@@ -188,6 +188,23 @@ stay intact and the open groups remain open. Scroll the long page to verify that
 the sidebar and account control reach the bottom. Repeat on a phone and open the
 navigation drawer; the page must not scroll horizontally.
 
+When changing the Settings Driver access stories, build and serve the preview
+and open each indexed story in a fresh browser context. Inspect the embedded
+frame's `story` query and the fixture requests from its first load:
+
+- `pages-settings--driver-configuration-denied` loads
+  `story=settingsDriverConfigurationsDenied`. Permissions say the account cannot
+  administer the Installation. Settings sends no Driver GET.
+- `pages-settings--driver-configuration-endpoint-refused` loads
+  `story=settingsDriverConfigurationsEndpointRefused`. Permissions allow
+  Installation administration. The first Driver GET returns 403, and the
+  permissions recheck still allows administration. The Driver section shows the
+  refusal without values.
+
+In both stories, the Account and Session cards stay usable. Check the empty
+and unavailable stories as controls: a 200 with no configurations shows the
+empty message, and a 503 shows the read failure.
+
 `scripts/console-storybook/` installs from its own manifest and lockfile under the
 seven-day release-age policy, independently of root dependencies.
 

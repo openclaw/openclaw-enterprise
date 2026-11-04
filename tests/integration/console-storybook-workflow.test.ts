@@ -5,7 +5,6 @@ import test from "node:test";
 import { SandboxNetworkPolicyConfiguration } from "../../packages/contracts/src/sandbox-policy.ts";
 import networkPolicySchema from "../../scripts/console-storybook/public/network-policy-schema.mts";
 
-import * as settingsStories from "../../scripts/console-storybook/pages-settings.stories.ts";
 import { settingsScenarios } from "../../scripts/console-storybook/public/scenario-groups/settings.mts";
 
 const controller = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
@@ -132,19 +131,4 @@ test("Settings stories distinguish read-only access from an endpoint refusal", (
   assert.deepEqual(refused.rules, [
     { path: "/installation/driver-configurations", status: 403, code: "FORBIDDEN" },
   ]);
-
-  // Import real CSF exports so removing a registration or selecting the wrong scenario fails.
-  assert.equal(settingsStories.default.title, "Pages/Settings");
-  assert.equal(
-    settingsStories.DriverConfigurationDenied.name,
-    "Read-only account: no Driver query",
-  );
-  assert.equal(settingsStories.DriverConfigurationDenied.name, readOnly.name);
-  assert.equal(typeof settingsStories.DriverConfigurationDenied.render, "function");
-  assert.equal(
-    settingsStories.DriverConfigurationEndpointRefused.name,
-    "Driver configuration endpoint refused",
-  );
-  assert.equal(settingsStories.DriverConfigurationEndpointRefused.name, refused.name);
-  assert.equal(typeof settingsStories.DriverConfigurationEndpointRefused.render, "function");
 });

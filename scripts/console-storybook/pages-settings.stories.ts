@@ -27,7 +27,7 @@ export const DriverConfigurationFailure = {
 };
 export const DriverConfigurationDenied = {
   ...story("settingsDriverConfigurationsDenied"),
-  name: "Read-only account: no Driver query",
+  name: "No Installation admin access: no Driver query",
 };
 export const DriverConfigurationEndpointRefused = {
   ...story("settingsDriverConfigurationsEndpointRefused"),

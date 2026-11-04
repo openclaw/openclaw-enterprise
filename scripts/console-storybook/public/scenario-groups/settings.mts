@@ -99,11 +99,11 @@ export const settingsScenarios = {
   },
   settingsDriverConfigurationsDenied: {
     group: "Pages/Settings",
-    name: "Read-only account: no Driver query",
+    name: "No Installation admin access: no Driver query",
     path: "/console/settings",
     readOnlyPermissionSummary: true,
     description:
-      "A read-only account keeps the Account and Session cards. Permissions return 200 with installation.administer false, so Settings sends no Driver configuration query and omits the Driver section.",
+      "The account can still use its Account and Session cards. Its permissions say it cannot administer the Installation, so Settings skips the Driver configuration request and leaves out the section.",
   },
   settingsDriverConfigurationsEndpointRefused: {
     group: "Pages/Settings",
