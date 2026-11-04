@@ -995,6 +995,9 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
   describeSourceDestinations(input: Pick<CredentialSourceInput, "type" | "config">) {
     const type = sourceType(input.type, this.options, this.refresh);
     const config = input.config;
+    if (type.catalog.secrets.length === 0) {
+      return Object.freeze({});
+    }
     if (input.type === "openai") {
       const endpoint = sourceBaseUrl(config);
       return Object.freeze({
