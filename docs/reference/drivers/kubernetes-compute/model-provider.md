@@ -34,7 +34,8 @@ transport. Source authorization never overrides the inference endpoint.
 
 Embedded and dedicated native OpenClaw receive the shared API adapter and URL.
 Compute translates the native default OpenAI URL in model metadata to the selected
-endpoint. A different custom URL or conflicting API adapter is rejected. Dedicated
+endpoint. It checks every embedded model row and every row rendered for dedicated
+native OpenClaw. A different custom URL or API adapter is rejected. Dedicated
 native OpenClaw still requires complete model metadata and a Credential Source
 for custom endpoints; direct Secret-backed keys remain restricted to OpenAI's
 default endpoint.

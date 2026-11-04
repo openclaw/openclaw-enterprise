@@ -1539,6 +1539,28 @@ test("shared providers render OpenClaw adapters and refuse unsupported Codex pro
   assert.deepEqual([...codex.objects], before);
 });
 
+test("embedded subagent model rows cannot override the shared provider destination", async () => {
+  const configuration = createHarnessConfiguration("openclaw", "gpt-5");
+  configuration.agents.defaults.subagents = { model: "openai/gpt-4.1" };
+  configuration.agents.defaults.models["openai/gpt-4.1"] = { agentRuntime: { id: "openclaw" } };
+  configuration.models.providers.openai.models.push({
+    ...configuration.models.providers.openai.models[0],
+    id: "gpt-4.1",
+    baseUrl: "https://other.example.test/v1",
+  });
+  const fixture = dedicatedFirstDeployFixture({
+    modelEndpoint: "https://models.example.test/v1",
+    revision: {
+      harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
+      configuration,
+      plugins: undefined,
+    },
+  });
+  const before = structuredClone([...fixture.objects]);
+  await assert.rejects(fixture.prepare(), /OpenAI model baseUrl must match the Installation/);
+  assert.deepEqual([...fixture.objects], before, "refuse before credential or workload writes");
+});
+
 test("shared OpenAI provider leaves a roster-selected Anthropic provider unchanged", async () => {
   const configuration = createHarnessConfiguration("openclaw", "gpt-5");
   delete configuration.agents.defaults.model;

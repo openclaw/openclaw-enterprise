@@ -108,10 +108,17 @@ export function modelProviderConfiguration(
       `Configuration setting ${reference} ${MODEL_PROVIDER_REFERENCE_REQUIREMENT}.`,
     );
   }
-  const entries =
-    selections?.flatMap((selection) =>
-      selection.matches.length === 1 ? selection.matches.map(({ entry }) => entry) : [],
-    ) ?? [];
+  // Embedded OpenClaw retains the whole catalogue, including subagent/model-switch rows.
+  // Dedicated native rendering emits only the selected rows.
+  let entries: readonly unknown[];
+  if (harness.mode === "embedded") {
+    entries = Array.isArray(native?.models) ? native.models : [];
+  } else {
+    entries =
+      selections?.flatMap((selection) =>
+        selection.matches.length === 1 ? selection.matches.map(({ entry }) => entry) : [],
+      ) ?? [];
+  }
   for (const value of [native, ...entries]) {
     const entry = asRecord(value);
     if (
