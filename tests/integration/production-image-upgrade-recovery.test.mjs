@@ -3888,6 +3888,18 @@ test("an Installation the selected controller image loads passes the preflight a
     .split("\n")
     .filter((line) => line.trim().startsWith("{"))
     .map((line) => JSON.parse(line));
+  const initialization = rendered.find(
+    (document) =>
+      document?.apiVersion === "batch/v1" &&
+      document.kind === "Job" &&
+      document.metadata.name === "oce-initialization",
+  );
+  assert.ok(
+    initialization?.spec.template.spec.initContainers?.some(
+      (container) => container.name === "installation-check",
+    ),
+    "the upgrade initialization Job includes the installation-check init container",
+  );
   assert.deepEqual(
     policy.spec.egress,
     rendered.find(
