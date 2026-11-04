@@ -38,7 +38,7 @@ func (app *application) installationHandoffCommand(action string) *cobra.Command
 			ctx, cancel := context.WithTimeout(cmd.Context(), app.parsedTimeout)
 			defer cancel()
 			result := readInitialization(ctx, kubeconfig, kubeContext, namespace, name, release, expectedUID)
-			out := cmd.OutOrStdout()
+			out := &bytes.Buffer{}
 			fmt.Fprintln(out, result.message)
 			if action == "plan" {
 				fmt.Fprintf(out, "Resume in order:\n1. %s\n", result.next())
@@ -49,6 +49,9 @@ func (app *application) installationHandoffCommand(action string) *cobra.Command
 				fmt.Fprintln(out, "API attempt: if started, inspect the original attempt and its outcome. Do not replay an uncertain operation.")
 				fmt.Fprintln(out, "Temporary access: removal unknown. Verify separately with the access owner.")
 				fmt.Fprintln(out, "Runtime: not qualified by this check.")
+			}
+			if _, err := out.WriteTo(cmd.OutOrStdout()); err != nil {
+				return err
 			}
 			if result.state != initializationComplete {
 				return &ExitStatusError{Code: 1}
