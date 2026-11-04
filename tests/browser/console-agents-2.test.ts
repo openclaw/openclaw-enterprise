@@ -2967,7 +2967,7 @@ test("Custom native source selection shows its immutable endpoint and requires e
               types: [
                 {
                   type: "openai",
-                  config: [{ name: "base_url", required: false }],
+                  config: [{ name: "authorized_base_url", required: false }],
                   secrets: [{ name: "api_key", required: true }],
                   rotation: "none",
                   harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
@@ -2994,7 +2994,7 @@ test("Custom native source selection shows its immutable endpoint and requires e
             namespaceId: namespace.id,
             name: "Authorized endpoint",
             type: "openai",
-            config: { base_url: endpoint },
+            config: { authorized_base_url: endpoint },
             state: "ready",
             secrets: { api_key: sourceSecret.data.ref },
             ref: { kind: "credential_source", namespaceId: namespace.id, id: sourceId },
@@ -3006,6 +3006,7 @@ test("Custom native source selection shows its immutable endpoint and requires e
   );
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset" }).click();
+  await page.getByLabel("Agent name").fill("Source Endpoint Agent");
   await page.getByLabel("Provider", { exact: true }).selectOption("custom");
   await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
   await page.getByLabel("Custom credential", { exact: true }).selectOption("source");
@@ -3045,4 +3046,12 @@ test("Custom native source selection shows its immutable endpoint and requires e
       cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
     },
   ]);
+  // The selected API-key source binds as a credential_source even while the method reads api_key.
+  const submitted = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" && request.url().includes(`/namespaces/${namespace.id}/agents`),
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const body = JSON.parse((await submitted).postData() ?? "{}");
+  assert.deepEqual(body.harnessAuth, { method: "credential_source", sourceId });
 });

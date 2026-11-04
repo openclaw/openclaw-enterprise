@@ -350,7 +350,7 @@ export function installFixture(scenario, evidence) {
         namespaceId,
         name: `${source.name} key`,
         ref,
-        authorizedEndpoint: source.config.base_url,
+        authorizedEndpoint: source.config.authorized_base_url,
       });
     }
   }

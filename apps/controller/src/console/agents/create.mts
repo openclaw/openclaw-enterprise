@@ -1200,10 +1200,10 @@ function renderAgentForm(
           return (
             value.namespaceId === namespaceId &&
             value.state === "ready" &&
-            typeof responseFields(value.config).base_url === "string" &&
+            typeof responseFields(value.config).authorized_base_url === "string" &&
             type?.harnessAuth?.loginMode === "api_key" &&
             type.harnessAuth.modelProvider === "openai" &&
-            type.config.some((entry) => entry.name === "base_url")
+            type.config.some((entry) => entry.name === "authorized_base_url")
           );
         },
       );
@@ -1802,7 +1802,7 @@ function renderAgentForm(
   sourcePicker.addEventListener("change", () => {
     clearModelCredential();
     const source = availableSources.find(({ id }) => id === sourcePicker.value);
-    customEndpoint.value = source?.config.base_url ?? "";
+    customEndpoint.value = source?.config.authorized_base_url ?? "";
     modelCredentialSource =
       source === undefined ? null : { kind: "credential_source", namespaceId, id: source.id };
     passwordAuth = false;
@@ -4014,14 +4014,19 @@ function renderAgentForm(
       ...(agent.backendId ? { backendId: agent.backendId } : {}),
     };
     const usesOAuth = (binding?.method ?? authMethod.value) === "credential_source";
+    // A selected endpoint-authorized Credential Source is a supported API-key binding even while
+    // the authentication method still reads api_key, as it does for the custom provider.
+    const usesCredentialSource = usesOAuth || modelCredentialSource?.kind === "credential_source";
     if (
       !binding &&
-      (!passwordAuth || usesOAuth) &&
-      modelCredentialSource?.kind !== (usesOAuth ? "credential_source" : "secret")
+      (!passwordAuth || usesCredentialSource) &&
+      modelCredentialSource?.kind !== (usesCredentialSource ? "credential_source" : "secret")
     ) {
       feedback.textContent = usesOAuth
         ? "Complete ChatGPT sign-in before creating the Agent."
-        : "Choose a model credential Secret before creating the Agent.";
+        : usesCredentialSource
+          ? "Choose an endpoint-authorized Credential Source before creating the Agent."
+          : "Choose a model credential Secret before creating the Agent.";
       return;
     }
     pending = true;

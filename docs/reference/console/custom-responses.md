@@ -11,7 +11,7 @@ reject mismatches. Direct delivery exposes the key to the Harness and does not
 restrict it to that hostname; Agent egress is unchanged.
 
 For Dedicated Codex or native OpenClaw, you can select an existing API-key
-Credential Source with an explicit `base_url`. Its endpoint is read-only. Native OpenClaw also requires the
+Credential Source with an explicit `authorized_base_url`. Its endpoint is read-only. Native OpenClaw also requires the
 model's context window, output limit, and cost values; obtain them from the
 provider. OCE does not infer them. Source registration follows the
 [Gateway destination contract](../drivers/credential-gateway.md).

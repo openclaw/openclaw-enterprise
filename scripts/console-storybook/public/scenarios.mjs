@@ -1746,14 +1746,17 @@ export const scenarios = {
     name: "Custom native OpenClaw source-owned endpoint",
     path: create,
     credentialSourceTypes: [
-      { ...modelCredentialSourceTypes[0], config: [{ name: "base_url", required: false }] },
+      {
+        ...modelCredentialSourceTypes[0],
+        config: [{ name: "authorized_base_url", required: false }],
+      },
     ],
     existingModelSources: [
       {
         id: "cs_00000000-0000-4000-8000-000000000020",
         name: "Authorized model endpoint",
         type: "openai",
-        config: { base_url: "https://models.example.test/v1" },
+        config: { authorized_base_url: "https://models.example.test/v1" },
         secrets: {
           api_key: {
             kind: "secret",
@@ -1780,7 +1783,10 @@ export const scenarios = {
     name: "No existing custom model sources",
     path: create,
     credentialSourceTypes: [
-      { ...modelCredentialSourceTypes[0], config: [{ name: "base_url", required: false }] },
+      {
+        ...modelCredentialSourceTypes[0],
+        config: [{ name: "authorized_base_url", required: false }],
+      },
     ],
     actions: [
       ...form,
@@ -1794,7 +1800,10 @@ export const scenarios = {
     name: "Custom model source read refused",
     path: create,
     credentialSourceTypes: [
-      { ...modelCredentialSourceTypes[0], config: [{ name: "base_url", required: false }] },
+      {
+        ...modelCredentialSourceTypes[0],
+        config: [{ name: "authorized_base_url", required: false }],
+      },
     ],
     rules: [{ suffix: "/credential-sources", method: "GET", status: 403, code: "FORBIDDEN" }],
     actions: [
