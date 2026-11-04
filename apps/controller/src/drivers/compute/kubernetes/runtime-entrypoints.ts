@@ -4122,6 +4122,7 @@ function codexTransientFailure(message, summary) {
 }
 function codexProbeStatusFailure(message, detail) {
   const summary = providerErrorSummary(message);
+  if (summary.providerCode === "model_not_found") detail = "model_not_found";
   return {
     ...probeFailure("PROBE_STATUS", codexRateLimited(message) ? "rate_limit" : detail),
     ...summary,

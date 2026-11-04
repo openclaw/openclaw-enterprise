@@ -3,6 +3,7 @@ import type {
   AgentDeploymentStatusWire,
   AgentRead,
   AgentRevisionSummaryWire,
+  RuntimeFailureEvidence,
 } from "@openclaw-enterprise/contracts";
 import type { Static } from "typebox";
 import { requestFailure } from "../api-client.mjs";
@@ -27,6 +28,7 @@ type RecoveryContext = Parameters<typeof logTextDenied>[0] & {
 interface FailureToShow {
   latest: Pick<AgentRevisionSummaryWire, "id" | "revision">;
   record: AgentDeploymentStatusWire | null;
+  failedModel: string | undefined;
   agent: AgentRead;
   permissions: Static<typeof AgentCallerPermissionsResponse>["data"] | null;
   currentLabel: string;
@@ -86,6 +88,18 @@ export function secretBackedCredential(
   harnessAuth: { method: string; source?: { kind: string } } | null | undefined,
 ) {
   return harnessAuth?.source?.kind === "secret";
+}
+
+export function modelUnavailable(error: AgentDeploymentStatusWire["error"] | undefined) {
+  const data = error?.data;
+  const failure: RuntimeFailureEvidence | undefined =
+    data && "runtimeFailure" in data ? data.runtimeFailure : undefined;
+  const cause = failure?.cause;
+  return (
+    error?.code === "RUNTIME_MODEL_PROBE_FAILED" &&
+    cause?.kind === "PROBE_STATUS" &&
+    (cause.detail === "model_not_found" || cause.detail === "model_not_found-attempt2")
+  );
 }
 
 const DEPLOYMENT_FAILURE_LINK_LABELS = {
@@ -226,14 +240,20 @@ export function createDeploymentRecovery(
       : "Ask someone with log access to check the failed version’s logs before deploying a new version.";
     const harnessAuth = "harnessAuth" in agent ? agent.harnessAuth : undefined;
     const credentialFixAsk = credentialRejectedAsk(code, harnessAuth, permissions);
-    const failureText = credentialFixAsk ?? errorMessage;
+    const unavailable = modelUnavailable(record?.error);
+    const modelLabel = failure.failedModel
+      ? `Model ${failure.failedModel}`
+      : "The configured model";
+    const failureText = unavailable
+      ? `${modelLabel} is unavailable with this credential (model_not_found). Choose a model this account can use in Configuration, then redeploy this Agent.`
+      : (credentialFixAsk ?? errorMessage);
     let impact = failureText || generic;
     if (servingImpact === "replacement-failed") {
       impact = `${currentLabel} is still selected, but its runtime was probably stopped for this deployment.${failureText ? ` ${failureText}` : ""}`;
     } else if (servingImpact === "selected-failed") {
       impact = `${currentLabel} is still selected, but its runtime replaced the previous version before deployment finished.${failureText ? ` ${failureText}` : ""}`;
     }
-    if ((servingImpact || (errorMessage && step === "logs")) && !logsAllowed) {
+    if (!unavailable && (servingImpact || (errorMessage && step === "logs")) && !logsAllowed) {
       // Without the Logs link this is the reader's only way to the logs (finding 1484).
       impact += " Ask someone with log access to check the failed version’s logs.";
     }
@@ -286,7 +306,7 @@ export function createDeploymentRecovery(
       (canOpenConfiguration && !configurationEditable
         ? "Open draft"
         : DEPLOYMENT_FAILURE_LINK_LABELS[tab]);
-    const actionsFor = `${latest.id}/${tab}/${nextLabel}/${logsAllowed}/${deployAgain}`;
+    const actionsFor = `${latest.id}/${tab}/${nextLabel}/${logsAllowed}/${deployAgain}/${unavailable}`;
     if (recoveryTarget !== actionsFor) {
       recoveryTarget = actionsFor;
       const again = deployAgain
@@ -296,7 +316,9 @@ export function createDeploymentRecovery(
       const next = tab && nextLabel ? versionLink(nextLabel, "draft", tab) : null;
       // The first action is the one primary on the page: Deploy again where redeploying can
       // help, else the failed version's Logs. The others are secondary buttons.
-      const actions = [again, logs, next].filter((action) => action !== null);
+      const actions = (unavailable ? [next, logs] : [again, logs, next]).filter(
+        (action) => action !== null,
+      );
       actions.forEach((action, index) => {
         action.className = index === 0 ? "button button--primary" : "button";
       });

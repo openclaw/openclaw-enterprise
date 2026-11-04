@@ -6736,13 +6736,13 @@ export const scenarios = {
   },
   deploymentModelProbeFailed: {
     group: "Pages/Agent detail",
-    name: "New version failed its model check",
+    name: "New version uses an unavailable model",
     path: `${candidateVersion}&tab=deployment`,
     deployed: true,
     candidateDeploymentStatus: "failed",
-    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
+    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "model_not_found" },
     description:
-      "Recovery comes first: v7 failed its startup model check, while selected v6 may have stopped. The detailed record preserves the reported cause without assuming a credential problem.",
+      "The recovery banner names the model configured for v7 and leads with Open Configuration so the operator can correct the model and deploy the same Agent.",
     steps: [
       "Open v7 Logs and confirm the failed version, then go Back. Open Configuration goes to the draft without deploying, scrolls it into view and focuses its Configuration tab.",
       "From the draft, open Channels, then Repositories. Select example/application without saving, then follow Open Configuration in the recovery card.",

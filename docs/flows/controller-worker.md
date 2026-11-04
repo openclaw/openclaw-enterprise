@@ -331,7 +331,10 @@ Terminal rows store `reason_code` and optional `result_data`, shaped as the
 and [deployment status](../reference/agents.md#deployment-status) define. For
 `runtimeFailure`, Compute reads cached startup results from its private status
 path, including unready Harnesses without plugins, and verifies runtime
-incarnation without repeating the model probe. Missing or invalid evidence
+incarnation without repeating the model probe. For a Codex provider refusal with
+code `model_not_found`, the worker retains that cause. The Console reads the failed
+version’s Configuration to identify the model and links to the draft for correction.
+Missing or invalid evidence
 leaves the cause unspecified.
 
 `packages/occ/src/state/controller-work.ts:validateFailureData` validates reads

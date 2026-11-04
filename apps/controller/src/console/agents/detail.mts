@@ -48,6 +48,7 @@ import {
 } from "../dom.mjs";
 import {
   configuredHarnessId,
+  configuredModel,
   createHarnessAuthFields,
   harnessAuthDescription,
   renderHarnessAuthSummary,
@@ -140,6 +141,7 @@ import {
 } from "./deployment-evidence.mjs";
 import {
   createDeploymentRecovery,
+  modelUnavailable,
   credentialFixAccess,
   credentialRejectedAsk,
 } from "./deployment-recovery.mjs";
@@ -413,8 +415,7 @@ function summary(
   values: OpenClawConfigurationDocument,
   details: [string, string | Node | null | undefined][],
 ) {
-  const { model } = responseFields(responseFields(values.agents).defaults);
-  const primary = typeof model === "string" ? model : responseFields(model).primary;
+  const primary = configuredModel(values);
   const list = element("dl", { className: "configuration-summary" });
   for (const [name, value] of [
     ["Model", typeof primary === "string" ? primary : "Not specified"],
@@ -2693,6 +2694,10 @@ export async function renderAgentDetail(
         : {
             latest,
             record: latestDeploymentRecord,
+            failedModel:
+              latestRevisionDetail?.id === latest.id && "configuration" in latestRevisionDetail
+                ? configuredModel(latestRevisionDetail.configuration)
+                : undefined,
             agent: currentAgent,
             permissions: callerPermissions,
             currentLabel,
@@ -2741,8 +2746,7 @@ export async function renderAgentDetail(
     }
     versionRecord?.rerender();
   }
-  // List summaries omit the credential binding a revision was admitted with, so the
-  // rejected-credential hint reads the newest revision once.
+  // Read the failed version’s model or credential binding. The draft may already have changed.
   async function readLatestRevisionDetail(revision: Revision) {
     if (latestRevisionDetail?.id === revision.id || latestRevisionDetailReading === revision.id) {
       return;
@@ -2761,7 +2765,7 @@ export async function renderAgentDetail(
       }
       latestRevisionDetail = detail;
       refreshDeployControls();
-      rerenderRecordedFailures();
+      renderLatestDeployment();
     } catch {
       // Without the detail the hint stays generic; the deployment status still shows.
     } finally {
@@ -2914,7 +2918,10 @@ export async function renderAgentDetail(
               latestOverviewUnavailable = overviewUnavailable;
               latestDeploymentUnavailable = readFailed;
               latestDeploymentReadError = readError;
-              if (record?.error?.code === "RUNTIME_AUTHENTICATION_FAILED") {
+              if (
+                record?.error?.code === "RUNTIME_AUTHENTICATION_FAILED" ||
+                modelUnavailable(record?.error)
+              ) {
                 void readLatestRevisionDetail(mostRecent);
               }
               latestDeploymentRecord = record;
