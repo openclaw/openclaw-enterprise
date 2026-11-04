@@ -13,15 +13,14 @@
 # release assets have answered 503 for over 30 seconds while other requests
 # succeeded, so retries continue for about 90 seconds rather than ending at 30.
 # The budget does not cut a running attempt short:
-# each attempt may take up to 300 seconds (curl --max-time), so a download
-# gives up within about seven minutes.
+# each attempt may take up to 600 seconds (curl --max-time), so a download
+# gives up within about twelve minutes.
 # An attempt that moves less than 100 KiB/s for 30 seconds is cut off as a
 # stall (curl exit 28) and retried like any other timeout. Healthy runner
-# downloads move tens of MB/s, and the 300 second cap already needs about
-# 195 KB/s for the largest pinned file (kubectl, about 59 MB), so this only
-# ends an attempt that has all but stopped. DOWNLOAD_PINNED_SPEED_LIMIT
-# (bytes/s) and DOWNLOAD_PINNED_SPEED_TIME (seconds) override the threshold
-# for tests.
+# downloads move tens of MB/s. The 600 second cap also lets kubectl (about
+# 59 MB) transfer at the existing 100 KiB/s floor.
+# DOWNLOAD_PINNED_SPEED_LIMIT (bytes/s) and DOWNLOAD_PINNED_SPEED_TIME (seconds)
+# override the threshold for tests.
 # The checksum is checked once, on the final file, and a mismatch is never
 # retried.
 set -euo pipefail
@@ -80,7 +79,7 @@ while :; do
   status=0
   attempt_started=${SECONDS}
   transfer="$(curl --fail --silent --show-error --location \
-    --connect-timeout 20 --max-time 300 \
+    --connect-timeout 20 --max-time 600 \
     --speed-limit "${speed_limit_bytes}" --speed-time "${speed_time_seconds}" \
     --write-out '%{http_code} %{speed_download}' --output "${temporary}" "${url}")" || status=$?
   http_code="${transfer%% *}"

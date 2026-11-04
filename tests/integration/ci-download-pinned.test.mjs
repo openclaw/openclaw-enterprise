@@ -102,7 +102,7 @@ test("a stalled download is cut off and retried, then checksum-verified", async 
       assert.match(result.stderr, /Transient download failure \(curl exit 28, HTTP 200\)/);
       assert.match(result.stdout, /: OK$/m);
       assert.deepEqual(await readFile(destination), body);
-      // The stall ends after the speed window, not at the 300 s attempt cap.
+      // The stall ends after the speed window, not at the attempt cap.
       assert.ok(Date.now() - started < 20_000, `took ${Date.now() - started} ms`);
     },
   );
