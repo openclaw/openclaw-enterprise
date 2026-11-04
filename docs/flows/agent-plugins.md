@@ -17,10 +17,8 @@ Harness owns tools and approvals.
 
 `apps/controller/src/index.ts:createFastifyApp`
 
-- Trigger: Agent create/update with `plugins`, including a Console new-version
-  plugin save, followed by Agent deployment.
-- Assumptions: exact Agent permission, valid selections, compatible trusted
-  PluginDriver, and deployment prerequisites.
+- Trigger: Agent create/update with `plugins`, then deployment.
+- Requires Agent permission, valid selections and a compatible PluginDriver.
 - Source: [HTTP handlers](../../apps/controller/src/index.ts),
   [OpenClawController](../../packages/occ/src/index.ts), and
   [bundled PluginDrivers](../../apps/controller/src/drivers/plugin/index.ts).
@@ -39,7 +37,12 @@ graph TD
   D1 -->|token or none| D6
   D6 -->|unsupported| D7["Unsupported"]
   D6 -->|token or none| D4["Call PluginDriver"]
-  D6 -->|stored| D3["Use stored credential"] --> E3["Recheck source authority"] --> D4
+  D6 -->|Secret| D3["Read and recheck"] --> D4
+  D6 -->|CredentialSource| D9["Read unless canceled"]
+  D9 -->|success| D10["Recheck authority"]
+  D10 -->|allowed and connected| D4
+  D9 -->|canceled or failed| D12["Stop"]
+  D10 -->|denied or disconnected| D12
   D4 -->|disconnect| D8["Cancel hosted reads"]
   D4 --> D5["Return safe catalog metadata"]
   A["Authorize and validate policy"] -->|valid| S["Save Agent selections"]
@@ -70,31 +73,32 @@ graph TD
 ### Credential-scoped discovery
 
 [Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) requires
-Agent `create`. Stored sources require caller `operate`. Cross-Namespace references
-return `400`, missing Secrets `404`, and unavailable explicit CredentialSources `409`.
+Agent `create` and caller `operate` on stored sources. OCC rechecks both before
+Driver use. Wrong Namespace returns `400`, missing Secret `404`, unavailable
+explicit CredentialSource `409`. Unsupported discovery reads no credential.
 
-Saved discovery requires a dedicated Agent and caller `read` and `update`. OCC
-offers only plugins it would admit on save. For bound credentials OCC rechecks
-the attachment and both caller and Agent `operate`. For explicit sources it
-rechecks caller `operate`. Missing or non-ready bound sources return `404`.
-Hosted catalogs use the saved bearer. Curated catalogs require no credential.
+Saved discovery requires a dedicated Agent and caller `read` and `update`.
+OCC offers admissible plugins. It rechecks attachment and both caller and Agent
+`operate` for bound sources, and caller `operate` for explicit sources.
+Missing or unready bound sources return `404`. Hosted catalogs use the saved
+bearer; curated catalogs need none.
+
+CredentialSource reads use timeout and HTTP cancellation. OCC skips canceled
+reads. After success it rechecks authority and discards the token on disconnect.
 
 `packages/occ/src/index.ts:OpenClawController.discoverManagedMcpTools`
 
 For managed MCP, the Plugin Driver matches the release slot. OCC reads the bearer
-through the Secret Driver and rechecks both grants and attachment before
-`tools/list`. Operators save upstream names in `driverPolicy.toolNames`.
-Deployment applies that selection to the worker, Gateway and OpenShell.
+through the Secret Driver and rechecks grants and attachment before `tools/list`.
+`driverPolicy.toolNames` pins upstream names for worker, Gateway and OpenShell.
 
-Console cancels hosted reads when a picker or view closes. Changing the account
-clears results. Hosted reads reject redirects and credential echoes, bound
-response size and time, and return safe metadata with `Cache-Control: no-store`.
-See [catalog browsing](../reference/drivers/plugin-bundled.md#selection-and-catalogs)
-for search, paging, and safe presentation fields.
+Console cancels reads on picker or view close and clears results on account
+change. Hosted reads reject redirects and credential echoes, limit size and
+time, and return safe metadata with `Cache-Control: no-store`.
+See [catalog browsing](../reference/drivers/plugin-bundled.md#selection-and-catalogs).
 
-The optional `NativeCodexPluginCatalogReader` reads `plugin/list` over app-server
-stdio. It rejects invalid results and stops the child on teardown. HTTP discovery
-uses the hosted reader.
+The optional `NativeCodexPluginCatalogReader` calls `plugin/list` over stdio,
+rejects invalid results and stops the child on teardown. HTTP uses the hosted reader.
 
 ### 1. Validate desired state under exact-Agent authority
 
