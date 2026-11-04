@@ -160,10 +160,11 @@ describes how that provider maps its phases to these states.
 
 ### Provisioning inputs
 
-Compute supplies the Namespace, Kubernetes client, and cancellation signal.
-For Harness provisioning it also supplies the Agent revision and
-[`HarnessWorkloadRequirements`](../../../packages/contracts/src/drivers/sandbox/index.ts).
-Use the identity, mounts, login mode, and credential references Compute selected.
+Use Compute's [context and launch requirements](../../../packages/contracts/src/drivers/sandbox/index.ts)
+without changing identity, login mode or credentials.
+`retainedDirectories` describes storage-independent paths and environment bindings.
+`workspaceMounts` supplies approved PVC subpaths/modes; provider-owned storage
+(`workspaceStorage: "provider"`) leaves it empty.
 
 If `workspaceSetup` is present, read only the specified key of the Agent-owned
 Secret in the same Namespace. Initialize the approved workspace and verify its
@@ -181,9 +182,11 @@ provider. Compute waits for the gateway to report every attachment
 
 ### Sandbox resource identity
 
-`SandboxResourceRef` contains `namespaceName`, `resourceName`, `agentId`, and
-`revisionId`. It stays stable when a controller replaces the underlying Pod;
-retirement must find the provider resource even if that Pod is already gone.
+`SandboxResourceRef` retains `namespaceName`, `resourceName`, `agentId` and
+`revisionId` across Pod replacement/removal.
+
+[Managed OpenShell](kubernetes-openshell-compute.md) combines `workspaceNodeNamespaceLabels(context)`
+and `workspaceNodePeerLabels`; neither grants namespace-wide Pod access.
 
 ### Optional network policy operations
 

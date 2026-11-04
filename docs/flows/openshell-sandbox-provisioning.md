@@ -8,19 +8,18 @@ last_updated_session: authoring-run/5728cb52-6c01-4613-a558-c793a649f415
 
 ## Overview
 
-Kubernetes Compute provisions dedicated Codex and OpenClaw Harnesses through
-OpenShell. [Credential sources](credential-source-lifecycle.md) supply model access.
+Kubernetes Compute provisions dedicated Codex/OpenClaw Harnesses through
+operator-mode OpenShell, using [credential sources](credential-source-lifecycle.md).
+See the [managed lifecycle](openshell-managed-workload.md) for managed Workspaces.
 
 ## Entry Points
 
-- Trigger: worker reconciliation of an Agent revision selecting OpenShell Sandbox
-  and Kubernetes Compute.
+- Trigger: worker reconciliation with OpenShell Sandbox and Kubernetes Compute.
 - Source: `apps/controller/src/drivers/sandbox/openshell.ts:ensureNamespace`
 - Source: `apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness`
 - Source: `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`
-- Assumptions: Kubernetes Compute, OpenShell Sandbox and Credential Gateway share
-  one `openshell` Backend; Namespace isolation exists; the operator-mode Gateway
-  is ready.
+- Assumptions: Compute, Sandbox and Credential Gateway share one `openshell`
+  Backend; Namespace isolation exists; the operator-mode Gateway is ready.
 
 ## Flow
 
@@ -157,25 +156,27 @@ managed-by labels and active phase; conflicts fail preparation.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`
 
-Compute derives `provisionHarness` from its ordinary Deployment. First deployment
-keeps the Agent Service inactive and Gateway transport fail-closed. Attachments
-and provider/Sandbox creation await Gateway readiness and its Agent-owned setup
-Secret reference. Projected identity is disabled locally; enabling it fails before Gateway
-mutation because the pinned API cannot preserve the exact Agent ServiceAccount/token.
+`harnessLaunch` prepares inputs; `sandboxRequirements` adds operator-mode PVC
+mounts. Initially, the Agent Service stays inactive
+and Gateway transport fail-closed. Attachment and provider/Sandbox creation await
+Gateway readiness and its Agent-owned setup Secret reference. Projected identity
+is disabled locally: enabling it fails before Gateway mutation because the pinned
+API cannot preserve the Agent ServiceAccount/token.
 
-For `credential_source`, Compute renders the catalog login mode without a model
-Secret and passes version and `attachForRevision` provider names through `requirements.credentialAttachments`.
-For `chatgptAuthTokens`, OpenShell omits static `CODEX_ACCESS_TOKEN` but retains
-account metadata. Codex receives only `APP_TOKEN_SHA` from its exact Agent transport
-Secret. Compute converts the admitted plugin snapshot to `runtime.json`/`config.toml` workload
-files, removing ConfigMap environment paths.
+For `credential_source`, Compute uses the catalog login mode without a model
+Secret; `requirements.credentialAttachments` carries version and
+`attachForRevision` provider names. `chatgptAuthTokens` omits static
+`CODEX_ACCESS_TOKEN` but retains account metadata. Codex gets only `APP_TOKEN_SHA`
+from its Agent transport Secret. Compute renders the admitted plugin snapshot as
+`runtime.json` and `config.toml`, removing their ConfigMap environment paths.
 
-`OpenShellSandboxDriver.configureAgent` sets full access/user review for every login
-mode and removes `appServer.networkProxy`.
-`deploy/runtime/openclaw-codex-full-access-profile.patch` sends `:danger-full-access`
-for threads/turns; constrained threads fail before a turn. First Agent warns that
-prior PAT `workspace-write` versions break shell tools; `--replace-key` deploys
-current policy. OpenShell blocks nested bubblewrap; model readiness does not prove shell execution.
+`OpenShellSandboxDriver.configureAgent` sets full access/user review for all
+login modes and removes `appServer.networkProxy`.
+`deploy/runtime/openclaw-codex-full-access-profile.patch` sends the endpoint's
+`:danger-full-access` profile for threads/turns; constrained threads fail
+before a turn. First Agent warns: prior PAT `workspace-write` versions break
+shell tools; `--replace-key` deploys current policy.
+OpenShell blocks nested bubblewrap; model readiness does not prove shell execution.
 
 PAT bootstrap (`prepareHarnessAuth`;
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:AGENT_RUNTIME_ENTRYPOINT`)

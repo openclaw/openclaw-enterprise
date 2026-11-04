@@ -78,6 +78,11 @@ such as `drivers/compute/index.ts` or `drivers/iam/index.ts`, containing that
 Driver's interface, request, context, and result types. The root `index.ts` retains
 shared resource definitions and the public package exports.
 
+`apps/controller/src/drivers/compute/kubernetes/harness/` owns internal Harness
+runtimes and workspace handling for the single Kubernetes Compute Driver.
+`drivers/sandbox/openshell/managed.ts` owns managed OpenShell reconciliation;
+see the [prototype boundary](reference/drivers/kubernetes-openshell-compute.md).
+
 Within controller composition, `installation-presets.ts` owns Preset file loading
 and bundled-version assembly; `installation-config.ts` owns Driver composition.
 

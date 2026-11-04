@@ -59,13 +59,22 @@ export interface SandboxWorkloadIdentity {
   };
 }
 
-export interface HarnessWorkloadRequirements {
+/** Durable data intent, before a Compute or Sandbox implementation selects storage. */
+export interface HarnessRetainedDirectory {
+  readonly purpose: "workspace" | "generated-images" | "sessions" | "node-state";
+  readonly name: string;
+  readonly path: string;
+  /** The workload reads this directory through this variable, when present. */
+  readonly environment?: string;
+}
+
+export interface HarnessLaunchDescription {
   readonly loginMode: HarnessAuthBinding["method"] | CredentialSourceLoginMode;
   readonly image: string;
   readonly command: readonly string[];
   /** Optional identity that a Sandbox must preserve in full or reject before provisioning. */
   readonly workloadIdentity?: SandboxWorkloadIdentity;
-  readonly workspaceMounts: readonly SandboxWorkspaceMount[];
+  readonly retainedDirectories: readonly HarnessRetainedDirectory[];
   /** Initialize the mounted workspace privately before starting the Harness; never copy file contents here. */
   readonly workspaceSetup?: {
     readonly id: string;
@@ -79,6 +88,11 @@ export interface HarnessWorkloadRequirements {
   readonly credentialAttachments: readonly CredentialSourceAttachment[];
   readonly proxyWiring?: ProxyWiring;
   readonly labels: Readonly<Record<string, string>>;
+}
+
+export interface HarnessWorkloadRequirements extends HarnessLaunchDescription {
+  /** Compute-owned storage only. Empty when the provider owns retained storage. */
+  readonly workspaceMounts: readonly SandboxWorkspaceMount[];
 }
 
 export interface SandboxResourceRef {
@@ -194,6 +208,11 @@ export interface SandboxDriver extends Driver {
     readonly openclaw: Readonly<Record<HarnessExecutionMode, HarnessExecutionModeSupport>>;
   };
   readonly repositoryAccess?: SandboxRepositoryAccess;
+  /** Provider owns durable Harness storage and reports lifecycle through observeHarness. */
+  readonly workspaceStorage?: "provider";
+  /** Namespace selector paired with exact workspace-node Pod labels. */
+  workspaceNodeNamespaceLabels?(context: SandboxNamespaceContext): Readonly<Record<string, string>>;
+
   /** Explicit support; a networking facet alone never grants editable policy. */
   readonly networkPolicy?: {
     readonly wildcards: boolean;
