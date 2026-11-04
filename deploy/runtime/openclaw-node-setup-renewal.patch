@@ -611,10 +611,11 @@
  
 --- a/node-host-launcher.mjs
 +++ b/node-host-launcher.mjs
-@@ -21,8 +21,11 @@
+@@ -21,8 +21,12 @@
  
  const CHILD_ARGUMENT = "--openclaw-node-host-child";
  const MANAGED_CHILD_ARGUMENT = "--openclaw-node-host-managed-child";
++const PROTOCOL_ARGUMENT = "--openclaw-node-host-protocol=1";
 +const ACCEPTED_RESTART_ARGUMENT = "--openclaw-node-host-accepted-restart";
  const CHILD_MARKER = Symbol.for("openclaw.node-host.launcher-child");
  const MANAGED_STATE_MARKER = Symbol.for("openclaw.node-host.managed-state-path");
@@ -623,13 +624,19 @@
  const RESTART_INTERVAL_MS = 12 * 60 * 60 * 1_000;
  const READY_TIMEOUT_MS = 5 * 60 * 1_000;
  const ROOT_VALUE_FLAGS = new Set(["--profile", "--log-level", "--container"]);
-@@ -288,8 +291,12 @@
+@@ -288,8 +292,18 @@
          "The private managed node launcher argument requires an absolute state database path.",
        );
      }
 -    process.argv.splice(2, managedChild ? 2 : 1);
-+    const restartContext = process.argv[managedChild ? 4 : 3] === ACCEPTED_RESTART_ARGUMENT;
-+    process.argv.splice(2, (managedChild ? 2 : 1) + (restartContext ? 1 : 0));
++    const protocolIndex = managedChild ? 4 : 3;
++    if (process.argv[protocolIndex] !== PROTOCOL_ARGUMENT) {
++      throw new Error(
++        "The node launcher supervisor protocol is unsupported. Restart the node with the current launcher.",
++      );
++    }
++    const restartContext = process.argv[protocolIndex + 1] === ACCEPTED_RESTART_ARGUMENT;
++    process.argv.splice(2, (managedChild ? 3 : 2) + (restartContext ? 1 : 0));
      process[CHILD_MARKER] = true;
 +    if (restartContext) {
 +      process[ACCEPTED_RESTART_MARKER] = true;
@@ -637,7 +644,7 @@
      if (managedStatePath) {
        process[MANAGED_STATE_MARKER] = managedStatePath;
      }
-@@ -363,6 +370,7 @@
+@@ -363,6 +377,7 @@
    let restartArgs = process.argv.slice(2);
    let childExecArgv = process.execArgv;
    let childEnv = process.env;
@@ -645,17 +652,21 @@
    let pending;
    let lastAcceptedRestartAt;
    let releaseActivation;
-@@ -417,6 +425,9 @@
+@@ -415,8 +430,11 @@
+       }
+       const selected = candidate ?? active;
        const childArguments = selected.runtimeRoot
-         ? [MANAGED_CHILD_ARGUMENT, statePath]
-         : [CHILD_ARGUMENT];
+-        ? [MANAGED_CHILD_ARGUMENT, statePath]
+-        : [CHILD_ARGUMENT];
++        ? [MANAGED_CHILD_ARGUMENT, statePath, PROTOCOL_ARGUMENT]
++        : [CHILD_ARGUMENT, PROTOCOL_ARGUMENT];
 +      if (acceptedAccessEnv) {
 +        childArguments.push(ACCEPTED_RESTART_ARGUMENT);
 +      }
        let ready = false;
        let candidateFailed = false;
        let bootstrap;
-@@ -428,8 +439,23 @@
+@@ -428,8 +446,23 @@
            execArgv: childExecArgv,
            args: [...childArguments, ...restartArgs],
          });
@@ -680,7 +691,7 @@
            stdio: ["inherit", "inherit", "inherit", "ipc"],
          });
          if (candidate) {
-@@ -474,9 +500,30 @@
+@@ -474,9 +507,30 @@
                message.argv.every((arg) => typeof arg === "string") &&
                message.argv[0] === "node" &&
                message.argv[1] === "run" &&
@@ -11994,7 +12005,7 @@
  process.exit(0);
  `);
      const legacyEntrypoint = path.join(f.base, "dist", "index.js");
-@@ -297,22 +305,31 @@
+@@ -297,22 +305,71 @@
      expect(child).toMatchObject({
        parentPid: service.child.pid,
        launcherChild: true,
@@ -12026,6 +12037,46 @@
 +      expect(result.stderr).toContain("requires a supervisor connection");
 +    },
 +  );
++
++  it.each([
++    { managed: false, protocol: [] },
++    { managed: true, protocol: [] },
++    { managed: false, protocol: ["--openclaw-node-host-protocol=unknown"] },
++    { managed: true, protocol: ["--openclaw-node-host-protocol=unknown"] },
++  ])(
++    "rejects unsupported supervisor protocol before CLI entry: %j",
++    async ({ managed, protocol }) => {
++      const f = await fixture("report('cli-entry-must-not-run'); process.exit(0);");
++      // A real IPC parent using an old or unknown invocation cannot enter the new runtime.
++      const child = spawn(
++        process.execPath,
++        [
++          path.join(f.base, "openclaw.mjs"),
++          ...(managed
++            ? ["--openclaw-node-host-managed-child", f.state]
++            : ["--openclaw-node-host-child"]),
++          ...protocol,
++          "node",
++          "run",
++        ],
++        { cwd: f.base, stdio: ["pipe", "pipe", "pipe", "ipc"] },
++      );
++      let stdout = "";
++      let stderr = "";
++      child.stdout.on("data", (chunk: Buffer) => {
++        stdout += chunk.toString();
++      });
++      child.stderr.on("data", (chunk: Buffer) => {
++        stderr += chunk.toString();
++      });
++      const closed = once(child, "close");
++      processes.set(child, closed);
++      const [code] = await closed;
++      expect(code).not.toBe(0);
++      expect(stderr).toContain("node launcher supervisor protocol is unsupported");
++      expect(stdout).not.toContain("cli-entry-must-not-run");
++    },
++  );
  
    it("restarts with paired arguments and revokes managed state when the healthy candidate disconnects", async () => {
      const f = await fixture(`
@@ -12034,7 +12085,7 @@
  ${requestUpdate}
  `);
      const candidate = await f.release(`
-@@ -338,7 +355,15 @@
+@@ -338,7 +395,15 @@
      const lines = jsonLines(result.stdout);
      expect(lines[0]).toMatchObject({ ok: true });
      expect(lines[1]).toMatchObject({
@@ -12051,7 +12102,7 @@
        cwd: f.base,
        state: f.state,
        disconnectedState: null,
-@@ -347,6 +372,147 @@
+@@ -347,6 +412,147 @@
      expect(lines[1].first).toBe(lines[1].second);
      await expectSelection(f.current, candidate.prefix);
      await expectMissing(f.lock);
@@ -12199,7 +12250,7 @@
    });
  
    it("keeps an authenticated candidate serving when its selector cannot be persisted", async () => {
-@@ -432,7 +598,7 @@
+@@ -432,7 +638,7 @@
  
    it("keeps the previous managed runtime serving after a failed candidate", async () => {
      const reportRuntime =
@@ -12208,7 +12259,7 @@
      const body = `
  ${reportRuntime}
  ${restartingRuntime("await ready(); await restartAndExit('old-runtime-serving', 3, 0);")}
-@@ -450,6 +616,7 @@
+@@ -450,6 +656,7 @@
          version,
          state: f.state,
          argv: ["node", "run"],
