@@ -265,3 +265,25 @@ export function run(service: Service) {
     ],
   );
 });
+
+test("preserves local calls through receivers returned by standard library methods", (t) => {
+  const root = fixture(t, {
+    "contracts.ts": "export interface Authority { authorize(): void }",
+    "caller.ts": `import type { Authority } from "./contracts.js";
+export function run(authorities: Authority[]) {
+  authorities[0].authorize();
+  authorities.at(0)?.authorize();
+}
+`,
+  });
+  const result = analyzeCoupling(root, ["caller.ts"]);
+  assert.deepEqual(result.unresolved, []);
+  // Array.at is external; the authority it returns still has a local contract.
+  assert.deepEqual(
+    result.edges.map(({ from, kind, to, site }) => [from, kind, to, site.line]),
+    [
+      ["caller.ts#run", "calls", "contracts.ts#Authority.authorize", 3],
+      ["caller.ts#run", "calls", "contracts.ts#Authority.authorize", 4],
+    ],
+  );
+});

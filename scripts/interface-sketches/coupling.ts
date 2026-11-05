@@ -218,11 +218,9 @@ export function analyzeCoupling(
       return true;
     }
     const declarations = canonical(symbol)?.declarations;
-    if (
-      declarations?.length &&
-      declarations.every((declaration) => !ownSource(declaration.getSourceFile()))
-    ) {
-      return true;
+    if (declarations?.length) {
+      // A library call can return a project-owned receiver. Classify its method first.
+      return declarations.every((declaration) => !ownSource(declaration.getSourceFile()));
     }
     if (ts.isPropertyAccessExpression(expression) || ts.isElementAccessExpression(expression)) {
       return external(expression.expression);

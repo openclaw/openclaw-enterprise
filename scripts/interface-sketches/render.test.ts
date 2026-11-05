@@ -138,6 +138,26 @@ test("rejects malformed shapes, unsafe values, bad anchors and excessive work", 
   }
 });
 
+test("rejects aggregate text expansion across node labels and multiline captions", () => {
+  const node = {
+    kind: "node" as const,
+    x: 0,
+    y: 0,
+    w: 10,
+    h: 10,
+    lines: Array.from({ length: 100 }, () => ""),
+  };
+  const caption = { kind: "text" as const, x: 0, y: 0, text: "\n".repeat(100) };
+  // Empty lines still emit SVG elements. Neither bytes nor visible glyphs bound this work.
+  for (const items of [
+    [...Array.from({ length: 100 }, () => node), { ...node, lines: [""] }],
+    Array.from({ length: 100 }, () => caption),
+    [...Array.from({ length: 99 }, () => node), caption],
+  ]) {
+    assert.throws(() => renderSvg({ ...sample(), items }), /text exceeds 10,000 lines/);
+  }
+});
+
 test("CLI rejects invalid references before creating or replacing outputs", () => {
   const dir = mkdtempSync(join(tmpdir(), "sketch-validation-"));
   try {

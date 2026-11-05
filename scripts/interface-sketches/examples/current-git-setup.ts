@@ -84,10 +84,10 @@ export default {
     },
     {
       id: "token-service",
-      title: "Token Service",
-      detail: "Prepares and renews",
+      title: "Worker token preparation",
+      detail: "Token Service runs GitHub owner",
       group: "worker",
-      pin: [10, 135, 205, 55],
+      pin: [10, 135, 275, 55],
     },
     {
       id: "owner",
@@ -200,25 +200,30 @@ export default {
       label: "Selects the scope",
       pin: { label: [300, 326] },
     },
-    { from: "token-service", to: "owner", label: "Prepares", pin: { label: [285, 439] } },
     {
-      from: "owner",
+      from: "token-service",
       to: "app-signer",
-      label: "Requests token",
+      label: "Signs App JWT",
+      pin: { from: "bottom", to: "top", label: [55, 491] },
+    },
+    {
+      from: "token-service",
+      to: "token-store",
+      label: "Commits\ntoken",
       pin: {
-        from: "bottom",
-        to: "top",
+        from: "right",
+        to: "left",
         via: [
-          [532.5, 487],
-          [172.5, 487],
+          [350, 447.5],
+          [350, 527.5],
         ],
-        label: [185, 484],
+        label: [313, 504],
       },
     },
     {
       from: "owner",
       to: "token-store",
-      label: "Stores / reads",
+      label: "Reads",
       pin: { from: "bottom", to: "top", label: [545, 492] },
     },
     {

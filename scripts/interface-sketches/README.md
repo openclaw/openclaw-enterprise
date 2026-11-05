@@ -33,7 +33,7 @@ pnpm build
 
 Open `examples/current-git.ts`, change the Agent's title, and run `pnpm build` again. Open `examples/current-git.png` to see the change. Commit the TypeScript, generated JSON and both PNG paths together. The build copies previews to `docs/assets/credential-proxy/` for the docs site and keeps the existing example URLs usable. `pnpm check` compares generated output without overwriting files; `pnpm test` type-checks the examples and runs tool tests.
 
-Canonical checks treat each top-level `examples/*.png` file as a preview. It must have a same-stem regular `.ts` source; declarations (`.d.ts`), symlinks and directories do not qualify. After renaming or deleting a source, restore it or manually remove the reported orphan PNG and its same-stem JSON, if present. Builds never delete old assets. Checks ignore standalone JSON and nested entries, and fail if no eligible sources remain. Custom `node build.ts INPUT.ts OUTPUT_PREFIX` builds are unchanged.
+Canonical checks treat each top-level `examples/*.png` file as a preview. It must have a same-stem regular `.ts` source; declarations (`.d.ts`), symlinks and directories do not qualify. After renaming or deleting a source, restore it or manually remove the reported orphan PNG and its same-stem JSON, if present. Published PNG filenames must match the example PNG filenames, and their bytes must match. Remove an obsolete published PNG manually from `docs/assets/credential-proxy/` when the check reports it. Builds never delete old assets. Checks ignore standalone JSON and nested entries, and fail if no eligible sources remain. Custom `node build.ts INPUT.ts OUTPUT_PREFIX` builds are unchanged.
 
 ## Add a diagram
 
@@ -101,7 +101,7 @@ cp examples/current-git.json my-layout.json
 node render.ts my-layout.json my-layout
 ```
 
-This writes `my-layout.svg` and `my-layout.png`. Keep hand-edited scenes outside the generated examples: the next build replaces those JSON files. No installed system fonts or browser are needed.
+This writes `my-layout.svg` and `my-layout.png`. The renderer rejects scenes with more than 10,000 text lines in total, counting each node label and each line of a multiline caption, including empty lines. Keep hand-edited scenes outside the generated examples: the next build replaces those JSON files. No installed system fonts or browser are needed.
 
 ## Draw a source-backed view
 

@@ -155,9 +155,9 @@
       "id": "token-service",
       "x": 45,
       "y": 420,
-      "w": 205,
+      "w": 275,
       "h": 55,
-      "lines": ["Token Service", "Prepares and renews"],
+      "lines": ["Worker token preparation", "Token Service runs GitHub owner"],
       "titleLineCount": 1,
       "density": "compact",
       "role": "control"
@@ -348,17 +348,17 @@
     {
       "kind": "line",
       "points": [
-        { "node": "token-service", "side": "right" },
-        { "node": "owner", "side": "left" }
+        { "node": "token-service", "side": "bottom" },
+        { "node": "app-signer", "side": "top" }
       ],
       "dashed": false,
       "arrow": true
     },
     {
       "kind": "text",
-      "text": "Prepares",
-      "x": 285,
-      "y": 439,
+      "text": "Signs App JWT",
+      "x": 55,
+      "y": 491,
       "size": 14,
       "role": "label",
       "backdrop": true,
@@ -367,19 +367,19 @@
     {
       "kind": "line",
       "points": [
-        { "node": "owner", "side": "bottom" },
-        [532.5, 487],
-        [172.5, 487],
-        { "node": "app-signer", "side": "top" }
+        { "node": "token-service", "side": "right" },
+        [350, 447.5],
+        [350, 527.5],
+        { "node": "token-store", "side": "left" }
       ],
       "dashed": false,
       "arrow": true
     },
     {
       "kind": "text",
-      "text": "Requests token",
-      "x": 185,
-      "y": 484,
+      "text": "Commits\ntoken",
+      "x": 313,
+      "y": 504,
       "size": 14,
       "role": "label",
       "backdrop": true,
@@ -396,7 +396,7 @@
     },
     {
       "kind": "text",
-      "text": "Stores / reads",
+      "text": "Reads",
       "x": 545,
       "y": 492,
       "size": 14,

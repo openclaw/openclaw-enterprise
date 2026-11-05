@@ -107,6 +107,7 @@ export function validateScene(input: unknown): Sketch {
     fail("invalid items");
   }
   let complexity = 0;
+  let textLines = 0;
   const ids = new Set<string>();
   for (const value of root.items) {
     const obj = record(value, [
@@ -222,6 +223,7 @@ export function validateScene(input: unknown): Sketch {
     if (obj.kind === "text") {
       label(obj.text, "text");
       complexity += (obj.text as string).length;
+      textLines += (obj.text as string).split("\n").length;
     }
     if (obj.kind === "node") {
       if (!Array.isArray(obj.lines) || obj.lines.length > 100) {
@@ -233,6 +235,7 @@ export function validateScene(input: unknown): Sketch {
           fail("invalid titleLineCount");
         }
       }
+      textLines += obj.lines.length;
       for (const line of obj.lines) {
         label(line, "node label");
         complexity += (line as string).length;
@@ -260,6 +263,9 @@ export function validateScene(input: unknown): Sketch {
           }
         }
       }
+    }
+    if (textLines > 10_000) {
+      fail("text exceeds 10,000 lines");
     }
     if (complexity > 200_000) {
       fail("content exceeds complexity limit");

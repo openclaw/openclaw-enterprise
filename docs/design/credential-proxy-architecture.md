@@ -24,7 +24,7 @@ For selected repositories, the grant names repositories on one GitHub App instal
 
 One OpenShell Backend supplies both `SandboxDriver` and `CredentialProxyDriver`. The worker binds its `ProtectedRepositoryGitAuthority` through `bindRepositoryGit`. See the [Driver contract](../reference/drivers/credential-proxy.md).
 
-GitHub issues the installation token after the worker signs an App JWT. Preparation and refresh run separately from Git requests. On the selected-repository path, OCE checks the held launcher's request against an authenticated middleware denial before issuing credentials. Credential installation and signed release precede Agent startup. See [OpenShell enrollment](../guides/repository-credentials/openshell-enrollment.md) and [token renewal](../guides/repository-credentials/openshell-git-renewal.md).
+GitHub issues the installation token after the worker signs an App JWT. The worker's preparation owner commits the token to the store. The transport adapter reads that committed material through the Repository Git authority; this read cannot issue a token. Preparation and refresh run separately from Git requests. On the selected-repository path, OCE checks the held launcher's request against an authenticated middleware denial before issuing credentials. Credential installation and signed release precede Agent startup. See [OpenShell enrollment](../guides/repository-credentials/openshell-enrollment.md) and [token renewal](../guides/repository-credentials/openshell-git-renewal.md).
 
 ## Who controls a generic API request and its reply?
 
