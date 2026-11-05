@@ -23,7 +23,7 @@ import {
 import { fulfillPatchedJson } from "./console-patched-response.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { NAMESPACE_UNAVAILABLE } from "../helpers/refusal-text.mjs";
-import { routeInstallationProvisioning } from "./console-agents-test-support.mjs";
+import { routeInstallationProvisioning } from "./console-agents-test-support.ts";
 import { refocus } from "./console-refocus-helpers.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 

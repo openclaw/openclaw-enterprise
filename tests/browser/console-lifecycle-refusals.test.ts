@@ -36,7 +36,7 @@ import {
   taggedView,
   waitForFocusedLabel,
 } from "./console-refocus-helpers.ts";
-import { withholdPermissionSummary } from "./console-agents-test-support.mjs";
+import { withholdPermissionSummary } from "./console-agents-test-support.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import {
   AGENT_STOP_AND_DELETE_DENIED,
