@@ -1801,10 +1801,6 @@ List all Installation-wide and Namespace-scoped connection templates
 | `data[].id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `meta` | `object` | Yes | — |
-| `meta.googleWorkspaceDestinations` | `array<object>` | Yes | min items: 1 |
-| `meta.googleWorkspaceDestinations[].host` | `string` | Yes | — |
-| `meta.googleWorkspaceDestinations[].path` | `string` | Yes | — |
-| `meta.googleWorkspaceDestinations[].port` | `integer` | Yes | — |
 | `meta.redirectUri` | `string` | No | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -1813,13 +1809,6 @@ No readable resources
 {
   "data": [],
   "meta": {
-    "googleWorkspaceDestinations": [
-      {
-        "host": "gmail.googleapis.com",
-        "path": "/gmail/**",
-        "port": 443
-      }
-    ],
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
   }
 }
@@ -1858,13 +1847,6 @@ Example response
     }
   ],
   "meta": {
-    "googleWorkspaceDestinations": [
-      {
-        "host": "gmail.googleapis.com",
-        "path": "/gmail/**",
-        "port": 443
-      }
-    ],
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
   }
 }

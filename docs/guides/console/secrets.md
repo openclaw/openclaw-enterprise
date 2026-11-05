@@ -7,9 +7,11 @@ replace a value; ask an administrator for the exact operation permissions.
 Without Secret `create` in the Namespace, **Create Secret** is disabled and a
 note under it says so.
 
-## Set up a Google connection template
+## Register a Google OAuth client
 
-Open **Credentials → OAuth clients → Register OAuth client** as an Installation administrator. Choose **Create connection template**, then **Use Google OAuth settings**. Choose availability. Expand **API destinations** to review each proposed host, port and path. Add or remove rows before saving. Choose **Create template** to return to registration. Register the displayed redirect URI with Google and enter the credentials Google issued. [Connection templates](../../reference/connection-templates.md)
+As an Installation administrator, open **Credentials → OAuth clients → Register OAuth client** and select the Installation-wide **Google OAuth** template. Register the displayed redirect URI with Google, then enter the client ID and secret that Google issued.
+
+To change where the account can send requests, open **Connection templates → Edit Google OAuth** and expand **API destinations**. The Namespace selector on either tab shows Installation-wide entries alongside those available in the selected Namespace. [Connection templates](../../reference/connection-templates.md)
 
 When you edit a saved manual template, add only hosts you trust to receive existing accounts’ access tokens.
 

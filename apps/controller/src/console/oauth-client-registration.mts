@@ -6,7 +6,6 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { requestFailure } from "./api-client.mjs";
 import { button, element, field, validateFields } from "./dom.mjs";
-import { googleOAuthProvider } from "./oauth-providers.mjs";
 import type { ConsolePageContext } from "./page-context.mjs";
 
 type Context = Pick<ConsolePageContext, "request" | "isCurrent">;
@@ -20,6 +19,10 @@ const methods = {
 
 export function advertisedClientMethods(observed: McpAuthorizationMetadata | undefined) {
   return observed?.tokenEndpointAuthMethods ?? ["client_secret_basic"];
+}
+
+export function availableInNamespace(value: { namespaceId?: string }, namespaceId: string | null) {
+  return !value.namespaceId || value.namespaceId === namespaceId;
 }
 
 export function availabilityLabel(
@@ -73,7 +76,11 @@ export function openOAuthClientRegistration(
     disabled: !options.createTemplate,
   });
   const choiceField = field({ label: "Connection template", control: choice });
-  const empty = element("p", { className: "hint" }, "No connection templates yet.");
+  const empty = element(
+    "p",
+    { className: "hint" },
+    "No connection templates are available for this selection.",
+  );
   const createTemplate = options.createTemplate
     ? button(
         "Create connection template",
@@ -175,7 +182,7 @@ export function openOAuthClientRegistration(
         .map(([key, label]) => option(key, label)),
     );
     const defaultMethod =
-      template?.current.issuer === googleOAuthProvider.issuer
+      template?.current.issuer === "https://accounts.google.com"
         ? "client_secret_post"
         : "client_secret_basic";
     const preferred = previousMethod || defaultMethod;

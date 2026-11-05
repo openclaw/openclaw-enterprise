@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import type { ConnectionEndpoint } from "../../packages/contracts/src/index.ts";
+import type { ConnectionTemplate } from "../../packages/contracts/src/index.ts";
 import { discoverMcpAuthorization } from "../../apps/controller/src/connections/mcp-discovery.ts";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 import { selectTemplateDrivers } from "../helpers/connection-template-drivers.mjs";
@@ -51,13 +51,29 @@ async function createManualDraft(
 }
 
 test(
-  "Google defaults and edited HTTPS destination rows stay pinned to the saved template version",
+  "the Installation starts with an editable Google OAuth template and preserves saved destination versions",
   requiresPostgres,
   async (t) => {
     const { inject, state, pool } = await createPostgresAgentApp(t, options);
     const list = await inject("GET", "/connection-templates");
     assert.equal(list.statusCode, 200, list.body);
-    const defaults: ConnectionEndpoint[] = list.json().meta.googleWorkspaceDestinations;
+    const templates: ConnectionTemplate[] = list.json().data;
+    const shipped = templates.filter(
+      (template) => template.namespaceId === undefined && template.displayName === "Google OAuth",
+    );
+    assert.equal(shipped.length, 1);
+    const [seed] = shipped;
+    assert.ok(seed);
+    const version = seed.current;
+    assert.equal(version.mode, "manual");
+    assert.equal(version.issuer, "https://accounts.google.com");
+    assert.equal(version.oauthClientId, undefined);
+    assert.deepEqual(version.scopes, []);
+    assert.deepEqual(version.authorizationParameters, {
+      access_type: "offline",
+      prompt: "consent",
+    });
+    const defaults = version.destinations;
     assert.ok(
       defaults.some((row) => row.host === "gmail.googleapis.com" && row.path === "/gmail/**"),
     );
@@ -68,18 +84,26 @@ test(
         { host: "www.googleapis.com", port: 443, path: "/drive/**" },
       ],
     );
+    // Run the destructive version checks on a Namespace copy so this database stays reusable.
+    const ns = await inject("POST", "/namespaces", { name: "Google API test " + randomUUID() });
+    assert.equal(ns.statusCode, 201, ns.body);
     const google = {
-      ...manual,
-      issuer: "https://accounts.google.com",
-      authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
-      tokenUrl: "https://oauth2.googleapis.com/token",
-      revocationUrl: "https://oauth2.googleapis.com/revoke",
-      destinations: defaults,
+      displayName: "Google Workspace account",
+      mode: version.mode,
+      issuer: version.issuer,
+      authorizationUrl: version.authorizationUrl,
+      tokenUrl: version.tokenUrl,
+      revocationUrl: version.revocationUrl,
+      scopes: version.scopes,
+      authorizationParameters: version.authorizationParameters,
     };
-    const created = await inject("POST", "/connection-templates", google);
+    const created = await inject("POST", "/connection-templates", {
+      ...google,
+      namespaceId: ns.json().data.id,
+      destinations: defaults,
+    });
     assert.equal(created.statusCode, 201, created.body);
     const template = created.json().data;
-    assert.deepEqual(template.current.destinations, defaults);
     const url = "/connection-templates/" + template.id;
     // The admin can keep two paths on a shared host and approve a separate host/port pair.
     const expected = [

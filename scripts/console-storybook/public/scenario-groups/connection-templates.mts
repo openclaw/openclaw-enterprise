@@ -13,7 +13,7 @@ export const connectionTemplateScenarios = {
     group: "Pages/Credentials",
     name: "OAuth connection templates",
     steps: [
-      "Open Secrets, then Connection templates. Create a template. Check its current Namespace under Template availability, or choose Installation-wide to share it across Namespaces. Choose a scope limit. Select a compatible client, or use Create template and register OAuth client to register provider-issued credentials.",
+      "Open Secrets, then Connection templates. Edit the installed Google OAuth template or create a template. Switch the header Namespace to see its templates alongside Installation-wide templates. Check its current Namespace under Template availability, or choose Installation-wide to share it across Namespaces. Choose a scope limit. Select a compatible client, or use Create template and register OAuth client to register provider-issued credentials.",
     ],
     path: "/console/credentials/connection-templates",
     oauthCatalog: "ready",
@@ -28,8 +28,31 @@ export const connectionTemplateScenarios = {
     description:
       "Register provider-issued OAuth clients for the availability and endpoints of a saved connection template.",
     steps: [
-      "Open Credentials → OAuth clients → Register OAuth client. Choose a saved connection template from the list or use Create connection template. Save the template to return to registration. Enter the client details issued for the displayed redirect URI.",
+      "Open Credentials → OAuth clients. Switch the header Namespace to see its clients alongside Installation-wide clients. Choose Register OAuth client. Choose a saved connection template from the list or use Create connection template. Save the template to return to registration. Enter the client details issued for the displayed redirect URI.",
     ],
+  },
+  credentialsDeleteTemplate: {
+    group: "Pages/Credentials",
+    name: "Delete connection template",
+    path: "/console/credentials/connection-templates",
+    oauthCatalog: "ready",
+    actions: [
+      { selector: 'button[aria-label="Delete Google OAuth (Installation-wide)"]', click: true },
+    ],
+    description:
+      "Review the name and availability before deleting the template. Its OAuth clients stay registered.",
+  },
+  credentialsReferencedClient: {
+    group: "Pages/Credentials",
+    name: "OAuth client in use",
+    path: "/console/credentials/oauth-clients",
+    oauthCatalog: "ready",
+    actions: [
+      { selector: 'button[aria-label^="Delete Support service ("]', click: true },
+      click("Delete OAuth client"),
+    ],
+    description:
+      "A saved version of the Support MCP template references this client. Close the message to return to the client list.",
   },
   credentialsRegisterOAuthClient: {
     group: "Pages/Credentials",
@@ -40,12 +63,19 @@ export const connectionTemplateScenarios = {
     description:
       "Choose a saved template or create one. Its availability and OAuth endpoints determine where OCE can use the registration.",
   },
-  credentialsRegisterWithoutTemplates: {
+  credentialsRegisterGoogleClient: {
     group: "Pages/Credentials",
-    name: "Register with no connection templates",
+    name: "Register a Google OAuth client",
     path: "/console/credentials/oauth-clients",
-    actions: [click("Register OAuth client")],
-    description: "An administrator with no saved templates starts with Create connection template.",
+    oauthCatalog: "ready",
+    actions: [
+      click("Register OAuth client"),
+      {
+        selector: "#oauth-registration-template",
+        value: "ctp_00000000-0000-4000-8000-000000000003",
+      },
+    ],
+    description: "Register a provider-issued client against the installed Google OAuth template.",
   },
   credentialsRegisterFromMcp: {
     group: "Pages/Credentials",
@@ -72,12 +102,12 @@ export const connectionTemplateScenarios = {
   },
   credentialsGoogleTemplate: {
     group: "Pages/Credentials",
-    name: "Set up Google OAuth",
+    name: "Edit Google OAuth",
     path: "/console/credentials/connection-templates",
     oauthCatalog: "ready",
-    actions: [click("Set up Google OAuth")],
+    actions: [click("Edit Google OAuth")],
     description:
-      "Expand API destinations to edit the proposed HTTPS routes before saving. This preview includes sample Gmail, Calendar and Drive routes.",
+      "Edit the Installation-wide Google template. Expand API destinations to change its HTTPS routes. This preview includes sample Gmail, Calendar and Drive routes.",
   },
   credentialsManualTemplate: {
     group: "Pages/Credentials",

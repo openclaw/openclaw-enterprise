@@ -672,9 +672,8 @@ export function createShell({
     );
     const main = element("main", { className: "content", id: "main" });
     const selected = namespaces.find((item) => item.id === namespaceId);
-    const scope = credentialAdministration
-      ? "Installation and Namespace availability"
-      : ["agents", "secrets"].includes(feature)
+    const scope =
+      credentialAdministration || ["agents", "secrets"].includes(feature)
         ? `Namespace · ${selected?.name ?? (session && !namespaceAdmissionPending ? "No available selection" : "Checking access")}`
         : feature === "settings"
           ? "Your account"
@@ -683,7 +682,7 @@ export function createShell({
             : "Installation-wide";
     // Settings is about the account, and Namespaces lists them: neither has a Namespace scope.
     const scopeSelector =
-      feature === "namespaces" || feature === "settings" || credentialAdministration
+      feature === "namespaces" || feature === "settings"
         ? null
         : namespaceSelector("Namespace", { compact: true });
     // Refresh rebuilds the page: one whose write must finish here stays and says why.

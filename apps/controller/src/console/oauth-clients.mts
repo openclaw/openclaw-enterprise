@@ -1,13 +1,11 @@
-import type {
-  ConnectionEndpoint,
-  ConnectionTemplate,
-  Namespace,
-} from "@openclaw-enterprise/contracts";
+import type { ConnectionTemplate, Namespace } from "@openclaw-enterprise/contracts";
 import { refusedAsNonAdministrator } from "./api-client.mjs";
 import { button, element } from "./dom.mjs";
+import { oauthDeleteButton } from "./oauth-deletion.mjs";
 import type { ConsolePageContext } from "./page-context.mjs";
 import {
   availabilityLabel,
+  availableInNamespace,
   oauthClients,
   oauthFailure,
   openOAuthClientRegistration,
@@ -39,7 +37,6 @@ export function renderOAuthClients(
   let redirectUri: string | undefined;
   let clients: PublicClient[] = [];
   let templates: ConnectionTemplate[] = [];
-  let googleDestinations: ConnectionEndpoint[] = [];
   async function refresh(message?: string) {
     create.disabled = true;
     rows.replaceChildren();
@@ -54,15 +51,15 @@ export function renderOAuthClients(
         return;
       }
       clients = data;
-      templates = saved.data;
-      googleDestinations = saved.meta.googleWorkspaceDestinations;
+      templates = saved.filter((item) => availableInNamespace(item, currentNamespace));
+      const visibleClients = data.filter((item) => availableInNamespace(item, currentNamespace));
       redirectUri = meta?.redirectUri;
       const auth = {
         none: "Public client",
         client_secret_basic: "Client secret in Authorization header",
         client_secret_post: "Client secret in request body",
       };
-      for (const item of data) {
+      for (const item of visibleClients) {
         const scope = availabilityLabel(item, namespaces);
         rows.append(
           element(
@@ -71,10 +68,17 @@ export function renderOAuthClients(
             element("h3", {}, item.displayName),
             element("p", {}, item.issuer),
             element("p", { className: "hint" }, scope + " · " + auth[item.tokenEndpointAuthMethod]),
+            element(
+              "div",
+              { className: "resource-row-actions" },
+              oauthDeleteButton(context, "OAuth client", item, scope, refresh, create),
+            ),
           ),
         );
       }
-      notice.textContent = message ?? (data.length ? "" : "No OAuth clients have been registered.");
+      notice.textContent =
+        message ??
+        (visibleClients.length ? "" : "No OAuth clients are available for this selection.");
       create.disabled = false;
     } catch (cause) {
       if (!context.isCurrent()) {
@@ -102,7 +106,6 @@ export function renderOAuthClients(
           namespaces,
           currentNamespace,
           clients,
-          googleDestinations,
           onSaved(saved) {
             templates.push(saved);
             selectCreated(saved);
