@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   codexRepositoryEvidenceScript,
+  codexRepositoryRequirementsScript,
   completedToolResult,
   expandTranscriptMessage,
   sessionEvidenceScript,
@@ -344,30 +345,73 @@ ${nativeCommands}`;
   });
   // A timeout is an unknown mutation outcome. Read actual trace and provider
   // state once; never replay a model task or create the PR in the runner.
-  let policyCaptured;
+  // One positive scenario per installation reads policy after refusal. This
+  // query does not depend on thread creation and never replays the model task.
+  if (dedicated && !readOnly && taskTransport.httpStatus === 500) {
+    try {
+      await f.record("Native requirements read attempted", {
+        evidenceKind: "diagnostic-only",
+        observerStage: "command-start",
+        status: "attempted",
+      });
+      let requirements;
+      let observerStage = "command-execution";
+      try {
+        const output = await exec(codexRepositoryRequirementsScript);
+        observerStage = "response-parse";
+        requirements = JSON.parse(output);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        requirements = {
+          evidenceKind: "diagnostic-only",
+          available: false,
+          observerStage,
+          reason:
+            observerStage === "response-parse"
+              ? "invalid-observer-json"
+              : /E2BIG|argument list too long/i.test(message)
+                ? "command-argument-limit"
+                : /timeout|timed out/i.test(message)
+                  ? "command-timeout"
+                  : "command-execution-failed",
+        };
+      }
+      await f.record("Native requirements read result", requirements);
+    } catch {
+      /* Diagnostic failure cannot replace the original submission error. */
+    }
+  }
   const readNativeTrace = async () => {
-    const captureRequirements = taskTransport.httpStatus === 500 && !policyCaptured;
     const output = await exec(codexRepositoryEvidenceScript, [
       completionMarker,
       JSON.stringify(commandSpecs),
-      captureRequirements ? "with-policy" : "turn-only",
     ]);
-    let current;
     try {
-      current = JSON.parse(output);
+      return JSON.parse(output);
     } catch {
       throw new Error("native observer returned unavailable metadata");
     }
-    if (captureRequirements) {
-      policyCaptured = { requirements: current.requirements };
-    }
-    return { ...current, ...policyCaptured };
   };
   let nativeTrace;
   if (dedicated) {
     try {
       nativeTrace = await readNativeTrace();
     } catch (error) {
+      try {
+        const message = error instanceof Error ? error.message : "";
+        await f.record("Native thread observer execution unavailable", {
+          evidenceKind: "diagnostic-only",
+          observerStage: "command-or-parse",
+          available: false,
+          reason: /E2BIG|argument list too long/i.test(message)
+            ? "command-argument-limit"
+            : /timeout|timed out/i.test(message)
+              ? "command-timeout"
+              : "observer-execution-or-parse-failed",
+        });
+      } catch {
+        /* Preserve the original task failure. */
+      }
       if (taskFailure) {
         throw taskFailure;
       }
@@ -380,7 +424,6 @@ ${nativeCommands}`;
           observerStage: nativeTrace.observerStage,
           observerReason: nativeTrace.observerReason,
           failure: nativeTrace.failure,
-          requirements: nativeTrace.requirements,
         });
       } catch {
         /* Preserve the original submission failure. */
@@ -429,7 +472,6 @@ ${nativeCommands}`;
           evidenceKind: "diagnostic-only",
           status: nativeTrace.status,
           cwdMatchesExpectedWorkspace: nativeTrace.cwdMatchesExpectedWorkspace === true,
-          requirements: nativeTrace.requirements,
           classificationMeaning: "text-pattern hints, not verified causes or successful operations",
           threadId: nativeTrace.threadId,
           turnId: nativeTrace.turnId,

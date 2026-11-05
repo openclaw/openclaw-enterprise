@@ -54,13 +54,12 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
   assert.equal(modelContainer, "oce-first-agent-smoke-model");
   assert.match(clusterUID, /^[a-f0-9-]{36}$/);
   assert.equal(input.sourceCommit, (await exec("git", ["rev-parse", "HEAD"])).stdout.trim());
-  const kc = async (...args) =>
-    (
-      await exec("kubectl", ["--kubeconfig", kubeconfig, "--context", context, ...args], {
-        maxBuffer: 8 * 1024 * 1024,
-        timeout: 240_000,
-      })
-    ).stdout;
+  const kubectl = (...args) =>
+    exec("kubectl", ["--kubeconfig", kubeconfig, "--context", context, ...args], {
+      maxBuffer: 8 * 1024 * 1024,
+      timeout: 240_000,
+    });
+  const kc = async (...args) => (await kubectl(...args)).stdout;
   const resource = async (...args) => JSON.parse(await kc("get", ...args, "-o", "json"));
   const uid = async () => (await resource("namespace", "kube-system")).metadata.uid;
   // Use occ dev up's actual context, never an alias or the runner's default cluster.
@@ -307,17 +306,15 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     );
     assert.equal((await api("GET", agentPath)).activeRevisionId, revision.id);
   };
-  const enter = (...args) =>
-    kc(
-      "exec",
-      gateway.metadata.name,
-      "-n",
-      gateway.metadata.namespace,
-      "-c",
-      "gateway",
-      "--",
-      ...args,
-    );
+  const gatewayTarget = [
+    gateway.metadata.name,
+    "-n",
+    gateway.metadata.namespace,
+    "-c",
+    "gateway",
+    "--",
+  ];
+  const enter = (...args) => kc("exec", ...gatewayTarget, ...args);
   // The prepared-repository thread profile includes these two read-only paths even when no
   // plugins are selected. Observe the actual Agent as its normal UID, without reading any file.
   await checkpoint("observe-installed-agent-readonly-skill-directories");
@@ -422,7 +419,22 @@ export async function prepareComputeSkipper(t, inputPath, repositoryRef) {
     return content;
   };
   const native = async (marker) => {
-    const t = JSON.parse(await enter("node", "-e", codexRepositoryEvidenceScript, marker, "[]"));
+    // The observer can exceed Linux's per-argument limit. Send its source over stdin
+    // and keep the marker and expected commands in their normal node -e positions.
+    const observation = kubectl(
+      "exec",
+      "-i",
+      ...gatewayTarget,
+      "node",
+      "-e",
+      'require("node:vm").runInThisContext(require("node:fs").readFileSync(0, "utf8"))',
+      marker,
+      "[]",
+    );
+    // kubectl can close the pipe early; its exit status reports the failure.
+    observation.child.stdin.on("error", () => {});
+    observation.child.stdin.end(codexRepositoryEvidenceScript);
+    const t = JSON.parse((await observation).stdout);
     assert.equal(t.status, "completed");
     assert.equal(
       t.commands.length,

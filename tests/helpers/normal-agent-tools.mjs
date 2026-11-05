@@ -447,8 +447,6 @@ export const codexRepositoryEvidenceScript = String.raw`
   const expected = JSON.parse(process.argv[2]);
   ${repositoryCommandEvidence}
   ${PLUGIN_RUNTIME_HELPERS}
-  const summarizeFailure = ${nativeTaskFailureSummary.toString()};
-  const summarizeRequirements = ${nativePolicyRequirementsSummary.toString()};
   (async () => {
     // Plugin-enabled peers rotate their transport token for each startup.
     // Resolve it through the same verified status contract as gateway startup;
@@ -465,15 +463,13 @@ export const codexRepositoryEvidenceScript = String.raw`
     const pending = new Map();
     let nextId = 0;
     let stage = "connect";
-    const capturePolicy = process.argv[3] === "with-policy";
-    let requirements = { available: false };
     let finished = false;
     const finish = (value) => {
       if (finished) return;
       finished = true;
       clearTimeout(deadline);
       try { socket.close(); } catch { /* Always retain the fixed observer receipt. */ }
-      process.stdout.write(JSON.stringify({ ...value, ...(capturePolicy ? { requirements } : {}) }), () => process.exit(0));
+      process.stdout.write(JSON.stringify(value), () => process.exit(0));
     };
     const unavailable = (reason, failure) => finish({ status: "unavailable", observerStage: stage, observerReason: reason, ...(failure ? { failure } : {}), commands: [] });
     const deadline = setTimeout(() => unavailable("deadline"), 20000);
@@ -488,21 +484,15 @@ export const codexRepositoryEvidenceScript = String.raw`
       if (!operation) return;
       pending.delete(message.id);
       message.error
-        ? operation.reject(Object.assign(new Error("native read failed"), { diagnostic: {
-            ...summarizeFailure(JSON.stringify(message.error)),
-            rpcCode: ({ "-32601": "method-not-found", "-32602": "invalid-params", "-32603": "internal-error", "-32000": "server-error" })[message.error.code] ?? "other",
-          } }))
+        ? operation.reject(new Error("native read failed"))
         : operation.resolve(message.result);
     });
     socket.addEventListener("error", () => unavailable("connection"));
     socket.addEventListener("open", async () => {
       try {
         stage = "initialize";
-        await request("initialize", { clientInfo: { name: "repository-acceptance-observer", version: "1.0.0" }, ...(capturePolicy ? { capabilities: { experimentalApi: true } } : {}) });
+        await request("initialize", { clientInfo: { name: "repository-acceptance-observer", version: "1.0.0" } });
         socket.send(JSON.stringify({ method: "initialized" }));
-        stage = "requirements-read";
-        try { if (capturePolicy) requirements = summarizeRequirements(await request("configRequirements/read")); }
-        catch (error) { requirements = { available: false, ...(error?.diagnostic ? { failure: error.diagnostic } : {}) }; }
         stage = "thread-list";
         const listed = await request("thread/list", { limit: 20, modelProviders: [] });
         if (listed.nextCursor !== null) return unavailable("inventory-limit");
@@ -561,6 +551,55 @@ export const codexRepositoryEvidenceScript = String.raw`
       }
     });
   })().catch(() => {
-    process.stdout.write(JSON.stringify({ status: "unavailable", observerStage: "startup", observerReason: "connection-or-runtime-unavailable", commands: [], requirements: { available: false } }));
+    process.stdout.write(JSON.stringify({ status: "unavailable", observerStage: "startup", observerReason: "connection-or-runtime-unavailable", commands: [] }));
   });
+`;
+
+// One read on the deployed peer, independent of whether a model turn exists.
+// TODO: remove after the managed native-profile blocker is resolved.
+export const codexRepositoryRequirementsScript = String.raw`
+  const WebSocket = require("ws");
+  ${PLUGIN_RUNTIME_HELPERS}
+  const summarize = ${nativePolicyRequirementsSummary.toString()};
+  let socket;
+  let stage = "runtime-status";
+  let finished = false;
+  const finish = (value) => {
+    if (finished) return;
+    finished = true;
+    clearTimeout(deadline);
+    try { socket?.close(); } catch { /* Keep the fixed receipt. */ }
+    process.stdout.write(JSON.stringify({ evidenceKind: "diagnostic-only", observerStage: stage, ...value }), () => process.exit(0));
+  };
+  const deadline = setTimeout(() => finish({ available: false, reason: "observer-timeout" }), 20000);
+  (async () => {
+    const runtime = readGatewayPluginRuntime();
+    if (runtime?.manifest?.kind === "codex" && hasEnabledPluginSelections(runtime)) {
+      const status = await readPeerPluginRuntimeStatus();
+      process.env.APP_SERVER_TOKEN = derivePluginAppServerToken(status.startupId);
+    }
+    stage = "connect";
+    socket = new WebSocket(process.env.APP_SERVER_URL, { headers: { Authorization: "Bearer " + process.env.APP_SERVER_TOKEN } });
+    socket.addEventListener("error", () => finish({ available: false, reason: "connection-unavailable" }));
+    socket.addEventListener("close", () => finish({ available: false, reason: "connection-closed" }));
+    socket.addEventListener("open", () => {
+      stage = "initialize";
+      socket.send(JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "repository-policy-observer", version: "1.0.0" }, capabilities: { experimentalApi: true } } }));
+    });
+    socket.addEventListener("message", ({ data }) => {
+      try {
+        const response = JSON.parse(String(data));
+        if ((response.id === 1 && stage !== "initialize") || (response.id === 2 && stage !== "requirements-read") || (response.id !== 1 && response.id !== 2)) return;
+        if (response.error) {
+          const codes = { "-32601": "method-not-found", "-32602": "invalid-params", "-32603": "internal-error", "-32000": "server-error" };
+          return finish({ available: false, reason: "native-rpc-refused", rpcCode: Object.hasOwn(codes, response.error.code) ? codes[response.error.code] : "other" });
+        }
+        if (response.id === 1) {
+          socket.send(JSON.stringify({ method: "initialized" }));
+          stage = "requirements-read";
+          socket.send(JSON.stringify({ id: 2, method: "configRequirements/read" }));
+        } else finish(summarize(response.result));
+      } catch { finish({ available: false, reason: "invalid-native-response" }); }
+    });
+  })().catch(() => finish({ available: false, reason: "runtime-or-connection-unavailable" }));
 `;

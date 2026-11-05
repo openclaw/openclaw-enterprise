@@ -1,4 +1,5 @@
 import { GATEWAY_STOP_TIMEOUT_MS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { cleanupRepositoryJourney } from "./repository-remote-cleanup.mjs";
 import { captureChild } from "./child-processes.mjs";
 import assert from "node:assert/strict";
@@ -1245,8 +1246,9 @@ export async function verifyQaRepository(f, agent, scenario = "git-write") {
           "OPENAI_API_KEY",
           "node",
           "-e",
-          script,
-          ...args,
+          // The shared loader consumes its pieces; restore the caller's argv
+          // inside the program and leave stdin available for the original input.
+          ...nodeProgramArguments(`process.argv.push(...${JSON.stringify(args)});\n${script}`),
         ],
         { input, timeout },
       );
