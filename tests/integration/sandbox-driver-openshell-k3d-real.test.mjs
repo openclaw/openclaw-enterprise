@@ -21,7 +21,7 @@ import { request as httpsRequest } from "node:https";
 import { createRequire } from "node:module";
 import { isIP, isIPv4 } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
@@ -7491,10 +7491,33 @@ async function stageInitialImportedPlugin(context, topology, provider) {
   return { source, secretRef: secret.ref };
 }
 
+async function importedPluginWorkspace(topology) {
+  // The native worker's configured directory must exist before an absence check can be meaningful.
+  const directory = (
+    await kubectl(
+      "exec",
+      topology.harnessPod.metadata.name,
+      "-n",
+      topology.placement,
+      "-c",
+      "agent",
+      "--",
+      "node",
+      "-e",
+      `const fs = require("node:fs");
+    const directory = process.env.OPENCLAW_WORKSPACE_DIR;
+    if (!fs.statSync(directory).isDirectory()) throw new Error("Missing dedicated Agent workspace");
+    process.stdout.write(fs.realpathSync(directory));`,
+    )
+  ).trim();
+  assert.ok(isAbsolute(directory));
+  return directory;
+}
+
 async function assertImportedNativeSkill(context, topology) {
   const workflow = nativePluginWorkflow(topology);
   const skill = "import-probe";
-  const workspaceSkills = join(workspaceMountPath, "skills");
+  const workspaceSkills = join(await importedPluginWorkspace(topology), "skills");
   const shadow = join(workspaceSkills, skill);
   const { namespace, request } = workflow;
   // The disposable Installation administrator can publish through the Namespace API.
@@ -7730,7 +7753,7 @@ async function assertImportedNativeMcp(context, topology, provider) {
   // The worker only advertises the allowed tool. A real exec turn attempts the excluded
   // JSON-RPC call anyway, so a filtered catalog cannot satisfy this enforcement check.
   const nonce = randomUUID();
-  const path = join(workspaceMountPath, "mcp-policy-" + randomUUID() + ".mjs");
+  const path = join(await importedPluginWorkspace(topology), "mcp-policy-" + randomUUID() + ".mjs");
   assert.equal(typeof source.config.env_var, "string");
   await kubectl(
     "exec",

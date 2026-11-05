@@ -219,7 +219,7 @@ RUN echo '1e19885e42f6958244de9ef563f6223b5599a062c82569e793c9f554f7e4207f  /tmp
 
 # TODO: retire the source check bridge when the pinned Gateway supports deployment-pinned skill resources.
 COPY deploy/runtime/openclaw-pinned-skill-sources.patch /tmp/openclaw-pinned-skill-sources.patch
-RUN echo 'e08b0872595284cb8760578c06243382d7a26a7d44227acc6425270d4b8cac08  /tmp/openclaw-pinned-skill-sources.patch' | sha256sum --check --strict \
+RUN echo 'eadf1158a618c44c22b4a6b5d92e9831093ffc95bcc15f039970b98bb70adb39  /tmp/openclaw-pinned-skill-sources.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-pinned-skill-sources.patch
 
 # TODO: Remove this bridge after selecting native setup renewal with bounded saved-device fallback.

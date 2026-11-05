@@ -2706,7 +2706,7 @@ function installGatewayPlugins(runtime, failures, installs) {
   const selectedImports = importedIds.filter((id) => selections[id].enabled);
   if (selectedImports.length) {
     const provenance = JSON.parse(pluginReadFileSync("/opt/oce/runtime/provenance.json", "utf8"));
-    if (provenance.source !== "https://github.com/openclaw/openclaw" || provenance.commit !== ${JSON.stringify(GATEWAY_TOOL_POLICY_SOURCE_COMMIT)} || provenance.patches?.["openclaw-pinned-skill-sources.patch"] !== "e08b0872595284cb8760578c06243382d7a26a7d44227acc6425270d4b8cac08") throw new Error("This OCE Gateway image cannot verify imported skill sources.");
+    if (provenance.source !== "https://github.com/openclaw/openclaw" || provenance.commit !== ${JSON.stringify(GATEWAY_TOOL_POLICY_SOURCE_COMMIT)} || provenance.patches?.["openclaw-pinned-skill-sources.patch"] !== "eadf1158a618c44c22b4a6b5d92e9831093ffc95bcc15f039970b98bb70adb39") throw new Error("This OCE Gateway image cannot verify imported skill sources.");
     const material = JSON.parse(pluginReadFileSync("/run/oce/imported-plugins/release.json", "utf8"));
     if (JSON.stringify(material.ids) !== JSON.stringify(selectedImports)) throw new Error("The imported plugin material does not match this Agent revision.");
     process.env.OPENCLAW_PINNED_SKILL_FILES = JSON.stringify(material.pins);

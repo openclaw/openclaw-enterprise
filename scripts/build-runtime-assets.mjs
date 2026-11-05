@@ -52,7 +52,7 @@ const appliedPatches = [
   },
   {
     file: "openclaw-pinned-skill-sources.patch",
-    sha256: "e08b0872595284cb8760578c06243382d7a26a7d44227acc6425270d4b8cac08",
+    sha256: "eadf1158a618c44c22b4a6b5d92e9831093ffc95bcc15f039970b98bb70adb39",
   },
   {
     file: "openclaw-node-setup-renewal.patch",

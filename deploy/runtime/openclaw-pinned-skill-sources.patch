@@ -11,13 +11,70 @@ index 0b1faf0..04079aa 100644
      !isDangerousHostEnvVarName(key) &&
      !isDangerousHostEnvOverrideVarName(key) &&
 diff --git a/src/skills/runtime/resources.test.ts b/src/skills/runtime/resources.test.ts
-index 5a106a8..c006b4c 100644
+index 5a106a8..ed31053 100644
 --- a/src/skills/runtime/resources.test.ts
 +++ b/src/skills/runtime/resources.test.ts
-@@ -73,6 +73,19 @@ async function expectFile(base: string, name: string, content: string, mode?: nu
+@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
+ import path from "node:path";
+ import { afterEach, beforeEach, expect, it, vi } from "vitest";
+ import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
++import { stripRuntimeOnlySessionSkillsFields } from "../../config/sessions/store-entry-shape.js";
+ import type { OpenClawConfig } from "../../config/types.openclaw.js";
+ import * as temporaryRoot from "../../infra/tmp-openclaw-dir.js";
+ import { resetLogger, setLoggerOverride } from "../../logging/logger.js";
+@@ -10,6 +11,7 @@ import { loggingState } from "../../logging/state.js";
+ import { escapeSkillXml, formatSkillsCompactForPrompt } from "../loading/skill-contract.js";
+ import { loadWorkspaceSkills } from "../loading/workspace-skill-loader.js";
+ import { buildSkillSnapshot } from "../loading/workspace-skill-prompt.js";
++import { recordSkillFileHost } from "../skill-file-host.js";
+ import { SkillResourceDeliveryLimitError } from "./resource-delivery-error.js";
+ import {
+   materializeSkillResources,
+@@ -73,6 +75,60 @@ async function expectFile(base: string, name: string, content: string, mode?: nu
    }
  }
  
++it("delivers a deployment-pinned Gateway skill from a compact session and rewrites its full tree", async () => {
++  const directory = await writeSkill("guide");
++  const instruction = path.join(directory, "SKILL.md");
++  const script = "scripts/check.sh";
++  await fs.mkdir(path.dirname(path.join(directory, script)));
++  await fs.writeFile(path.join(directory, script), "echo pin", { mode: 0o755 });
++  const entries = loadWorkspaceSkills(workspace, { workspaceOnly: true });
++  for (const entry of entries) {
++    recordSkillFileHost(entry.skill, "gateway");
++  }
++  const snapshot = await buildSkillSnapshot(workspace, { entries });
++  const compact = stripRuntimeOnlySessionSkillsFields({
++    sessionId: "pinned",
++    updatedAt: 1,
++    skillsSnapshot: snapshot,
++  }).skillsSnapshot!;
++  vi.stubEnv(
++    "OPENCLAW_PINNED_SKILL_FILES",
++    JSON.stringify({ guide: instruction, other: "/unselected/SKILL.md" }),
++  );
++  try {
++    const delivery = await prepare(compact);
++    expect(delivery?.skills.map((skill) => skill.name)).toEqual(["guide"]);
++    const worker = await materialize(delivery!);
++    const workerInstruction = worker.snapshot.resolvedSkills[0]!.filePath;
++    expect(worker.rewriteReferences(compact.prompt)).toContain(workerInstruction);
++    expect(worker.rewriteReferences(compact.prompt)).not.toContain(instruction);
++    const workerDir = path.dirname(workerInstruction);
++    await expectFile(workerDir, "SKILL.md", markdown, 0o400);
++    await expectFile(workerDir, script, "echo pin", 0o500);
++
++    // Hydration retains the earlier prompt but can exclude a skill under current eligibility.
++    expect(await prepare({ ...compact, resolvedSkills: [], discoverySkills: [] })).toBeUndefined();
++
++    await fs.unlink(instruction);
++    await expect(prepare(compact)).rejects.toThrow(/guide/u);
++  } finally {
++    vi.unstubAllEnvs();
++  }
++});
++
 +it("refuses a workspace skill shadowing a deployment-pinned Gateway name before delivery", async () => {
 +  await writeSkill("guide");
 +  const snapshot = await loadSnapshot();
@@ -35,28 +92,99 @@ index 5a106a8..c006b4c 100644
    let lastSupport = "";
    for (const name of ["alpha", "beta"]) {
 diff --git a/src/skills/runtime/resources.ts b/src/skills/runtime/resources.ts
-index cfde657..fd738cf 100644
+index cfde657..215a157 100644
 --- a/src/skills/runtime/resources.ts
 +++ b/src/skills/runtime/resources.ts
-@@ -261,6 +261,21 @@ export async function prepareSkillResourceDelivery(
-       }),
-     ),
-   ];
-+  // Deployment-owned skills must resolve to the selected Gateway file after workspace and
-+  // explicit selections have been merged. A remote host can report a matching path.
-+  if (process.env.OPENCLAW_PINNED_SKILL_FILES) {
-+    const pins: Record<string, string> = JSON.parse(process.env.OPENCLAW_PINNED_SKILL_FILES);
-+    for (const skill of candidates) {
+@@ -24,6 +24,7 @@ import { resolvePreferredOpenClawTmpDir } from "../../infra/tmp-openclaw-dir.js"
+ import { createSubsystemLogger } from "../../logging/subsystem.js";
+ import {
+   copyExplicitSkillSelectionFileHost,
++  recordExplicitSkillSelectionFileHost,
+   resolveExplicitSkillSelectionFileHost,
+ } from "../discovery/skill-command-provenance.js";
+ import { normalizeSkillIndexName } from "../discovery/skill-index.js";
+@@ -143,11 +144,47 @@ export async function prepareSkillResourceDelivery(
+     return undefined;
+   }
+   assertCurrent();
++  const deploymentPins: Record<string, string> = JSON.parse(
++    process.env.OPENCLAW_PINNED_SKILL_FILES ?? "{}",
++  );
++  const explicitSelections = inputExplicitSelections.map((selection) =>
++    copyExplicitSkillSelectionFileHost(selection, { ...selection }),
++  );
++  if (Object.keys(deploymentPins).length > 0) {
++    // A persisted session drops both runtime arrays. Hydrated arrays, even empty ones,
++    // contain the current eligibility decision and take precedence over the retained prompt.
++    const compact =
++      inputSnapshot.resolvedSkills === undefined && inputSnapshot.discoverySkills === undefined;
++    const advertised = compact
++      ? new Set(parseSkillsPromptCatalog(inputSnapshot.prompt).map((skill) => skill.name))
++      : undefined;
++    for (const skill of inputSnapshot.skills) {
++      if (!Object.hasOwn(deploymentPins, skill.name)) {
++        continue;
++      }
++      const pinnedPath = deploymentPins[skill.name]!;
 +      if (
-+        Object.hasOwn(pins, skill.name) &&
-+        (resolveSkillFileHost(skill) !== "gateway" || skill.filePath !== pins[skill.name])
++        skill.source?.fileHost !== "gateway" ||
++        skill.source.filePath !== pinnedPath ||
++        skill.gatewayFilePath !== pinnedPath ||
++        inputSnapshot.librarySelections?.some((entry) => entry.name === skill.name)
 +      ) {
 +        throw new Error(
 +          `Skill "${skill.name}" conflicts with its deployment-pinned Gateway source.`,
 +        );
 +      }
++      if (advertised?.has(skill.name)) {
++        explicitSelections.push(
++          recordExplicitSkillSelectionFileHost({ name: skill.name, path: pinnedPath }, "gateway"),
++        );
++      }
++    }
++  }
+   if (
+     !inputSnapshot.resolvedSkills?.length &&
+     !inputSnapshot.discoverySkills?.length &&
+     !inputSnapshot.librarySelections?.length &&
+-    !inputExplicitSelections.length
++    !explicitSelections.length
+   ) {
+     return undefined;
+   }
+@@ -162,9 +199,6 @@ export async function prepareSkillResourceDelivery(
+     resolvedSkills: inputSnapshot.resolvedSkills?.map((skill) => ({ ...skill })),
+     skillRoots: inputSnapshot.skillRoots && { ...inputSnapshot.skillRoots },
+   };
+-  const explicitSelections = inputExplicitSelections.map((selection) =>
+-    copyExplicitSkillSelectionFileHost(selection, { ...selection }),
+-  );
+   // Library-only and node-native catalogs need no workspace filesystem access.
+   let sourceReader: SkillResourceSourceReader | undefined;
+   const getSourceReader = (skill?: Skill) => {
+@@ -261,6 +295,16 @@ export async function prepareSkillResourceDelivery(
+       }),
+     ),
+   ];
++  // Deployment-owned skills must resolve to the selected Gateway file after workspace and
++  // explicit selections have been merged. A remote host can report a matching path.
++  for (const skill of candidates) {
++    if (
++      Object.hasOwn(deploymentPins, skill.name) &&
++      (resolveSkillFileHost(skill) !== "gateway" || skill.filePath !== deploymentPins[skill.name])
++    ) {
++      throw new Error(`Skill "${skill.name}" conflicts with its deployment-pinned Gateway source.`);
 +    }
 +  }
    let manifests: Awaited<ReturnType<typeof readSkillLibrarySelectionManifests>>;
    for (const skill of candidates) {
      if (skill.filePath.startsWith("node://")) {
+@@ -289,7 +333,7 @@ export async function prepareSkillResourceDelivery(
+         );
+       } else {
+         files = await getSourceReader(skill).readSkillFiles(skill, {
+-          allowMissingRoot: !explicitlySelected,
++          allowMissingRoot: !explicitlySelected && !Object.hasOwn(deploymentPins, skill.name),
+         });
+       }
+     } catch (error) {

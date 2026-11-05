@@ -1,14 +1,14 @@
 ---
 created: 2026-09-08
-updated: 2026-11-03
-last_updated_session: authoring-run/e29308a5-ef76-4952-b439-23483c4dbd99
+updated: 2026-11-05
+last_updated_session: authoring-run/01a1a93c-472f-70c0-b038-f7f673ffdc1e
 ---
 
 # Agent Plugin Deployment Flow
 
 ## Overview
 
-OCC freezes the Agent's selections, policy and Driver at deployment. For an import, the [reader](../../apps/controller/src/drivers/plugin/import-package.ts) previews the package. OCC publishes it in the Namespace and resolves the selected digest. [Compute](../../apps/controller/src/drivers/compute/kubernetes/imported-plugin-skills.ts) verifies the files and mounts them read-only in the Gateway for delivery to the worker. The [OpenShell policy](../../apps/controller/src/drivers/sandbox/openshell-managed-mcp-policy.ts) enforces the template account and selected tools.
+OCC freezes plugin selections, policy and Driver at deployment. Namespace administrators [preview and publish packages](../../apps/controller/src/drivers/plugin/import-package.ts). Agent owners select releases by digest. [OpenShell](../../apps/controller/src/drivers/sandbox/openshell-managed-mcp-policy.ts) enforces the bound MCP account and selected tools.
 
 ## Entry Points
 
@@ -45,6 +45,8 @@ graph TD
   A["Authorize and validate policy"] -->|valid| S["Save Agent selections"]
   A -->|unsupported| Y["Reject write"]
   S --> B["Revalidate and snapshot version"]
+  B -->|imported skills| V["Mount verified files in the Gateway"]
+  V --> I
   B -->|managed MCP| K["Project worker MCP and Gateway tool selections"]
   K --> L["Sandbox applies account and tool request policy"]
   L --> I
@@ -147,6 +149,8 @@ PluginDriver refuses an automatic reviewer unless the policy is `on-request` or
 `on-failure`, because an omitted policy lets the Gateway pick one the startup
 check cannot see. Configuration save and Compute Drivers refuse policies the
 Gateway refuses at load, such as `untrusted`.
+
+[Compute](../../apps/controller/src/drivers/compute/kubernetes/imported-plugin-skills.ts) mounts verified files read-only in the dedicated Gateway. Before delivery, the [Gateway](../../deploy/runtime/openclaw-pinned-skill-sources.patch) checks the advertised skill’s pinned source and rejects a same-name workspace skill. The worker preserves executable permissions and points the model to its local `SKILL.md`.
 
 The Kubernetes ConfigMap is immutable and per version. A version prepared
 by an earlier controller keeps its earlier `config.toml` (without
@@ -346,6 +350,8 @@ establish starvation.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 04:01: Trace Namespace publication, pinned skill delivery and imported MCP enforcement. (authoring-run/01a1a93c-472f-70c0-b038-f7f673ffdc1e - d4c9146f564444412e93181b3b6b6c9c1e3b4820)
 
 - 2026-11-03 01:40: Trace startup of multiple managed packages on one dedicated Agent. (authoring-run/e29308a5-ef76-4952-b439-23483c4dbd99 - 54b2a30498f690e2a16a3198e84a6363f69d91ae)
 
