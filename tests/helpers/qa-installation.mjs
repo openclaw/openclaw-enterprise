@@ -470,6 +470,7 @@ export async function createQaInstallation(
     OCC_POSTGRES_PORT: String(postgresPort),
     OCC_DEVELOPMENT_BROWSER_PORT: String(browserPort),
     OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
+    OCC_DEVELOPMENT_NETWORK_EGRESS_MODE: "restricted",
     OCC_DEVELOPMENT_CONTROL_PLANE: controlPlane,
     OCC_DEVELOPMENT_SANDBOX_DRIVER: sandboxDriver,
     OCC_DEVELOPMENT_CONTAINER_ENGINE: "docker",

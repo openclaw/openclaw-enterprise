@@ -1172,6 +1172,14 @@ test(
       join(stateDirectory, "state.json"),
       "the Local Setup state",
     );
+    const networkEgressMode = process.env.OCC_DEVELOPMENT_STATE_DIRECTORY
+      ? (recorded.networkEgressMode ?? "restricted")
+      : recorded.networkEgressMode;
+    assert.equal(
+      networkEgressMode,
+      "restricted",
+      "This workflow requires a restricted installation; public egress has separate coverage",
+    );
     assert.ok(
       typeof recorded?.keyPath === "string" && isAbsolute(recorded.keyPath),
       "The Local Setup state must record an absolute administrator key path",
