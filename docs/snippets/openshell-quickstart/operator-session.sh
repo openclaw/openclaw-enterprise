@@ -68,14 +68,64 @@ deploy_and_wait() {
   wait_deployment "$revision"
 }
 upgrade_installation() {
-  local secret="oce-installation-$(date +%s)"
-  kube -n "$PLATFORM_NS" create secret generic "$secret" \
-    --from-file="installation.yaml=$INSTALLATION_FILE" || return 1
-  jq --arg secret "$secret" '.installation.secretName=$secret' "$VALUES_FILE" \
-    > "$RUN_DIR/upgrade-values.json" || return 1
+  local evidence secret key installation checksum pod ip
+  evidence=$(mktemp -d "$RUN_DIR/installation-upgrade.XXXXXXXX") || return 1
+  printf 'Installation change evidence: %s\n' "$evidence"
   helm --kubeconfig "$KUBECONFIG" --kube-context "$CONTEXT" -n "$PLATFORM_NS" \
-    upgrade "$RELEASE" "$OCE_CHART" -f "$RUN_DIR/upgrade-values.json" --wait || return 1
-  cp "$RUN_DIR/upgrade-values.json" "$VALUES_FILE" || return 1
+    get values "$RELEASE" --all -o json > "$evidence/live-values.json" || return 1
+  secret=$(jq -er '.installation.secretName | strings | select(length>0)' "$evidence/live-values.json") || return 1
+  key=$(jq -er '.installation.key | strings | select(length>0)' "$evidence/live-values.json") || return 1
+  jq -e --arg secret "$secret" --arg key "$key" '
+    (.installation.secretName // "occ-installation-startup") == $secret and
+    (.installation.key // "installation.yaml") == $key' "$VALUES_FILE" >/dev/null || {
+    printf 'Saved values do not match the installed Installation Secret binding.\n' >&2
+    return 1
+  }
+  read -r pod ip < <(api_pod) || return 1
+  kube -n "$PLATFORM_NS" get pod "$pod" -o json > "$evidence/api-pod.json" || return 1
+  jq -e --arg secret "$secret" --arg key "$key" '
+    any(.spec.volumes[]?; .name == "installation-startup" and
+      .secret.secretName == $secret and
+      any(.secret.items[]?; .key == $key and .path == "installation.yaml")) and
+    any(.spec.containers[]?; .name == "api" and
+      any(.env[]?; .name == "OCC_CONFIG_PATH" and
+        .value == "/etc/openclaw/installation/installation.yaml") and
+      any(.volumeMounts[]?; .name == "installation-startup" and
+        .mountPath == "/etc/openclaw/installation"))' "$evidence/api-pod.json" >/dev/null || {
+    printf 'Running API does not use the selected Installation Secret binding.\n' >&2
+    return 1
+  }
+  installation=$(request GET /installation | jq -er '.data.id | strings | select(length>0)') || return 1
+  kube -n "$PLATFORM_NS" get secret "$secret" -o json > "$evidence/secret-before.json" || return 1
+  jq -e --arg installation "$installation" --arg key "$key" '
+    ((.metadata.annotations // {} | has("openclaw.dev/installation-id") | not) or
+      .metadata.annotations["openclaw.dev/installation-id"] == $installation) and
+    (.metadata.uid | strings | length>0) and
+    (.metadata.resourceVersion | strings | length>0) and
+    (.data[$key] | strings | length>0) and .immutable != true' \
+    "$evidence/secret-before.json" >/dev/null || {
+    printf 'Installation Secret identity, data or mutability check failed.\n' >&2
+    return 1
+  }
+  cp "$INSTALLATION_FILE" "$evidence/installation.yaml" || return 1
+  checksum=$(sha256sum "$evidence/installation.yaml" | cut -d ' ' -f 1) || return 1
+  jq --arg checksum "$checksum" '.controlPlane.installationChecksum=$checksum' "$VALUES_FILE" \
+    > "$evidence/values.json" || return 1
+  # UID and resourceVersion prevent a concurrent replacement or edit from accepting this patch.
+  # Bind an unannotated initial Secret to the authenticated Installation; retain other contents.
+  jq --arg installation "$installation" --arg key "$key" --rawfile document "$evidence/installation.yaml" '
+    {metadata: {uid: .metadata.uid, resourceVersion: .metadata.resourceVersion,
+       annotations: {"openclaw.dev/installation-id": $installation}},
+     data: {($key): ($document | @base64)}}' "$evidence/secret-before.json" \
+    > "$evidence/patch.json" || return 1
+  kube -n "$PLATFORM_NS" patch secret "$secret" --type merge \
+    --patch-file "$evidence/patch.json" -o json > "$evidence/secret-after.json" || return 1
+  helm --kubeconfig "$KUBECONFIG" --kube-context "$CONTEXT" -n "$PLATFORM_NS" \
+    upgrade "$RELEASE" "$OCE_CHART" -f "$evidence/values.json" --wait || {
+    printf 'Installation Secret was patched; inspect the saved evidence before recovery or retry.\n' >&2
+    return 1
+  }
+  cp "$evidence/values.json" "$VALUES_FILE" || return 1
   kube -n "$PLATFORM_NS" rollout status deployment/openclaw-enterprise-api || return 1
   kube -n "$PLATFORM_NS" rollout status deployment/openclaw-enterprise-worker
 }

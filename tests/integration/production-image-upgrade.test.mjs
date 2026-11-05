@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -21,6 +22,228 @@ const sourceRevision = (
 const upgradeScript = fileURLToPath(
   new URL("../../scripts/upgrade-production-images", import.meta.url),
 );
+
+test("quickstart Installation updates preserve the bound Secret and stop on unsafe outcomes", async (t) => {
+  let kubectl;
+  try {
+    kubectl = (await execute("bash", ["-c", "command -v kubectl"])).stdout.trim();
+  } catch {
+    t.skip("kubectl is required for real local Secret merge-patch semantics");
+    return;
+  }
+  const snippet = join(repository, "docs/snippets/openshell-quickstart/operator-session.sh");
+  const document = "drivers:\n  repository: reviewed-change\n";
+  for (const failure of [
+    "",
+    "unannotated",
+    "binding",
+    "mounted-binding",
+    "identity",
+    "patch",
+    "helm",
+  ]) {
+    await t.test(failure || "preserves identity and unrelated data", async (t) => {
+      const directory = await temporaryDirectory(t, "occ-quickstart-installation-");
+      const bin = join(directory, "bin");
+      await mkdir(bin);
+      const secret = {
+        apiVersion: "v1",
+        kind: "Secret",
+        metadata: {
+          name: "selected-installation",
+          namespace: "system",
+          uid: "selected-secret-uid",
+          resourceVersion: "7",
+          labels: { retained: "yes" },
+          annotations: {
+            "openclaw.dev/installation-id": failure === "identity" ? "ins_other" : "ins_selected",
+            retained: "yes",
+          },
+        },
+        data: { "custom.yaml": Buffer.from("old").toString("base64"), retained: "a2VlcA==" },
+      };
+      if (failure === "unannotated") {
+        delete secret.metadata.annotations["openclaw.dev/installation-id"];
+      }
+      const apiPod = {
+        spec: {
+          volumes: [
+            {
+              name: "installation-startup",
+              secret: {
+                secretName: failure === "mounted-binding" ? "other-secret" : secret.metadata.name,
+                items: [{ key: "custom.yaml", path: "installation.yaml" }],
+              },
+            },
+          ],
+          containers: [
+            {
+              name: "api",
+              env: [
+                { name: "OCC_CONFIG_PATH", value: "/etc/openclaw/installation/installation.yaml" },
+              ],
+              volumeMounts: [
+                { name: "installation-startup", mountPath: "/etc/openclaw/installation" },
+              ],
+            },
+          ],
+        },
+      };
+      const liveValues = {
+        installation: { secretName: secret.metadata.name, key: "custom.yaml" },
+        repositoryCredentials: { registryConfigMapName: "old-registry" },
+      };
+      const values = structuredClone(liveValues);
+      values.repositoryCredentials.registryConfigMapName = "reviewed-registry";
+      if (failure === "binding") {
+        values.installation.secretName = "different-secret";
+      }
+      for (const [name, content] of Object.entries({
+        "secret.json": JSON.stringify(secret),
+        "api-pod.json": JSON.stringify(apiPod),
+        "live-values.json": JSON.stringify(liveValues),
+        "values.json": JSON.stringify(values),
+        "installation.yaml": document,
+        "key.json": JSON.stringify({ data: { key: "fixture-key" } }),
+        "request.mjs": "// Transport is substituted; the real shell constructs its request.\n",
+      })) {
+        await writeFile(join(directory, name), content, { mode: 0o600 });
+      }
+      const log = join(directory, "commands");
+      // Substitute remote command responses, but apply the generated patch with actual
+      // kubectl --local. This proves the helper/merge contract, not API-server concurrency.
+      await writeCommand(
+        bin,
+        "kubectl",
+        `
+case "$*" in
+  *"get pods"*) printf '%s\\n' '{"items":[{"metadata":{"name":"api"},"status":{"podIP":"127.0.0.1","containerStatuses":[{"name":"api","ready":true}]}}]}' ;;
+  *"exec -i"*) cat > "$RUN_DIR/api-request.json"; printf '%s\\n' '{"data":{"id":"ins_selected"}}' ;;
+  *"get pod "*) cat "$RUN_DIR/api-pod.json" ;;
+  *"get secret"*) cat "$RUN_DIR/secret.json" ;;
+  *"patch secret"*)
+    while (($#)); do
+      if [[ $1 == --patch-file ]]; then patch=$2; break; fi
+      shift
+    done
+    cp "$patch" "$RUN_DIR/submitted-patch.json"
+    if [[ $FAILURE == patch ]]; then exit 9; fi
+    "$REAL_KUBECTL" patch --local -f "$RUN_DIR/secret.json" --type merge --patch-file "$patch" -o json > "$RUN_DIR/merged.json" || exit
+    cp "$RUN_DIR/merged.json" "$RUN_DIR/secret.json"
+    cat "$RUN_DIR/secret.json" ;;
+  *"create secret generic"*)
+    # Keep the old implementation runnable: its actual client-side create loses identity.
+    while [[ $1 != generic ]]; do shift; done
+    "$REAL_KUBECTL" create secret generic "$2" --from-file="installation.yaml=$INSTALLATION_FILE" --dry-run=client -o json > "$RUN_DIR/secret.json" ;;
+  *"rollout status"*) ;;
+  *) exit 91 ;;
+esac
+`,
+        { interpreter: "bash", log },
+      );
+      await writeCommand(
+        bin,
+        "helm",
+        `
+case "$*" in
+  *"get values"*) cat "$RUN_DIR/live-values.json" ;;
+  *"upgrade"*)
+    while (($#)); do
+      if [[ $1 == -f ]]; then cp "$2" "$RUN_DIR/applied-values.json"; break; fi
+      shift
+    done
+    if [[ $FAILURE == helm ]]; then exit 9; fi ;;
+  *) exit 92 ;;
+esac
+`,
+        { interpreter: "bash", log },
+      );
+      const result = await execute(
+        "bash",
+        ["-c", 'set -euo pipefail; source "$SNIPPET"; upgrade_installation'],
+        {
+          cwd: repository,
+          env: {
+            ...process.env,
+            PATH: `${bin}:${process.env.PATH}`,
+            REAL_KUBECTL: kubectl,
+            SNIPPET: snippet,
+            RUN_DIR: directory,
+            KUBECONFIG: join(directory, "unused-kubeconfig"),
+            CONTEXT: "selected",
+            PLATFORM_NS: "system",
+            RELEASE: "oce",
+            OCE_CHART: "unused-local-chart",
+            OCC_SERVICE_KEY_FILE: join(directory, "key.json"),
+            INSTALLATION_FILE: join(directory, "installation.yaml"),
+            VALUES_FILE: join(directory, "values.json"),
+            FAILURE: failure,
+          },
+        },
+      ).then(
+        (result) => ({ ...result, code: 0 }),
+        (error) => error,
+      );
+      const success = !failure || failure === "unannotated";
+      assert.equal(result.code, success ? 0 : 1, result.stderr);
+      const commands = await readFile(log, "utf8");
+      const after = JSON.parse(await readFile(join(directory, "secret.json"), "utf8"));
+      assert.deepEqual(
+        after.metadata,
+        success
+          ? {
+              ...secret.metadata,
+              annotations: {
+                ...secret.metadata.annotations,
+                "openclaw.dev/installation-id": "ins_selected",
+              },
+            }
+          : secret.metadata,
+        "the same Secret and all metadata survive",
+      );
+      assert.equal(after.data.retained, secret.data.retained);
+      const changed = success || failure === "helm";
+      assert.equal(
+        after.data["custom.yaml"],
+        changed ? Buffer.from(document).toString("base64") : secret.data["custom.yaml"],
+      );
+      if (["binding", "mounted-binding", "identity"].includes(failure)) {
+        assert.doesNotMatch(commands, /patch secret| upgrade /);
+      } else {
+        const patch = JSON.parse(await readFile(join(directory, "submitted-patch.json"), "utf8"));
+        assert.deepEqual(patch.metadata, {
+          uid: secret.metadata.uid,
+          resourceVersion: "7",
+          annotations: { "openclaw.dev/installation-id": "ins_selected" },
+        });
+        assert.deepEqual(Object.keys(patch.data), ["custom.yaml"]);
+      }
+      if (!success) {
+        assert.deepEqual(
+          JSON.parse(await readFile(join(directory, "values.json"), "utf8")),
+          values,
+        );
+        assert.doesNotMatch(commands, /rollout status/);
+        if (failure === "patch") {
+          assert.doesNotMatch(commands, / upgrade /);
+        }
+      } else {
+        const applied = JSON.parse(await readFile(join(directory, "applied-values.json"), "utf8"));
+        assert.deepEqual(applied, {
+          ...values,
+          controlPlane: {
+            installationChecksum: createHash("sha256").update(document).digest("hex"),
+          },
+        });
+        assert.deepEqual(
+          JSON.parse(await readFile(join(directory, "values.json"), "utf8")),
+          applied,
+        );
+        assert.match(commands, /rollout status deployment\/openclaw-enterprise-worker/);
+      }
+    });
+  }
+});
 
 test("production image upgrades preserve controller/runtime ownership and wait for ready Pods", async (t) => {
   const directory = await temporaryDirectory(t, "occ-production-upgrade-");

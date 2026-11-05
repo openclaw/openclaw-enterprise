@@ -36,13 +36,15 @@ Platform-only inputs remain in setup: local `OCC_DEVELOPMENT_STATE_DIRECTORY`; c
 | `deploy_and_wait`                                       | Run platform preflight, submit one deployment, save its ID, prepare the required network rules, and wait for that revision to become active.                                |
 | `wait_deployment ID`                                    | Prepare network rules and wait for an already submitted Console deployment. It does not submit another deployment.                                                          |
 | `turn PROMPT_FILE`                                      | Send one OpenClaw WebSocket turn from the API Pod. Each call creates a new conversation; browser onboarding proves continuity separately.                                   |
-| `upgrade_installation`                                  | Load the current Installation through a new versioned Secret, upgrade the recorded Helm release with current values, and wait for API/worker rollout.                       |
+| `upgrade_installation`                                  | Verify the selected Installation, patch its existing Secret, set the rollout checksum, upgrade the recorded Helm release, and wait for API/worker rollout.                  |
 | `git_audit REVISION`                                    | Read scoped Git attempt custody and request receipts through the worker's database connection. It does not read keys or change records.                                     |
 | `stop_and_retire REVISION`                              | Stop a finite Git grant and wait for recorded revocation/expiry with no retained sealed material. This is for permission changes, not a prerequisite for deleting an Agent. |
 | `select_registry CONFIGMAP read\|write`                 | Check the exact repository/Namespace/permission map, upgrade the existing release, and verify the worker mount.                                                             |
 | `save_session`                                          | Save nonsecret IDs, paths and helper loading to the private `session.sh`.                                                                                                   |
 
 Use the same matching release checkout when running source-dependent setup commands. Retain service-key files, chart files and the private session directory; moving or deleting them breaks the saved session. A timed-out mutation has an unknown outcome. Read the existing resource or saved deployment ID before submitting it again.
+
+`upgrade_installation` checks that saved values, live Helm values and the running API select the same Secret and key. It binds an initially unannotated Secret to the authenticated Installation with `openclaw.dev/installation-id`; an existing annotation must match. It preserves other Secret data and metadata; a concurrent Secret change rejects the patch. The printed private evidence directory retains the original Secret, live values and proposed update. A failed or interrupted patch or Helm upgrade may have changed the Secret: inspect it and Helm status before another mutation, and follow [Installation-change recovery](production-installation-changes.md) to restore a refused change. Saved values advance only after Helm succeeds.
 
 ## Where setup supplies the session
 
