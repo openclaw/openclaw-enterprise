@@ -47,6 +47,7 @@ export function openShellSandbox(t, overrides = {}, gateway = {}) {
     { id: "workspace-openshell-sandbox", backend },
   );
   return {
+    backend,
     sandboxDriver,
     driverConfigurations: [
       {

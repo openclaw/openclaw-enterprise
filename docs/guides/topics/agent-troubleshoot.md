@@ -10,6 +10,10 @@ If a dedicated Codex Agent on OpenShell reports `Codex did not grant the request
 
 Successful login, a ready credential source, or a model reply under another permission profile does not prove compatibility. Use an approved compatible credential or an administrator-approved policy change. For copied API-key or PAT credentials, [update the source](../../reference/credential-sources.md#update-a-source) and redeploy the Agent. Device-login sources reject updates: sign in again, replace the Agent binding and redeploy, following the same reference. Then [verify a model response from the actual Agent](../operate/model-verification.md). Keep managed policy, the Gateway permission check and OpenShell isolation intact.
 
+## Deploy requires a Sandbox Driver that supports protected Codex artifact admission
+
+OCE stops before creating an Agent version when the selected Sandbox Driver cannot validate artifact access for protected Codex repository execution. Ask your Installation administrator to check the `drivers.sandbox` selection and whether the installed Driver version provides [protected Codex artifact admission](../../reference/drivers/sandbox.md#methods). For OpenShell, see [how to configure the artifact rules](../../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules).
+
 ## The configured model is unavailable
 
 Open the failed version in the Agent’s **Deployment** tab. If the startup model check reports an unavailable model, [choose a model ID for the same credential](../operate/model-verification.md#choose-a-model-for-dedicated-codex).

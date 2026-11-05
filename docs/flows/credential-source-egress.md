@@ -302,26 +302,24 @@ Sandboxes or continued model execution.
 ### 7. Retain installation custody
 
 `packages/occ/src/state/credential-deliveries.ts:CredentialDeliveries` requires
-independent confirmation for registered recipients and the original reserving
-worker for snapshots, including bootstrap. Reservations advance the fence;
-confirmation grants no request authority.
+independent confirmation for registered recipients; snapshots require their reserving
+worker, including bootstrap. Neither grants request authority.
 
 `apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts:reconcile`
 cancels only definitely unsent writes. Uncertain writes stay pending and blocked.
 `release` drops closed routes whose Sandbox is gone; refusal stays.
 `prepare` requires held launch or explicit installation preview and closes another
 worker's persisted route before credential access. Historical `verifyExecution`
-permits cleanup, not live recovery; `retireExpiredRepositoryAccess` settles the
-original detach through its stored fence.
-The background prepared-token owner discovers eligible sessions before this
-transport starts. Its bundled `openshell-repository-git-evidence.ts:openShellGitRecipientEvidence`
-predicate separately excludes historical online installation-wide delivery from
-live issuance. Selected-repository delivery and explicit observed-hook preview
-remain eligible; the historical verification and detach predicate is unchanged.
+permits only cleanup; `retireExpiredRepositoryAccess` settles the original fenced detach.
+Before transport starts, the background owner discovers sessions.
+`openshell-repository-git-evidence.ts:openShellGitRecipientEvidence` excludes historical
+online installation-wide issuance while retaining selected delivery and explicit
+observed-hook preview.
 See [restart behavior](../reference/repository-credentials/protected-openshell-git.md#route-state-restarts-and-recovery).
 
-Creation requires live ownership; deletion keeps custody but stops use. `apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts:confirmDetached`
-checks the retained fence, recipient, material, policy and request without another apply.
+Deletion retains custody but stops use.
+`apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts:confirmDetached`
+verifies the original fence, recipient, material, policy and request without reapplying.
 
 ## Debugging and Verification
 

@@ -291,11 +291,12 @@ Local contracts are implemented; protected cluster proof remains.
 
 ### Workload identity
 
-The local profile disables the optional Harness workload credential. OpenShell
-may use its gateway-configured infrastructure ServiceAccount, but the
-supervisor credential must remain inaccessible to the Agent. If a deployment
-requests an Agent ServiceAccount and projected token, the Driver must preserve
-both exactly or reject the Agent revision.
+OpenShell cannot preserve an Agent ServiceAccount and projected token. Dedicated
+Agents need Compute's `servicePrincipalCredentials.mode: disabled` or a compatible
+Sandbox Driver. Deployment admission rejects projected identity; saving a
+credential-source binding does not validate it. OpenShell may use its
+gateway-configured infrastructure ServiceAccount; supervisor credentials must
+remain inaccessible to the Agent.
 
 Kubernetes ServiceAccount tokens cannot identify an OCE Agent across cluster
 trust domains. Future exchange must scope evidence to its ServicePrincipal and

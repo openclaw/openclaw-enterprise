@@ -83,7 +83,7 @@ Drivers. It does not prove persistence, routing through a deployed gateway, or
 Agent runtime behavior. The API checks can run without a browser:
 
 ```sh
-node --test tests/integration/console-api.test.mjs
+node --test tests/integration/console-api.test.ts
 ```
 
 ### Browser failure diagnostics

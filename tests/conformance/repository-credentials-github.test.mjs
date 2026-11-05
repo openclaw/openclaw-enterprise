@@ -4,7 +4,7 @@ import { parseInstallationTokenResponse } from "../../apps/controller/src/driver
 import { parseUnambiguousJson } from "../../apps/controller/src/drivers/repo/credentials/json-members.ts";
 import { createGitHubKeyOwner } from "../../apps/controller/src/drivers/repo/github/credentials/material.ts";
 import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/credentials/configuration.ts";
-import { createCredentialService } from "../../apps/controller/src/drivers/repo/credentials/service.ts";
+import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
 import { createGitHubPlanningFixture } from "../fixtures/repository-credentials/planning.ts";
 import { startGitHubFixture } from "../fixtures/repository-credentials/github.mjs";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";

@@ -351,6 +351,7 @@
       "expectedTests": [
         "only the installed Git recipient owner may use its material or retire its ended admission",
         "changing between repository and installation scope waits for the previous owner to settle its token",
+        "OpenShell preparation refuses historical v5 installation access and preserves v6 observed-hook custody",
         "selected repository set retires after B session across owner restart",
         "selected repository set retires after B replacement across owner restart",
         "selected repository set retires after B deadline across owner restart",
