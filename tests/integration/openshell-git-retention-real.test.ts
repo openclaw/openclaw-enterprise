@@ -357,9 +357,9 @@ test(
           `set +e; ${git} >'${directory}/git.out' 2>'${directory}/git.err'; status=$?; set -e`,
           'test "$status" -ne 0; test "$status" -ne 126; test "$status" -ne 127',
           `test ! -s '${directory}/git.out'`,
-          // Stock's explicit proxy policy refusal is HTTP 403. DNS, TLS and
-          // executable failures cannot satisfy this assertion.
-          `grep -Eq '(^|[^0-9])403([^0-9]|$)' '${directory}/git.err'`,
+          // Require Git's C-locale status diagnostic, not digits in its URL:
+          // a repository named a403b must not turn a DNS failure into a pass.
+          `grep -Eq '(The requested URL returned error: 403|CONNECT tunnel failed, response 403)$' '${directory}/git.err'`,
           "printf '%s' 'non-git-succeeded;fresh-git-denied'",
         ].join("; "),
       ]);
