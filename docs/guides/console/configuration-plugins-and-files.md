@@ -78,6 +78,8 @@ Configuration JSON. See the [Configuration reference](../../reference/configurat
 
 ## Plugins tab
 
+For a skill supplied by a catalog plugin, select its release here and deploy a new version. The managed Gateway refuses native skill installation, including uploads and ClawHub installs.
+
 In **Open draft** → **Plugins**, edit the Agent's existing selections and
 tool policies with **Configure plugins** or **Plugin selections JSON**. With a bound
 Service Accounts token Secret, the tab preloads the first catalog page for the

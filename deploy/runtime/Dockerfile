@@ -212,6 +212,11 @@ COPY deploy/runtime/openclaw-google-worker-placeholder.patch /tmp/openclaw-googl
 RUN echo '55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31  /tmp/openclaw-google-worker-placeholder.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-google-worker-placeholder.patch
 
+# TODO: remove the managed skill-install bridge when the pinned Gateway owns this deployment control.
+COPY deploy/runtime/openclaw-managed-skill-installs.patch /tmp/openclaw-managed-skill-installs.patch
+RUN echo '1e19885e42f6958244de9ef563f6223b5599a062c82569e793c9f554f7e4207f  /tmp/openclaw-managed-skill-installs.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-managed-skill-installs.patch
+
 # Run the bridge tests alongside the build using the same patched source.
 # Packaging mounts this stage so a failed test still blocks the runtime image.
 FROM openclaw-patched-source AS openclaw-bridge-tests
@@ -224,7 +229,9 @@ RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \
     OPENCLAW_VITEST_RUNTIME=node OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts \
     src/infra/gateway-lock-recovery.test.ts src/node-host/node-worker-google-placeholder.test.ts \
-    src/infra/private-store-file.test.ts
+    src/infra/private-store-file.test.ts \
+    src/gateway/server-methods/skills.clawhub.test.ts src/skills/library/service.test.ts \
+    extensions/skill-workshop/src/drafts.test.ts src/config/config.env-vars.test.ts
 # Type-check the two UI test graphs touched by the bridge. The upstream runner
 # generates its database types and compiler cache under .artifacts.
 RUN --network=none --mount=type=tmpfs,target=/source/.artifacts \

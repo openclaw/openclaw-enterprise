@@ -45,7 +45,9 @@ test(
   { ...requiresProductionCluster, timeout: 1_200_000 },
   async (testContext) => {
     const { context } = topologyTeardown(testContext);
-    const topology = await arrangeProductionTopology(context, "dedicated");
+    const topology = await arrangeProductionTopology(context, "dedicated", undefined, {
+      gatewayManagedMode: false,
+    });
     await assertDedicatedSkillSources(topology);
   },
 );
@@ -56,6 +58,7 @@ test(
   async (testContext) => {
     const { context } = topologyTeardown(testContext);
     const topology = await arrangeProductionTopology(context, "dedicated", undefined, {
+      gatewayManagedMode: false,
       gatewayPassword: true,
     });
     assert.ok(topology.harnessPod, "dedicated production must start a real separate Codex Pod");

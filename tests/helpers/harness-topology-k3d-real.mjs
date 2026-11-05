@@ -2276,6 +2276,14 @@ async function arrangeProductionTopology(testContext, mode, slack, options = {})
       );
     }
 
+    if (options.gatewayManagedMode === false) {
+      // Only the Installation administrator can enable native installs for these operator workflows.
+      agent = await adminRequest("PATCH", `/namespaces/${namespaceId}/agents/${agent.data.id}`, {
+        gatewayManagedMode: false,
+      });
+      assert.equal(agent.status, 200, JSON.stringify(agent.error));
+      assert.equal(agent.data.gatewayManagedMode, false);
+    }
     deployed = await request("POST", `/namespaces/${namespaceId}/agents/${agent.data.id}/deploy`);
     assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
   }

@@ -66,7 +66,7 @@ Dedicated Gateways require the supporting source recorded in this recipe and
 validate their effective native configuration before starting. The required
 Gateway tool policy covers core dispatch, automation authority and Codex
 dynamic tools. Older or unknown source images remain unready; source checks
-and configuration validation do not replace runtime qualification.
+and configuration validation do not replace runtime qualification. A managed Gateway also checks the digest of the skill installation patch before startup. An older image built from the same source commit cannot enforce native skill installation refusal.
 
 The Codex adapter preserves namespaced IDs with an explicit native
 provider. For a custom endpoint, OCE compiles its private Gateway model references

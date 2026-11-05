@@ -1870,6 +1870,7 @@ assert.deepEqual(provenance.patches, {
     "stock-codex-0.163.0-alpha.2-dependency-pin.patch": "d7eea3944eaaf4469ede0261d4f706148cd672f29f1efedd59e325c46c90d119",
   } : {
     "openclaw-control-ui-browser-reconnect.patch": "21fef3589702683a173dd2967d852954e1bfa56ea9d9e9a99bdaa28159ff5d2c",
+    "openclaw-managed-skill-installs.patch": "1e19885e42f6958244de9ef563f6223b5599a062c82569e793c9f554f7e4207f",
     "openclaw-terminated-gateway-namespace.patch": "1ed77577d53d43619f7c8fb33dbcdcf6a728351821abfe1b0beee947bd6eb456",
   }),
 });

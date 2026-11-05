@@ -3110,7 +3110,7 @@ function prepareWritableCodexBridge(failures) {
 // so an in-place respawn repeats it for a changed peer. For a Codex peer this
 // installs nothing: the Harness installs the plugins; the Gateway applies its result.
 function configureGateway(peerStatus) {
-  if (appliesGatewayToolPolicy) requireGatewayToolPolicyRuntime();
+  if (appliesGatewayToolPolicy || ${managedMode}) requireGatewayPolicyRuntime(${managedMode});
   process.env.OPENCLAW_CONFIG_PATH = initialConfigPath;
   configureNativeWorkerProfile();
   const peerFailures = peerStatus?.failures ?? readPluginFailuresFromEnvironment();

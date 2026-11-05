@@ -1,0 +1,367 @@
+diff --git a/extensions/skill-workshop/src/drafts.test.ts b/extensions/skill-workshop/src/drafts.test.ts
+index a4c11ea..25fbbe2 100644
+--- a/extensions/skill-workshop/src/drafts.test.ts
++++ b/extensions/skill-workshop/src/drafts.test.ts
+@@ -1,7 +1,7 @@
+ import fs from "node:fs/promises";
+ import path from "node:path";
+ import { createOpenClawTestState, type OpenClawTestState } from "openclaw/plugin-sdk/test-state";
+-import { afterEach, beforeEach, expect, it } from "vitest";
++import { afterEach, beforeEach, expect, it, vi } from "vitest";
+ import * as draftsModule from "./drafts.js";
+ import * as libraryModule from "./library.js";
+ import * as skillsRootModule from "./skills-root.js";
+@@ -52,6 +52,23 @@ it("applies a draft over the live skill as an undoable change and deletes the dr
+   expect((await viewWorkshopSkill({}, "main", "deploy")).content).toContain("make deploy");
+ });
+ 
++it("keeps an unpublished draft when managed mode refuses its publication", async () => {
++  vi.stubEnv("OPENCLAW_DISABLE_SKILL_INSTALLS", "1");
++  try {
++    const id = await saveWorkshopDraft({}, "main", {
++      name: "deploy",
++      content: skillFile("deploy", "Managed replacement."),
++    });
++    await expect(applyWorkshopDraft(ctx, id)).rejects.toThrow(
++      /installation and publication are disabled/,
++    );
++    expect(await listWorkshopDrafts({}, "main")).toHaveLength(1);
++    expect((await viewWorkshopSkill({}, "main", "deploy")).content).toContain("make deploy");
++  } finally {
++    vi.unstubAllEnvs();
++  }
++});
++
+ it("applies a multi-file draft as one change that a single undo reverts", async () => {
+   // A Doctor export: a draft directory with a support file and no recorded reason.
+   const draftDir = path.join(resolveWorkshopDraftsDir({}, "main"), "deploy-proposal-1");
+diff --git a/extensions/skill-workshop/src/library.ts b/extensions/skill-workshop/src/library.ts
+index 2bc23b2..15519b2 100644
+--- a/extensions/skill-workshop/src/library.ts
++++ b/extensions/skill-workshop/src/library.ts
+@@ -23,6 +23,7 @@ import {
+ import {
+   pathExists,
+   recordWorkshopChange,
++  skillInstallDisabledMessage,
+   type WorkshopActor,
+   type WorkshopChange,
+ } from "openclaw/plugin-sdk/skill-workshop-host-runtime";
+@@ -239,6 +240,10 @@ export async function mutateSkill(
+   alsoLock: readonly SkillPaths[] = [],
+ ): Promise<WorkshopChange> {
+   const paths = resolveSkillPaths(ctx.config, ctx.agentId, name);
++  const disabled = skillInstallDisabledMessage();
++  if (disabled && action !== "archive") {
++    throw new WorkshopWriteError(disabled);
++  }
+   const lockKeys = [paths.skillDir, ...alsoLock.map((other) => other.skillDir)];
+   return await withSkillLocks(lockKeys, async () => {
+     ctx.assertLive?.();
+diff --git a/src/config/config-env-values.ts b/src/config/config-env-values.ts
+index 701f789..0b1faf0 100644
+--- a/src/config/config-env-values.ts
++++ b/src/config/config-env-values.ts
+@@ -21,6 +21,7 @@ export function isConfigRuntimeEnvVarAllowed(key: string, value: string): boolea
+     upperKey !== "OPENCLAW_CONFIG_READONLY_NOTICE" &&
+     upperKey !== "OPENCLAW_DISABLE_GATEWAY_LOCAL_TERMINALS" &&
+     upperKey !== "OPENCLAW_DISABLE_CRON_HOST_EXECUTION" &&
++    upperKey !== "OPENCLAW_DISABLE_SKILL_INSTALLS" &&
+     upperKey !== "OPENCLAW_DEV_RELOAD_BUNDLED_PLUGINS" &&
+     !isDangerousHostEnvVarName(key) &&
+     !isDangerousHostEnvOverrideVarName(key) &&
+diff --git a/src/config/config.env-vars.test.ts b/src/config/config.env-vars.test.ts
+index 828cebc..1f77a3b 100644
+--- a/src/config/config.env-vars.test.ts
++++ b/src/config/config.env-vars.test.ts
+@@ -73,6 +73,7 @@ describe("config env vars", () => {
+             ),
+             OPENCLAW_DISABLE_GATEWAY_LOCAL_TERMINALS: "0",
+             OPENCLAW_DISABLE_CRON_HOST_EXECUTION: "0",
++            OPENCLAW_DISABLE_SKILL_INSTALLS: "0",
+             OPENCLAW_DEV_RELOAD_BUNDLED_PLUGINS: "1",
+             OPENCLAW_NIX_MODE: "1",
+             VALID: "literal",
+diff --git a/src/gateway/server-methods/skills-install.ts b/src/gateway/server-methods/skills-install.ts
+index 2273821..62f9746 100644
+--- a/src/gateway/server-methods/skills-install.ts
++++ b/src/gateway/server-methods/skills-install.ts
+@@ -11,7 +11,7 @@ import { installSkill } from "../../skills/lifecycle/install.js";
+ import { installUploadedSkillArchive } from "../../skills/lifecycle/upload-install.js";
+ import { SessionMutationAuthorizationChangedError } from "../session-mutation-authorization-error.js";
+ import { captureGatewayClientUploadCommitGuard } from "../upload-policy.js";
+-import { resolveSkillsAgentWorkspace } from "./skills-workspace-handler.js";
++import { rejectDisabledSkillInstall, resolveSkillsAgentWorkspace } from "./skills-workspace-handler.js";
+ import { defineValidatedGatewayHandler } from "./validation.js";
+ 
+ type ClawHubInstallResult = Awaited<ReturnType<typeof installSkillFromClawHub>>;
+@@ -22,6 +22,9 @@ export const handleSkillsInstall = defineValidatedGatewayHandler(
+   "skills.install",
+   validateSkillsInstallParams,
+   async ({ params: p, respond, context, client }) => {
++    if (rejectDisabledSkillInstall(respond)) {
++      return;
++    }
+     const resolved = resolveSkillsAgentWorkspace(p, context);
+     if (!resolved.ok) {
+       respond(false, undefined, resolved.error);
+diff --git a/src/gateway/server-methods/skills-upload.ts b/src/gateway/server-methods/skills-upload.ts
+index bdf1646..f43b2b4 100644
+--- a/src/gateway/server-methods/skills-upload.ts
++++ b/src/gateway/server-methods/skills-upload.ts
+@@ -16,6 +16,7 @@ import { SkillUploadRequestError } from "../../skills/lifecycle/upload-store-err
+ import { defaultSkillUploadStore } from "../../skills/lifecycle/upload-store.js";
+ import { SessionMutationAuthorizationChangedError } from "../session-mutation-authorization-error.js";
+ import { captureGatewayClientUploadCommitGuard } from "../upload-policy.js";
++import { rejectDisabledSkillInstall } from "./skills-workspace-handler.js";
+ import type { GatewayRequestHandlers } from "./types.js";
+ import { assertValidParams } from "./validation.js";
+ 
+@@ -53,6 +54,9 @@ function makeUploadHandler<P, R>(
+   action: (params: P, assertCommitAllowed?: () => void) => Promise<R>,
+ ): GatewayRequestHandlers[string] {
+   return async ({ params, respond, context, client }) => {
++    if (rejectDisabledSkillInstall(respond)) {
++      return;
++    }
+     if (!areUploadedSkillArchivesEnabled(context.getRuntimeConfig())) {
+       respond(
+         false,
+diff --git a/src/gateway/server-methods/skills-workspace-handler.ts b/src/gateway/server-methods/skills-workspace-handler.ts
+index 1e1254f..aa7d978 100644
+--- a/src/gateway/server-methods/skills-workspace-handler.ts
++++ b/src/gateway/server-methods/skills-workspace-handler.ts
+@@ -1,4 +1,5 @@
+ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
++import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/schema/error-codes.js";
+ import { AgentSelectionRequiredError } from "../../agents/agent-scope-config.js";
+ import {
+   listAgentIds,
+@@ -6,8 +7,18 @@ import {
+   resolveDefaultAgentId,
+ } from "../../agents/agent-scope.js";
+ import { normalizeAgentId } from "../../routing/session-key.js";
++import { skillInstallDisabledMessage } from "../../skills/lifecycle/install-mode.js";
+ import { invalidSessionRequest } from "../session-request-error.js";
+-import type { GatewayRequestContext } from "./types.js";
++import type { GatewayRequestContext, RespondFn } from "./types.js";
++
++export function rejectDisabledSkillInstall(respond: RespondFn): boolean {
++  const message = skillInstallDisabledMessage();
++  if (!message) {
++    return false;
++  }
++  respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, message));
++  return true;
++}
+ 
+ export function resolveSkillsAgentWorkspace(
+   params: { agentId?: string },
+diff --git a/src/gateway/server-methods/skills.clawhub.test.ts b/src/gateway/server-methods/skills.clawhub.test.ts
+index f2222aa..89e7a3a 100644
+--- a/src/gateway/server-methods/skills.clawhub.test.ts
++++ b/src/gateway/server-methods/skills.clawhub.test.ts
+@@ -157,6 +157,34 @@ describe("skills gateway handlers (clawhub)", () => {
+     expect(fetchExactClawHubSkillSecurityVerdictsMock).not.toHaveBeenCalled();
+   });
+ 
++  it("refuses skill installs, registry replacements and archive staging in managed mode", async () => {
++    vi.stubEnv("OPENCLAW_DISABLE_SKILL_INSTALLS", "1");
++    try {
++      for (const [method, params] of [
++        ["skills.install", { source: "clawhub", slug: "weather" }],
++        ["skills.install", { name: "weather", installId: "brew" }],
++        ["skills.install", { source: "upload", uploadId: "prior-upload", slug: "weather" }],
++        ["skills.update", { source: "clawhub", all: true }],
++        ["skills.upload.begin", { kind: "skill-archive", slug: "weather", sizeBytes: 1 }],
++        ["skills.upload.chunk", { uploadId: "prior-upload", offset: 0, dataBase64: "YQ==" }],
++        ["skills.upload.commit", { uploadId: "prior-upload" }],
++      ] as const) {
++        expect(await callSkillsHandler(method, params)).toMatchObject({
++          ok: false,
++          error: {
++            code: "UNAVAILABLE",
++            message: expect.stringContaining("installation and publication are disabled"),
++          },
++        });
++      }
++      expect(installSkillFromClawHubMock).not.toHaveBeenCalled();
++      expect(installSkillMock).not.toHaveBeenCalled();
++      expect(updateSkillsFromClawHubMock).not.toHaveBeenCalled();
++    } finally {
++      vi.unstubAllEnvs();
++    }
++  });
++
+   it("installs a ClawHub skill through skills.install", async () => {
+     listAgentIdsMock.mockReturnValue(["main", "research"]);
+     resolveAgentWorkspaceDirMock.mockImplementation((_cfg, agentId) =>
+diff --git a/src/gateway/server-methods/skills.ts b/src/gateway/server-methods/skills.ts
+index 6e0a763..11ecfa0 100644
+--- a/src/gateway/server-methods/skills.ts
++++ b/src/gateway/server-methods/skills.ts
+@@ -35,7 +35,7 @@ import { skillsLibraryHandlers } from "./skills-library.js";
+ import { skillsRetiredHandlers } from "./skills-retired.js";
+ import { buildRemoteAwareWorkspaceSkillStatus, handleSkillsStatus } from "./skills-status.js";
+ import { skillsUploadHandlers } from "./skills-upload.js";
+-import { resolveSkillsAgentWorkspace } from "./skills-workspace-handler.js";
++import { rejectDisabledSkillInstall, resolveSkillsAgentWorkspace } from "./skills-workspace-handler.js";
+ import type { GatewayRequestHandlers } from "./types.js";
+ import { assertValidParams, defineValidatedGatewayHandler } from "./validation.js";
+ 
+@@ -184,6 +184,9 @@ export const skillsHandlers: GatewayRequestHandlers = {
+     }
+     const p = params;
+     if ("source" in p) {
++      if (rejectDisabledSkillInstall(respond)) {
++        return;
++      }
+       if (Boolean(p.slug) === Boolean(p.all)) {
+         respondError(
+           respond,
+diff --git a/src/plugin-sdk/skill-workshop-host-runtime.ts b/src/plugin-sdk/skill-workshop-host-runtime.ts
+index 342395f..2c8d834 100644
+--- a/src/plugin-sdk/skill-workshop-host-runtime.ts
++++ b/src/plugin-sdk/skill-workshop-host-runtime.ts
+@@ -4,6 +4,7 @@
+ // no public SDK contract yet.
+ import type { OpenClawConfig } from "../config/types.openclaw.js";
+ 
++export { skillInstallDisabledMessage } from "../skills/lifecycle/install-mode.js";
+ export { listWorkshopChanges, recordWorkshopChange } from "../skills/workshop-changes/changes.js";
+ export type {
+   WorkshopActor,
+diff --git a/src/skills/library/import.ts b/src/skills/library/import.ts
+index bb35f30..8464fe0 100644
+--- a/src/skills/library/import.ts
++++ b/src/skills/library/import.ts
+@@ -21,7 +21,7 @@ import {
+   SKILL_LIBRARY_MAX_PATH_COMPONENTS,
+   SKILL_LIBRARY_MAX_TREE_ENTRIES,
+ } from "./bundle.js";
+-import { saveSkillLibrary, skillLibraryReceipt } from "./service.js";
++import { assertSkillLibraryPublicationEnabled, saveSkillLibrary, skillLibraryReceipt } from "./service.js";
+ import { captureSkillLibraryAccess } from "./store-access.js";
+ import type { SkillLibraryAuthority } from "./store.js";
+ 
+@@ -56,6 +56,7 @@ export async function importSkillLibrary(
+   params: SkillsLibraryImportParams,
+   options: OpenClawStateDatabaseOptions = {},
+ ) {
++  assertSkillLibraryPublicationEnabled();
+   const access = captureSkillLibraryAccess(authority, options);
+   await access.read("profile", undefined);
+   return withTempWorkspace(
+@@ -87,6 +88,7 @@ export async function uploadSkillLibrary(
+   params: SkillsLibraryUploadParams,
+   options: OpenClawStateDatabaseOptions = {},
+ ): Promise<SkillsLibraryUploadResult> {
++  assertSkillLibraryPublicationEnabled();
+   const access = captureSkillLibraryAccess(authority, options);
+   if (params.action !== "commit") {
+     return access.write("skillLibrary.upload", { params });
+diff --git a/src/skills/library/service.test.ts b/src/skills/library/service.test.ts
+index 1fbac32..d3070b1 100644
+--- a/src/skills/library/service.test.ts
++++ b/src/skills/library/service.test.ts
+@@ -25,6 +25,7 @@ import { buildWorkspaceSkillCommandSpecs as buildCommandSpecs } from "../discove
+ import { buildSkillSnapshot as buildSnapshot } from "../loading/workspace-skill-prompt.js";
+ import { SkillLibraryError } from "../skill-library-error.js";
+ import { skillLibraryRevisionDir as revisionDir } from "./bundle.js";
++import { importSkillLibrary } from "./import.js";
+ import { loadSkillLibrarySelection as loadSelection } from "./selection.js";
+ import {
+   content,
+@@ -49,6 +50,35 @@ async function selectedFixture() {
+   return { ...context, pins: await context.lib.seed() };
+ }
+ 
++it("keeps the published personal revision when managed mode blocks new skill bytes", async () => {
++  const { alice, options, lib, saved } = await publishedFixture();
++  const current = (await lib.revise(saved, content + "\nAccepted revision")).entry;
++  await withEnvAsync({ OPENCLAW_DISABLE_SKILL_INSTALLS: "1" }, async () => {
++    await expectCode(lib.save(draft("new-skill")), "POLICY_BLOCKED");
++    await expectCode(lib.revise(current, content + "\nChanged"), "POLICY_BLOCKED");
++    await expectCode(
++      lib.mutate({
++        action: "rollback",
++        skillId: saved.skillId,
++        expectedRevision: current.revision,
++        revision: saved.revision,
++      }),
++      "POLICY_BLOCKED",
++    );
++    await expectCode(
++      importSkillLibrary(
++        alice,
++        { slug: "new-skill", source: { kind: "clawhub", slug: "new-skill" } },
++        options,
++      ),
++      "POLICY_BLOCKED",
++    );
++    await expectCode(lib.begin(Buffer.from("archive"), "imported"), "POLICY_BLOCKED");
++    expect((await lib.seed()).map((pin) => pin.revision)).toEqual([current.revision]);
++    expect((await lib.read(saved.skillId)).content).toContain("Accepted revision");
++  });
++});
++
+ it.each([
+   ["heading", "# Friendly Title", "Friendly Title"],
+   ["metadata fallback", "Plain introduction", "Guide"],
+diff --git a/src/skills/library/service.ts b/src/skills/library/service.ts
+index 1b70ec1..cda573b 100644
+--- a/src/skills/library/service.ts
++++ b/src/skills/library/service.ts
+@@ -14,6 +14,7 @@ import {
+   assertSkillBundleHasNoLiteralSecrets,
+   scanSkillBundle,
+ } from "../security/skill-bundle-scan.js";
++import { skillInstallDisabledMessage } from "../lifecycle/install-mode.js";
+ import { SkillLibraryError } from "../skill-library-error.js";
+ import {
+   decodeSkillLibraryFile,
+@@ -76,12 +77,20 @@ export async function readSkillLibrary(
+   };
+ }
+ 
++export function assertSkillLibraryPublicationEnabled(): void {
++  const message = skillInstallDisabledMessage();
++  if (message) {
++    throw new SkillLibraryError("POLICY_BLOCKED", message);
++  }
++}
++
+ export async function saveSkillLibrary(
+   authority: SkillLibraryAuthority,
+   params: SkillsLibrarySaveParams,
+   options: OpenClawStateDatabaseOptions = {},
+   uploadId?: string,
+ ): Promise<SkillsLibraryReceipt> {
++  assertSkillLibraryPublicationEnabled();
+   if (!validateSkillsLibrarySaveParams(params)) {
+     throw new SkillLibraryError("INVALID_BUNDLE", "Invalid skill save parameters.");
+   }
+@@ -162,5 +171,8 @@ export async function mutateSkillLibrary(
+   params: SkillsLibraryMutateParams,
+   options: OpenClawStateDatabaseOptions = {},
+ ): Promise<SkillsLibraryReceipt> {
++  if (params.action === "rollback") {
++    assertSkillLibraryPublicationEnabled();
++  }
+   return captureSkillLibraryAccess(authority, options).write("skillLibrary.mutate", { params });
+ }
+diff --git a/src/skills/lifecycle/install-mode.ts b/src/skills/lifecycle/install-mode.ts
+new file mode 100644
+index 0000000..623f049
+--- /dev/null
++++ b/src/skills/lifecycle/install-mode.ts
+@@ -0,0 +1,9 @@
++import { isTruthyEnvValue } from "../../infra/env.js";
++
++/** The deployment sets this in the Gateway child after delivering its selected skills. */
++export function skillInstallDisabledMessage(): string | undefined {
++  if (isTruthyEnvValue(process.env.OPENCLAW_DISABLE_SKILL_INSTALLS)) {
++    return "Skill installation and publication are disabled on this managed Gateway.";
++  }
++  return undefined;
++}

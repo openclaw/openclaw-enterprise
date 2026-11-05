@@ -8031,6 +8031,9 @@ test(
     const source = await topology.request("GET", configPath);
     assert.equal(source.status, 200, JSON.stringify(source.error));
     const values = structuredClone(source.data.values);
+    // Permit uploaded archives in native config so the managed Gateway itself must refuse them.
+    (values.skills ??= {}).install ??= {};
+    values.skills.install.allowUploadedArchives = true;
     values.tools ??= {};
     values.tools.gatewayPolicy = {
       ...structuredClone(proof.effectivePolicy.gatewayPolicy),
@@ -8092,6 +8095,28 @@ test(
     client = await connectGateway();
     const currentConfig = await client.request("config.get", {});
     assert.deepEqual(currentConfig.config.tools.gatewayPolicy, values.tools.gatewayPolicy);
+    const slug = `managed-install-${randomUUID()}`;
+    const denied = {
+      code: "UNAVAILABLE",
+      message: "Skill installation and publication are disabled on this managed Gateway.",
+    };
+    await assert.rejects(
+      client.request("skills.upload.begin", { kind: "skill-archive", slug, sizeBytes: 1 }),
+      denied,
+    );
+    await assert.rejects(
+      client.request("skills.install", { agentId: "main", source: "clawhub", slug }),
+      denied,
+    );
+    const status = await client.request("skills.status", { agentId: "main", refresh: true });
+    assert.ok(!status.skills.some((skill) => skill.name === slug));
+    // Read the worker's actual workspace to catch publication even if discovery omits the skill.
+    await execPod(topology.harnessPod, topology.placement, [
+      "test",
+      "!",
+      "-e",
+      join(workspaceMountPath, "skills", slug),
+    ]);
     await assert.rejects(
       client.request("cron.run", { id: humanCommandJob.id, mode: "force" }),
       /OPENCLAW_DISABLE_CRON_HOST_EXECUTION/,

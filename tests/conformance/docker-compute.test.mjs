@@ -14,6 +14,7 @@ import {
   ComputeGatewaySettingError,
   ConfigurationHarnessError,
 } from "../../packages/occ/src/index.ts";
+import { gatewayRuntimeProvenance } from "../helpers/plugin-runtime.mjs";
 import { assertCleanupFailure } from "../helpers/compute-cleanup-failure.mjs";
 import { unreadableGatewayPasswordRefusal } from "../helpers/refusal-text.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
@@ -665,30 +666,53 @@ test("Docker prepares configuration before starting a managed Gateway", async ()
   const program = inflateRawSync(Buffer.from(body.Cmd.slice(2).join(""), "base64")).toString();
   const nativeRequire = createRequire(import.meta.url);
   const events = [];
-  runInNewContext(program, {
-    process: { env: { ...environment }, on() {} },
-    require(specifier) {
-      if (specifier === "node:fs") {
-        return {
-          chmodSync() {},
-          mkdirSync() {},
-          readdirSync: () => [],
-          writeFileSync(path) {
-            events.push({ path });
-          },
-        };
-      }
-      if (specifier === "node:child_process") {
-        return {
-          spawn(_command, args, { env }) {
-            events.push({ args: [...args], env });
-            return { on() {} };
-          },
-        };
-      }
-      return nativeRequire(specifier);
-    },
-  });
+  const errors = [];
+  const run = (provenance) =>
+    runInNewContext(program, {
+      process: { env: { ...environment }, on() {} },
+      setInterval() {},
+      console: {
+        error(message) {
+          errors.push(message);
+        },
+      },
+      require(specifier) {
+        if (specifier === "node:fs") {
+          return {
+            chmodSync() {},
+            mkdirSync() {},
+            readdirSync: () => [],
+            readFileSync(path) {
+              assert.equal(path, "/opt/oce/runtime/provenance.json");
+              return provenance;
+            },
+            writeFileSync(path) {
+              events.push({ path });
+            },
+          };
+        }
+        if (specifier === "node:child_process") {
+          return {
+            spawn(_command, args, { env }) {
+              events.push({ args: [...args], env });
+              return { on() {} };
+            },
+          };
+        }
+        return nativeRequire(specifier);
+      },
+    });
+  // Same OpenClaw commit, built before the OCE managed skill control was added.
+  const { patches, ...olderImage } = JSON.parse(gatewayRuntimeProvenance);
+  assert.ok(patches);
+  run(JSON.stringify(olderImage));
+  assert.equal(
+    events.some((event) => event.args),
+    false,
+  );
+  assert.match(errors.at(-1), /requires an OCE runtime image that enforces skill/);
+  events.length = 0;
+  run(gatewayRuntimeProvenance);
   assert.equal(events.length, 2);
   const [configWrite, gatewayLaunch] = events;
   assert.equal(configWrite.path, environment.OPENCLAW_CONFIG_PATH);
@@ -701,6 +725,7 @@ test("Docker prepares configuration before starting a managed Gateway", async ()
   assert.equal(gatewayLaunch.env.OPENCLAW_CONFIG_READONLY, "1");
   assert.equal(gatewayLaunch.env.OPENCLAW_DISABLE_GATEWAY_LOCAL_TERMINALS, "1");
   assert.equal(gatewayLaunch.env.OPENCLAW_DISABLE_CRON_HOST_EXECUTION, "1");
+  assert.equal(gatewayLaunch.env.OPENCLAW_DISABLE_SKILL_INSTALLS, "1");
   // OCE replaces the Gateway image to upgrade it: OpenClaw runs no update check or
   // install count request of its own (finding 2779).
   assert.equal(gatewayLaunch.env.OPENCLAW_NO_AUTO_UPDATE, "1");

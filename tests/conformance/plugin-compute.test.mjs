@@ -40,7 +40,6 @@ import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts
 import { validateConfigurationSettings } from "../../packages/occ/src/configuration-settings.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
 import { MAX_TIMER_DELAY_MS } from "../../packages/utils/src/index.ts";
-import { readOpenclawSource } from "../../scripts/lib/openclaw-source.mjs";
 
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { pluginPolicyListRefusal } from "../helpers/refusal-text.mjs";
@@ -51,7 +50,7 @@ import {
   invalidGatewayConfigurationLine,
   invalidGatewayConfigurationSecret,
 } from "../helpers/openclaw-config-validation.mjs";
-import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
+import { gatewayRuntimeProvenance, runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { waitForResult } from "../helpers/wait-for.mjs";
 
@@ -64,10 +63,6 @@ const CODEX_ASANA_REMOTE_ID = "plugin_asdk_app_asana";
 const CODEX_ASANA_APP_ID = "asdk_app_asana";
 const PLUGIN_APP_SERVER_TOKEN_DOMAIN = "openclaw-plugin-runtime/app-server-token/v1";
 const nodeRequire = createRequire(import.meta.url);
-const gatewayRuntimeProvenance = JSON.stringify({
-  source: "https://github.com/openclaw/openclaw",
-  commit: (await readOpenclawSource()).commit,
-});
 
 function plain(value) {
   return JSON.parse(JSON.stringify(value));
@@ -4560,6 +4555,7 @@ test("Codex gateway supervisor keeps managed-mode restrictions when respawning f
     assert.equal(child.env.OPENCLAW_CONFIG_READONLY, "1");
     assert.equal(child.env.OPENCLAW_DISABLE_GATEWAY_LOCAL_TERMINALS, "1");
     assert.equal(child.env.OPENCLAW_DISABLE_CRON_HOST_EXECUTION, "1");
+    assert.equal(child.env.OPENCLAW_DISABLE_SKILL_INSTALLS, "1");
     assert.deepEqual(child.config.tools.gatewayPolicy.automations, {
       scope: "caller",
       allowCommandJobs: false,

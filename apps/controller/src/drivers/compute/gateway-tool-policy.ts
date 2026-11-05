@@ -156,6 +156,8 @@ const GATEWAY_LOCAL_CODEX_DYNAMIC_TOOLS = [
 // Reviewed core, automation and Codex adapter enforcement. Update together
 // with the runtime source pin and archive provenance.
 export const GATEWAY_TOOL_POLICY_SOURCE_COMMIT = "513c12703ad9a9161cc123e0b8ed4ecb811aa6b3";
+const GATEWAY_MANAGED_SKILLS_PATCH_SHA256 =
+  "1e19885e42f6958244de9ef563f6223b5599a062c82569e793c9f554f7e4207f";
 
 type SettingError = (setting: string, requirement: string) => Error;
 
@@ -396,20 +398,24 @@ const GATEWAY_ACTION_TOOLS = ${JSON.stringify(GATEWAY_ACTION_TOOLS)};
 const GATEWAY_LOCAL_CODEX_DYNAMIC_TOOLS = ${JSON.stringify(GATEWAY_LOCAL_CODEX_DYNAMIC_TOOLS)};
 const managedGatewayConfiguration = ${managedGatewayConfiguration.toString()};
 class GatewayToolPolicyError extends Error {
-  constructor() {
-    super("The dedicated Gateway cannot apply its required tool policy. It remains unready; use the supporting OCE runtime image and a valid Gateway tool allowlist.");
+  constructor(message) {
+    super(message ?? "The dedicated Gateway cannot apply its required tool policy. It remains unready; use the supporting OCE runtime image and a valid Gateway tool allowlist.");
   }
 }
-function requireGatewayToolPolicyRuntime() {
+function requireGatewayPolicyRuntime(managedMode) {
   try {
     const provenance = JSON.parse(pluginReadFileSync("/opt/oce/runtime/provenance.json", "utf8"));
-    if (provenance.source !== "https://github.com/openclaw/openclaw" ||
-        provenance.commit !== ${JSON.stringify(GATEWAY_TOOL_POLICY_SOURCE_COMMIT)}) {
-      throw new GatewayToolPolicyError();
+    if (provenance.source === "https://github.com/openclaw/openclaw" &&
+        provenance.commit === ${JSON.stringify(GATEWAY_TOOL_POLICY_SOURCE_COMMIT)} &&
+        (!managedMode || provenance.patches?.["openclaw-managed-skill-installs.patch"] === ${JSON.stringify(GATEWAY_MANAGED_SKILLS_PATCH_SHA256)})) {
+      return;
     }
   } catch {
-    throw new GatewayToolPolicyError();
+    // Missing or unreadable image provenance cannot establish the required controls.
   }
+  throw new GatewayToolPolicyError(managedMode
+    ? "The managed Gateway requires an OCE runtime image that enforces skill installation and publication controls."
+    : undefined);
 }
 // OpenClaw refuses to read its configuration while an earlier Gateway process may still own
 // the state: after an unclean exit, a restarted container runs in a new PID namespace and
