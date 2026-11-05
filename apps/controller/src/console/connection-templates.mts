@@ -16,6 +16,7 @@ import {
 } from "./oauth-client-registration.mjs";
 import { button, element, field, validateFields } from "./dom.mjs";
 import { resourceActionIcon } from "./resource-actions.mjs";
+import { oauthDeleteButton } from "./oauth-deletion.mjs";
 import type { ConsolePageContext } from "./page-context.mjs";
 
 type Context = Pick<ConsolePageContext, "request" | "isCurrent">;
@@ -218,7 +219,12 @@ export function renderConnectionTemplates(
               { className: "hint" },
               `${scope} · Version ${template.current.version} · ${client?.displayName ?? "No OAuth client assigned"}`,
             ),
-            button(`Edit ${template.displayName}`, () => edit(template), { size: "sm" }),
+            element(
+              "div",
+              { className: "resource-row-actions" },
+              button(`Edit ${template.displayName}`, () => edit(template), { size: "sm" }),
+              oauthDeleteButton(context, "connection template", template, scope, refresh, create),
+            ),
           ),
         );
       }

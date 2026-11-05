@@ -73,7 +73,7 @@ export function createConnectionTemplateFixture(
       createdAt,
     },
   });
-  const oauthClients: object[] =
+  const oauthClients: Record<string, unknown>[] =
     mode === "ready"
       ? [
           {
@@ -88,6 +88,7 @@ export function createConnectionTemplateFixture(
           },
         ]
       : [];
+  const previousVersions: Record<string, unknown>[] = [];
   return (path: string, method: string, body: unknown): Response | undefined => {
     if (path === "/connection-templates" && method === "GET") {
       return response(oauthTemplates);
@@ -96,6 +97,38 @@ export function createConnectionTemplateFixture(
       return response(oauthClients, 200, undefined, {
         redirectUri: "https://console.example.com/oauth/callback",
       });
+    }
+    if (method === "DELETE" && path.startsWith("/connection-templates/")) {
+      const index = oauthTemplates.findIndex((t) => path === "/connection-templates/" + t.id);
+      if (index === -1) {
+        return error(404, "NOT_FOUND", "The connection template does not exist.");
+      }
+      oauthTemplates.splice(index, 1);
+      return new Response(null, { status: 204 });
+    }
+    if (method === "DELETE" && path.startsWith("/oauth-clients/")) {
+      const index = oauthClients.findIndex((client) => path === "/oauth-clients/" + client.id);
+      if (index === -1) {
+        return error(404, "NOT_FOUND", "The OAuth client does not exist.");
+      }
+      const client = oauthClients[index]!;
+      if (
+        oauthTemplates.some(
+          (t) =>
+            (isRecord(t.current) && t.current.oauthClientId === client.id) ||
+            previousVersions.some(
+              (version) => version.templateId === t.id && version.oauthClientId === client.id,
+            ),
+        )
+      ) {
+        return error(
+          409,
+          "RESOURCE_STATE_CONFLICT",
+          "A template version still references this OAuth client.",
+        );
+      }
+      oauthClients.splice(index, 1);
+      return new Response(null, { status: 204 });
     }
     if (mode && isRecord(body)) {
       const observed = {
@@ -152,6 +185,7 @@ export function createConnectionTemplateFixture(
           return error(404, "RESOURCE_NOT_FOUND", "Connection template unavailable.");
         }
         const { displayName, ...config } = body;
+        previousVersions.push(template.current);
         template.displayName = displayName;
         template.current = {
           ...config,

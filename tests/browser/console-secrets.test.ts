@@ -403,6 +403,98 @@ test("registering a provider-issued client uses a saved or newly created templat
   assert.equal(await page.getByRole("button", { name: "Register OAuth client" }).count(), 0);
 });
 
+test("deleting a template and client targets the selected availability and preserves referenced clients", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Customer support");
+  selectTemplateDrivers(fixture.controller);
+  const google = (await fixture.request("GET", "/connection-templates")).data.find(
+    (template: { displayName: string }) => template.displayName === "Google OAuth",
+  );
+  assert.ok(google);
+  const { issuer, authorizationUrl, tokenUrl, destinations } = google.current;
+  const local = await fixture.request("POST", "/connection-templates", {
+    body: {
+      namespaceId: namespace.id,
+      displayName: google.displayName,
+      mode: "manual",
+      issuer,
+      authorizationUrl,
+      tokenUrl,
+      scopes: [],
+      destinations,
+    },
+  });
+  assert.equal(local.status, 201);
+  // Both rows have the same visible name. Only their availability and resource IDs distinguish them.
+  async function register(templateId: string) {
+    const result = await fixture.request("POST", "/oauth-clients", {
+      body: {
+        connectionTemplateId: templateId,
+        connectionTemplateVersion: 1,
+        displayName: "Google app",
+        clientId: "google-app",
+        tokenEndpointAuthMethod: "none",
+      },
+    });
+    assert.equal(result.status, 201);
+    return result.data.id as string;
+  }
+  const clientId = await register(google.id);
+  await register(local.data.id);
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, secretsUrl(namespace));
+  const sections = page.getByRole("navigation", { name: "Credential sections" });
+  await sections.getByRole("link", { name: "OAuth clients", exact: true }).click();
+  const button = (name: string) => page.getByRole("button", { name, exact: true });
+  const removeClient = button("Delete Google app (Installation-wide)");
+  const removeTemplate = button("Delete Google OAuth (Installation-wide)");
+  const clientDialog = dialog(page, "Delete OAuth client");
+  const templateDialog = dialog(page, "Delete connection template");
+  const requests = apiRequests(page, fixture.origin);
+  await removeClient.click();
+  assert.match(await clientDialog.innerText(), /Installation-wide/);
+  await clientDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  assert.deepEqual(
+    requests.filter(({ method }) => method === "DELETE"),
+    [],
+  );
+
+  await removeClient.click();
+  const clientUrl = fixture.origin + "/oauth-clients/" + clientId;
+  const refused = responseTo(page, "DELETE", clientUrl);
+  await clientDialog.getByRole("button", { name: "Delete OAuth client", exact: true }).click();
+  assert.equal((await refused).status(), 409);
+  await clientDialog.getByText(/template version still references this OAuth client/i).waitFor();
+  await clientDialog.getByRole("button", { name: "Close", exact: true }).click();
+  await removeClient.waitFor();
+
+  await sections.getByRole("link", { name: "Connection templates", exact: true }).click();
+  await removeTemplate.click();
+  assert.match(await templateDialog.innerText(), /Google OAuth/);
+  assert.match(await templateDialog.innerText(), /Installation-wide/);
+  const deletedTemplate = responseTo(
+    page,
+    "DELETE",
+    fixture.origin + "/connection-templates/" + google.id,
+  );
+  await templateDialog
+    .getByRole("button", { name: "Delete connection template", exact: true })
+    .click();
+  assert.equal((await deletedTemplate).status(), 204);
+  await page.getByText("Deleted Google OAuth.", { exact: true }).waitFor();
+  await page.reload();
+  await button("Delete Google OAuth (Namespace · Customer support)").waitFor();
+  assert.equal(await removeTemplate.count(), 0);
+
+  await sections.getByRole("link", { name: "OAuth clients", exact: true }).click();
+  await removeClient.click();
+  const deletedClient = responseTo(page, "DELETE", clientUrl);
+  await clientDialog.getByRole("button", { name: "Delete OAuth client", exact: true }).click();
+  assert.equal((await deletedClient).status(), 204);
+  await page.getByText("Deleted Google app.", { exact: true }).waitFor();
+  await button("Delete Google app (Namespace · Customer support)").waitFor();
+  assert.equal(await removeClient.count(), 0);
+});
+
 test("a lost template creation response closes registration and reloads the committed template", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Registration recovery");
   const { page } = await newPage(t, fixture, { browser });
