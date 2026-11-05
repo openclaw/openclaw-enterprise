@@ -1417,11 +1417,11 @@ test("Settings inspects nested Driver fields and the same JSON without changing 
   );
 });
 
-// Settings shows the Installation Driver configuration heading while its configuration read is still in
-// flight. An administrator's Settings page has settled once the values are listed; a revoke
-// before then reaches that read and the API refuses and audits it (finding 2654).
+// Settle all the Installation reads on Settings before revoking the administrator. A pending
+// template, OAuth client, or Driver configuration read would exercise a different race.
 async function waitForDriverConfigurations(page: Page) {
   await page.getByText(/^Inspect startup values accepted by the selected Drivers\./).waitFor();
+  await waitForIdleFetches(page);
 }
 
 // Finding D760. An administrator revoked while signed in keeps the tab's settled answer, so the
@@ -1456,7 +1456,7 @@ test("Installation-administration reads after a revoke are refused and audited o
   const adminDenials = () =>
     authorizationDenials(
       fixture.auditSink,
-      /^openclaw\.(observability|backends|iam|secrets|installation)\./,
+      /^openclaw\.(observability|backends|iam|secrets|installation|connection_templates|oauth_clients)\./,
     );
   const settingsUrl = `${fixture.origin}/console/settings?namespace=${namespace.id}`;
   const agentUrl = String(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
@@ -1481,6 +1481,15 @@ test("Installation-administration reads after a revoke are refused and audited o
       assert.equal(await driverSchemas.count(), 0);
       assert.equal(await page.getByRole("alert").count(), 0);
     },
+    templates: async () => {
+      const before = reads("/connection-templates") + reads("/oauth-clients");
+      await page.goto(`${fixture.origin}/console/credentials/connection-templates`);
+      await page
+        .getByRole("heading", { name: "Installation administrator access required" })
+        .waitFor();
+      assert.equal(await page.getByRole("link", { name: "Connection templates" }).count(), 0);
+      assert.equal(reads("/connection-templates") + reads("/oauth-clients"), before);
+    },
     backends: async () => {
       const refused = reads("/backends");
       await page.goto(`${fixture.origin}/console/backends?namespace=${namespace.id}`);
@@ -1504,7 +1513,7 @@ test("Installation-administration reads after a revoke are refused and audited o
     await pages[first]();
     assert.equal(await observability.count(), 0, first);
     assert.equal(adminDenials().length, round + 1, first);
-    for (const other of ["access", "agent", "settings", "backends"] as const) {
+    for (const other of ["access", "agent", "settings", "backends", "templates"] as const) {
       await pages[other]();
     }
     assert.equal(adminDenials().length, round + 1, first);

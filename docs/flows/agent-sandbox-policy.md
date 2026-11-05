@@ -266,9 +266,10 @@ the policy read, only the network policy card states it; the suggestions card is
   `pending` or `failed` never establishes a successful retry.
 - Compare the application revision with the active Agent revision and inspect
   attributable audit evidence before retrying a stale or unconfirmed request.
-- [PostgreSQL admission integration](../../tests/integration/postgres-agent-sandbox-policy.test.mjs)
-  exercises HTTP/IAM/storage; the [public egress runtime lane](../testing/public-egress.md)
-  owns real enforcement proof. Storybook proves simulated presentation only.
+- [PostgreSQL integration](../../tests/integration/postgres-agent-sandbox-policy.test.mjs)
+  exercises HTTP/IAM/storage. [OpenShell](../../tests/helpers/openshell-sandbox-workflows.mjs)
+  and [public egress](../testing/public-egress.md) lanes own enforcement proof.
+  Storybook proves simulated presentation only.
 - [Console batch browser tests](../../tests/browser/console-policy-denials.test.ts)
   cover selection across pages, stable Follow, deduplication, preservation of saved
   rules, and ceiling rejection through real controller routes. They use in-memory

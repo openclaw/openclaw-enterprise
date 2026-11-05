@@ -23,6 +23,7 @@
 - [Service accounts](#service-accounts)
 - [Service account credentials](#service-account-credentials)
 - [Backends](#backends)
+- [Connections](#connections)
 - [Credential sources](#credential-sources)
 - [Presets](#presets)
 
@@ -205,6 +206,19 @@
 ### Backends
 
 - [`listBackends`](../api.md#get-backends): List configured Backends (experimental).
+
+### Connections
+
+- [`listConnectionTemplates`](../api.md#get-connectiontemplates): List all Installation-wide and Namespace-scoped connection templates.
+- [`listOAuthClients`](../api.md#get-oauthclients): List registered OAuth clients.
+- [`getConnectionTemplate`](../api.md#get-connectiontemplatesconnectiontemplateid): Get one connection template.
+- [`createConnectionTemplate`](../api.md#post-connectiontemplates): Create an Installation-wide or Namespace-scoped connection template.
+- [`createOAuthClient`](../api.md#post-oauthclients): Register an OAuth client from a connection template.
+- [`updateConnectionTemplate`](../api.md#patch-connectiontemplatesconnectiontemplateid): Rename a connection template, or create a version with new approved values.
+- [`discoverConnectionTemplate`](../api.md#post-connectiontemplatesdiscover): Read public MCP resource and authorization server metadata.
+- [`rotateOAuthClientSecret`](../api.md#post-oauthclientsoauthclientidrotatesecret): Rotate an OAuth client secret.
+- [`deleteConnectionTemplate`](../api.md#delete-connectiontemplatesconnectiontemplateid): Delete a connection template.
+- [`deleteOAuthClient`](../api.md#delete-oauthclientsoauthclientid): Delete an unused OAuth client.
 
 ### Credential sources
 

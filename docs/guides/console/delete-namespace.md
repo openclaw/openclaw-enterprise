@@ -24,9 +24,11 @@ Restriction. Ask whoever manages IAM Restrictions to lift it.
    row disappears and a success message appears. If it was selected, the Console
    chooses another readable Namespace, or clears the selection when none remain.
 
-If the outcome is unknown, select **Refresh status** before deciding to try
-again. The Console does not repeat an unconfirmed write automatically. If access
-is refused, it reports the access change without claiming deletion succeeded.
+If a status check fails while the deletion confirmation is open, the confirmation
+closes. If the status or outcome is unknown, select **Refresh status**. After the
+check succeeds, open a new confirmation if deletion is still available. The Console
+does not repeat an unconfirmed write automatically. If access is refused, it
+reports the access change without claiming deletion succeeded.
 
 If cleanup does not finish, ask an operator to check teardown. After the cause
 is resolved, select **Request deletion again** and confirm. The API enforces

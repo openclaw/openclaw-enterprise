@@ -59,3 +59,24 @@ Correct the field to `[]` or `["keep-plugin"]`, or remove it. Retry the switch
 and select `gpt-6-sol`, then `gpt-6-luna`. Check the JSON primary model and confirm
 that whole plugin entries remain. Repeat at 1440 px and 390 px. Do not create an
 Agent. Capture the error and successful retry; this is simulated UI evidence only.
+
+## Correct an out-of-range Configuration number
+
+Open **Pages → Agent detail → Invalid Configuration JSON**
+(`invalidConfiguration`) and **Pages → Create Agent → Invalid Configuration JSON**
+(`createInvalidConfiguration`). Check their initial syntax errors first. Follow
+each story's review steps to restore the complete document, then set
+`plugins.entries.knowledge` to
+`{"enabled":true,"config":{"thresholds":[1,1e400,3]}}`, preserving the other settings.
+
+The nested array has valid JSON syntax, but `1e400` is outside the supported
+number range. Select **Save Configuration** or **Create Agent**. The error under
+the editor must read: “A number is too large or too small to save. Use a number
+closer to zero.” Check editor focus, exact draft retention, and no write. In
+Create Agent, select **Enter model ID manually** if a model list is shown.
+Change **Model ID** and leave the field: the rejected JSON must remain unchanged.
+Restore the original Model ID before retrying.
+
+Replace only `1e400` with `2`. Save or create, then inspect the Configuration for
+`[1,2,3]`. Capture the rejection and successful correction. These stories use
+simulated saves; they do not prove Controller persistence or runtime behavior.

@@ -158,6 +158,9 @@ function catalogAtMigrationCount(count, completedCount) {
     return "preAgentPluginDriver";
   }
   if (count === 68 && completedCount > 68) {
+    return "preConnectionTemplates";
+  }
+  if (count === 69 && completedCount > 69) {
     return "preNetworkEgressMode";
   }
   if (count === completedCount) {

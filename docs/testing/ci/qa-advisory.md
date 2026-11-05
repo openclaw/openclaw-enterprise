@@ -11,9 +11,9 @@ last_verified: "2026-11-04"
 
 QA Matrix Advisory is one workflow with three groups of test jobs:
 
-- **QA matrix:** Codex model responses, Calendar access, and Console Secrets on
-  Compose and Kubernetes installations.
-- **OpenShell:** five parallel jobs for sandbox policy, credentials, plugins,
+- **QA matrix:** Console Secret management with Standard Codex Agents on Compose
+  and Kubernetes installations.
+- **OpenShell:** ten jobs with at most ten running at once for sandbox policy, credentials, plugins,
   installation, and Agent redeployment.
 - **Local installation:** the hosted local setup tests.
 
@@ -63,11 +63,10 @@ is in the [QA manifest](../../../scripts/ci/test-suites/qa-matrix.json).
 | ----------------------- | -------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `sandbox-policy`        | Yes — OpenShell jobs | Codex           | Discover and preview configuration, then apply, update, and withdraw OpenShell network policy in a prepared environment.                                   |
 | `plugin-install`        | Yes — OpenShell jobs | Codex           | Install a dedicated Codex plugin, find it after the Codex process restarts, then remove it from the Agent selection.                                       |
-| `model-ui`              | Yes (Codex)          | OpenClaw, Codex | Real model turn and native browser response.                                                                                                               |
+| `model-ui`              | No                   | OpenClaw        | Real model turn and native browser response.                                                                                                               |
 | `console-secrets`       | Yes (Codex)          | OpenClaw, Codex | Create and manage Console Secrets referenced by Agent drafts. Refusing Namespace deletion identifies the deployed Agent and links to its cleanup controls. |
 | `git-write`             | No                   | OpenClaw, Codex | Clone, edit, commit, push to the run's granted branch, dispose credentials.                                                                                |
 | `git-push-denied`       | No                   | Codex           | Reject a push to any other branch and dispose credentials.                                                                                                 |
-| `calendar`              | Yes (Codex)          | Codex           | Successful Calendar read, approvals and tool restrictions.                                                                                                 |
 | `slack`                 | No                   | Codex           | Threaded reply and new root message.                                                                                                                       |
 | `openshell-linear-read` | No                   | Codex           | Opt-in shipped OpenShell setup, Linear installation and verified native read.                                                                              |
 | `public-egress`         | No                   | Codex           | Prepared Kubernetes Installation: public TCP, restricted control, and managed Git/model credential custody.                                                |
@@ -89,13 +88,9 @@ separately prepared Kubernetes Installation. Select `Codex` and `kubernetes`
 explicitly. Hosted advisory jobs do not supply its fresh credential custody,
 controlled public endpoint, or coordinated configuration rollout.
 
-`model-ui` checks the example console theme through sign-in and Agent use. On
-Kubernetes, dedicated Agents use `nativeAdmin: true` and must start with
-Configuration generation 1 and one revision before native browser chat.
-The optional OpenClaw cell also redeploys with a provider alias, the existing OCC
-Secret, and `OCE_MODEL_API_KEY`, then requires a real model turn. That cell is
-outside the scheduled Codex selection. Other scenarios do not require the theme
-or an extra API rollout.
+The OpenClaw `model-ui` case checks the example Console theme through sign-in
+and Agent use. It also redeploys the Agent with a provider alias, the existing OCC
+Secret, and `OCE_MODEL_API_KEY`, then requires a real model turn.
 
 ### OpenShell file coverage
 
@@ -105,7 +100,7 @@ on its own Ubuntu 24.04 VM, with a Landlock check, Docker daemon, cluster, and
 private state. These are parallel jobs within the same advisory run, named
 `QA advisory (OpenShell / <test-file-basename>)`.
 
-The selection job reads the five files in the
+The selection job reads the ten files in the
 [OpenShell manifest](../../../scripts/ci/test-suites/openshell.json). Each resulting
 job calls `run-ci-lane` with `lane: openshell` and its selected `test-file`. The
 `qa-openshell-compose` label selects only the first row below.
@@ -114,11 +109,19 @@ job calls `run-ci-lane` with `lane: openshell` and its selected `test-file`. The
 | -------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [Compose first Agent](../../../tests/integration/local-first-agent-openshell-real.test.mjs)        | Compose control plane with Kubernetes workloads: Agent deployment and reuse, key replacement denial, native redeployment, retained session/files, and required-worker execution. |
 | [OpenShell installation](../../../tests/integration/dev-up-openshell-k3d-real.test.mjs)            | Pinned OpenShell installation with Kubernetes-only and Compose control planes.                                                                                                   |
-| [Sandbox enforcement](../../../tests/integration/sandbox-driver-openshell-k3d-real.test.mjs)       | Provider credential delivery, authenticated Codex access, and Gateway tool policy during normal Agent work.                                                                      |
+| [Gateway tool policy](../../../tests/integration/openshell-gateway-tool-policy-real.test.ts)       | Gateway model tool restrictions, positive administrator controls, and policy replacement.                                                                                        |
+| [Credential lifecycle](../../../tests/integration/openshell-credentials-real.test.ts)              | Credential routing, replacement, non-model sources, and absence from Agent material.                                                                                             |
+| [Live credential withdrawal](../../../tests/integration/openshell-withdrawal-real.test.ts)         | Credential update, revocation without restarting the Harness, embedded refusal, and authenticated native policy scopes.                                                          |
+| [Upstream outages](../../../tests/integration/openshell-upstream-real.test.ts)                     | Untrusted model TLS, tool outages, and model provider outages with recovery.                                                                                                     |
+| [Gateway and OAuth recovery](../../../tests/integration/openshell-refresh-real.test.ts)            | Gateway restart, fresh OAuth minting, rotation, revocation, expiry, and source deletion.                                                                                         |
+| [Sandbox enforcement](../../../tests/integration/sandbox-driver-openshell-k3d-real.test.mjs)       | Provider credential delivery, authenticated Codex access, filesystem enforcement, and Agent network policy.                                                                      |
 | [Kubernetes first Agent](../../../tests/integration/local-first-agent-openshell-k3d-real.test.mjs) | The first-Agent and native redeployment workflow with the control plane in Kubernetes.                                                                                           |
 | [Codex plugin installation](../../../tests/integration/openshell-plugin-install-real.test.ts)      | Selected Codex plugin installation and retention through the OpenShell Agent workflow.                                                                                           |
 
 The runner requires the selected files' credentials, expected tests, and cleanup.
+Local installation also uses one runner per manifest file: input and network-policy
+refusals, Kubernetes and Compose profiles, and Keycloak sign-in and recovery.
+The six original installation cases remain required.
 A failed job does not cancel its peers. Hosted preparation builds first-Agent
 images from the current checkout using read-only caches. Local Setup then creates
 and cleans up each installation without duplicate clusters. See
@@ -141,7 +144,7 @@ To run the same coverage as the schedule, configure the
 gh workflow run qa-advisory.yml --repo openclaw/openclaw-enterprise --ref main
 ```
 
-This starts the QA matrix, all five OpenShell jobs, and local installation tests.
+This starts the QA matrix, all ten OpenShell jobs, and three local installation jobs.
 For only OpenShell, use [Full Integration](full-integration.md#run-a-protected-integration-lane)
 with `lane=openshell`.
 
@@ -182,13 +185,12 @@ and `certutil`. Store selected inputs in a private environment file. Credential
 files must be regular files without group/other permissions. Hosted settings
 are under [integration environments](configuration.md#environments).
 
-| Scenario/preset           | Inputs                                                                                                                                                                                 |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| OpenClaw model            | `OCC_TEST_QA_OPENAI_KEY_FILE`                                                                                                                                                          |
-| Codex, including Calendar | `OCC_TEST_QA_CODEX_TOKEN_FILE`: authorized service-account PAT                                                                                                                         |
-| Git                       | `OCC_TEST_QA_REPOSITORY_AUTHORIZED=1`, `OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY`, and `OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE` or absolute managed `OCC_TEST_QA_GITHUB_OBSERVER_BINARY` |
-| Calendar                  | `OCC_TEST_CODEX_CALENDAR_TOOL_NAME`, `OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT`: harmless read and successful-result pattern                                                              |
-| Slack                     | `OCC_TEST_QA_SLACK_APP_TOKEN_FILE`, `OCC_TEST_QA_SLACK_BOT_TOKEN_FILE`, `OCC_TEST_QA_SLACK_SENDER_TOKEN_FILE`, `OCC_TEST_QA_SLACK_CHANNEL_ID`                                          |
+| Scenario/preset | Inputs                                                                                                                                                                                 |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| OpenClaw model  | `OCC_TEST_QA_OPENAI_KEY_FILE`                                                                                                                                                          |
+| Codex           | `OCC_TEST_QA_CODEX_TOKEN_FILE`: authorized service-account PAT                                                                                                                         |
+| Git             | `OCC_TEST_QA_REPOSITORY_AUTHORIZED=1`, `OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY`, and `OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE` or absolute managed `OCC_TEST_QA_GITHUB_OBSERVER_BINARY` |
+| Slack           | `OCC_TEST_QA_SLACK_APP_TOKEN_FILE`, `OCC_TEST_QA_SLACK_BOT_TOKEN_FILE`, `OCC_TEST_QA_SLACK_SENDER_TOKEN_FILE`, `OCC_TEST_QA_SLACK_CHANNEL_ID`                                          |
 
 Slack sender and gateway bot must be distinct channel members; the sender needs
 post/history/reply access. Reserve the Socket Mode app for this run.
@@ -228,7 +230,7 @@ Missing, filtered, or interrupted tests are not passes.
 | --------------------------------------------------- | ----------------------------------------------------------------------------- |
 | QA matrix stages (`passed`, `failed`, or `blocked`) | `matrix.json` in `qa-advisory-<installation>-<run-id>-<attempt>`              |
 | OpenShell tests                                     | `qa-advisory-<test-file-basename>-openshell` (omit `.test.mjs` or `.test.ts`) |
-| Local installation tests                            | `qa-advisory-local-installation-dev-up-k3d`                                   |
+| Local installation tests                            | `qa-advisory-local-installation-<test-file-basename>-dev-up-k3d`              |
 
 Startup command failures report elapsed time, the configured limit, and the observed
 exit code or signal. `timed out` means the command deadline fired; a following
@@ -237,8 +239,16 @@ by itself identify a spontaneous CLI crash. Command arguments and protected outp
 remain private; the existing redacted failure detail is unchanged. The startup
 limit remains 1,100,000 ms.
 
+When available, `startup timings` in the failure message names a JSON file in the
+same artifact. It retains the last 64 recognized CLI timing records: stage,
+elapsed milliseconds, and failure status, plus the number of older records omitted.
+These describe completed commands, including commands that failed; they do not
+identify an unfinished command. Durations can overlap, so do not sum them as wall
+time. Unknown or malformed records and other stdout remain private. Commands with
+protected output produce no timing artifact.
+
 Artifacts expire after seven days. Each OpenShell job reports `scope: focused`
-because it runs one file; complete advisory OpenShell coverage requires all five
+because it runs one file; complete advisory OpenShell coverage requires all ten
 to pass.
 
 In `matrix.json`, `scope: full` means both installations and presets with the
