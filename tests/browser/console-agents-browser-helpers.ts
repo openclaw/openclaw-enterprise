@@ -74,7 +74,7 @@ import { AgentCallerPermissionsResponse } from "../../packages/contracts/src/api
 import { waitForIdleFetches } from "./console-fetch-accounting.ts";
 import { fulfillPatchedJson } from "./console-patched-response.ts";
 
-import { watchBrowserContext } from "../helpers/browser-failure-diagnostics.mjs";
+import { watchBrowserContext } from "../helpers/browser-failure-diagnostics.ts";
 import { keepRequestInterceptionEnabled } from "../helpers/browser-request-interception.mjs";
 import { memberRole } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
