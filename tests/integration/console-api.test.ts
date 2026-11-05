@@ -2,9 +2,13 @@ import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { request as httpRequest } from "node:http";
+import {
+  request as httpRequest,
+  type IncomingHttpHeaders,
+  type OutgoingHttpHeaders,
+} from "node:http";
 import { stripTypeScriptTypes } from "node:module";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
 
 import { assertApiError } from "../helpers/api-error.mjs";
@@ -24,16 +28,72 @@ import {
   setCookieHeaders,
 } from "../helpers/auth-session.mjs";
 
-const contract = JSON.parse(
-  await readFile(
-    new URL("../../packages/contracts/openapi/occ-api.openapi.json", import.meta.url),
-    "utf8",
-  ),
-);
+import { Check } from "typebox/value";
+import { Type, type TSchema } from "typebox";
+import {
+  type Permission,
+  type PermissionAction,
+  type ResourceKind,
+  type ResourceRef,
+  type SecretBinding,
+  type SecretBindings,
+} from "../../packages/contracts/src/index.ts";
+import { OpenClawController, type PlatformStateStore } from "../../packages/occ/src/index.ts";
+import {
+  AgentCallerPermissionsResponse,
+  AgentSecretPermissionsResponse,
+  NamespaceCallerPermissionsResponse,
+  NamespaceSecretPermissionsResponse,
+  NamespaceListResponse,
+  AgentListResponse,
+  ConfigurationResponse,
+  SecretDetailResponse,
+  SecretListResponse,
+  InstallationResponse,
+  AgentRevisionReadResponse,
+  type SecretWire,
+  type NamespaceWire,
+} from "../../packages/contracts/src/api/resources.ts";
+import { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
+import contract from "../../packages/contracts/openapi/occ-api.openapi.json" with { type: "json" };
+
+type Fixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
+type Session = Awaited<ReturnType<Fixture["signIn"]>>;
+type Grants = readonly (readonly [PermissionAction, ResourceKind])[];
+type Permissions =
+  readonly Permission[] | Partial<Record<ResourceKind, readonly PermissionAction[]>>;
+type InjectionResponse = Awaited<ReturnType<Fixture["app"]["inject"]>>;
+type Outage = Parameters<Fixture["withIamOutage"]>[0];
+type FixtureOptions = { wrapState?: (state: PlatformStateStore) => PlatformStateStore };
+
+// Check the original envelope without projecting away unexpected or private fields.
+function checkedResponse<T extends TSchema>(
+  fixture: Fixture,
+  result: { status: number; body: unknown },
+  schema: T,
+  status = 200,
+) {
+  return fixture.fixtureResponse(result, status, schema, "Console API");
+}
+
+function errorBody(text: string) {
+  const body: unknown = JSON.parse(text);
+  assert.ok(Check(ErrorResponse, body));
+  return body;
+}
+
+const responseMapSchema = Type.Record(Type.String(), Type.Unknown());
+const operationSchema = Type.Object({
+  operationId: Type.String(),
+  responses: responseMapSchema,
+});
+
 const UNTRUSTED_ORIGIN_MESSAGE =
   "A trusted browser origin is required: session-cookie requests that change state must come from the console and send its Origin header.";
 
-function noSecretProviderFields(backend) {
+function noSecretProviderFields(backend: unknown) {
+  assert.ok(typeof backend === "object" && backend !== null);
+  assert.ok("id" in backend && "type" in backend);
   assert.deepEqual(Object.keys(backend).sort(), ["id", "type"]);
   assert.equal(typeof backend.id, "string");
   assert.equal(backend.type, "chatgpt");
@@ -45,8 +105,12 @@ test("console Backend API returns only safe Installation-admin summaries", async
 
   const backends = await fixture.request("GET", "/backends");
   assert.equal(backends.status, 200);
-  assert.deepEqual(backends.data, [{ id: backendFixtures[0].id, type: "chatgpt" }]);
-  backends.data.forEach(noSecretProviderFields);
+  const backend = backendFixtures[0];
+  assert.ok(backend);
+  assert.deepEqual(backends.data, [{ id: backend.id, type: "chatgpt" }]);
+  const backendData: unknown = backends.data;
+  assert.ok(Array.isArray(backendData));
+  backendData.forEach(noSecretProviderFields);
   assert.doesNotMatch(JSON.stringify(backends.body), /apiKey|workspaceId|credential|drivers|path/i);
 
   const emptyFixture = await createConsoleAppFixture(t, { backends: [] });
@@ -61,7 +125,10 @@ test("console Backend API returns only safe Installation-admin summaries", async
   await unavailableFixture.bootstrap("Console unavailable Backend Installation");
   const unavailable = await unavailableFixture.request("GET", "/backends");
   assert.equal(unavailable.status, 503);
-  assert.equal(unavailable.body.error.code, "DEPENDENCY_UNAVAILABLE");
+  assert.equal(
+    checkedResponse(unavailableFixture, unavailable, ErrorResponse, 503).error.code,
+    "DEPENDENCY_UNAVAILABLE",
+  );
 });
 
 test("observability destination requires Installation administration", async (t) => {
@@ -110,7 +177,9 @@ test("console collection APIs keep exact Namespace and Agent IAM boundaries", as
   });
   assert.equal(visibleNamespaces.status, 200);
   assert.deepEqual(
-    visibleNamespaces.data.map((namespace) => namespace.id),
+    checkedResponse(fixture, visibleNamespaces, NamespaceListResponse).data.map(
+      (namespace) => namespace.id,
+    ),
     [alpha.id],
   );
 
@@ -118,11 +187,12 @@ test("console collection APIs keep exact Namespace and Agent IAM boundaries", as
     session: limitedSession,
   });
   assert.equal(visibleAgents.status, 200);
+  const visibleAgentData = checkedResponse(fixture, visibleAgents, AgentListResponse).data;
   assert.deepEqual(
-    visibleAgents.data.map((agent) => agent.id),
+    visibleAgentData.map((agent) => agent.id),
     [alphaAgent.id],
   );
-  assert.equal(visibleAgents.data[0].name, alphaAgent.name);
+  assert.equal(visibleAgentData[0]?.name, alphaAgent.name);
 
   const hiddenAgents = await fixture.request("GET", `/namespaces/${beta.id}/agents`, {
     session: limitedSession,
@@ -184,9 +254,9 @@ test("the Namespace Secret create answer matches what Secret creation checks", a
   const answer = async () => {
     const summary = await fixture.request("GET", permissionsPath, { session });
     assert.equal(summary.status, 200);
-    return summary.data;
+    return checkedResponse(fixture, summary, NamespaceCallerPermissionsResponse).data;
   };
-  const create = (name) =>
+  const create = (name: string) =>
     fixture.request("POST", secretsPath, { session, body: { name, value: "synthetic-value" } });
 
   assert.deepEqual(await answer(), {
@@ -215,15 +285,21 @@ test("the Namespace Secret create answer matches what Secret creation checks", a
 // each step proves it against the real GET /backends.
 test("the Namespace Installation administer answer matches what Installation-wide reads check", async (t) => {
   const fixture = await createConsoleAppFixture(t);
-  const installation = await fixture.bootstrap();
+  const installation: unknown = await fixture.bootstrap();
+  assert.ok(Check(InstallationResponse.properties.data, installation));
   const namespace = await fixture.createNamespace("Administer answer", { ready: true });
   const permissionsPath = `/namespaces/${namespace.id}/permissions`;
-  const answer = async (session) => {
-    const summary = await fixture.request("GET", permissionsPath, { session });
+  const answer = async (session?: Session) => {
+    const summary = await fixture.request(
+      "GET",
+      permissionsPath,
+      session === undefined ? {} : { session },
+    );
     assert.equal(summary.status, 200);
-    return summary.data;
+    return checkedResponse(fixture, summary, NamespaceCallerPermissionsResponse).data;
   };
-  const backends = (session) => fixture.request("GET", "/backends", { session });
+  const backends = (session?: Session) =>
+    fixture.request("GET", "/backends", session === undefined ? {} : { session });
   const denials = () => authorizationDenials(fixture.auditSink);
 
   // A member with Namespace-wide Agent create does not administer the Installation.
@@ -268,13 +344,16 @@ test("the Secret read's caller answer matches what Secret replace and delete che
   const namespace = await fixture.createNamespace("Secret write answer", { ready: true });
   const secret = await fixture.createSecret(namespace.id, "Answered token", "synthetic-value");
   const secretPath = `/namespaces/${namespace.id}/secrets/${secret.id}`;
-  const answer = async (session) => {
-    const read = await fixture.request("GET", secretPath, { session });
+  const answer = async (session?: Session) => {
+    const read = await fixture.request("GET", secretPath, session === undefined ? {} : { session });
     assert.equal(read.status, 200);
-    return read.data.callerPermissions;
+    return checkedResponse(fixture, read, SecretDetailResponse).data.callerPermissions;
   };
-  const replace = (session) =>
-    fixture.request("PATCH", secretPath, { session, body: { value: "synthetic-rotated" } });
+  const replace = (session?: Session) =>
+    fixture.request("PATCH", secretPath, {
+      ...(session === undefined ? {} : { session }),
+      body: { value: "synthetic-rotated" },
+    });
   const denials = () => authorizationDenials(fixture.auditSink);
 
   // A reader may neither replace nor delete; a false answer is not an attempted operation.
@@ -323,16 +402,20 @@ test("the Agent readLogs answer matches what the runtime log read checks", async
   const agent = await fixture.createAgent(namespace.id, "Log text agent");
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
-  const readLogs = async (session) => {
-    const summary = await fixture.request("GET", `${agentPath}/permissions`, { session });
+  const readLogs = async (session?: Session) => {
+    const summary = await fixture.request(
+      "GET",
+      `${agentPath}/permissions`,
+      session === undefined ? {} : { session },
+    );
     assert.equal(summary.status, 200);
-    return summary.data.readLogs;
+    return checkedResponse(fixture, summary, AgentCallerPermissionsResponse).data.readLogs;
   };
-  const logRead = (session) =>
+  const logRead = (session?: Session) =>
     fixture.request(
       "GET",
       `${agentPath}/deployments/${active.revision.id}/runtime/logs?source=gateway`,
-      { session },
+      session === undefined ? {} : { session },
     );
   const denials = () =>
     authorizationDenials(fixture.auditSink, "openclaw.agents.runtime_logs.view");
@@ -413,7 +496,7 @@ test("caller permission summaries report primary IAM decisions without authorizi
     [["read", "namespace"]],
   );
   // Each grant below is its own Role, bound to one exact resource.
-  const grantExact = (name, permissions, resource) =>
+  const grantExact = (name: string, permissions: Permissions, resource: ResourceRef) =>
     grantRole(fixture.policy, limited.principal.id, {
       id: `role-permission-summary-${name}`,
       bindingId: `binding-permission-summary-${name}`,
@@ -448,9 +531,14 @@ test("caller permission summaries report primary IAM decisions without authorizi
     { kind: "sandbox_policy", id: `sbp_${agent.id.slice(4)}` },
   );
   const policySummary = await fixture.request("GET", permissionsPath, { session });
+  const policySummaryData = checkedResponse(
+    fixture,
+    policySummary,
+    AgentCallerPermissionsResponse,
+  ).data;
   assert.equal(policySummary.status, 200);
-  assert.equal(policySummary.data.sandboxPolicyRead, true);
-  assert.equal(policySummary.data.update, false);
+  assert.equal(policySummaryData.sandboxPolicyRead, true);
+  assert.equal(policySummaryData.update, false);
   // The answer agrees with the real policy read it stands for.
   const policyRead = await fixture.request("GET", `${agentPath}/sandbox-policy/networking`, {
     session,
@@ -470,9 +558,14 @@ test("caller permission summaries report primary IAM decisions without authorizi
     { kind: "configuration", id: agent.configurationId },
   );
   const configurationSummary = await fixture.request("GET", permissionsPath, { session });
+  const configurationSummaryData = checkedResponse(
+    fixture,
+    configurationSummary,
+    AgentCallerPermissionsResponse,
+  ).data;
   assert.equal(configurationSummary.status, 200);
-  assert.equal(configurationSummary.data.configurationUpdate, true);
-  assert.equal(configurationSummary.data.update, false);
+  assert.equal(configurationSummaryData.configurationUpdate, true);
+  assert.equal(configurationSummaryData.update, false);
   const namespaceSummary = await fixture.request("GET", namespacePath, { session });
   assert.equal(namespaceSummary.status, 200);
   assert.deepEqual(namespaceSummary.data, {
@@ -510,7 +603,7 @@ test("caller permission summaries report primary IAM decisions without authorizi
   assert.equal(before.status, 200);
   const deploy = await fixture.request("POST", `${agentPath}/deploy`, { session });
   assertApiError(deploy, 403, "FORBIDDEN");
-  assert.equal(denials().at(-1).action, "openclaw.agents.deploy");
+  assert.equal(denials().at(-1)?.action, "openclaw.agents.deploy");
   const after = await fixture.request("GET", revisionsPath);
   assert.equal(after.status, 200);
   assert.deepEqual(after.data, before.data, "denied deployment created no revision");
@@ -518,7 +611,7 @@ test("caller permission summaries report primary IAM decisions without authorizi
   // Each Configuration save authorizes Secret operate on every Secret it binds, so Configuration
   // update alone does not say a save can succeed (finding 2437). The answer covers the bound
   // Secrets, and only for a caller who may read and update the Configuration.
-  assert.equal(configurationSummary.data.configurationSecretsOperate, false);
+  assert.equal(configurationSummaryData.configurationSecretsOperate, false);
   const bound = await fixture.createSecret(namespace.id, "Bound token", "bound-token-value");
   const second = await fixture.createSecret(namespace.id, "Second token", "second-token-value");
   // Two bound Secrets, one of them under two names: a save checks operate on each Secret.
@@ -535,7 +628,7 @@ test("caller permission summaries report primary IAM decisions without authorizi
     },
   );
   const boundPermissions = `/namespaces/${namespace.id}/agents/${boundAgent.id}/permissions`;
-  const bindExact = (id, roleId, kind, resourceId) =>
+  const bindExact = (id: string, roleId: string, kind: ResourceKind, resourceId: string) =>
     bindRole(fixture.policy, limited.principal.id, {
       id,
       roleId,
@@ -566,8 +659,9 @@ test("caller permission summaries report primary IAM decisions without authorizi
     boundAgent.configurationId,
   );
   const updateOnly = await fixture.request("GET", boundPermissions, { session });
-  assert.equal(updateOnly.data.configurationUpdate, true);
-  assert.equal(updateOnly.data.configurationSecretsOperate, false);
+  const updateOnlyData = checkedResponse(fixture, updateOnly, AgentCallerPermissionsResponse).data;
+  assert.equal(updateOnlyData.configurationUpdate, true);
+  assert.equal(updateOnlyData.configurationSecretsOperate, false);
   // Read and update, but no operate on the bound Secret: a save would be refused.
   bindExact(
     "binding-bound-configuration-editor",
@@ -576,8 +670,13 @@ test("caller permission summaries report primary IAM decisions without authorizi
     boundAgent.configurationId,
   );
   const withoutOperate = await fixture.request("GET", boundPermissions, { session });
-  assert.equal(withoutOperate.data.configurationUpdate, true);
-  assert.equal(withoutOperate.data.configurationSecretsOperate, false);
+  const withoutOperateData = checkedResponse(
+    fixture,
+    withoutOperate,
+    AgentCallerPermissionsResponse,
+  ).data;
+  assert.equal(withoutOperateData.configurationUpdate, true);
+  assert.equal(withoutOperateData.configurationSecretsOperate, false);
   // Operate on only one of the two bound Secrets: a save still needs the other, so the answer
   // stays false. It covers every bound Secret, not any of them.
   bindExact(
@@ -587,17 +686,23 @@ test("caller permission summaries report primary IAM decisions without authorizi
     bound.id,
   );
   const partialOperate = await fixture.request("GET", boundPermissions, { session });
-  assert.equal(partialOperate.data.configurationSecretsOperate, false);
+  const partialOperateData = checkedResponse(
+    fixture,
+    partialOperate,
+    AgentCallerPermissionsResponse,
+  ).data;
+  assert.equal(partialOperateData.configurationSecretsOperate, false);
   // The probes are answers, not attempted operations.
-  assert.equal(denials().at(-1).action, "openclaw.agents.deploy");
+  assert.equal(denials().at(-1)?.action, "openclaw.agents.deploy");
   // The answer matches the real save: resaving the same values is refused now.
   const boundConfigurationPath = `/namespaces/${namespace.id}/configurations/${boundAgent.configurationId}`;
   const saved = await fixture.request("GET", boundConfigurationPath);
+  const savedData = checkedResponse(fixture, saved, ConfigurationResponse).data;
   assert.equal(saved.status, 200);
   const resave = () =>
     fixture.request("PATCH", boundConfigurationPath, {
       session,
-      body: { values: saved.data.values },
+      body: { values: savedData.values },
     });
   assertApiError(await resave(), 403, "FORBIDDEN");
   // Operate on the other Secret completes what a save checks, and the same save succeeds.
@@ -608,7 +713,12 @@ test("caller permission summaries report primary IAM decisions without authorizi
     second.id,
   );
   const withOperate = await fixture.request("GET", boundPermissions, { session });
-  assert.equal(withOperate.data.configurationSecretsOperate, true);
+  const withOperateData = checkedResponse(
+    fixture,
+    withOperate,
+    AgentCallerPermissionsResponse,
+  ).data;
+  assert.equal(withOperateData.configurationSecretsOperate, true);
   assert.equal((await resave()).status, 200);
 });
 
@@ -624,7 +734,10 @@ test("the per-binding Secret answer names the bindings a Configuration save must
   const adminBot = await fixture.createSecret(namespace.id, "Admin bot token", "admin-bot-value");
   const app = await fixture.createSecret(namespace.id, "App token", "app-value");
   const own = await fixture.createSecret(namespace.id, "Member bot token", "member-bot-value");
-  const binding = (secret) => ({ source: secret.ref, delivery: { type: "env" } });
+  const binding = (secret: SecretWire): SecretBinding => ({
+    source: secret.ref,
+    delivery: { type: "env" },
+  });
   const agent = await fixture.createAgent(
     namespace.id,
     "Per-binding agent",
@@ -645,7 +758,7 @@ test("the per-binding Secret answer names the bindings a Configuration save must
     ["read", "configuration"],
   ]);
   const session = await fixture.signIn(member.credentials);
-  const grant = (id, permissions, kind, resourceId) =>
+  const grant = (id: string, permissions: Permissions, kind: ResourceKind, resourceId: string) =>
     grantRole(fixture.policy, member.principal.id, {
       id: `role-${id}`,
       bindingId: `binding-${id}`,
@@ -656,7 +769,7 @@ test("the per-binding Secret answer names the bindings a Configuration save must
   const answer = async () => {
     const summary = await fixture.request("GET", permissionsPath, { session });
     assert.equal(summary.status, 200);
-    return summary.data;
+    return checkedResponse(fixture, summary, AgentCallerPermissionsResponse).data;
   };
   const denials = () => authorizationDenials(fixture.auditSink);
 
@@ -677,7 +790,7 @@ test("the per-binding Secret answer names the bindings a Configuration save must
     "configuration",
     agent.configurationId,
   );
-  const operate = [{ action: "operate", resourceKind: "secret" }];
+  const operate: Permission[] = [{ action: "operate", resourceKind: "secret" }];
   grant("per-binding-app", operate, "secret", app.id);
   grant("per-binding-own", operate, "secret", own.id);
   const partial = await answer();
@@ -691,11 +804,12 @@ test("the per-binding Secret answer names the bindings a Configuration save must
   assert.equal(denials().length, 0);
 
   const saved = await fixture.request("GET", configurationPath);
+  const savedData = checkedResponse(fixture, saved, ConfigurationResponse).data;
   assert.equal(saved.status, 200);
-  const save = (secretBindings, expectedGeneration) =>
+  const save = (secretBindings: SecretBindings, expectedGeneration: number) =>
     fixture.request("PATCH", configurationPath, {
       session,
-      body: { values: saved.data.values, secretBindings, expectedGeneration },
+      body: { values: savedData.values, secretBindings, expectedGeneration },
     });
   // A save that keeps a listed name on the administrator's Secret is refused, even when it
   // replaces another binding.
@@ -706,12 +820,12 @@ test("the per-binding Secret answer names the bindings a Configuration save must
         SLACK_BOT_TOKEN_ALIAS: binding(adminBot),
         SLACK_APP_TOKEN: binding(app),
       },
-      saved.data.generation,
+      savedData.generation,
     ),
     403,
     "FORBIDDEN",
   );
-  assert.equal(denials().at(-1).action, "openclaw.configurations.update");
+  assert.equal(denials().at(-1)?.action, "openclaw.configurations.update");
   // A save that rebinds every listed name to the member's own Secret succeeds: the Secret they
   // bound before is not checked.
   const replaced = await save(
@@ -720,10 +834,14 @@ test("the per-binding Secret answer names the bindings a Configuration save must
       SLACK_BOT_TOKEN_ALIAS: binding(own),
       SLACK_APP_TOKEN: binding(app),
     },
-    saved.data.generation,
+    savedData.generation,
   );
   assert.equal(replaced.status, 200);
-  assert.equal(replaced.data.secretBindings.SLACK_BOT_TOKEN.source.id, own.id);
+  assert.equal(
+    checkedResponse(fixture, replaced, ConfigurationResponse).data.secretBindings?.SLACK_BOT_TOKEN
+      ?.source.id,
+    own.id,
+  );
   // Every bound Secret is operable now, so nothing is listed.
   const operable = await answer();
   assert.equal(operable.configurationSecretsOperate, true);
@@ -736,9 +854,17 @@ test("the per-binding Secret answer names the bindings a Configuration save must
 // `readable` Secrets. `grant` adds one more grant: on one resource, or across the Namespace
 // without `resourceId`, as Agent create needs. `data` and `answer` read the Secret answer at
 // `answerPath`.
-async function secretAnswerMember(fixture, namespace, answerPath, label, grants, readable) {
+async function secretAnswerMember(
+  fixture: Fixture,
+  namespace: NamespaceWire,
+  answerPath: string,
+  label: string,
+  grants: Grants,
+  readable: readonly Pick<SecretWire, "id">[],
+  schema: typeof AgentSecretPermissionsResponse | typeof NamespaceSecretPermissionsResponse,
+) {
   const created = await fixture.createNamespaceMember(label, namespace.id, grants);
-  const grant = (id, action, kind, resourceId) =>
+  const grant = (id: string, action: PermissionAction, kind: ResourceKind, resourceId?: string) =>
     grantRole(fixture.policy, created.principal.id, {
       id: `role-${label}-${id}`,
       bindingId: `binding-${label}-${id}`,
@@ -753,7 +879,7 @@ async function secretAnswerMember(fixture, namespace, answerPath, label, grants,
   const data = async () => {
     const response = await fixture.request("GET", answerPath, { session });
     assert.equal(response.status, 200);
-    return response.data;
+    return checkedResponse(fixture, response, schema).data;
   };
   const answer = async () => (await data()).operateDenied;
   return { session, grant, answer, data, principal: created.principal };
@@ -764,13 +890,16 @@ async function secretAnswerMember(fixture, namespace, answerPath, label, grants,
 // save be refused only after the click (finding 2453). The Secret answer names the readable
 // Secrets the caller may not operate, only to a caller who could make such a save, and each
 // step proves it against the same real Configuration PATCH.
-async function secretAnswerFixture(t, options = {}) {
+async function secretAnswerFixture(t: TestContext, options: FixtureOptions = {}) {
   const fixture = await createConsoleAppFixture(t, options);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Secret operate answer", { ready: true });
   const app = await fixture.createSecret(namespace.id, "App token", "app-value");
   const bot = await fixture.createSecret(namespace.id, "Bot token", "bot-value");
-  const binding = (secret) => ({ source: secret.ref, delivery: { type: "env" } });
+  const binding = (secret: SecretWire): SecretBinding => ({
+    source: secret.ref,
+    delivery: { type: "env" },
+  });
   const agent = await fixture.createAgent(
     namespace.id,
     "Secret answer agent",
@@ -778,8 +907,16 @@ async function secretAnswerFixture(t, options = {}) {
     { secretBindings: { SLACK_APP_TOKEN: binding(app), SLACK_BOT_TOKEN: binding(bot) } },
   );
   const answerPath = `/namespaces/${namespace.id}/agents/${agent.id}/permissions/secrets`;
-  const member = (label, grants, readable) =>
-    secretAnswerMember(fixture, namespace, answerPath, label, grants, readable);
+  const member = (label: string, grants: Grants, readable: readonly Pick<SecretWire, "id">[]) =>
+    secretAnswerMember(
+      fixture,
+      namespace,
+      answerPath,
+      label,
+      grants,
+      readable,
+      AgentSecretPermissionsResponse,
+    );
   const denials = () => authorizationDenials(fixture.auditSink);
   return { fixture, namespace, agent, app, bot, binding, answerPath, member, denials };
 }
@@ -789,10 +926,14 @@ test("the Agent Secret answer names the readable Secrets a binding save would be
     await secretAnswerFixture(t);
   // Readable spare Secrets. The answer is sorted by ID; the Secret list is in creation order. A
   // spare is added until the two orders differ, so the sort is observable.
-  const spares = [];
+  const spares: SecretWire[] = [];
   const listedSpares = async () =>
-    (await fixture.request("GET", `/namespaces/${namespace.id}/secrets`)).data
-      .map((secret) => secret.id)
+    checkedResponse(
+      fixture,
+      await fixture.request("GET", `/namespaces/${namespace.id}/secrets`),
+      SecretListResponse,
+    )
+      .data.map((secret) => secret.id)
       .filter((id) => spares.some((spare) => spare.id === id));
   do {
     spares.push(
@@ -800,14 +941,16 @@ test("the Agent Secret answer names the readable Secrets a binding save would be
     );
   } while (
     spares.length < 2 ||
-    JSON.stringify(await listedSpares()) === JSON.stringify((await listedSpares()).toSorted())
+    JSON.stringify(await listedSpares()) === JSON.stringify([...(await listedSpares())].sort())
   );
+  const spare = spares[0];
+  assert.ok(spare);
   const spareIds = spares.map((spare) => spare.id).sort();
   // A Secret the members cannot read: the answer never names it, operable or not.
   await fixture.createSecret(namespace.id, "Unread token", "unread-value");
   const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
   const readable = [app, bot, ...spares];
-  const reads = [
+  const reads: Grants = [
     ["read", "namespace"],
     ["read", "agent"],
     ["read", "configuration"],
@@ -835,35 +978,36 @@ test("the Agent Secret answer names the readable Secrets a binding save would be
   // The answer matches the real save: binding a listed Secret is refused, and rebinding to the
   // operable ones succeeds.
   const saved = await fixture.request("GET", configurationPath);
+  const savedData = checkedResponse(fixture, saved, ConfigurationResponse).data;
   assert.equal(saved.status, 200);
-  const save = (secretBindings, expectedGeneration) =>
+  const save = (secretBindings: SecretBindings, expectedGeneration: number) =>
     fixture.request("PATCH", configurationPath, {
       session: editor.session,
-      body: { values: saved.data.values, secretBindings, expectedGeneration },
+      body: { values: savedData.values, secretBindings, expectedGeneration },
     });
   assertApiError(
     await save(
-      { SLACK_APP_TOKEN: binding(app), SLACK_BOT_TOKEN: binding(spares[0]) },
-      saved.data.generation,
+      { SLACK_APP_TOKEN: binding(app), SLACK_BOT_TOKEN: binding(spare) },
+      savedData.generation,
     ),
     403,
     "FORBIDDEN",
   );
-  assert.equal(denials().at(-1).action, "openclaw.configurations.update");
+  assert.equal(denials().at(-1)?.action, "openclaw.configurations.update");
   const swapped = await save(
     { SLACK_APP_TOKEN: binding(bot), SLACK_BOT_TOKEN: binding(app) },
-    saved.data.generation,
+    savedData.generation,
   );
   assert.equal(swapped.status, 200);
   // Operate on a spare too: it is no longer listed, and the refused binding saves.
-  editor.grant("operate-spare", "operate", "secret", spares[0].id);
+  editor.grant("operate-spare", "operate", "secret", spare.id);
   assert.deepEqual(
     await editor.answer(),
-    spareIds.filter((id) => id !== spares[0].id),
+    spareIds.filter((id) => id !== spare.id),
   );
   const rebound = await save(
-    { SLACK_APP_TOKEN: binding(app), SLACK_BOT_TOKEN: binding(spares[0]) },
-    swapped.data.generation,
+    { SLACK_APP_TOKEN: binding(app), SLACK_BOT_TOKEN: binding(spare) },
+    checkedResponse(fixture, swapped, ConfigurationResponse).data.generation,
   );
   assert.equal(rebound.status, 200);
 
@@ -877,14 +1021,16 @@ test("the Agent Secret answer names the readable Secrets a binding save would be
   // bindings (the editor rebound them to app and the first spare) and the fixture's Harness
   // authentication Secret, readable here. The other readable Secrets stay unreported, since no
   // deployment checks them (finding 2565).
+  assert.ok(agent.harnessAuth);
+  assert.equal(agent.harnessAuth.method, "api_key");
   const harnessSecret = agent.harnessAuth.source;
   const deniedBeforeDeployer = denials().length;
   const deployer = await member("secret-answer-deployer", reads, [...readable, harnessSecret]);
   assert.deepEqual(await deployer.answer(), []);
   deployer.grant("deploy", "deploy", "agent", agent.id);
-  assert.deepEqual(await deployer.answer(), [app.id, spares[0].id, harnessSecret.id].sort());
+  assert.deepEqual(await deployer.answer(), [app.id, spare.id, harnessSecret.id].sort());
   deployer.grant("operate-harness", "operate", "secret", harnessSecret.id);
-  assert.deepEqual(await deployer.answer(), [app.id, spares[0].id].sort());
+  assert.deepEqual(await deployer.answer(), [app.id, spare.id].sort());
   // The narrowed answer still makes no refused, audited read.
   assert.equal(denials().length, deniedBeforeDeployer);
   // A bound Secret the caller may not read is never named, only counted, and only while she may
@@ -893,7 +1039,7 @@ test("the Agent Secret answer names the readable Secrets a binding save would be
   const blind = await member("secret-answer-blind-deployer", reads, [app]);
   blind.grant("deploy", "deploy", "agent", agent.id);
   assert.deepEqual(await blind.data(), { operateDenied: [app.id], unreadableOperateDenied: 2 });
-  blind.grant("operate-spare", "operate", "secret", spares[0].id);
+  blind.grant("operate-spare", "operate", "secret", spare.id);
   blind.grant("operate-app", "operate", "secret", app.id);
   assert.deepEqual(await blind.data(), { operateDenied: [], unreadableOperateDenied: 1 });
   assert.equal(denials().length, deniedBeforeDeployer);
@@ -901,11 +1047,11 @@ test("the Agent Secret answer names the readable Secrets a binding save would be
   const deployPath = `/namespaces/${namespace.id}/agents/${agent.id}/deploy`;
   const refused = await fixture.request("POST", deployPath, { session: blind.session });
   assertApiError(refused, 403, "FORBIDDEN");
-  assert.equal(denials().at(-1).action, "openclaw.agents.deploy");
+  assert.equal(denials().at(-1)?.action, "openclaw.agents.deploy");
   blind.grant("operate-harness", "operate", "secret", harnessSecret.id);
   assert.deepEqual(await blind.data(), { operateDenied: [], unreadableOperateDenied: 0 });
   // The deployment also checks the Agent's own access to the Secrets the editor rebound.
-  for (const secret of [app, spares[0]]) {
+  for (const secret of [app, spare]) {
     await fixture.grantAgentSecretOperate(agent, secret.ref);
   }
   // Every authorization check passes: Kubernetes Compute then refuses the draft, which selects
@@ -913,7 +1059,10 @@ test("the Agent Secret answer names the readable Secrets a binding save would be
   const deniedBeforeDeploy = denials().length;
   const admitted = await fixture.request("POST", deployPath, { session: blind.session });
   assertApiError(admitted, 400, "INVALID_REQUEST");
-  assert.match(admitted.body.error.message, /agents\.defaults\.model is required/);
+  assert.match(
+    checkedResponse(fixture, admitted, ErrorResponse, 400).error.message,
+    /agents\.defaults\.model is required/,
+  );
   assert.equal(denials().length, deniedBeforeDeploy);
   const deniedAfterDeploy = denials().length;
   // A reader who may not deploy or update gets no count.
@@ -978,9 +1127,9 @@ test("the Agent Secret answer names the readable Secrets a binding save would be
 // its own database connection and policy read (finding 2473). The units the answer opens do not
 // grow with the number of Secrets.
 test("the Agent Secret answer makes its Secret decisions in one read unit", async (t) => {
-  const unit = new AsyncLocalStorage();
+  const unit = new AsyncLocalStorage<boolean>();
   let units = 0;
-  const wrapState = (state) => ({
+  const wrapState = (state: PlatformStateStore): PlatformStateStore => ({
     read: (work) => {
       units += 1;
       return unit.run(true, () => state.read(work));
@@ -1001,7 +1150,7 @@ test("the Agent Secret answer makes its Secret decisions in one read unit", asyn
     [],
   );
   editor.grant("configuration", "update", "configuration", agent.configurationId);
-  const decisions = [];
+  const decisions: { action: PermissionAction; inUnit: boolean }[] = [];
   const authorize = fixture.iamDriver.authorize;
   fixture.iamDriver.authorize = async (request) => {
     if (request.resource.kind === "secret") {
@@ -1038,15 +1187,23 @@ test("the Agent Secret answer makes its Secret decisions in one read unit", asyn
 // Secret let Create be refused only after the click (finding 2469). There is no Agent yet, so
 // the Namespace Secret answer names the readable Secrets the caller may not operate, only to a
 // caller who may create an Agent, and each step proves it against the same real creates.
-async function namespaceSecretAnswerFixture(t, options = {}) {
+async function namespaceSecretAnswerFixture(t: TestContext, options: FixtureOptions = {}) {
   const fixture = await createConsoleAppFixture(t, options);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Create Secret answer", { ready: true });
   const model = await fixture.createSecret(namespace.id, "Model key", "model-value");
   const bot = await fixture.createSecret(namespace.id, "Bot token", "bot-value");
   const answerPath = `/namespaces/${namespace.id}/permissions/secrets`;
-  const member = (label, grants, readable) =>
-    secretAnswerMember(fixture, namespace, answerPath, label, grants, readable);
+  const member = (label: string, grants: Grants, readable: readonly Pick<SecretWire, "id">[]) =>
+    secretAnswerMember(
+      fixture,
+      namespace,
+      answerPath,
+      label,
+      grants,
+      readable,
+      NamespaceSecretPermissionsResponse,
+    );
   const denials = () => authorizationDenials(fixture.auditSink);
   return { fixture, namespace, model, bot, answerPath, member, denials };
 }
@@ -1056,10 +1213,14 @@ test("the Namespace Secret answer names the readable Secrets Agent creation woul
     await namespaceSecretAnswerFixture(t);
   // Readable spare Secrets. The answer is sorted by ID; the Secret list is in creation order. A
   // spare is added until the two orders differ, so the sort is observable.
-  const spares = [];
+  const spares: SecretWire[] = [];
   const listedSpares = async () =>
-    (await fixture.request("GET", `/namespaces/${namespace.id}/secrets`)).data
-      .map((secret) => secret.id)
+    checkedResponse(
+      fixture,
+      await fixture.request("GET", `/namespaces/${namespace.id}/secrets`),
+      SecretListResponse,
+    )
+      .data.map((secret) => secret.id)
       .filter((id) => spares.some((spare) => spare.id === id));
   do {
     spares.push(
@@ -1067,8 +1228,10 @@ test("the Namespace Secret answer names the readable Secrets Agent creation woul
     );
   } while (
     spares.length < 2 ||
-    JSON.stringify(await listedSpares()) === JSON.stringify((await listedSpares()).toSorted())
+    JSON.stringify(await listedSpares()) === JSON.stringify([...(await listedSpares())].sort())
   );
+  const spare = spares[0];
+  assert.ok(spare);
   const spareIds = spares.map((spare) => spare.id).sort();
   // A Secret the member cannot read: the answer never names it, operable or not.
   await fixture.createSecret(namespace.id, "Unread key", "unread-value");
@@ -1103,7 +1266,7 @@ test("the Namespace Secret answer names the readable Secrets Agent creation woul
 
   // The answer matches the real Create Agent requests: a Configuration that binds a listed
   // Secret is refused, and so is an Agent that uses one as its Harness authentication source.
-  const createConfiguration = (secret) =>
+  const createConfiguration = (secret: SecretWire) =>
     fixture.request("POST", `/namespaces/${namespace.id}/configurations`, {
       session: creator.session,
       body: {
@@ -1112,28 +1275,34 @@ test("the Namespace Secret answer names the readable Secrets Agent creation woul
         secretBindings: { SLACK_BOT_TOKEN: { source: secret.ref, delivery: { type: "env" } } },
       },
     });
-  const createAgent = (name, configurationId, secret) =>
+  const createAgent = (name: string, configurationId: string, secret: SecretWire) =>
     fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
       session: creator.session,
       body: { name, configurationId, harnessAuth: { method: "api_key", source: secret.ref } },
     });
-  assertApiError(await createConfiguration(spares[0]), 403, "FORBIDDEN");
-  assert.equal(denials().at(-1).action, "openclaw.configurations.create");
+  assertApiError(await createConfiguration(spare), 403, "FORBIDDEN");
+  assert.equal(denials().at(-1)?.action, "openclaw.configurations.create");
   const configuration = await createConfiguration(bot);
   assert.equal(configuration.status, 201);
+  const configurationData = checkedResponse(
+    fixture,
+    configuration,
+    ConfigurationResponse,
+    201,
+  ).data;
   assertApiError(
-    await createAgent("Refused create agent", configuration.data.id, spares[0]),
+    await createAgent("Refused create agent", configurationData.id, spare),
     403,
     "FORBIDDEN",
   );
-  assert.equal(denials().at(-1).action, "openclaw.agents.create");
+  assert.equal(denials().at(-1)?.action, "openclaw.agents.create");
   // Operate on a spare too: it is no longer listed, and the Agent that uses it is created.
-  creator.grant("operate-spare", "operate", "secret", spares[0].id);
+  creator.grant("operate-spare", "operate", "secret", spare.id);
   assert.deepEqual(
     await creator.answer(),
-    spareIds.filter((id) => id !== spares[0].id),
+    spareIds.filter((id) => id !== spare.id),
   );
-  const created = await createAgent("Created create agent", configuration.data.id, spares[0]);
+  const created = await createAgent("Created create agent", configurationData.id, spare);
   assert.equal(created.status, 201);
 
   // Without Namespace read the answer is refused and audited exactly like the Namespace
@@ -1141,13 +1310,13 @@ test("the Namespace Secret answer names the readable Secrets Agent creation woul
   // Namespace (finding 2478): the probe reveals nothing the Namespace answer does not.
   const permissionsPath = `/namespaces/${namespace.id}/permissions`;
   const missingNamespace = "/namespaces/ns_00000000-0000-4000-8000-000000000000/permissions";
-  const sameAsNamespaceAnswer = async (session, path) => {
-    const outcome = async (suffix) => {
+  const sameAsNamespaceAnswer = async (session: Session, path: string) => {
+    const outcome = async (suffix: string) => {
       const before = denials().length;
       const response = await fixture.request("GET", path + suffix, { session });
       return {
         status: response.status,
-        code: response.body?.error?.code,
+        code: checkedResponse(fixture, response, ErrorResponse, 403).error.code,
         denials: denials().length - before,
       };
     };
@@ -1186,9 +1355,9 @@ test("the Namespace Secret answer names the readable Secrets Agent creation woul
 // native IAM Driver reads its policy once for all of them, as for the Agent Secret answer
 // (finding 2473). The units the answer opens do not grow with the number of Secrets.
 test("the Namespace Secret answer makes its Secret decisions in one read unit", async (t) => {
-  const unit = new AsyncLocalStorage();
+  const unit = new AsyncLocalStorage<boolean>();
   let units = 0;
-  const wrapState = (state) => ({
+  const wrapState = (state: PlatformStateStore): PlatformStateStore => ({
     read: (work) => {
       units += 1;
       return unit.run(true, () => state.read(work));
@@ -1207,7 +1376,7 @@ test("the Namespace Secret answer makes its Secret decisions in one read unit", 
     ],
     [],
   );
-  const decisions = [];
+  const decisions: { action: PermissionAction; inUnit: boolean }[] = [];
   const authorize = fixture.iamDriver.authorize;
   fixture.iamDriver.authorize = async (request) => {
     if (request.resource.kind === "secret") {
@@ -1262,6 +1431,7 @@ test("the Agent sources answer matches what a real Agent update checks", async (
       },
     },
   );
+  assert.ok(agent.harnessAuth);
   assert.equal(agent.harnessAuth.method, "api_key");
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const member = await fixture.createNamespaceMember("agent-sources-editor", namespace.id, [
@@ -1271,7 +1441,7 @@ test("the Agent sources answer matches what a real Agent update checks", async (
   ]);
   const session = await fixture.signIn(member.credentials);
   // A revoked grant is granted again by binding its Role once more.
-  const grant = (id, action, kind, resourceId) => {
+  const grant = (id: string, action: PermissionAction, kind: ResourceKind, resourceId: string) => {
     if (!fixture.policy.roles.some((role) => role.id === `role-${id}`)) {
       fixture.policy.roles.push({
         id: `role-${id}`,
@@ -1289,7 +1459,7 @@ test("the Agent sources answer matches what a real Agent update checks", async (
   const summary = async () => {
     const response = await fixture.request("GET", `${agentPath}/permissions`, { session });
     assert.equal(response.status, 200);
-    return response.data;
+    return checkedResponse(fixture, response, AgentCallerPermissionsResponse).data;
   };
   const answer = async () => {
     const data = await summary();
@@ -1304,7 +1474,7 @@ test("the Agent sources answer matches what a real Agent update checks", async (
     });
   const denials = () => authorizationDenials(fixture.auditSink);
 
-  const revoke = (id) => {
+  const revoke = (id: string) => {
     const index = fixture.policy.bindings.findIndex((binding) => binding.id === `binding-${id}`);
     assert.notEqual(index, -1);
     fixture.policy.bindings.splice(index, 1);
@@ -1355,7 +1525,9 @@ test("the Agent sources answer matches what a real Agent update checks", async (
   // update reads it, so the answer needs that grant too (finding 2459).
   editor.permissions.push({ action: "update", resourceKind: "agent" });
   // Issuance is outside this test: the account is seeded through State as the console tests do.
-  const account = await fixture.controller.transact((state) =>
+  const controller: unknown = fixture.controller;
+  assert.ok(controller instanceof OpenClawController);
+  const account = await controller.transact((state) =>
     state.serviceAccounts.createServiceAccount({
       id: `sa_${randomUUID()}`,
       namespaceId: namespace.id,
@@ -1421,7 +1593,7 @@ test("console static routes expose only public assets and preserve API JSON fail
     ["/console/channels.mjs", /javascript/i],
     ["/console/dom.mjs", /javascript/i],
     ["/console/channels.css", /text\/css/i],
-  ]) {
+  ] as const) {
     const result = await fixture.rawRequest("GET", path);
     assert.equal(result.response.status, 200, path);
     assert.match(result.response.headers.get("content-type") ?? "", mime, path);
@@ -1446,27 +1618,34 @@ test("console static routes expose only public assets and preserve API JSON fail
   const apiMiss = await fixture.rawRequest("GET", "/api/does-not-exist");
   assert.equal(apiMiss.response.status, 404);
   assert.match(apiMiss.response.headers.get("content-type") ?? "", /application\/json/i);
-  assert.equal(JSON.parse(apiMiss.text).error.code, "NOT_FOUND");
+  assert.equal(errorBody(apiMiss.text).error.code, "NOT_FOUND");
 
   const methodMiss = await fixture.rawRequest("POST", "/backends");
   assert.equal(methodMiss.response.status, 405);
-  assert.equal(JSON.parse(methodMiss.text).error.code, "METHOD_NOT_ALLOWED");
+  assert.equal(errorBody(methodMiss.text).error.code, "METHOD_NOT_ALLOWED");
 });
 
 test("console scripts and styles are compressed when accepted; the shell and binaries are not", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   const host = new URL(fixture.origin).host;
-  const consoleFile = (path) =>
+  const consoleFile = (path: string) =>
     readFile(new URL(`../../apps/controller/src/console/${path}`, import.meta.url));
   // Read the wire bytes: Fetch decodes content codings before exposing its body.
-  const fetchRaw = (url, headers = {}, method = "GET") =>
-    new Promise((resolve, reject) => {
+  const fetchRaw = (url: string, headers: OutgoingHttpHeaders = {}, method = "GET") =>
+    new Promise<{
+      statusCode: number | undefined;
+      headers: IncomingHttpHeaders;
+      rawPayload: Buffer;
+    }>((resolve, reject) => {
       const request = httpRequest(
         new URL(url, fixture.origin),
         { method, headers: { host, ...headers } },
         (response) => {
-          const chunks = [];
-          response.on("data", (chunk) => chunks.push(chunk));
+          const chunks: Buffer[] = [];
+          response.on("data", (chunk: unknown) => {
+            assert.ok(Buffer.isBuffer(chunk));
+            chunks.push(chunk);
+          });
           response.on("error", reject);
           response.on("end", () =>
             resolve({
@@ -1490,6 +1669,7 @@ test("console scripts and styles are compressed when accepted; the shell and bin
   assert.equal(plain.headers.vary, "Accept-Encoding");
   assert.deepEqual(plain.rawPayload, script);
   const csp = plain.headers["content-security-policy"];
+  assert.ok(typeof csp === "string");
   assert.match(csp, /script-src 'self'/);
 
   for (const [acceptEncoding, encoding, decode] of [
@@ -1500,14 +1680,14 @@ test("console scripts and styles are compressed when accepted; the shell and bin
     ["identity;q=0, gzip;q=0.5", "gzip", gunzipSync],
     ["identity;q=1, br;q=1, gzip;q=1", "br", brotliDecompressSync],
     ["*", "br", brotliDecompressSync],
-  ]) {
+  ] as const) {
     const result = await fetchRaw("/console/agents/detail.mjs", {
       "accept-encoding": acceptEncoding,
     });
     assert.equal(result.statusCode, 200, acceptEncoding);
     assert.equal(result.headers["content-encoding"], encoding, acceptEncoding);
     assert.equal(result.headers.vary, "Accept-Encoding", acceptEncoding);
-    assert.match(result.headers["content-type"], /javascript/, acceptEncoding);
+    assert.match(result.headers["content-type"] ?? "", /javascript/, acceptEncoding);
     assert.equal(Number(result.headers["content-length"]), result.rawPayload.length);
     assert.ok(result.rawPayload.length < script.length / 3, acceptEncoding);
     assert.deepEqual(decode(result.rawPayload), script, acceptEncoding);
@@ -1595,7 +1775,7 @@ test("console auth routes reject untrusted browser origins and issue production 
   assert.equal(rejected.response.status, 403);
   assert.equal(rejected.response.headers.get("set-cookie"), null);
   // A correct password with a foreign Origin is refused for the Origin, not the credentials.
-  assert.equal(JSON.parse(rejected.text).error.message, UNTRUSTED_ORIGIN_MESSAGE);
+  assert.equal(errorBody(rejected.text).error.message, UNTRUSTED_ORIGIN_MESSAGE);
   // A browser that omits Origin still names a cross-site request in Sec-Fetch-Site.
   const crossSiteSignIn = await fixture.rawRequest("POST", "/api/auth/sign-in/email", {
     headers: { "sec-fetch-site": "cross-site" },
@@ -1603,7 +1783,7 @@ test("console auth routes reject untrusted browser origins and issue production 
   });
   assert.equal(crossSiteSignIn.response.status, 403);
   assert.equal(crossSiteSignIn.response.headers.get("set-cookie"), null);
-  assert.equal(JSON.parse(crossSiteSignIn.text).error.message, UNTRUSTED_ORIGIN_MESSAGE);
+  assert.equal(errorBody(crossSiteSignIn.text).error.message, UNTRUSTED_ORIGIN_MESSAGE);
 
   const cliAccepted = await fixture.rawRequest("POST", "/api/auth/sign-in/email", {
     body: signInBody,
@@ -1615,7 +1795,8 @@ test("console auth routes reject untrusted browser origins and issue production 
     body: signInBody,
   });
   assert.equal(accepted.response.status, 200, accepted.text);
-  const setCookies = setCookieHeaders(accepted.response);
+  const setCookies: unknown = setCookieHeaders(accepted.response);
+  assert.ok(Check(Type.Array(Type.String()), setCookies));
   const setCookie = setCookies.join("\n");
   const requestCookie = cookieHeaderFromSetCookie(setCookies);
   assert.ok(requestCookie.length > 0);
@@ -1631,13 +1812,18 @@ test("console auth routes reject untrusted browser origins and issue production 
     },
   });
   assert.equal(rejectedSignOut.response.status, 403);
-  assert.equal(JSON.parse(rejectedSignOut.text).error.message, UNTRUSTED_ORIGIN_MESSAGE);
+  assert.equal(errorBody(rejectedSignOut.text).error.message, UNTRUSTED_ORIGIN_MESSAGE);
 
   const retainedSession = await fixture.rawRequest("GET", "/api/auth/session", {
     headers: { cookie: requestCookie },
   });
   assert.equal(retainedSession.response.status, 200, retainedSession.text);
-  assert.equal(JSON.parse(retainedSession.text).data.authenticated, true);
+  const retainedBody: unknown = JSON.parse(retainedSession.text);
+  const sessionSchema = Type.Object({
+    data: Type.Object({ authenticated: Type.Boolean(), sessionKey: Type.String() }),
+  });
+  assert.ok(Check(sessionSchema, retainedBody));
+  assert.equal(retainedBody.data.authenticated, true);
 
   const crossSiteNoOrigin = await fixture.rawRequest("POST", "/api/auth/sign-out", {
     headers: {
@@ -1646,18 +1832,20 @@ test("console auth routes reject untrusted browser origins and issue production 
     },
   });
   assert.equal(crossSiteNoOrigin.response.status, 403);
-  assert.equal(JSON.parse(crossSiteNoOrigin.text).error.message, UNTRUSTED_ORIGIN_MESSAGE);
+  assert.equal(errorBody(crossSiteNoOrigin.text).error.message, UNTRUSTED_ORIGIN_MESSAGE);
 
   // Without the GitHub profile the session key still only narrows the cookie session.
   const providers = await fixture.rawRequest("GET", "/api/auth/providers");
-  assert.deepEqual(JSON.parse(providers.text).data, {
+  const providersBody: unknown = JSON.parse(providers.text);
+  assert.ok(Check(Type.Object({ data: Type.Unknown() }), providersBody));
+  assert.deepEqual(providersBody.data, {
     github: false,
     google: false,
     oidc: false,
     password: true,
     sessionBinding: false,
   });
-  const sessionKey = JSON.parse(retainedSession.text).data.sessionKey;
+  const sessionKey = retainedBody.data.sessionKey;
   assert.match(sessionKey, /^[A-Za-z0-9_-]{43}$/);
   const foreignKey = "A".repeat(43);
   const foreignSession = await fixture.rawRequest("GET", "/api/auth/session", {
@@ -1672,14 +1860,16 @@ test("console auth routes reject untrusted browser origins and issue production 
   const keptSession = await fixture.rawRequest("GET", "/api/auth/session", {
     headers: { cookie: requestCookie, "x-occ-session-key": sessionKey },
   });
-  assert.equal(JSON.parse(keptSession.text).data.sessionKey, sessionKey);
+  const keptBody: unknown = JSON.parse(keptSession.text);
+  assert.ok(Check(sessionSchema, keptBody));
+  assert.equal(keptBody.data.sessionKey, sessionKey);
 
   // The exact Origin check runs before the session key is considered.
   const originlessSignOut = await fixture.rawRequest("POST", "/api/auth/sign-out", {
     headers: { cookie: requestCookie, "x-occ-session-key": foreignKey },
   });
   assert.equal(originlessSignOut.response.status, 403);
-  assert.equal(JSON.parse(originlessSignOut.text).error.message, UNTRUSTED_ORIGIN_MESSAGE);
+  assert.equal(errorBody(originlessSignOut.text).error.message, UNTRUSTED_ORIGIN_MESSAGE);
 
   const cliSignOut = await fixture.rawRequest("POST", "/api/auth/sign-out", {
     headers: { cookie: requestCookie, origin: fixture.origin, "x-occ-session-key": sessionKey },
@@ -1692,8 +1882,8 @@ test("console auth routes reject untrusted browser origins and issue production 
     body: { email: fixture.credentials.email },
   });
   assert.equal(malformedSignIn.response.status, 400, malformedSignIn.text);
-  assert.equal(JSON.parse(malformedSignIn.text).error.code, "INVALID_REQUEST");
-  assert.deepEqual(JSON.parse(malformedSignIn.text).error.details, [
+  assert.equal(errorBody(malformedSignIn.text).error.code, "INVALID_REQUEST");
+  assert.deepEqual(errorBody(malformedSignIn.text).error.details, [
     { path: "/password", code: "REQUIRED" },
   ]);
 
@@ -1709,10 +1899,12 @@ test("console auth routes reject untrusted browser origins and issue production 
     ["/api/auth/sign-out", foreignSignOut],
     ["/api/auth/sign-out", originlessSignOut],
     ["/api/auth/sign-out", cliSignOut],
-  ]) {
+  ] as const) {
     const status = String(result.response.status);
+    const responses: unknown = contract.paths[path]?.post?.responses;
+    assert.ok(Check(responseMapSchema, responses), `POST ${path} has invalid responses`);
     assert.ok(
-      Object.hasOwn(contract.paths[path].post.responses, status),
+      Object.hasOwn(responses, status),
       `POST ${path} answered ${status}, which its OpenAPI operation does not list`,
     );
   }
@@ -1727,9 +1919,25 @@ test("every /api/auth operation that takes a body answers the 400, 413 and 415 i
   const operations = Object.entries(contract.paths)
     .filter(([path]) => path.startsWith("/api/auth/"))
     .flatMap(([path, item]) =>
-      Object.entries(item)
-        .filter(([, operation]) => operation.requestBody !== undefined)
-        .map(([method, operation]) => ({ method: method.toUpperCase(), path, operation })),
+      Object.entries(item).flatMap(([method, candidate]) => {
+        // Path-item metadata and bodyless operations are outside this body-rejection proof.
+        if (
+          !["get", "put", "post", "delete", "options", "head", "patch", "trace"].includes(method)
+        ) {
+          return [];
+        }
+        const operation: unknown = candidate;
+        if (
+          typeof operation !== "object" ||
+          operation === null ||
+          !("requestBody" in operation) ||
+          operation.requestBody === undefined
+        ) {
+          return [];
+        }
+        assert.ok(Check(operationSchema, operation), `${method} ${path} has an invalid operation`);
+        return [{ method: method.toUpperCase(), path, operation }];
+      }),
     );
   // Fourteen such operations exist today; an empty scan would prove nothing.
   assert.ok(operations.length >= 14, `found ${operations.length} operations`);
@@ -1741,8 +1949,8 @@ test("every /api/auth operation that takes a body answers the 400, 413 and 415 i
       ["413", "PAYLOAD_TOO_LARGE", "application/json", `{"pad":"${"x".repeat(70 * 1024)}"}`],
       ["415", "UNSUPPORTED_MEDIA_TYPE", "text/plain", "expectedVersion=1"],
       ["400", "INVALID_REQUEST", "application/json", JSON.stringify({ unexpected: true })],
-    ]) {
-      const response = await fixture.app.inject({
+    ] as const) {
+      const response: InjectionResponse = await fixture.app.inject({
         method,
         url: path.replace("{userId}", "usr_unknown").replace("{methodId}", "method_unknown"),
         headers: authenticatedHeaders(session, {
@@ -1753,7 +1961,7 @@ test("every /api/auth operation that takes a body answers the 400, 413 and 415 i
       });
       const label = `${operation.operationId} ${status}`;
       assert.equal(String(response.statusCode), status, `${label}: ${response.body}`);
-      assert.equal(JSON.parse(response.body).error.code, code, label);
+      assert.equal(errorBody(response.body).error.code, code, label);
       assert.ok(Object.hasOwn(operation.responses, status), `${label} is not in the contract`);
     }
   }
@@ -1764,7 +1972,8 @@ test("untrusted cookie mutations do not clean up an expired session", async (t) 
   await fixture.bootstrap();
   const session = await fixture.signIn();
   const expired = fixture.memoryDatabase.session.at(-1);
-  assert.ok(expired);
+  assert.ok(typeof expired === "object" && expired !== null && "expiresAt" in expired);
+  assert.ok(expired.expiresAt instanceof Date);
   expired.expiresAt = new Date(0);
 
   const denied = await fixture.rawRequest("POST", "/api/auth/service-keys", {
@@ -1805,7 +2014,9 @@ test("public Agent revisions return the selected binding without private credent
     harnessAuth: null,
   });
   const historical = await fixture.request("GET", `${path}/${revision.id}`);
-  assert.deepEqual(historical.data.harnessAuth, agent.harnessAuth);
+  const historicalData = checkedResponse(fixture, historical, AgentRevisionReadResponse).data;
+  assert.ok("harnessAuth" in historicalData);
+  assert.deepEqual(historicalData.harnessAuth, agent.harnessAuth);
 });
 
 // The Agent page skips its native admin status probe when this answer is false (review of
@@ -1830,7 +2041,7 @@ test("the Agent administer answer matches what native admin access checks", asyn
   const answer = async () => {
     const summary = await fixture.request("GET", `${agentPath}/permissions`, { session });
     assert.equal(summary.status, 200);
-    return summary.data.administer;
+    return checkedResponse(fixture, summary, AgentCallerPermissionsResponse).data.administer;
   };
   const probe = () => fixture.request("GET", `${agentPath}/native-admin`, { session });
   const denials = () => authorizationDenials(fixture.auditSink);
@@ -1857,8 +2068,13 @@ test("the Agent administer answer matches what native admin access checks", asyn
   assert.equal(await answer(), true);
   const otherPath = `/namespaces/${namespace.id}/agents/${other.id}`;
   const otherSummary = await fixture.request("GET", `${otherPath}/permissions`, { session });
+  const otherSummaryData = checkedResponse(
+    fixture,
+    otherSummary,
+    AgentCallerPermissionsResponse,
+  ).data;
   assert.equal(otherSummary.status, 200);
-  assert.equal(otherSummary.data.administer, false);
+  assert.equal(otherSummaryData.administer, false);
   assertApiError(
     await fixture.request("GET", `${otherPath}/native-admin`, { session }),
     403,
@@ -1889,15 +2105,20 @@ test("an IAM failure on any caller permission decision fails the whole answer in
     {},
     { secretBindings: { EXTERNAL_API_TOKEN: { source: bound.ref, delivery: { type: "env" } } } },
   );
+  assert.ok(agent.harnessAuth);
   assert.equal(agent.harnessAuth.method, "api_key");
   assert.notEqual(agent.harnessAuth.source.id, bound.id);
   const agentPermissions = `/namespaces/${namespace.id}/agents/${agent.id}/permissions`;
   const namespacePermissions = `/namespaces/${namespace.id}/permissions`;
-  const outage = (path, failing, session) =>
-    fixture.withIamOutage(failing, () => fixture.request("GET", path, { session }));
+  const outage = (path: string, failing: Outage, session?: Session) =>
+    fixture.withIamOutage(failing, () =>
+      fixture.request("GET", path, session === undefined ? {} : { session }),
+    );
   // One exact decision: an action on one resource.
-  const decision = (action, kind, id) => (request) =>
-    request.action === action && request.resource.kind === kind && request.resource.id === id;
+  const decision =
+    (action: PermissionAction, kind: ResourceKind, id: string): Outage =>
+    (request) =>
+      request.action === action && request.resource.kind === kind && request.resource.id === id;
 
   // The administrator's answers probe every decision; each one fails alone.
   for (const [label, failing] of [
@@ -1905,14 +2126,14 @@ test("an IAM failure on any caller permission decision fails the whole answer in
     ["configurationUpdate", decision("update", "configuration", agent.configurationId)],
     ["configurationRead", decision("read", "configuration", agent.configurationId)],
     ["agentSourcesOperate", decision("operate", "secret", agent.harnessAuth.source.id)],
-  ]) {
+  ] as const) {
     assertApiError(await outage(agentPermissions, failing), 503, "DEPENDENCY_UNAVAILABLE", label);
   }
   for (const [label, failing] of [
     ["namespace.delete", decision("delete", "namespace", namespace.id)],
     ["agents.create", decision("create", "agent", namespace.id)],
     ["secrets.create", decision("create", "secret", namespace.id)],
-  ]) {
+  ] as const) {
     assertApiError(
       await outage(namespacePermissions, failing),
       503,
@@ -1921,7 +2142,7 @@ test("an IAM failure on any caller permission decision fails the whole answer in
     );
   }
   // The exact Secret read's callerPermissions (finding D761).
-  for (const action of ["update", "delete"]) {
+  for (const action of ["update", "delete"] as const) {
     assertApiError(
       await outage(
         `/namespaces/${namespace.id}/secrets/${bound.id}`,
@@ -1943,9 +2164,10 @@ test("an IAM failure on any caller permission decision fails the whole answer in
   ]);
   const session = await fixture.signIn(member.credentials);
   const answer = await fixture.request("GET", agentPermissions, { session });
+  const answerData = checkedResponse(fixture, answer, AgentCallerPermissionsResponse).data;
   assert.equal(answer.status, 200);
-  assert.equal(answer.data.update, false);
-  assert.deepEqual(answer.data.configurationSecretsOperateDeniedBindings, ["EXTERNAL_API_TOKEN"]);
+  assert.equal(answerData.update, false);
+  assert.deepEqual(answerData.configurationSecretsOperateDeniedBindings, ["EXTERNAL_API_TOKEN"]);
   assertApiError(
     await outage(agentPermissions, decision("operate", "secret", bound.id), session),
     503,
