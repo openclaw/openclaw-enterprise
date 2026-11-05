@@ -29,8 +29,8 @@ keeps unselected controller/runtime source builds serial. See the [development f
 Other files retain their lane preparation. The runner enforces both lane-wide and per-file `requiredEnv`
 inputs, expected cases, and cleanup. A failed shard does not cancel the
 others. Each result has `scope: focused`; require every shard to pass before
-claiming full advisory OpenShell coverage. The manual Full Integration lane
-continues to run the full manifest serially and prepares the shared resources
+claiming full advisory OpenShell coverage. The Full Integration lane
+runs the full manifest serially and prepares the shared resources
 needed by its other files. First-Agent files do not request a separate CI database
 in either mode.
 

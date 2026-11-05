@@ -39,7 +39,7 @@ results. For triggers and failure consequences across workflows, use the
 | [CI required checks](ci/required-checks.md)    | Verify source, component workflows, persistence, and packaging for a change. |
 | [First Agent Smoke](ci/first-agent-smoke.md)   | Exercise the installed Agent lifecycle with a simulated model provider.      |
 | [QA Matrix Advisory](ci/qa-advisory.md)        | Test Agent workflows with real providers and OpenShell.                      |
-| [Full Integration](ci/full-integration.md)     | Dispatch selected integration lanes and inspect their aggregate result.      |
+| [Full Integration](ci/full-integration.md)     | Inspect main-push results or dispatch selected lanes on `main`.              |
 | [Observability Demo](ci/observability-demo.md) | Verify fixture telemetry and rendered monitoring dashboards.                 |
 | [Local k3d Quickstart](ci/k3d-quickstart.md)   | Exercise browser onboarding, Linear, and Git on one Agent.                   |
 
