@@ -74,7 +74,7 @@ for Codex.
 | `openshell-linear-read` | No                   | Codex           | Opt-in shipped OpenShell setup, Linear installation and verified native read.                                                                                                    |
 | `codex-search-config`   | No                   | Codex           | API-key Agent user configuration with omitted, false and true capability declarations; persistence after supported stop/deploy.                                                  |
 | `openshell-git-model`   | No                   | Codex           | Register after enabling Git; verify model turns with and without repositories, Git expiry, and worker restart.                                                                   |
-| `openshell-provider-replacement` | No | Codex | [Prepared managed OpenShell installation](../openshell.md#provider-replacement): source switch, network grant addition/removal, unchanged redeploy, model turns and shared-source isolation. |
+| `openshell-provider-replacement` | No | Codex | [Prepared managed OpenShell installation](../openshell.md#provider-replacement): separate and combined source/network grant changes, unchanged redeploy, model turns and shared-source isolation. |
 
 [QA matrix](../../../tests/integration/qa-matrix-real.test.mjs) and
 [scenario selection](../../../tests/helpers/qa-selection.mjs) own these checks.

@@ -237,10 +237,13 @@ export async function verifyOpenShellProviderReplacement(context) {
       signal(),
     );
   };
-  const assertPolicy = async (present) => {
+  const assertPolicy = async (present, provider = providerB) => {
     const current = await sandbox(agents[0]);
     assert.equal(current.id, before.id);
-    assert.deepEqual([...current.spec.providers].sort(), [...after.spec.providers].sort());
+    assert.deepEqual(
+      [...current.spec.providers].sort(),
+      [...after.spec.providers.filter((name) => name !== providerB), provider].sort(),
+    );
     const status = await gateway.getPolicyStatus({ workspace, sandbox: current.name }, signal());
     assert.equal(status.state, "POLICY_STATUS_LOADED");
     assert.equal(status.activeVersion, status.version);
@@ -266,8 +269,32 @@ export async function verifyOpenShellProviderReplacement(context) {
   await assertPolicy(false);
   assert.notEqual(await probe(agents[0]), 0, "The later revision must deny the removed route");
   await turn(agents[0], removed);
+  // Change both inputs before deployment so the regular worker must reconcile
+  // policy and Provider membership together on the same retained Sandbox.
+  for (const [source, present] of [
+    [sources[0], true],
+    [sources[1], false],
+  ]) {
+    await api("PATCH", `${base}/agents/${agents[0].id}`, {
+      configurationId: input.configurationId,
+      harnessAuth: { method: "credential_source", sourceId: source.id },
+      credentialSources: [{ sourceId: source.id }],
+    });
+    const current = (await api("GET", policyPath)).policy;
+    await api("PUT", policyPath, {
+      expectedVersion: current.version,
+      additions: present ? [networkGrant] : [],
+    });
+    const combined = await deploy(agents[0]);
+    await assertPolicy(present, openShellProviderName(source.id));
+    assert.equal((await probe(agents[0])) === 0, present);
+    await turn(agents[0], combined);
+  }
+  assert.notEqual(await probe(agents[1]), 0, "Combined replacement must not alter the peer policy");
+  assert.ok((await sandbox(agents[1])).spec.providers.includes(providerA));
+  await turn(agents[1], peer);
   return {
     outcome:
-      "model source replacement, stable Sandbox, network grant addition/removal, unchanged redeploy and shared-source isolation",
+      "separate and combined model source and network grant replacement, stable Sandbox, unchanged redeploy and shared-source isolation",
   };
 }

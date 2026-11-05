@@ -77,6 +77,10 @@ Enable sandbox updates in the OpenShell gateway and select a compute driver
 that supports the requested changes. The prototype also uses `StopSandbox`,
 `StartSandbox`, `ExposeService`, `AttachSandboxProvider`, `DetachSandboxProvider`
 and `UpdateConfig`. Policy updates require workspace-admin authority.
+Provider attachment validation must use the latest stored policy, including for
+credential inspection. A gateway that validates against the creation-time policy
+can reject valid replacements or accept conflicting attachments. The combined
+replacement path requires the OpenShell fix for that behavior.
 The default OCE development and CI images
 remain pinned to OpenShell v0.1.5; updating the RPC definitions does not update
 those images or establish live compatibility.
@@ -96,19 +100,19 @@ resource version, reads back the complete specification, then starts it. An
 older server that ignores new update fields fails verification before start.
 Final Agent deletion deletes the Sandbox and runtime Provider through OpenShell.
 
-With unchanged policy, replacement can add, remove or switch Credential Source
-Providers. OCE detaches obsolete Providers before attaching replacements, verifies
-each change while stopped, and compares membership independently of list order.
-An interrupted attempt leaves the Sandbox stopped; retry reconciles its stored
-attachments. Detachment preserves the shared Provider and other Agents' access.
-Provider profile and policy conflicts fail the replacement before start.
+Replacement can add, remove or switch Credential Source Providers and change
+network rules in the same revision. When attachments differ, OCE clears the base
+network rules while stopped, detaches obsolete Providers, attaches replacements,
+then installs the final policy. Each mutation uses a resource-version check and
+readback. Detachment preserves shared Providers and other Agents' access.
 
-With unchanged Provider attachments, a revision can add, change or remove network
-rules. OCE writes the policy while stopped and verifies it separately from the
-workload. It starts only after both readbacks match, and reports the Harness ready
-only after the latest policy is loaded. An uncertain policy write leaves the
-Sandbox stopped; retry reads the stored policy before deciding whether to write.
-Static policy and middleware bindings must remain unchanged.
+An interrupted attempt leaves the Sandbox stopped; retry reconciles its stored
+policy and attachments. A rejected final policy leaves the changed attachments
+in place for retry without starting the workload. OCE starts only after policy
+and workload readbacks match, and reports the Harness ready only after the latest
+policy is loaded. With unchanged attachments, it updates the policy directly.
+Static policy and middleware bindings must remain unchanged. Provider profile
+and policy conflicts fail replacement before start.
 
 Provider config updates preserve unchanged empty fields, including an absent
 node CA. Before a native OpenClaw replacement starts, OCE restores and verifies
@@ -142,8 +146,7 @@ See the [provisioning flow](../../flows/openshell-managed-workload.md).
   within that root are refused. The inherited `sandboxDataMount` fields describe a logical
   workspace path; no mount using them is submitted to OpenShell.
 - Changing the Harness type, static policy, middleware bindings, resource requests
-  or runtime class through workload replacement is refused. Changing network
-  rules and Provider attachments together is also refused. Git replacement remains unsupported: its
+  or runtime class through workload replacement is refused. Git replacement remains unsupported: its
   revision-specific Provider, middleware binding and authorization lifecycle must
   be reconciled together. Runtime Provider configuration keys cannot be removed.
 - Replacement relies on one OCE worker and OpenShell's serialized lifecycle
