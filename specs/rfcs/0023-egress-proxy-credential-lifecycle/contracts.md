@@ -195,6 +195,8 @@ OCC and its trusted callers use two Token Service operations for OCE-managed dyn
   for the exact grant. The caller waits only within its remaining time. An unsuccessful or
   cancelled wait releases no material.
 
+The Credential Proxy may request preparation only for a captured operation that OCC has
+authorized. The native Git broker continues to use its existing preparation authority.
 Scheduled and request-triggered renewals share the same owner and durable attempt. A caller may
 tighten its validity requirement within policy. It cannot change the grant through resolution.
 The trusted sender must still prove that the selected attempt and value version are current.

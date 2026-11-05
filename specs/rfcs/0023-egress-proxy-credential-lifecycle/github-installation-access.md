@@ -52,8 +52,7 @@ revision and verified execution. Admit, renew, authorize and withdraw without a 
 control socket, session bearer or broker receipt.
 
 **Authorize the Git operation.** Repo defines repository, ref and operation constraints. The
-Token Service renews short-lived tokens in the background and resolves the exact grant
-under the [dynamic material contract](protocol.md#dynamic-material). Credential Proxy binds the actual
+Token Service prepares short-lived tokens in the background. Credential Proxy binds the actual
 request and signed sandbox identity to this execution. Before allowing it, check current OCC authority
 and the exact installed token attempt, version and expiry. In that transaction, record possible use
 and consume any applicable draft allowance. Serialize with withdrawal and replacement. Bound the allow
