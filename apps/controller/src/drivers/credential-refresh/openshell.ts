@@ -388,7 +388,8 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
       provider !== undefined &&
       (provider.type !== openShellProviderName(context.source.id) ||
         provider.labels["app.kubernetes.io/managed-by"] !== "openclaw-enterprise" ||
-        provider.labels["openclaw.dev/credential-source-id"] !== openShellCredentialSourceLabel(context.source.id))
+        provider.labels["openclaw.dev/credential-source-id"] !==
+          openShellCredentialSourceLabel(context.source.id))
     ) {
       throw new ScopeViolationError(
         "The OpenShell provider is not owned by this credential source.",

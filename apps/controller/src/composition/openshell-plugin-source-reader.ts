@@ -40,7 +40,8 @@ export function bindOpenShellPluginSourceReader(
         provider?.name !== name ||
         provider.type !== name ||
         provider.labels["app.kubernetes.io/managed-by"] !== "openclaw-enterprise" ||
-        provider.labels["openclaw.dev/credential-source-id"] !== openShellCredentialSourceLabel(source.id)
+        provider.labels["openclaw.dev/credential-source-id"] !==
+          openShellCredentialSourceLabel(source.id)
       ) {
         throw new ScopeViolationError(
           "The OpenShell provider is not owned by this Codex OAuth source.",
