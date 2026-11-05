@@ -186,13 +186,16 @@ administrators, who hold every action through the built-in administrator role.
 
 ## Update a running sender
 
-The worker compares the current delivery policy with the policy installed for that
-Agent. If its credential recipients change, the Gateway withholds token material while
-Compute and the Sandbox Driver update the sender. Compute confirms the effective
-request policy before asking OCC to release a prepared token for that revision
-and policy. OCC rechecks the grant, template and Agent binding before release.
-A failed or superseded update leaves that sender without a usable token until
-reconciliation succeeds. A different Agent can keep using its own sender.
+When an Agent’s credential recipients change, the Gateway withholds its token.
+Compute and the Sandbox Driver update the sender and verify its effective policy.
+OCC rechecks the grant, template and Agent binding before releasing a token
+for that revision and policy. Failed or superseded updates leave the sender
+empty until reconciliation succeeds.
+
+The Plugin Driver matches recipients independently of scopes. If no granted
+operation matches the current destinations, the slot's delivery returns no
+configuration. After confirming withdrawal, the worker keeps serving other
+slots and Agents. A compatible template edit can resume delivery.
 
 ## Protected egress
 
@@ -202,8 +205,7 @@ use the source for the actual request within the Installation’s egress ceiling
 
 For manual OAuth, OCC reads the current rows from the same manual template and
 checks the issuer against the grant. An administrator can replace hosts for
-existing accounts. OCC reconciles affected senders on running revisions and
-retries failed updates. Each request must match a host, port and path, the
+existing accounts. Each request must match a host, port and path, the
 release’s reviewed operations, granted scopes and deployed Agent policy.
 
 For MCP, the approved resource and server must match the release. OpenShell
