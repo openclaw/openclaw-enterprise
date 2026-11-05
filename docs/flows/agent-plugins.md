@@ -1,17 +1,14 @@
 ---
 created: 2026-09-08
-updated: 2026-11-03
-last_updated_session: authoring-run/1bd8c7a3-997a-45b2-93a4-e24d114c9ca8
+updated: 2026-11-05
+last_updated_session: 01a169f0-a851-7b81-8e83-ff597893aa21
 ---
 
 # Agent Plugin Deployment Flow
 
 ## Overview
 
-An authorized caller saves plugin selections, then deploys. OCC validates and
-snapshots policy, selections, and Driver. Startup resolves metadata, translates
-policy, and prepares the version. Version selection may precede cutover; the
-Harness owns tools and approvals.
+OCC validates selections against the Harness catalog and snapshots the Driver and policy at deployment. The Harness owns tools and approvals.
 
 ## Entry Points
 
@@ -33,7 +30,7 @@ graph TD
   E0 -->|bound| E1["Caller and Agent operate"] --> D6
   E0 -->|managed MCP| M0["Check credential and discover server tools"] --> D5
   E0 -->|credentialSource| D2
-  D1 -->|stored source| D2["Caller source operate"] --> D6["Check PluginDriver support"]
+  D1 -->|stored source| D2["Caller source operate"] --> D6["Select Harness catalog"]
   D1 -->|token or none| D6
   D6 -->|unsupported| D7["Unsupported"]
   D6 -->|token or none| D4["Call PluginDriver"]
@@ -44,7 +41,7 @@ graph TD
   D9 -->|canceled or failed| D12["Stop"]
   D10 -->|denied or disconnected| D12
   D4 -->|disconnect| D8["Cancel hosted reads"]
-  D4 --> D5["Return safe catalog metadata"]
+  D4 --> D5["Return safe metadata"]
   A["Authorize and validate policy"] -->|valid| S["Save Agent selections"]
   A -->|unsupported| Y["Reject write"]
   S --> B["Revalidate and snapshot version"]
@@ -73,18 +70,17 @@ graph TD
 ### Credential-scoped discovery
 
 [Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) requires
-Agent `create` and caller `operate` on stored sources. OCC rechecks both before
-Driver use. Wrong Namespace returns `400`, missing Secret `404`, unavailable
-explicit CredentialSource `409`. Unsupported discovery reads no credential.
+the target Harness, Agent `create` and caller `operate` on stored sources.
+A wrong Namespace returns `400`, a missing Secret `404`, and an unavailable
+explicit CredentialSource `409`.
 
-Saved discovery requires a dedicated Agent and caller `read` and `update`.
+Saved discovery requires a dedicated Agent with caller `read` and `update`.
 OCC offers admissible plugins. It rechecks attachment and both caller and Agent
 `operate` for bound sources, and caller `operate` for explicit sources.
 Missing or unready bound sources return `404`. Hosted catalogs use the saved
 bearer; curated catalogs need none.
 
-CredentialSource reads use timeout and HTTP cancellation. OCC skips canceled
-reads. After success it rechecks authority and discards the token on disconnect.
+Before provider access, OCC rechecks grants and catalog. Cancellation discards late credentials.
 
 `packages/occ/src/index.ts:OpenClawController.discoverManagedMcpTools`
 
@@ -92,8 +88,7 @@ For managed MCP, the Plugin Driver matches the release slot. OCC reads the beare
 through the Secret Driver and rechecks grants and attachment before `tools/list`.
 `driverPolicy.toolNames` pins upstream names for worker, Gateway and OpenShell.
 
-Console cancels reads on picker or view close and clears results on account
-change. Hosted reads reject redirects and credential echoes, limit size and
+Closing the picker cancels discovery. Changing accounts clears results. Changing Harness clears selections and approvers. Hosted reads reject redirects and credential echoes, limit size and
 time, and return safe metadata with `Cache-Control: no-store`.
 See [catalog browsing](../reference/drivers/plugin-bundled.md#selection-and-catalogs).
 
@@ -106,20 +101,13 @@ rejects invalid results and stops the child on teardown. HTTP uses the hosted re
 
 HTTP contracts validate input before [OpenClawController](../../packages/occ/src/index.ts)
 checks the exact Namespace and Agent. Reads require Agent `read`; create/PATCH
-stores the `plugins` map. `OpenClawController.validatePluginPolicies` calls the selected Driver's
-`validatePolicies` before Agent create/update and provisioning writes, and its optional
-`validateAgentConfiguration` there and at deployment. The OpenClaw Driver refuses a selection
+stores the `plugins` map and its Driver identity. `validateAgentPlugins` uses the Harness catalog for policy and Configuration checks on Agent and provisioning writes. Deployment rechecks Configuration. The OpenClaw Driver refuses a selection
 whose tools `tools.deny`, the sole `agents.entries` entry's list, the primary provider's
 `byProvider` lists, or these together block, any selection beside an entry denying `*`, or one a
 sole entry's `alsoAllow` hides under a profile. With an OpenClaw Harness,
 [`openClawPluginSettingConflict`](../../apps/controller/src/drivers/plugin/openclaw-plugin-settings.ts)
 first refuses [plugin settings the Gateway refuses](../reference/drivers/plugin-bundled.md#native-mappings-and-limits).
-Unsupported controls, reviewer scopes, and combinations return `400 INVALID_REQUEST`;
-a missing selected Driver returns `501 NOT_IMPLEMENTED`. Validation is static: native app mapping,
-authentication, and release/tool metadata remain startup checks. Agent mutations store desired
-state and audit evidence atomically, leaving the Configuration and active runtime unchanged. On
-update, omission preserves the
-map, `{}` clears it, and a nonempty map replaces it.
+Unsupported controls and incompatible selections return `400 INVALID_REQUEST`. Startup checks native app mapping, authentication, and release metadata. Agent updates store desired state and audit evidence atomically. Omission preserves selections, `{}` clears them, and a nonempty map replaces them. Clear selections with an unknown or different owner before changing catalogs.
 
 Installation uses `GET /installation`; Agent editors use
 `GET .../plugins/capabilities` with Agent read/update. Both return policy capabilities.
@@ -128,13 +116,13 @@ Installation uses `GET /installation`; Agent editors use
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-OCC snapshots the validated Configuration, Driver and plugin selections in the queued Agent revision. Compute projects one package descriptor; shared startup verifies its release and CLI or MCP assets.
+OCC snapshots the Configuration, Driver and selections. Before cutover the worker checks the pinned Driver against the Harness. Gateway and worker each verify their assets from Compute’s package descriptors.
 
-- **CLI packages.** The Gateway loads skill instructions. The Harness runs its image’s pinned executable. The shared guard checks operation and credential restrictions before injection.
-- **Hosted MCP packages.** Compute gives the worker the pinned descriptor and selected upstream tool names. The worker advertises that subset and the Gateway admits it. The credential driver attaches the source. The Sandbox delivers its placeholder and translates the selection into request policy for worker and script calls. The bundled OpenShell implementation enforces exact MCP names and rejects overlapping routes. An account and nonempty selection enable the server.
-- **Native runtime plugins.** Startup installs packages and verifies native tool policy.
+- **CLI packages.** The Gateway loads skills. The Harness runs the pinned executable. The guard checks operation and credential restrictions before injection.
+- **Hosted MCP packages.** An account lets the worker advertise selected tools. The Gateway grants same-node execution per turn. Calls requiring Gateway hooks or another node return structured results or policy denials through the Gateway to Code Mode. The credential driver attaches the source. Sandbox supplies its placeholder and scopes worker and script requests. OpenShell enforces exact tool names and rejects overlapping routes.
+- **Native runtime plugins.** Startup installs packages and verifies tool policy.
 
-Credential withdrawal removes injection. Recovery preserves other attachments.
+Withdrawal removes credential injection. Recovery preserves other attachments.
 
 ### 3. Deliver requested state through Compute preparation
 
@@ -362,6 +350,10 @@ establish starvation.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 01:02: Select the Harness catalog and recheck its identity before cutover. (01a169f0-a851-7b81-8e83-ff597893aa21 - 0e9575278)
+
+- 2026-11-03 01:40: Trace startup of multiple managed packages on one dedicated Agent. (authoring-run/e29308a5-ef76-4952-b439-23483c4dbd99 - 54b2a30498f690e2a16a3198e84a6363f69d91ae)
 
 - 2026-11-03 01:10: Describe hosted MCP packages and Driver-owned request policy. (authoring-run/1bd8c7a3-997a-45b2-93a4-e24d114c9ca8 - 4178b555ac5dc711c818055bd7fe34c3e4d4943b)
 

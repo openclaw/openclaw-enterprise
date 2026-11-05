@@ -190,6 +190,42 @@ test(
   },
 );
 
+test("stock Git refuses malformed branch policies and wildcard draft heads before approval", async (t) => {
+  let policy = binding;
+  let approvals = 0;
+  const denials = [];
+  const { client, keys } = await openShellOnlineGitWire(t, {
+    lookupBinding: async () => policy,
+    authorizeOnlineRequest: async (q, installed) => {
+      approvals++;
+      return onlineGitAllow(q, installed);
+    },
+    onDeny: (denial) => denials.push(denial.reason),
+  });
+  const auth = token(keys, "supervisor", binding.sandboxId);
+  // Corrupt the trusted lookup boundary to verify fail-closed handling of invalid
+  // policy. Valid Git-only patterns are covered through the real runtime journey.
+  for (const pushRef of [
+    "refs/heads/review*",
+    "refs/heads/*/review",
+    "refs/heads/review/../*",
+    "refs/heads/review/\u200b*",
+  ]) {
+    policy = { ...binding, pushRef, pullRequestBase: undefined };
+    assert.deepEqual(await invoke(client, "EvaluateHttpRequest", pushRequest(), auth), {
+      decision: 2,
+      reason_code: "online_authorization_denied",
+    });
+  }
+  policy = { ...binding, pushRef: "refs/heads/review/*" };
+  assert.deepEqual(await invoke(client, "EvaluateHttpRequest", pushRequest(), auth), {
+    decision: 2,
+    reason_code: "online_authorization_denied",
+  });
+  assert.equal(approvals, 0);
+  assert.deepEqual(denials, Array(5).fill("binding_mismatch"));
+});
+
 test(
   "stock Git refuses mixed refs, identity substitution and unsupported or ambiguous input before approval",
   { timeout: 10000 },

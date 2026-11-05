@@ -7,7 +7,6 @@ import type { BrowserContextOptions } from "playwright";
 import type {
   HarnessAuthBinding,
   HarnessExecutionMode,
-  OpenClawConfigurationDocument,
   OpenClawConfigurationValue,
   Restriction,
   SecretBinding,
@@ -37,12 +36,11 @@ import {
   pathRequests,
   secretOptionLabel,
   selectSecret,
-  trackSettledFetches,
   waitForEnabled,
-  waitForIdleFetches,
   waitForInputValue,
-} from "./console-agents-browser-helpers.mjs";
-import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
+} from "./console-agents-browser-helpers.ts";
+import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
+import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import {
   agentPrincipalDenied,
   CHANNEL_BINDING_CREDENTIALS_REMEDY,
@@ -91,7 +89,7 @@ async function createAgent(
   fixture: Fixture,
   namespaceId: string,
   name: string,
-  values: OpenClawConfigurationDocument,
+  values: Readonly<Record<string, unknown>>,
   options: {
     executionMode?: HarnessExecutionMode;
     harnessAuth?: HarnessAuthBinding | null;
