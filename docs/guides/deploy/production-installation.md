@@ -4,11 +4,15 @@ tags: [nolimit]
 
 # Install the production control plane
 
-Use this procedure for a custom Helm installation, then continue to
-[production Agent deployment](production-agents.md). For the OpenShell path,
-follow [Kubernetes setup](kubernetes-setup.md) or [EKS setup](eks-openshell-setup.md)
-and their first-Agent instructions instead. Those guides use different generated
-configuration, namespace names, and operator-session helpers.
+For an OpenShell cluster, start with [Kubernetes setup](kubernetes-setup.md) or
+[Amazon EKS setup](eks-openshell-setup.md), then [deploy your first Agent](deploy-first-agent.md)
+in the same operator shell.
+
+Use this guide for a custom Helm installation. Choose the [published images](#use-published-images),
+[generate the profile configuration](#recommended-generate-profile-configuration), and
+prepare the cluster resources below. Then [run `occ installation install`](#install-the-control-plane)
+once, [authenticate to the API](#authenticate-to-the-production-api), and
+[deploy a production Agent](production-agents.md).
 
 Prepare [Kubernetes](kubernetes.md) or [EKS infrastructure](eks-openshell-setup.md#prepare-aws-infrastructure), the
 [prerequisites below](#before-you-start), and
@@ -20,9 +24,6 @@ settings in [Prepare workspace access](#prepare-workspace-access) before Helm in
 Start with the password profile and
 [native Agent administration](native-admin.md#requirements); optional
 [GitHub](#enable-github-browser-sign-in) or [Google](google-sign-in.md) sign-in requires disabling native administration.
-
-Configure with an [installation profile](#recommended-generate-profile-configuration)
-or [manual YAML](#advanced-copy-manual-yaml-examples).
 
 Use a clean checkout matching the image source commit. Follow
 [private-registry delivery](private-registry-images.md) for provenance, ECR copies,
@@ -162,9 +163,7 @@ Kubernetes older than 1.35 is unsupported; the API and worker emit
 
 Choose `openclaw` or `codex` from the [profile options](installation-profiles.md#choose-a-profile).
 Generation requires Node.js 24.22.1+ on the operator host (and `pnpm install` with
-native admin). Manual YAML does not, but
-the later Agent transport-provisioning example does; without Node, provision
-transports in the console.
+native admin). Without Node.js on the operator host, use the manual YAML examples.
 
 Create `$OCC_INPUT_DIRECTORY/profile-input.json` from the schema in
 [Render installation profiles](installation-profiles.md#prepare-inputs). Set
@@ -452,8 +451,10 @@ binds, reports `Prepared bootstrap volume claim ... with UID/GID 1000 mode 0700.
 and retains failed Pods. If policy forbids the Pod, have the storage administrator
 prepare the same root state.
 
-Exclude competing installs, upgrades and Job replacements. Use the CLI matching this chart's
-source revision. [Keep the receipt for handoff](production-handoff.md#record-the-initialization-job-for-handoff), then install once:
+### Install the control plane
+
+Exclude competing installs, upgrades and Job replacements. Use the [OCC CLI](../cli.md#connect-to-your-installation)
+matching the chart source revision. [Keep the receipt for handoff](production-handoff.md#record-the-initialization-job-for-handoff), then install once:
 
 ```bash
 INSTALL_RECEIPT_DIRECTORY="$OCC_INPUT_DIRECTORY/install-receipt"
@@ -463,7 +464,9 @@ occ installation install --release oce --chart deploy/helm/openclaw-enterprise \
   --receipt "$INSTALL_RECEIPT_DIRECTORY" --wait-timeout 5m
 ```
 
-After a lost response or refused release name, [resume this installation](production-handoff.md#resume-an-installation-in-progress).
+After a lost response or refused release name, use the read-only
+[`occ installation plan` or `doctor`](production-handoff.md#resume-an-installation-in-progress)
+to inspect the original attempt.
 Do not retry or switch to upgrade. An unused release name does not prove the database, identity or storage is fresh.
 
 For an explicitly [published chart release](../../release/chart-publication.md#pull-and-install)
