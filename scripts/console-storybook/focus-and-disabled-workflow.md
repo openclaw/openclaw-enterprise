@@ -159,3 +159,8 @@ For **Components / Deletion / Permission denied** and **Components / Stop Agent 
 Permission denied**, move focus to another window and back. The later permission
 answer confirms denial. The attempted action's refusal and Request ID must remain
 visible and describe the unavailable control, without a duplicate permission notice.
+
+In **Components / Deletion / Outcome unknown**, choose **Refresh deletion status**,
+then move to another window and back. The active Agent readback initially permits
+a retry; the later negative permission answer must replace that advice with the
+current access reason and leave Delete unavailable.

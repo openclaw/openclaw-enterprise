@@ -27,7 +27,7 @@ export function createAgentDeletion(
   const permissionNotice = AGENT_DELETE_DENIED;
   let refusedAfterReads = 0;
   let refused = false;
-  let permissionOnly = false;
+  let feedbackKind: "permission" | "status" | "error" | undefined;
   let deleteAnswered = false;
   let restrictConfirmation: (() => void) | undefined;
   const feedback = element("div", { className: "danger-zone-feedback" });
@@ -110,7 +110,7 @@ export function createAgentDeletion(
 
   function render(text?: string, tone: "info" | "danger" = "info", requestId?: string) {
     if (text) {
-      permissionOnly = false;
+      feedbackKind = tone === "danger" ? "error" : "status";
       feedback.replaceChildren(
         element(
           "div",
@@ -276,15 +276,15 @@ export function createAgentDeletion(
     state.forbidden = permitted === false;
     if (state.forbidden) {
       restrictConfirmation?.();
-    } else if (regranted || (permitted === true && permissionOnly)) {
+    } else if (regranted || (permitted === true && feedbackKind === "permission")) {
       refused = false;
-      permissionOnly = false;
+      feedbackKind = undefined;
       feedback.replaceChildren();
     }
-    // Permission advice must not replace an attempted write's outcome or request ID.
-    if (state.forbidden && state.used && !feedback.firstElementChild) {
+    // Permission loss replaces retry advice, but preserves a failed write's diagnostics.
+    if (state.forbidden && state.used && feedbackKind !== "error") {
       render(permissionNotice);
-      permissionOnly = true;
+      feedbackKind = "permission";
     } else {
       render();
     }

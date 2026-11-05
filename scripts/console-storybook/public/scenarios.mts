@@ -1704,7 +1704,7 @@ const authoredScenarios = {
     path: draft,
     agentPermissionSummary: { update: true, deploy: true, operate: true, delete: false },
     rules: [
-      { suffix: "/permissions", status: 503, once: true },
+      { pathIncludes: "/agents/", suffix: "/permissions", status: 503, once: true },
       {
         path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
         method: "DELETE",
@@ -1739,7 +1739,9 @@ const authoredScenarios = {
     group: "Components/Deletion",
     name: "Outcome unknown",
     path: draft,
+    agentPermissionSummary: { update: true, deploy: true, operate: true, delete: false },
     rules: [
+      { pathIncludes: "/agents/", suffix: "/permissions", status: 503, once: true },
       {
         path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
         method: "DELETE",
@@ -1750,7 +1752,8 @@ const authoredScenarios = {
     description:
       "Deletion may have started. Refresh deletion status checks this Agent without sending another deletion request.",
     steps: [
-      "Tab to Delete Agent. It takes focus and looks unavailable, described by the Outcome unknown alert; Enter, Space or a click sends nothing (finding 2935).",
+      "Choose Refresh deletion status: the Agent remains active and allows another attempt. Refocus the window: the next permission read denies delete, replacing retry advice with the current access reason.",
+      "After refocus, Tab to Delete Agent. It takes focus and looks unavailable, described by the current permission notice; Enter, Space or a click sends nothing.",
     ],
   } satisfies LocalScenario,
   createFlow: {
@@ -2171,7 +2174,7 @@ const authoredScenarios = {
     deployed: true,
     agentPermissionSummary: { update: true, deploy: true, delete: true, operate: false },
     rules: [
-      { suffix: "/permissions", status: 503, once: true },
+      { pathIncludes: "/agents/", suffix: "/permissions", status: 503, once: true },
       {
         suffix: "/stop",
         method: "POST",
