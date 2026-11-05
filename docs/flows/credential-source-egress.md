@@ -313,6 +313,11 @@ cancels only definitely unsent writes. Uncertain writes stay pending and blocked
 worker's persisted route before credential access. Historical `verifyExecution`
 permits cleanup, not live recovery; `retireExpiredRepositoryAccess` settles the
 original detach through its stored fence.
+The background prepared-token owner discovers eligible sessions before this
+transport starts. Its bundled `openshell-repository-git-evidence.ts:openShellGitRecipientEvidence`
+predicate separately excludes historical online installation-wide delivery from
+live issuance. Selected-repository delivery and explicit observed-hook preview
+remain eligible; the historical verification and detach predicate is unchanged.
 See [restart behavior](../reference/repository-credentials/protected-openshell-git.md#route-state-restarts-and-recovery).
 
 Creation requires live ownership; deletion keeps custody but stops use. `apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts:confirmDetached`

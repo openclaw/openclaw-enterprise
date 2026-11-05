@@ -303,6 +303,9 @@ with retry backoff from 1 s to 10 s. The held-launch paths (`github-repository`,
 protected `git-write`, and installation preview) cannot be adopted by a replacement
 worker: deploy a new revision after `worker_replaced` or terminal `bootstrap_failed`.
 The bundled Driver never restores legacy installation-wide routes for live use.
+Background credential preparation also refuses these historical routes, even
+while their persisted session is open and unexpired. Installation-wide issuance
+requires the explicit observed-hook preview.
 A replacement worker can verify historical metadata and finish the original detach
 without requesting credentials or taking over delivery. No path replays an
 uncertain provider write. Provider writes retain their own deadline. See
