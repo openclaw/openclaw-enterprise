@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
 import { createServer as createSecureServer } from "node:https";
@@ -369,6 +370,8 @@ test("the OpenShell client reaches a bearer-passthrough service through the gate
     const accept = createHash("sha1")
       .update(`${request.headers["sec-websocket-key"]}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
       .digest("base64");
+    // Consume the client's close frame so this raw upgrade fixture observes EOF.
+    socket.resume();
     socket.end(
       `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
     );
@@ -500,6 +503,41 @@ test("the OpenShell client reaches a bearer-passthrough service through the gate
   );
 });
 
+test("an accepted OpenShell probe closes its WebSocket normally without sending a Harness request", async (t) => {
+  const controller = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
+  const { WebSocketServer } = createRequire(controller.resolve("@kubernetes/client-node"))("ws");
+  const peers = new WebSocketServer({ noServer: true });
+  const gateway = createServer();
+  const connected = once(peers, "connection");
+  let requests = 0;
+  gateway.on("upgrade", (request, socket, head) => {
+    assert.equal(request.headers.authorization, `Bearer ${TOKEN}`);
+    peers.handleUpgrade(request, socket, head, (peer) => {
+      peer.on("message", () => requests++);
+      peers.emit("connection", peer);
+    });
+  });
+  const port = await listen(gateway);
+  t.after(async () => {
+    for (const peer of peers.clients) {
+      peer.terminate();
+    }
+    await new Promise((resolve) => peers.close(resolve));
+    await close(gateway);
+  });
+  const client = new GrpcOpenShellGatewayClient({ endpoint: `http://127.0.0.1:${port}` });
+  t.after(() => client.close());
+  const handshake = client.serviceWebSocketHandshake(serviceUrl, TOKEN, AbortSignal.timeout(5_000));
+  const [peer] = await connected;
+  const closed = once(peer, "close", { signal: AbortSignal.timeout(5_000) });
+  assert.equal(await handshake, true);
+  // The real WebSocket peer reports 1006 when a probe drops TCP without a close frame.
+  const [code, reason] = await closed;
+  assert.equal(code, 1000);
+  assert.equal(reason.length, 0);
+  assert.equal(requests, 0, "readiness must not invoke the Harness");
+});
+
 test("a refused OpenShell WebSocket handshake releases an unfinished HTTP response", async () => {
   let socket;
   let closed = false;
@@ -616,6 +654,8 @@ function tlsGateway(keyPath, certPath, seen) {
     const accept = createHash("sha1")
       .update(`${request.headers["sec-websocket-key"]}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
       .digest("base64");
+    // Consume the client's close frame so this raw upgrade fixture observes EOF.
+    socket.resume();
     socket.end(
       `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
     );
