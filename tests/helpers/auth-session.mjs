@@ -108,8 +108,9 @@ export async function createTestAuthPrincipal({
   return { auth, account, seed, installationId, email, password, name };
 }
 
-export async function signInToControllerApp(app, credentials) {
+export async function signInToControllerApp(app, credentials, { origin } = {}) {
   return signInWithEmailPassword({
+    origin,
     fetch:
       typeof app.fetch === "function"
         ? app.fetch.bind(app)

@@ -14,7 +14,7 @@ override grants, and one action never implies another. See
 | `read`       | Read a resource or include it in a list; Secret reads return metadata, not values.                                                                             |
 | `update`     | Change a resource or its credential.                                                                                                                           |
 | `delete`     | Request deletion of the exact resource.                                                                                                                        |
-| `deploy`     | Create a new Agent revision.                                                                                                                                   |
+| `deploy`     | Create an Agent revision or recover its exact first-deployment receipt.                                                                                        |
 | `operate`    | Stop an Agent, provision its runtime credentials, write its workspace files, read its runtime status, or use a bound Secret or credential source.              |
 | `administer` | Run Installation administration, access the exact Agent’s native admin UI, or read its runtime log text. It does not imply `read`, `deploy`, or other actions. |
 | `read_logs`  | Read the exact Agent’s runtime log text without `administer`. Not granted by bootstrap; grant it through a Namespace Role.                                     |
@@ -35,7 +35,7 @@ principal. Rerunning bootstrap does not add missing permissions to existing Role
 | [`secret`](../api.md#secrets)                   | `create`, `read`, `update`, `delete`, `operate`                                                       | Namespace collection for create; list needs Namespace `read` and returns only Secrets with exact `read`. Other actions target the exact Secret. `operate` is checked when a Secret is bound or used.                                                                                                                                                       |
 | [`credential_source`](../credential-sources.md) | `create`, `read`, `update`, `delete`, `operate`                                                       | Namespace collection for create; list needs Namespace `read` and returns only sources with exact `read`. Other actions target the exact source. `operate` is checked when a source is bound or deployed. `update` also gates rotation and needs `secret:operate` on each Secret it reads; Roles bootstrapped before `update` existed must have it granted. |
 | [`agent`](../api.md#agents)                     | `create`, `read`, `update`, `delete`, `deploy`, `operate`, `administer`, `read_logs`, `manage_policy` | Namespace for create; exact Agent otherwise. Native admin requires a human session. Bootstrap does not grant `read_logs`.                                                                                                                                                                                                                                  |
-| [`sandbox_policy`](../sandbox-policies.md)      | `read`, `update`                                                                                      | Exact Agent-owned policy. Reads and discovery require Agent read; preview/save/apply require Agent manage_policy and enabled editing.                                                                                                                                                                                                                      |
+| [`sandbox_policy`](../sandbox-policies.md)      | `read`, `update`                                                                                      | Exact Agent-owned policy. Reads and discovery require Agent read; preview/save/apply require Agent manage_policy and enabled editing; apply also requires `read`, as do Agent deploy and an Agent update with repository bindings when saved additions exist.                                                                                              |
 | [`agent_revision`](../api.md#agent-revisions)   | `read`                                                                                                | Exact AgentRevision; deployment-status reads use this permission too.                                                                                                                                                                                                                                                                                      |
 
 Namespace, Preset, Agent, ServiceAccount, AgentRevision, Secret, and credential
@@ -107,6 +107,10 @@ operation was not authorized.`
   also requires `secret:operate` on each Secret it reads.
 - [Withdrawing a credential source](../api.md#post-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdraw)
   from an Agent requires `agent:operate`; the worker rechecks it before revoking.
+- [First-deployment receipt recovery](../agents/deployment.md#guarded-first-deployment)
+  requires current exact Agent `deploy` and reviewed Configuration `read`.
+  It does not grant Agent revision `read`; deployment-status access needs that
+  separate permission.
 - [Create](../api.md#post-namespacesnamespaceidconfigurations) or
   [update a Configuration](../api.md#patch-namespacesnamespaceidconfigurationsconfigurationid)
   with Secret bindings requires `secret:operate` on each bound Secret.

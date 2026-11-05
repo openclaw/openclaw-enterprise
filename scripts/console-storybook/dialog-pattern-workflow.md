@@ -24,6 +24,14 @@ simulated data.
    Open **Plugins (tablet)** (a 1024 px frame). Up to 1100 px the workspace
    stacks: the catalog shows alone, choosing Calendar replaces it with
    Calendar's detail, and **Back to plugins** returns to the catalog.
+   In **Components / Plugins / Available catalog**, add Calendar. Set
+   **Destructive tools** to **Disabled**, read its hint, and check that
+   **Calendar tools enabled by default** still says **Inherit default policy**.
+   The preview exercises the form; it does not submit a policy to a Controller.
+   In **Pages / Create Agent / Short window plugin picker** (1440×480), expand
+   and collapse **Access and credential setup**. Scroll the catalog browser:
+   plugin names stay readable, Calendar opens its details, and pagination is
+   reachable. Repeat at 390×844.
 3. Open **Slack editor (drawer)**. The drawer floats 16 px from the right, top
    and bottom edges with the same corners, and slides in from the right.
 4. Press Escape in each dialog. It closes and focus returns to the button that
@@ -64,3 +72,12 @@ Open **Components / Dialogs / Create Secret**, then repeat in **Create Secret
 Capture the initial Name, the edited form and the selected Secret on desktop and
 phone, plus a short recording of editing and creation. Use synthetic values only.
 These fixtures do not verify backend persistence or delivery to Slack.
+
+## Return after deferred plugin prefetch
+
+Open **Pages / Agent detail / Return before plugin prefetch starts**. The initial
+actions leave Plugins before its catalog read starts. Wait on Configuration,
+return to Plugins, and open Configure plugins. The catalog must load instead of
+staying on Loading plugins. Calendar's saved selection and policy stay unchanged.
+Close and reopen the picker, then Reset story and repeat. This scenario simulates
+catalog responses; it does not establish plugin installation or runtime access.

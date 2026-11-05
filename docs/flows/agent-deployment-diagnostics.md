@@ -1,7 +1,7 @@
 ---
 created: 2026-09-27
-updated: 2026-10-14
-last_updated_session: authoring-run/3ffec2d3-d528-40ec-98a6-f91d0ad55db4
+updated: 2026-11-04
+last_updated_session: authoring-run/06bc63c9-f110-4607-a058-a816a61dd579
 ---
 
 # Agent deployment diagnostics flow
@@ -117,6 +117,13 @@ reads `UNRECOGNIZED`. Native Driver errors become `DEPENDENCY_UNAVAILABLE`
 without messages. Stored deployment status, startup evidence, plugin warnings
 and Agent state stay unchanged.
 
+## Guarded first admission
+
+The [Configuration persistence flow](configuration-driver/persistence-and-revisions.md#guarded-first-admission)
+traces first-deployment admission and receipt recovery. That path ends when OCC
+commits an Agent revision and queues reconciliation. Diagnostics observes runtime
+state after admission.
+
 ## Debugging and Verification
 
 - `403` indicates missing exact permission; `404` indicates the path does not
@@ -132,10 +139,30 @@ and Agent state stay unchanged.
   Harness could not enroll with its egress proxy before the model check.
   An `agent` `state-migration` or `workspace-baseline` check with code
   `UNAVAILABLE` is a dedicated Harness or native worker held before Codex or its
-  node started: Doctor left its node state older, or `openclaw setup --baseline`
+  node started: Doctor did not complete maintenance, or `openclaw setup --baseline`
   failed. The log line names the cause and any invalid setting paths, and
   OpenClaw's own hints to run `openclaw doctor` are dropped, since the
-  Harness runs Doctor itself. Fix the cause, then deploy again.
+  Harness runs Doctor itself. A pending marker in the retained `state` directory preserves the repair requirement
+  across container replacements; fix the cause, then deploy again.
+- A `gateway` `gateway-state-lock` check with code `UNAVAILABLE` is a dedicated
+  Gateway that OpenClaw refused to configure: an earlier Gateway process did not
+  stop cleanly, and the restarted container cannot verify that the lock holder
+  stopped. The log line quotes OpenClaw's holder description. Follow
+  [unverifiable state owner recovery](../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner).
+- A `gateway` `gateway-config` check with code `UNAVAILABLE` is a Kubernetes
+  Gateway that exited before it served, and `openclaw config validate` reports
+  its configuration invalid. A plugin entry whose `config` fails the plugin's
+  schema causes this even when the plugin is disabled or denied. The log line
+  names up to five setting paths, with the schema message where OpenClaw gives
+  one, and never a value. Fix or remove those settings, then deploy again.
+  A dedicated Gateway's tool policy step holds the same check before OpenClaw
+  starts when no invalid setting belongs to the tool policy.
+- When a Codex startup check returns `model_not_found`, the worker saves that
+  code. Codex can omit the code from its error event. In that case, the probe
+  recognizes the provider’s HTTP 404 missing-model message for the requested model.
+  The Console names the model from the failed version. It directs editors to
+  Configuration and tells other viewers to ask an editor to choose a model.
+  If the viewer cannot redeploy the Agent, it tells them who can.
 - A dedicated Codex model check cause whose detail ends `-attempt2`, such as
   `turn-failed-attempt2`, means the check was retried once, after a timeout, a
   transient failure or a network or 5xx exit, and the second attempt failed that
@@ -177,6 +204,16 @@ and Agent state stay unchanged.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 07:41: Move the first-admission trace to the Configuration persistence owner and retain its diagnostics link. (authoring-run/06bc63c9-f110-4607-a058-a816a61dd579 - 6371064e)
+
+- 2026-10-31 15:00: Hold a dedicated Gateway's invalid settings outside its tool policy as check `gateway-config` instead of `gateway-tool-policy`. (fix-3045, finding 3045)
+
+- 2026-10-31 13:00: Hold a Kubernetes Gateway whose configuration OpenClaw refuses at startup as check `gateway-config`. (fix-3043b, finding 3043)
+
+- 2026-10-30 16:53: Document guarded first admission, receipt recovery, and how both controller calls bind authorization to the request captured on entry. (authoring-run/62495070-6f26-49ba-b4b9-e00ac1a9bccd - 460529c7)
+
+- 2026-10-29 15:00: Hold a dedicated Gateway's unverifiable Gateway state lock as check `gateway-state-lock` instead of `gateway-tool-policy`. (fix-2864, finding 2864)
 
 - 2026-10-27 09:00: Name the `state-migration` and `workspace-baseline` holds of a dedicated Harness or native worker. (fix-2686-status, finding 2686)
 

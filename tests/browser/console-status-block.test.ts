@@ -1,3 +1,4 @@
+import { openAdvancedSettings } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import type { BrowserContextOptions, Locator, Page, Route } from "playwright";
@@ -8,6 +9,7 @@ import type { PermissionAction } from "../../packages/contracts/src/index.ts";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   consoleViewports,
   detailUrl,
@@ -20,12 +22,11 @@ import {
   selectSecret,
   statusTone,
   grantStaleConfigurationUpdate,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import {
   createRepositoryLaunchFixture,
-  openAdvancedSettings,
   withholdPermissionSummary,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
 import {
   AGENT_SAVE_DENIED,
   CONFIGURATION_SAVE_DENIED,
@@ -241,7 +242,7 @@ test("Share Agent refusals", async (t) => {
   // person.
   async function sharingPage(
     t: TestContext,
-    viewport: BrowserContextOptions["viewport"],
+    viewport: NonNullable<BrowserContextOptions["viewport"]>,
     target = namespace,
   ) {
     agents += 1;
@@ -677,9 +678,7 @@ test("Repository access save refusals", async (t) => {
 });
 
 test("Configuration save outcomes", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Status configuration", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Status configuration");
   const reader = await createReader(fixture, namespace, "status-config-reader");
   let agents = 0;
   const newAgent = () => {
@@ -941,9 +940,7 @@ async function answerDiagnostics(page: Page, revisionId: string) {
 const DIAGNOSTICS_REASON = DIAGNOSTICS_DENIED;
 
 test("Run diagnostics access and outcomes", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Status diagnostics", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Status diagnostics");
   const reader = await createReader(fixture, namespace, "status-diagnostics-reader");
   let agents = 0;
   // An Agent with an active version, and that version's diagnostics section and Run button.

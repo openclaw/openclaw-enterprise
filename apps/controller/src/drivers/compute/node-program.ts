@@ -1,4 +1,4 @@
-import { deflateRawSync } from "node:zlib";
+import { deflateRawSync, inflateRawSync } from "node:zlib";
 
 /**
  * Upper bound for one program piece. Linux rejects any single exec argument or
@@ -32,10 +32,24 @@ export function withoutLineComments(program: string): string {
  * argument outgrows a piece and a Sandbox command carries only the compressed size.
  */
 export function nodeProgramArguments(program: string): string[] {
-  const encoded = deflateRawSync(withoutLineComments(program)).toString("base64");
+  // Keep nested runtime programs within the Sandbox command budget.
+  const encoded = deflateRawSync(withoutLineComments(program), {
+    level: 9,
+    memLevel: 7,
+  }).toString("base64");
   const pieces: string[] = [];
   for (let offset = 0; offset < encoded.length; offset += NODE_PROGRAM_PIECE_BYTES) {
     pieces.push(encoded.slice(offset, offset + NODE_PROGRAM_PIECE_BYTES));
   }
   return [NODE_PROGRAM_LOADER, ...pieces];
+}
+
+/** Re-encode a provider prelude with the canonical, already-rendered Node program. */
+export function prependNodeProgramArguments(prelude: string, args: readonly string[]): string[] {
+  const [loader, ...pieces] = args;
+  if (loader !== NODE_PROGRAM_LOADER) {
+    throw new Error("Expected the canonical Node program loader.");
+  }
+  const program = inflateRawSync(Buffer.from(pieces.join(""), "base64")).toString("utf8");
+  return nodeProgramArguments(prelude + program);
 }

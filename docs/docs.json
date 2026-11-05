@@ -34,26 +34,75 @@
                 "group": "Quickstart",
                 "pages": [
                   {
-                    "page": "guides/quickstart",
-                    "label": "Local Setup"
+                    "group": "Set Up Installation",
+                    "pages": [
+                      {
+                        "page": "guides/deploy/local-setup",
+                        "label": "Local k3d"
+                      },
+                      {
+                        "page": "guides/deploy/kubernetes-setup",
+                        "label": "Kubernetes"
+                      },
+                      {
+                        "page": "guides/deploy/eks-openshell-setup",
+                        "label": "Amazon EKS"
+                      }
+                    ]
                   },
                   {
-                    "page": "guides/kubernetes-setup",
-                    "label": "Kubernetes Setup"
-                  }
-                ]
-              },
-              {
-                "group": "Deploy",
-                "pages": [
-                  {
-                    "page": "guides/first-agent",
+                    "page": "guides/deploy/deploy-first-agent",
                     "label": "Deploy Your First Agent"
+                  },
+                  {
+                    "group": "Add Capabilities",
+                    "pages": [
+                      {
+                        "page": "guides/repository-credentials/openshell-git-push",
+                        "label": "Git"
+                      },
+                      {
+                        "page": "guides/integrations/codex-plugins",
+                        "label": "Plugins"
+                      }
+                    ]
+                  },
+                  {
+                    "group": "Cleanup",
+                    "pages": [
+                      {
+                        "page": "guides/deploy/quickstart-delete-agent",
+                        "label": "Delete Agent"
+                      },
+                      {
+                        "group": "Clean Up Installation",
+                        "pages": [
+                          {
+                            "page": "guides/deploy/local-cleanup",
+                            "label": "Local k3d"
+                          },
+                          {
+                            "page": "guides/deploy/kubernetes-cleanup",
+                            "label": "Kubernetes"
+                          },
+                          {
+                            "page": "guides/deploy/eks-cleanup",
+                            "label": "Amazon EKS"
+                          }
+                        ]
+                      }
+                    ]
                   }
                 ]
               }
             ],
-            "hidden": ["guides/README"]
+            "hidden": [
+              "guides/README",
+              "guides/repository-credentials/openshell-read-only",
+              "guides/repository-credentials/openshell-git-renewal",
+              "guides/kubernetes-setup",
+              "guides/deploy/quickstart-session"
+            ]
           },
           {
             "tab": "Topics",
@@ -209,6 +258,10 @@
                     "label": "Credential Proxy"
                   },
                   {
+                    "page": "design/credential-proxy-architecture",
+                    "label": "Credential Proxy Architecture"
+                  },
+                  {
                     "page": "reference/security/credential-proxy",
                     "label": "Credential Proxy Threat Model"
                   },
@@ -322,8 +375,20 @@
                             "label": "Overview"
                           },
                           {
+                            "page": "reference/drivers/kubernetes-compute/configuration",
+                            "label": "Configuration"
+                          },
+                          {
+                            "page": "reference/drivers/kubernetes-compute/model-provider",
+                            "label": "Model Provider"
+                          },
+                          {
                             "page": "reference/drivers/kubernetes-compute/networking-and-isolation",
                             "label": "Networking and Isolation"
+                          },
+                          {
+                            "page": "reference/drivers/kubernetes-compute/gateway-authentication",
+                            "label": "Gateway Authentication"
                           },
                           {
                             "page": "reference/drivers/kubernetes-compute/storage-and-credentials",
@@ -340,6 +405,10 @@
                           {
                             "page": "reference/drivers/kubernetes-compute/split-layout-installations",
                             "label": "Split-Layout Installations"
+                          },
+                          {
+                            "page": "reference/drivers/kubernetes-compute/preprovisioned-namespace",
+                            "label": "Preprovisioned Namespace"
                           }
                         ]
                       },
@@ -431,8 +500,8 @@
                         "label": "Installation"
                       },
                       {
-                        "page": "guides/repository-credentials/team-runbook",
-                        "label": "Team Runbook"
+                        "page": "guides/repository-credentials/openshell-enrollment",
+                        "label": "OpenShell Enrollment"
                       },
                       {
                         "page": "reference/repository-credentials",
@@ -486,6 +555,7 @@
               }
             ],
             "hidden": [
+              "guides/repository-credentials/team-runbook",
               "guides/repository-credentials/standalone-service",
               "guides/repository-credentials/development-token",
               "reference/repository-credentials/development-token",
@@ -495,10 +565,10 @@
             ]
           },
           {
-            "tab": "Operate",
+            "tab": "Deploy & Operate",
             "groups": [
               {
-                "group": "Operate",
+                "group": "Deploy & Operate",
                 "pages": [
                   {
                     "page": "guides/operate/README",
@@ -514,52 +584,36 @@
                     "label": "Overview"
                   },
                   {
+                    "page": "guides/deploy/kubernetes",
+                    "label": "Kubernetes"
+                  },
+                  {
+                    "page": "guides/quickstart",
+                    "label": "Local Setup Without OpenShell"
+                  },
+                  {
                     "page": "guides/deploy/production-installation",
                     "label": "Control Plane Setup"
-                  },
-                  {
-                    "page": "guides/deploy/console-theme",
-                    "label": "Console Theme"
-                  },
-                  {
-                    "page": "guides/deploy/private-registry-images",
-                    "label": "Private Images"
                   },
                   {
                     "page": "guides/deploy/installation-profiles",
                     "label": "Profiles"
                   },
                   {
-                    "page": "guides/deploy/split-layout-upgrade",
-                    "label": "Split-Layout Upgrade"
+                    "page": "guides/deploy/private-registry-images",
+                    "label": "Private Images"
                   },
                   {
-                    "page": "guides/deploy/upgrade-checklist",
-                    "label": "Upgrade Checklist"
+                    "page": "guides/deploy/eks-private-access",
+                    "label": "Private EKS Access"
                   },
                   {
-                    "page": "guides/deploy/upgrade-dispositions",
-                    "label": "Upgrade Dispositions"
+                    "page": "guides/deploy/codex-sandbox",
+                    "label": "Codex Sandbox"
                   },
                   {
-                    "page": "guides/deploy/upgrade-baseline",
-                    "label": "Upgrade Baseline"
-                  },
-                  {
-                    "page": "guides/deploy/production-upgrade",
-                    "label": "Image Upgrades"
-                  },
-                  {
-                    "page": "guides/deploy/production-installation-changes",
-                    "label": "Installation Changes"
-                  },
-                  {
-                    "page": "guides/deploy/production-upgrade-recovery",
-                    "label": "Upgrade Recovery"
-                  },
-                  {
-                    "page": "guides/deploy/auth-maintenance",
-                    "label": "External Sign-in Maintenance"
+                    "page": "guides/deploy/console-theme",
+                    "label": "Console Theme"
                   },
                   {
                     "page": "guides/deploy/google-sign-in",
@@ -570,32 +624,8 @@
                     "label": "OIDC Sign-in"
                   },
                   {
-                    "page": "guides/deploy/oidc-operations",
-                    "label": "OIDC Operations"
-                  },
-                  {
                     "page": "guides/deploy/oidc-keycloak",
                     "label": "Keycloak Sign-in"
-                  },
-                  {
-                    "page": "guides/deploy/local-k3d-image-upgrade",
-                    "label": "Local k3d Upgrades"
-                  },
-                  {
-                    "page": "guides/deploy/kubernetes",
-                    "label": "Kubernetes"
-                  },
-                  {
-                    "page": "guides/deploy/eks",
-                    "label": "Amazon EKS"
-                  },
-                  {
-                    "page": "guides/deploy/eks-private-access",
-                    "label": "Private EKS Access"
-                  },
-                  {
-                    "page": "guides/deploy/codex-sandbox",
-                    "label": "Codex Sandbox"
                   },
                   {
                     "group": "Settings",
@@ -658,6 +688,10 @@
                     "label": "Observability"
                   },
                   {
+                    "page": "guides/observability/worker-terminations",
+                    "label": "Worker Exits"
+                  },
+                  {
                     "page": "guides/observability/metrics",
                     "label": "Metrics Scraping"
                   },
@@ -680,15 +714,60 @@
                 ]
               },
               {
-                "group": "Maintenance and Recovery",
+                "group": "Upgrades & Recovery",
+                "pages": [
+                  {
+                    "page": "guides/deploy/upgrade-checklist",
+                    "label": "Upgrade Checklist"
+                  },
+                  {
+                    "page": "guides/deploy/upgrade-baseline",
+                    "label": "Upgrade Baseline"
+                  },
+                  {
+                    "page": "guides/deploy/upgrade-dispositions",
+                    "label": "Upgrade Dispositions"
+                  },
+                  {
+                    "page": "guides/deploy/production-upgrade",
+                    "label": "Image Upgrades"
+                  },
+                  {
+                    "page": "guides/deploy/production-installation-changes",
+                    "label": "Installation Changes"
+                  },
+                  {
+                    "page": "guides/deploy/production-upgrade-recovery",
+                    "label": "Upgrade Recovery"
+                  },
+                  {
+                    "page": "guides/deploy/split-layout-upgrade",
+                    "label": "Split-Layout Upgrade"
+                  },
+                  {
+                    "page": "guides/deploy/local-k3d-image-upgrade",
+                    "label": "Local k3d Upgrades"
+                  },
+                  {
+                    "page": "guides/deploy/credential-proxy-upgrade",
+                    "label": "Migrate to Credential Proxy"
+                  }
+                ]
+              },
+              {
+                "group": "Maintenance",
                 "pages": [
                   {
                     "page": "guides/deploy/credential-lifecycle",
                     "label": "Credential Rotation"
                   },
                   {
-                    "page": "guides/deploy/credential-proxy-upgrade",
-                    "label": "Migrate to Credential Proxy"
+                    "page": "guides/deploy/auth-maintenance",
+                    "label": "External Sign-in Maintenance"
+                  },
+                  {
+                    "page": "guides/deploy/oidc-operations",
+                    "label": "OIDC Operations"
                   }
                 ]
               }
@@ -698,6 +777,7 @@
               "guides/deploy/local-operations",
               "flows/installation-profile-rendering",
               "guides/deploy/published-images",
+              "guides/deploy/prerequisite-diagnosis",
               "guides/deploy/production-tui",
               "reference/settings/oidc"
             ]
@@ -760,13 +840,109 @@
                     "label": "Quickstart"
                   },
                   {
-                    "page": "reference/api",
+                    "page": "reference/api-explorer",
                     "label": "API Reference"
+                  },
+                  {
+                    "page": "guides/http-api-agent",
+                    "label": "Create an Agent"
                   }
                 ]
               }
             ],
-            "hidden": ["reference/postgres-auth-binding", "reference/cli/local-development"]
+            "hidden": [
+              "reference/api",
+              "reference/postgres-auth-binding",
+              "reference/cli/local-development"
+            ]
+          },
+          {
+            "tab": "Testing & CI",
+            "groups": [
+              {
+                "group": "Testing",
+                "pages": [
+                  {
+                    "page": "testing/README",
+                    "label": "Overview"
+                  },
+                  {
+                    "page": "testing/local",
+                    "label": "Local Tests"
+                  },
+                  {
+                    "page": "testing/manual-tests",
+                    "label": "Manual Tests"
+                  },
+                  {
+                    "page": "testing/fixtures-and-scenarios",
+                    "label": "Fixtures and Scenarios"
+                  }
+                ]
+              },
+              {
+                "group": "CI",
+                "pages": [
+                  {
+                    "page": "testing/ci",
+                    "label": "Overview"
+                  },
+                  {
+                    "page": "testing/ci/configuration",
+                    "label": "Configuration"
+                  },
+                  {
+                    "page": "testing/ci/run-lanes",
+                    "label": "Find and Run Lanes"
+                  },
+                  {
+                    "group": "Tests",
+                    "pages": [
+                      {
+                        "page": "testing/ci/required-checks",
+                        "label": "Required Checks"
+                      },
+                      {
+                        "page": "testing/ci/first-agent-smoke",
+                        "label": "First Agent Smoke"
+                      },
+                      {
+                        "page": "testing/ci/qa-advisory",
+                        "label": "QA Matrix Advisory"
+                      },
+                      {
+                        "page": "testing/ci/full-integration",
+                        "label": "Full Integration"
+                      },
+                      {
+                        "page": "testing/ci/observability-demo",
+                        "label": "Observability Demo"
+                      },
+                      {
+                        "page": "testing/ci/k3d-quickstart",
+                        "label": "Local k3d Quickstart"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ],
+            "hidden": [
+              "testing/postgresql",
+              "testing/docker",
+              "testing/ssh",
+              "testing/kubernetes",
+              "testing/populated-controller-return",
+              "testing/slack",
+              "testing/plugins",
+              "testing/openshell",
+              "testing/openshell-oauth",
+              "testing/openshell-coverage",
+              "testing/ci/openshell-execution",
+              "testing/repository-credentials",
+              "testing/static-egress",
+              "testing/protected-repository-custody"
+            ]
           },
           {
             "tab": "Contribute",
@@ -928,43 +1104,40 @@
                   {
                     "page": "testing/autoreview",
                     "label": "Code Review"
-                  },
-                  {
-                    "group": "Testing and CI",
-                    "pages": [
-                      {
-                        "page": "testing/README",
-                        "label": "Overview"
-                      },
-                      {
-                        "page": "testing/local",
-                        "label": "Local Tests"
-                      },
-                      {
-                        "page": "testing/module-boundaries",
-                        "label": "Module Boundaries"
-                      },
-                      {
-                        "page": "testing/fixtures-and-scenarios",
-                        "label": "Fixtures and Scenarios"
-                      },
-                      {
-                        "page": "testing/ci",
-                        "label": "CI"
-                      }
-                    ]
                   }
                 ]
               },
               {
                 "group": "Release",
                 "pages": [
-                  { "page": "release/README", "label": "Overview" },
-                  { "page": "release/configuration", "label": "Configuration" },
-                  { "page": "release/containers", "label": "Containers" },
-                  { "page": "release/chart-publication", "label": "Helm Chart" },
-                  { "page": "release/cli-publication", "label": "OCC CLI" },
-                  { "page": "release/container-promotion", "label": "Docker Hub Promotion" }
+                  {
+                    "page": "release/README",
+                    "label": "Overview"
+                  },
+                  {
+                    "page": "release/configuration",
+                    "label": "Configuration"
+                  },
+                  {
+                    "page": "release/containers",
+                    "label": "Containers"
+                  },
+                  {
+                    "page": "release/chart-publication",
+                    "label": "Helm Chart"
+                  },
+                  {
+                    "page": "release/cli-publication",
+                    "label": "OCC CLI"
+                  },
+                  {
+                    "page": "release/staging-qualification",
+                    "label": "Staging Qualification"
+                  },
+                  {
+                    "page": "release/container-promotion",
+                    "label": "Docker Hub Promotion"
+                  }
                 ]
               },
               {
@@ -973,6 +1146,10 @@
                   {
                     "page": "layout",
                     "label": "Repository Layout"
+                  },
+                  {
+                    "page": "testing/module-boundaries",
+                    "label": "Module Boundaries"
                   }
                 ]
               },
@@ -998,6 +1175,10 @@
                   {
                     "page": "base-driver-docs-template",
                     "label": "Driver Docs"
+                  },
+                  {
+                    "page": "contributing/ci-check-template",
+                    "label": "CI Check Template"
                   }
                 ]
               }
@@ -1009,6 +1190,8 @@
               "guides/deploy/local-sandbox-network-policy",
               "guides/deploy/openshell-credential-sources",
               "guides/deploy/local-openshell-images",
+              "guides/deploy/local-kubernetes-tools",
+              "guides/operate/local-setup-troubleshooting",
               "guides/deploy/protected-egress-development",
               "reference/settings/development",
               "design/resources",
@@ -1068,24 +1251,12 @@
               "flows/cli-publication",
               "flows/cli-agent-browsing",
               "flows/github-actions-testing/preparation",
-              "testing/postgresql",
-              "testing/docker",
-              "testing/ssh",
-              "testing/kubernetes",
-              "testing/slack",
-              "testing/plugins",
-              "testing/openshell",
-              "testing/openshell-oauth",
-              "testing/openshell-coverage",
               "flows/agent-repository-credentials",
               "flows/public-github-reads",
               "flows/repository-credentials",
               "flows/repository-credential-configuration",
-              "testing/repository-credentials",
               "flows/agent-presets",
               "flows/credential-source-egress",
-              "testing/static-egress",
-              "testing/protected-repository-custody",
               "reference/sandbox-policies",
               "guides/topics/agent-sandbox-policy",
               "flows/agent-sandbox-policy"
@@ -1094,5 +1265,77 @@
         ]
       }
     ]
-  }
+  },
+  "redirects": [
+    {
+      "from": "/testing/ci/staging-qualification/",
+      "to": "/release/staging-qualification/"
+    },
+    {
+      "from": "/guides/deploy/local-openshell-setup/",
+      "to": "/guides/deploy/local-setup/",
+      "anchors": {
+        "3-enable-the-credential-and-plugin-settings": "/guides/deploy/local-setup/#3-configure-credential-gateway",
+        "remove-a-previous-quickstart": "/guides/deploy/local-cleanup/#remove-the-installation",
+        "next-steps": "/guides/deploy/local-cleanup/#next-steps"
+      }
+    },
+    {
+      "from": "/guides/deploy/local-openshell-browser/",
+      "to": "/guides/deploy/deploy-first-agent/#3-grant-model-access-and-deploy",
+      "anchors": {
+        "bind-the-origin-before-deployment": "/guides/deploy/deploy-first-agent/#bind-the-origin-before-deployment",
+        "open-the-agent-and-continue-a-chat": "/guides/deploy/deploy-first-agent/#4-complete-onboarding-in-the-control-ui",
+        "restore-read-only-git-and-keep-the-agent-running": "/guides/repository-credentials/openshell-read-only/",
+        "renew-expired-read-only-access": "/guides/repository-credentials/openshell-read-only/#renew-expired-read-only-access"
+      }
+    },
+    {
+      "from": "/guides/deploy/eks-openshell-owner-session/",
+      "to": "/guides/deploy/quickstart-session/",
+      "anchors": {
+        "choose-a-console-deployment-action": "/guides/deploy/deploy-first-agent/#3-grant-model-access-and-deploy",
+        "complete-onboarding-in-the-browser": "/guides/deploy/deploy-first-agent/#4-complete-onboarding-in-the-control-ui",
+        "temporarily-grant-one-push": "/guides/repository-credentials/openshell-git-push/",
+        "restore-read-only-access": "/guides/repository-credentials/openshell-read-only/"
+      }
+    },
+    {
+      "from": "/guides/deploy/eks/",
+      "to": "/guides/deploy/eks-openshell-setup/",
+      "anchors": {
+        "prepare-aws-infrastructure": "/guides/deploy/eks-openshell-setup/#prepare-aws-infrastructure",
+        "select-the-cluster": "/guides/deploy/eks-openshell-setup/#select-the-cluster",
+        "authenticate-the-image-builder-to-ecr": "/guides/deploy/eks-openshell-setup/#authenticate-the-image-builder-to-ecr",
+        "configure-network-enforcement-and-storage": "/guides/deploy/eks-openshell-setup/#configure-network-enforcement-and-storage",
+        "enable-console-workspace-files": "/guides/deploy/eks-openshell-setup/#enable-console-workspace-files",
+        "configure-the-protected-copies-and-install": "/guides/deploy/eks-openshell-setup/#configure-the-protected-copies-and-install",
+        "verify-workspace-routing": "/guides/deploy/eks-openshell-setup/#verify-workspace-routing",
+        "update-an-existing-eks-installation": "/guides/deploy/production-upgrade/"
+      }
+    },
+    {
+      "from": "/guides/deploy/eks-openshell-browser/",
+      "to": "/guides/deploy/eks-openshell-setup/#configure-browser-access",
+      "anchors": {
+        "set-the-production-browser-origins-before-installing-occ": "/guides/deploy/eks-openshell-setup/#set-the-production-browser-origins-before-installing-occ",
+        "read-the-protected-initial-owner-files": "/guides/deploy/eks-openshell-setup/#read-the-protected-initial-owner-files",
+        "install-the-loopback-tls-listener": "/guides/deploy/eks-openshell-setup/#install-the-loopback-tls-listener"
+      }
+    },
+    {
+      "from": "/testing/ci/documentation-publication/",
+      "to": "/contributing/documentation-hosting/#deploy-private-documentation",
+      "anchors": {
+        "overview": "/contributing/documentation-hosting/#deploy-private-documentation",
+        "trigger": "/contributing/documentation-hosting/#deploy-private-documentation",
+        "when-it-runs": "/contributing/documentation-hosting/#deploy-private-documentation",
+        "scenarios": "/contributing/documentation-hosting/#build-and-deployment-stages",
+        "execution": "/contributing/documentation-hosting/#deploy-private-documentation",
+        "run-it": "/contributing/documentation-hosting/#deploy-private-documentation",
+        "results-and-limits": "/contributing/documentation-hosting/#verify-a-deployment",
+        "files": "/contributing/documentation-hosting/#publication-source-files"
+      }
+    }
+  ]
 }

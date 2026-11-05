@@ -1,4 +1,5 @@
-import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
+import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 import { RUNTIME_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { normalizeOpenAiBaseUrl } from "../../apps/controller/src/drivers/openai-endpoint.ts";
@@ -17,12 +18,11 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { createRequire } from "node:module";
-import { connect, isIP, isIPv4 } from "node:net";
+import { isIP, isIPv4 } from "node:net";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { connect as connectTls } from "node:tls";
 import { promisify } from "node:util";
 import { inflateRawSync } from "node:zlib";
 import { createAuthenticatedControllerRequest } from "../helpers/auth-session.mjs";
@@ -65,8 +65,8 @@ import {
 import {
   createEnvoyWorkspaceGatewayPlan,
   ensureEnvoyGatewayControllers,
+  startWorkspaceGatewayHostRelay,
 } from "../helpers/envoy-workspace-gateway.mjs";
-import { availablePort } from "../helpers/available-port.mjs";
 import {
   defaultKeycloakImage,
   issueServingCertificate,
@@ -77,8 +77,22 @@ import {
 
 const executeFile = promisify(execFile);
 const selectedScenario = process.env.OCC_TEST_OPENSHELL_SCENARIO ?? "full";
-assert.ok(["full", "network-policy"].includes(selectedScenario), "Unknown OpenShell scenario.");
+assert.ok(
+  ["full", "network-policy", "plugin-install"].includes(selectedScenario),
+  "Unknown OpenShell scenario.",
+);
 const networkPolicyOnly = selectedScenario === "network-policy";
+const pluginInstallOnly = selectedScenario === "plugin-install";
+const installationPluginId =
+  process.env.OCC_TEST_CODEX_INSTALL_PLUGIN_ID ?? "codex-plugin:linear@openai-curated-remote";
+const pluginArtifactHosts = Object.freeze([
+  "sdmntprsouthcentralus.oaiusercontent.com",
+  "sdmntprwestcentralus.oaiusercontent.com",
+  "sdmntprcentralus.oaiusercontent.com",
+  "sdmntprwestus.oaiusercontent.com",
+  "sdmntprbrazilsouth.oaiusercontent.com",
+  "sdmntprwestus2.oaiusercontent.com",
+]);
 
 const kubeconfigPath = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;
 const kubernetesContext = process.env.OCC_TEST_KUBERNETES_CONTEXT;
@@ -468,227 +482,6 @@ function workspaceGatewayHostname(workspaceGateway) {
   return `occ-gateway-${hash(
     `${workspaceGateway.routing.gatewayNamespace}/${workspaceGateway.routing.gatewayName}`,
   )}.${workspaceGateway.routing.envoyNamespace}.svc.cluster.local`;
-}
-
-async function waitForLoopbackPort(port) {
-  await waitFor("OpenShell host-side Gateway routing relay", async () => {
-    try {
-      await new Promise((resolve, reject) => {
-        const socket = connect({ host: "127.0.0.1", port });
-        socket.once("connect", () => {
-          socket.destroy();
-          resolve();
-        });
-        socket.once("error", reject);
-      });
-      return true;
-    } catch {
-      return undefined;
-    }
-  });
-}
-
-async function waitForWorkspaceGatewayTls(hostname, port) {
-  await waitFor("OpenShell host-side Gateway TLS path", async () => {
-    try {
-      await new Promise((resolve, reject) => {
-        const socket = connectTls({ host: hostname, port, servername: hostname });
-        const timeout = setTimeout(
-          () => socket.destroy(new Error("Gateway TLS probe timed out.")),
-          5_000,
-        );
-        timeout.unref();
-        socket.once("secureConnect", () => {
-          clearTimeout(timeout);
-          socket.destroy();
-          resolve();
-        });
-        socket.once("error", (error) => {
-          clearTimeout(timeout);
-          reject(error);
-        });
-      });
-      return true;
-    } catch {
-      return undefined;
-    }
-  });
-}
-
-async function startWorkspaceGatewayHostRelay(context, workspaceGateway) {
-  const containerEngine = process.env.OCC_DOCKER_BIN ?? "docker";
-  // Docker Desktop and Podman Machine host networking stays in their Linux VM.
-  // Publish to macOS loopback and use the engine's host alias for the port-forward.
-  const usesContainerVm = process.platform === "darwin";
-  const relayHost = usesContainerVm
-    ? basename(containerEngine) === "podman"
-      ? "host.containers.internal"
-      : "host.docker.internal"
-    : "127.0.0.1";
-  const dockerRuntimeImage = process.env.OCC_DOCKER_RUNTIME_IMAGE;
-  assert.ok(
-    dockerRuntimeImage,
-    "OCC_DOCKER_RUNTIME_IMAGE is required for the loopback-only Gateway routing relay.",
-  );
-  const gatewayHostname = workspaceGatewayHostname(workspaceGateway);
-  const services = await resources(
-    "services",
-    workspaceGateway.routing.envoyNamespace,
-    "-l",
-    `gateway.envoyproxy.io/owning-gateway-namespace=${workspaceGateway.routing.gatewayNamespace},gateway.envoyproxy.io/owning-gateway-name=${workspaceGateway.routing.gatewayName}`,
-  );
-  const envoyService = services.find((service) =>
-    service.spec?.ports?.some(({ port }) => port === 443),
-  );
-  assert.ok(envoyService, "the workspace Gateway must expose an Envoy HTTPS Service.");
-  assert.match(
-    envoyService.spec.clusterIP ?? "",
-    /^(?:\d{1,3}\.){3}\d{1,3}$/,
-    "the disposable k3d Gateway must expose an IPv4 ClusterIP.",
-  );
-  const endpointPort = usesContainerVm ? await availablePort() : 443;
-  if (usesContainerVm) {
-    const envoyHttpsPort = envoyService.spec.ports.find(({ port }) => port === 443);
-    assert.ok(envoyHttpsPort, "the workspace Gateway Service must retain its HTTPS port.");
-    await kubectl(
-      "patch",
-      "service",
-      envoyService.metadata.name,
-      "--namespace",
-      workspaceGateway.routing.envoyNamespace,
-      "--type=json",
-      "--patch",
-      JSON.stringify([
-        {
-          op: "add",
-          path: "/spec/ports/-",
-          value: {
-            name: "oce-host-relay",
-            protocol: envoyHttpsPort.protocol ?? "TCP",
-            port: endpointPort,
-            targetPort: envoyHttpsPort.targetPort ?? envoyHttpsPort.port,
-          },
-        },
-      ]),
-    );
-  }
-  const relayPod = `oce-routing-relay-${hash(randomUUID())}`;
-  const relayLabels = Object.entries(workspaceGateway.apiPodLabels)
-    .map(([name, value]) => `${name}=${value}`)
-    .join(",");
-  const inClusterRelayProgram = [
-    'const net = require("node:net");',
-    "const server = net.createServer((client) => {",
-    `  const upstream = net.connect({ host: ${JSON.stringify(envoyService.spec.clusterIP)}, port: 443 });`,
-    "  client.pipe(upstream).pipe(client);",
-    '  client.on("error", () => upstream.destroy());',
-    '  upstream.on("error", () => client.destroy());',
-    "});",
-    'server.listen(8443, "0.0.0.0");',
-  ].join("\n");
-  await kubectl(
-    "run",
-    relayPod,
-    "--namespace",
-    workspaceGateway.routing.gatewayNamespace,
-    `--image=${gatewayImage}`,
-    "--image-pull-policy=IfNotPresent",
-    "--restart=Never",
-    `--labels=${relayLabels}`,
-    "--command",
-    "--",
-    "node",
-    "-e",
-    inClusterRelayProgram,
-  );
-  await kubectl(
-    "wait",
-    "--namespace",
-    workspaceGateway.routing.gatewayNamespace,
-    "--for=condition=Ready",
-    `pod/${relayPod}`,
-    "--timeout=180s",
-  );
-  const forwarding = await fixture.startPortForwardTarget(
-    workspaceGateway.routing.gatewayNamespace,
-    `pod/${relayPod}`,
-    "0:8443",
-  );
-  const forwardedPort = Number(new URL(forwarding.url).port);
-  const relayName = `oce-openshell-routing-${hash(randomUUID())}`;
-  // Bind/startup failure must still close the forwarding process and owned relay.
-  context.after(async () => {
-    await Promise.allSettled([
-      forwarding.stop(),
-      executeFile(containerEngine, ["stop", "--timeout", "2", relayName]),
-    ]);
-  });
-  const relayProgram = [
-    'const net = require("node:net");',
-    "const targetPort = Number(process.argv[1]);",
-    "const server = net.createServer((client) => {",
-    `  const upstream = net.connect({ host: ${JSON.stringify(relayHost)}, port: targetPort });`,
-    "  client.pipe(upstream).pipe(client);",
-    '  client.on("error", () => upstream.destroy());',
-    '  upstream.on("error", () => client.destroy());',
-    "});",
-    `server.listen(443, ${JSON.stringify(usesContainerVm ? "0.0.0.0" : "127.0.0.1")});`,
-    'process.on("SIGTERM", () => server.close(() => process.exit(0)));',
-  ].join("\n");
-  await executeFile(containerEngine, [
-    "run",
-    "--rm",
-    "-d",
-    "--name",
-    relayName,
-    ...(usesContainerVm ? ["--publish", `127.0.0.1:${endpointPort}:443`] : ["--network", "host"]),
-    "--user",
-    "0",
-    "--stop-timeout",
-    "2",
-    "--entrypoint",
-    "node",
-    dockerRuntimeImage,
-    "-e",
-    relayProgram,
-    String(forwardedPort),
-  ]);
-  await delay(250);
-  let relayRunning = false;
-  try {
-    const inspected = await executeFile(containerEngine, [
-      "inspect",
-      "--format={{.State.Running}}",
-      relayName,
-    ]);
-    relayRunning = inspected.stdout.trim() === "true";
-  } catch {
-    // --rm removes a relay that cannot bind its loopback listener.
-  }
-  assert.equal(
-    relayRunning,
-    true,
-    "the exact OpenShell host routing relay must own loopback port 443.",
-  );
-  const originalLookup = dns.lookup;
-  dns.lookup = function lookup(hostname, options, callback) {
-    if (hostname !== gatewayHostname) {
-      return originalLookup.call(dns, hostname, options, callback);
-    }
-    if (typeof options === "function") {
-      return options(null, "127.0.0.1", 4);
-    }
-    if (options?.all === true) {
-      return callback(null, [{ address: "127.0.0.1", family: 4 }]);
-    }
-    return callback(null, "127.0.0.1", 4);
-  };
-  context.after(() => {
-    dns.lookup = originalLookup;
-  });
-  await waitForLoopbackPort(endpointPort);
-  await waitForWorkspaceGatewayTls(gatewayHostname, endpointPort);
-  return endpointPort;
 }
 
 function summarizeWorkerEvent(event) {
@@ -1843,6 +1636,7 @@ function createIntegrationSandboxDriverFactory(
       id: selection.id,
       capability: "sandbox",
       implementation: selection.implementation,
+      supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
       facets: Object.freeze(["networking", "filesystem", "process"]),
       networkPolicy: { live: true, wildcards: true, portRanges: true },
       admitNetworkPolicy(additions, version, defaults) {
@@ -2255,6 +2049,7 @@ async function prepareProductionInstallation(
   workspaceGateway.routing.endpointPort = await startWorkspaceGatewayHostRelay(
     context,
     workspaceGateway,
+    { ...gatewayHelpers, gatewayImage },
   );
   const controller = await createScopedController(
     context,
@@ -2303,9 +2098,39 @@ async function prepareProductionInstallation(
     openShellRuntimeClass,
     cluster: "k3d-openshell-sandboxdriver",
   });
+  if (pluginInstallOnly) {
+    configuration.drivers.plugin = [
+      {
+        id: "codex-plugin",
+        configuration: { catalogSource: "openai-curated" },
+      },
+    ];
+    // These are observed native package origins, admitted through ordinary operator
+    // configuration. Keep artifact access credential-free; new origins need review.
+    configuration.drivers.sandbox.configuration.policy.networkPolicies.push({
+      name: "codex-plugin-artifacts",
+      binaries: configuration.drivers.credential_gateway.configuration.binaries.map((path) => ({
+        path,
+      })),
+      endpoints: pluginArtifactHosts.map((host) => ({
+        host,
+        ports: [443],
+        protocol: "rest",
+        // OpenShell 0.1.5 inspects TLS automatically; explicit "terminate" is rejected.
+        enforcement: "enforce",
+        access: "read_only",
+      })),
+    });
+  }
   // The Codex scenario runs a second Agent beside the first. Each Agent holds about 7 GiB of
   // limits: its 4 GiB Gateway, its Harness and the 1 GiB OpenShell supervisor. A rolling
   // replacement of a Gateway briefly holds another 4 GiB.
+  if (modelSourceType === "openai") {
+    configuration.drivers.compute.configuration.runtime.modelProvider = {
+      protocol: "openai-responses",
+      baseUrl: modelBaseUrl,
+    };
+  }
   configuration.drivers.compute.configuration.resources.namespace.quota["limits.memory"] = "20Gi";
   configuration.drivers.compute.configuration.network.pluginStatusProxySourceCidrs =
     await apiServerPodProxySourceCidrs();
@@ -2643,7 +2468,9 @@ async function prepareProductionInstallation(
   const modelSource = await request("POST", `/namespaces/${namespaceId}/credential-sources`, {
     name: `openshell-openai-${randomUUID()}`,
     type: modelSourceType,
-    ...(openShellModelBaseUrl === undefined ? {} : { config: { base_url: openShellModelBaseUrl } }),
+    ...(openShellModelBaseUrl === undefined
+      ? {}
+      : { config: { authorized_base_url: openShellModelBaseUrl } }),
     secrets: { [modelSecretField]: modelSecret.data.ref },
   });
   assert.equal(modelSource.status, 201, JSON.stringify(modelSource.error));
@@ -2703,6 +2530,7 @@ async function prepareProductionInstallation(
     name: `openshell-${randomUUID()}`,
     configurationId: agentConfiguration.data.id,
     executionMode: "dedicated",
+    ...(pluginInstallOnly ? { plugins: { [installationPluginId]: { enabled: true } } } : {}),
     ...(gatewayManagedMode === undefined ? {} : { gatewayManagedMode }),
     harnessAuth: { method: "credential_source", sourceId: modelSource.data.id },
     // Console creation includes initial files. Keep this normal setup path in the
@@ -3064,6 +2892,8 @@ async function prepareProductionInstallation(
     gatewayPlacement,
     gatewayPod: gatewayPods[0],
     harnessServiceUrl: createSandboxDriver.harnessServiceUrls.get(deployed.data.id),
+    harnessServiceUrlForRevision: (revisionId) =>
+      createSandboxDriver.harnessServiceUrls.get(revisionId),
     appServerToken: transport.appServerToken,
     modelSecretId: modelSecret.data.id,
     sourceRoleId: sourceRole.data.id,
@@ -4041,7 +3871,9 @@ async function assertNonModelCredentialSource(topology) {
   const secondModel = await request("POST", `/namespaces/${namespaceId}/credential-sources`, {
     name: `openshell-openai-second-${randomUUID()}`,
     type: modelSourceType,
-    ...(openShellModelBaseUrl === undefined ? {} : { config: { base_url: openShellModelBaseUrl } }),
+    ...(openShellModelBaseUrl === undefined
+      ? {}
+      : { config: { authorized_base_url: openShellModelBaseUrl } }),
     secrets: { [modelSecretField]: secondModelSecret.data.ref },
   });
   assert.equal(secondModel.status, 201, JSON.stringify(secondModel.error));
@@ -6315,6 +6147,10 @@ async function setModelProviderDns(topology, address) {
   modelDnsOverride = address;
 }
 
+function modelEndpointSupportsDnsProofs() {
+  return isIP(modelEndpoint.hostname) === 0;
+}
+
 /**
  * Serves the model host from an upstream signed by a CA nothing trusts. The model profile allows
  * the provider's exact host even at a cluster address, so OpenShell connects, and must refuse
@@ -6323,7 +6159,7 @@ async function setModelProviderDns(topology, address) {
  */
 async function assertModelRouteRefusesUntrustedUpstream(topology) {
   // Cluster DNS cannot redirect an endpoint selected by address; report the gap instead.
-  if (isIP(modelEndpoint.hostname) !== 0) {
+  if (!modelEndpointSupportsDnsProofs()) {
     process.stderr.write(
       "OpenShell integration: untrusted model upstream not tested; the model endpoint is an address.\n",
     );
@@ -6543,7 +6379,7 @@ async function replacementActivationDiagnostic(topology, revision, worker) {
  * the key, and the same running Harness must complete a turn once the provider is back.
  */
 async function assertModelProviderOutageFailsClosed(topology) {
-  if (isIP(modelEndpoint.hostname) !== 0) {
+  if (!modelEndpointSupportsDnsProofs()) {
     process.stderr.write(
       "OpenShell integration: model provider outage not tested; the model endpoint is an address.\n",
     );
@@ -7321,6 +7157,135 @@ async function observeExposedCodexAuthenticationBoundary(serviceUrl, appServerTo
     upgrade.on("error", reject);
     upgrade.end();
   });
+}
+
+async function assertInstalledCodexPlugin(topology) {
+  const gateway = topology.gatewayClient();
+  const status = await gateway.getPolicyStatus(
+    { workspace: topology.placement, sandbox: topology.sandbox.metadata.name },
+    AbortSignal.timeout(10_000),
+  );
+  const artifacts = status.policy.network_policies["codex-plugin-artifacts"];
+  assert.equal(
+    status.activeVersion,
+    status.version,
+    "the inspected artifact policy must be active",
+  );
+  assert.deepEqual(
+    artifacts.endpoints.map((endpoint) => endpoint.host).sort(),
+    [...pluginArtifactHosts].sort(),
+  );
+  for (const endpoint of artifacts.endpoints) {
+    assert.equal(endpoint.access, "NETWORK_ACCESS_PRESET_READ_ONLY");
+    assert.equal(endpoint.tls ?? "NETWORK_TLS_MODE_UNSPECIFIED", "NETWORK_TLS_MODE_UNSPECIFIED");
+    assert.equal(endpoint.enforcement, "NETWORK_ENFORCEMENT_MODE_ENFORCE");
+    assert.equal(endpoint.protocol, "rest");
+    assert.deepEqual(endpoint.ports, [443]);
+  }
+  const sourceProfile = await gateway.getProviderProfile(
+    topology.placement,
+    openShellProviderName(topology.agent.harnessAuth.sourceId),
+    AbortSignal.timeout(10_000),
+  );
+  assert.ok(Array.isArray(sourceProfile?.definition?.endpoints));
+  assert.ok(artifacts.binaries.length > 0);
+  assert.deepEqual(artifacts.binaries, sourceProfile.definition.binaries);
+  // Successful download must not come from extending the PAT-bearing profile.
+  assert.equal(
+    sourceProfile.definition.endpoints.some((endpoint) =>
+      endpoint.host.endsWith(".oaiusercontent.com"),
+    ),
+    false,
+  );
+  const nativeId = installationPluginId.replace(/^codex-plugin:/, "");
+  const observe = async (enabled) => {
+    const [installed, configuration] = await assertExposedCodexInitializes(
+      topology.harnessServiceUrl,
+      topology.appServerToken,
+      [
+        { method: "plugin/installed", params: {} },
+        { method: "config/read", params: { cwd: "/home/node/workspace" } },
+      ],
+    );
+    const selected = installed.marketplaces
+      .flatMap((market) => market.plugins)
+      .find((plugin) => plugin.id === nativeId);
+    if (enabled) {
+      assert.equal(
+        selected?.installed,
+        true,
+        "final native process must discover the installed selection",
+      );
+      assert.equal(selected.enabled, true);
+    } else {
+      assert.notEqual(selected?.enabled, true, "removed selection must not remain enabled");
+      assert.notEqual(configuration.config.plugins?.[nativeId]?.enabled, true);
+    }
+  };
+  await observe(true);
+  // Signal only this Agent's serving native child. Its existing supervisor must
+  // repeat preparation, and the replacement must discover the installed package.
+  const inspectNative = async (stop = false) =>
+    JSON.parse(
+      await kubectl(
+        "exec",
+        "-n",
+        topology.placement,
+        topology.harnessPod.metadata.name,
+        "-c",
+        "agent",
+        "--",
+        "node",
+        "-e",
+        `const fs=require("node:fs");const entries=[];for(const entry of fs.readdirSync("/proc")){if(!/^\\d+$/.test(entry))continue;try{if(fs.readlinkSync("/proc/"+entry+"/exe").split("/").at(-1)!=="codex")continue;const args=fs.readFileSync("/proc/"+entry+"/cmdline","utf8").split("\\0");if(args.includes("app-server"))entries.push({pid:Number(entry),serving:args.includes("--ws-token-sha256")});}catch{}}if(${stop})for(const entry of entries.filter(entry=>entry.serving))process.kill(entry.pid,"SIGTERM");console.log(JSON.stringify(entries));`,
+      ),
+    );
+  const before = await inspectNative(true);
+  assert.equal(before.length, 1, "the temporary stdio process must already have exited");
+  assert.equal(before[0].serving, true);
+  await waitFor("replacement native process after plugin preparation", async () => {
+    const current = await inspectNative();
+    return current.length === 1 && current[0].serving && current[0].pid !== before[0].pid
+      ? current
+      : undefined;
+  });
+  // A PID with WebSocket arguments can exist before bind completes. Retry only
+  // transport availability; preserve the first native discovery result below.
+  await waitFor("replacement native WebSocket listener", async () => {
+    try {
+      return (await observeExposedCodexAuthenticationBoundary(
+        topology.harnessServiceUrl,
+        topology.appServerToken,
+      )) === 101
+        ? true
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  });
+  await observe(true);
+  const agentPath = `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}`;
+  const current = await topology.request("GET", agentPath);
+  assert.equal(current.status, 200, JSON.stringify(current.error));
+  const removed = await topology.request("PATCH", agentPath, {
+    configurationId: current.data.configurationId,
+    executionMode: current.data.executionMode,
+    ...(current.data.backendId === undefined ? {} : { backendId: current.data.backendId }),
+    plugins: {},
+  });
+  assert.equal(removed.status, 200, JSON.stringify(removed.error));
+  const deployed = await topology.request("POST", agentPath + "/deploy");
+  assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
+  await waitFor("plugin removal revision activation", async () => {
+    const current = await topology.request("GET", agentPath);
+    return current.data.activeRevisionId === deployed.data.id ? true : undefined;
+  });
+  topology.harnessPod = await waitForProviderHarnessPod(topology.placement, deployed.data);
+  topology.harnessServiceUrl = topology.harnessServiceUrlForRevision(deployed.data.id);
+  await observe(false);
+  process.stderr.write(
+    "OpenShell integration: selected plugin installed through stdio, discovered after native restart, and disabled after removal.\n",
+  );
 }
 
 const selectedHarness = process.env.OCC_TEST_OPENSHELL_HARNESS ?? "codex";
@@ -8244,9 +8209,11 @@ test(
 );
 
 test(
-  networkPolicyOnly
-    ? "OpenShell Agent network policy lifecycle"
-    : "OpenShell enforces provider delivery and authenticated Codex exposure",
+  {
+    "plugin-install": "OpenShell installs selected Codex plugins before WebSocket startup",
+    "network-policy": "OpenShell Agent network policy lifecycle",
+    full: "OpenShell enforces provider delivery and authenticated Codex exposure",
+  }[selectedScenario],
   {
     ...requiresOpenShellK3d,
     ...(demoStatePath === undefined ? { timeout: 2_400_000 } : {}),
@@ -8256,6 +8223,29 @@ test(
     const teardown = boundedTeardown(testContext, { label: "OpenShell integration teardown" });
     teardownStarted = () => teardown.started;
     const { context } = teardown;
+
+    async function measurePhase(stage, operation, applicable = true) {
+      if (!applicable || selectedScenario !== "full" || selectedHarness !== "codex") {
+        return operation();
+      }
+      const started = performance.now();
+      let outcome = "failed";
+      try {
+        const result = await operation();
+        outcome = "passed";
+        return result;
+      } finally {
+        testContext.diagnostic(
+          `openclaw-ci-measurement ${JSON.stringify({
+            kind: "openshell-sandbox-phase",
+            stage,
+            outcome,
+            elapsedMs: Math.round(performance.now() - started),
+          })}`,
+        );
+      }
+    }
+
     if (demoStatePath !== undefined) {
       context.after(() => {
         process.removeListener("SIGINT", resolveDemoStop);
@@ -8264,10 +8254,13 @@ test(
     }
     {
       process.stderr.write(`OpenShell integration: selected real ${selectedScenario} workflow.\n`);
-      const topology = await prepareProductionInstallation(context, {
-        harnessId: selectedHarness,
-        ...(demoStatePath === undefined ? {} : { controllerPort: demoConsolePort }),
-      });
+      const topology = await measurePhase("installation", () =>
+        prepareProductionInstallation(context, {
+          harnessId: selectedHarness,
+          ...(pluginInstallOnly ? { withOAuthToolSources: false } : {}),
+          ...(demoStatePath === undefined ? {} : { controllerPort: demoConsolePort }),
+        }),
+      );
       assert.equal(
         topology.harnessPod.spec.serviceAccountName,
         openShellAgentName(topology.agent.id),
@@ -8328,51 +8321,59 @@ test(
       process.stderr.write(
         "OpenShell integration: checking create-time service exposure authentication boundary.\n",
       );
-      assert.match(topology.harnessServiceUrl, /^https?:\/\//);
-      // OpenShell must preserve the Gateway's bearer header while Codex remains the authenticator.
-      let lastServiceObservation = "no response";
-      try {
-        await waitFor("OpenShell create-time Harness service exposure", async () => {
-          try {
-            const status = await observeExposedCodexAuthenticationBoundary(
-              topology.harnessServiceUrl,
-              topology.appServerToken,
-            );
-            lastServiceObservation = `HTTP ${status}`;
-            return status === 101 ? true : undefined;
-          } catch (error) {
-            lastServiceObservation = error instanceof Error ? error.message : String(error);
-            return undefined;
-          }
-        });
-      } catch (error) {
-        throw new Error(`${error.message} Last observation: ${lastServiceObservation}.`, {
-          cause: error,
-        });
+      await measurePhase("exposure-auth", async () => {
+        assert.match(topology.harnessServiceUrl, /^https?:\/\//);
+        // OpenShell must preserve the Gateway's bearer header while Codex remains the authenticator.
+        let lastServiceObservation = "no response";
+        try {
+          await waitFor("OpenShell create-time Harness service exposure", async () => {
+            try {
+              const status = await observeExposedCodexAuthenticationBoundary(
+                topology.harnessServiceUrl,
+                topology.appServerToken,
+              );
+              lastServiceObservation = `HTTP ${status}`;
+              return status === 101 ? true : undefined;
+            } catch (error) {
+              lastServiceObservation = error instanceof Error ? error.message : String(error);
+              return undefined;
+            }
+          });
+        } catch (error) {
+          throw new Error(`${error.message} Last observation: ${lastServiceObservation}.`, {
+            cause: error,
+          });
+        }
+        for (const token of [undefined, `wrong-${randomUUID()}`]) {
+          const status = await observeExposedCodexAuthenticationBoundary(
+            topology.harnessServiceUrl,
+            token,
+          );
+          assert.ok(
+            [401, 403].includes(status),
+            `Codex must reject ${token === undefined ? "missing" : "incorrect"} bearer authentication.`,
+          );
+        }
+        // Retry only endpoint availability above. Preserve the first protocol failure on this route.
+        await assertExposedCodexInitializes(topology.harnessServiceUrl, topology.appServerToken);
+      });
+      if (pluginInstallOnly) {
+        await assertInstalledCodexPlugin(topology);
+        return;
       }
-      for (const token of [undefined, `wrong-${randomUUID()}`]) {
-        const status = await observeExposedCodexAuthenticationBoundary(
-          topology.harnessServiceUrl,
-          token,
-        );
-        assert.ok(
-          [401, 403].includes(status),
-          `Codex must reject ${token === undefined ? "missing" : "incorrect"} bearer authentication.`,
-        );
-      }
-      // Retry only endpoint availability above. Preserve the first protocol failure on this route.
-      await assertExposedCodexInitializes(topology.harnessServiceUrl, topology.appServerToken);
       process.stderr.write(
         "OpenShell integration: exposed Codex initialized; starting real shell turns through the Agent Gateway.\n",
       );
-      await requestGatewayTurns(context, topology, "codex");
+      await measurePhase("gateway-turns", () => requestGatewayTurns(context, topology, "codex"));
       process.stderr.write("OpenShell integration: regular Gateway shell turns passed.\n");
       if (!networkPolicyOnly) {
-        await assertOpenShellToolFilesystemAndNetworkEnforcement(topology);
+        await measurePhase("filesystem-egress", () =>
+          assertOpenShellToolFilesystemAndNetworkEnforcement(topology),
+        );
       }
       process.stderr.write("OpenShell integration: testing Agent network policy lifecycle.\n");
       try {
-        await assertAgentNetworkPolicyLifecycle(topology);
+        await measurePhase("network-policy", () => assertAgentNetworkPolicyLifecycle(topology));
       } catch (error) {
         // Teardown may take minutes; preserve the failure before removing its resources.
         const message = redactLogLine(
@@ -8397,51 +8398,71 @@ test(
       process.stderr.write(
         "OpenShell integration: tool filesystem and egress verified; testing the credential route.\n",
       );
-      await assertCredentialRouteEnforcement(topology);
+      await measurePhase("credential-route", () => assertCredentialRouteEnforcement(topology));
       process.stderr.write(
         "OpenShell integration: credential route verified; testing Pod-absent replacement and cleanup.\n",
       );
-      await assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology);
+      await measurePhase("pod-replacement", () =>
+        assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology),
+      );
       process.stderr.write(
         "OpenShell integration: replacement verified; testing an untrusted model upstream.\n",
       );
-      await assertModelRouteRefusesUntrustedUpstream(topology);
+      await measurePhase(
+        "untrusted-model-upstream",
+        () => assertModelRouteRefusesUntrustedUpstream(topology),
+        modelEndpointSupportsDnsProofs(),
+      );
       process.stderr.write(
         "OpenShell integration: untrusted model upstream refused; testing a tool upstream outage.\n",
       );
-      await assertToolUpstreamOutageFailsClosed(topology);
+      await measurePhase("tool-upstream-outage", () =>
+        assertToolUpstreamOutageFailsClosed(topology),
+      );
       process.stderr.write(
         "OpenShell integration: tool upstream outage verified; testing a model provider outage.\n",
       );
-      await assertModelProviderOutageFailsClosed(topology);
+      await measurePhase(
+        "model-provider-outage",
+        () => assertModelProviderOutageFailsClosed(topology),
+        modelEndpointSupportsDnsProofs(),
+      );
       process.stderr.write(
         "OpenShell integration: model provider outage verified; testing an OpenShell gateway outage.\n",
       );
-      await assertOpenShellGatewayOutage(topology);
+      await measurePhase("gateway-outage", () => assertOpenShellGatewayOutage(topology));
       process.stderr.write(
         "OpenShell integration: gateway outage verified; testing OAuth2 refresh credential sources.\n",
       );
-      await assertRefreshCredentialSources(topology);
+      await measurePhase("oauth-refresh", () => assertRefreshCredentialSources(topology));
       process.stderr.write(
         "OpenShell integration: refresh sources verified; testing a non-model credential source.\n",
       );
-      await assertNonModelCredentialSource(topology);
+      await measurePhase("non-model-source", () => assertNonModelCredentialSource(topology));
       process.stderr.write(
         "OpenShell integration: non-model source verified; checking Agent-visible material, diagnostics and audit.\n",
       );
-      await assertAgentVisibleMaterialExcludesCredentials(topology);
+      await measurePhase("credential-audit", () =>
+        assertAgentVisibleMaterialExcludesCredentials(topology),
+      );
       process.stderr.write(
         "OpenShell integration: credential absence verified; testing credential source update and live withdrawal.\n",
       );
-      await assertCredentialSourceUpdateAndLiveWithdrawal(topology);
+      await measurePhase("source-withdrawal", () =>
+        assertCredentialSourceUpdateAndLiveWithdrawal(topology),
+      );
       process.stderr.write(
         "OpenShell integration: withdrawal recorded and post-withdrawal turn did not complete; testing embedded fail-closed.\n",
       );
-      await assertEmbeddedOpenShellFailsClosed(topology);
+      await measurePhase("embedded-fail-closed", () =>
+        assertEmbeddedOpenShellFailsClosed(topology),
+      );
       // Changing gateway authentication restarts its service router. Keep this configuration
       // boundary last so it cannot disrupt the Agent workflow whose behavior is tested above.
       process.stderr.write("OpenShell integration: testing authenticated native policy scopes.\n");
-      await assertAuthenticatedNativePolicyScopes(topology);
+      await measurePhase("native-policy-scopes", () =>
+        assertAuthenticatedNativePolicyScopes(topology),
+      );
       return;
     }
   },

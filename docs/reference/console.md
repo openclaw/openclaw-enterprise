@@ -11,6 +11,10 @@ runtime checks belong to the [deployment guide](../guides/deploy.md).
 
 ## Start and sign in
 
+If the Console says it could not load, click **Reload page** to try the same
+address again. If it stays on the loading screen without that button, use your
+browser's Reload command. The Console does not automatically reload the page.
+
 Enter your provisioned account email and password, then select **Sign in**. Public
 signup, single sign-on, and self-service password recovery are unavailable; ask
 your administrator for an account or password reset. A wrong email or password
@@ -58,11 +62,21 @@ hidden. Namespace rows open their Agents.
 control, cleanup blockers, and deletion recovery.
 
 The Console uses light appearance and OCC-served fonts. Navigation focuses the
-destination heading; **Open navigation** opens the mobile drawer.
+destination heading; **Open navigation** opens the mobile drawer. The drawer
+scrolls independently and keeps the page behind it in place until it closes.
 
 Click an Agent name or an open area of its row to open its details. Version links
 and Stop or Delete buttons keep their separate actions. Keyboard users can Tab to
 the Agent name and press Enter.
+An individual Agent header uses **Agent details** until an authorized read supplies its name.
+
+While a Namespace provisions, the Agents list checks its status every ten seconds.
+If that check no longer lists the Namespace, the Console removes its Agent rows
+and previous row feedback, and disables Create Agent. Open row confirmations close
+and focus Search Agents. The unavailable status replaces empty-list messages.
+Submitted requests report acceptance, refusal or an unknown outcome without Agent
+names or IDs and without replay. Session expiry still requires sign-in.
+Clearing search does not restore the removed rows.
 
 Opening an Agent shows its details page immediately. While it loads, **Back to
 Agents** returns to your place. A slow return to a retained page says **Still
@@ -71,12 +85,18 @@ Slack searches, focus, and the Namespace selector; at phone width, focus in the 
 **Open navigation**. Views belong to one account, session, route,
 and Namespace. Sign-out, session changes, exit, or Backend denial clear them.
 
+A previously shown Configuration denial can leave Agent metadata visible after
+reload and refocus. Refocus still checks current access. If the read before a
+channel Secret save is denied, the Console clears the binding controls and keeps
+the failed attempt's message. No save is sent. After access is restored, use
+**Refresh** to read saved state before retrying.
+
 **Namespace** switches readable scopes; Namespaces omits this selector. The account menu offers
 **Settings** (the signed-in account, with **Sign out**) and **Sign out**.
 
 The URL keeps `?namespace=<id>` across navigation, reload, and Back. An unreadable
-ID shows **Namespace unavailable**; on Namespaces, **Choose a valid namespace**
-updates the URL in place.
+ID shows **Namespace unavailable**: the Namespace is missing or your access does not
+include it. On Namespaces, **Choose a valid Namespace** updates the URL in place.
 
 During session and Namespace checks, the selector is disabled and hides its choices.
 Once the list is known, it names the destination's Namespace. On returns to the same page,
@@ -261,6 +281,8 @@ domain; native chat or other Agent-host activity does not extend that session.
 Supported pages are `/console/login`, `/console/agents`,
 `/console/agents/new`, `/console/agents/:agentId`, `/console/backends`,
 `/console/namespaces`, `/console/secrets`, and `/console/settings`. `/console/` resolves the session
-and opens Agents. Unknown console paths show a generic not-found page.
+and opens Agents. A page path with trailing slashes opens that page with status `200`, and the
+address bar then shows it without them; the query, tab and hash stay. Unknown console paths
+return `404` and show a generic not-found page.
 See the [request flow](../flows/platform-console.md) and
 [local testing](../testing/local.md) for implementation and verification.

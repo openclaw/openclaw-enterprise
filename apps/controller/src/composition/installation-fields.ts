@@ -2,6 +2,7 @@
 // Driver binding remain in their owning composition modules.
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { isAbsolute } from "node:path";
+import type { KubernetesGatewayRoutingOptions } from "../drivers/compute/kubernetes/index.ts";
 
 export type ConfigurationRecord = Readonly<Record<string, unknown>>;
 
@@ -89,8 +90,7 @@ const egressAuthorityFields = [
 ] as const;
 
 /**
- * Validate one TLS and issuer listener block, `drivers.credential_proxy.configuration.authority`
- * or `repository.openShell.authority`. Each fault names its own field and never echoes a value,
+ * Validate one TLS and issuer listener block. Each fault names its own field and never echoes a value,
  * so startup logs and the chart's upgrade check say which key to fix (finding 2216).
  */
 export function egressAuthorityConfiguration(
@@ -177,7 +177,8 @@ export function egressAuthorityConfiguration(
  * An Installation listener that the production chart's Service cannot reach: the chart
  * serves no such listener, serves it on another port, the listener does not bind all
  * addresses, or it names TLS or issuer files where the chart mounts none. Startup and the
- * chart's upgrade check report it as `CHART_LISTENER_MISMATCH`.
+ * chart's upgrade check report it as `CHART_LISTENER_MISMATCH`. Private Gateway
+ * routing must also agree with the chart's listener and resource identity.
  * The message names the Installation and Helm settings and values, which hold no secret;
  * `path` is the refused Installation setting as a JSON Pointer (finding 2213).
  */
@@ -210,19 +211,6 @@ export const chartListeners = {
       ],
     },
   },
-  openshellGit: {
-    path: "repository.openShell.authority",
-    chart: "openshellGit",
-    variable: "OCC_OPENSHELL_GIT_PORT",
-    files: {
-      certificatePath: ["/etc/openclaw/openshell-git/tls.crt", "openshellGit.tlsSecretName"],
-      privateKeyPath: ["/etc/openclaw/openshell-git/tls.key", "openshellGit.tlsSecretName"],
-      issuerPublicKeyPath: [
-        "/etc/openclaw/openshell-git/gateway-public.pem",
-        "openshellGit.issuerPublicKeyConfigMapName",
-      ],
-    },
-  },
 } as const;
 
 /**
@@ -240,7 +228,17 @@ export function requireChartListener(
       >
     | undefined,
   environment: Readonly<Record<string, string | undefined>>,
-  listener: (typeof chartListeners)[keyof typeof chartListeners],
+  listener: {
+    readonly path: string;
+    readonly chart: string;
+    readonly variable: string;
+    readonly files: Readonly<
+      Record<
+        "certificatePath" | "privateKeyPath" | "issuerPublicKeyPath",
+        readonly [string, string]
+      >
+    >;
+  },
 ): void {
   const declared = environment[listener.variable];
   if (declared === undefined) {
@@ -289,21 +287,52 @@ export function requireChartListener(
   }
 }
 
-export function openShellRepositoryConfiguration(
-  input: unknown,
-  mode: "development" | "production",
-) {
-  if (input === undefined) {
-    return undefined;
+/** Compare selected Kubernetes routing with the private Gateway this chart renders. */
+export function requireChartGatewayRouting(
+  routing: KubernetesGatewayRoutingOptions | undefined,
+  environment: Readonly<Record<string, string | undefined>>,
+): void {
+  const encoded = environment.OCC_CHART_GATEWAY_ROUTING;
+  // Direct routing and Gateways managed outside this chart have no chart-owned expectation.
+  if (encoded === undefined || routing === undefined) {
+    return;
   }
-  const value = object(input, "repository.openShell");
-  closed(value, ["registrationName", "authority"], "repository.openShell");
-  return {
-    registrationName: nonempty(value.registrationName, "repository.openShell.registrationName"),
-    authority: egressAuthorityConfiguration(
-      value.authority,
-      mode,
-      "repository.openShell.authority",
-    ),
-  };
+  const path = "drivers.compute.configuration.gatewayRouting";
+  let declared: ConfigurationRecord | undefined;
+  try {
+    declared = asRecord(JSON.parse(encoded));
+  } catch {
+    // Report only the chart-owned setting, never the submitted JSON.
+  }
+  if (
+    declared === undefined ||
+    ["gatewayName", "gatewayNamespace", "envoyNamespace", "hostname", "defaultHostname"].some(
+      (field) => !isNonEmptyString(declared?.[field]),
+    )
+  ) {
+    throw new ChartListenerMismatchError(
+      "OCC_CHART_GATEWAY_ROUTING must contain the private Gateway expectation rendered by the Helm chart.",
+      path,
+    );
+  }
+  for (const [field, chart] of [
+    ["gatewayName", "Helm gatewayRouting.gatewayName"],
+    ["gatewayNamespace", "the Helm release namespace"],
+    ["envoyNamespace", "Helm gatewayRouting.envoyNamespace"],
+  ] as const) {
+    if (routing[field] !== declared[field]) {
+      throw new ChartListenerMismatchError(
+        `${path}.${field} must match ${chart}.`,
+        `${path}.${field}`,
+      );
+    }
+  }
+  // Matching resource identities give Compute the same automatic Service DNS as the chart.
+  // Keep the chart's existing derivation as the source for both its listener and this check.
+  if ((routing.hostname || declared.defaultHostname) !== declared.hostname) {
+    throw new ChartListenerMismatchError(
+      `${path}.hostname must match Helm gatewayRouting.hostname. Set both to the same DNS name, or omit both for automatic Service DNS.`,
+      `${path}.hostname`,
+    );
+  }
 }

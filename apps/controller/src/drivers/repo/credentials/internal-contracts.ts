@@ -61,9 +61,7 @@ export interface ExchangeService {
 export interface CredentialServiceOwner extends CredentialService, ExchangeService {
   /** Hold local capacity and the resolved grant without constructing a backend. */
   prepareOpen(input: RepositoryCredentialBoundSessionInput): {
-    open(
-      authorizeStanding?: (sessionId: string) => Promise<void>,
-    ): RepositoryCredentialSessionResult;
+    open(): RepositoryCredentialSessionResult;
     cancel(): void;
   };
   observeDisposal(observer: (status: SessionStatus) => void): () => void;

@@ -34,7 +34,7 @@ func TestDownImageVolumeRecovery(t *testing.T) {
 		{"delete-fails/podman-compose", "podman", "", "fail", "", "k3d failed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			directory, log, sentinel := downVolumeFixture(t, tc.engine, tc.mode, tc.cluster)
+			directory, log, sentinel := downVolumeFixture(t, tc.engine, tc.mode, tc.cluster, false)
 			t.Setenv("DOWN_VOLUME", tc.volume)
 			run := func(want string) {
 				t.Helper()
@@ -125,7 +125,7 @@ func TestDownImageVolumeRecovery(t *testing.T) {
 
 // Reuse the recorded-state, endpoint, cluster and unrelated-marker fixture.
 // Only the selected engine gets the additional exact Compose grammar.
-func downVolumeFixture(t *testing.T, engine, mode, cluster string) (string, string, string) {
+func downVolumeFixture(t *testing.T, engine, mode, cluster string, bothProviders bool) (string, string, string) {
 	t.Helper()
 	directory, log, sentinel := recoveryFixture(t, "oce-system", "none", engine, cluster)
 	state, err := readState(directory)
@@ -145,13 +145,30 @@ func downVolumeFixture(t *testing.T, engine, mode, cluster string) (string, stri
 	if err := rewriteState(state); err != nil {
 		t.Fatal(err)
 	}
+	bin := os.Getenv("PATH") // recoveryFixture supplies an isolated, inert PATH.
+	providerCheck := ""
+	if engine == "podman" && mode == "" {
+		// Down resolves the provider path; the fake engine must never invoke it.
+		if err := os.WriteFile(filepath.Join(bin, "podman-compose"), []byte("#!/bin/sh\nexit 96\n"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if bothProviders {
+			// With both providers installed, the Kubernetes-profile down must pin
+			// docker-compose to match the provider occ dev up selected.
+			if err := os.WriteFile(filepath.Join(bin, "docker-compose"), []byte("#!/bin/sh\nexit 96\n"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			providerCheck = `[ "$PODMAN_COMPOSE_PROVIDER" = ` + shellQuote(filepath.Join(bin, "docker-compose")) + ` ] || exit 97
+`
+		}
+	}
 	script := `#!/bin/sh
 [ "$DOCKER_HOST" = unix:///recorded-engine.sock ] || exit 91
 [ -z "$DOCKER_CONTEXT$DOCKER_TLS_VERIFY$DOCKER_CERT_PATH" ] || exit 92
 if [ "$RECOVERY_ENGINE" = podman ]; then
  [ "$CONTAINER_HOST" = "$DOCKER_HOST" ] && [ -z "$CONTAINER_CONNECTION" ] || exit 93
 fi
-printf '%s\n' "$*" >> "$RECOVERY_LOG"
+` + providerCheck + `printf '%s\n' "$*" >> "$RECOVERY_LOG"
 case "$*" in
  'volume ls --filter label=k3d.cluster=occ-dev-recorded --format {{.Name}}')
   case "$DOWN_VOLUME" in
@@ -164,15 +181,31 @@ case "$*" in
 ` + composeCases + ` *) exit 95 ;;
 esac
 `
-	bin := os.Getenv("PATH") // recoveryFixture supplies an isolated, inert PATH.
 	if err := os.WriteFile(filepath.Join(bin, engine), []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if engine == "podman" && mode == "" {
-		// Down resolves the provider path; the fake engine must never invoke it.
-		if err := os.WriteFile(filepath.Join(bin, "podman-compose"), []byte("#!/bin/sh\nexit 96\n"), 0700); err != nil {
-			t.Fatal(err)
-		}
-	}
 	return directory, log, sentinel
+}
+
+func TestDownKubernetesComposeModePrefersDockerCompose(t *testing.T) {
+	// occ dev up starts the Kubernetes-profile Compose stack with docker-compose
+	// when both providers exist, because its Compose command passes
+	// --project-directory, which standalone podman-compose does not support.
+	// Down must resolve the same provider, or up and down disagree about which
+	// binary stops the stack. The fixture's engine exits 97 unless down pinned
+	// the docker-compose path.
+	directory, _, sentinel := downVolumeFixture(t, "podman", "", "absent", true)
+	var output bytes.Buffer
+	if err := Down(context.Background(), Options{Repository: filepath.Dir(directory), Out: &output}); err != nil {
+		t.Fatalf("Down: %v", err)
+	}
+	if output.String() != "Stopped Kubernetes development stack occ-dev-recorded.\n" {
+		t.Errorf("unexpected output: %q", output.String())
+	}
+	if _, err := os.Stat(directory); !os.IsNotExist(err) {
+		t.Errorf("state remains: %v", err)
+	}
+	if data, err := os.ReadFile(sentinel); err != nil || string(data) != "keep" {
+		t.Fatalf("unrelated fixture changed: %q, %v", data, err)
+	}
 }

@@ -1,13 +1,20 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { chmod, mkdir, readdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test, { describe } from "node:test";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import {
+  collectNativeWorkerFailure,
+  nativePlacementReadRetryable,
+  nativeWorkerHistoryEvidence,
+  nativeWorkerPlacementObservation,
+  nativeWorkerTurnObservation,
+} from "../helpers/local-first-agent-native.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.mjs");
@@ -191,6 +198,8 @@ test("run resolves lane documents relative to the manifest and preserves ordered
       'import test from "node:test";',
       'test("first file sees scoped env", () => {',
       '  assert.equal(process.env.CI_RUNNER_SCOPED_VALUE, "one");',
+      "  assert.equal(process.env.ACTIONS_RUNTIME_TOKEN, undefined);",
+      "  assert.equal(process.env.ACTIONS_RESULTS_URL, undefined);",
       "  assert.match(process.env.OCC_TEST_PRODUCTION_UPGRADE_CONTROLLER_IMAGE, /@sha256:d{64}$/);",
       "  assert.match(process.env.OCC_TEST_PRODUCTION_UPGRADE_RUNTIME_IMAGE, /@sha256:e{64}$/);",
       "});",
@@ -249,6 +258,8 @@ test("run resolves lane documents relative to the manifest and preserves ordered
       resultsPath,
     ],
     {
+      ACTIONS_RUNTIME_TOKEN: "synthetic-cache-token",
+      ACTIONS_RESULTS_URL: "https://cache.example.test/",
       OCC_PROBE_CONTROLLER_IMAGE: `private.example/current-controller@sha256:${"b".repeat(64)}`,
       OCC_PROBE_BROKER_IMAGE: `private.example/current-broker@sha256:${"c".repeat(64)}`,
       OCC_PROBE_OLD_CONTROLLER_IMAGE: `private.example/old-controller@sha256:${"d".repeat(64)}`,
@@ -291,6 +302,94 @@ test("run resolves lane documents relative to the manifest and preserves ordered
   assert.deepEqual(summary.files[1].imageDigests, pairDigests);
   assert.doesNotMatch(JSON.stringify(summary), /private\.example|untrusted-image-value/);
   assert.match(await readFile(statePath, "utf8"), /first\.test\.mjs/);
+});
+
+test("focused runs retain case enforcement and cleanup but cannot complete a full lane", async (t) => {
+  const root = await fixture(t);
+  await writePrepare(root);
+  const selectedPath = "tests/integration/first.test.mjs";
+  const selected = { path: selectedPath, expectedTests: ["required case"] };
+  await writeFile(
+    join(root, selectedPath),
+    'import test from "node:test"; test("required case", () => {});\n',
+  );
+  await writeFile(
+    join(root, "tests/integration/second.test.mjs"),
+    'throw new Error("unselected file executed");\n',
+  );
+  await writeJson(join(root, "manifest.json"), {
+    version: 1,
+    lanes: {
+      baseline: { files: [selected, { path: "tests/integration/second.test.mjs" }] },
+      single: { files: [selected] },
+    },
+    groups: { ci: ["baseline"] },
+  });
+  const args = (lane) => [
+    "run",
+    lane,
+    "--manifest",
+    "manifest.json",
+    "--root",
+    root,
+    "--state",
+    `state/${lane}.jsonl`,
+    "--results",
+    `results/${lane}.json`,
+    "--file",
+    selectedPath,
+  ];
+  for (const lane of ["baseline", "single"]) {
+    const result = run(root, args(lane));
+    assert.equal(result.status, 0, result.stderr);
+    const summary = JSON.parse(await readFile(join(root, `results/${lane}.json`), "utf8"));
+    assert.equal(summary.scope, "focused");
+    assert.deepEqual(
+      summary.files.map((file) => file.path),
+      [selectedPath],
+    );
+    assert.equal(summary.files[0].cleanup.status, "passed");
+    assert.equal(await readFile(join(root, `state/${lane}.jsonl`), "utf8"), `${selectedPath}\n`);
+    // Even a one-file lane cannot turn explicitly focused proof into full qualification.
+    const aggregated = run(root, [
+      "aggregate",
+      lane,
+      "--manifest",
+      "manifest.json",
+      "--root",
+      root,
+      "--results-dir",
+      "results",
+    ]);
+    assert.equal(aggregated.status, 1, aggregated.stderr);
+    const evidence = JSON.parse(aggregated.stdout);
+    assert.ok(evidence.issues.some(({ code }) => code === "focused-lane-evidence"));
+    if (lane === "baseline") {
+      assert.ok(evidence.issues.some(({ code }) => code === "missing-lane-evidence"));
+    }
+  }
+  // A green Node process is insufficient when the selected file omits its required case.
+  await writeFile(
+    join(root, selectedPath),
+    'import test from "node:test"; test("different case", () => {});\n',
+  );
+  const missing = run(root, args("baseline"));
+  assert.equal(missing.status, 1, missing.stderr);
+  const summary = JSON.parse(await readFile(join(root, "results/baseline.json"), "utf8"));
+  assert.ok(summary.issues.some(({ code }) => code === "missing-expected-test"));
+  assert.equal(summary.files[0].cleanup.status, "passed");
+  const stateBefore = await readFile(join(root, "state/baseline.jsonl"), "utf8");
+  for (const path of [
+    "tests/integration/unknown.test.mjs",
+    "tests/integration/../integration/first.test.mjs",
+  ]) {
+    const invalid = run(root, [...args("baseline").slice(0, -1), path]);
+    assert.equal(invalid.status, 1, invalid.stderr);
+    const rejected = JSON.parse(await readFile(join(root, "results/baseline.json"), "utf8"));
+    assert.deepEqual(rejected.files, []);
+    assert.ok(rejected.issues.some(({ code }) => code === "invalid-file-selection"));
+    assert.equal(await readFile(join(root, "state/baseline.jsonl"), "utf8"), stateBefore);
+  }
 });
 
 test("run preserves nonzero child Node exits and rejects zero-case files", async (t) => {
@@ -526,6 +625,27 @@ test("run fails missing expected tests, skipped expected tests, skips, todos, an
 
   const manifest = JSON.parse(await readFile(join(root, "manifest.json"), "utf8"));
   delete manifest.lanes.lane.requiredEnv;
+  manifest.lanes.lane.files[0].requiredEnv = ["CI_RUNNER_FILE_INPUT"];
+  await writeJson(join(root, "manifest.json"), manifest);
+  const missingFileEnv = run(root, [
+    "run",
+    "lane",
+    "--manifest",
+    "manifest.json",
+    "--root",
+    root,
+    "--state",
+    "state/lane.jsonl",
+    "--results",
+    resultsPath,
+  ]);
+  assert.equal(missingFileEnv.status, 1);
+  summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  assert.deepEqual(
+    summary.issues.map((entry) => [entry.code, entry.env]),
+    [["missing-env", "CI_RUNNER_FILE_INPUT"]],
+  );
+  delete manifest.lanes.lane.files[0].requiredEnv;
   await writeJson(join(root, "manifest.json"), manifest);
   const selected = run(root, [
     "run",
@@ -549,6 +669,12 @@ test("run fails missing expected tests, skipped expected tests, skips, todos, an
     "unexpected-skip",
     "unexpected-skip",
   ]);
+  const suiteSkip = summary.issues.find((entry) => entry.name === "skipped suite");
+  assert.equal(suiteSkip.file, "tests/integration/skips.test.mjs");
+  assert.equal(suiteSkip.source.file, suiteSkip.file);
+  assert.ok(Number.isSafeInteger(suiteSkip.source.line) && suiteSkip.source.line > 0);
+  assert.ok(Number.isSafeInteger(suiteSkip.source.column) && suiteSkip.source.column > 0);
+  assert.equal(suiteSkip.source.nesting, 0);
   // Every issue is named in the job log, which keeps every attempt.
   for (const line of [
     "run-tests: issue missing-expected-test tests/integration/skips.test.mjs: expected test did not run: missing named case",
@@ -557,6 +683,48 @@ test("run fails missing expected tests, skipped expected tests, skips, todos, an
     "run-tests: issue unexpected-skip tests/integration/skips.test.mjs: selected suite did not run its tests: skipped suite",
   ]) {
     assert.ok(selected.stderr.split("\n").includes(line), line);
+  }
+
+  // Filesystem traversal follows the symlink before '..'; lexical normalization
+  // instead points at the unrelated in-tree helper and must not supply a source.
+  const external = await temporaryDirectory(t, "ci-runner-source-");
+  await mkdir(join(external, "deep"));
+  await symlink(join(external, "deep"), join(root, "link"), "dir");
+  await writeFile(join(root, "helper.mjs"), "// Not the source of the skipped suite.\n");
+  await writeFile(
+    join(external, "helper.mjs"),
+    'describe("external skipped suite", { skip: true }, () => {});\n',
+  );
+  for (const filename of [`${root}/link/../helper.mjs`, "link/../helper.mjs"]) {
+    await writeFile(
+      join(root, "tests/integration/skips.test.mjs"),
+      [
+        'import { readFileSync } from "node:fs";',
+        'import { describe } from "node:test";',
+        'import { runInNewContext } from "node:vm";',
+        `const filename = ${JSON.stringify(filename)};`,
+        'runInNewContext(readFileSync(filename, "utf8"), { describe }, { filename });',
+      ].join("\n"),
+    );
+    const escaped = run(root, [
+      "run",
+      "lane",
+      "--manifest",
+      "manifest.json",
+      "--root",
+      root,
+      "--state",
+      "state/lane.jsonl",
+      "--results",
+      resultsPath,
+    ]);
+    const escapedSummary = JSON.parse(await readFile(resultsPath, "utf8"));
+    const escapedSkip = escapedSummary.issues.find(
+      (entry) => entry.name === "external skipped suite",
+    );
+    assert.equal(escaped.status, 1);
+    assert.equal(escapedSkip.code, "unexpected-skip");
+    assert.equal(escapedSkip.source, undefined, filename);
   }
 });
 
@@ -1165,6 +1333,226 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
   const root = await fixture(t);
   const resultsPath = join(root, "results/redacted.json");
   const secret = "secretauthvalue";
+  // This marker is deliberately absent from the redactor's environment secrets.
+  // The native projector and reporter must remove it themselves.
+  const nativePrivate = "private-native-observation-marker";
+  const nativeWorker = nativeWorkerPlacementObservation({
+    placement: {
+      state: "failed",
+      recoveryError: `Worker tunnel did not connect within 3 minutes; ${nativePrivate}`,
+      terminalReason: { message: nativePrivate },
+      remoteWorkspaceDir: nativePrivate,
+      session: nativePrivate,
+    },
+    environment: {
+      id: nativePrivate,
+      worker: {
+        state: "failed",
+        tunnelStatus: "stopped",
+        error: nativePrivate,
+        attachedSessionIds: [nativePrivate],
+      },
+    },
+    nodes: [
+      { nodeId: "unrelated-node", connected: true, caps: [nativePrivate] },
+      {
+        nodeId: nativePrivate,
+        connected: false,
+        paired: true,
+        sessionHost: true,
+        caps: ["system", nativePrivate],
+        commands: [nativePrivate],
+        workerBundle: { status: "installed", version: nativePrivate },
+      },
+    ],
+    expectedNodeId: nativePrivate,
+    sessionId: nativePrivate,
+    environmentLookup: "found",
+    nodeLookup: "found",
+    elapsedMs: 180488,
+  });
+  const wrappedNativeWorker = nativeWorkerPlacementObservation({
+    placement: {
+      state: "failed",
+      recoveryError: `Worker node bootstrap failed: OpenClaw worker deploy artifact is missing; build the running package at ${nativePrivate}`,
+      terminalReason: `Worker node bootstrap failed: Device worker bundle installation failed: ${nativePrivate}`,
+    },
+    environment: {
+      worker: {
+        error:
+          "Worker provider preparation failed: Device worker node is not connected with the installer dialect",
+      },
+    },
+  });
+  // A retained session can acquire a new owner during send. Exercise the real
+  // collector with public RPC-shaped observations, then retain its result through CI.
+  const nativeSession = { key: "agent:main:retained-proof", sessionId: "retained-proof" };
+  const lastPlacement = { state: "active", environmentId: "previous-owner" };
+  const collectRetained = (refresh) =>
+    collectNativeWorkerFailure({
+      session: nativeSession,
+      lastPlacement,
+      elapsedMs: 3000,
+      request: async (method, params) => {
+        if (method === "node.list") {
+          return { nodes: [] };
+        }
+        if (method === "sessions.describe") {
+          if (refresh === "rejected") {
+            throw new Error(nativePrivate);
+          }
+          return {
+            session: {
+              sessionId: refresh === "mismatched" ? "different-session" : nativeSession.sessionId,
+              placement: { state: "failed", environmentId: "replacement-owner" },
+            },
+          };
+        }
+        if (method === "environments.status") {
+          return params.environmentId === "replacement-owner"
+            ? { id: "replacement-owner", worker: { state: "failed", tunnelStatus: "stopped" } }
+            : { id: "previous-owner", worker: { state: "attached", tunnelStatus: "connected" } };
+        }
+        throw new Error("Unexpected diagnostic RPC");
+      },
+    });
+  const freshNativeWorker = await collectRetained("fresh");
+  const fallbackNativeWorker = await collectRetained("rejected");
+  const mismatchedNativeWorker = await collectRetained("mismatched");
+  const diagnosticSignals = new Set();
+  const collectedTurn = await collectNativeWorkerFailure({
+    session: nativeSession,
+    runId: "selected-run",
+    outcome: { status: "error", error: `fetch failed: ${nativePrivate}` },
+    request: async (method, params, options) => {
+      diagnosticSignals.add(options.signal);
+      assert.equal(options.timeoutMs, 5000);
+      if (method === "node.list") {
+        return { nodes: [] };
+      }
+      if (method === "sessions.describe") {
+        return { session: { sessionId: nativeSession.sessionId } };
+      }
+      assert.equal(method, "chat.history");
+      assert.deepEqual(params, { sessionKey: nativeSession.key, limit: 30 });
+      return { messages: [] };
+    },
+  });
+  assert.equal(diagnosticSignals.size, 1, "Failure reads must share one deadline");
+  // Keep foreign turns and private error suffixes out of the real reporter artifact.
+  const turnCases = [
+    ["Incorrect API key provided", "model-authentication"],
+    ["insufficient_quota", "model-rate-or-quota"],
+    ["Worker model is not approved for this session", "model-unavailable"],
+    ["exec denied by security policy", "tool-policy"],
+    ["EACCES: permission denied", "filesystem-permission"],
+    ["Cannot find module", "file-or-command-missing"],
+    ["ERR_TLS_CERT_ALTNAME_INVALID", "tls-validation"],
+    ["fetch failed", "network-connection"],
+    ["Worker turn authority changed while preparing its launch", "worker-authority"],
+    ["Worker tunnel does not support worker turns", "worker-transport"],
+    ["HTTP 401", "http-unauthorized"],
+    ["HTTP 403", "http-forbidden"],
+    ["HTTP 429", "http-rate-limit"],
+  ];
+  const turnDiagnostics = turnCases.map(([message, category]) => ({
+    name: `native turn ${category}`,
+    diagnostic: {
+      kind: "native-first-agent-proof",
+      failureStage: "model-outcome",
+      worker: nativeWorkerTurnObservation({
+        outcome: { status: "error", error: `${message}: ${nativePrivate}`, stopReason: "error" },
+        error: new Error(nativePrivate),
+        runId: "selected-run",
+        historyLookup: "found",
+        messages: [
+          { role: "assistant", errorMessage: nativePrivate, __openclaw: { runId: "foreign-run" } },
+          {
+            role: "assistant",
+            stopReason: "error",
+            errorMessage: `${message}: ${nativePrivate}`,
+            __openclaw: { runId: "selected-run" },
+          },
+          {
+            role: "toolResult",
+            toolName: "exec",
+            isError: true,
+            content: [{ type: "text", text: `${message}: ${nativePrivate}` }],
+            __openclaw: { runId: "selected-run" },
+          },
+          {
+            role: "toolResult",
+            toolName: "exec",
+            isError: true,
+            content: nativePrivate,
+            __openclaw: { runId: "foreign-run" },
+          },
+        ],
+      }),
+    },
+  }));
+  // Installer errors add one more fixed wrapper. Exercise distinct transfer,
+  // extraction, storage and prewarm failures without retaining their private details.
+  const nativeLeafCases = [
+    ["gateway returned 401", "bundle-http-401"],
+    ["gateway returned 403", "bundle-http-403"],
+    ["gateway returned 404", "bundle-http-404"],
+    ["gateway returned 429", "bundle-http-client-error"],
+    ["gateway returned 503", "bundle-http-server-error"],
+    ["gateway returned 0", "bundle-http-unexpected-status"],
+    ["gateway returned an unexpected worker bundle range", "bundle-range-invalid"],
+    ["gateway returned an unexpected worker bundle length", "bundle-transfer-length-invalid"],
+    [
+      "worker bundle download stopped after 3 consecutive no-progress failures",
+      "bundle-download-no-progress",
+    ],
+    ["prepared worker bundle archive has an unexpected length", "bundle-archive-length-invalid"],
+    ["worker bundle archive exceeded its byte limit", "bundle-archive-too-large"],
+    ["worker bundle transfer response exceeded its byte limit", "bundle-response-too-large"],
+    ["worker bundle archive failed integrity validation", "bundle-archive-integrity-failed"],
+    ["published worker bundle failed validation", "bundle-published-invalid"],
+    ["gateway TLS fingerprint mismatch", "bundle-tls-mismatch"],
+    ["Cloudflare Access credentials require HTTPS", "bundle-https-required"],
+    ["gateway transfer is unavailable", "bundle-transfer-unavailable"],
+    [
+      "Worker bundle archive manifest does not match its expected hash",
+      "bundle-manifest-hash-mismatch",
+    ],
+    ["Extracted worker bundle does not match its expected hash", "bundle-extracted-hash-mismatch"],
+    ["Invalid worker bundle archive path:", "bundle-entry-invalid"],
+    ["Worker bundle archive exceeds its entry limit", "bundle-extraction-limit"],
+    ["Worker bundle contains a symbolic link:", "bundle-symlink-refused"],
+    ["Worker bundle file changed while hashing:", "bundle-file-changed"],
+    ["EACCES: permission denied", "bundle-storage-access-denied"],
+    ["EPERM: operation not permitted", "bundle-operation-denied"],
+    ["EROFS: read-only file system", "bundle-storage-readonly"],
+    ["ENOSPC: no space left on device", "bundle-storage-full"],
+    ["ENOENT: no such file or directory", "bundle-file-missing"],
+    ["Command failed:", "bundle-prewarm-failed"],
+    ["INVALID_REQUEST: invalid node worker bundle install request", "bundle-request-invalid"],
+  ];
+  const nativeLeafDiagnostics = nativeLeafCases.map(([message, category]) => ({
+    name: `native installer ${category}`,
+    diagnostic: {
+      kind: "native-first-agent-proof",
+      failureStage: "required-placement-terminal-failed",
+      worker: nativeWorkerPlacementObservation({
+        placement: {
+          state: "failed",
+          recoveryError: `Worker node bootstrap failed: Device worker bundle installation failed: ${category === "bundle-request-invalid" ? "" : "worker-bundle-install-failed: "}${message} ${nativePrivate}`,
+        },
+      }),
+    },
+  }));
+  // An unknown outer message is not permission to search arbitrary private text for a cause.
+  assert.equal(
+    nativeWorkerPlacementObservation({
+      placement: {
+        recoveryError: `${nativePrivate}: Worker node bootstrap failed: OpenClaw worker deploy artifact is missing; build the running package`,
+      },
+    }).recoveryError,
+    "other",
+  );
   const relayPodCases = [
     {
       name: "retains closed relay Pod status without payloads",
@@ -1602,6 +1990,64 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
           },
         },
         {
+          name: "retains native worker placement observations through CI",
+          diagnostic: {
+            kind: "native-first-agent-proof",
+            failureStage: "required-placement-terminal-failed",
+            worker: { ...nativeWorker, recoveryErrorDetail: nativePrivate, session: nativePrivate },
+            environmentId: nativePrivate,
+            workspace: nativePrivate,
+          },
+        },
+        {
+          name: "rejects hostile native worker diagnostic fields",
+          diagnostic: {
+            kind: "native-first-agent-proof",
+            failureStage: "required-placement",
+            worker: {
+              placementState: nativePrivate,
+              recoveryError: { message: nativePrivate },
+              environmentLookup: { value: nativePrivate },
+              expectedNodeConnected: nativePrivate,
+              expectedNodeMatches: 4097,
+              nodeCount: -1,
+              elapsedMs: 3_600_001,
+              session: nativePrivate,
+              turnStatus: nativePrivate,
+              turnError: { message: nativePrivate },
+              assistantError: nativePrivate,
+              execError: nativePrivate,
+              execResultCount: 4097,
+            },
+          },
+        },
+        {
+          name: "retains wrapped native worker bootstrap causes through CI",
+          diagnostic: {
+            kind: "native-first-agent-proof",
+            failureStage: "required-placement-terminal-failed",
+            worker: wrappedNativeWorker,
+          },
+        },
+        ...[
+          ["refreshes retained native placement", freshNativeWorker],
+          ["labels fallback after failed native placement refresh", fallbackNativeWorker],
+          ["rejects another session during native placement refresh", mismatchedNativeWorker],
+        ].map(([name, worker]) => ({
+          name,
+          diagnostic: { kind: "native-first-agent-proof", failureStage: "model-and-exec", worker },
+        })),
+        ...nativeLeafDiagnostics,
+        ...turnDiagnostics,
+        {
+          name: "collects native turn failure within the shared read budget",
+          diagnostic: {
+            kind: "native-first-agent-proof",
+            failureStage: "model-history",
+            worker: collectedTurn,
+          },
+        },
+        {
           name: "rejects unknown native first-Agent proof stage",
           diagnostic: { kind: "native-first-agent-proof", failureStage: `${secret}-stage` },
         },
@@ -1721,6 +2167,7 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
   const details = await readFile(join(root, "state/redacted.jsonl.diagnostics.json"), "utf8");
   const cliAndArtifact = `${result.stdout}\n${result.stderr}\n${await readFile(resultsPath, "utf8")}\n${details}`;
   assert.doesNotMatch(cliAndArtifact, /secretauthvalue|strippedjobvalue42/);
+  assert.ok(!cliAndArtifact.includes(nativePrivate));
   assert.ok(JSON.parse(details).failures[0].tests.length > 0);
   const summary = JSON.parse(await readFile(resultsPath, "utf8"));
   assert.equal(summary.files[0].tests[0].name, "redacted failure locator");
@@ -1847,6 +2294,96 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     kind: "native-first-agent-proof",
     failureStage: "required-placement-terminal-reclaimed",
   });
+  const retainedNative = summary.files[0].tests.find(
+    (entry) => entry.name === "retains native worker placement observations through CI",
+  ).error.diagnostic;
+  assert.deepEqual(retainedNative, {
+    kind: "native-first-agent-proof",
+    failureStage: "required-placement-terminal-failed",
+    worker: {
+      placementState: "failed",
+      recoveryError: "tunnel-timeout",
+      terminalReason: "other",
+      workspaceReferencePresent: true,
+      environmentLookup: "found",
+      environmentState: "failed",
+      environmentError: "other",
+      tunnelStatus: "stopped",
+      attachedSessionCount: 1,
+      attachedSessionMatches: true,
+      nodeLookup: "found",
+      nodeCount: 2,
+      connectedNodeCount: 1,
+      expectedNodeIdPresent: true,
+      expectedNodeMatches: 1,
+      expectedNodeConnected: false,
+      expectedNodePaired: true,
+      expectedNodeSessionHost: true,
+      expectedNodeCaps: 2,
+      expectedNodeCommands: 1,
+      expectedNodeWorkerBundle: "installed",
+      elapsedMs: 180488,
+    },
+  });
+  assert.deepEqual(
+    summary.files[0].tests.find(
+      (entry) => entry.name === "rejects hostile native worker diagnostic fields",
+    ).error.diagnostic.worker,
+    {
+      placementState: "other",
+      recoveryError: "other",
+      environmentLookup: "other",
+      turnStatus: "other",
+      turnError: "other",
+      assistantError: "other",
+      execError: "other",
+    },
+  );
+  for (const [, category] of turnCases) {
+    const turn = summary.files[0].tests.find((entry) => entry.name === `native turn ${category}`)
+      .error.diagnostic.worker;
+    assert.equal(turn.turnStatus, "error");
+    assert.equal(turn.turnError, category);
+    assert.equal(turn.assistantError, category);
+    assert.equal(turn.execError, category);
+    assert.equal(turn.proofError, "other");
+    assert.equal(turn.execResultCount, 1);
+    assert.equal(turn.execFailureCount, 1);
+  }
+  const collected = summary.files[0].tests.find(
+    (entry) => entry.name === "collects native turn failure within the shared read budget",
+  ).error.diagnostic.worker;
+  assert.equal(collected.turnError, "network-connection");
+  assert.equal(collected.historyLookup, "found");
+  const wrapped = summary.files[0].tests.find(
+    (entry) => entry.name === "retains wrapped native worker bootstrap causes through CI",
+  ).error.diagnostic.worker;
+  assert.equal(wrapped.recoveryError, "worker-deploy-artifact-missing");
+  assert.equal(wrapped.terminalReason, "bundle-install-failed");
+  assert.equal(wrapped.environmentError, "node-installer-disconnected");
+  const fresh = summary.files[0].tests.find(
+    (entry) => entry.name === "refreshes retained native placement",
+  ).error.diagnostic.worker;
+  assert.equal(fresh.placementLookup, "fresh");
+  assert.equal(fresh.placementState, "failed");
+  assert.equal(fresh.environmentState, "failed");
+  assert.equal(fresh.tunnelStatus, "stopped");
+  for (const name of [
+    "labels fallback after failed native placement refresh",
+    "rejects another session during native placement refresh",
+  ]) {
+    const fallback = summary.files[0].tests.find((entry) => entry.name === name).error.diagnostic
+      .worker;
+    assert.equal(fallback.placementLookup, "fallback");
+    assert.equal(fallback.placementState, "active");
+    assert.equal(fallback.environmentState, "attached");
+  }
+  for (const [, category] of nativeLeafCases) {
+    const leaf = summary.files[0].tests.find(
+      (entry) => entry.name === `native installer ${category}`,
+    );
+    assert.equal(leaf.error.diagnostic.worker.recoveryError, category);
+  }
   const monitoringFailure = summary.files[0].tests.find(
     (entry) => entry.name === "retains safe monitoring readiness evidence",
   );
@@ -2628,6 +3165,16 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
   const root = await fixture(t);
   const resultsPath = join(root, "results/details.json");
   const statePath = join(root, "state/details.json");
+  const failedPhase = {
+    kind: "openshell-sandbox-phase",
+    stage: "network-policy",
+    outcome: "failed",
+    elapsedMs: 1_234,
+  };
+  const phaseDiagnostic = `openclaw-ci-measurement ${JSON.stringify({
+    ...failedPhase,
+    detail: "fixture-opaque-phase-detail",
+  })}`;
   await writeFile(
     join(root, "tests/integration/details.test.mjs"),
     [
@@ -2639,6 +3186,7 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
       "  console.error(`credential ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);",
       '  console.log("Authorization: Bearer abcdefghijklmnop0123");',
       '  t.diagnostic("phase timings 1234 ms");',
+      `  t.diagnostic(${JSON.stringify(phaseDiagnostic)});`,
       '  assert.fail(`password="fixture,\\nprivate-tail" phase=after ${"stage line\\n".repeat(80)}decisive line ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);',
       "});",
       "",
@@ -2676,6 +3224,8 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
 
   assert.equal(result.status, 1);
   const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  assert.equal(summary.files[0].status, "failed");
+  assert.deepEqual(summary.files[0].measurements, [failedPhase]);
   const failed = summary.files[0].tests.find(({ name }) => name === "long failure");
   // Results and the job log keep the short message only.
   assert.match(failed.error.message, /\.\.\. \[truncated\]$/);
@@ -2688,6 +3238,7 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
   );
   const text = await readFile(`${statePath}.diagnostics.json`, "utf8");
   assert.doesNotMatch(text, /secretauthvalue|abcdefghijklmnop0123|private-tail|passing output/);
+  assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${text}`, /fixture-opaque-phase-detail/);
   const report = JSON.parse(text);
   assert.equal(report.lane, "details");
   assert.equal(report.failures.length, 1);
@@ -2695,9 +3246,9 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
   assert.equal(record.file, "tests/integration/details.test.mjs");
   assert.equal(record.omittedTests, 0);
   const detail = record.tests.find(({ name }) => name === "long failure");
-  assert.equal(detail.line, 9);
+  assert.equal(detail.line, 10);
   assert.match(detail.message, /decisive line \[env:CI_RUNNER_FIXTURE_CREDENTIAL\]$/);
-  assert.match(detail.stack, /tests\/integration\/details\.test\.mjs:9:\d+/);
+  assert.match(detail.stack, /tests\/integration\/details\.test\.mjs:10:\d+/);
   // stdout and stderr arrive on separate pipes, so only the set of lines is fixed.
   assert.deepEqual([...record.output.lines].sort(), [
     "[redacted credential-bearing line]",
@@ -4421,14 +4972,16 @@ test("aggregate requires fixed lane outputs, successful needs, and matching sour
 test("aggregate accepts a lane as a singleton target and rejects tampered result evidence", async (t) => {
   const root = await fixture(t);
   const sha = currentSha();
+  const file = "tests/integration/model.test.mjs";
+  const name = "real model case";
   await writeJson(join(root, "manifest.json"), {
     version: 1,
     lanes: {
       "docker-model": {
         files: [
           {
-            path: "tests/integration/model.test.mjs",
-            expectedTests: ["real model case"],
+            path: file,
+            expectedTests: [name],
           },
         ],
       },
@@ -4447,7 +5000,7 @@ test("aggregate accepts a lane as a singleton target and rejects tampered result
     files: [],
   });
 
-  const tampered = run(root, [
+  const aggregateArgs = [
     "aggregate",
     "docker-model",
     "--manifest",
@@ -4456,7 +5009,8 @@ test("aggregate accepts a lane as a singleton target and rejects tampered result
     root,
     "--results-dir",
     "results",
-  ]);
+  ];
+  const tampered = run(root, aggregateArgs);
   assert.equal(tampered.status, 1);
   let summary = JSON.parse(tampered.stdout);
   assert.deepEqual(
@@ -4464,33 +5018,32 @@ test("aggregate accepts a lane as a singleton target and rejects tampered result
     ["missing-lane-evidence"],
   );
 
-  await writeJson(join(root, "results/docker-model.json"), {
-    version: 1,
-    command: "run",
-    sourceSha: sha,
-    lane: "docker-model",
-    status: "passed",
-    exitCode: 0,
-    files: [
-      {
-        path: "tests/integration/model.test.mjs",
-        status: "passed",
-        counts: { passed: 1, failed: 0, skipped: 0, todo: 0, total: 1 },
-        tests: [{ name: "real model case", status: "passed" }],
-      },
-    ],
-  });
-
-  const passed = run(root, [
-    "aggregate",
+  // Produce full evidence with a required case and an optional nested case.
+  await writeFile(
+    join(root, file),
+    [
+      'import test from "node:test";',
+      'await test("real model case", async (t) => {',
+      '  await t.test("optional nested case", () => {});',
+      "});",
+      "",
+    ].join("\n"),
+  );
+  const produced = run(root, [
+    "run",
     "docker-model",
     "--manifest",
     "manifest.json",
     "--root",
     root,
-    "--results-dir",
-    "results",
+    "--state",
+    "state/docker-model.json",
+    "--results",
+    "results/docker-model.json",
   ]);
+  assert.equal(produced.status, 0, produced.stderr);
+
+  const passed = run(root, aggregateArgs);
   assert.equal(passed.status, 0, passed.stderr);
   summary = JSON.parse(passed.stdout);
   assert.equal(summary.status, "passed");
@@ -4498,6 +5051,71 @@ test("aggregate accepts a lane as a singleton target and rejects tampered result
     summary.lanes.map((entry) => entry.lane),
     ["docker-model"],
   );
+
+  const resultPath = join(root, "results/docker-model.json");
+  const evidence = JSON.parse(await readFile(resultPath, "utf8"));
+  assert.equal(evidence.scope, "full");
+  const fileEvidence = evidence.files[0];
+  const required = fileEvidence.tests.find((testCase) => testCase.name === name);
+  const optional = fileEvidence.tests.find((testCase) => testCase.name === "optional nested case");
+  assert.equal(required?.status, "passed");
+  assert.equal(optional?.status, "passed");
+
+  const skipped = { ...required, status: "skipped" };
+  const unpassed = (status) => ({
+    code: "expected-test-not-passed",
+    message: `expected test did not pass: ${name}`,
+    file,
+    name,
+    status,
+  });
+  const marker = "untrusted-case-status-marker";
+  const invalidStatuses = [
+    ["string", marker],
+    ["object", { text: marker }],
+    ["array", [marker]],
+  ];
+
+  // Keep the passing rollups and vary the individual case evidence.
+  for (const [label, cases, issues] of [
+    ["required skip", [skipped], [unpassed("skipped")]],
+    ["skip before duplicate pass", [skipped, required], [unpassed("skipped")]],
+    ["pass before duplicate skip", [required, skipped], [unpassed("skipped")]],
+    ["both duplicates pass", [required, required], []],
+    ["missing status before duplicate pass", [{ name }, required], [unpassed("invalid")]],
+    ...invalidStatuses.map(([type, status]) => [
+      `invalid ${type} status`,
+      [{ ...required, status }],
+      [unpassed("invalid")],
+    ]),
+    [
+      "null row in valid JSON",
+      [required, null],
+      [
+        {
+          code: "invalid-test-evidence",
+          message: "test evidence contains an invalid case entry",
+          file,
+        },
+      ],
+    ],
+  ]) {
+    await t.test(label, async () => {
+      await writeJson(resultPath, {
+        ...evidence,
+        files: [{ ...fileEvidence, tests: [optional, ...cases] }],
+      });
+      const result = run(root, aggregateArgs);
+      assert.ok(
+        !result.stdout.includes(marker) && !result.stderr.includes(marker),
+        "aggregate printed untrusted case status",
+      );
+      assert.equal(result.status, issues.length === 0 ? 0 : 1, result.stdout);
+      const aggregate = JSON.parse(result.stdout);
+      assert.equal(aggregate.status, issues.length === 0 ? "passed" : "failed");
+      assert.deepEqual(aggregate.issues, issues);
+    });
+  }
 });
 
 test("aggregate fails when a supplied non-lane need failed even if lane artifacts pass", async (t) => {
@@ -4558,16 +5176,132 @@ test("aggregate fails when a supplied non-lane need failed even if lane artifact
   assert.equal(summary.issues[0].need, "audit");
 });
 
+test("first-Agent scenario ownership drains child work before teardown after failure or cancellation", async (t) => {
+  for (const mode of ["failure", "cancel"]) {
+    const root = await fixture(t);
+    const trace = join(root, "trace");
+    const file = join(root, "scenario.test.mjs");
+    const owner = pathToFileURL(
+      join(repositoryRoot, "tests/helpers/local-first-agent-stack.mjs"),
+    ).href;
+    await writeFile(
+      file,
+      `
+import test from 'node:test';
+import { spawn } from 'node:child_process';
+import { appendFileSync } from 'node:fs';
+import { ownFirstAgentWork } from ${JSON.stringify(owner)};
+const controller = new AbortController();
+test('scenario', { signal: controller.signal }, async (t) => {
+  const own = ownFirstAgentWork(t);
+  t.after(() => appendFileSync(${JSON.stringify(trace)}, 'cleanup|'));
+  let ready;
+  const started = new Promise(resolve => { ready = resolve; });
+  t.test('native', { signal: t.signal }, (native) => own(new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['-e', "process.on('SIGTERM', () => setTimeout(() => process.exit(0), 50)); console.log('ready'); setTimeout(() => process.exit(0), 300);"], { stdio: ['ignore', 'pipe', 'ignore'] });
+    native.signal.addEventListener('abort', () => child.kill('SIGTERM'), { once: true });
+    child.stdout.once('data', ready);
+    child.once('error', reject);
+    child.once('close', () => { appendFileSync(${JSON.stringify(trace)}, 'settled|'); resolve(); });
+  })));
+  await started;
+  if (${JSON.stringify(mode)} === 'cancel') { controller.abort(); }
+  else { throw new Error('scenario-failed'); }
+});
+`,
+    );
+    const env = { ...process.env };
+    delete env.NODE_TEST_CONTEXT;
+    delete env.NODE_TEST_WORKER_ID;
+    const result = spawnSync(process.execPath, ["--test", file], {
+      env,
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert.equal(result.status, 1, result.stderr);
+    assert.equal(await readFile(trace, "utf8"), "settled|cleanup|", mode);
+  }
+});
+
 test("run records only allowlisted measurements from test diagnostics", async (t) => {
   const root = await fixture(t);
   const resultsPath = join(root, "results/measurements.json");
   const measurement = (value) => `openclaw-ci-measurement ${JSON.stringify(value)}`;
+  const openshellPhase = {
+    kind: "openshell-sandbox-phase",
+    stage: "exposure-auth",
+    outcome: "passed",
+    elapsedMs: 39_000,
+  };
   await writeFile(
     join(root, "tests/integration/measurements.test.mjs"),
     [
       'import test from "node:test";',
       'test("measures", (t) => {',
       ...[
+        measurement({
+          kind: "local-first-agent-command",
+          phase: "setup",
+          stage: "runtime-build",
+          count: 1,
+          failed: 0,
+          elapsedMs: 100,
+          args: "secretauthvalue-args",
+        }),
+        measurement({
+          kind: "local-first-agent-command",
+          phase: "setup",
+          stage: "secretauthvalue-stage",
+          count: 1,
+          failed: 0,
+          elapsedMs: 100,
+        }),
+        measurement({
+          kind: "local-first-agent-pod",
+          stage: "native-initial",
+          role: "harness",
+          restarts: 0,
+          createdAfterRequestMs: 100,
+          scheduledMs: 100,
+          initializedMs: 200,
+          runningMs: 200,
+          readyMs: 300,
+          observedMs: 400,
+          environment: "secretauthvalue-env",
+        }),
+        measurement({
+          kind: "local-first-agent-pod",
+          stage: "native-initial",
+          role: "secretauthvalue-role",
+          restarts: 0,
+        }),
+
+        measurement({
+          kind: "local-first-agent",
+          stage: "setup",
+          outcome: "passed",
+          elapsedMs: 1234,
+          transcript: "secretauthvalue-transcript",
+        }),
+        measurement({
+          kind: "local-first-agent",
+          stage: "secretauthvalue-stage",
+          outcome: "passed",
+          elapsedMs: 12,
+        }),
+        measurement({
+          kind: "local-first-agent",
+          stage: "setup",
+          outcome: "secretauthvalue-outcome",
+          elapsedMs: 12,
+        }),
+        measurement({
+          kind: "local-first-agent",
+          stage: "setup",
+          outcome: "passed",
+          elapsedMs: "secretauthvalue-time",
+        }),
+
         measurement({
           kind: "kubelet-volume-refresh",
           volume: "secret",
@@ -4675,6 +5409,11 @@ test("run records only allowlisted measurements from test diagnostics", async (t
           elapsedMs: 1.5,
           budgetMs: 15_000,
         }),
+        measurement({ ...openshellPhase, detail: "secretauthvalue-phase-detail" }),
+        measurement({ ...openshellPhase, stage: "secretauthvalue-phase-stage" }),
+        measurement({ ...openshellPhase, outcome: "secretauthvalue-phase-outcome" }),
+        measurement({ ...openshellPhase, elapsedMs: 2_400_001 }),
+        measurement({ ...openshellPhase, elapsedMs: 0.5 }),
         "openclaw-ci-measurement secretauthvalue-not-json",
         "secretauthvalue-plain-diagnostic",
       ].map((message) => `  t.diagnostic(${JSON.stringify(message)});`),
@@ -4704,6 +5443,28 @@ test("run records only allowlisted measurements from test diagnostics", async (t
   const summary = JSON.parse(artifact);
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(summary.files[0].measurements, [
+    {
+      kind: "local-first-agent-command",
+      phase: "setup",
+      stage: "runtime-build",
+      count: 1,
+      failed: 0,
+      elapsedMs: 100,
+    },
+    {
+      kind: "local-first-agent-pod",
+      stage: "native-initial",
+      role: "harness",
+      restarts: 0,
+      createdAfterRequestMs: 100,
+      scheduledMs: 100,
+      initializedMs: 200,
+      runningMs: 200,
+      readyMs: 300,
+      observedMs: 400,
+    },
+
+    { kind: "local-first-agent", stage: "setup", outcome: "passed", elapsedMs: 1234 },
     {
       kind: "kubelet-volume-refresh",
       volume: "secret",
@@ -4751,6 +5512,7 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       elapsedMs: 4_321,
       budgetMs: 15_000,
     },
+    openshellPhase,
   ]);
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${artifact}`, /secretauthvalue/);
 });
@@ -5277,4 +6039,96 @@ describe("tests that wait out real runner limits, side by side", { concurrency: 
   for (const args of waitingTests) {
     test(...args);
   }
+});
+
+test("native history proof keeps exact run, explicit success and marker predicates", () => {
+  const prefix = "FIRST_AGENT_NATIVE_TOOL ";
+  const marker = "FIRST_AGENT_NATIVE_expected";
+  const output = prefix + JSON.stringify({ hostname: "private-host", content: "private-value" });
+  const tool = {
+    role: "toolResult",
+    toolName: "exec",
+    isError: false,
+    content: output,
+    __openclaw: { runId: "selected" },
+  };
+  const final = {
+    role: "assistant",
+    stopReason: "stop",
+    content: marker,
+    __openclaw: { runId: "selected" },
+  };
+  for (const [name, messages, toolPresent, finalPresent, flag] of [
+    ["valid", [tool, final], true, true, "false"],
+    [
+      "wrapped",
+      [{ ...tool, content: JSON.stringify({ value: { aggregated: output } }) }, final],
+      true,
+      true,
+      "false",
+    ],
+    ["missing flag", [{ ...tool, isError: undefined }, final], false, true, "absent"],
+    ["error", [{ ...tool, isError: true }, final], false, true, "true"],
+    ["invalid flag", [{ ...tool, isError: 0 }, final], false, true, "other"],
+    ["source echo", [{ ...tool, content: "command: " + output }, final], false, true, "false"],
+    ["wrong run", [{ ...tool, __openclaw: { runId: "other" } }, final], false, true, "none"],
+    ["wrong marker", [tool, { ...final, content: "Done: " + marker }], true, false, "false"],
+    [
+      "tool continuation",
+      [tool, { ...final, content: [{ type: "text", text: marker }, { type: "toolCall" }] }],
+      true,
+      false,
+      "false",
+    ],
+  ]) {
+    const evidence = nativeWorkerHistoryEvidence({
+      messages,
+      runId: "selected",
+      toolPrefix: prefix,
+      marker,
+    });
+    assert.equal(Boolean(evidence.tool), toolPresent, name);
+    assert.equal(Boolean(evidence.final), finalPresent, name);
+    assert.equal(evidence.observation.historyExecErrorFlag, flag, name);
+    assert.doesNotMatch(
+      JSON.stringify(evidence.observation),
+      /private-host|private-value|FIRST_AGENT_NATIVE/,
+    );
+  }
+});
+
+test("native placement retries only the correlated pinned read-generation signal", async () => {
+  const message = "Error: Session changed while preparing its description; retry the request";
+  const error = Object.assign(new Error(message), { code: "UNAVAILABLE" });
+  assert.equal(nativePlacementReadRetryable(error, true), true);
+  assert.equal(
+    nativePlacementReadRetryable(error, false),
+    false,
+    "local/transport errors cannot opt into a retry by text",
+  );
+  for (const rejected of [
+    Object.assign(new Error(message), { code: "FORBIDDEN" }),
+    Object.assign(new Error("Session repository binding changed while preparing its description"), {
+      code: "UNAVAILABLE",
+    }),
+    Object.assign(new Error("gateway request timed out"), { code: "UNAVAILABLE" }),
+    Object.assign(new Error("private peer text"), { code: "UNAVAILABLE" }),
+    Object.assign(new Error(message + "; private suffix"), { code: "UNAVAILABLE" }),
+  ]) {
+    assert.equal(nativePlacementReadRetryable(rejected, true), false);
+  }
+  const observed = await collectNativeWorkerFailure({
+    error,
+    elapsedMs: 1,
+    request: async (method) => {
+      assert.equal(method, "node.list");
+      return { nodes: [] };
+    },
+  });
+  assert.equal(
+    observed.proofError,
+    "session-read-changed",
+    "pre-turn failures must retain safe classification",
+  );
+  assert.doesNotMatch(JSON.stringify(observed), /Session changed|private peer/);
 });

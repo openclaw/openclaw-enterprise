@@ -215,7 +215,6 @@ test(
       tls: gh.tls,
       trustedUpstreamOrigins: new Set(factory.trustedUpstreamOrigins),
       upstreamOrigins: undefined,
-      providerQueue: undefined,
       log: undefined,
     });
     const client = new UnixRepositoryCredentialControlClient({ controlSocket });

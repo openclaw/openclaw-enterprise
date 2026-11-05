@@ -36,11 +36,68 @@ follows `:focus-visible`. No part of any ring may be cut off.
    Arrow through results: the active result has an inset ring.
 8. Open **Pages / Namespaces / Ready and provisioning**. Tab to a Namespace
    name. The whole row card draws the ring.
-9. Open **Pages / Create Agent / Default Preset Loading** (**Use Preset** is
-   disabled) or **Pages / Agents / Create Restricted** (**Create Agent** is
-   disabled). Hover the button: the pointer is `not-allowed` and the button is
-   at 0.6 opacity. A button with `aria-busy="true"`, or a disabled
+9. Open **Pages / Create Agent / Capability check failure** (**Create Agent**
+   is disabled). Hover the button: the pointer is `not-allowed` and the button
+   is at 0.6 opacity. A button with `aria-busy="true"`, or a disabled
    button inside an `aria-busy="true"` region, shows the `progress` pointer.
+   An unavailable control whose reason shows beside it stays in the Tab order
+   instead (`aria-disabled`): open **Pages / Create Agent / Choose a starting
+   point** and Tab to **Use Preset**. It takes focus, its description is the
+   status line, and Enter or Space does nothing. Its label, fill and edge fade,
+   not the whole button, so its focus ring keeps full contrast. **Deploy new
+   version**, **Save plugin selections**, **Discard changes**, **Save channel
+   Secrets**, **Strict mode** and the Gateway toggles do the same (finding
+   2878); an unavailable checkbox's label draws its ring. So do the list's
+   **Create Agent**, Stop and Delete icons, **Create Secret**, **Run
+   diagnostics**, the Logs controls, the plugin dialog's **Load plugins** and
+   pager, and the read-only authentication and Slack token fields (finding
+   2899): a select or text field fades its text, and ignores arrow keys and
+   typing too. So do the Secret dialog's **Replace value** and **Delete
+   Secret** (**Pages / Secrets / Read only for this caller**) and the issued
+   account select (**Components / Credentials / Issued service accounts
+   unavailable**) (finding 2925). On **Pages / Agents / Stop from the list**,
+   confirm Stop: the Stop icon becomes unavailable and keeps focus, described
+   by its Stop requested badge (finding 2926). So do a refused **Create
+   Namespace** (**Pages / Namespaces / Create refused, then closed**), **Create
+   Agent** waiting for a Namespace (**Pages / Create Agent / Form, Namespace
+   still provisioning**), **Disable Slack** (**Components / Channels / Slack
+   Disable, editor must replace the bot token Secret**), Configure Slack on an
+   Embedded Agent, the Share Agent form after a failed change (**Pages / Agent
+   detail / Sharing outcome uncertain**) and the Logs controls of a version
+   with no running Pod (**Pages / Agent detail / Logs of a version with no
+   running Pod**). A dialog that cannot submit after a refusal or an unknown
+   outcome keeps its fields and confirmation in the Tab order, described by
+   its alert, while focus moves to Cancel or Close (finding 2935): **Pages /
+   Namespaces / Create permission denied** and **Create outcome unknown**,
+   **Pages / Secrets / Create denied** and **Concurrent reference conflict**,
+   and the Stop and Delete confirmations when a refusal arrives while they are
+   open (**Pages / Agents / Stop from the list, permission arrives while
+   confirmation is open**, **Components / Stop Agent / Permission arrives while
+   confirmation is open**, **Components / Deletion / Permission arrives while
+   confirmation is open**). Delete Agent after an unknown outcome
+   (**Components / Deletion / Outcome unknown**) or a refusal (**Components /
+   Deletion / Permission denied**, finding 2951) is described by its alert, as
+   is a refused Stop Agent (**Components / Stop Agent / Permission denied**)
+   and a refused list row icon, whose row note names the grant (**Pages /
+   Agents / Stop from the list denied**, finding 2955). So are the header's
+   Namespace selector with no readable Namespace (**Pages / Agents / No
+   readable Namespaces**, finding 2936) and **Start with default
+   Preset** without a default Preset (**Pages / Create Agent / No Presets**,
+   finding 2937), whose hint says why. With other Presets (**Pages / Create
+   Agent / Other Presets, no default**), the chooser's status says only
+   "Choose a Preset." and describes Use Preset; the hint is not repeated
+   (finding 2946). A list row refused for a reason other than grants shows the
+   API's text in its alert, its note names no grant but reads "Not deleted:
+   see above", and its icons stay reachable, described by the alert, until
+   Refresh (**Pages / Agents / Delete from the list refused for another
+   reason**, findings 2958, D812). On **Pages / Agents / Refocus after
+   another person's stop**, focus Stop, switch windows and return: the
+   rebuilt row has no Stop, and focus is on the Agent's name (finding 2967).
+   So do Previous instance before a restart (**Pages / Agent
+   detail / Runtime status after a healthy first deploy**), described by its
+   note (finding 2944), and Execution mode with the Codex harness (**Pages /
+   Create Agent / OpenAI with Codex harness**, Runtime details open), described
+   by its hint (finding 2945).
 10. Open **Components / Stop Agent / Stop pending**. Stopping… sets
     `aria-busy="true"` and shows the `progress` pointer, as Deleting… and a
     saving Save Configuration do (finding 1927).
@@ -64,7 +121,9 @@ follows `:focus-visible`. No part of any ring may be cut off.
     (wide)**, **Access and credential setup** looks the same.
 15. Open **Components / Native admin / Refreshing access**. Tab to **Refresh
     access** and press Enter: while it reads (1.5 s) it keeps focus. Repeat and
-    press Tab during the read: focus stays where you moved it.
+    press Tab during the read: focus stays where you moved it. On **Available
+    once a deployment completes**, focus the unavailable **Open Agent UI**
+    before the poll lands: the live link that replaces it keeps focus.
 
 16. Open **Components / Credentials / Scrolling Secret list**. Click **API key
     Secret**: the list scrolls. Press Tab: the list closes and focus moves to
@@ -78,3 +137,20 @@ follows `:focus-visible`. No part of any ring may be cut off.
 
 Check steps 1 to 5 again at a narrow viewport (390 px; use **Plugins (phone)**
 for step 5).
+
+## Agent collection access checks
+
+Open **Pages / Agents / Populated Namespace leaves the list** at desktop and
+phone widths. Keep focus in Search Agents while the idle Namespace read finishes.
+The warning names the lost access, all Agent rows disappear, and Create Agent is
+disabled. Clear the search: the rows must not return. The existing empty
+**Namespace leaves the list while provisioning** story covers the same warning
+without rows. These stories simulate API responses; browser tests exercise the
+controller and IAM decisions.
+
+Repeat with **Namespace loss with Stop dialog** and **Namespace loss with Delete
+dialog**. The background check closes the confirmation and focuses Search Agents.
+Previous row feedback disappears. No empty-list message appears beside the
+unavailable warning. Submitted requests report generic acceptance, refusal or
+unknown outcomes without Agent details or replay. Browser tests also cover session
+expiry. Use the late Stop response story to inspect its generic result.

@@ -5,22 +5,24 @@ import {
   describeDisabled,
   dismissOnBackdrop,
   element,
+  mayReturnFocus,
+  replaceChildrenIfChanged,
   requestIdLine,
   statusBlock,
 } from "./dom.mjs";
 import type { NamespacePageContext } from "./namespaces.mjs";
 import { resourceActionIcon } from "./resource-actions.mjs";
 import { describeFailure } from "./agents/list.mjs";
-import { askForGrant } from "./agents/access-reasons.mjs";
+import { NAMESPACE_DELETE_DENIED, namespaceDeleteDenied } from "./agents/access-reasons.mjs";
 
 interface DeletionContext extends NamespacePageContext {
-  onRemoved(namespace: Namespace): void;
+  /** `refocus`: a requested check found it removed while its Refresh held focus. */
+  onRemoved(namespace: Namespace, refocus: boolean): void;
   onResume?(handler: () => void): void;
   statusChanged(status: Namespace["status"]): void;
 }
 
 const POLL_MS = 3000;
-const DENIED = `You do not have permission to delete this Namespace. ${askForGrant("Namespace delete on it")}`;
 
 /** One exact Namespace owns its confirmation, request outcome, and teardown observation. */
 export function createNamespaceDeletion(context: DeletionContext, namespace: Namespace) {
@@ -34,7 +36,18 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
   let unknown = false;
   let pending = false;
   let reading = false;
+  // Set while the running read is a background poll. A poll keeps the controls usable and the
+  // shown status in place, so it neither drops keyboard focus from a button it would disable
+  // nor announces the same status again every 3 s (finding 2797).
+  let quiet = false;
+  // Each deletion request bumps this, so a poll sent before it cannot report over its outcome.
+  let generation = 0;
+  // Set when a requested check disables the focused Refresh status, so focus returns to the row.
+  let refocus = false;
   let denied = false;
+  // Why delete is refused, from the last permission answer: an Installation administrator is
+  // refused only by a Restriction (finding 2861).
+  let deniedReason = NAMESPACE_DELETE_DENIED;
   let accessEnded = false;
   let removed = false;
   let poll: ReturnType<typeof setTimeout> | undefined;
@@ -65,29 +78,40 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
     remove.hidden = deleting || unknown;
     refresh.hidden = !deleting && !unknown;
     retry.hidden = !deleting || unknown;
-    remove.disabled = pending || reading || denied || accessEnded;
-    retry.disabled = pending || reading || denied || accessEnded;
-    refresh.disabled = pending || reading;
+    const checking = reading && !quiet;
+    const busy = pending || checking || accessEnded;
+    // A refused delete stays in the Tab order (aria-disabled, not disabled), so a keyboard user
+    // reaches its reason (finding D788). openConfirmation ignores it.
+    for (const control of [remove, retry]) {
+      control.disabled = busy;
+      if (denied && !busy) {
+        control.setAttribute("aria-disabled", "true");
+      } else {
+        control.removeAttribute("aria-disabled");
+      }
+    }
+    refresh.disabled = pending || checking;
     let text = message;
     if (!text && denied) {
-      text = DENIED;
+      text = deniedReason;
     } else if (!text && deleting) {
       text =
         "Deletion started. Cleanup runs in the background. If it does not finish, ask an operator to check teardown before requesting deletion again.";
     }
     const support = requestId ? requestIdLine(requestId) : null;
-    feedback.replaceChildren(
+    replaceChildrenIfChanged(feedback, [
       ...(text ? [statusBlock(unknown || accessEnded ? "warning" : "info", null, text)] : []),
       ...(support ? [support] : []),
-    );
-    describeDisabled(remove, remove.disabled ? feedback : null);
-    describeDisabled(retry, retry.disabled ? feedback : null);
+    ]);
+    // Each links the reason only while it is unavailable, disabled or aria-disabled.
+    describeDisabled(remove, feedback);
+    describeDisabled(retry, feedback);
   }
 
   function schedulePoll() {
     clearTimeout(poll);
     if (deleting && !unknown && !accessEnded && current()) {
-      poll = setTimeout(() => void readStatus(), POLL_MS);
+      poll = setTimeout(() => void readStatus({ background: true }), POLL_MS);
     }
   }
 
@@ -98,6 +122,7 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
         return;
       }
       denied = answer.delete === false;
+      deniedReason = namespaceDeleteDenied(answer as { installation?: { administer?: boolean } });
       if (denied && confirmation?.open && !pending) {
         confirmation.close();
       }
@@ -107,16 +132,28 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
     }
   }
 
-  async function readStatus() {
-    if (!current() || pending || reading) {
+  async function readStatus({ background = false } = {}) {
+    if (!current() || pending) {
+      return;
+    }
+    if (reading) {
+      // Refresh during a background poll shows that poll as the requested check.
+      if (!background && quiet) {
+        refocus = document.activeElement === refresh;
+        quiet = false;
+        render();
+      }
       return;
     }
     clearTimeout(poll);
     reading = true;
+    quiet = background;
+    refocus = !background && document.activeElement === refresh;
+    const sent = generation;
     render();
     try {
       const result = responseFields(await context.request(path));
-      if (!current()) {
+      if (!current() || sent !== generation) {
         return;
       }
       if (
@@ -124,6 +161,11 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
         !["ready", "provisioning", "failed", "deleting"].includes(String(result.status))
       ) {
         throw new Error("Invalid Namespace status response");
+      }
+      if (quiet && deleting && result.status === "deleting") {
+        // Cleanup is still running: a background poll leaves what the row shows, including a
+        // refusal of the last request, until the status changes or the person refreshes.
+        return;
       }
       deleting = result.status === "deleting";
       unknown = false;
@@ -135,7 +177,7 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
       context.statusChanged(result.status as Namespace["status"]);
       await readPermissions();
     } catch (cause) {
-      if (!current()) {
+      if (!current() || sent !== generation) {
         return;
       }
       const error = requestFailure(cause);
@@ -145,7 +187,9 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
       }
       if (error.status === 404) {
         removed = true;
-        context.onRemoved(namespace);
+        // A confirmation opened while a background poll read has nothing left to delete.
+        confirmation?.close();
+        context.onRemoved(namespace, refocus);
         return;
       }
       accessEnded = error.status === 403;
@@ -156,10 +200,15 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
       requestId = error.requestId;
     } finally {
       reading = false;
+      quiet = false;
       if (current()) {
         render();
         schedulePoll();
+        if (refocus && (!document.activeElement || document.activeElement === document.body)) {
+          (refresh.hidden ? remove : refresh).focus();
+        }
       }
+      refocus = false;
     }
   }
 
@@ -211,16 +260,19 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
         heading,
         ...resource.ids.map((id) => element("code", { className: "resource-id" }, id)),
       );
-      if (resource.count > resource.ids.length) {
+      const unlisted = resource.count - resource.ids.length;
+      if (unlisted > 0) {
+        // The API names at most 20 IDs per kind, and only those the caller can read (finding 2724).
+        const lead = resource.ids.length ? `And ${unlisted} more not listed.` : "None listed.";
         item.append(
           element(
             "p",
             { className: "muted" },
-            `And ${resource.count - resource.ids.length} more. Retry after cleanup to see remaining IDs.`,
+            `${lead} The list shows up to 20 IDs that you can read; retry after cleanup to see more.`,
           ),
         );
       }
-      if (resource.kind === "Configurations") {
+      if (resource.kind === "Configurations" && resource.ids.length) {
         item.append(
           element(
             "details",
@@ -269,7 +321,7 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
   }
 
   function openConfirmation() {
-    if (!current() || pending || reading || denied || accessEnded || unknown) {
+    if (!current() || pending || (reading && !quiet) || denied || accessEnded || unknown) {
       return;
     }
     const opener = document.activeElement;
@@ -337,7 +389,13 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
       () => {
         confirmation = undefined;
         dialog.remove();
-        if (current() && !pending && opener instanceof HTMLElement && opener.isConnected) {
+        if (
+          current() &&
+          !pending &&
+          opener instanceof HTMLElement &&
+          opener.isConnected &&
+          mayReturnFocus(dialog)
+        ) {
           opener.focus();
         }
       },
@@ -367,6 +425,7 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
         return;
       }
       pending = true;
+      generation += 1;
       clearTimeout(poll);
       cancel.disabled = true;
       confirm.disabled = true;
@@ -406,7 +465,7 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
         requestId = error.requestId;
         if (error.status === 403) {
           denied = true;
-          message = error.serverMessage ?? DENIED;
+          message = error.serverMessage ?? deniedReason;
         } else if (error.status === 400 || error.status === 409 || error.status === 429) {
           message = describeFailure(cause, { mutation: true });
         } else {
@@ -430,9 +489,8 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
   render();
   void readPermissions();
   schedulePoll();
-  context.onResume?.(() => {
-    void readPermissions();
-    schedulePoll();
-  });
+  // A return mounts this row only after replaying its reads, including the permission answer,
+  // unchanged, so resuming only restarts the poll a detached view stopped (finding 2799).
+  context.onResume?.(schedulePoll);
   return { actions, feedback };
 }

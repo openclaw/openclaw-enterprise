@@ -51,15 +51,188 @@ const postTestAsyncActivityPrefix =
   "Error: A resource generated asynchronous activity after the test ended.";
 
 // Tests publish timings with t.diagnostic(`${measurementPrefix}${JSON}`). Only the
-// allowlisted shape below survives; anything else is dropped like other diagnostics.
+// allowlisted shape below is retained in ordinary results.
 const measurementPrefix = "openclaw-ci-measurement ";
+const openShellSandboxMeasurementKind = "openshell-sandbox-phase";
+const openShellSandboxStages = new Set([
+  "installation",
+  "exposure-auth",
+  "gateway-turns",
+  "filesystem-egress",
+  "network-policy",
+  "credential-route",
+  "pod-replacement",
+  "untrusted-model-upstream",
+  "tool-upstream-outage",
+  "model-provider-outage",
+  "gateway-outage",
+  "oauth-refresh",
+  "non-model-source",
+  "credential-audit",
+  "source-withdrawal",
+  "embedded-fail-closed",
+  "native-policy-scopes",
+]);
 
-function safeMeasurement(message) {
-  let value;
+function parseMeasurement(message) {
+  if (!message.startsWith(measurementPrefix)) {
+    return undefined;
+  }
   try {
-    value = JSON.parse(message.slice(measurementPrefix.length));
+    return JSON.parse(message.slice(measurementPrefix.length));
   } catch {
     return undefined;
+  }
+}
+
+function safeMeasurement(value) {
+  if (isRecord(value) && value.kind === openShellSandboxMeasurementKind) {
+    if (
+      !openShellSandboxStages.has(value.stage) ||
+      !["passed", "failed"].includes(value.outcome) ||
+      !Number.isInteger(value.elapsedMs) ||
+      value.elapsedMs < 0 ||
+      value.elapsedMs > 2_400_000
+    ) {
+      return undefined;
+    }
+    return {
+      kind: value.kind,
+      stage: value.stage,
+      outcome: value.outcome,
+      elapsedMs: value.elapsedMs,
+    };
+  }
+  if (isRecord(value) && value.kind === "local-first-agent-setup-point") {
+    if (
+      ![
+        "database-start",
+        "cluster-start",
+        "controller-images-start",
+        "routing-start",
+        "network-check-start",
+        "openshell-assets-start",
+        "openshell-gateway-start",
+        "platform-start",
+        "controller-start",
+        "namespace-check-start",
+        "ready",
+      ].includes(value.stage) ||
+      !Number.isInteger(value.elapsedMs) ||
+      value.elapsedMs < 0 ||
+      value.elapsedMs > 7_200_000
+    ) {
+      return undefined;
+    }
+    return { kind: value.kind, stage: value.stage, elapsedMs: value.elapsedMs };
+  }
+  if (isRecord(value) && value.kind === "local-first-agent-capacity") {
+    const result = { kind: value.kind };
+    for (const key of ["cpus", "totalMiB", "minimumFreeMiB", "maximumLoadHundredths", "samples"]) {
+      if (!Number.isSafeInteger(value[key]) || value[key] < 0 || value[key] > 10_000_000) {
+        return undefined;
+      }
+      result[key] = value[key];
+    }
+    return result;
+  }
+  if (isRecord(value) && value.kind === "local-first-agent-command") {
+    if (
+      !["setup", "cleanup"].includes(value.phase) ||
+      ![
+        "runtime-build",
+        "controller-build",
+        "compose-build-and-start",
+        "compose-build",
+        "image-pull",
+        "image-export",
+        "image-import",
+        "node-image-pull",
+        "cluster-create",
+        "k3d-image-import",
+        "kubernetes-readiness",
+        "helm-install",
+      ].includes(value.stage) ||
+      !Number.isInteger(value.count) ||
+      value.count < 1 ||
+      value.count > 100_000 ||
+      !Number.isInteger(value.failed) ||
+      value.failed < 0 ||
+      value.failed > value.count ||
+      !Number.isInteger(value.elapsedMs) ||
+      value.elapsedMs < 0 ||
+      value.elapsedMs > 7_200_000
+    ) {
+      return undefined;
+    }
+    return {
+      kind: value.kind,
+      phase: value.phase,
+      stage: value.stage,
+      count: value.count,
+      failed: value.failed,
+      elapsedMs: value.elapsedMs,
+    };
+  }
+  if (isRecord(value) && value.kind === "local-first-agent-pod") {
+    if (
+      !["native-initial", "native-replacement"].includes(value.stage) ||
+      !["harness", "gateway"].includes(value.role) ||
+      !Number.isInteger(value.restarts) ||
+      value.restarts < 0 ||
+      value.restarts > 1000
+    ) {
+      return undefined;
+    }
+    const result = {
+      kind: value.kind,
+      stage: value.stage,
+      role: value.role,
+      restarts: value.restarts,
+    };
+    for (const key of [
+      "createdAfterRequestMs",
+      "scheduledMs",
+      "initializedMs",
+      "runningMs",
+      "readyMs",
+      "observedMs",
+    ]) {
+      if (
+        value[key] !== null &&
+        (!Number.isInteger(value[key]) || value[key] < -60_000 || value[key] > 7_200_000)
+      ) {
+        return undefined;
+      }
+      result[key] = value[key];
+    }
+    return result;
+  }
+  if (isRecord(value) && value.kind === "local-first-agent") {
+    if (
+      ![
+        "setup",
+        "cleanup",
+        "initial-deploy-and-model",
+        "reuse-model",
+        "native-deploy",
+        "native-model",
+        "native-redeploy",
+        "native-resumed-model",
+      ].includes(value.stage) ||
+      !["passed", "failed"].includes(value.outcome) ||
+      !Number.isInteger(value.elapsedMs) ||
+      value.elapsedMs < 0 ||
+      value.elapsedMs > 7_200_000
+    ) {
+      return undefined;
+    }
+    return {
+      kind: value.kind,
+      stage: value.stage,
+      outcome: value.outcome,
+      elapsedMs: value.elapsedMs,
+    };
   }
   if (isRecord(value) && value.kind === "runtime-model-probe") {
     return safeModelProbeMeasurement(value);
@@ -414,7 +587,7 @@ function relayNodeDiagnostic(value) {
 
 // The proof runs in a separate controller process. Both its test and the CI
 // reporter use this closed vocabulary; neither publishes arbitrary stage text.
-export function nativeFirstAgentProofDiagnostic(failureStage) {
+export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
   const stages = [
     "startup",
     "connect",
@@ -428,11 +601,190 @@ export function nativeFirstAgentProofDiagnostic(failureStage) {
     "session-identity",
     "send",
     "model-and-exec",
+    "model-outcome",
+    "model-history",
+    "exec-proof",
     "current-placement",
   ];
-  return stages.includes(failureStage)
-    ? { kind: "native-first-agent-proof", failureStage }
-    : undefined;
+  if (!stages.includes(failureStage)) {
+    return undefined;
+  }
+  const diagnostic = { kind: "native-first-agent-proof", failureStage };
+  if (!isRecord(worker)) {
+    return diagnostic;
+  }
+  const errors = [
+    "tunnel-timeout",
+    "workspace-command-timeout",
+    "workspace-command-failed",
+    "node-transport-unavailable",
+    "node-supervisor-disconnected",
+    "workspace-not-synced",
+    "workspace-device-mismatch",
+    "workspace-validation-failed",
+    "workspace-session-mismatch",
+    "owner-credential-stale",
+    "owner-epoch-stale",
+    "owner-binding-changed",
+    "tunnel-stopped",
+    "worker-bootstrap-failed",
+    "bundle-install-failed",
+    "provider-preparation-failed",
+    "provider-operation-failed",
+    "provider-profile-rejected",
+    "node-installer-disconnected",
+    "node-install-connection-stale",
+    "bundle-receipt-mismatch",
+    "bundle-prefetch-unsupported",
+    "worker-deploy-artifact-missing",
+    "worker-deploy-artifact-unsafe",
+    "gateway-build-missing",
+    "gateway-cli-missing",
+    "bootstrap-artifact-too-large",
+    "bootstrap-transfer-too-large",
+    "bundle-http-401",
+    "bundle-http-403",
+    "bundle-http-404",
+    "bundle-http-client-error",
+    "bundle-http-server-error",
+    "bundle-http-unexpected-status",
+    "bundle-storage-access-denied",
+    "bundle-operation-denied",
+    "bundle-storage-readonly",
+    "bundle-storage-full",
+    "bundle-file-missing",
+    "bundle-prewarm-failed",
+    "bundle-request-invalid",
+    "bundle-range-invalid",
+    "bundle-transfer-length-invalid",
+    "bundle-download-no-progress",
+    "bundle-archive-length-invalid",
+    "bundle-archive-too-large",
+    "bundle-response-too-large",
+    "bundle-archive-integrity-failed",
+    "bundle-published-invalid",
+    "bundle-tls-mismatch",
+    "bundle-https-required",
+    "bundle-transfer-unavailable",
+    "bundle-manifest-hash-mismatch",
+    "bundle-extracted-hash-mismatch",
+    "bundle-entry-invalid",
+    "bundle-extraction-limit",
+    "bundle-symlink-refused",
+    "bundle-file-changed",
+  ];
+  const turnErrors = [
+    "session-read-changed",
+    "session-binding-changed",
+    "model-authentication",
+    "model-rate-or-quota",
+    "model-unavailable",
+    "tool-policy",
+    "filesystem-permission",
+    "file-or-command-missing",
+    "tls-validation",
+    "network-connection",
+    "worker-authority",
+    "worker-transport",
+    "http-unauthorized",
+    "http-forbidden",
+    "http-rate-limit",
+  ];
+  const vocabularies = {
+    proofRpcCode: ["UNAVAILABLE", "INVALID_REQUEST", "NOT_FOUND", "UNAUTHORIZED", "FORBIDDEN"],
+    historyExecErrorFlag: ["none", "false", "true", "absent", "other", "mixed"],
+    turnStatus: ["ok", "error", "timeout", "pending"],
+    turnError: turnErrors,
+    proofError: turnErrors,
+    assistantError: turnErrors,
+    execError: turnErrors,
+    turnStopReason: ["stop", "length", "toolUse", "error", "aborted"],
+    assistantStopReason: ["stop", "length", "toolUse", "error", "aborted"],
+    historyLookup: ["found", "unavailable", "invalid", "absent"],
+    placementLookup: ["fresh", "fallback", "absent"],
+    placementState: [
+      "local",
+      "requested",
+      "provisioning",
+      "syncing",
+      "starting",
+      "active",
+      "draining",
+      "reconciling",
+      "reclaimed",
+      "failed",
+    ],
+    recoveryError: errors,
+    terminalReason: errors,
+    environmentError: errors,
+    environmentLookup: ["absent", "found", "unavailable", "mismatch"],
+    environmentState: [
+      "requested",
+      "provisioning",
+      "bootstrapping",
+      "ready",
+      "attached",
+      "idle",
+      "draining",
+      "destroying",
+      "destroyed",
+      "failed",
+      "orphaned",
+    ],
+    tunnelStatus: ["stopped", "connecting", "connected", "reconnecting"],
+    nodeLookup: ["found", "unavailable", "invalid"],
+    expectedNodeWorkerBundle: ["installed", "missing"],
+  };
+  const safe = {};
+  for (const [field, values] of Object.entries(vocabularies)) {
+    if (worker[field] !== undefined) {
+      safe[field] = [...values, "absent", "other"].includes(worker[field])
+        ? worker[field]
+        : "other";
+    }
+  }
+  for (const field of [
+    "proofRpcResponse",
+    "historyToolProofPresent",
+    "historyFinalProofPresent",
+    "historySettleExpired",
+    "workspaceReferencePresent",
+    "attachedSessionMatches",
+    "expectedNodeIdPresent",
+    "expectedNodeConnected",
+    "expectedNodePaired",
+    "expectedNodeSessionHost",
+    "providerStarted",
+  ]) {
+    if (typeof worker[field] === "boolean") {
+      safe[field] = worker[field];
+    }
+  }
+  for (const field of [
+    "placementReadRetries",
+    "historyMessageCount",
+    "historyRunMessageCount",
+    "historyExecCount",
+    "historyExplicitSuccessCount",
+    "historyToolPrefixCount",
+    "historyFinalMarkerCount",
+    "historyTerminalAssistantCount",
+    "attachedSessionCount",
+    "nodeCount",
+    "connectedNodeCount",
+    "expectedNodeMatches",
+    "expectedNodeCaps",
+    "expectedNodeCommands",
+    "elapsedMs",
+    "execResultCount",
+    "execFailureCount",
+  ]) {
+    const limit = field === "elapsedMs" ? 3_600_000 : 4096;
+    if (Number.isSafeInteger(worker[field]) && worker[field] >= 0 && worker[field] <= limit) {
+      safe[field] = worker[field];
+    }
+  }
+  return { ...diagnostic, worker: safe };
 }
 
 function failureDiagnostic(error) {
@@ -440,8 +792,57 @@ function failureDiagnostic(error) {
   if (!isRecord(diagnostic)) {
     return undefined;
   }
+  if (diagnostic.kind === "openshell-startup-process") {
+    const keys = Reflect.ownKeys(diagnostic);
+    if (!keys.includes("kind") || !keys.includes("outcome")) {
+      return undefined;
+    }
+    const { kind, outcome, exitCode, signal, code } = diagnostic;
+    if (outcome === "output-limit" && keys.length === 2) {
+      return { kind, outcome };
+    }
+    if (keys.length !== 3) {
+      return undefined;
+    }
+    if (
+      outcome === "exit" &&
+      keys.includes("exitCode") &&
+      Number.isInteger(exitCode) &&
+      exitCode > 0 &&
+      exitCode <= 255
+    ) {
+      return { kind, outcome, exitCode };
+    }
+    if (
+      outcome === "signal" &&
+      keys.includes("signal") &&
+      typeof signal === "string" &&
+      Object.hasOwn(process.getBuiltinModule("node:os").constants.signals, signal)
+    ) {
+      return { kind, outcome, signal };
+    }
+    if (
+      outcome === "launch-error" &&
+      keys.includes("code") &&
+      [
+        "E2BIG",
+        "EACCES",
+        "EAGAIN",
+        "EMFILE",
+        "ENFILE",
+        "ENOENT",
+        "ENOEXEC",
+        "ENOMEM",
+        "ENOTDIR",
+        "EPERM",
+      ].includes(code)
+    ) {
+      return { kind, outcome, code };
+    }
+    return undefined;
+  }
   if (diagnostic.kind === "native-first-agent-proof") {
-    return nativeFirstAgentProofDiagnostic(diagnostic.failureStage);
+    return nativeFirstAgentProofDiagnostic(diagnostic.failureStage, diagnostic.worker);
   }
   if (diagnostic.kind === "runtime-model-probe") {
     if (
@@ -892,21 +1293,21 @@ export default async function* jsonLinesReporter(source) {
       failed = true;
     }
     if (event.type === "test:diagnostic") {
+      const message = event.data?.message;
+      if (typeof message !== "string") {
+        continue;
+      }
+      const value = parseMeasurement(message);
       // Per-test diagnostics name their file; the run summary counts do not.
-      if (typeof event.data?.message === "string" && typeof event.data.file === "string") {
-        output.diagnostic(event.data.message);
+      // OpenShell phase timings belong only in the projected measurement, even on failure.
+      if (typeof event.data.file === "string" && value?.kind !== openShellSandboxMeasurementKind) {
+        output.diagnostic(message);
       }
       // Node diagnostics can quote thrown errors; retain only this fixed failure category.
-      if (
-        typeof event.data?.message === "string" &&
-        event.data.message.startsWith(postTestAsyncActivityPrefix)
-      ) {
+      if (message.startsWith(postTestAsyncActivityPrefix)) {
         yield '{"type":"test:diagnostic","data":{"kind":"post-test-async-activity"}}\n';
-      } else if (
-        typeof event.data?.message === "string" &&
-        event.data.message.startsWith(measurementPrefix)
-      ) {
-        const measurement = safeMeasurement(event.data.message);
+      } else if (value !== undefined) {
+        const measurement = safeMeasurement(value);
         if (measurement) {
           yield `${JSON.stringify({
             type: "test:diagnostic",

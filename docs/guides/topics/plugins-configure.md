@@ -6,13 +6,26 @@ bundled Diffs plugin on an embedded OpenClaw Agent running on Kubernetes. Dedica
 Codex Agents use a different catalog and approval policy; see
 [plugin support](../../reference/agent-plugins.md#current-support).
 
+If an existing selection belongs to a different or unknown Driver, save an empty
+plugin map first. Then select the plugins offered for the Agent's Harness and
+deploy a new version. This also lets you correct an older embedded OpenClaw Agent
+whose selections belonged to the Codex Driver.
+
 ## Use the console
 
 Open **Agents**, select the Agent, then open **Create new version** → **Plugins**.
 Use **Configure plugins** to edit saved selections and tool policy. On a dedicated
 OpenClaw Agent on Kubernetes with the bundled OpenClaw Plugin Driver, choose
-**Google Workspace**, add it, and save. Deploy a new version and run `gog --version`
-on the worker.
+**Google Workspace** and add it. Leave **Install without an account** selected
+to verify the installation with `gog --version`. To make Google API calls, choose a ready
+**Google account**, save the selection and deploy. The worker receives an
+OpenShell placeholder for that account. The Gateway loads the skill. The worker can use mapped operations within the account’s configured host, path and OAuth scopes. A command that calls multiple Google services may need more destinations than the selected source permits.
+
+The picker lists compatible sources attached to the Agent. Other sources can stay attached with their own authority. OpenShell requires distinct placeholder names and refuses another credential on a host covered by the Google request guard. The caller needs
+`read` and `operate` on the source, and the Agent needs `operate`. If the
+package digest changes, select the account again. Clearing the slot or removing
+the plugin takes effect on the next deployment. The Agent keeps its separately attached credentials. To stop a running version from using a credential, [withdraw the source](../../reference/credential-sources/withdrawal.md). [Enable the Google request guard](../credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
+
 Dedicated Codex Agents with a supported login can browse their app catalog.
 For other Agents, use **Plugin selections JSON** to enter a known plugin ID.
 The CLI example below uses Diffs.
@@ -44,13 +57,54 @@ check the effective policy and a normal Agent turn; a saved selection alone does
 not prove approval routing. See the [approval policy](../../reference/agent-plugins.md#approval-policy)
 and [runtime proof limits](../../reference/drivers/plugin-bundled.md#native-mappings-and-limits).
 
+<a id="configure-slack-search"></a>
+
+## Configure a hosted MCP plugin
+
+A hosted MCP package pins its server endpoint and declares a credential slot.
+OCE discovers available tools using the selected account. On a dedicated OpenClaw
+Agent, select an attached credential for that slot and the upstream tool names
+the Agent may call. The worker advertises those tools; the Sandbox enforces the
+selection for both worker and script calls.
+[Managed MCP plugins](../../reference/agent-plugins.md#current-support)
+
+The bundled credentialed path uses the OpenShell Sandbox and Credential Gateway
+Drivers. Configure `/usr/local/bin/node` in `toolBinaries`, then register a
+`bearer-token` source with the package's MCP host, port, path and placeholder name.
+Reference the saved access token as its `token` Secret and set `protocol: mcp`.
+Attach the source to the Agent draft and grant the operator and Agent service
+principal `credential_source:operate` on it.
+[OpenShell Credential Gateway](../../reference/drivers/openshell-credential-gateway.md)
+· [Bind a source to an Agent](../../reference/credential-sources.md#bind-a-source-to-an-agent)
+
+Allow the OCE API to reach the MCP endpoint for **Load tools**. For HTTPS port 443,
+set Helm `api.pluginDiscoveryCidrs` to the endpoint's IPv4 `/32` hosts and refresh
+them when DNS changes. Other ports need the Installation's managed egress policy.
+This setting is separate from model discovery. Worker calls use the Sandbox policy.
+
+Open **Plugins**, add the plugin, choose the account, and choose **Load tools**.
+Choose the tools to enable, then save and deploy. Loading tools again refreshes
+the inventory. Additional tools require selection and deployment before the Agent
+can use them. An empty selection leaves the worker server disabled.
+Removing the plugin keeps its independently attached
+credential; [withdraw the source](../../reference/credential-sources/withdrawal.md)
+to revoke a running version's credential access.
+
+For example, Slack uses `host: mcp.slack.com`, `port: "443"`, `path: /mcp` and
+`env_var: SLACK_MCP_TOKEN`. Select `slack_search_public` if the account advertises
+it. Inspect its worker server and tool filter:
+
+```sh
+OPENCLAW_CONFIG_PATH="$OPENCLAW_NODE_STATE_DIR/openclaw.json" openclaw config get nodeHost.mcp.servers.oce_mcp_slack --json
+```
+
 ## Before you start
 
 - [Connect the OCC CLI](../cli.md#connect-to-your-installation) to your
   Installation. The examples also use Node.js and a protected service-key file.
 - Choose an Agent configured for embedded OpenClaw on Kubernetes and an
   Installation that explicitly selects the bundled OpenClaw Plugin Driver
-  (`drivers.plugin.id: occ-plugin`); no Plugin Driver is selected by default.
+  (an `occ-plugin` entry under `drivers.plugin`); no Plugin Driver is selected by default.
   See [Driver selection](../../reference/drivers/plugin-bundled.md#selection-and-catalogs).
   SSH Compute rejects Agents with plugin selections or an Agent default plugin
   approver policy.
@@ -85,6 +139,16 @@ and [runtime proof limits](../../reference/drivers/plugin-bundled.md#native-mapp
   an Agent entry. A `tools.byProvider` object that also has a
   `<provider>/<model>` key for that provider is not checked, because OpenClaw
   may rewrite the model ID it matches.
+- Check the Configuration's plugin settings. With Diffs enabled, the Gateway
+  does not start when `plugins.enabled` is `false`, `plugins.deny` lists
+  `diffs`, or a non-empty `plugins.allow` leaves it out. Configuration save
+  refuses an item in either list that is not text, such as `1`. OCE writes the
+  `plugins.entries.diffs` entry from the selection. The Configuration can hold
+  only an exact copy: `{"enabled": true}` with Diffs enabled, or
+  `{"enabled": false}` with it disabled. With an HTTPS `gateway.publicOrigin` listed in
+  `gateway.controlUi.allowedOrigins` and Diffs enabled, it must not hold one.
+  Agent create, update, provisioning and deployment return `400` naming the
+  setting.
 - With one Agent under `agents.entries` and a `minimal`, `coding` or
   `messaging` tool profile, the Agent's own `tools.alsoAllow` replaces the
   top-level list that grants Diffs, so the request returns `400` unless that

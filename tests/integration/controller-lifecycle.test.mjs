@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
@@ -5,6 +6,10 @@ import {
   PRODUCTION_HARNESS_DESCRIPTOR,
   resolveApprovedHarness as resolveApprovedDevelopmentHarness,
 } from "../../apps/controller/src/composition/production-harness.ts";
+import {
+  CodexPluginDriver,
+  OCCPluginDriver,
+} from "../../apps/controller/src/drivers/plugin/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
   AgentPrincipalAuthorizationError,
@@ -151,6 +156,7 @@ function createSandboxDriver(options = {}) {
     id: options.id ?? "sandbox-driver-a",
     capability: "sandbox",
     implementation: options.implementation ?? "openshell",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: options.facets ?? ["networking", "filesystem", "process"],
     ...(options.configureAgent === undefined ? {} : { configureAgent: options.configureAgent }),
     async provisionHarness(context) {
@@ -308,6 +314,28 @@ test("the controller selects explicitly registered Sandbox Drivers with closed f
   delete containmentOnly.provisionHarness;
   controller.registerDriver(containmentOnly);
 
+  // A missing or malformed declaration cannot silently advertise support or fail on a read.
+  for (const supportsHarnessExecutionMode of [
+    undefined,
+    { openclaw: { embedded: { supported: false }, dedicated: { supported: true } } },
+    Object.freeze({ openclaw: Object.freeze({ embedded: Object.freeze({ supported: false }) }) }),
+    Object.freeze({
+      openclaw: Object.freeze({
+        embedded: Object.freeze({ supported: false }),
+        dedicated: Object.freeze({ supported: true, reason: "Contradictory refusal" }),
+      }),
+    }),
+  ]) {
+    assert.throws(
+      () =>
+        controller.registerDriver({
+          ...createSandboxDriver({ id: "invalid-support" }),
+          supportsHarnessExecutionMode,
+        }),
+      DriverSelectionError,
+    );
+  }
+
   for (const facets of [
     [],
     ["networking", "networking"],
@@ -391,6 +419,35 @@ test("controller validates selected lifecycle hooks and registered Driver owners
     DriverSelectionError,
   );
   assert.equal(controller.selectedDriver("configuration"), configuration);
+});
+
+test("selecting one plugin catalog replaces the mixed catalog's Compute lifecycle hooks", () => {
+  const controller = new OpenClawController(installation);
+  const { compute } = createDrivers(createIAMDriver());
+  const codex = new CodexPluginDriver();
+  const openclaw = new OCCPluginDriver();
+  for (const driver of [codex, openclaw]) {
+    driver.computeLifecycleHooks = { beforeWorkloadStart: async () => {} };
+  }
+  let hooks;
+  let refuseSingleton = true;
+  compute.setLifecycleDrivers = (drivers) => {
+    if (refuseSingleton && drivers.length === 1) {
+      throw new Error("Cannot install the requested hooks.");
+    }
+    hooks = drivers;
+  };
+  controller.registerDriver(compute);
+  controller.selectDriver("compute", compute.id);
+  controller.installPluginDrivers([codex, openclaw]);
+  assert.throws(() => controller.selectDriver("plugin", codex.id), /Cannot install/);
+  assert.throws(() => controller.selectedDriver("plugin"), DriverSelectionError);
+  assert.deepEqual(hooks, [codex, openclaw]);
+
+  refuseSingleton = false;
+  controller.selectDriver("plugin", codex.id);
+  assert.equal(controller.selectedDriver("plugin"), codex);
+  assert.deepEqual(hooks, [codex]);
 });
 
 test("lifecycle-owner selection fails atomically when compute cannot accept hooks", () => {
@@ -980,10 +1037,28 @@ async function createDedicatedAgentForSandboxAdmission(controller, namespaceName
 }
 
 test("Sandbox admission applies provider-owned Agent configuration before freezing its revision", async () => {
-  const { controller } = createController();
+  const iam = createIAMDriver({
+    roles: [
+      {
+        id: "installation-reader",
+        permissions: [{ action: "read", resourceKind: "installation" }],
+      },
+    ],
+    bindings: [
+      {
+        id: "installation-reader-binding",
+        subjectKind: "identity",
+        subjectId: "principal-admin",
+        roleId: "installation-reader",
+      },
+    ],
+  });
+  const { controller } = createController(iam);
+  let transformations = 0;
   const sandbox = createSandboxDriver({
     implementation: "custom-containment",
     configureAgent(configuration, harness) {
+      transformations += 1;
       assert.equal(Object.isFrozen(configuration), true);
       assert.equal(Object.isFrozen(configuration.plugins.entries.codex.config.appServer), true);
       assert.deepEqual(harness, {
@@ -999,6 +1074,13 @@ test("Sandbox admission applies provider-owned Agent configuration before freezi
   });
   controller.registerDriver(sandbox);
   controller.selectDriver("sandbox", sandbox.id);
+
+  // This transform requires real Codex Configuration content. Installation discovery must
+  // still succeed and use the Driver's OpenClaw support declaration without invoking it.
+  assert.deepEqual((await controller.getInstallation("principal-admin")).capabilities.openclaw, {
+    executionModes: ["dedicated"],
+  });
+  assert.equal(transformations, 0);
 
   const values = {
     ...codexSandboxConfiguration(),
@@ -1038,8 +1120,65 @@ test("Sandbox admission applies provider-owned Agent configuration before freezi
     },
   });
   assert.equal(Object.isFrozen(revision), true);
+  assert.equal(
+    Object.isFrozen(revision.configuration.plugins.entries.codex.config.appServer),
+    true,
+  );
+  assert.ok(transformations > 0);
+  const saved = await controller.getConfiguration(
+    "principal-admin",
+    target.namespaceId,
+    revision.configurationId,
+  );
+  assert.deepEqual(saved.values, values);
   assert.equal(values.plugins.entries.codex.enabled, false);
   assert.equal(values.plugins.entries.codex.config.appServer.sandbox, "read-only");
+});
+
+test("deployment refuses stored OpenClaw after the Installation selects unsupported Sandbox settings", async () => {
+  const { controller } = createController();
+  const supported = createSandboxDriver();
+  controller.registerDriver(supported);
+  controller.selectDriver("sandbox", supported.id);
+  const target = await createDedicatedAgentForSandboxAdmission(
+    controller,
+    "OpenClaw support change",
+    "Stored OpenClaw Agent",
+    {
+      agents: {
+        defaults: {
+          model: "openai/gpt-5",
+          models: { "openai/gpt-5": { agentRuntime: { id: "openclaw" } } },
+        },
+      },
+    },
+  );
+  const reason = "Ask an operator to enable OpenClaw in the Sandbox settings.";
+  const refused = {
+    ...createSandboxDriver({ id: "unsupported-openclaw" }),
+    supportsHarnessExecutionMode: Object.freeze({
+      openclaw: Object.freeze({
+        embedded: Object.freeze({ supported: false }),
+        dedicated: Object.freeze({ supported: false, reason }),
+      }),
+    }),
+    configureAgent() {
+      assert.fail("an unsupported mode must not reach real Configuration transformation");
+    },
+  };
+  // A newly constructed selected Driver replaces the Installation's former support decision.
+  controller.registerDriver(refused);
+  controller.selectDriver("sandbox", refused.id);
+  await assert.rejects(
+    controller.deployAgent("principal-admin", target, resolveApprovedDevelopmentHarness),
+    { name: "ConfigurationHarnessError", message: reason },
+  );
+  assert.deepEqual(
+    await controller.transact((state) =>
+      state.revisions.listRevisions(target.namespaceId, target.agentId),
+    ),
+    [],
+  );
 });
 
 test("Sandbox Drivers without an Agent configuration hook preserve the admitted configuration", async () => {

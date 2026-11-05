@@ -138,6 +138,10 @@ jobs:
             title: k3d State and Lifecycle
             profile: k3d
             timeout: 45
+          - lane: k3d-fixture-network
+            title: k3d Network Isolation
+            profile: k3d
+            timeout: 45
           - lane: k3d-fixture-plugins
             title: k3d Plugin Status
             profile: k3d
@@ -564,6 +568,9 @@ jobs:
           ACTIONS_RUNTIME_TOKEN: ${{ steps.image-cache.outputs.token }}
           ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
         run: node scripts/ci/first-agent-smoke.mjs prepared-git-images
+      - name: Record independent checkout image selection
+        timeout-minutes: 1
+        run: node scripts/ci/first-agent-smoke.mjs release-selection "$RUNNER_TEMP/skipper-release-selection.json"
       - name: Prove native private Git and withdrawal on the same installed Agent
         env:
           OCC_DEVELOPMENT_K3S_IMAGE: docker.io/rancher/k3s:v1.35.9-k3s1@sha256:ec9868c6a38d4e8c1869832fb5fd1eb8473c39794a0b44d2b952e7ba911951bc
@@ -572,6 +579,9 @@ jobs:
           OCC_DEVELOPMENT_PREPARED_GIT_HOST_IP="$host" \
             node scripts/qualification/skipper-private-git-fixture.mjs --team-review -- node scripts/ci/skipper-prepared-git-installed.mjs
           echo 'Private Git origin, synthetic issuer and credential inputs removed.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Qualify installed Skipper image selection
+        timeout-minutes: 1
+        run: node scripts/ci/run-tests.mjs aggregate skipper-prepared-git-installed --release-selection "$RUNNER_TEMP/skipper-release-selection.json" --results-dir "$RUNNER_TEMP/results"
       # The runner writes only verified test metadata here, after checking proof and cleanup.
       - name: Upload selected test and cleanup outcome
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
@@ -630,7 +640,7 @@ jobs:
           const out = { preflight: needs.preflight };
           if (lane === "all") {
             out["runtime-image-fixture"] = needs["runtime-image-fixture"] ?? { result: "missing" };
-            for (const name of ["checks-baseline-1", "checks-baseline-2", "checks-browser", "checks-browser-2", "postgres", "postgres-application", "postgres-auth", "postgres-platform", "images-packaging", "images-runtime-startup", "images-runtime-startup-2", "images-runtime-startup-3", "k3d-fixture-configuration", "k3d-fixture-state", "k3d-fixture-plugins", "k3d-observability", "k3d-observability-demo", "logging-collector", "repository-credentials-container", "keycloak-oidc"]) {
+            for (const name of ["checks-baseline-1", "checks-baseline-2", "checks-browser", "checks-browser-2", "postgres", "postgres-application", "postgres-auth", "postgres-platform", "images-packaging", "images-runtime-startup", "images-runtime-startup-2", "images-runtime-startup-3", "k3d-fixture-configuration", "k3d-fixture-state", "k3d-fixture-network", "k3d-fixture-plugins", "k3d-observability", "k3d-observability-demo", "logging-collector", "repository-credentials-container", "keycloak-oidc"]) {
               out[name] = { result: needs["pr-safe-same-sha"]?.result ?? "missing" };
             }
           } else if (lane === "logging-collector") {

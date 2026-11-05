@@ -28,6 +28,9 @@ func TestRefusalHintTableCoversEveryCommand(t *testing.T) {
 				// Local commands: they send no OCC request.
 				continue
 			}
+			if child.CommandPath() == "occ installation doctor" || child.CommandPath() == "occ installation plan" || child.CommandPath() == "occ installation install" {
+				continue // Uses Kubernetes or Helm directly.
+			}
 			if child.HasSubCommands() {
 				walk(child)
 			} else if child.Runnable() {
@@ -141,7 +144,7 @@ func TestRefusedCommandsNameTheGrantTheyNeed(t *testing.T) {
 		texts = append(texts, err.Error())
 	}
 	want := "FORBIDDEN: " + denied + "\n" +
-		grantHint("agent deploy", "Agent deploy and Configuration read, plus access to the ServiceAccount, Secrets and credential sources it binds, and Agent read and operate for a first deploy", true)
+		grantHint("agent deploy", "Agent deploy and Configuration read, plus access to the ServiceAccount, Secrets and credential sources it binds, Agent read and operate for a first deploy, and SandboxPolicy read when the Agent has saved network policy additions", true)
 	if !strings.HasSuffix(texts[0], want) || texts[0] != texts[1] {
 		t.Fatalf("refusals = %q, want both to end with %q", texts, want)
 	}

@@ -14,7 +14,9 @@ test("prepared startup accepts TLS without an App key or provider calls and reje
     await import("../../apps/controller/src/composition/repository-credentials/check-config.ts");
   const directory = await temporaryDirectory(t, "repository-configuration-");
   const tls = await createTlsMaterial(t);
-  const controlDirectory = await socketDirectory(t, "rcs-config-");
+  const controlDirectory = await socketDirectory(t, "rcs-config-", {
+    longest: "prepared-git-use.sock",
+  });
   const key = join(directory, "app.pem");
   const tlsKey = join(directory, "tls.key");
   const cert = join(directory, "tls.crt");
@@ -102,7 +104,17 @@ test("prepared startup accepts TLS without an App key or provider calls and reje
   const loaded = await loadConfiguration(file, createSystemClock());
   try {
     assert.equal(loaded.repositoryDescriptions, undefined);
-    assert.throws(() => loaded.factory.resolve("git-write"), /BOUND_SESSION_REQUIRED/);
+    assert.equal("resolve" in loaded.factory, false);
+    const { createCredentialService } =
+      await import("../fixtures/repository-credentials/service.ts");
+    const service = createCredentialService({
+      config: loaded.config,
+      factory: loaded.factory,
+      clock: createSystemClock(),
+    });
+    assert.throws(() => service.open({ durationSeconds: 30, profile: "git-write" }), {
+      message: "INVALID_BINDING",
+    });
   } finally {
     loaded.close();
   }

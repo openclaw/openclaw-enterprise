@@ -5,6 +5,9 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   EMBEDDED_GATEWAY_OWNER_STARTUP,
   GATEWAY_NAMESPACE_PROBE,
@@ -29,6 +32,139 @@ import {
   jsonLogEntries,
   runGatewaySmoke,
 } from "../helpers/runtime-image-startup.mjs";
+
+test(
+  "Gateway replacement retains unfinished maintenance on its database mounts",
+  imageTestOptions,
+  async (t) => {
+    const statePath = "/home/node/.openclaw/state";
+    const agentPath = "/home/node/.openclaw/agents/main/agent";
+    const stateVolume = await gatewayStateVolume(t, statePath);
+    const agentVolume = await gatewayStateVolume(t, agentPath);
+    const volumes = [`${stateVolume}:${statePath}`, `${agentVolume}:${agentPath}`];
+    const configurationPath = await temporaryGatewayConfiguration(t, "openclaw");
+    const preloadPath = join(dirname(configurationPath), "doctor-boundary.cjs");
+    // Only the external Doctor result and final native child are controlled. The
+    // complete Kubernetes wrapper, SQLite files, and separate Docker mounts are real.
+    const doctor = `
+    const fs = require("node:fs");
+    const { DatabaseSync } = require("node:sqlite");
+    const attemptsPath = ${JSON.stringify(statePath + "/attempts")};
+    const attempts = fs.existsSync(attemptsPath) ? Number(fs.readFileSync(attemptsPath, "utf8")) : 0;
+    fs.writeFileSync(attemptsPath, String(attempts + 1));
+    for (const [path, version] of ${JSON.stringify([
+      [statePath + "/openclaw.sqlite", OPENCLAW_STATE_DATABASE_SCHEMA_VERSION],
+      [agentPath + "/openclaw-agent.sqlite", OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION],
+    ])}) {
+      const db = new DatabaseSync(path);
+      db.exec("PRAGMA user_version = " + version);
+      db.close();
+    }
+    const accepted = process.env.OCE_TEST_DOCTOR_ACCEPT === "1";
+    const result = accepted ? { status: "ok" } : {
+      status: "error", maintenanceRefusal: { kind: "data-at-risk", reason: "active-mutation" }
+    };
+    console.log("OPENCLAW_UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH=" + JSON.stringify(result));
+    process.exitCode = accepted ? 0 : 1;
+  `;
+    await writeFile(
+      preloadPath,
+      `
+    const fs = require("node:fs");
+    const cp = require("node:child_process");
+    const spawn = cp.spawn;
+    delete process.env.NODE_OPTIONS;
+    require("node:assert/strict").equal(fs.existsSync("/home/node/previous-container"), false);
+    fs.writeFileSync("/home/node/previous-container", "transient");
+    cp.spawn = (command, args, options) => {
+      if (args[0] === "/app/openclaw.mjs" && args[1] === "doctor") {
+        return spawn(process.execPath, ["-e", ${JSON.stringify(doctor)}], options);
+      }
+      if (args[0] === "/app/openclaw.mjs" && args[1] === "gateway") {
+        return spawn(process.execPath, ["-e", 'console.log("GATEWAY_CHILD_STARTED"); setInterval(() => {}, 1000);'], options);
+      }
+      return spawn(command, args, options);
+    };
+  `,
+    );
+    await runDocker([
+      "run",
+      "--rm",
+      "--network",
+      "none",
+      "--user",
+      "1000:1000",
+      ...volumes.flatMap((volume) => ["--volume", volume]),
+      "--entrypoint",
+      "node",
+      image,
+      "-e",
+      `const db = new (require("node:sqlite").DatabaseSync)(${JSON.stringify(agentPath + "/openclaw-agent.sqlite")});
+     db.exec("PRAGMA user_version = ${OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION - 1}"); db.close();`,
+    ]);
+    for (const [index, accepted] of [false, false, true].entries()) {
+      // Each new container gets a new HOME tmpfs, retaining only the two database
+      // mounts. A refusal after schema advancement must still run Doctor next time.
+      const { containerName } = await runGatewaySmoke(t, "openclaw", {
+        configurationPath: "/etc/openclaw/openclaw.json",
+        entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+        // Docker creates nested mount parents as root; Kubernetes prepares this
+        // transient directory for the Gateway user before mounting PVC children.
+        tmpfs: [
+          "/home/node:uid=1000,gid=1000,mode=700",
+          "/home/node/.openclaw:uid=1000,gid=1000,mode=700",
+        ],
+        volumes: [
+          ...volumes,
+          `${configurationPath}:/etc/openclaw/openclaw.json:ro`,
+          `${preloadPath}:/doctor-boundary.cjs:ro`,
+        ],
+        extraEnvironment: [
+          "NODE_OPTIONS=--require=/doctor-boundary.cjs",
+          `OCE_TEST_DOCTOR_ACCEPT=${accepted ? "1" : "0"}`,
+        ],
+        withAppServer: false,
+        waitUntilReady: false,
+      });
+      let logs = "";
+      const deadline = Date.now() + 20_000 * imageSmokeTimeoutMultiplier;
+      while (Date.now() < deadline) {
+        const output = await runDocker(["logs", containerName]);
+        logs = output.stdout + output.stderr;
+        if (
+          logs.includes("GATEWAY_CHILD_STARTED") ||
+          logs.includes('"phase":"state-migration","outcome":"failed"')
+        ) {
+          break;
+        }
+        await delay(100);
+      }
+      assert.equal(logs.includes("GATEWAY_CHILD_STARTED"), accepted, logs);
+      if (!accepted) {
+        assert.match(logs, /"phase":"state-migration","outcome":"failed"/);
+      }
+      const snapshot = await runDocker([
+        "exec",
+        "--env",
+        "NODE_OPTIONS=",
+        containerName,
+        "node",
+        "-e",
+        `
+      const fs = require("node:fs");
+      const marker = [${JSON.stringify(statePath + "/.oce-maintenance-pending")}, "/home/node/.openclaw/.oce-maintenance-pending"].find((path) => fs.existsSync(path));
+      console.log(JSON.stringify({ attempts: Number(fs.readFileSync(${JSON.stringify(statePath + "/attempts")}, "utf8")),
+        pending: Boolean(marker), mode: marker ? fs.statSync(marker).mode & 0o777 : null }));
+    `,
+      ]);
+      const current = JSON.parse(snapshot.stdout);
+      assert.equal(current.attempts, index + 1);
+      assert.equal(current.pending, !accepted);
+      assert.equal(current.mode, accepted ? null : 0o600);
+      await runDocker(["rm", "-f", containerName]);
+    }
+  },
+);
 
 test("embedded Gateway restart recovers only its signed Pod owner", imageTestOptions, async (t) => {
   const keyDir = "/run/oce-gateway-owner-key";
@@ -329,15 +465,16 @@ process.stdout.write(JSON.stringify({
   migrated: schema(shared).version,
   backups: backups.map((name) => ({ name, ...schema(state + "/state/" + name) })),
   current,
+  ancestor: { uid: statSync("/home/node").uid, mode: statSync("/home/node").mode & 0o7777 },
 }));
 `;
 
-// The Harness's node and Codex children, replaced; Doctor runs for real.
+// The Harness's node and Codex children, replaced; Doctor and native setup run for real.
 const HARNESS_CHILDREN = [
   'const cp = require("node:child_process");',
   "const realSpawn = cp.spawn;",
   "cp.spawn = (command, args, options) => {",
-  '  if (args[1] === "doctor") return realSpawn(command, args, options);',
+  '  if (["doctor", "setup"].includes(args[1])) return realSpawn(command, args, options);',
   '  console.log("HARNESS_CHILD_STARTED " + (args[0] === "/app/openclaw.mjs" ? "node" : "codex"));',
   '  return new (require("node:events").EventEmitter)();',
   "};",
@@ -400,6 +537,24 @@ async function upgradeWorkspaceNode(t, entrypoint, children, environment = {}) {
     seed: "tar -xzf /workspace-node-state.tar.gz -C /home/node",
     seedVolumes: [`${olderWorkspaceNodeState}:/workspace-node-state.tar.gz:ro`],
   });
+  // OpenShell's fsGroup mount roots are root-owned and group-writable. The
+  // workload owns its private children, but cannot tighten the shared ancestor.
+  // Doctor must use its private temporary cache rather than HOME/.cache here.
+  await runDocker([
+    "run",
+    "--rm",
+    "--user",
+    "0:0",
+    "--network",
+    "none",
+    "--volume",
+    `${volume}:/home/node`,
+    "--entrypoint",
+    "sh",
+    image,
+    "-c",
+    "chown 0:1000 /home/node && chmod 2775 /home/node",
+  ]);
   // Doctor's full repair pass takes about 20 s, and over a minute on a busy runner.
   const startMs = 240_000 * imageSmokeTimeoutMultiplier;
   const { stdout } = await runDocker(
@@ -441,6 +596,7 @@ async function upgradeWorkspaceNode(t, entrypoint, children, environment = {}) {
 // matching `started`; the node keeps its identity; the second start runs no Doctor.
 function assertWorkspaceNodeMigratedOnce(outcome, phases, started, count) {
   const { upgraded, current } = outcome;
+  assert.deepEqual(outcome.ancestor, { uid: 0, mode: 0o2775 });
   assert.equal(upgraded.status, 0, upgraded.output);
   assert.match(upgraded.output, /from schema 20 to \d+ with openclaw doctor --fix/);
   for (const phase of ["state-migration", ...phases]) {

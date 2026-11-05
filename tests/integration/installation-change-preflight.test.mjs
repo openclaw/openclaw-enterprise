@@ -17,6 +17,7 @@ import {
   chartListeners,
   requireChartListener,
 } from "../../apps/controller/src/composition/installation-fields.ts";
+import { openShellGitChartListener } from "../../apps/controller/src/drivers/egress-proxy/openshell-configuration.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // An Installation change restarts the API with the Recreate strategy, so an Installation
@@ -43,6 +44,11 @@ const repositoryCredentialValues = {
   "repositoryCredentials.serviceName": "git",
 };
 const themeValues = { "api.consoleTheme.configMapName": "console-theme-v2" };
+const gatewayValues = {
+  "gatewayRouting.enabled": "true",
+  "gatewayRouting.gatewayClassName": "eg",
+  "gatewayRouting.apiKeySecretName": "private-gateway-key",
+};
 // Prepared GitHub custody for the Credential Proxy authority, without and with a private issuer CA.
 const preparedGitHubValues = {
   "egressAuthority.enabled": "true",
@@ -89,6 +95,7 @@ test(
       {},
       repositoryCredentialValues,
       themeValues,
+      gatewayValues,
       { ...repositoryCredentialValues, ...themeValues },
       preparedGitHubValues,
       issuerCaValues,
@@ -120,6 +127,9 @@ test(
         environment(server, "OCC_CONFIG_PATH"),
         environment(server, "OCC_EGRESS_AUTHORITY_PORT"),
         environment(server, "OCC_OPENSHELL_GIT_PORT"),
+        ...("gatewayRouting.enabled" in values
+          ? [environment(server, "OCC_CHART_GATEWAY_ROUTING")]
+          : []),
         ...(theme ? [environment(server, "OCC_CONSOLE_THEME_DIR")] : []),
       ]);
       // The check compares the Installation's listeners with the ports the chart routes.
@@ -200,6 +210,93 @@ test("the upgrade hook check passes an Installation API startup accepts", async 
   assert.equal(result.stdout, "installation-startup-ready\n");
   assert.equal(result.stderr, "");
 });
+
+test(
+  "the upgrade hook refuses private Gateway routing that differs from the chart",
+  tooling,
+  async (t) => {
+    for (const variant of ["default", "custom-automatic", "custom-hostname"]) {
+      const custom = variant !== "default";
+      const hostname = variant === "custom-hostname" ? "agents.internal.example" : undefined;
+      const namespace = custom ? "team-control" : "openclaw-system";
+      const gatewayName = custom ? "private-agents" : "oce-agent-gateways";
+      const envoyNamespace = custom ? "private-proxy" : "envoy-gateway-system";
+      const objects = await parseProductionChart(
+        (
+          await renderProductionChart(
+            {
+              ...gatewayValues,
+              ...(custom
+                ? {
+                    "gatewayRouting.gatewayName": gatewayName,
+                    "gatewayRouting.envoyNamespace": envoyNamespace,
+                  }
+                : {}),
+              ...(hostname === undefined ? {} : { "gatewayRouting.hostname": hostname }),
+            },
+            { isUpgrade: true, namespace },
+          )
+        ).stdout,
+      );
+      const gateway = objects.find(({ kind }) => kind === "Gateway");
+      const [check] = objects.find(
+        ({ kind, metadata }) =>
+          kind === "Job" && metadata.labels["app.kubernetes.io/component"] === "initialization",
+      ).spec.template.spec.initContainers;
+      const environment = Object.fromEntries(
+        check.env
+          .filter(({ name }) => name === "OCC_CHART_GATEWAY_ROUTING")
+          .map(({ name, value }) => [name, value]),
+      );
+      const configuration = installation();
+      const compute = configuration.drivers.compute.configuration;
+      delete compute.network.gatewayClients;
+      compute.gatewayRouting = {
+        gatewayName,
+        gatewayNamespace: namespace,
+        envoyNamespace,
+        ...(hostname === undefined ? {} : { hostname }),
+      };
+
+      // Both automatic Service DNS and custom routing must pass the actual chart hook.
+      // An explicit spelling of the automatic hostname is equivalent to omitting it.
+      const hostnames =
+        hostname === undefined
+          ? [undefined, "", gateway.spec.listeners.find(({ name }) => name === "https").hostname]
+          : [hostname];
+      for (const selectedHostname of hostnames) {
+        if (selectedHostname === undefined) {
+          delete compute.gatewayRouting.hostname;
+        } else {
+          compute.gatewayRouting.hostname = selectedHostname;
+        }
+        const accepted = await runCheck(t, configuration, {}, () => environment);
+        assert.equal(accepted.status, 0, accepted.stderr);
+        assert.equal(accepted.stdout, "installation-startup-ready\n");
+      }
+
+      // Each mismatch previously passed startup, then sent Agent routes or clients to a
+      // different Gateway. Refuse it before the upgrade replaces the serving API Pod.
+      const mismatches = [
+        ["gatewayName", "other-gateway"],
+        ["gatewayNamespace", "other-namespace"],
+        ["envoyNamespace", "other-namespace"],
+        ["hostname", "other.example"],
+        ...(hostname === undefined ? [] : [["hostname", undefined]]),
+      ];
+      for (const [field, value] of mismatches) {
+        const different = structuredClone(configuration);
+        different.drivers.compute.configuration.gatewayRouting[field] = value;
+        const refused = await runCheck(t, different, {}, () => environment);
+        assert.equal(refused.status, 1, `${field}: ${refused.stderr}`);
+        assert.equal(refused.stdout, "");
+        assert.match(refused.stderr, /\(CHART_LISTENER_MISMATCH\)/);
+        assert.ok(refused.stderr.includes(`drivers.compute.configuration.gatewayRouting.${field}`));
+        assert.doesNotMatch(refused.stderr, /other\.example|other-namespace|other-gateway/);
+      }
+    }
+  },
+);
 
 test("the upgrade hook check names the key and file of a refused Installation", async (t) => {
   const prefix = "installation-check: API and worker startup would refuse the Installation";
@@ -331,7 +428,7 @@ test(
     );
     for (const [listener, files] of [
       [chartListeners.egressAuthority, mounted(api, "api")],
-      [chartListeners.openshellGit, mounted(worker, "worker")],
+      [openShellGitChartListener, mounted(worker, "worker")],
     ]) {
       for (const [path] of Object.values(listener.files)) {
         assert.ok(files.includes(path), `${listener.chart}: ${path} in ${files.join(", ")}`);
@@ -382,17 +479,17 @@ test(
       host: "0.0.0.0",
       port: 8445,
       ...Object.fromEntries(
-        Object.entries(chartListeners.openshellGit.files).map(([key, [path]]) => [key, path]),
+        Object.entries(openShellGitChartListener.files).map(([key, [path]]) => [key, path]),
       ),
     };
     const declared = { OCC_OPENSHELL_GIT_PORT: "8445" };
-    requireChartListener(transport, declared, chartListeners.openshellGit);
+    requireChartListener(transport, declared, openShellGitChartListener);
     assert.throws(
       () =>
         requireChartListener(
           { ...transport, issuerPublicKeyPath: "/etc/openclaw/openshell-git/issuer.pub" },
           declared,
-          chartListeners.openshellGit,
+          openShellGitChartListener,
         ),
       {
         name: "ChartListenerMismatchError",

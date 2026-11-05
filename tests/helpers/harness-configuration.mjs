@@ -86,3 +86,42 @@ export function withStubbedProviderEndpoint(configuration) {
     },
   };
 }
+
+// The Gateway auth of the native admin opt-in in the deployment guide: the Gateway trusts the
+// console's identity header for its one workspace-files user and approves that user's
+// operator.admin devices. Returns a new object on each call, so a test may change it.
+export function nativeAdminGatewayAuth() {
+  return {
+    mode: "trusted-proxy",
+    trustedProxy: {
+      userHeader: "x-occ-identity",
+      allowUsers: ["occ-workspace-files"],
+      deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
+    },
+    identityScopes: { "occ-workspace-files": ["operator.admin"] },
+  };
+}
+
+// `configuration` with the native admin opt-in: the Control UI on, allowed only from `origin`
+// (the Agent's native admin origin), and nativeAdminGatewayAuth().
+/**
+ * @template {{ gateway?: { controlUi?: Record<string, unknown> } }} T
+ * @param {T} configuration
+ * @param {string} origin
+ */
+export function withNativeAdminGateway(configuration, origin) {
+  const { gateway, ...fields } = configuration;
+
+  return {
+    ...fields,
+    gateway: {
+      ...gateway,
+      controlUi: {
+        ...gateway?.controlUi,
+        enabled: true,
+        allowedOrigins: [origin],
+      },
+      auth: nativeAdminGatewayAuth(),
+    },
+  };
+}

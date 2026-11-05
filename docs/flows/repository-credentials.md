@@ -1,7 +1,7 @@
 ---
 created: "2026-09-17"
-updated: 2026-10-27
-last_updated_session: authoring-run/2af9e346-e424-4bb7-8b0e-a6e1126f9832
+updated: 2026-11-05
+last_updated_session: authoring-run/7e95100b-4e77-456d-85a2-e31dc72ccf5e
 ---
 
 # Repository credential service flow
@@ -28,7 +28,7 @@ protected files and control; clients receive session files and public connection
 
 ```mermaid
 graph TD
-  Operator["Worker or operator<br/>opens session"] --> Admission["Service freezes grant<br/>and creates bearer"]
+  Operator["Worker or operator<br/>opens session"] --> Admission["Reserve slot, resolve grant<br/>then construct session"]
   Admission -->|Construction failed| ConstructionCleanup["Seal renewal access<br/>drain unpublished custody"]
   Operator -->|Uncertain admission| Recovery["Inspect original owner<br/>and known session status"]
   Admission --> Files["CLI publishes private<br/>client directory"]
@@ -52,56 +52,50 @@ graph TD
 
 ### 1. Load protected startup inputs
 
-`apps/controller/src/composition/repository-credentials/check-config.ts:checkConfiguration` and
-`apps/controller/src/composition/repository-credentials/service.ts:startCredentialService` load protected configuration through
-`apps/controller/src/composition/repository-credentials/protected-file.ts:readProtectedFile`.
-The [configuration flow](repository-credential-configuration.md) traces its
-root-to-leaf protected-path validation and Kubernetes projection snapshots.
-`apps/controller/src/drivers/repo/credentials/configuration.ts:validateServiceConfig`
-validates gateway, session and capacity settings. The standalone check emits a
-safe summary without session/listener imports. Startup selects the system clock
-and configured backend; `apps/controller/src/composition/repository-credentials/service.ts:runService`
-composes service and listeners without the controller API or worker.
-For the development token backend,
-`apps/controller/src/drivers/repo/github/credentials/factory.ts:createGitHubDriverFactory`
-composes session-bound backends. It delegates grant resolution to
-`apps/controller/src/drivers/repo/github/credentials/grants.ts:createGrantResolver`
-and client authentication to
-`apps/controller/src/drivers/repo/github/credentials/gateway-authentication.ts:createGatewayAuthentication`.
-A registry-selected factory retains the frozen repository identity and access profile.
-The production native sender consumes READY material from the worker Token Service.
-It owns no App signing key, cannot issue installation tokens and does not load the
-development static-token implementation. The development backend requires both
-`developmentOnly: true` and the `--development-authority` process flag.
-`packages/contracts/src/repo.ts` owns public `RepoDriver`, grant identity and
-four-field status. Private contracts under
-`apps/controller/src/drivers/repo/credentials/` separate full status/admission/bearer
-results (`service-contracts.ts`), the dependency-free six-field client DTO
-(`client-contracts.ts`), and backend protocol/custody handles (`backend-contracts.ts`).
-Type-only imports keep service initialization out of Compute and the Git/gh bundle.
-The frozen runtime facade exposes `open`, `status`, `close` and `shutdown`;
-listeners own exchanges. The [Agent flow](agent-repository-credentials.md) owns
-platform session-control and local policy.
+Both `checkConfiguration` and `startCredentialService` use
+[`readProtectedFile`](../../apps/controller/src/composition/repository-credentials/protected-file.ts)
+and [validate](../../apps/controller/src/drivers/repo/credentials/configuration.ts) gateway,
+session and capacity settings. The [configuration flow](repository-credential-configuration.md)
+covers protected paths and Kubernetes projections. The standalone check needs no listeners or sessions.
 
-Registry startup selects
-`apps/controller/src/drivers/repo/github/credentials/warm-registry-factory.ts:createPreparedGitHubRegistryFactory`
-from the same canonical registry loaded by API and worker. The worker owns the
-App key; only the sender receives its TLS private key. `startListeners` can reclaim only an owned,
-private, refused stale Unix socket after checking that its identity is unchanged;
-a live or ambiguously owned socket fails startup. Neither listener admits requests
-until the control socket has mode `0600` and its identity is recorded.
+`apps/controller/src/composition/repository-credentials/service.ts:runService` uses the configured
+factory's `createPrepared` capability to select a session constructor before either listener starts.
+Both constructors share admission, capacity and shutdown:
+
+- **Prepared:** [Pass the original authority and selection to `createPrepared`](../../apps/controller/src/drivers/repo/credentials/session-construction.ts)
+  and verify the returned binding. The sender reads READY material from the worker Token Service;
+  it cannot mint installation tokens. It loads neither development custody nor the development lifecycle.
+- **Development:** [Construct custody and lifecycle locally](../../apps/controller/src/drivers/repo/credentials/development-session.ts)
+  and drain failed construction. The [GitHub factory](../../apps/controller/src/drivers/repo/github/credentials/factory.ts)
+  uses the [grant resolver](../../apps/controller/src/drivers/repo/github/credentials/grants.ts) and
+  [client authentication](../../apps/controller/src/drivers/repo/github/credentials/gateway-authentication.ts).
+  It requires both `developmentOnly: true` and `--development-authority`.
+
+The [public contracts](../../packages/contracts/src/drivers/repo/index.ts) define
+`RepositoryPolicyDriver`, `NativeRepositorySender`, grant identity and four-field status.
+Private contracts separate [admission and bearer results](../../apps/controller/src/drivers/repo/credentials/service-contracts.ts),
+the [six-field client DTO](../../apps/controller/src/drivers/repo/credentials/client-contracts.ts) and
+[backend custody handles](../../apps/controller/src/drivers/repo/credentials/backend-contracts.ts).
+Type-only imports keep service startup out of Compute and Git/gh. The frozen facade exposes
+`open`, `status`, `close` and `shutdown`; listeners own exchanges.
+See the [Agent flow](agent-repository-credentials.md) for platform session control and policy.
+
+The [prepared factory](../../apps/controller/src/drivers/repo/github/credentials/warm-registry-factory.ts)
+uses the API and worker's canonical registry and preserves repository identity and access profile.
+The worker owns the App signing key; the sender holds its TLS private key. Startup reclaims
+only a refused, private, owned Unix socket whose identity is unchanged. Neither listener
+admits requests until the control socket has mode `0600` and its identity is recorded.
 
 ### 2. Admit and publish a client session
 
 `apps/controller/src/drivers/repo/credentials/control.ts:handleControl` validates the local
 request method, target, content type, and body before invoking the common
 service. The body limit is the smaller of 16,384 bytes and `controlBodyBytes`. `apps/controller/src/drivers/repo/credentials/service.ts:createCredentialService`
-checks duration, allowed profile and capacity, then freezes the resolved binding.
-Profiles are opaque to the common service. GitHub resolves `git-read`, `git-write`
-and `git-full` to the [permission maps](../reference/repository-credentials.md#configuration)
-and includes the profile in grant identity. Startup rejects unknown names,
-including `read-write`; the example defaults to `git-write`. Bearer lookup stores
-a digest; only the original admission response contains the bearer.
+reserves capacity through binding resolution and construction. Shutdown cancels unclaimed
+selections and drains in-flight work within grace; expiry or shutdown closes unpublished
+sessions. GitHub maps `git-read`, `git-write` and `git-full` to
+[permissions](../reference/repository-credentials.md#configuration); startup rejects
+unknown profiles. Only the original response contains the bearer; lookup stores its digest.
 
 `apps/controller/src/drivers/repo/credentials/server.ts:startListeners` owns the
 correlation registry from
@@ -133,15 +127,15 @@ reports `RECEIPT_UNAVAILABLE`;
 [`callControl`](../../apps/controller/src/drivers/repo/github/credentials/client/operator.ts)
 retains the admission ID in `control-request-failed` and also closes the request.
 
-Factory failure or an invalid binding closes construction admission before
+Development factory failure or an invalid binding closes construction admission before
 `apps/controller/src/drivers/repo/credentials/custody.ts:disposeAllRenewal`.
 All handles are sealed before awaiting callbacks. Unpublished custody occupies
 the configured session capacity until callbacks settle and bytes are disposed.
 
 `apps/controller/src/drivers/repo/github/credentials/client/config.ts:writeClientConfiguration`
-stages private files, synchronizes writes and renames the directory into place.
-CLI output reports status and location. After a write failure, the CLI attempts
-closure and reports the admitted session ID for operator follow-up.
+sets files `0600` and directories `0700` despite umask. `operator open` checks
+`--output` before admission and again when writing; after a write failure it
+closes the session and reports its ID.
 
 ### 3. Authenticate the selected client
 
@@ -240,18 +234,19 @@ the original settlement receives `not-submitted`.
 Missing or uncertain material does not cause request-time issuance. The explicit
 development token factory instead borrows its process-owned static token.
 
-Handler and sender capture allowed origins independently.
+Handler and sender each capture allowed origins.
 `apps/controller/src/drivers/repo/credentials/transport/request-headers.ts:createUpstreamHeaders`
-validates adapter fields within byte and field-count limits, rejects case-insensitive
-duplicates, and removes reserved fields such as `Expect` before request construction.
-After verified TLS, owned exchanges recheck configured standing before first write.
-Prepared sends check their original one-use permit, cancellation and send deadline
-there. Gate denial or confirmed pre-write socket close prevents HTTP writes. The response-header timer starts
-after upload unless headers arrived. Connection, upload, stall and total deadlines
-apply. Upload-pack has separate response-byte, first-header, stall and total
-budgets; other requests retain ordinary limits. Every plan obeys `maxExchangeMs` and
-the session deadline; static-token upload-pack also obeys its lease. The byte counter
-applies backpressure without buffering the pack.
+enforces adapter header byte and count limits, rejects duplicates case-insensitively,
+and strips reserved fields such as `Expect` before request construction.
+After TLS, the first-write gate rechecks the owned lease or the original
+prepared permit, cancellation and deadline. Withdrawal blocks new permits;
+an issued permit allows one send before its deadline. Denial or confirmed
+pre-write closure sends no HTTP request. The response-header timer starts after
+upload unless headers arrived. Connection, upload, stall and total deadlines
+apply. Upload-pack uses separate response-byte, first-header, stall and total
+budgets. Plans obey `maxExchangeMs` and session deadlines; static-token
+upload-pack also obeys its lease. Byte counting applies backpressure without
+pack buffering.
 
 ### 5. Deliver an outcome and release ownership
 
@@ -360,6 +355,12 @@ client and alternate-adapter checks; live-provider behavior requires separate qu
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 13:04: Refresh session construction while preserving current admission and shutdown behavior. (authoring-run/7e95100b-4e77-456d-85a2-e31dc72ccf5e - ec30be0251ac912467c78856edb3a9c989c1ec00)
+
+- 2026-10-30 06:43: Select session construction before startup; retain shared admission and shutdown ownership. (authoring-run/1e62ea7b-b50d-46c8-808e-66f71c8965c7 - f6dd82ffef812be1fb3082bd9c416e23c5da866f)
+
+- 2026-10-30 06:21: Reserve admission capacity and drain shutdown work. (authoring-run/d49a5c43-d13a-4c18-8850-b9e95cca726c - 4a27fe5e2ff5fc4b216040bcf1227bfb6a7e0a88)
 
 - 2026-10-27 17:25: Resend a disposal whose acknowledgement was lost with its original status. (fix-3873-dispose)
 

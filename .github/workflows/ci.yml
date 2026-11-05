@@ -169,6 +169,7 @@ jobs:
               {"lane": "images-runtime-startup-3", "title": "Image Runtime Startup 3", "profile": "images", "timeout": 30, "runner": "blacksmith-16vcpu-ubuntu-2404"},
               {"lane": "k3d-fixture-configuration", "title": "k3d Fixture and Configuration", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "k3d-fixture-state", "title": "k3d State and Lifecycle", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
+              {"lane": "k3d-fixture-network", "title": "k3d Network Isolation", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "k3d-fixture-plugins", "title": "k3d Plugin Status", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "k3d-observability", "title": "Production Observability", "profile": "k3d", "timeout": 45, "runner": "blacksmith-32vcpu-ubuntu-2404"},
               {"lane": "logging-collector", "title": "Logging Collector", "profile": "images", "timeout": 30, "runner": "blacksmith-16vcpu-ubuntu-2404"},
@@ -292,34 +293,16 @@ jobs:
         run: pnpm check:workspace
       - name: Run lint check
         run: pnpm lint
-      # Restore only on main: a pull request can have its own cache at the same key.
-      # Prettier's content cache also depends on the absolute checkout path.
-      - name: Restore Prettier's content cache
-        id: prettier-cache
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Set up formatter
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
-          path: ${{ runner.temp }}/prettier-cache
-          key: prettier-content-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.NODE_VERSION }}-${{ hashFiles('pnpm-lock.yaml', 'package.json', '.editorconfig', '.prettierignore', '.prettierrc.json') }}-${{ github.workspace }}
+          bun-version-file: .bun-version
       - name: Check formatting
-        if: steps.prettier-cache.outcome != 'success'
         run: pnpm format:check
-      # Restore succeeds on a miss too. Prettier then checks every file and builds the cache.
-      - name: Check formatting with content cache
-        if: steps.prettier-cache.outcome == 'success'
-        run: pnpm format:check --cache --cache-strategy content --cache-location "$RUNNER_TEMP/prettier-cache"
       - name: Run OpenAPI check
         run: pnpm openapi:check
       - name: Check and build documentation
-        run: pnpm docs:install && pnpm docs:check && pnpm docs:build
-      # Seed the cache only after Static Checks passes on a push to main.
-      - name: Save Prettier's content cache
-        if: steps.prettier-cache.outcome == 'success' && steps.prettier-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/prettier-cache
-          key: ${{ steps.prettier-cache.outputs.cache-primary-key }}
-
+        run: pnpm docs:install && pnpm openapi:lint && pnpm docs:check && pnpm docs:build
   affected-packages:
     name: Affected Packages (advisory)
     needs: impact
