@@ -21,6 +21,7 @@ import { stopProcess } from "./stop-process.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const { loadYaml } = await import(require.resolve("@kubernetes/client-node"));
+const { Agent, fetch } = require("undici");
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const workerLabels = {
   "app.kubernetes.io/name": "openclaw-enterprise",
@@ -40,6 +41,52 @@ const peer = (namespace, labels) => ({
   namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": namespace } },
   podSelector: { matchLabels: labels },
 });
+
+export function createOpenShellGitApi({ origin, key, signal, after }) {
+  const base = new URL(origin);
+  assert.ok(
+    base.protocol === "http:" &&
+      base.hostname === "127.0.0.1" &&
+      base.port &&
+      base.username === "" &&
+      base.password === "" &&
+      base.pathname === "/" &&
+      base.search === "" &&
+      base.hash === "",
+    "Installed Git API requires its owned loopback origin",
+  );
+  // This key and Secret request bodies belong only to the disposable API. A
+  // private dispatcher bypasses ambient proxies without altering other traffic.
+  const dispatcher = new Agent();
+  after(() => dispatcher.close());
+  return async (method, path, body) => {
+    const url = new URL(path, base);
+    assert.equal(url.origin, base.origin, "Installed Git API path changed origin");
+    const response = await fetch(url, {
+      dispatcher,
+      redirect: "error",
+      method,
+      headers: {
+        "x-api-key": key,
+        ...(body === undefined ? {} : { "content-type": "application/json" }),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+    });
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new Error(`OCC ${method} ${path} returned HTTP ${response.status}`);
+    }
+    if (response.status === 204) {
+      return undefined;
+    }
+    try {
+      return (await response.json()).data;
+    } catch {
+      throw new Error(`OCC ${method} ${path} returned invalid JSON`);
+    }
+  };
+}
 
 async function waitUntil(description, operation, timeout, signal) {
   const deadline = Date.now() + timeout;
@@ -328,19 +375,12 @@ async function installOpenShellGit(t) {
   const admin = JSON.parse(
     await readFile(join(stack.directory, "initial-admin-service-key.json"), "utf8"),
   );
-  const request = async (method, path, body) => {
-    const response = await fetch(new URL(path, stack.environment.OCC_URL), {
-      method,
-      headers: {
-        "x-api-key": admin.data.key,
-        ...(body === undefined ? {} : { "content-type": "application/json" }),
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.any([t.signal, AbortSignal.timeout(30_000)]),
-    });
-    assert.equal(response.ok, true, `OCC ${method} ${path} returned HTTP ${response.status}`);
-    return response.status === 204 ? undefined : (await response.json()).data;
-  };
+  const request = createOpenShellGitApi({
+    origin: stack.environment.OCC_URL,
+    key: admin.data.key,
+    signal: t.signal,
+    after: (operation) => cleanup.push(operation),
+  });
   const namespaces = await request("GET", "/namespaces");
   const defaults = namespaces.filter(({ name }) => name === "default");
   assert.equal(defaults.length, 1);
