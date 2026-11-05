@@ -323,6 +323,23 @@ test("paired observation rejects changed, missing or extra artifact rules before
   };
   const configuration = openShellEgressConfiguration(context.plan, options, revision);
   const rules = revision.sandboxPolicy!.defaults;
+  // A correctly shaped artifact map cannot authorize a different revision-wide mode.
+  for (const mode of ["restricted", "public"] as const) {
+    await t.test(`changed ${mode} egress mode`, async () => {
+      const selected = { ...context, revision: { ...revision, networkEgressMode: mode } };
+      const admitted = openShellEgressConfiguration(context.plan, options, selected.revision);
+      await assert.rejects(
+        proxy.wiringStatus(selected, {
+          plan: context.plan,
+          configuration: {
+            ...admitted,
+            allow_unconfigured_public_tcp: mode !== "public",
+          },
+        }),
+        /changed protected egress routes/,
+      );
+    });
+  }
   // These are valid read-only wire rules; only their authority differs from the frozen map.
   const changedRule = {
     name: artifact().name,

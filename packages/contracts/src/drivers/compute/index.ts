@@ -217,6 +217,8 @@ export interface ComputePreflightResult {
 }
 
 export interface ComputeDriver extends Driver {
+  /** Enforces the admitted public TCP mode without bypassing provider-owned networking. */
+  readonly publicNetworkEgress?: true | undefined;
   /**
    * Read only the selected revision's existing Harness. Never prepare, adopt, attach,
    * repair, release or authorize an execution. Missing support provides no assurance.

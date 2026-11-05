@@ -247,6 +247,7 @@ func TestCheckLegacyNATTable(t *testing.T) {
 // The Kubernetes-only profile checks the host before it records state or
 // asks k3d for anything, so the reported host fails at once.
 func TestK3dStartupChecksLegacyNATTableBeforeClusterCreation(t *testing.T) {
+	t.Setenv("OCC_DEVELOPMENT_NETWORK_EGRESS_MODE", "restricted")
 	root := t.TempDir()
 	state := filepath.Join(root, "state")
 	for _, key := range []string{"DOCKER_CONTEXT", "OCC_DEVELOPMENT_CONTROLLER_IMAGE", "OCC_KUBERNETES_RUNTIME_IMAGE", "OCC_DEVELOPMENT_REPOSITORY_INPUT_DIRECTORY", "OCC_DEVELOPMENT_REPOSITORY_IMAGE", developmentImageRegistrySetting} {

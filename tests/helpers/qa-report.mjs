@@ -24,9 +24,9 @@ export function createQaReport(path, metadata) {
       });
     return writing;
   }
-  async function stage(parent, cell, name, work, scenario) {
+  async function stage(parent, cell, name, work, scenario, { timeout = 1_800_000 } = {}) {
     let value;
-    await parent.test(name, { timeout: 1_800_000 }, async () => {
+    await parent.test(name, { timeout }, async () => {
       const start = performance.now();
       const outcome = {
         cell,

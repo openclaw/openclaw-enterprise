@@ -1,4 +1,9 @@
+($ARGS.named.networkEgressMode // "public") as $networkEgressMode |
+if $networkEgressMode != "public" and $networkEgressMode != "restricted" then
+  error("networkEgressMode must be public or restricted")
+else
 {
+  "networkEgressMode": $networkEgressMode,
   "occ": {
     "cluster": $cluster
   },
@@ -484,3 +489,5 @@
     }
   }
 }
+
+end

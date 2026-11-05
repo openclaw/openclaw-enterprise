@@ -29,7 +29,7 @@ import {
   serializeStartupConfiguration,
 } from "@openclaw-enterprise/contracts";
 import { validateSandboxNetworkGrants } from "@openclaw-enterprise/contracts";
-import type { SandboxNetworkGrant } from "@openclaw-enterprise/contracts";
+import type { NetworkEgressMode, SandboxNetworkGrant } from "@openclaw-enterprise/contracts";
 import { asRecord } from "@openclaw-enterprise/utils";
 import { readFile } from "node:fs/promises";
 import { createHash, X509Certificate } from "node:crypto";
@@ -141,6 +141,7 @@ export interface SelectedDriverConfiguration<T = ConfigurationRecord> {
 export interface InstallationStartupConfiguration {
   readonly repository?: SelectedDriverConfiguration;
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
+  readonly networkEgressMode?: NetworkEgressMode;
   readonly occ: { readonly cluster: string };
   readonly logging: LoggingConfiguration;
   readonly presets?: { readonly includeDefaults: boolean; readonly files?: readonly string[] };
@@ -201,12 +202,14 @@ export function installationControllerOptions(
   ControllerOptions,
   | "driverConfigurations"
   | "sandboxNetworkPolicyCeiling"
+  | "networkEgressMode"
   | "nativeWorkerSupport"
   | "credentialProxyCapacity"
 > {
   return {
     driverConfigurations: installationDriverConfigurations(installation),
     sandboxNetworkPolicyCeiling: installation?.sandboxNetworkPolicyCeiling ?? [],
+    networkEgressMode: installation?.networkEgressMode ?? "restricted",
     ...(installation?.runtime === undefined
       ? {}
       : { nativeWorkerSupport: installation.runtime.nativeWorkerSupport }),
@@ -751,6 +754,20 @@ export async function loadInstallationConfiguration(options: {
   if (sandboxNetworkPolicyCeiling !== undefined) {
     validateSandboxNetworkGrants(sandboxNetworkPolicyCeiling, "/sandboxNetworkPolicyCeiling");
   }
+  const networkEgressMode = configuration.networkEgressMode;
+  if (
+    networkEgressMode !== undefined &&
+    networkEgressMode !== "public" &&
+    networkEgressMode !== "restricted"
+  ) {
+    throw new InstallationFieldError([
+      {
+        path: "/networkEgressMode",
+        code: "INVALID_VALUE",
+        message: "networkEgressMode must be public or restricted.",
+      },
+    ]);
+  }
   const observability = observabilityConfiguration(configuration.observability);
   const runtime = runtimeConfiguration(configuration.runtime);
   const drivers = object(configuration.drivers, "drivers");
@@ -1176,6 +1193,7 @@ export async function loadInstallationConfiguration(options: {
   const installation = Object.freeze({
     occ: Object.freeze({ cluster }),
     ...(sandboxNetworkPolicyCeiling === undefined ? {} : { sandboxNetworkPolicyCeiling }),
+    ...(networkEgressMode === undefined ? {} : { networkEgressMode }),
     presets: Object.freeze({ includeDefaults }),
     logging,
     ...(observability === undefined ? {} : { observability }),

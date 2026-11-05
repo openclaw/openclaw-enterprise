@@ -392,6 +392,7 @@ export interface OpenShellPolicyStatus {
   readonly activeVersion: number;
   readonly state: string;
   readonly policy: Readonly<Record<string, unknown>>;
+  readonly policyHash?: string;
 }
 
 export interface OpenShellGatewayClient
@@ -1413,6 +1414,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       activeVersion: Number(response.active_version ?? 0),
       state: revision!.status as string,
       policy,
+      ...(typeof revision?.policy_hash === "string" ? { policyHash: revision.policy_hash } : {}),
     };
   }
 

@@ -2489,6 +2489,234 @@ test("OpenShell native startup creates private temporary state without changing 
   }
 });
 
+// The Gateway transport is a controlled peer. This proves the production Driver's readiness
+// gate and replay behavior, not that an installed supervisor enforces public network access.
+test("OpenShell requires matching applied network egress evidence before accepting a Sandbox", async (t) => {
+  for (const mode of ["public", "restricted"]) {
+    await t.test(mode, async (t) => {
+      const gateway = workspaceGatewayClient();
+      let creates = 0;
+      let sandbox;
+      const accepted = {
+        instance_id: "supervisor-one",
+        state: 2,
+        policy_version: 3,
+        policy_hash: "policy-one",
+        config_revision: "4",
+        provider_env_revision: "5",
+        applied_allow_unconfigured_public_tcp: mode === "public",
+      };
+      let admission = accepted;
+      const configuration = {
+        configuration_admitted: true,
+        policy_source: 1,
+        configuration_instance_id: "supervisor-one",
+        version: 3,
+        policy_hash: "policy-one",
+        config_revision: "4",
+        provider_env_revision: "5",
+        policy: { allow_unconfigured_public_tcp: mode === "public" },
+      };
+      let effective = configuration;
+      let status = {
+        state: "POLICY_STATUS_LOADED",
+        version: 3,
+        activeVersion: 3,
+        // Provider composition gives the effective policy a different hash from its source.
+        policyHash: "source-policy",
+        policy: { allow_unconfigured_public_tcp: mode === "public" },
+      };
+      gateway.createSandbox = async (request) => {
+        creates += 1;
+        sandbox = storedSandbox(request, { serviceUrls: {}, resourceVersion: "1" });
+        return sandbox;
+      };
+      gateway.getSandbox = async () => sandbox && { ...sandbox, configurationAdmission: admission };
+      gateway.getSandboxConfig = async () => effective;
+      gateway.getPolicyStatus = async () => status;
+      const driver = openShellDriver(gateway);
+      const { context, revision, requirements } = runtimeSandboxFixture(driver, {
+        harnessId: "openclaw",
+      });
+      revision.networkEgressMode = mode;
+      const provision = () => driver.provisionHarness({ ...context, revision, requirements });
+      const awaitingAppliedMode = (error) => {
+        assert.ok(error instanceof TransientDependencyError);
+        assert.equal(error.dependency, "sandbox_gateway");
+        assert.equal(error.reason, "unavailable");
+        return true;
+      };
+      const rejectedAppliedMode = (error) => {
+        assert.ok(!(error instanceof TransientDependencyError));
+        assert.match(error.message, /has not confirmed active public network egress/);
+        return true;
+      };
+
+      if (mode === "public") {
+        // Startup accepts configuration before the network engine reports its applied mode.
+        // Waiting must not consume failure attempts or replace the already-created Sandbox.
+        admission = { ...accepted, applied_allow_unconfigured_public_tcp: undefined };
+        await assert.rejects(provision(), awaitingAppliedMode);
+        const created = sandbox;
+        await assert.rejects(provision(), awaitingAppliedMode);
+        assert.equal(sandbox, created);
+        assert.equal(creates, 1);
+        admission = accepted;
+      }
+      const first = await provision();
+      assert.equal(sandbox.spec.policy.allow_unconfigured_public_tcp ?? false, mode === "public");
+      assert.deepEqual(await provision(), first);
+      assert.equal(creates, 1, "reconciliation adopts the admitted Sandbox");
+
+      if (mode === "public") {
+        // A requested and loaded policy can outlive its supervisor or provider generation.
+        // Each response must independently prove that the active engine accepted this mode.
+        for (const [label, change, expected = /has not confirmed active public network egress/] of [
+          [
+            "absent applied mode",
+            { applied_allow_unconfigured_public_tcp: undefined },
+            awaitingAppliedMode,
+          ],
+          [
+            "false applied mode",
+            { applied_allow_unconfigured_public_tcp: false },
+            rejectedAppliedMode,
+          ],
+          ["pending admission", { state: 1 }, awaitingAppliedMode],
+          ["rejected admission", { state: 3 }, rejectedAppliedMode],
+          ["admission error", { error: "policy rejected" }, rejectedAppliedMode],
+          ["different instance", { instance_id: "supervisor-two" }, rejectedAppliedMode],
+          ["different policy hash", { policy_hash: "policy-two" }, rejectedAppliedMode],
+          ["different policy version", { policy_version: 2 }, awaitingAppliedMode],
+          ["different configuration generation", { config_revision: "3" }],
+          ["different provider generation", { provider_env_revision: "4" }],
+        ]) {
+          await t.test(label, async () => {
+            admission = { ...accepted, ...change };
+            await assert.rejects(provision(), expected);
+          });
+        }
+        admission = accepted;
+        effective = { ...configuration, configuration_admitted: false };
+        await assert.rejects(provision(), awaitingAppliedMode);
+        effective = { ...configuration, policy: { allow_unconfigured_public_tcp: false } };
+        await assert.rejects(provision(), /has not confirmed active public network egress/);
+        // A global override can retain the source version without applying its policy.
+        effective = { ...configuration, policy_source: 2 };
+        await assert.rejects(provision(), rejectedAppliedMode);
+        // Matching empty hashes cannot attest any effective policy.
+        admission = { ...accepted, policy_hash: "" };
+        effective = { ...configuration, policy_hash: "" };
+        await assert.rejects(provision(), rejectedAppliedMode);
+        admission = accepted;
+        effective = configuration;
+      } else {
+        admission = { ...accepted, applied_allow_unconfigured_public_tcp: true };
+        await assert.rejects(provision(), /public network egress for a restricted Agent revision/);
+        admission = accepted;
+      }
+      const loaded = status;
+      status = { ...loaded, activeVersion: 2 };
+      await assert.rejects(provision(), /did not load the revision's network egress mode/);
+      status = { ...loaded, policy: { allow_unconfigured_public_tcp: mode !== "public" } };
+      await assert.rejects(provision(), /did not load the revision's network egress mode/);
+      status = loaded;
+      if (mode === "public") {
+        for (const [label, change, expected] of [
+          ["stale loaded policy version", { version: 2, activeVersion: 2 }, awaitingAppliedMode],
+          ["missing source policy hash", { policyHash: "" }, rejectedAppliedMode],
+        ]) {
+          await t.test(label, async () => {
+            status = { ...loaded, ...change };
+            await assert.rejects(provision(), expected);
+          });
+        }
+        status = loaded;
+      }
+      assert.deepEqual(await provision(), first);
+      assert.equal(creates, 1, "rejected evidence never creates a replacement Sandbox");
+      if (mode === "public") {
+        await t.test("live policy observation requires the applied public mode", async (t) => {
+          // Ordinary revisions support live additions; protected revisions refuse this operation.
+          revision.executionAdmission = { mode: "standard" };
+          const snapshot = driver.admitNetworkPolicy(
+            [
+              {
+                id: "docs",
+                host: "docs.example.test",
+                ports: [{ from: 443, to: 443 }],
+                binary: "/usr/bin/curl",
+              },
+            ],
+            1,
+          );
+          let candidate;
+          gateway.updatePolicy = async (request) => {
+            candidate = structuredClone(request.policy);
+          };
+          await driver.applyNetworkPolicy(
+            { ...context, revision },
+            {
+              snapshot,
+              expectedProviderVersion: "1",
+              operationId: "public-policy-update",
+            },
+          );
+          assert.equal(candidate.allow_unconfigured_public_tcp, true);
+          assert.ok(
+            Object.values(candidate.network_policies).some((rule) =>
+              rule.endpoints.some((endpoint) => endpoint.host === "docs.example.test"),
+            ),
+          );
+          const currentStatus = {
+            ...loaded,
+            version: 4,
+            activeVersion: 4,
+            policyHash: "source-policy-two",
+            policy: candidate,
+          };
+          const currentAdmission = {
+            ...accepted,
+            policy_version: 4,
+            policy_hash: "policy-two",
+            config_revision: "5",
+          };
+          effective = {
+            ...configuration,
+            version: 4,
+            policy_hash: "policy-two",
+            config_revision: "5",
+            policy: candidate,
+          };
+          const observe = () => driver.observeNetworkPolicy({ ...context, revision }, snapshot);
+          for (const [label, acknowledgement, reported] of [
+            ["missing applied mode", { applied_allow_unconfigured_public_tcp: undefined }, {}],
+            ["false applied mode", { applied_allow_unconfigured_public_tcp: false }, {}],
+            ["stale status version", {}, { version: 3, activeVersion: 3 }],
+            ["stale effective hash", { policy_hash: "policy-one" }, {}],
+          ]) {
+            await t.test(label, async () => {
+              admission = { ...currentAdmission, ...acknowledgement };
+              status = { ...currentStatus, ...reported };
+              const observation = await observe();
+              assert.equal(observation.matches, true, "the requested policy alone already matches");
+              assert.notEqual(observation.state, "applied");
+            });
+          }
+          admission = currentAdmission;
+          status = currentStatus;
+          assert.deepEqual(await observe(), {
+            resourceVersion: "1",
+            policyVersion: "4",
+            matches: true,
+            state: "applied",
+          });
+        });
+      }
+    });
+  }
+});
+
 test("OpenShell adopts its revision's existing Sandbox instead of re-sending CreateSandbox", async () => {
   // The gateway's request_id replay refuses a changed spec and forgets a create after
   // 24 h, so a reconcile pass must find the existing Sandbox rather than create again.
@@ -6256,6 +6484,27 @@ test("stock OpenShell v0.1.5 cannot carry OCE readiness-extension evidence", asy
       "../../apps/controller/src/drivers/sandbox/proto/openshell-gateway.proto",
     ),
     options,
+  );
+  // Fixed wire tags protect interoperability independently of a same-codec round trip.
+  const policy = "openshell.v1.SandboxPolicy";
+  const publicMode = Buffer.from([0x38, 0x01]); // bool field 7
+  assert.equal(product[policy].deserialize(publicMode).allow_unconfigured_public_tcp, true);
+  assert.deepEqual(stock[policy].deserialize(publicMode), {});
+  const admission = "openshell.v1.SandboxConfigurationAdmission";
+  for (const applied of [false, true]) {
+    const wire = Buffer.from([0x40, Number(applied)]); // optional bool field 8
+    assert.equal(
+      product[admission].deserialize(wire).applied_allow_unconfigured_public_tcp,
+      applied,
+    );
+    assert.deepEqual(
+      product[admission].serialize({ applied_allow_unconfigured_public_tcp: applied }),
+      wire,
+    );
+  }
+  assert.equal(
+    product[admission].deserialize(Buffer.alloc(0)).applied_allow_unconfigured_public_tcp,
+    undefined,
   );
   const message = "openshell.v1.ProviderReadinessStatus";
   const evidence = {

@@ -34,7 +34,8 @@ export OCC_DEVELOPMENT_OPENSHELL_SUPERVISOR_IMAGE='<supervisor-name>@sha256:<64 
 ./scripts/dev-up
 ```
 
-These selectors also work with the Compose control plane. Supplying any one,
+These selectors also work with the Compose control plane when
+`OCC_DEVELOPMENT_NETWORK_EGRESS_MODE=restricted`. Supplying any one,
 even an empty value, requires all four. Image names may include a tag, but must
 end in an exact SHA-256 digest. Before creating state or cluster resources, the
 launcher rejects incomplete or malformed selections, unavailable local images,

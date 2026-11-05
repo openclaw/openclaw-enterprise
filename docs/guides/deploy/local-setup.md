@@ -38,7 +38,12 @@ install -m 600 docs/snippets/openshell-quickstart/configure-installation.mjs "$R
 source docs/snippets/openshell-quickstart/stage-session.sh
 ```
 
-Choose one image path before starting the cluster.
+Choose one OCE image path below. Public egress also requires qualified OpenShell
+Gateway, sandbox and supervisor images; the bundled 0.1.6 images do not support
+it. Select the [matching candidate images](local-openshell-images.md)
+before startup. The launcher refuses bundled images in public mode; selecting
+images alone does not prove support. Agent readiness requires the supervisor
+to confirm the applied public-egress policy.
 
 **Build from this checkout.** Clear any previous image selection. The launcher builds and imports both images from your checkout.
 
@@ -66,6 +71,7 @@ The [plugin network policy](../../snippets/openshell-quickstart/plugin-network-p
 export OCC_DEVELOPMENT_STATE_DIRECTORY="$RUN_DIR/k3d-state"
 export OPENCLAW_DEV_PORT=3012 OCC_DEVELOPMENT_BROWSER_PORT=8443 OCC_DEVELOPMENT_KUBERNETES_API_PORT=6455
 export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes
+export OCC_DEVELOPMENT_NETWORK_EGRESS_MODE=public
 export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell
 # Static-inference enforcement is a separate, optional profile.
 unset OCC_DEVELOPMENT_PROTECTED_EGRESS

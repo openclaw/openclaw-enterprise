@@ -2235,6 +2235,44 @@ test(
 );
 
 test(
+  "Canonical network egress migration preserves admitted revisions",
+  requiresHistoryPostgres,
+  async (context) => {
+    const fixture = await migrationHistoryFixture();
+    const db = await historyDatabase(context, fixture, "network_egress", { prefix: 69 });
+    await seedCanonicalData(db, { preset: true, computeAdmission: true, executionAdmission: true });
+    const before = await canonicalData(db);
+    const snapshots = await db.app.query(
+      "SELECT id, admitted_spec FROM occ.agent_revisions ORDER BY id",
+    );
+    assert.ok(snapshots.rows.length > 0);
+    assert.ok(
+      snapshots.rows.every(
+        ({ admitted_spec }) => !Object.hasOwn(admitted_spec, "network_egress_mode"),
+      ),
+    );
+    const receipts = await historyReceipts(db.migrator);
+
+    // Adding the optional choice changes the constraint, not prior execution authority.
+    assert.deepEqual(await runHistoryMigration(db, "production", "--check"), {
+      ok: true,
+      history: "preNetworkEgressMode",
+    });
+    assert.deepEqual(await runHistoryMigration(db, "production"), {
+      ok: true,
+      history: "preNetworkEgressMode",
+    });
+    await assertCompletedHistory(db, receipts);
+    await assertUpgradedRevisionReadable(db);
+    assert.deepEqual(await canonicalData(db), before);
+    assert.deepEqual(
+      (await db.app.query("SELECT id, admitted_spec FROM occ.agent_revisions ORDER BY id")).rows,
+      snapshots.rows,
+    );
+  },
+);
+
+test(
   "Canonical repository-prefix upgrade retains exact attempt cleanup context",
   requiresHistoryPostgres,
   async (context) => {

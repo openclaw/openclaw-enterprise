@@ -110,6 +110,7 @@ import {
   type ErrorDetail,
 } from "@openclaw-enterprise/contracts";
 import type {
+  NetworkEgressMode,
   SandboxPolicy,
   SandboxFacet,
   SandboxNetworkGrant,
@@ -792,6 +793,7 @@ export interface ControllerOptions {
   readonly preparedTokens?: PreparedTokenService | undefined;
   readonly driverConfigurations?: readonly DriverConfigurationRegistration[];
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
+  readonly networkEgressMode?: NetworkEgressMode;
   readonly authorize?: (
     request: AuthorizationRequest,
   ) => AuthorizationDecision | Promise<AuthorizationDecision>;
@@ -2107,6 +2109,7 @@ export class OpenClawController {
   private readonly configurations = new DriverConfigurationRegistry();
 
   private readonly sandboxNetworkPolicyCeiling: readonly SandboxNetworkGrant[];
+  private readonly networkEgressMode: NetworkEgressMode;
   private readonly authorization?: ControllerOptions["authorize"];
   private readonly clock: () => Date;
   private readonly identifier?: ControllerOptions["createId"];
@@ -2155,6 +2158,14 @@ export class OpenClawController {
       "/sandboxNetworkPolicyCeiling",
     );
     this.sandboxNetworkPolicyCeiling = immutableCopy(options.sandboxNetworkPolicyCeiling ?? []);
+    if (
+      options.networkEgressMode !== undefined &&
+      options.networkEgressMode !== "public" &&
+      options.networkEgressMode !== "restricted"
+    ) {
+      throw new ScopeViolationError("networkEgressMode must be public or restricted.");
+    }
+    this.networkEgressMode = options.networkEgressMode ?? "restricted";
     for (const registration of options.driverConfigurations ?? []) {
       this.configurations.register(registration);
     }
@@ -11665,6 +11676,16 @@ export class OpenClawController {
       }
       const sandbox = this.sandboxDriver();
 
+      if (
+        this.networkEgressMode === "public" &&
+        (compute.publicNetworkEgress !== true ||
+          (sandbox !== undefined && sandbox.publicNetworkEgress !== true))
+      ) {
+        throw new ResourceStateConflictError(
+          "Public network egress requires support from the selected Compute and Sandbox Drivers. Select supporting Drivers or set networkEgressMode to restricted.",
+        );
+      }
+
       if (!isNonEmptyString(lockedAgent.servicePrincipalId)) {
         throw new ScopeViolationError(
           "The Agent or its service principal does not belong to the exact Namespace.",
@@ -12055,6 +12076,7 @@ export class OpenClawController {
       const revisionDraft: AgentRevision = {
         id: revisionId,
         ...execution,
+        networkEgressMode: this.networkEgressMode,
         namespaceId: namespace.id,
         agentId: lockedAgent.id,
         revision: previous.length + 1,
@@ -15051,14 +15073,21 @@ export class OpenClawController {
     ] as const);
   }
 
-  /** A selected Credential Gateway replaces Secret-backed model delivery; no env fallback. */
+  /** Public egress and a selected Credential Gateway exclude raw model credential delivery. */
   private assertCredentialGatewayDelivery(binding: HarnessAuthBinding | null): void {
     if (
-      this.selections.has("credential_gateway") &&
-      binding !== null &&
-      binding.method !== "credential_source" &&
-      binding.method !== "runtime"
+      binding === null ||
+      binding.method === "credential_source" ||
+      binding.method === "runtime"
     ) {
+      return;
+    }
+    if (this.networkEgressMode === "public") {
+      throw new ResourceStateConflictError(
+        "Public network egress requires external model credential custody. Use credential-source Harness authentication with a paired Credential Gateway and Sandbox, or set networkEgressMode to restricted.",
+      );
+    }
+    if (this.selections.has("credential_gateway")) {
       throw new ResourceStateConflictError(
         "The selected Credential Gateway requires credential-source Harness authentication.",
       );

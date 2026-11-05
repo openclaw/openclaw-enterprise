@@ -178,7 +178,7 @@ func TestLegacyNamespaceRecovery(t *testing.T) {
 func TestLegacyNamespaceRecoveryRejectsInvalidState(t *testing.T) {
 	cases := []struct{ field, value string }{
 		{"version", "2"}, {"computeDriver", `"docker"`}, {"sandboxDriver", `"invalid"`},
-		{"containerEngine", `"invalid"`}, {"deploymentMode", `"invalid"`},
+		{"networkEgressMode", `"invalid"`}, {"containerEngine", `"invalid"`}, {"deploymentMode", `"invalid"`},
 		{"platformNamespace", `"Bad/name"`}, {"cluster", `"unrelated"`},
 		{"dockerHost", `"tcp://remote:2375"`}, {"repository", `"relative"`},
 		{"keyPath", `"/outside-owned-state.json"`}, {"apiPort", "0"}, {"browserPort", "65536"},

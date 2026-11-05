@@ -6,14 +6,15 @@ Agent revisions, Namespaces, routing, credentials, and authorization.
 
 Development supports native OpenClaw and dedicated Codex with
 [`v0.1.6`](https://github.com/NVIDIA/OpenShell/tree/v0.1.6). The pinned
-OCE runtime declares native Dedicated support. The paired
+OCE runtime declares native Dedicated support. The
 [Credential Gateway](openshell-credential-gateway.md) delivers model credentials;
 each Agent revision's providers supply node enrollment and Codex files. These experimental APIs are
 unqualified for production.
 
-Embedded OpenClaw is unsupported. See native OpenClaw
-[containment facets](#openshell-containment-facets) and
-[qualification](#qualification-contract).
+Embedded OpenClaw is unsupported. See
+[containment facets](#openshell-containment-facets),
+[qualification](#qualification-contract), and
+[public egress](../configuration/network-egress.md).
 
 ## Ownership model
 

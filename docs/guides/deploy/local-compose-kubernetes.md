@@ -1,7 +1,8 @@
 # Connect a Compose control plane to Kubernetes Agents
 
 Use this manual procedure for the Compose + k3d profile with
-`OCC_DEVELOPMENT_SANDBOX_DRIVER=none`. It supplies the private route and node
+`OCC_DEVELOPMENT_SANDBOX_DRIVER=none` and
+`OCC_DEVELOPMENT_NETWORK_EGRESS_MODE=restricted`. It supplies the private route and node
 enrollment required by Standard Codex while PostgreSQL, OCC and its worker
 remain in Compose. Standard OpenClaw uses embedded compute.
 

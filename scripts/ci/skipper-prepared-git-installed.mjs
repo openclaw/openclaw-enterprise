@@ -43,6 +43,7 @@ const database = "openclaw_k8s_skipper_" + id;
 const install = {
   ...env,
   OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
+  OCC_DEVELOPMENT_NETWORK_EGRESS_MODE: "restricted",
   OCC_DEVELOPMENT_CONTROL_PLANE: "kubernetes",
   OCC_DEVELOPMENT_SANDBOX_DRIVER: "none",
   OCC_DEVELOPMENT_PROTECTED_EGRESS: "0",

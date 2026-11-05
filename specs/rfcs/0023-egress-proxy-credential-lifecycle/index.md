@@ -26,6 +26,10 @@ The [proposed protected Codex artifact amendment](contracts.md#protected-codex-a
 adds explicitly qualified credential-free download authority to the same frozen
 admission. Its deployment qualification remains pending.
 
+The [public-egress proposal](public-egress.md) would let new protected
+installations reach public TCP destinations while keeping credentials outside
+the Agent. Shipping this default requires a qualified OpenShell pair.
+
 ## Two deployment modes
 
 The deployment selects an egress implementation; it does not separately select an authentication mechanism. Protection is an explicit admission decision, independent of how many credentials are configured.

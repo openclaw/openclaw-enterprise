@@ -52,7 +52,13 @@ kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" get nodes -L oce-role
 kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" get storageclass "$STORAGE_CLASS"
 ```
 
-Set `OCE_CHART` to the matching absolute chart directory/archive and `OPENSHELL_CHART` to stock OpenShell 0.1.6. Set `SANDBOX_REGISTRY` and `SANDBOX_REPOSITORY` to the registry holding its stock AMD64 Gateway, supervisor and runtime manifests. Verify compatibility with the templates’ OpenShell 0.1.6 and Codex 0.164.0.
+Set `OCE_CHART` to the matching absolute chart directory/archive. Public egress
+requires a qualified OpenShell Gateway and supervisor that confirm the applied
+public-egress policy; stock 0.1.6 does not support it. Until that image and chart
+set is qualified, set `NETWORK_EGRESS_MODE=restricted`, use OpenShell 0.1.6 for
+`OPENSHELL_CHART`, and set `SANDBOX_REGISTRY` and `SANDBOX_REPOSITORY` to its stock
+AMD64 manifests. Do not present a registry substitution as public-mode qualification.
+Verify compatibility with the templates and Codex 0.164.0.
 
 Set `ENVOY_IMAGE` to the qualified immutable proxy image and `ADMIN_EMAIL` to the owner’s email. Set `DATABASE_CIDRS` and `API_CIDRS` to approved IPv4 JSON arrays, including the API Service VIP and endpoint /32s.
 

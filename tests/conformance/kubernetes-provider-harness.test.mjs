@@ -720,6 +720,54 @@ for (const scenario of transportScenarios) {
   });
 }
 
+test("pending Sandbox provisioning preserves its workload and converges on the next observation", async () => {
+  const fixture = await endpointWithGateway();
+  fixture.observePods([fixture.pod("ready")]);
+  const provision = fixture.sandbox.provisionHarness;
+  const observed = [];
+  let pending = true;
+  fixture.sandbox.provisionHarness = async (context) => {
+    const resource = await provision(context);
+    observed.push(resource);
+    // Creation succeeded, but the provider cannot yet observe the required policy.
+    if (pending) {
+      throw new TransientDependencyError(
+        "sandbox_gateway",
+        "unavailable",
+        "Policy observation pending.",
+      );
+    }
+    return resource;
+  };
+  assert.deepEqual(await fixture.prepare(), { ...expectedRevision(fixture), ready: false });
+  assert.equal(
+    fixture.hooks.includes("stop"),
+    false,
+    "pending observation must not invoke lifecycle cleanup",
+  );
+  pending = false;
+  assert.deepEqual(await fixture.prepare(), { ...expectedRevision(fixture), ready: true });
+  assert.deepEqual(observed[1], observed[0], "the next pass adopts the same Sandbox identity");
+  assert.equal(fixture.hooks.includes("stop"), false);
+});
+
+test("Sandbox provisioning keeps definite failures and other transient classes on the cleanup path", async (t) => {
+  for (const error of [
+    new Error("Policy observation rejected."),
+    new TransientDependencyError("sandbox_admission", "unavailable", "Admission unavailable."),
+    new TransientDependencyError("sandbox_gateway", "timeout", "Provisioning timed out."),
+  ]) {
+    await t.test(error.message, async () => {
+      const fixture = await endpointWithGateway();
+      fixture.sandbox.provisionHarness = async () => {
+        throw error;
+      };
+      await assert.rejects(fixture.prepare(), (failure) => failure === error);
+      assert.equal(fixture.hooks.at(-1), "stop");
+    });
+  }
+});
+
 test("provider Harness unreachable transport is a transient Sandbox provisioning failure", async () => {
   const fixture = await endpointWithGateway();
   const { driver } = fixture;
@@ -934,6 +982,7 @@ test("provider Harness protected execution is released only on current signed in
   const sandbox = {
     ...fixture.sandbox,
     capability: "sandbox",
+    publicNetworkEgress: true,
     supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking"],
     cleanup: assert.fail,
@@ -1005,6 +1054,7 @@ test("provider Harness protected execution is released only on current signed in
   };
   const protectedRevision = {
     ...revision,
+    networkEgressMode: "public",
     id: protectedId,
     executionAdmission: { version: 3, mode: "protected" },
     revision: revision.revision + 1,
@@ -1063,6 +1113,32 @@ test("provider Harness protected execution is released only on current signed in
     },
     currentEgressInstallation: async () => observation,
   };
+  // Public mode is an admission capability, and replay must refuse it after
+  // the selected Sandbox stops supporting that mode, before issuing a release.
+  assert.equal(fixture.driver.publicNetworkEgress, undefined);
+  assert.equal(driver.publicNetworkEgress, true);
+  assert.doesNotThrow(() =>
+    driver.admitRevision({
+      ...protectedRevision,
+      secretBindings: {
+        SLACK_BOT_TOKEN: { source: { kind: "secret", namespaceId: tenant.id, id: "sec_channel" } },
+      },
+    }),
+  );
+  delete sandbox.publicNetworkEgress;
+  assert.equal(driver.publicNetworkEgress, undefined);
+  const unsupportedPublic = /Public network egress requires a selected Sandbox Driver/;
+  assert.throws(() => driver.admitRevision(protectedRevision), unsupportedPublic);
+  await assert.rejects(
+    driver.prepareRevision(protectedRevision, protectedContext),
+    unsupportedPublic,
+  );
+  await assert.rejects(
+    driver.activateRevision(protectedRevision, protectedContext),
+    unsupportedPublic,
+  );
+  assert.deepEqual(events.splice(0), []);
+  sandbox.publicNetworkEgress = true;
   // A source cannot claim Proxy ownership under a different admitted source key.
   const conflictingSource = structuredClone(source);
   conflictingSource.egress.key.source.generation += 1;

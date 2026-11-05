@@ -1168,6 +1168,7 @@ export class ControllerWorker {
   private readonly driverConfigurations: readonly DriverConfigurationRegistration[];
   private readonly configurations = new DriverConfigurationRegistry();
   private readonly policyCeiling: readonly import("@openclaw-enterprise/contracts").SandboxNetworkGrant[];
+  private readonly networkEgressMode: import("@openclaw-enterprise/contracts").NetworkEgressMode;
   private readonly queue: PostgresWorkQueue;
   private readonly compute: ComputeDriver;
   private readonly configuration: ConfigurationDriver | undefined;
@@ -1270,6 +1271,7 @@ export class ControllerWorker {
       this.configurations.register(definition);
     }
     this.policyCeiling = drivers?.installation.sandboxNetworkPolicyCeiling ?? [];
+    this.networkEgressMode = drivers?.installation.networkEgressMode ?? "restricted";
     this.configuredServiceAccountDriverId = drivers?.installation.drivers.service_account?.id;
     this.nativeWorkerSupport = drivers?.installation.runtime?.nativeWorkerSupport;
     if (this.mode === "production" && drivers === undefined) {
@@ -1431,6 +1433,7 @@ export class ControllerWorker {
       preparedTokens: this.preparedTokens,
       state: this.state,
       sandboxNetworkPolicyCeiling: this.policyCeiling,
+      networkEgressMode: this.networkEgressMode,
       driverConfigurations: this.driverConfigurations,
       backends: this.backends,
       recordOperations: true,

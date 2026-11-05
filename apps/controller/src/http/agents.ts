@@ -103,6 +103,7 @@ function clientRevision(revision: Readonly<AgentRevisionRead>): Record<string, u
     configurationGeneration: revision.configurationGeneration,
     backendId: revision.backendId,
     gatewayManagedMode: revision.gatewayManagedMode,
+    networkEgressMode: revision.networkEgressMode,
     configuration: revision.configuration,
     harness: revision.harness,
     compute: { id: revision.compute.id, implementation: revision.compute.implementation },
