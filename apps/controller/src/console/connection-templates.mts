@@ -6,6 +6,7 @@ import type {
 import { refusedAsNonAdministrator, requestFailure } from "./api-client.mjs";
 import {
   openOAuthClientRegistration,
+  advertisedClientMethods,
   availabilityLabel,
   oauthClients,
   oauthFailure as failure,
@@ -427,6 +428,8 @@ export function openConnectionTemplateEditor(
         oauth?.issuer === item.issuer &&
         oauth.tokenUrl === item.tokenUrl &&
         (!oauth.revocationUrl || item.revocationUrl === oauth.revocationUrl) &&
+        (mode.value !== "mcp_discovery" ||
+          advertisedClientMethods(observed).includes(item.tokenEndpointAuthMethod)) &&
         scope.value !== "" &&
         (!item.namespaceId || item.namespaceId === scope.value),
     );
