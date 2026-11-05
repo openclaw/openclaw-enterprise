@@ -18,7 +18,6 @@ import { withStateLock } from "../../scripts/ci/state-lock.ts";
 import { readJsonLines } from "../helpers/json-lines.mjs";
 import { createKubernetesInstallationConfiguration } from "../helpers/kubernetes-real.mjs";
 import { listen } from "../helpers/listen.mjs";
-import { nodeTestSummary } from "../helpers/node-test-summary.ts";
 import {
   assertStderrMatch,
   fixture,
@@ -1546,89 +1545,44 @@ for (let index = 0; index < Number(times); index += 1) {
     assert.deepEqual(await readdir(root), ["order"]);
   });
 
-  test("installed repository preparation is refused before prerequisite checks or side effects", async (t) => {
+  test("retired repository lane is unknown before inputs, state, or commands", async (t) => {
     const root = await fixture(t);
-    const statePath = join(root, "installed-state.json");
-    const configPath = join(root, "app.json");
-    const keyPath = join(root, "app.pem");
-    await writeFile(configPath, "{}", { mode: 0o600 });
-    await writeFile(keyPath, "test-only key", { mode: 0o600 });
-    const args = ["--lane", "repository-credentials-installed", "--state", statePath];
-
-    // An operator who selects the lane without any inputs learns that it is
-    // unavailable, instead of being asked for model, App and image inputs first.
-    const unprepared = await runPrepare(args, {});
-    assert.equal(unprepared.status, 1);
-    assert.match(
-      unprepared.stderr,
-      /Installed repository qualification is temporarily unavailable/,
+    const manifest = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"));
+    assert.equal(Object.hasOwn(manifest.lanes, "repository-credentials-installed"), false);
+    const program = `
+import assert from "node:assert/strict";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+let commands = 0;
+childProcess.spawn = () => {
+  commands += 1;
+  throw new Error("Preparation must not run commands");
+};
+syncBuiltinESMExports();
+const { prepareLane, prepareFile } = await import(process.argv[1]);
+for (const prepare of [prepareLane, prepareFile]) {
+  await assert.rejects(
+    prepare({
+      lane: "repository-credentials-installed",
+      ...(prepare === prepareFile
+        ? { file: "tests/integration/repository-credentials-k3d-real.test.mjs" }
+        : {}),
+      statePath: process.argv[2],
+    }),
+    { message: "Unknown CI lane: repository-credentials-installed" },
+  );
+}
+assert.equal(commands, 0);
+`;
+    const result = await runProgram(
+      program,
+      join(root, "state.json"),
+      // No ambient credentials or real input files; even command lookup is isolated.
+      { PATH: root },
+      10_000,
     );
-    assert.doesNotMatch(unprepared.stderr, /Missing required CI input/);
-    await assert.rejects(() => stat(statePath), { code: "ENOENT" });
-
-    // Inputs that previously passed the early checks cannot create a preparation state
-    // while remote cleanup lacks a safe ownership boundary.
-    const blocked = await runPrepare(args, {
-      OPENAI_API_KEY: "test-only-model-key",
-      OCC_TEST_OPENAI_MODEL: "test-model",
-      NODE_BASE_IMAGE: "",
-      OCC_TEST_REPOSITORY_CREDENTIALS_AUTHORIZED: "1",
-      OCC_TEST_REPOSITORY_CREDENTIALS_REPOSITORY: "fixture/repository",
-      OCC_TEST_REPOSITORY_CREDENTIALS_APP_CONFIG_FILE: configPath,
-      OCC_TEST_REPOSITORY_CREDENTIALS_APP_KEY_FILE: keyPath,
-      OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE: immutableImage,
-      OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE_MODE: "release",
-      OCC_TEST_REPOSITORY_CREDENTIALS_UPSTREAM_CIDRS: "203.0.113.1/32",
-      OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: immutableImage,
-      OCC_TEST_KUBERNETES_RUNTIME_IMAGE: immutableImage,
-      OCC_TEST_PRODUCTION_POSTGRES_IMAGE: immutableImage,
-      OCC_TEST_PRODUCTION_NODE_IMAGE: immutableImage,
-    });
-    assert.equal(blocked.status, 1);
-    assert.match(blocked.stderr, /Installed repository qualification is temporarily unavailable/);
-    await assert.rejects(() => stat(statePath), { code: "ENOENT" });
-
-    // Per-file preparation, which the test runner uses, is refused the same way.
-    const perFile = await runPrepare(
-      [...args, "--file", "tests/integration/repository-credentials-k3d-real.test.mjs"],
-      {},
-    );
-    assert.equal(perFile.status, 1);
-    assert.match(perFile.stderr, /Installed repository qualification is temporarily unavailable/);
-    await assert.rejects(() => stat(statePath), { code: "ENOENT" });
-  });
-
-  test("the installed repository journey refuses direct execution before fixture setup", async (t) => {
-    const root = await fixture(t);
-    // Direct execution must fail at the safety guard even without credentials or
-    // a cluster, before any setup or provider operation can be attempted.
-    const result = await spawnResult(
-      process.execPath,
-      [
-        "--test",
-        "--test-name-pattern=^installed ",
-        "tests/integration/repository-credentials-k3d-real.test.mjs",
-      ],
-      {
-        env: {
-          HOME: root,
-          PATH: process.env.PATH,
-          OCC_TEST_REPOSITORY_CREDENTIALS_REAL: "1",
-        },
-        timeout: 15000,
-      },
-    );
-    assert.equal(result.status, 1);
-    const output = `${result.stdout}\n${result.stderr}`;
-    // Every selected installed case refuses; read the run's own totals rather
-    // than hard-coding how many installed cases that file has (finding 1032).
-    const summary = nodeTestSummary(output);
-    assert.ok(summary.tests >= 1, JSON.stringify(summary));
-    assert.equal(summary.fail, summary.tests, JSON.stringify(summary));
-    assert.equal(
-      (output.match(/Installed repository qualification is temporarily unavailable/g) ?? []).length,
-      summary.tests,
-    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(await readdir(root), []);
   });
 
   test("production upgrade preparation requires two distinct immutable image pairs before creating resources", async (t) => {
@@ -1722,7 +1676,6 @@ for (let index = 0; index < Number(times); index += 1) {
     const manifest = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"));
     for (const name of ["ci", "full"]) {
       assert.ok(manifest.groups[name].includes("repository-credentials-container"));
-      assert.ok(!manifest.groups[name].includes("repository-credentials-installed"));
       for (const lane of manifest.groups[name]) {
         assert.notEqual(manifest.lanes[lane].env?.OCC_TEST_REPOSITORY_CREDENTIALS_REAL, "1");
       }
