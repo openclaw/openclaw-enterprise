@@ -598,9 +598,9 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
   assert.ok(capabilities.sandbox.repositoryAccess);
   assert.ok(capabilities.proxy?.bindRepositoryGit);
   assert.ok(capabilities.repositoryTransport);
-  assert.equal(runtime.configuration.protectedExecution, true);
-  // Observe the actual bundled handoff without starting listeners or contacting PostgreSQL.
   const authority = {} as ProtectedRepositoryGitAuthority;
+  await assert.rejects(runtime.bindRepositoryGit(authority), /requires its selected route store/);
+  // Observe the actual bundled handoff without starting listeners or contacting PostgreSQL.
   const connect = t.mock.method(runtime, "connectRouteStore");
   const bind = t.mock.method(
     capabilities.proxy as Required<Pick<CredentialProxyDriver, "bindRepositoryGit">>,

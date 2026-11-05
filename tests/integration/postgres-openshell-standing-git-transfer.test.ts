@@ -277,7 +277,6 @@ test(
       const r = new OpenShellGitRuntime(
         {
           registrationName,
-          protectedExecution: true,
           authority: {} as EgressAuthorityConfiguration,
         },
         createGitHubRepositoryDeliveryResolver(registry),
@@ -574,23 +573,19 @@ test(
       outcome?: string;
     };
     const events: Event[] = [];
-    const selectDrivers = (d: InstallationRuntimeDrivers) => ({
-      ...d,
-      credentialGatewayDriver: gateway,
-      installation: {
-        ...d.installation,
-        backend: [...(d.installation.backend ?? []), repositoryBackend],
-        drivers: {
-          ...d.installation.drivers,
-          credential_gateway: { id: gatewayId },
+    const selectDrivers = (d: InstallationRuntimeDrivers) =>
+      protectedGit.selectDrivers(
+        {
+          ...d,
+          installation: {
+            ...d.installation,
+            backend: [...(d.installation.backend ?? []), repositoryBackend],
+          },
+          repositoryPolicy: driver,
+          repositoryAdmission: { policy: driver, backendId },
         },
-      },
-      repositoryPolicy: driver,
-      repositoryAdmission: { policy: driver, backendId },
-      protectedDriver: protectedGit.owner,
-      sandboxDriver: protectedGit.owner.require("sandbox"),
-      proxyDriver: protectedGit.owner.require("credential_proxy"),
-    });
+        gateway,
+      );
     const start = () =>
       f.start(compute, {
         emit: (e?: Event) => {

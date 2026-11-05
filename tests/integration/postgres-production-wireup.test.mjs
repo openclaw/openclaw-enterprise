@@ -8,7 +8,7 @@ import test from "node:test";
 import { createServer } from "node:net";
 import { startApi } from "../../apps/controller/src/api-startup.mjs";
 import { listen } from "../helpers/listen.mjs";
-import { setEnvironment } from "../helpers/environment.mjs";
+import { setEnvironment } from "../helpers/environment.ts";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { request as httpRequest } from "node:http";

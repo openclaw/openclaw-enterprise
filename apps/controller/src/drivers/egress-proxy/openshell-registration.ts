@@ -51,9 +51,7 @@ export function createOpenShellCapabilities(input: {
     throw new Error("OpenShell Git requires its protected credential proxy.");
   }
   const git =
-    configuration &&
-    resolveDelivery &&
-    new OpenShellGitRuntime({ ...configuration, protectedExecution: true }, resolveDelivery);
+    configuration && resolveDelivery && new OpenShellGitRuntime(configuration, resolveDelivery);
   const sandbox = input.createSandbox(
     { ...input.sandbox.configuration, ...(input.proxy && { egress: input.proxy.configuration }) },
     {

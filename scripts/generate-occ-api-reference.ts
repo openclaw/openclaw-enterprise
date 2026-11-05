@@ -3,6 +3,53 @@ import { STATUS_CODES } from "node:http";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+type Entry = {
+  anchor: string;
+  method: string;
+  operation: unknown;
+  operationId: unknown;
+  path: string;
+  tag: unknown;
+};
+type ValidEntry = Entry & { operationId: string; summary: string };
+type Group = { title: unknown; anchor: string; operations: Entry[] };
+type Output = { label: string; path: string; content: string };
+
+function hasFields(value: unknown): value is Record<string, unknown> {
+  return (typeof value === "object" && value !== null) || typeof value === "function";
+}
+function fields(value: unknown): Record<string, unknown> {
+  if (value == null) {
+    throw new TypeError("Cannot read nullish value");
+  }
+  const boxed: unknown = Object(value);
+  if (!hasFields(boxed)) {
+    throw new TypeError("Expected object");
+  }
+  return boxed;
+}
+function field(value: unknown, key: string): unknown {
+  return fields(value)[key];
+}
+function optionalField(value: unknown, key: string): unknown {
+  return value == null ? undefined : field(value, key);
+}
+function entries(value: unknown): [string, unknown][] {
+  return Object.entries(fields(value));
+}
+function array(value: unknown): unknown[] {
+  if (!Array.isArray(value)) {
+    throw new TypeError("Expected array");
+  }
+  return value;
+}
+function text(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new TypeError("Expected string");
+  }
+  return value;
+}
+
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const documentPath = new URL("../packages/contracts/openapi/occ-api.openapi.json", import.meta.url);
 const referenceDirectoryPath = new URL("../docs/reference/api/", import.meta.url);
@@ -18,7 +65,7 @@ export const httpMethods = new Set([
 ]);
 
 // Curated entity order and subdivisions; unmatched operations keep their OpenAPI tag.
-const cheatSheetEntities = [
+const cheatSheetEntities: { title: string; tag?: string; paths?: string[] }[] = [
   { title: "Authentication accounts", tag: "Authentication", paths: ["/api/auth/accounts"] },
   {
     title: "Authentication sessions",
@@ -47,7 +94,7 @@ const cheatSheetEntities = [
   { title: "Backends" },
 ];
 
-function slugifySegment(value) {
+function slugifySegment(value: unknown) {
   return (
     String(value)
       .trim()
@@ -57,11 +104,11 @@ function slugifySegment(value) {
   );
 }
 
-function tagAnchor(tag) {
+function tagAnchor(tag: unknown) {
   return slugifySegment(tag);
 }
 
-function operationAnchor(path, method) {
+function operationAnchor(path: string, method: string) {
   const pathId = path
     .toLowerCase()
     .replace(/[{}]/g, "")
@@ -69,131 +116,126 @@ function operationAnchor(path, method) {
   return `${method.toLowerCase()}-${pathId}`;
 }
 
-function schemaType(schema, document) {
-  if (schema.$ref) {
-    const name = schema.$ref.split("/").at(-1);
-    return document.components?.schemas?.[name]?.title ?? name;
+function schemaType(schema: unknown, document: unknown): unknown {
+  const ref = field(schema, "$ref");
+  if (ref) {
+    const name = text(ref).split("/").at(-1);
+    return (
+      optionalField(
+        optionalField(optionalField(optionalField(document, "components"), "schemas"), name ?? ""),
+        "title",
+      ) ?? name
+    );
   }
-
-  if (Object.hasOwn(schema, "const")) {
-    return JSON.stringify(schema.const);
+  if (Object.hasOwn(fields(schema), "const")) {
+    return JSON.stringify(field(schema, "const"));
   }
-  if (schema.enum) {
-    return schema.enum.map((value) => JSON.stringify(value)).join(" or ");
+  const values = field(schema, "enum");
+  if (values) {
+    return array(values)
+      .map((value) => JSON.stringify(value))
+      .join(" or ");
   }
-  if (schema.anyOf) {
-    return schema.anyOf.map((alternative) => schemaType(alternative, document)).join(" or ");
+  const anyOf = field(schema, "anyOf");
+  if (anyOf) {
+    return array(anyOf)
+      .map((value) => schemaType(value, document))
+      .join(" or ");
   }
-  if (schema.type === "array") {
-    return `array<${schemaType(schema.items ?? {}, document)}>`;
+  const type = field(schema, "type");
+  if (type === "array") {
+    return `array<${schemaType(field(schema, "items") ?? {}, document)}>`;
   }
-  if (
-    schema.type === "object" &&
-    schema.additionalProperties &&
-    typeof schema.additionalProperties === "object"
-  ) {
-    return `object<string, ${schemaType(schema.additionalProperties, document)}>`;
+  const additional = field(schema, "additionalProperties");
+  if (type === "object" && additional && typeof additional === "object") {
+    return `object<string, ${schemaType(additional, document)}>`;
   }
-
-  return schema.format ? `${schema.type} (${schema.format})` : (schema.type ?? "any");
+  const format = field(schema, "format");
+  return format ? `${type} (${format})` : (type ?? "any");
 }
 
-function resolveSchema(schema, document) {
-  if (!schema?.$ref) {
+function resolveSchema(schema: unknown, document: unknown): unknown {
+  const ref = optionalField(schema, "$ref");
+  if (!ref || !text(ref).startsWith("#/")) {
     return schema;
   }
-
-  if (!schema.$ref.startsWith("#/")) {
-    return schema;
+  let value: unknown = document;
+  for (const segment of text(ref).slice(2).split("/")) {
+    value = optionalField(value, segment.replaceAll("~1", "/").replaceAll("~0", "~"));
   }
-
-  return (
-    schema.$ref
-      .slice(2)
-      .split("/")
-      .reduce(
-        (value, segment) => value?.[segment.replaceAll("~1", "/").replaceAll("~0", "~")],
-        document,
-      ) ?? schema
-  );
+  return value ?? schema;
 }
 
-function schemaConstraints(schema) {
-  const constraints = [];
-
-  if (schema.minLength !== undefined) {
-    constraints.push(`min length: ${schema.minLength}`);
+function schemaConstraints(schema: unknown) {
+  const constraints: string[] = [];
+  for (const [key, label] of [
+    ["minLength", "min length"],
+    ["maxLength", "max length"],
+    ["minimum", "minimum"],
+    ["maximum", "maximum"],
+    ["minItems", "min items"],
+    ["maxItems", "max items"],
+  ] as const) {
+    const value = field(schema, key);
+    if (value !== undefined) {
+      constraints.push(`${label}: ${value}`);
+    }
   }
-  if (schema.maxLength !== undefined) {
-    constraints.push(`max length: ${schema.maxLength}`);
+  const pattern = field(schema, "pattern");
+  if (pattern) {
+    constraints.push(`pattern: \`${text(pattern).replaceAll("|", "\\|")}\``);
   }
-  if (schema.minimum !== undefined) {
-    constraints.push(`minimum: ${schema.minimum}`);
+  const defaultValue = field(schema, "default");
+  if (defaultValue !== undefined) {
+    constraints.push(`default: ${JSON.stringify(defaultValue)}`);
   }
-  if (schema.maximum !== undefined) {
-    constraints.push(`maximum: ${schema.maximum}`);
+  const description = field(schema, "description");
+  if (description) {
+    constraints.push(text(description).replaceAll("|", "\\|"));
   }
-  if (schema.minItems !== undefined) {
-    constraints.push(`min items: ${schema.minItems}`);
-  }
-  if (schema.maxItems !== undefined) {
-    constraints.push(`max items: ${schema.maxItems}`);
-  }
-  if (schema.pattern) {
-    constraints.push(`pattern: \`${schema.pattern.replaceAll("|", "\\|")}\``);
-  }
-  if (schema.default !== undefined) {
-    constraints.push(`default: ${JSON.stringify(schema.default)}`);
-  }
-  if (schema.description) {
-    constraints.push(schema.description.replaceAll("|", "\\|"));
-  }
-
   return constraints.join("; ") || "—";
 }
 
-function schemaRows(schema, document, parent = "") {
+function schemaRows(schema: unknown, document: unknown, parent = ""): string[] {
   const resolvedSchema = resolveSchema(schema, document);
-  const rows = [];
-
-  for (const [name, property] of Object.entries(resolvedSchema.properties ?? {})) {
+  const rows: string[] = [];
+  for (const [name, property] of entries(field(resolvedSchema, "properties") ?? {})) {
     const resolvedProperty = resolveSchema(property, document);
-    const field = parent ? `${parent}.${name}` : name;
-    const required = resolvedSchema.required?.includes(name) ? "Yes" : "No";
-    const columns = [
-      `\`${field}\``,
-      `\`${schemaType(property, document)}\``,
-      required,
-      schemaConstraints(resolvedProperty),
-    ];
-    rows.push(`| ${columns.join(" | ")} |`);
-
-    if (resolvedProperty.type === "object" && resolvedProperty.properties) {
-      rows.push(...schemaRows(resolvedProperty, document, field));
-    } else if (resolvedProperty.type === "array") {
-      const resolvedItems = resolveSchema(resolvedProperty.items, document);
-      if (resolvedItems.properties) {
-        rows.push(...schemaRows(resolvedItems, document, `${field}[]`));
+    const fieldName = parent ? `${parent}.${name}` : name;
+    const required = optionalField(resolvedSchema, "required");
+    const isRequired =
+      required == null
+        ? false
+        : typeof required === "string"
+          ? required.includes(name)
+          : array(required).includes(name);
+    rows.push(
+      `| \`${fieldName}\` | \`${schemaType(property, document)}\` | ${isRequired ? "Yes" : "No"} | ${schemaConstraints(resolvedProperty)} |`,
+    );
+    const type = field(resolvedProperty, "type");
+    if (type === "object" && field(resolvedProperty, "properties")) {
+      rows.push(...schemaRows(resolvedProperty, document, fieldName));
+    } else if (type === "array") {
+      const items = resolveSchema(field(resolvedProperty, "items"), document);
+      if (field(items, "properties")) {
+        rows.push(...schemaRows(items, document, `${fieldName}[]`));
       }
     }
   }
-
   return rows;
 }
 
-function schemaTable(schema, document) {
-  const resolvedSchema = resolveSchema(schema, document);
-  const rows = schemaRows(resolvedSchema, document);
-  if (rows.length === 0) {
+function schemaTable(schema: unknown, document: unknown) {
+  const rows = schemaRows(resolveSchema(schema, document), document);
+  if (!rows.length) {
     return `Schema: \`${schemaType(schema, document)}\`.`;
   }
-
   return ["| Field | Type | Required | Constraints |", "| --- | --- | --- | --- |", ...rows].join(
     "\n",
   );
 }
 
-const permissionScopeQualifiers = {
+const permissionScopeQualifiers: Record<string, string> = {
   associated_service_account: " (when associated)",
   existing_namespace: " (when selecting an existing namespace)",
   bound_secret: " (when bound)",
@@ -205,145 +247,158 @@ const permissionScopeQualifiers = {
   saved_sandbox_policy_additions: " (when saved network policy additions exist)",
 };
 
-function renderedExamples(content, contentType) {
-  return Object.values(content.examples ?? {}).map(({ summary, value }) =>
+function renderedExamples(content: unknown, contentType: string) {
+  return entries(field(content, "examples") ?? {}).map(([, example]) =>
     [
-      summary ?? "Example",
+      field(example, "summary") ?? "Example",
       contentType === "text/plain" ? "```text" : "```json",
-      contentType === "text/plain" ? value : JSON.stringify(value, null, 2),
+      contentType === "text/plain"
+        ? field(example, "value")
+        : JSON.stringify(field(example, "value"), null, 2),
       "```",
     ].join("\n"),
   );
 }
 
-function operationReference(path, method, operation, document, { headingLevel = 2 } = {}) {
+function operationReference(
+  path: string,
+  method: string,
+  operation: unknown,
+  document: unknown,
+  { headingLevel = 2 }: { headingLevel?: number } = {},
+) {
   const childHeading = "#".repeat(Math.min(headingLevel + 1, 6));
-  const sections = [
+  const sections: unknown[] = [
     `${"#".repeat(headingLevel)} \`${method.toUpperCase()} ${path}\``,
     `<span id="${operationAnchor(path, method)}"></span>`,
-    operation.summary ?? "No summary.",
-    `**Operation ID:** \`${operation.operationId ?? `${method}_${path}`}\``,
-    `**Permissions:** ${operation.description ?? "No IAM permission required."}`,
+    field(operation, "summary") ?? "No summary.",
+    `**Operation ID:** \`${field(operation, "operationId") ?? `${method}_${path}`}\``,
+    `**Permissions:** ${field(operation, "description") ?? "No IAM permission required."}`,
   ];
-
-  if (operation["x-openclaw-permissions"]?.length) {
+  const permissions = field(operation, "x-openclaw-permissions");
+  if (optionalField(permissions, "length")) {
     sections.push(
       [
         "| Action | Resource | Scope |",
         "| --- | --- | --- |",
-        ...operation["x-openclaw-permissions"].map(({ action, resourceKind, scope, condition }) => {
-          const qualifier = permissionScopeQualifiers[condition] ?? "";
-          return `| \`${action}\` | \`${resourceKind}\` | \`${scope}\`${qualifier} |`;
+        ...array(permissions).map((permission) => {
+          const condition = field(permission, "condition");
+          const qualifier = permissionScopeQualifiers[String(condition)] ?? "";
+          return `| \`${field(permission, "action")}\` | \`${field(permission, "resourceKind")}\` | \`${field(permission, "scope")}\`${qualifier} |`;
         }),
       ].join("\n"),
     );
   }
-
-  if (operation.parameters?.length) {
+  const parameters = field(operation, "parameters");
+  if (optionalField(parameters, "length")) {
     sections.push(
       `${childHeading} Parameters`,
       [
         "| Name | In | Type | Required | Constraints | Example |",
         "| --- | --- | --- | --- | --- | --- |",
-        ...operation.parameters.map((parameter) => {
-          const columns = [
-            `\`${parameter.name}\``,
-            parameter.in,
-            `\`${schemaType(parameter.schema, document)}\``,
-            parameter.required ? "Yes" : "No",
-            schemaConstraints(parameter.schema),
-            JSON.stringify(parameter.examples?.example?.value)?.replaceAll("|", "\\|") ?? "—",
-          ];
-          return `| ${columns.join(" | ")} |`;
+        ...array(parameters).map((parameter) => {
+          const schema = field(parameter, "schema");
+          const value = optionalField(
+            optionalField(field(parameter, "examples"), "example"),
+            "value",
+          );
+          return `| ${[`\`${field(parameter, "name")}\``, field(parameter, "in"), `\`${schemaType(schema, document)}\``, field(parameter, "required") ? "Yes" : "No", schemaConstraints(schema), JSON.stringify(value)?.replaceAll("|", "\\|") ?? "—"].join(" | ")} |`;
         }),
       ].join("\n"),
     );
   }
-
-  if (operation.requestBody) {
+  const requestBody = field(operation, "requestBody");
+  if (requestBody) {
     sections.push(
       `${childHeading} Request body`,
-      `**Required:** ${operation.requestBody.required ? "Yes" : "No"}`,
+      `**Required:** ${field(requestBody, "required") ? "Yes" : "No"}`,
     );
-
-    for (const [contentType, content] of Object.entries(operation.requestBody.content ?? {})) {
+    for (const [contentType, content] of entries(field(requestBody, "content") ?? {})) {
       sections.push(
         `**Content type:** \`${contentType}\``,
-        schemaTable(content.schema, document),
+        schemaTable(field(content, "schema"), document),
         ...renderedExamples(content, contentType),
       );
     }
   }
-
+  const responses = entries(field(operation, "responses"));
   sections.push(
     `${childHeading} Responses`,
     [
       "| Status | Meaning |",
       "| --- | --- |",
-      ...Object.keys(operation.responses).map((status) => {
-        const description = operation.responses[status].description;
+      ...responses.map(([status, response]) => {
+        const description = field(response, "description");
         const meaning =
           description && description !== "Default Response"
             ? description
             : (STATUS_CODES[status] ?? description);
-        return `| \`${status}\` | ${meaning?.replaceAll("|", "\\|")} |`;
+        return `| \`${status}\` | ${meaning == null ? undefined : text(meaning).replaceAll("|", "\\|")} |`;
       }),
     ].join("\n"),
   );
-
-  for (const [status, response] of Object.entries(operation.responses)) {
+  for (const [status, response] of responses) {
     if (!status.startsWith("2")) {
       continue;
     }
-
-    for (const [contentType, content] of Object.entries(response.content ?? {})) {
+    for (const [contentType, content] of entries(field(response, "content") ?? {})) {
       sections.push(
         `**\`${status}\` response body:** \`${contentType}\``,
-        schemaTable(content.schema, document),
+        schemaTable(field(content, "schema"), document),
         ...renderedExamples(content, contentType),
       );
     }
   }
-
   return sections.join("\n\n");
 }
 
-function operationRows(operations) {
+function operationRows(operations: Entry[]) {
   return [
     "| Operation | Summary |",
     "| --- | --- |",
-    ...operations.map(({ anchor, method, operation, path }) => {
-      return `| [\`${method.toUpperCase()} ${path}\`](#${anchor}) | ${operation.summary ?? "No summary."} |`;
-    }),
+    ...operations.map(
+      ({ anchor, method, operation, path }) =>
+        `| [\`${method.toUpperCase()} ${path}\`](#${anchor}) | ${field(operation, "summary") ?? "No summary."} |`,
+    ),
   ].join("\n");
 }
 
-function errorSchema(document, entries) {
-  const schemas = entries
-    .flatMap(({ operation }) => Object.entries(operation.responses))
-    .filter(([status, response]) => {
-      return !status.startsWith("2") && response.content?.["application/json"]?.schema;
-    })
-    .map(([, response]) => response.content["application/json"].schema);
-  const detailed = schemas.filter(
-    (schema) => resolveSchema(schema, document)?.properties?.error?.properties?.details,
+function errorSchema(document: unknown, operationList: Entry[]) {
+  const schemas = operationList
+    .flatMap(({ operation }) => entries(field(operation, "responses")))
+    .filter(
+      ([status, response]) =>
+        !status.startsWith("2") &&
+        optionalField(
+          optionalField(optionalField(response, "content"), "application/json"),
+          "schema",
+        ),
+    )
+    .map(([, response]) => field(field(field(response, "content"), "application/json"), "schema"));
+  const detailed = schemas.filter((schema) =>
+    optionalField(
+      optionalField(
+        optionalField(optionalField(resolveSchema(schema, document), "properties"), "error"),
+        "properties",
+      ),
+      "details",
+    ),
   );
-  // Prefer the shared envelope component over a route's inline copy of it.
-  return detailed.find((schema) => schema.$ref) ?? detailed[0] ?? schemas[0];
+  return detailed.find((schema) => field(schema, "$ref")) ?? detailed[0] ?? schemas[0];
 }
 
 function generatedComment() {
   return "<!-- Generated from packages/contracts/openapi/occ-api.openapi.json. Do not edit directly. -->";
 }
 
-function tableOfContents(titles) {
+function tableOfContents(titles: unknown[]) {
   const links = titles.map((title) => `- [${title}](#${tagAnchor(title)})`);
   return `## Table of contents\n\n${links.join("\n")}`;
 }
 
-function introduction(document) {
+function introduction(document: unknown) {
   return [
-    `Version \`${document.info.version}\`; OpenAPI \`${document.openapi}\`.`,
+    `Version \`${field(field(document, "info"), "version")}\`; OpenAPI \`${field(document, "openapi")}\`.`,
     [
       "This reference is generated from the",
       "[checked-in OpenAPI contract](../../packages/contracts/openapi/occ-api.openapi.json).",
@@ -366,24 +421,24 @@ function introduction(document) {
   ];
 }
 
-function operationEntries(document) {
-  return Object.entries(document.paths).flatMap(([path, operations]) =>
-    Object.entries(operations)
+function operationEntries(document: unknown): Entry[] {
+  return entries(field(document, "paths")).flatMap(([path, operations]) =>
+    entries(operations)
       .filter(([method]) => httpMethods.has(method))
       .map(([method, operation]) => ({
         anchor: operationAnchor(path, method),
         method,
         operation,
-        operationId: operation.operationId,
+        operationId: field(operation, "operationId"),
         path,
-        tag: operation.tags?.[0] ?? "Untagged",
+        tag: optionalField(field(operation, "tags"), "0") ?? "Untagged",
       })),
   );
 }
 
-function referenceGroups(entries) {
-  const groups = [];
-  const byTag = new Map();
+function referenceGroups(entries: Entry[]): Group[] {
+  const groups: Group[] = [];
+  const byTag = new Map<unknown, Group>();
   for (const entry of entries) {
     let group = byTag.get(entry.tag);
     if (!group) {
@@ -400,9 +455,9 @@ function referenceGroups(entries) {
   return groups;
 }
 
-function referencePage(document, groups, entries) {
+function referencePage(document: unknown, groups: Group[], operationList: Entry[]) {
   const sections = [];
-  const schema = errorSchema(document, entries);
+  const schema = errorSchema(document, operationList);
 
   if (schema) {
     sections.push(
@@ -464,7 +519,7 @@ function referencePage(document, groups, entries) {
     );
   }
 
-  const schemas = Object.entries(document.components?.schemas ?? {});
+  const schemas = entries(optionalField(optionalField(document, "components"), "schemas") ?? {});
   if (schemas.length) {
     sections.push(
       "## Shared schemas",
@@ -474,7 +529,7 @@ function referencePage(document, groups, entries) {
         "| --- | --- |",
         ...schemas.map(
           ([name, schema]) =>
-            `| \`${schema.title ?? name}\` | \`${schemaType(schema, document)}\` |`,
+            `| \`${field(schema, "title") ?? name}\` | \`${schemaType(schema, document)}\` |`,
         ),
       ].join("\n"),
     );
@@ -485,7 +540,7 @@ function referencePage(document, groups, entries) {
     .map((heading) => heading.slice(3));
   const page = [
     "---\ntags: [nolimit]\n---",
-    `# ${document.info.title} reference`,
+    `# ${field(field(document, "info"), "title")} reference`,
     generatedComment(),
     ...introduction(document),
     tableOfContents(titles),
@@ -494,17 +549,23 @@ function referencePage(document, groups, entries) {
   return `${page.join("\n\n")}\n`;
 }
 
-function cheatSheetEntityOrder(title) {
+function cheatSheetEntityOrder(title: unknown) {
   const index = cheatSheetEntities.findIndex((entity) => entity.title === title);
   if (index !== -1) {
     return index;
   }
 
-  const lastSibling = cheatSheetEntities.findLastIndex((entity) => entity.tag === title);
+  let lastSibling = -1;
+  for (let i = cheatSheetEntities.length - 1; i >= 0; i--) {
+    if (cheatSheetEntities[i]?.tag === title) {
+      lastSibling = i;
+      break;
+    }
+  }
   return lastSibling === -1 ? cheatSheetEntities.length : lastSibling + 0.5;
 }
 
-function cheatSheetOperationOrder({ method, operationId, path }) {
+function cheatSheetOperationOrder({ method, operationId, path }: ValidEntry) {
   // Keep native administration after Agent lifecycle operations in the compact index.
   if (method === "get" && path.endsWith("/native-admin")) {
     return 5;
@@ -524,10 +585,10 @@ function cheatSheetOperationOrder({ method, operationId, path }) {
   return 4;
 }
 
-function cheatSheetPage(entries) {
-  const groups = new Map();
-  const operationIds = new Set();
-  const operationAnchors = new Map();
+function cheatSheetPage(entries: Entry[]) {
+  const groups = new Map<unknown, ValidEntry[]>();
+  const operationIds = new Set<string>();
+  const operationAnchors = new Map<string, string>();
 
   for (const entry of entries) {
     if (typeof entry.operationId !== "string" || !entry.operationId.trim()) {
@@ -541,10 +602,11 @@ function cheatSheetPage(entries) {
     operationIds.add(entry.operationId);
 
     const route = `${entry.method.toUpperCase()} ${entry.path}`;
-    if (typeof entry.operation.summary !== "string" || !entry.operation.summary.trim()) {
+    const operationSummary = field(entry.operation, "summary");
+    if (typeof operationSummary !== "string" || !operationSummary.trim()) {
       throw new Error(`Missing OpenAPI summary for ${route}.`);
     }
-    const summary = entry.operation.summary.trim().replace(/\s+/g, " ");
+    const summary = operationSummary.trim().replace(/\s+/g, " ");
 
     if (operationAnchors.has(entry.anchor)) {
       throw new Error(
@@ -562,7 +624,7 @@ function cheatSheetPage(entries) {
     if (!groups.has(title)) {
       groups.set(title, []);
     }
-    groups.get(title).push({ ...entry, summary });
+    groups.get(title)?.push({ ...entry, operationId: entry.operationId, summary });
   }
 
   const entities = [...groups].sort(
@@ -594,10 +656,10 @@ function cheatSheetPage(entries) {
   return `${sections.join("\n\n")}\n`;
 }
 
-export function generateApiReferenceOutputs(document) {
+export function generateApiReferenceOutputs(document: unknown): [Output, Output] {
   const entries = operationEntries(document);
   const groups = referenceGroups(entries);
-  const outputs = [
+  const outputs: [Output, Output] = [
     {
       label: "API reference",
       path: "docs/reference/api.md",
@@ -612,18 +674,16 @@ export function generateApiReferenceOutputs(document) {
   return outputs;
 }
 
-export function generateApiReference(document) {
-  return generateApiReferenceOutputs(document).find(
-    (output) => output.path === "docs/reference/api.md",
-  ).content;
+export function generateApiReference(document: unknown) {
+  return generateApiReferenceOutputs(document)[0].content;
 }
 
-async function walkMarkdown(directoryUrl) {
+async function walkMarkdown(directoryUrl: URL): Promise<string[]> {
   let entries;
   try {
     entries = await readdir(directoryUrl, { withFileTypes: true });
   } catch (error) {
-    if (error?.code === "ENOENT") {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
       return [];
     }
     throw error;
@@ -641,7 +701,7 @@ async function walkMarkdown(directoryUrl) {
   return files;
 }
 
-export async function unexpectedApiReferenceFiles(outputs) {
+export async function unexpectedApiReferenceFiles(outputs: Output[]) {
   const expectedPaths = new Set(outputs.map((output) => output.path));
   return (await walkMarkdown(referenceDirectoryPath)).filter((path) => !expectedPaths.has(path));
 }
@@ -653,10 +713,10 @@ export async function removeGeneratedApiReferenceDirectory() {
 async function run() {
   const arguments_ = process.argv.slice(2);
   if (arguments_.length > 1 || (arguments_.length === 1 && arguments_[0] !== "--check")) {
-    throw new Error("Usage: node scripts/generate-occ-api-reference.mjs [--check]");
+    throw new Error("Usage: node scripts/generate-occ-api-reference.ts [--check]");
   }
 
-  const document = JSON.parse(await readFile(documentPath, "utf8"));
+  const document: unknown = JSON.parse(await readFile(documentPath, "utf8"));
   const outputs = generateApiReferenceOutputs(document);
 
   if (arguments_[0] === "--check") {
@@ -666,8 +726,8 @@ async function run() {
       try {
         existing = await readFile(path, "utf8");
       } catch (error) {
-        if (error?.code === "ENOENT") {
-          throw new Error(`Missing ${output.path}; run pnpm openapi:generate.`);
+        if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+          throw new Error(`Missing ${output.path}; run pnpm openapi:generate.`, { cause: error });
         }
         throw error;
       }
