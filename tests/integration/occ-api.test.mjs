@@ -3098,7 +3098,7 @@ test("credential source registration names the missing Credential Gateway", asyn
   );
 });
 
-test("Agent reads return the bound credentialSources; revision reads return only source IDs", async () => {
+test("Agent drafts and revisions support up to 64 distinct credential sources and expose only their IDs", async () => {
   const fixture = await createInjectedFixture({
     computeDriver: createReadyComputeDriver("compute-credential-sources", {
       validateHarnessAuth() {},
@@ -3165,14 +3165,23 @@ test("Agent reads return the bound credentialSources; revision reads return only
     fixture.controller.registerDriver(driver);
     fixture.controller.selectDriver(driver.capability, driver.id);
   }
-  const source = await controller.request(
-    "POST",
-    `/namespaces/${namespace.id}/credential-sources`,
-    {
-      body: { name: "registry", type: "registry", config: { host: "registry.example.com" } },
-    },
-  );
-  assert.equal(source.status, 201, JSON.stringify(source.body));
+  const sources = [];
+  for (let i = 0; i < 65; i++) {
+    const registered = await controller.request(
+      "POST",
+      `/namespaces/${namespace.id}/credential-sources`,
+      {
+        body: {
+          name: `registry-${i}`,
+          type: "registry",
+          config: { host: `registry-${i}.example.com` },
+        },
+      },
+    );
+    assert.equal(registered.status, 201, JSON.stringify(registered.body));
+    sources.push({ sourceId: registered.data.id });
+  }
+  const credentialSources = sources.slice(0, 64);
   const configuration = await createConfiguration(controller, namespace.id, {
     agents: {
       defaults: {
@@ -3187,11 +3196,11 @@ test("Agent reads return the bound credentialSources; revision reads return only
       configurationId: configuration.id,
       executionMode: "dedicated",
       harnessAuth: { method: "runtime" },
-      credentialSources: [{ sourceId: source.data.id }],
+      credentialSources,
     },
   });
   assert.equal(created.status, 201, JSON.stringify(created.body));
-  assert.deepEqual(created.data.credentialSources, [{ sourceId: source.data.id }]);
+  assert.deepEqual(created.data.credentialSources, credentialSources);
   // An object array declared uniqueItems: listing one source twice names the rule.
   const repeated = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
     body: {
@@ -3199,7 +3208,7 @@ test("Agent reads return the bound credentialSources; revision reads return only
       configurationId: configuration.id,
       executionMode: "dedicated",
       harnessAuth: { method: "runtime" },
-      credentialSources: [{ sourceId: source.data.id }, { sourceId: source.data.id }],
+      credentialSources: [sources[0], sources[0]],
     },
   });
   assert.equal(repeated.status, 400, JSON.stringify(repeated.body));
@@ -3211,9 +3220,15 @@ test("Agent reads return the bound credentialSources; revision reads return only
     { path: "/credentialSources", code: "INVALID_VALUE" },
   ]);
   const agentPath = `/namespaces/${namespace.id}/agents/${created.data.id}`;
-  assert.deepEqual((await controller.request("GET", agentPath)).data.credentialSources, [
-    { sourceId: source.data.id },
-  ]);
+  const overflow = await controller.request("PATCH", agentPath, {
+    body: { configurationId: configuration.id, credentialSources: sources },
+  });
+  assertApiError(overflow, 400, "INVALID_REQUEST");
+  assert.match(overflow.body.error.message, /credentialSources.*at most 64 items/);
+  assert.deepEqual(
+    (await controller.request("GET", agentPath)).data.credentialSources,
+    credentialSources,
+  );
 
   const roleId = `credential-source-operate-${created.data.id}`;
   fixture.state.roles.push({
@@ -3221,15 +3236,17 @@ test("Agent reads return the bound credentialSources; revision reads return only
     namespaceId: namespace.id,
     permissions: [{ action: "operate", resourceKind: "credential_source" }],
   });
-  fixture.state.bindings.push({
-    id: roleId,
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: created.data.servicePrincipalId,
-    roleId,
-    resourceKind: "credential_source",
-    resourceId: source.data.id,
-  });
+  for (const { sourceId } of credentialSources) {
+    fixture.state.bindings.push({
+      id: `${roleId}-${sourceId}`,
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: created.data.servicePrincipalId,
+      roleId,
+      resourceKind: "credential_source",
+      resourceId: sourceId,
+    });
+  }
   fixture.state.identities.push({
     kind: "service_principal",
     id: created.data.servicePrincipalId,
@@ -3239,10 +3256,10 @@ test("Agent reads return the bound credentialSources; revision reads return only
   const deployed = await controller.request("POST", `${agentPath}/deploy`);
   assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
   // The gateway and type frozen at admission are private admission metadata.
-  assert.deepEqual(deployed.data.credentialSources, [{ sourceId: source.data.id }]);
+  assert.deepEqual(deployed.data.credentialSources, credentialSources);
   const revision = await controller.request("GET", `${agentPath}/revisions/${deployed.data.id}`);
   assert.equal(revision.status, 200, JSON.stringify(revision.body));
-  assert.deepEqual(revision.data.credentialSources, [{ sourceId: source.data.id }]);
+  assert.deepEqual(revision.data.credentialSources, credentialSources);
 });
 
 test("refresh source PATCH and rotate refuse a stale refresh token and audit a failed gateway effect", async () => {
