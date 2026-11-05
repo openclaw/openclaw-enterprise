@@ -3536,8 +3536,7 @@ test("QA model failure evidence preserves the failure and its admitted revision"
   assert.equal(JSON.stringify(evidence).includes("private"), false);
   assert.deepEqual(evidence[0].sources[1], { source: "agent", unavailable: true });
 
-  // Failure to save diagnostics must not replace the assertion or prevent its
-  // caller's ordinary cleanup from running.
+  // Failure to save diagnostics must not replace the original model assertion.
   const unavailable = createNativePluginAssertions({
     async readRuntimeLogs() {
       throw new Error("logs unavailable");
@@ -3546,18 +3545,10 @@ test("QA model failure evidence preserves the failure and its admitted revision"
       throw new Error("artifact write failed");
     },
   });
-  let cleaned = false;
   await assert.rejects(
-    (async () => {
-      try {
-        await unavailable.withRuntimeFailureLogs(agent, async () => {
-          throw failure;
-        });
-      } finally {
-        cleaned = true;
-      }
-    })(),
+    unavailable.withRuntimeFailureLogs(agent, async () => {
+      throw failure;
+    }),
     (error) => error === failure,
   );
-  assert.equal(cleaned, true);
 });
