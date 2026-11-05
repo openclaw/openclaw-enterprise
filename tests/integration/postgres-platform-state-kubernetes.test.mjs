@@ -379,6 +379,7 @@ stateCase(
       configuration_id: revision.configurationId,
       configuration_kind: revision.configurationKind,
       configuration_generation: revision.configurationGeneration,
+      network_egress_mode: "restricted",
       draft_spec: admitted(servedAs(firstValues, first.data.name)),
       harness_auth: {
         method: "api_key",
@@ -738,8 +739,10 @@ stateCase(
       "harnessAuth",
       "id",
       "namespaceId",
+      "networkEgressMode",
       "revision",
     ]);
+    assert.equal(firstRevision.networkEgressMode, "restricted");
     assert.equal(firstRevision.namespaceId, namespaceA);
     assert.equal(firstRevision.agentId, primary.id);
     assert.equal(firstRevision.revision, 1);
@@ -863,6 +866,7 @@ stateCase(
       configuration_id: firstRevision.configurationId,
       configuration_kind: firstRevision.configurationKind,
       configuration_generation: firstRevision.configurationGeneration,
+      network_egress_mode: "restricted",
       draft_spec: admitted(servedAs(persistedConfigValues, primary.name)),
       harness_auth: {
         method: "api_key",
@@ -877,6 +881,7 @@ stateCase(
       configuration_id: secondRevision.configurationId,
       configuration_kind: secondRevision.configurationKind,
       configuration_generation: secondRevision.configurationGeneration,
+      network_egress_mode: "restricted",
       draft_spec: admitted(servedAs(replacementConfigValues, primary.name)),
       harness_auth: {
         method: "api_key",
