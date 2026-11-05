@@ -8,7 +8,7 @@ import { buffer } from "node:stream/consumers";
 import test from "node:test";
 import { createSecureContext } from "node:tls";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
-import type { PreparedRepositoryBackendFactory } from "../../apps/controller/src/drivers/repo/credentials/backend-contracts.ts";
+import type { BoundPreparedRepositoryBackendFactory } from "../../apps/controller/src/drivers/repo/credentials/backend-contracts.ts";
 import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/credentials/configuration.ts";
 import {
   createControlAdmission,
@@ -149,7 +149,7 @@ for (const [delivery, settle] of [
         }),
       },
     });
-    const admissions = createControlAdmission(service, config, clock, true, true);
+    const admissions = createControlAdmission(service, config, clock, true);
     resources.after(() => admissions.dispose());
     service.observeDisposal(admissions.observe);
     const server = createServer((incoming, response) => {
@@ -337,9 +337,9 @@ for (const stage of ["reserved", "authorizing", "dispatch"] as const) {
     };
     let authorizations = 0;
     const settlements: unknown[] = [];
-    const factory: PreparedRepositoryBackendFactory = {
+    const factory: BoundPreparedRepositoryBackendFactory = {
       ...createGatewayAuthentication({ isGitRoute: () => false }),
-      resolve: () => ({
+      resolveBound: () => ({
         binding,
         client: {
           gatewayOrigin: "https://credentials.example",
@@ -388,7 +388,17 @@ for (const stage of ["reserved", "authorizing", "dispatch"] as const) {
     };
     const config = validateServiceConfig(serviceConfigurationData({ gateway: { controlSocket } }));
     const service = createCredentialService({ config, factory, clock });
-    const opened = service.open({ durationSeconds: 30, profile: "git-write" });
+    const opened = service.open({
+      durationSeconds: 30,
+      profile: "git-write",
+      namespaceId: "namespace",
+      repositoryRef: "project",
+      expectedBinding: binding,
+      deadlineWallMs: startWall + 30_000,
+      preparedOnly: true,
+    });
+    assert.deepEqual(opened.session.binding, binding);
+    assert.equal(opened.session.deadlineWallMs, startWall + 30_000);
     resources.after(() => service.close(opened.session.sessionId));
     if (stage === "dispatch") {
       // Invalid digest syntax must stop before either owner authorization or sender entry.
@@ -425,7 +435,8 @@ for (const stage of ["reserved", "authorizing", "dispatch"] as const) {
     }
     let disposals = 0;
     service.observeDisposal(() => disposals++);
-    const admissions = createControlAdmission(service, config, clock, false, true);
+    // This fixture reads local status only; it never opens a durable control admission.
+    const admissions = createControlAdmission(service, config, clock, true);
     resources.after(() => admissions.dispose());
     const control = createServer((incoming, response) => {
       void handleControl(incoming, response, config, clock, admissions);
