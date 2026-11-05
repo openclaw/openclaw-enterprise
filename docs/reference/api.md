@@ -2735,26 +2735,28 @@ Get the singleton Installation
 | `data.capabilities.openclaw.sandboxDriverUnavailable` | `true` | No | Present while the selected Sandbox Driver is unavailable. executionModes is then empty until it returns, and Agent save and deploy answer 503 DEPENDENCY_UNAVAILABLE. |
 | `data.capabilities.openclaw.settingRefusals` | `object` | No | Present when the selected Sandbox Driver can provision a mode missing from executionModes but its settings refuse it. Each value is the message Agent save and deploy return for that mode, naming the setting an operator changes. Absent for other reasons a mode is missing. |
 | `data.capabilities.openclaw.settingRefusals.dedicated` | `string` | No | min length: 1 |
-| `data.capabilities.pluginDiscovery` | `object` | No | — |
-| `data.capabilities.pluginDiscovery.credential` | `"required" or "none"` | Yes | — |
-| `data.capabilities.pluginPolicies` | `object` | No | — |
-| `data.capabilities.pluginPolicies.approvers` | `object` | No | — |
-| `data.capabilities.pluginPolicies.approvers.agent` | `boolean` | Yes | — |
-| `data.capabilities.pluginPolicies.approvers.plugin` | `boolean` | Yes | — |
-| `data.capabilities.pluginPolicies.approvers.tools` | `boolean` | Yes | — |
-| `data.capabilities.pluginPolicies.driver` | `PluginDriverIdentity` | Yes | — |
-| `data.capabilities.pluginPolicies.driver.id` | `string` | Yes | min length: 1 |
-| `data.capabilities.pluginPolicies.driver.implementation` | `string` | Yes | min length: 1 |
-| `data.capabilities.pluginPolicies.driverPolicySchema` | `object<string, any>` | Yes | — |
-| `data.capabilities.pluginPolicies.policyScopeByPlugin` | `object<string, "enablement_only">` | No | — |
-| `data.capabilities.pluginPolicies.toolDefaults` | `object` | Yes | — |
-| `data.capabilities.pluginPolicies.toolDefaults.approval` | `array<"provider_default" or "all_actions" or "write_actions" or "none">` | Yes | — |
-| `data.capabilities.pluginPolicies.toolDefaults.enabled` | `boolean` | Yes | — |
-| `data.capabilities.pluginPolicies.toolDefaults.reviewer` | `array<"human" or "auto">` | Yes | — |
-| `data.capabilities.pluginPolicies.tools` | `object` | Yes | — |
-| `data.capabilities.pluginPolicies.tools.approval` | `array<"provider_default" or "all_actions" or "write_actions" or "none">` | Yes | — |
-| `data.capabilities.pluginPolicies.tools.enabled` | `boolean` | Yes | — |
-| `data.capabilities.pluginPolicies.tools.reviewer` | `array<"human" or "auto">` | Yes | — |
+| `data.capabilities.pluginCatalogs` | `array<object>` | No | — |
+| `data.capabilities.pluginCatalogs[].harnessId` | `"openclaw" or "codex"` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginDiscovery` | `object` | No | — |
+| `data.capabilities.pluginCatalogs[].pluginDiscovery.credential` | `"required" or "none"` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies` | `object` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.approvers` | `object` | No | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.approvers.agent` | `boolean` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.approvers.plugin` | `boolean` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.approvers.tools` | `boolean` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.driver` | `PluginDriverIdentity` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.driver.id` | `string` | Yes | min length: 1 |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.driver.implementation` | `string` | Yes | min length: 1 |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.driverPolicySchema` | `object<string, any>` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.policyScopeByPlugin` | `object<string, "enablement_only">` | No | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.toolDefaults` | `object` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.toolDefaults.approval` | `array<"provider_default" or "all_actions" or "write_actions" or "none">` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.toolDefaults.enabled` | `boolean` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.toolDefaults.reviewer` | `array<"human" or "auto">` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.tools` | `object` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.tools.approval` | `array<"provider_default" or "all_actions" or "write_actions" or "none">` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.tools.enabled` | `boolean` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.tools.reviewer` | `array<"human" or "auto">` | Yes | — |
 | `data.createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
 | `data.id` | `string` | Yes | pattern: `^ins_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
@@ -2855,26 +2857,28 @@ Example request
 | `data.capabilities.openclaw.sandboxDriverUnavailable` | `true` | No | Present while the selected Sandbox Driver is unavailable. executionModes is then empty until it returns, and Agent save and deploy answer 503 DEPENDENCY_UNAVAILABLE. |
 | `data.capabilities.openclaw.settingRefusals` | `object` | No | Present when the selected Sandbox Driver can provision a mode missing from executionModes but its settings refuse it. Each value is the message Agent save and deploy return for that mode, naming the setting an operator changes. Absent for other reasons a mode is missing. |
 | `data.capabilities.openclaw.settingRefusals.dedicated` | `string` | No | min length: 1 |
-| `data.capabilities.pluginDiscovery` | `object` | No | — |
-| `data.capabilities.pluginDiscovery.credential` | `"required" or "none"` | Yes | — |
-| `data.capabilities.pluginPolicies` | `object` | No | — |
-| `data.capabilities.pluginPolicies.approvers` | `object` | No | — |
-| `data.capabilities.pluginPolicies.approvers.agent` | `boolean` | Yes | — |
-| `data.capabilities.pluginPolicies.approvers.plugin` | `boolean` | Yes | — |
-| `data.capabilities.pluginPolicies.approvers.tools` | `boolean` | Yes | — |
-| `data.capabilities.pluginPolicies.driver` | `PluginDriverIdentity` | Yes | — |
-| `data.capabilities.pluginPolicies.driver.id` | `string` | Yes | min length: 1 |
-| `data.capabilities.pluginPolicies.driver.implementation` | `string` | Yes | min length: 1 |
-| `data.capabilities.pluginPolicies.driverPolicySchema` | `object<string, any>` | Yes | — |
-| `data.capabilities.pluginPolicies.policyScopeByPlugin` | `object<string, "enablement_only">` | No | — |
-| `data.capabilities.pluginPolicies.toolDefaults` | `object` | Yes | — |
-| `data.capabilities.pluginPolicies.toolDefaults.approval` | `array<"provider_default" or "all_actions" or "write_actions" or "none">` | Yes | — |
-| `data.capabilities.pluginPolicies.toolDefaults.enabled` | `boolean` | Yes | — |
-| `data.capabilities.pluginPolicies.toolDefaults.reviewer` | `array<"human" or "auto">` | Yes | — |
-| `data.capabilities.pluginPolicies.tools` | `object` | Yes | — |
-| `data.capabilities.pluginPolicies.tools.approval` | `array<"provider_default" or "all_actions" or "write_actions" or "none">` | Yes | — |
-| `data.capabilities.pluginPolicies.tools.enabled` | `boolean` | Yes | — |
-| `data.capabilities.pluginPolicies.tools.reviewer` | `array<"human" or "auto">` | Yes | — |
+| `data.capabilities.pluginCatalogs` | `array<object>` | No | — |
+| `data.capabilities.pluginCatalogs[].harnessId` | `"openclaw" or "codex"` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginDiscovery` | `object` | No | — |
+| `data.capabilities.pluginCatalogs[].pluginDiscovery.credential` | `"required" or "none"` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies` | `object` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.approvers` | `object` | No | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.approvers.agent` | `boolean` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.approvers.plugin` | `boolean` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.approvers.tools` | `boolean` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.driver` | `PluginDriverIdentity` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.driver.id` | `string` | Yes | min length: 1 |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.driver.implementation` | `string` | Yes | min length: 1 |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.driverPolicySchema` | `object<string, any>` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.policyScopeByPlugin` | `object<string, "enablement_only">` | No | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.toolDefaults` | `object` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.toolDefaults.approval` | `array<"provider_default" or "all_actions" or "write_actions" or "none">` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.toolDefaults.enabled` | `boolean` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.toolDefaults.reviewer` | `array<"human" or "auto">` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.tools` | `object` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.tools.approval` | `array<"provider_default" or "all_actions" or "write_actions" or "none">` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.tools.enabled` | `boolean` | Yes | — |
+| `data.capabilities.pluginCatalogs[].pluginPolicies.tools.reviewer` | `array<"human" or "auto">` | Yes | — |
 | `data.createdAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
 | `data.id` | `string` | Yes | pattern: `^ins_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
@@ -3577,7 +3581,7 @@ List authorized Agents in one exact Namespace
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `array<object or object>` | Yes | An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources. |
+| `data` | `array<object or object>` | Yes | An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources. |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -3736,6 +3740,9 @@ Example request
 | `data.pluginApprovers` | `PluginApprovers` | No | max items: 64 |
 | `data.pluginApprovers[].channel` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9_-]*$` |
 | `data.pluginApprovers[].id` | `string` | Yes | min length: 1; max length: 200; pattern: `^[^\u0000-\u0020\u007f]+$` |
+| `data.pluginDriver` | `PluginDriverIdentity` | No | — |
+| `data.pluginDriver.id` | `string` | Yes | min length: 1 |
+| `data.pluginDriver.implementation` | `string` | Yes | min length: 1 |
 | `data.plugins` | `PluginDesiredState` | No | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
 | `data.repositoryAccess` | `object` | No | Desired repository access. Each omitted repository profile inherits defaultProfile; explicit profiles remain overrides. Mutually exclusive with repositoryBindings in create, provision, and update requests. |
 | `data.repositoryAccess.defaultProfile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
@@ -4131,6 +4138,7 @@ Schema: `object or object or object or object`.
 Example request
 ```json
 {
+  "harnessId": "codex",
   "secretRef": {
     "id": "sec_123e4567-e89b-42d3-a456-426614174000",
     "kind": "secret",
@@ -4238,6 +4246,7 @@ Schema: `object or object or object or object`.
 Example request
 ```json
 {
+  "harnessId": "codex",
   "pluginId": "documentation",
   "secretRef": {
     "id": "sec_123e4567-e89b-42d3-a456-426614174000",
@@ -4962,6 +4971,9 @@ Begin or retry deletion of the requested Agent and its Agent revisions
 | `data.pluginApprovers` | `PluginApprovers` | No | max items: 64 |
 | `data.pluginApprovers[].channel` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9_-]*$` |
 | `data.pluginApprovers[].id` | `string` | Yes | min length: 1; max length: 200; pattern: `^[^\u0000-\u0020\u007f]+$` |
+| `data.pluginDriver` | `PluginDriverIdentity` | No | — |
+| `data.pluginDriver.id` | `string` | Yes | min length: 1 |
+| `data.pluginDriver.implementation` | `string` | Yes | min length: 1 |
 | `data.plugins` | `PluginDesiredState` | No | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
 | `data.repositoryAccess` | `object` | No | Desired repository access. Each omitted repository profile inherits defaultProfile; explicit profiles remain overrides. Mutually exclusive with repositoryBindings in create, provision, and update requests. |
 | `data.repositoryAccess.defaultProfile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
@@ -5044,7 +5056,7 @@ Get an exact Namespace-owned Agent
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `object or object` | Yes | An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources. |
+| `data` | `object or object` | Yes | An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources. |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -5184,6 +5196,9 @@ Example request
 | `data.pluginApprovers` | `PluginApprovers` | No | max items: 64 |
 | `data.pluginApprovers[].channel` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9_-]*$` |
 | `data.pluginApprovers[].id` | `string` | Yes | min length: 1; max length: 200; pattern: `^[^\u0000-\u0020\u007f]+$` |
+| `data.pluginDriver` | `PluginDriverIdentity` | No | — |
+| `data.pluginDriver.id` | `string` | Yes | min length: 1 |
+| `data.pluginDriver.implementation` | `string` | Yes | min length: 1 |
 | `data.plugins` | `PluginDesiredState` | No | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
 | `data.repositoryAccess` | `object` | No | Desired repository access. Each omitted repository profile inherits defaultProfile; explicit profiles remain overrides. Mutually exclusive with repositoryBindings in create, provision, and update requests. |
 | `data.repositoryAccess.defaultProfile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
@@ -7534,6 +7549,9 @@ Example request
 | `data.pluginApprovers` | `PluginApprovers` | No | max items: 64 |
 | `data.pluginApprovers[].channel` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9_-]*$` |
 | `data.pluginApprovers[].id` | `string` | Yes | min length: 1; max length: 200; pattern: `^[^\u0000-\u0020\u007f]+$` |
+| `data.pluginDriver` | `PluginDriverIdentity` | No | — |
+| `data.pluginDriver.id` | `string` | Yes | min length: 1 |
+| `data.pluginDriver.implementation` | `string` | Yes | min length: 1 |
 | `data.plugins` | `PluginDesiredState` | No | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
 | `data.repositoryAccess` | `object` | No | Desired repository access. Each omitted repository profile inherits defaultProfile; explicit profiles remain overrides. Mutually exclusive with repositoryBindings in create, provision, and update requests. |
 | `data.repositoryAccess.defaultProfile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
@@ -7711,6 +7729,9 @@ Stop one Agent and keep its saved Agent revision and persistent state
 | `data.pluginApprovers` | `PluginApprovers` | No | max items: 64 |
 | `data.pluginApprovers[].channel` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9_-]*$` |
 | `data.pluginApprovers[].id` | `string` | Yes | min length: 1; max length: 200; pattern: `^[^\u0000-\u0020\u007f]+$` |
+| `data.pluginDriver` | `PluginDriverIdentity` | No | — |
+| `data.pluginDriver.id` | `string` | Yes | min length: 1 |
+| `data.pluginDriver.implementation` | `string` | Yes | min length: 1 |
 | `data.plugins` | `PluginDesiredState` | No | Agent plugin selection map. Keys must be 1-253 characters matching ^[A-Za-z0-9._~:@-]{1,253}$. |
 | `data.repositoryAccess` | `object` | No | Desired repository access. Each omitted repository profile inherits defaultProfile; explicit profiles remain overrides. Mutually exclusive with repositoryBindings in create, provision, and update requests. |
 | `data.repositoryAccess.defaultProfile` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |

@@ -475,7 +475,14 @@
       "idx": 68,
       "version": "7",
       "when": 1787000000068,
-      "tag": "0068_connection_templates",
+      "tag": "0068_agent_plugin_driver",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1787000000069,
+      "tag": "0069_connection_templates",
       "breakpoints": true
     }
   ]
