@@ -139,6 +139,12 @@ test("cold contracts prepack builds from workspace source without writing to uti
         }
         assert.match(readFileSync(join(contracts, "dist/index.js"), "utf8"), /export /);
         assert.ok(existsSync(join(contracts, "dist/index.d.ts")));
+        for (const name of ["runtime-failure", "workspace-defaults"]) {
+          for (const extension of ["mjs", "d.mts"]) {
+            const output = join(contracts, "dist", `${name}.${extension}`);
+            assert.ok(existsSync(output), `Missing output: ${name}.${extension}`);
+          }
+        }
       } finally {
         rmSync(referenceOutput, { recursive: true, force: true });
       }

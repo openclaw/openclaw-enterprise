@@ -7,7 +7,7 @@
     "allowJs": true,
     "lib": ["ES2022", "ES2024.String", "DOM"]
   },
-  "include": ["src/**/*.ts", "src/**/*.mts", "src/**/*.mjs"],
+  "include": ["src/**/*.ts", "src/preset-variables.mts", "src/**/*.mjs"],
   "references": [
     {
       "path": "../utils"
