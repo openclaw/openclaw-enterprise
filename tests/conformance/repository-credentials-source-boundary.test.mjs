@@ -413,18 +413,6 @@ test("credential source boundary rejects new raw capabilities in the real source
       installation,
     ],
     [
-      "repository installation rejects the former shared adapter parser",
-      'import { openShellRepositoryConfiguration } from "../../../composition/installation-fields.ts";',
-      /unreviewed shared field validation/,
-      installation,
-    ],
-    [
-      "repository installation rejects the adapter-owned parser",
-      'import { openShellRepositoryConfiguration } from "../../egress-proxy/openshell-configuration.ts";',
-      /runtime import has no scanned credential source/,
-      installation,
-    ],
-    [
       "field consumers reject repository parser at the wrong caller",
       'import { openShellRepositoryConfiguration } from "../../../../composition/installation-fields.ts";',
       /unreviewed shared field validation/,

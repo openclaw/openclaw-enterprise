@@ -8,10 +8,9 @@ last_updated_session: authoring-run/507ebdda-c10f-4840-acd7-1667d5919fab
 
 ## Overview
 
-Deployment freezes repository grants.
-Compute-owned dedicated Codex uses prepared native sessions without a Sandbox Driver. On the
-[OpenShell path](../reference/repository-credentials/protected-openshell-git.md), the sandbox gets a placeholder.
-The worker delivers the credential to the provider and checks signed requests against the live grant.
+Compute-owned dedicated Codex uses prepared native sessions without a Sandbox Driver;
+[OpenShell sandboxes](../reference/repository-credentials/protected-openshell-git.md) receive placeholders.
+Workers deliver credentials to providers, checking signed requests against live grants.
 See [enrollment and mandatory hooks](../guides/repository-credentials/openshell-enrollment.md),
 [service forwarding and retirement](repository-credentials.md) and [runtime qualification](../testing/repository-credentials.md).
 
