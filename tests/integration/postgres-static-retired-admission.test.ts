@@ -19,6 +19,13 @@ import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 
+type FixtureAppFactory = NonNullable<
+  NonNullable<Parameters<typeof staticEgressFixture>[1]>["appFactory"]
+>;
+type FixtureAppOptions = NonNullable<Parameters<FixtureAppFactory>[1]> & {
+  readonly driverConfigurations?: readonly DriverConfigurationRegistration[];
+};
+
 const refusal =
   "The selected Driver has retired new uses of this protected static credential provider.";
 
@@ -30,10 +37,7 @@ test(
     let bootstrapJobs: readonly { idempotency_key: string }[] = [];
     let application: Awaited<ReturnType<typeof postgresApp>> | undefined;
     const f = await staticEgressFixture(t, {
-      appFactory: async (
-        context,
-        options?: { readonly driverConfigurations?: readonly DriverConfigurationRegistration[] },
-      ) => {
+      appFactory: async (context, options?: FixtureAppOptions) => {
         assert.ok(options);
         registrations = options.driverConfigurations;
         application = await postgresApp(context, {
@@ -56,13 +60,14 @@ test(
         return application;
       },
     });
+    assert.equal(f.fixtureKind, "deployed");
     assert.ok(application);
     const registered = registrations;
     assert.ok(registered);
     const p = application;
     assert.equal(p.controller, f.controller);
-    const sandbox = f.controller.selectedDriver("sandbox");
-    const proxy = f.controller.selectedDriver("credential_proxy");
+    const sandbox = p.controller.selectedDriver("sandbox");
+    const proxy = p.controller.selectedDriver("credential_proxy");
     assert.equal(sandbox, f.installedDriver.require("sandbox"));
     assert.equal(proxy, f.installedDriver.require("credential_proxy"));
 
@@ -151,7 +156,7 @@ test(
       "secret",
       "credential_gateway",
     ] as const) {
-      const driver = f.controller.selectedDriver(capability);
+      const driver = p.controller.selectedDriver(capability);
       selected.registerDriver(driver);
       selected.selectDriver(capability, driver.id);
     }
@@ -195,8 +200,8 @@ test(
       );
       assert.deepEqual(otherJobs.rows, bootstrapJobs, "no foreign work may be claimed");
 
-      const base: ComputeDriver = f.controller.selectedDriver("compute");
-      const gateway = f.controller.selectedDriver("credential_gateway");
+      const base: ComputeDriver = p.controller.selectedDriver("compute");
+      const gateway = p.controller.selectedDriver("credential_gateway");
       const sandboxConfig = registered.find(({ capability }) => capability === "sandbox");
       assert.ok(sandboxConfig);
       const calls: Parameters<typeof base.prepareRevision>[] = [];
@@ -208,7 +213,7 @@ test(
         },
       };
       const workerInputs = createBackendWorkerDrivers(compute, [], {
-        secretDriver: f.controller.selectedDriver("secret"),
+        secretDriver: p.controller.selectedDriver("secret"),
       });
       const fixtureDrivers = workerInputs.installation.drivers;
       const worker = new ControllerWorker({
@@ -217,7 +222,7 @@ test(
           ...workerInputs,
           computeDriver: compute,
           configurationDriver: { ...workerInputs.configurationDriver, capability: "configuration" },
-          secretDriver: f.controller.selectedDriver("secret"),
+          secretDriver: p.controller.selectedDriver("secret"),
           installation: {
             ...workerInputs.installation,
             backend: [],
@@ -240,7 +245,7 @@ test(
               },
               secret: {
                 ...fixtureDrivers.secret,
-                implementation: f.controller.selectedDriver("secret").implementation,
+                implementation: p.controller.selectedDriver("secret").implementation,
                 definition: KubernetesSecretDriver,
               },
               sandbox: {
