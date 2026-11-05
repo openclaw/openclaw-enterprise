@@ -278,10 +278,9 @@ A version that is still deploying has no credential yet, so its requests answer
 Each refusal logs `worker.openshell-git-denied`: `reasonCode` is listed above;
 `reason` details the cause, such as
 `ref_not_allowed`, `draft_rejected`, `session_closed`, `material_unavailable`,
-`installation_changed` or `route_blocked`. It includes the Sandbox and supervisor request IDs. The
-`worker.openshell-git-route-warning` line for a lost credential carries the same
-`reasonCode`, so an alert can tell a removed binding (`access_withdrawn`) from a
-rejected App key (`credential_unavailable`).
+`installation_changed` or `route_blocked`. Sandbox and supervisor request IDs are included. Lost-credential
+`worker.openshell-git-route-warning` uses the same `reasonCode`, distinguishing
+removed bindings (`access_withdrawn`) from rejected App keys (`credential_unavailable`).
 
 ## Route state, restarts and recovery
 
@@ -289,13 +288,14 @@ rejected App key (`credential_unavailable`).
 or unavailable material. `REPOSITORY_GIT_ROUTE_BLOCKED` closes Git until a new revision.
 Continued chat requires independent model access and verified Git-only removal. Unsafe
 identity changes, retained GitHub access or failed observation can require retirement.
-Conditional detach repeats while Git stays attached; a changed Sandbox version
-or unknown gateway outcome retires the runtime.
-An original `WITHHELD / CREDENTIAL_EXPIRED` installation requires matching identity/generation,
-the current ready Sandbox instance and an observation under 15 seconds old.
-Expired credentials remain unusable. A cold worker defers under global withholding from
-expired attached Git. Without warm-owner renewal, waiting cannot restore model readiness or authorize cold adoption.
-After detach, Git must be revoked and the model ready.
+Detach persists one request ID and Sandbox version, reusing both while Git remains
+attached at that version. After a lost reply, absent Git requires verified revocation
+and model readiness; a changed attached version or unverifiable outcome retires the runtime.
+An original `WITHHELD / CREDENTIAL_EXPIRED` installation must match identity/generation,
+a ready live Sandbox and an observation younger than 15 seconds.
+Expired credentials remain unusable. Cold workers defer under global expiry withholding;
+without warm-owner renewal, neither saved routes nor waiting restore model readiness
+or authorize adoption. After detach, Git must be revoked and the model ready.
 An empty profile workspace selects the platform profile. Files-only profiles may
 remain: omitted protobuf endpoint/credential lists are empty. Exact profile identity
 and Git-overlap checks apply.
