@@ -105,9 +105,15 @@ empty query lists it. Keep the same query while paging and omit the cursor when
 changing the query.
 Both routes require Agent `create` in the Namespace. Stored references must
 belong to that Namespace and require caller `operate` on the exact source.
-OCC uses SecretDriver `withValue` for Secrets and Credential Gateway
-`withSourceToken` for CredentialSources, passing credentials to the PluginDriver
-in server memory. For PAT discovery, the bundled Codex Driver derives the
+OCC uses SecretDriver `withValue` for Secrets. For CredentialSources, the trusted
+bundled OpenShell Backend reader performs ordinary metadata lookup and
+operator-mTLS export; an external Credential Gateway retains its optional
+`withSourceToken` callback. Both paths require the same exact Gateway owner
+match and Namespace checks, with no fallback to another Gateway or tenant.
+OCC checks authorization, source readiness, attachment where required, and the
+selected catalog before retrieval, then rechecks before catalog dispatch.
+Credentials pass to the PluginDriver in server memory; refresh remains with
+its owner. For PAT discovery, the bundled Codex Driver derives the
 account ID from the PAT. Clients do not provide an account ID. A Secret reference
 to another Namespace returns `400 INVALID_REQUEST`. After caller authorization,
 a missing Secret returns `404`. A missing or non-ready explicitly selected

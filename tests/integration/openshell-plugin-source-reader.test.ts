@@ -9,7 +9,7 @@ import {
   CODEX_OAUTH_TYPE,
 } from "../../apps/controller/src/drivers/credential-refresh/codex-device-authorization.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
-import type { Backend, Namespace, PluginDriver } from "../../packages/contracts/src/index.ts";
+import type { Backend, Namespace } from "../../packages/contracts/src/index.ts";
 import type * as Grpc from "../../apps/controller/node_modules/@grpc/grpc-js/build/src/index.js";
 import type * as ProtoLoader from "../../apps/controller/node_modules/@grpc/proto-loader/build/src/index.js";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
@@ -17,8 +17,12 @@ import assert from "node:assert/strict";
 import { randomUUID, X509Certificate } from "node:crypto";
 import { createRequire } from "node:module";
 import test from "node:test";
+import { createServer } from "node:http";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { grantRole } from "../helpers/iam-grants.mjs";
 import { fileURLToPath } from "node:url";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
+import type { NativeIAMState } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
@@ -27,7 +31,7 @@ import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 
 const accessToken = "at-plugin-discovery-private-fixture";
-const pluginId = "codex-plugin:knowledge@openai-remote";
+const pluginId = "codex-plugin:knowledge@openai-curated-remote";
 const remoteId = "remote-knowledge";
 const catalogEntry = {
   id: pluginId,
@@ -71,9 +75,12 @@ test("OpenShell source discovery uses the selected Backend reader with no Gatewa
   const definition = loader.loadSync(proto, { keepCase: true });
   const server = new grpc.Server();
   t.after(() => server.forceShutdown());
-  const observed: { role: string; request: unknown }[] = [];
+  type PeerCall = { role: string; request: unknown };
+  const observed: PeerCall[] = [];
   const peerErrors: unknown[] = [];
   let providerName = name;
+  // Hold the actual operator RPC at the verified peer, after observing its identity.
+  let holdExport: ((finish: () => void) => void) | undefined;
   const receive = (
     role: string,
     identity: { cert: string },
@@ -86,10 +93,18 @@ test("OpenShell source discovery uses the selected Backend reader with no Gatewa
         assert.equal(auth.transportSecurityType, "ssl");
         assert.equal(auth.sslPeerCertificate?.fingerprint256, fingerprint);
         observed.push({ role, request: call.request });
-        callback(null, reply());
+        const finish = () => callback(null, reply());
+        if (role === "operator" && holdExport) {
+          holdExport(finish);
+        } else {
+          finish();
+        }
       } catch (error) {
         peerErrors.push(error);
-        callback({ code: grpc.status.PERMISSION_DENIED, message: "Unexpected source reader call" });
+        callback({
+          code: grpc.status.PERMISSION_DENIED,
+          message: "Unexpected source reader call",
+        });
       }
     };
   };
@@ -176,31 +191,7 @@ test("OpenShell source discovery uses the selected Backend reader with no Gatewa
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Plugin discovery", { ready: true });
   const path = `/namespaces/${namespace.id}/agents/plugins`;
-  const calls: Parameters<NonNullable<PluginDriver["discoverCatalog"]>>[0][] = [];
-  const policies = new CodexPluginDriver();
-  // Only the external catalog is controlled; retain the production policy implementation.
-  const driver: PluginDriver = {
-    id: "plugin-discovery-test",
-    harnessId: "codex",
-    capability: "plugin",
-    implementation: "test-plugin-catalog",
-    policyCapabilities: policies.policyCapabilities,
-    validatePolicies: policies.validatePolicies.bind(policies),
-    async listCatalog() {
-      throw new Error("Credential discovery must not use the runtime catalog.");
-    },
-    async discoverCatalog(input) {
-      calls.push(input);
-      return {
-        plugins: input.cursor ? [] : [catalogEntry],
-        nextCursor: input.cursor ? null : "second-page",
-      };
-    },
-    async getCatalogPlugin() {
-      return catalogEntry;
-    },
-  };
-  fixture.controller.installPluginDrivers([driver]);
+  fixture.controller.installPluginDrivers([new CodexPluginDriver()]);
   fixture.controller.registerDriver(gateway);
   fixture.controller.selectDriver(gateway.capability, id);
   await state.transact((state) =>
@@ -222,6 +213,127 @@ test("OpenShell source discovery uses the selected Backend reader with no Gatewa
     id: sourceId,
     namespaceId: namespace.id,
   };
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Source reader Agent",
+    createHarnessConfiguration("codex", "gpt-5.1"),
+    {
+      executionMode: "dedicated",
+      harnessAuth: { method: "credential_source", sourceId },
+      credentialSources: [{ sourceId }],
+    },
+  );
+  const identities: NativeIAMState["identities"][number][] = fixture.policy.identities;
+  identities.push({
+    id: agent.servicePrincipalId,
+    kind: "service_principal",
+    namespaceId: namespace.id,
+    agentId: agent.id,
+  });
+  const actor = await fixture.createAccountWithPolicy("source-reader-editor", (principal) => {
+    grantRole(fixture.policy, principal.id, {
+      id: "source-reader-editor-role",
+      namespaceId: namespace.id,
+      permissions: { agent: ["read", "update"] },
+      resource: { kind: "agent", id: agent.id },
+    });
+  });
+  const session = await fixture.signIn(actor.credentials);
+  const sourceBindings = [actor.principal.id, agent.servicePrincipalId].map((principalId) => {
+    const bindingId = `source-reader-binding-${principalId}`;
+    grantRole(fixture.policy, principalId, {
+      id: `source-reader-operator-${principalId}`,
+      bindingId,
+      namespaceId: namespace.id,
+      permissions: { credential_source: ["operate"] },
+      resource: credentialSource,
+    });
+    const binding = fixture.policy.bindings.find(({ id }) => id === bindingId);
+    assert.ok(binding);
+    return binding;
+  });
+  const savedPath = `/namespaces/${namespace.id}/agents/${agent.id}/plugins`;
+  const savedRequest = () => fixture.request("POST", savedPath, { session, body: {} });
+
+  // Exercise the production hosted serializer and real socket I/O. Only the exact
+  // catalog URL is redirected; no credential, policy, or response method is mocked.
+  const catalogPath = "/backend-api/ps/plugins/list?scope=GLOBAL&limit=20";
+  let catalogCalls = 0;
+  const catalogErrors: unknown[] = [];
+  const catalog = createServer((request, response) => {
+    catalogCalls += 1;
+    try {
+      assert.equal(request.method, "GET");
+      assert.equal(request.url, catalogPath);
+      assert.equal(request.headers.authorization, `Bearer ${accessToken}`);
+      assert.equal(request.headers["chatgpt-account-id"], "synthetic-account");
+      assert.equal(request.headers["oai-product-sku"], "codex");
+      assert.equal(request.headers["x-openai-fedramp"], undefined);
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          plugins: [
+            {
+              id: remoteId,
+              name: "knowledge",
+              scope: "GLOBAL",
+              status: "ENABLED",
+              installation_policy: "AVAILABLE",
+              release: {
+                display_name: "Knowledge",
+                description: "Search shared knowledge.",
+                interface: {},
+                app_ids: ["app_knowledge"],
+                skills: [],
+                requires_local_executor: false,
+              },
+            },
+          ],
+          pagination: { next_page_token: "second-page" },
+        }),
+      );
+    } catch (error) {
+      catalogErrors.push(error);
+      response.writeHead(500).end();
+    }
+  });
+  t.after(
+    () =>
+      new Promise<void>((resolve, reject) => {
+        catalog.close((error) => (error ? reject(error) : resolve()));
+        catalog.closeAllConnections();
+      }),
+  );
+  await new Promise<void>((resolve, reject) => {
+    catalog.once("error", reject);
+    catalog.listen(0, "127.0.0.1", resolve);
+  });
+  const catalogAddress = catalog.address();
+  const appAddress = fixture.app.server.address();
+  assert.ok(catalogAddress && typeof catalogAddress !== "string");
+  assert.ok(appAddress && typeof appAddress !== "string");
+  const appOrigin = `http://127.0.0.1:${appAddress.port}`;
+  const catalogUrl = `http://127.0.0.1:${catalogAddress.port}${catalogPath}`;
+  const originalFetch = globalThis.fetch;
+  const rejectedFetches: string[] = [];
+  const redirectCatalogFetch: typeof fetch = (input, init) => {
+    const url = String(input);
+    const method = init?.method ?? "GET";
+    if (url === `https://chatgpt.com${catalogPath}` && method === "GET") {
+      assert.ok(init?.signal instanceof AbortSignal);
+      assert.equal(init.signal.aborted, false);
+      assert.equal(init.redirect, "error");
+      return originalFetch(catalogUrl, init);
+    }
+    if ((url === appOrigin + path || url === appOrigin + savedPath) && method === "POST") {
+      return originalFetch(input, init);
+    }
+    rejectedFetches.push(`${method} ${url}`);
+    throw new Error("Unexpected source-reader fixture transport");
+  };
+  t.mock.method(globalThis, "fetch", redirectCatalogFetch);
+  // Agent creation may itself inspect the provider; the proof starts here.
+  observed.length = 0;
   const request = () =>
     fixture.request("POST", path, { body: { harnessId: "codex", credentialSource } });
   const allowed = await request();
@@ -240,8 +352,9 @@ test("OpenShell source discovery uses the selected Backend reader with no Gatewa
     },
   };
   assert.deepEqual(observed, [metadataObservation, exportObservation]);
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0]?.accessToken, accessToken);
+  assert.equal(catalogCalls, 1);
+  assert.deepEqual(allowed.data.plugins, [catalogEntry]);
+  assert.equal(allowed.data.nextCursor, "second-page");
   assert.equal(JSON.stringify(allowed.body).includes(accessToken), false);
 
   providerName = openShellProviderName(randomUUID());
@@ -254,5 +367,98 @@ test("OpenShell source discovery uses the selected Backend reader with no Gatewa
     [metadataObservation, exportObservation, metadataObservation],
     "the mismatched returned name must stop discovery before a second export",
   );
-  assert.equal(calls.length, 1, "a rejected lookup must not reach the plugin catalog");
+  assert.equal(catalogCalls, 1, "a rejected lookup must not reach the plugin catalog");
+  providerName = name;
+
+  const remove = (binding: (typeof sourceBindings)[number]) => {
+    const index = fixture.policy.bindings.indexOf(binding);
+    assert.notEqual(index, -1);
+    fixture.policy.bindings.splice(index, 1);
+  };
+  const callerBinding = sourceBindings[0]!;
+  remove(callerBinding);
+  const beforeDenied = observed.length;
+  const beforeDeniedCatalog = catalogCalls;
+  try {
+    const missingGrant = await savedRequest();
+    assert.equal(missingGrant.status, 403, JSON.stringify(missingGrant.body));
+    assert.equal(observed.length, beforeDenied, "denial must precede metadata and export");
+    assert.equal(catalogCalls, beforeDeniedCatalog);
+    t.diagnostic(
+      `Missing caller grant: HTTP ${missingGrant.status}; new OpenShell calls=${observed.length - beforeDenied}; new catalog requests=${catalogCalls - beforeDeniedCatalog}`,
+    );
+  } finally {
+    fixture.policy.bindings.push(callerBinding);
+  }
+
+  // Both withdrawals occur while one authenticated operator export is in progress.
+  // The retained-grant control uses exactly the same barrier and saved Agent.
+  for (const binding of [undefined, ...sourceBindings, undefined]) {
+    const before: number = observed.length;
+    const beforeCatalog: number = catalogCalls;
+    let release: (() => void) | undefined;
+    let entered!: () => void;
+    const atPeer = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    holdExport = (finish) => {
+      assert.equal(release, undefined, "only one export may be held");
+      release = finish;
+      entered();
+    };
+    const pending = savedRequest();
+    // Consume a possible rejection even if the peer-entry deadline wins.
+    pending.catch(() => {});
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let removed = false;
+    try {
+      await Promise.race([
+        atPeer,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("operator export did not arrive")), 5000);
+        }),
+      ]);
+      clearTimeout(timer);
+      assert.deepEqual(observed.slice(before), [metadataObservation, exportObservation]);
+      assert.equal(catalogCalls, beforeCatalog, "held export has not reached the catalog");
+      if (binding) {
+        remove(binding);
+        removed = true;
+      }
+      holdExport = undefined;
+      release!(); // Yield the synthetic token even after withdrawal.
+      release = undefined;
+      const result = await pending;
+      assert.equal(result.status, binding ? 403 : 200, JSON.stringify(result.body));
+      assert.equal(catalogCalls, beforeCatalog + (binding ? 0 : 1));
+      const peerCalls: PeerCall[] = observed.slice(before);
+      assert.deepEqual(peerCalls, [metadataObservation, exportObservation]);
+      const scenario = !binding
+        ? "Retained authority"
+        : binding === callerBinding
+          ? "Caller grant withdrawn during export"
+          : "Agent grant withdrawn during export";
+      t.diagnostic(
+        `${scenario}: HTTP ${result.status}; metadata=${peerCalls.filter(({ role }) => role === "ordinary").length}; export=${peerCalls.filter(({ role }) => role === "operator").length}; new catalog requests=${catalogCalls - beforeCatalog}`,
+      );
+      if (!binding) {
+        assert.deepEqual(result.data.plugins, [catalogEntry]);
+        assert.equal(result.data.nextCursor, "second-page");
+      }
+      assert.equal(JSON.stringify(result.body).includes(accessToken), false);
+    } finally {
+      clearTimeout(timer);
+      holdExport = undefined;
+      release?.();
+      await pending.catch(() => {});
+      if (removed) {
+        fixture.policy.bindings.push(binding!);
+      }
+    }
+  }
+  assert.equal(catalogCalls, 3, "draft and both retained-grant saved requests reach the server");
+  assert.deepEqual(peerErrors, []);
+  assert.deepEqual(catalogErrors, []);
+  assert.deepEqual(rejectedFetches, []);
+  assert.equal(JSON.stringify(auditSink.events).includes(accessToken), false);
 });
