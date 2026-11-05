@@ -1,3 +1,4 @@
+import { runDocker, image, imageTestOptions } from "../helpers/runtime-image-startup.mjs";
 import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import { routeStore } from "../fixtures/openshell-git-route-store.mjs";
@@ -7304,6 +7305,8 @@ test(
       ),
     );
     const configuration = sandboxInstallation();
+    configuration.drivers.sandbox.configuration.kubernetes.sandboxDataMount.mountPath =
+      "/sandbox/repository";
     configuration.drivers.compute.configuration.network.providerHarness = {
       namespace: "openshell-system",
       podLabels: { app: "openshell-gateway" },
@@ -7612,7 +7615,7 @@ test(
     // model source survives Git; the runtime-files provider cannot stand in for that source.
     await t.test(
       "protected Sandbox accepts only the separately admitted model alongside Git",
-      async () => {
+      async (subtest) => {
         const git = protectedGit.sandboxDriver.openShellGit;
         const proxy = protectedGit.proxyDriver;
         const sandbox = protectedGit.sandboxDriver;
@@ -7755,6 +7758,43 @@ test(
           ]);
           assert.equal(spec.environment.OPENAI_API_KEY, undefined);
           assert.equal(spec.environment.GITHUB_TOKEN, undefined);
+          // Check the final launch environment, after all provider and Sandbox
+          // composition, rather than only the Git runtime's intermediate result.
+          const gitEnvironment = Object.fromEntries(
+            Object.entries(spec.environment).filter(([name]) => name.startsWith("GIT_")),
+          );
+          const trust = spawnSync("git", ["config", "--get-all", "safe.directory"], {
+            env: { ...gitEnvironment, GIT_CONFIG_NOSYSTEM: "1", HOME: "/nonexistent" },
+            encoding: "utf8",
+          });
+          assert.equal(trust.status, 0, trust.stderr);
+          assert.equal(trust.stdout.trim(), sandbox.options.kubernetes.sandboxDataMount.mountPath);
+          await subtest.test(
+            "Git trusts only the selected root-owned workspace",
+            imageTestOptions,
+            async () => {
+              await runDocker([
+                "run",
+                "--rm",
+                "--pull=never",
+                "--network=none",
+                "--read-only",
+                "--user=0:0",
+                "--security-opt=no-new-privileges",
+                "--tmpfs=/sandbox:rw,exec,nosuid,nodev,mode=755",
+                "--tmpfs=/tmp:rw,nosuid,nodev,mode=1777",
+                "--mount",
+                `type=bind,src=${fileURLToPath(new URL("../fixtures/openshell-git-workspace.cjs", import.meta.url))},dst=/proof.cjs,readonly`,
+                "--entrypoint=node",
+                image,
+                "/proof.cjs",
+                JSON.stringify({
+                  workspace: sandbox.options.kubernetes.sandboxDataMount.mountPath,
+                  environment: gitEnvironment,
+                }),
+              ]);
+            },
+          );
           assert.deepEqual(result.proxyWiring.plan, plan);
           const collisionConfiguration = structuredClone(
             configuration.drivers.sandbox.configuration,
