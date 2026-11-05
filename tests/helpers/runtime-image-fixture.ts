@@ -2,16 +2,32 @@ import { readFile, rename, rm, writeFile } from "node:fs/promises";
 
 type CommandResult = { stdout: string };
 type CommandExecution<R> = Promise<R> & { child?: { pid?: number | undefined } };
-type Execute<R> = (command: string, args: (string | undefined)[], options: { env: NodeJS.ProcessEnv; detached: boolean; maxBuffer: number }) => CommandExecution<R>;
-type Disposition = { started: number; settled: number; unknown: number; escapedDescendants: string };
-type Docker = ((...args: (string | undefined)[]) => Promise<CommandResult>) & { disposition?: () => Disposition };
+type Execute<R> = (
+  command: string,
+  args: (string | undefined)[],
+  options: { env: NodeJS.ProcessEnv; detached: boolean; maxBuffer: number },
+) => CommandExecution<R>;
+type Disposition = {
+  started: number;
+  settled: number;
+  unknown: number;
+  escapedDescendants: string;
+};
+type Docker = ((...args: (string | undefined)[]) => Promise<CommandResult>) & {
+  disposition?: () => Disposition;
+};
 type ReceiptEntry = { operation: string; status: string; reference?: string | undefined };
 
 const imageIdPattern = /^sha256:[a-f0-9]{64}$/;
 const containerIdPattern = /^[a-f0-9]{64}$/;
 
 export function assertProcessGroupSettled(pid: number | undefined) {
-  if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0 || process.platform === "win32") {
+  if (
+    typeof pid !== "number" ||
+    !Number.isSafeInteger(pid) ||
+    pid <= 0 ||
+    process.platform === "win32"
+  ) {
     throw new Error("Docker command process group cannot be observed");
   }
   try {
@@ -106,18 +122,34 @@ export function isRuntimeImageJob(env: NodeJS.ProcessEnv) {
 
 // The caller supplies unique tags and build inputs. A failed Docker command can
 // have an unknown effect; names or labels alone never authorize cleanup.
-type RuntimeImageFixture = { build(tag: string, iidfile: string, nonce: string, baseId: string): Promise<string>; buildRuntimeBase(tag: string, iidfile: string, dockerfile: string, context: string): Promise<string>; inspectImage(ref: string): Promise<{ Id: string; RepoTags?: unknown; RepoDigests?: unknown }>; create(name: string, args: string[]): Promise<string>; startAttached(id: string): Promise<void>; removeContainer(id: string): Promise<void>; retag(id: string, tag: string): Promise<void> };
+type RuntimeImageFixture = {
+  build(tag: string, iidfile: string, nonce: string, baseId: string): Promise<string>;
+  buildRuntimeBase(
+    tag: string,
+    iidfile: string,
+    dockerfile: string,
+    context: string,
+  ): Promise<string>;
+  inspectImage(ref: string): Promise<{ Id: string; RepoTags?: unknown; RepoDigests?: unknown }>;
+  create(name: string, args: string[]): Promise<string>;
+  startAttached(id: string): Promise<void>;
+  removeContainer(id: string): Promise<void>;
+  retag(id: string, tag: string): Promise<void>;
+};
 
-export async function withRuntimeImageFixture<T>(docker: Docker, directory: string | undefined, run: (fixture: RuntimeImageFixture) => T | Promise<T>, { receiptPath }: { receiptPath?: string | undefined } = {}) {
+export async function withRuntimeImageFixture<T>(
+  docker: Docker,
+  directory: string | undefined,
+  run: (fixture: RuntimeImageFixture) => T | Promise<T>,
+  { receiptPath }: { receiptPath?: string | undefined } = {},
+) {
   const images = new Map<string, boolean>();
   const tags = new Map<string, string>();
   const containers = new Set<string>();
   const uncertain: string[] = [];
   const cleanupErrors: unknown[] = [];
   const history: ReceiptEntry[] = [];
-  let primary: unknown;
-  let primaryFailed = false;
-  let value: T | undefined;
+  let outcome: { failed: false; value: Awaited<T> } | { failed: true; error: unknown };
   let pending: { operation: string; reference?: string | undefined } | undefined;
 
   async function receipt(operation: string, status: string, reference?: string) {
@@ -153,7 +185,10 @@ export async function withRuntimeImageFixture<T>(docker: Docker, directory: stri
     return parsed[0];
   }
 
-  function references(image: { Id: string; RepoTags?: unknown; RepoDigests?: unknown }, id: string) {
+  function references(
+    image: { Id: string; RepoTags?: unknown; RepoDigests?: unknown },
+    id: string,
+  ) {
     if (!Object.hasOwn(image, "RepoTags") || !Object.hasOwn(image, "RepoDigests")) {
       throw new Error(`Docker omitted reference information for ${id}`);
     }
@@ -180,8 +215,10 @@ export async function withRuntimeImageFixture<T>(docker: Docker, directory: stri
     try {
       await docker("image", "inspect", tag);
     } catch (error) {
-      const stderr: unknown = error == null ? undefined : Reflect.get(Object(error), "stderr", error);
-      const message: unknown = stderr == null && error != null ? Reflect.get(Object(error), "message", error) : undefined;
+      const stderr: unknown =
+        error == null ? undefined : Reflect.get(Object(error), "stderr", error);
+      const message: unknown =
+        stderr == null && error != null ? Reflect.get(Object(error), "message", error) : undefined;
       const detail = stderr ?? message ?? "";
       if (Reflect.apply(RegExp.prototype.test, /No such image/i, [detail])) {
         return;
@@ -333,10 +370,9 @@ export async function withRuntimeImageFixture<T>(docker: Docker, directory: stri
 
   try {
     await receipt("fixture", "started");
-    value = await run(fixture);
+    outcome = { failed: false, value: await run(fixture) };
   } catch (error) {
-    primary = error;
-    primaryFailed = true;
+    outcome = { failed: true, error };
   }
 
   if (docker.disposition?.().unknown) {
@@ -440,12 +476,12 @@ export async function withRuntimeImageFixture<T>(docker: Docker, directory: stri
   }
   if (cleanupErrors.length) {
     throw new AggregateError(
-      primaryFailed ? [primary, ...cleanupErrors] : cleanupErrors,
+      outcome.failed ? [outcome.error, ...cleanupErrors] : cleanupErrors,
       "Runtime image fixture and cleanup failed",
     );
   }
-  if (primaryFailed) {
-    throw primary;
+  if (outcome.failed) {
+    throw outcome.error;
   }
-  return value;
+  return outcome.value;
 }

@@ -32,15 +32,17 @@ const ids = [`sha256:${"1".repeat(64)}`, `sha256:${"2".repeat(64)}`] as const;
 const containerId = "c".repeat(64);
 
 // The fake models command effects and lost responses; no daemon is involved.
-function fakeEngine(options: {
-  buildResponseLost?: boolean;
-  createResponseLost?: boolean;
-  retagResponseLost?: boolean;
-  containerRemoveFails?: boolean;
-  omitReferences?: boolean;
-  containerdStore?: boolean;
-  imageRemoveResponseLost?: boolean;
-} = {}) {
+function fakeEngine(
+  options: {
+    buildResponseLost?: boolean;
+    createResponseLost?: boolean;
+    retagResponseLost?: boolean;
+    containerRemoveFails?: boolean;
+    omitReferences?: boolean;
+    containerdStore?: boolean;
+    imageRemoveResponseLost?: boolean;
+  } = {},
+) {
   const tags = new Map([["base:fixture", baseId]]);
   const images = new Set([baseId]);
   const containers = new Set<string>();
@@ -139,7 +141,10 @@ async function withDirectory<T>(run: (directory: string) => Promise<T>) {
   }
 }
 
-async function buildPair(fixture: Parameters<Parameters<typeof withRuntimeImageFixture>[2]>[0], directory: string) {
+async function buildPair(
+  fixture: Parameters<Parameters<typeof withRuntimeImageFixture>[2]>[0],
+  directory: string,
+) {
   const first = await fixture.build("fixture:first", join(directory, "first.iid"), "first", baseId);
   const second = await fixture.build(
     "fixture:second",
@@ -388,8 +393,20 @@ test("runtime fixture records pending effects and successful cleanup", async () 
         /image cleanup incomplete or outcome unknown/.test(error.errors.at(-1).message),
     );
     const result: unknown = JSON.parse(await readFile(receiptPath, "utf8"));
-    assert.ok(result && typeof result === "object" && "status" in result && "pending" in result && "images" in result && "history" in result);
-    assert.ok(result.pending && typeof result.pending === "object" && "operation" in result.pending && "reference" in result.pending);
+    assert.ok(
+      result &&
+        typeof result === "object" &&
+        "status" in result &&
+        "pending" in result &&
+        "images" in result &&
+        "history" in result,
+    );
+    assert.ok(
+      result.pending &&
+        typeof result.pending === "object" &&
+        "operation" in result.pending &&
+        "reference" in result.pending,
+    );
     assert.ok(Array.isArray(result.history));
     assert.equal(result.status, "unknown");
     assert.equal(result.pending.operation, "image-tag-remove");
@@ -397,7 +414,13 @@ test("runtime fixture records pending effects and successful cleanup", async () 
     assert.deepEqual(result.images, ids);
     assert.ok(
       result.history.some(
-        (entry: unknown) => entry !== null && typeof entry === "object" && "operation" in entry && "status" in entry && entry.operation === "image-tag-remove" && entry.status === "pending",
+        (entry: unknown) =>
+          entry !== null &&
+          typeof entry === "object" &&
+          "operation" in entry &&
+          "status" in entry &&
+          entry.operation === "image-tag-remove" &&
+          entry.status === "pending",
       ),
     );
   });
@@ -413,7 +436,13 @@ test("runtime fixture records pending effects and successful cleanup", async () 
       { receiptPath },
     );
     const result: unknown = JSON.parse(await readFile(receiptPath, "utf8"));
-    assert.ok(result && typeof result === "object" && "status" in result && "images" in result && "tags" in result);
+    assert.ok(
+      result &&
+        typeof result === "object" &&
+        "status" in result &&
+        "images" in result &&
+        "tags" in result,
+    );
     assert.equal(result.status, "complete");
     assert.equal("pending" in result, false);
     assert.deepEqual(result.images, []);
@@ -529,7 +558,9 @@ test("runtime fixture refuses further Docker commands after an unsettled group",
   const docker = localDockerCli(
     () => {
       calls += 1;
-      return Object.assign(Promise.resolve({ stdout: `${containerId}\n` }), { child: { pid: 123 } });
+      return Object.assign(Promise.resolve({ stdout: `${containerId}\n` }), {
+        child: { pid: 123 },
+      });
     },
     {},
     () => {
@@ -553,13 +584,18 @@ test("process group observation preserves thrown value property access", (t) => 
   const missing = Object.assign(new Error("missing"), { code: "ESRCH" });
   const values: unknown[] = [missing, { code: "ESRCH" }, 42, null, undefined];
   for (const value of values) {
-    const kill = t.mock.method(process, "kill", () => { throw value; });
+    const kill = t.mock.method(process, "kill", () => {
+      throw value;
+    });
     if (value === missing || (typeof value === "object" && value !== null && "code" in value)) {
       assert.doesNotThrow(() => assertProcessGroupSettled(123));
     } else if (value == null) {
       assert.throws(() => assertProcessGroupSettled(123), TypeError);
     } else {
-      assert.throws(() => assertProcessGroupSettled(123), (error) => error === value);
+      assert.throws(
+        () => assertProcessGroupSettled(123),
+        (error) => error === value,
+      );
     }
     kill.mock.restore();
   }
