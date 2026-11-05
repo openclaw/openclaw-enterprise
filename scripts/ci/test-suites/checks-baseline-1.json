@@ -524,6 +524,7 @@
         "credential exchange checks the selected provider before the first Kubernetes Secret GET",
         "credential exchange checks the registered Secret reader before retrying a Kubernetes GET",
         "credential exchange checks the registered Secret reader before an automatic HTTP 421 retry",
+        "credential exchange checks its absolute deadline before an automatic HTTP 421 retry",
         "OCC withholds a changed reader's result when the driver ignores the selection check",
         "credential exchange refuses provider replacement during a pending Secret read",
         "credential exchange withholds a response after provider method replacement",

@@ -143,28 +143,40 @@ export async function createKubernetesClientConfiguration(
 export function nonRedirectingHttpLibrary(sdk: KubernetesSdk): HttpLibrary {
   return sdk.wrapHttpLibrary({
     async send(request) {
-      const deadline = currentComputeOperationLifetime()?.deadline;
-      if (deadline !== undefined && Date.now() >= deadline) {
-        throw new DOMException(
-          "The Kubernetes request deadline elapsed before dispatch.",
-          "TimeoutError",
-        );
-      }
-      const guard = requestGuards.getStore();
-      guard?.();
+      const lifetime = currentComputeOperationLifetime();
+      const signal = request.getSignal();
+      const selectionGuard = requestGuards.getStore();
+      const check = () => {
+        lifetime?.signal.throwIfAborted();
+        signal?.throwIfAborted();
+        if (lifetime?.deadline !== undefined && Date.now() >= lifetime.deadline) {
+          throw new DOMException(
+            "The Kubernetes request deadline elapsed before dispatch.",
+            "TimeoutError",
+          );
+        }
+        selectionGuard?.();
+      };
+      check();
       const dispatcher = request.getDispatcher() ?? getGlobalDispatcher();
-      // Fetch can retry HTTP 421 internally, without returning to the SDK or our retry loop.
-      const guardedDispatcher = guard
-        ? dispatcher.compose((dispatch) => (options, handler) => {
-            guard();
-            return dispatch(options, handler);
-          })
-        : dispatcher;
+      const guardedDispatcher = dispatcher.compose((dispatch) => (options, handler) => {
+        // Fetch retries HTTP 421 here; HTTP/2 stream retries occur below dispatch.
+        check();
+        return dispatch(options, {
+          ...handler,
+          onRequestStart(controller, context) {
+            // Undici calls this before each HTTP/1.1 write or HTTP/2 stream,
+            // including a refused stream replay and a request leaving its queue.
+            check();
+            handler.onRequestStart?.call(this, controller, context);
+          },
+        });
+      });
       const response = await fetch(request.getUrl(), {
         method: request.getHttpMethod().toString(),
         body: request.getBody() ?? null,
         headers: request.getHeaders(),
-        signal: request.getSignal() ?? null,
+        signal: signal ?? null,
         redirect: "manual",
         dispatcher: guardedDispatcher,
       });
@@ -219,11 +231,13 @@ type KubeConfigDispatcherFactory = {
  * material changes (a rotated client certificate or CA), it builds a new
  * dispatcher and closes the old one a few seconds later, once requests that
  * already picked it up have dispatched and finished.
- * Requests use HTTP/1.1, as before 2.0.0: undici would otherwise negotiate
+ * Configured direct and HTTP proxy requests use HTTP/1.1: undici would otherwise negotiate
  * HTTP/2 and multiplex every call over one shared connection, and its close
  * does not drain HTTP/2 streams gracefully. Direct and HTTP proxy connections
  * also get KUBERNETES_KEEP_ALIVE_LIMITS. A SOCKS proxy keeps client-node's own
  * dispatcher (its connector is private), so undici's defaults apply there.
+ * System-trust fallback can negotiate HTTP/2. The shared transport checks each
+ * request start, including internal stream replays.
  */
 export function reuseRequestDispatcher(
   configuration: KubeConfig,

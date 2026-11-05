@@ -54,8 +54,8 @@ caching it. Kubernetes verifies the stored UID and returns the object's
 
 OCC supplies an optional `selectionCurrent` callback for request-time static reads.
 It checks the captured provider, Secret Driver instance, and read method. The bundled
-Kubernetes Driver checks it before each material HTTP dispatch, including SDK and
-HTTP client retries, and again before returning material. A changed selection refuses the read or discards its result;
+Kubernetes Driver checks it before dispatch, before each request starts writing
+(including HTTP/2 stream replays), and before returning material. A changed selection refuses the read or discards its result;
 it cannot undo a GET already received by Kubernetes. OCC also checks before calling
 the reader and after it returns. A reader that ignores the callback can still access
 storage after selection changes, although OCC withholds the returned material.

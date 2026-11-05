@@ -38,6 +38,21 @@ node --test tests/integration/secret-api.test.mjs
 node --test --test-name-pattern='part of the test name' tests/integration/secret-api.test.mjs
 ```
 
+### Kubernetes transport checks
+
+```sh
+node --test tests/conformance/kubernetes-client.test.mjs \
+  tests/integration/credential-proxy-provider-pin.test.ts
+```
+
+These suites count Secret GETs across reader-selection changes, expired deadlines,
+HTTP 421 retries, and HTTP/2 stream refusals through the real SDK transport.
+The request-start fixture runs in isolated child processes with synthetic process
+trust and no environment proxy. The SDK negotiates HTTP/2 for system trust and
+HTTP/1.1 through its current SOCKS connector. Both transports must reuse connections,
+permit a current reader's retry, and refuse another GET after selection changes.
+These checks do not prove an installed Kubernetes API or supervisor.
+
 ## Linting and formatting
 
 Use `pnpm lint:fix` and `pnpm format:fix` to apply fixes; review the diff and

@@ -21,6 +21,7 @@ import {
 import { kubernetesRequest } from "../../apps/controller/src/drivers/kubernetes/request.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { selfSigned } from "../helpers/certificates.mjs";
+import { captureChild } from "../helpers/child-processes.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
@@ -624,3 +625,26 @@ test("Kubernetes dispatch retains the parent deadline through child and per-atte
   );
   assert.equal(requests, 0, "expired or invalid lifetimes never reach the Kubernetes API");
 });
+
+for (const transport of ["system-trust", "SOCKS"]) {
+  test(`${transport} Kubernetes retries preserve reader selection and pooling`, async () => {
+    // Process-local TLS trust and the default Agent must not affect other tests.
+    const env = { ...process.env };
+    delete env.NODE_USE_ENV_PROXY;
+    delete env.NODE_TEST_CONTEXT;
+    const result = await captureChild(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        `
+      import test from "node:test";
+      import { verifyKubernetesRequestStart } from "./tests/helpers/kubernetes-request-start.mjs";
+      test("request start", { timeout: 15000 }, (t) => verifyKubernetesRequestStart(t, ${JSON.stringify(transport)}));
+    `,
+      ],
+      { env, timeout: 20000 },
+    );
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+  });
+}

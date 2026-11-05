@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: 2026-11-05
-last_updated_session: authoring-run/30343d21-03ee-4bb6-8bc2-64c565e32c0e
+last_updated_session: authoring-run/b8441e9c-e014-43fd-8bfa-2b691c639705
 ---
 
 # Protected credential request flow
@@ -185,12 +185,12 @@ without material.
 
 For request-time static reads, OCC pins the selected Secret Driver and read method.
 `apps/controller/src/drivers/secret/kubernetes/index.ts:readCredentialInput` passes the selection
-check to the shared Kubernetes dispatcher before each material GET, including SDK and fetch retries,
-and discards material if the selection changed in flight. OCC rechecks on return. See the
+check to the shared Kubernetes transport before dispatch and before each request starts writing, including
+HTTP/2 stream replays. It discards material if selection changes in flight. OCC rechecks on return. See the
 [Secret Driver contract](../reference/drivers/secret.md#interface) for optional-reader limits.
 The Driver verifies the backend UID and returns its resourceVersion.
 Static and prepared GitHub reads share `{ signal, deadlineAt }`. Kubernetes propagates cancellation
-and the earliest deadline through namespace verification and retries. Each HTTP dispatch checks
+and the earliest deadline through namespace verification and retries. Each dispatch and request start checks
 expiry independently of timers. Invalid deadlines refuse.
 GitHub acquisition validation, transport and metadata injection share a wire check:
 1–16,384 bytes of nonspace printable ASCII, not authentication.
@@ -344,10 +344,10 @@ None.
 
 ## Changelog
 
+- 2026-11-05 12:04: Check selection and expiry before transport writes. (authoring-run/b8441e9c-e014-43fd-8bfa-2b691c639705 - ef3bfd7c193e37f280bfc864255116a1bbaafab8)
+
 - 2026-11-05 11:53: Guard fetch-internal Secret retries at dispatch. (authoring-run/30343d21-03ee-4bb6-8bc2-64c565e32c0e - 5c2da10f84772f6c366cd4a1a425b3501cd9126f)
 
 - 2026-11-05 11:46: Reconcile selection checks with the current request flow. (authoring-run/4f657203-a2dd-4392-84b3-f5019d83db5f - b8e47057c619ed3d281488c6d507315ec97de1b0)
-
-- 2026-11-05 02:35: Refresh model observation after Git credential rotation. (authoring-run/cdb62c1d-61db-4f65-985f-7b44e64f10d0 - 261e4b54cbd0366ff0cba0dc6a00b7890b8e39f2)
 
 [Protected credential request documentation history](credential-source-egress/history.md) preserves the older dated entries.

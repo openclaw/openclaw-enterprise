@@ -413,6 +413,26 @@ test("credential exchange checks the registered Secret reader before an automati
   assert.equal(f.providerRequests.length, 0);
 });
 
+test("credential exchange checks its absolute deadline before an automatic HTTP 421 retry", async (t) => {
+  const f = await staticEgressFixture(t);
+  assert.ok("egress" in f);
+  const reads = f.secretReads;
+  const failed = f.failOneSecretGet(421);
+  const captured = f.capture();
+  const deadline = captured.deadline.seconds * 1000 + captured.deadline.nanos / 1e6;
+  const resolution = f.resolve(captured);
+  await failed;
+  // Only the wall clock advances: the reader stays current and no timeout
+  // callback has fired when fetch considers another material GET.
+  t.mock.method(Date, "now", () => deadline);
+  const result = await resolution;
+  t.mock.restoreAll();
+  assert.equal(f.secretReads, reads + 1, "expiry must prevent the second material GET");
+  assert.ok(result.refused);
+  assert.equal(result.ready, undefined);
+  assert.equal(f.providerRequests.length, 0);
+});
+
 test("OCC withholds a changed reader's result when the driver ignores the selection check", async (t) => {
   const f = await staticEgressFixture(t);
   assert.ok("egress" in f);
