@@ -552,7 +552,7 @@
       "when": 1787000000069,
       "tag": "0069_connection_templates",
       "breakpoints": true,
-      "sha256": "b21b5d8848d8c663eb685e09d74970c520828b9ce058353d0a08dc423ef4e3c0"
+      "sha256": "c0cc7c64e1c13a00b07f56c624cb12fb09746439eb5bf8ad7ed3e9f3ad70299a"
     }
   ],
   "initialSchemaStates": {
@@ -566,18 +566,8 @@
     "ownerOnly": {
       "owner": "occ_migrator",
       "privileges": [
-        [
-          "occ_migrator",
-          "occ_migrator",
-          "CREATE",
-          false
-        ],
-        [
-          "occ_migrator",
-          "occ_migrator",
-          "USAGE",
-          false
-        ]
+        ["occ_migrator", "occ_migrator", "CREATE", false],
+        ["occ_migrator", "occ_migrator", "USAGE", false]
       ],
       "objects": 0,
       "defaultPrivileges": 0,
@@ -665,7 +655,7 @@
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",
-    "completed": "5693317372204660303ec53ce8d96322d9b2404fc484401b95b846e3fb4c88e9"
+    "completed": "1989ad2291a59e5d15e7f35fd008677449cac6cd11e653605b3d48675655dba9"
   },
   "catalogEvidence": {
     "postgres": "18.6",

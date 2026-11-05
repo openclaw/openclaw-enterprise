@@ -359,6 +359,11 @@ export interface ConfigurationRepository extends ConfigurationReadRepository {
   deleteConfiguration(namespaceId: string, configurationId: string): Promise<boolean>;
 }
 
+/** Private registration ownership. Only the selected Secret Driver can resolve the material. */
+export interface StoredOAuthClient extends OAuthClient {
+  readonly secretDriverId?: string;
+}
+
 export interface ConnectionTemplateReadRepository {
   listOAuthClientCleanups(limit: number): Promise<readonly string[]>;
   findConnectionTemplate(templateId: string): Promise<Readonly<ConnectionTemplate> | undefined>;
@@ -368,23 +373,23 @@ export interface ConnectionTemplateReadRepository {
     templateId: string,
     version: number,
   ): Promise<Readonly<OAuthConnectionTemplateVersion> | undefined>;
-  listOAuthClients(): Promise<readonly Readonly<OAuthClient>[]>;
+  listOAuthClients(): Promise<readonly Readonly<StoredOAuthClient>[]>;
   countNamespaceOAuthClients(namespaceId: string): Promise<number>;
-  findOAuthClient(registrationId: string): Promise<Readonly<OAuthClient> | undefined>;
+  findOAuthClient(registrationId: string): Promise<Readonly<StoredOAuthClient> | undefined>;
 }
 
 export interface ConnectionTemplateRepository extends ConnectionTemplateReadRepository {
-  lockOAuthClient(id: string): Promise<Readonly<OAuthClient> | undefined>;
+  lockOAuthClient(id: string): Promise<Readonly<StoredOAuthClient> | undefined>;
   lockOAuthClientForCleanup(
     id: string,
     dueOnly: boolean,
-  ): Promise<Readonly<OAuthClient> | undefined>;
+  ): Promise<Readonly<StoredOAuthClient> | undefined>;
   setOAuthClientCleanup(id: string, cleanupAfter: string | null): Promise<void>;
   lockConnectionTemplate(templateId: string): Promise<Readonly<ConnectionTemplate> | undefined>;
   createOAuthClient(
-    registration: OAuthClient,
+    registration: StoredOAuthClient,
     cleanupAfter?: string,
-  ): Promise<Readonly<OAuthClient>>;
+  ): Promise<Readonly<StoredOAuthClient>>;
   /** False while a connection template version still names the registration. */
   deleteOAuthClient(registrationId: string, retainForCleanup?: boolean): Promise<boolean>;
   /** Inserts the template and its first version together. */
@@ -1171,7 +1176,10 @@ interface PlatformSnapshot {
   readonly namespaces: Map<string, Readonly<PersistedNamespace>>;
   readonly configurations: Map<string, Readonly<ConfigurationOwnership>>;
   readonly connectionTemplates: Map<string, Readonly<ConnectionTemplate>>;
-  readonly clientRegistrations: Map<string, Readonly<OAuthClient> & { cleanupAfter?: string }>;
+  readonly clientRegistrations: Map<
+    string,
+    Readonly<StoredOAuthClient> & { cleanupAfter?: string }
+  >;
   readonly oauthConnectionTemplateVersions: Map<string, Readonly<OAuthConnectionTemplateVersion>>;
   readonly presets: Map<string, Readonly<Preset>>;
   readonly secrets: Map<string, Readonly<Secret>>;
@@ -1982,6 +1990,15 @@ function repositories(
     lockConnectionTemplate: findConnectionTemplate,
     createOAuthClient: async (registration, cleanupAfter) => {
       assertInitialized(snapshot);
+      if (
+        (registration.tokenEndpointAuthMethod === "none") !==
+          (registration.secretDriverId === undefined) ||
+        registration.secretDriverId === ""
+      ) {
+        throw new ResourceConflictError(
+          "Only confidential OAuth clients have a private Secret Driver.",
+        );
+      }
       if (
         registration.namespaceId !== undefined &&
         !snapshot.namespaces.has(registration.namespaceId)

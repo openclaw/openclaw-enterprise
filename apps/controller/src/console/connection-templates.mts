@@ -3,6 +3,7 @@ import type {
   ConnectionTemplate,
   McpAuthorizationMetadata,
   Namespace,
+  OAuthClient,
 } from "@openclaw-enterprise/contracts";
 import { refusedAsNonAdministrator, requestFailure } from "./api-client.mjs";
 import {
@@ -12,7 +13,6 @@ import {
   availableInNamespace,
   oauthClients,
   oauthFailure as failure,
-  type PublicClient,
 } from "./oauth-client-registration.mjs";
 import { button, element, field, validateFields } from "./dom.mjs";
 import { resourceActionIcon } from "./resource-actions.mjs";
@@ -178,7 +178,7 @@ export function renderConnectionTemplates(
     ["Availability", "OAuth client", "Version"],
   );
   section.classList.add("connection-template-catalog");
-  let clients: PublicClient[] = [];
+  let clients: OAuthClient[] = [];
   let savedTemplates: ConnectionTemplate[] = [];
   let redirectUri: string | undefined;
   async function refresh(saved?: string) {
@@ -276,7 +276,7 @@ export function openConnectionTemplateEditor(
     parent: HTMLElement;
     namespaces: readonly Namespace[];
     currentNamespace: string | null;
-    clients: readonly PublicClient[];
+    clients: readonly OAuthClient[];
     template?: ConnectionTemplate | undefined;
     onSaved: (saved: ConnectionTemplate) => void;
     onUnconfirmed: () => void;

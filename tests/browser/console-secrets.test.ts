@@ -36,7 +36,6 @@ import {
 } from "../helpers/refusal-text.mjs";
 import { restrict } from "../helpers/iam-grants.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { selectTemplateDrivers } from "../helpers/connection-template-drivers.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { consoleStorage } from "../helpers/console-storage.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -170,7 +169,6 @@ test("a template needs an explicit availability when the administrator has no Na
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   restrict(fixture.policy, "read", "namespace");
-  selectTemplateDrivers(fixture.controller);
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, "/console/secrets");
   await page
@@ -291,7 +289,6 @@ test("registering a provider-issued client uses a saved or newly created templat
     publicOrigin: true,
   });
   const other = await fixture.createNamespace("Other client owners", { ready: true });
-  selectTemplateDrivers(fixture.controller);
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, secretsUrl(namespace));
   const sections = page.getByRole("navigation", { name: "Credential sections" });
@@ -436,7 +433,6 @@ test("registering a provider-issued client uses a saved or newly created templat
 
 test("deleting a template and client targets the selected availability and preserves referenced clients", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Customer support");
-  selectTemplateDrivers(fixture.controller);
   const google = (await fixture.request("GET", "/connection-templates")).data.find(
     (template: { displayName: string }) => template.displayName === "Google OAuth",
   );

@@ -23,8 +23,6 @@ export interface OAuthClient {
   readonly revocationUrl?: string;
   readonly clientId: string;
   readonly tokenEndpointAuthMethod: OAuthClientAuthMethod;
-  /** Installation Driver that owns this client registration and its private material. */
-  readonly credentialRefreshDriverId: string;
   readonly createdAt: string;
 }
 
@@ -99,7 +97,7 @@ export class ConnectionTemplateValidationError extends Error {
   }
 }
 
-/** Validate immutable OAuth settings before the Refresh Driver stages a client secret. */
+/** Validate immutable OAuth settings before OCC registers a client. */
 export function validateConnectionTemplateAuthorization(
   values: Pick<
     ConnectionTemplateValues,

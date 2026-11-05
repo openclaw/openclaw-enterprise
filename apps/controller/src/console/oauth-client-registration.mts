@@ -9,9 +9,8 @@ import { button, element, field, validateFields } from "./dom.mjs";
 import type { ConsolePageContext } from "./page-context.mjs";
 
 type Context = Pick<ConsolePageContext, "request" | "isCurrent">;
-export type PublicClient = Omit<OAuthClient, "credentialRefreshDriverId">;
 const option = (value: string, label: string) => element("option", { value }, label);
-const methods: readonly PublicClient["tokenEndpointAuthMethod"][] = [
+const methods: readonly OAuthClient["tokenEndpointAuthMethod"][] = [
   "client_secret_basic",
   "client_secret_post",
   "none",
@@ -48,7 +47,7 @@ export async function oauthClients(context: Context) {
   return (await context.request("/oauth-clients", {
     installationAdministration: "required",
     includeMeta: true,
-  })) as { data: PublicClient[]; meta?: { redirectUri?: string } };
+  })) as { data: OAuthClient[]; meta?: { redirectUri?: string } };
 }
 
 /** Both entry points register the provider-issued credentials against the displayed template version. */
@@ -61,7 +60,7 @@ export function openOAuthClientRegistration(
     selected?: ConnectionTemplate;
     redirectUri?: string | undefined;
     createTemplate?: (onSaved: (template: ConnectionTemplate) => void) => void;
-    onClose: (created?: PublicClient) => void;
+    onClose: (created?: OAuthClient) => void;
   },
 ) {
   const dialog = element("dialog", {
@@ -158,7 +157,7 @@ export function openOAuthClientRegistration(
   let selected: ConnectionTemplate | undefined;
   let pending = false;
   let uncertain = false;
-  let created: PublicClient | undefined;
+  let created: OAuthClient | undefined;
   let confidentialMethods: typeof methods = [];
   function showMethods(previous = "") {
     const isPublic = clientType.value === "public";
@@ -244,7 +243,7 @@ export function openOAuthClientRegistration(
         installationAdministration: "required",
         expectedStatus: 201,
         body: registration,
-      })) as PublicClient;
+      })) as OAuthClient;
       if (!dialog.open || !context.isCurrent()) {
         return;
       }

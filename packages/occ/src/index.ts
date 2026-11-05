@@ -383,6 +383,7 @@ import {
 } from "./backends.ts";
 import {
   InMemoryPlatformState,
+  type StoredOAuthClient,
   type PlatformReadView,
   type PlatformOperation,
   type PlatformStateStore,
@@ -4736,9 +4737,17 @@ export class OpenClawController {
     });
   }
 
+  private oauthClientMetadata({
+    secretDriverId: _owner,
+    ...metadata
+  }: StoredOAuthClient): OAuthClient {
+    return immutableCopy(metadata);
+  }
+
   async listOAuthClients(principalId: string) {
     await this.authorizeTemplateAdministration(principalId);
-    return this.read((view) => view.connectionTemplates.listOAuthClients());
+    const clients = await this.read((view) => view.connectionTemplates.listOAuthClients());
+    return Object.freeze(clients.map((client) => this.oauthClientMetadata(client)));
   }
 
   async createOAuthClient(
@@ -4784,9 +4793,6 @@ export class OpenClawController {
       ...(revocationUrl !== undefined && { revocationUrl }),
       ...(template.namespaceId !== undefined && { namespaceId: template.namespaceId }),
       createdAt: this.timestamp(),
-      credentialRefreshDriverId: clientSecret
-        ? this.connectionRegistrationDriver().id
-        : this.credentialRefreshDriver().id,
     };
     const lockSelectedVersion = async (state: PlatformUnitOfWork) => {
       await this.authorizeTemplateAdministration(principalId);
@@ -4830,7 +4836,10 @@ export class OpenClawController {
       const cleanupAfter = clientSecret
         ? new Date(this.clock().getTime() + 5 * 60_000).toISOString()
         : undefined;
-      await state.connectionTemplates.createOAuthClient(client, cleanupAfter);
+      const registration = clientSecret
+        ? { ...client, secretDriverId: this.oauthClientSecretDriver().id }
+        : client;
+      await state.connectionTemplates.createOAuthClient(registration, cleanupAfter);
       if (!clientSecret) {
         await publish(state);
       }
@@ -4847,10 +4856,8 @@ export class OpenClawController {
             "The OAuth client reservation expired. Create the client again.",
           );
         }
-        const driver = this.connectionRegistrationDriver(client.credentialRefreshDriverId);
-        await this.credentialGatewayOperation(() =>
-          driver.registerClient!(this.oauthClientContext(client), clientSecret),
-        );
+        const { store, ref } = this.oauthClientSecret(reserved);
+        await this.secretOperation(() => store.create(ref, clientSecret));
         await state.connectionTemplates.setOAuthClientCleanup(client.id, null);
         await publish(state);
       });
@@ -4891,20 +4898,12 @@ export class OpenClawController {
     }
     return this.mutate(async (state) => {
       const client = await lockClient(state);
-      const driver = this.connectionRegistrationDriver(client.credentialRefreshDriverId);
-      if (!driver.rotateClientSecret) {
-        throw new NotImplementedError(
-          "connection_templates",
-          "The selected Refresh Driver does not support OAuth client rotation.",
-        );
-      }
-      await this.credentialGatewayOperation(() =>
-        driver.rotateClientSecret!(this.oauthClientContext(client), clientSecret),
-      );
+      const { store, ref } = this.oauthClientSecret(client);
+      await this.secretOperation(() => store.update(ref, clientSecret));
       if (audit) {
         await state.audit.append({ ...audit, occurredAt: this.timestamp() });
       }
-      return client;
+      return this.oauthClientMetadata(client);
     });
   }
 
@@ -4948,8 +4947,8 @@ export class OpenClawController {
           return;
         }
         try {
-          const driver = this.connectionRegistrationDriver(client.credentialRefreshDriverId);
-          await driver.removeClient!(this.oauthClientContext(client));
+          const { store, ref } = this.oauthClientSecret(client);
+          await this.secretOperation(() => store.delete(ref));
         } catch {
           await state.connectionTemplates.setOAuthClientCleanup(
             id,
@@ -4964,29 +4963,43 @@ export class OpenClawController {
     }
   }
 
-  private oauthClientContext(client: OAuthClient) {
-    return {
-      registrationId: client.id,
-      issuer: client.issuer,
-      clientId: client.clientId,
-      signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-    };
+  /** Trusted, server-side OAuth operations resolve the current value at each use. */
+  async withOAuthClientSecret<T>(
+    client: Readonly<OAuthClient>,
+    use: (secret: string | undefined) => Promise<T>,
+  ): Promise<T> {
+    const current = await this.read((view) => view.connectionTemplates.findOAuthClient(client.id));
+    if (
+      !current ||
+      !isDeepStrictEqual(this.oauthClientMetadata(current), this.oauthClientMetadata(client))
+    ) {
+      throw new ResourceStateConflictError("The approved OAuth client is unavailable.");
+    }
+    if (current.tokenEndpointAuthMethod === "none") {
+      return use(undefined);
+    }
+    const { store, ref } = this.oauthClientSecret(current);
+    return store.withValue(ref, use);
   }
 
-  private connectionRegistrationDriver(expectedId?: string): CredentialRefreshDriver {
-    const driver = this.credentialRefreshDriver();
-    if (expectedId !== undefined && driver.id !== expectedId) {
+  private oauthClientSecretDriver(expectedId?: string) {
+    const driver = this.secretDriver(expectedId);
+    if (!driver.installationSecrets) {
       throw new DependencyUnavailableError(
-        "The selected Refresh Driver does not own this OAuth client.",
+        "The selected Secret Driver cannot store Installation-private OAuth client secrets.",
       );
     }
-    if (!driver.registerClient || !driver.removeClient) {
-      throw new NotImplementedError(
-        "connection_templates",
-        "The selected Refresh Driver does not support OAuth client registrations.",
-      );
+    return { id: driver.id, store: driver.installationSecrets };
+  }
+
+  private oauthClientSecret(client: StoredOAuthClient) {
+    if (!client.secretDriverId) {
+      throw new ResourceStateConflictError("The OAuth client has no private secret.");
     }
-    return driver;
+    return {
+      store: this.oauthClientSecretDriver(client.secretDriverId).store,
+      ref: { installationId: this.installation.id, id: client.id },
+    };
   }
 
   async listServiceAccounts(

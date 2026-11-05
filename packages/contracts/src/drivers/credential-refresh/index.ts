@@ -34,18 +34,6 @@ export interface CredentialRefreshDriver extends Driver {
     context: CredentialSourceContext,
     privateState: string,
   ): Promise<CredentialSourceDeviceAuthorizationResult>;
-  /** Stores the client secret for `issuer` and `clientId`; OCC keeps no copy. */
-  registerClient?(
-    context: CredentialClientRegistrationContext,
-    clientSecret: string,
-  ): Promise<void>;
-  /** Replaces the stored client secret for new connections; existing ones keep theirs. */
-  rotateClientSecret?(
-    context: CredentialClientRegistrationContext,
-    clientSecret: string,
-  ): Promise<void>;
-  /** Deletes the stored client secret; an absent secret counts as removed. */
-  removeClient?(context: CredentialClientRegistrationContext): Promise<void>;
   /** Replaces the source's refresh material; replaying a successful `requestId` is a no-op. */
   configureRefresh(
     context: CredentialSourceContext,
@@ -68,12 +56,3 @@ export interface CredentialSourceDeviceAuthorization {
 }
 
 export type CredentialSourceDeviceAuthorizationResult = { readonly status: "pending" | "ready" };
-
-/** One OAuth client at one authorization server, whose secret the Refresh Driver keeps. */
-export interface CredentialClientRegistrationContext {
-  /** Stable OAuthClient ID. All grants for this client use its current private material. */
-  readonly registrationId: string;
-  readonly issuer: string;
-  readonly clientId: string;
-  readonly signal: AbortSignal;
-}
