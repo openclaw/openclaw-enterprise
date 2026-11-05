@@ -5269,7 +5269,102 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     executionSeconds: 120,
     observerMs: 180_000,
   };
+  const expiryObservation = {
+    event: "worker.openshell-git-expiry",
+    workerUid: uuid,
+    namespaceMatches: true,
+    repository: "match",
+    outcome: "pending",
+    check: "retained-provider-profiles",
+    failure: "gateway_unavailable",
+    rawLog: forbidden,
+  };
+  const expiryDiagnostic = {
+    event: "git-expiry-unconfirmed",
+    namespaceId: opaque,
+    agentId: opaque,
+    revisionId: opaque,
+    repositoryRef: opaque,
+    lastWorkerUid: uuid,
+    polls: 4,
+    workerReadFailures: 0,
+    noReadyWorkerPolls: 1,
+    logReads: 3,
+    logReadSuccesses: 2,
+    logReadFailures: 1,
+    linesRead: 2005,
+    parsedEvents: 2002,
+    parseFailures: 3,
+    tailLimitReads: 1,
+    workerChanges: 1,
+    matchingEventReads: 5,
+    rejectedEventReads: 1,
+    driverSuccessSeen: true,
+    workerAcknowledgementSeen: false,
+    observationsTruncated: true,
+    observations: [
+      expiryObservation,
+      {
+        ...expiryObservation,
+        namespaceMatches: false,
+        repository: "mismatch",
+        outcome: "retire-runtime",
+      },
+      {
+        ...expiryObservation,
+        outcome: "withdrawn",
+        check: "record-reduced-generation",
+      },
+      {
+        event: "worker.completed",
+        workerUid: uuid,
+        namespaceMatches: true,
+        repository: "absent",
+        outcome: "success",
+        code: "REPOSITORY_RUNTIME_RETIREMENT_QUEUED",
+        error: forbidden,
+      },
+      {
+        event: "worker.completed",
+        workerUid: uuid,
+        namespaceMatches: true,
+        repository: "absent",
+        outcome: "pending",
+        code: forbidden,
+      },
+      {
+        event: "worker.repository-cleanup-warning",
+        workerUid: uuid,
+        namespaceMatches: true,
+        repository: "absent",
+        code: "REPOSITORY_CLEANUP_STALLED",
+        cause: forbidden,
+      },
+    ],
+  };
+  // The live observer uses this same projection before retaining or emitting a
+  // record. Malicious fields must disappear there, not just in the reporter.
+  const { projectOpenShellGitExpiryObservation } =
+    await import("../../scripts/ci/openshell-git-retention.mjs");
+  const captured = expiryDiagnostic.observations.map(projectOpenShellGitExpiryObservation);
+  assert.ok(!JSON.stringify(captured).includes(forbidden));
+  assert.equal(captured[4].code, "unrecognized");
+  assert.equal(captured[5].cause, "unrecognized");
+  for (const field of [
+    "outcome",
+    "check",
+    "failure",
+    "workerUid",
+    "namespaceMatches",
+    "repository",
+  ]) {
+    assert.equal(
+      projectOpenShellGitExpiryObservation({ ...expiryObservation, [field]: forbidden }),
+      undefined,
+    );
+  }
   const retentionReceipts = [
+    expiryDiagnostic,
     {
       event: "supervisor-trust",
       parent: `ghcr.io/example/stock@sha256:${sha256}`,
@@ -5353,6 +5448,19 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     { event: "cleanup", outcome: "passed" },
   ].map((value) => ({ kind: retentionKind, ...value, unexpected: forbidden }));
   const invalidRetention = [
+    { ...expiryDiagnostic, polls: -1 },
+    { ...expiryDiagnostic, logReadSuccesses: 0.5 },
+    { ...expiryDiagnostic, driverSuccessSeen: forbidden },
+    { ...expiryDiagnostic, lastWorkerUid: forbidden },
+    { ...expiryDiagnostic, observations: Array(17).fill(expiryObservation) },
+    {
+      ...expiryDiagnostic,
+      observations: [{ ...expiryObservation, check: forbidden }],
+    },
+    {
+      ...expiryDiagnostic,
+      observations: [{ ...expiryObservation, failure: forbidden }],
+    },
     { event: forbidden },
     { event: "initial-runtime", ...runtimeReceipt, podUid: forbidden },
     {
@@ -5707,6 +5815,18 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     outcome: "withdrawn",
     check: "record-reduced-generation",
   });
+  const unconfirmed = receipts.find(({ event }) => event === "git-expiry-unconfirmed");
+  assert.deepEqual(unconfirmed.observations, captured);
+  assert.equal(unconfirmed.namespaceIdHash, opaqueHash);
+  assert.equal(unconfirmed.agentIdHash, opaqueHash);
+  assert.equal(unconfirmed.revisionIdHash, opaqueHash);
+  assert.equal(unconfirmed.repositoryRefHash, opaqueHash);
+  assert.equal(unconfirmed.lastWorkerUid, uuid);
+  assert.equal(unconfirmed.tailLimitReads, 1);
+  assert.equal(unconfirmed.workerChanges, 1);
+  assert.equal(unconfirmed.driverSuccessSeen, true);
+  assert.equal(unconfirmed.workerAcknowledgementSeen, false);
+  assert.equal(unconfirmed.observationsTruncated, true);
   assert.ok(!artifact.includes(forbidden));
   assert.ok(!artifact.includes(opaque));
 

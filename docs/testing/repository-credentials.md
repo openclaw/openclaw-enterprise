@@ -223,6 +223,8 @@ Receipts contain digests, Kubernetes UIDs, counters and fixed outcomes; opaque
 runtime identifiers use SHA-256 fingerprints. The final `cleanup` receipt is
 emitted only after all owned resources are removed. This proves the selected installation and controlled Git boundary,
 not live GitHub access or a different published image set.
+An unsuccessful expiry wait retains bounded worker outcomes and polling counters;
+these diagnostics do not establish successful withdrawal or runtime retention.
 
 The case is registered in the `openshell` lane. For a reviewed same-repository PR,
 a maintainer selects [QA Matrix Advisory](ci/qa-advisory.md#trigger) with `full-qa`.
