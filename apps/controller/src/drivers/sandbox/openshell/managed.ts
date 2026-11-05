@@ -410,9 +410,19 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
         );
       }
     }
+    if (!isDeepStrictEqual(providerNames(existing.spec), providerNames(create.spec))) {
+      // Old rules can depend on removed Providers or conflict with new credential
+      // scopes. Clear base network rules while stopped before changing membership.
+      // Retries derive the remaining work from stored policy and attachments.
+      const transition = {
+        ...create.spec,
+        policy: { ...fixedPolicy(create.spec.policy), network_policies: {} },
+      };
+      existing = await this.reconcilePolicy(client, context, existing, transition);
+      existing = await this.reconcileProviders(client, context, existing, transition);
+    }
     existing = await this.reconcilePolicy(client, context, existing, create.spec);
     if (!matches(existing)) {
-      existing = await this.reconcileProviders(client, context, existing, create.spec);
       const sandboxId = existing.id;
       const baselinePolicy = existing.spec?.policy;
       if (existing.resourceVersion === undefined) {
@@ -509,21 +519,22 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
     if (client.getPolicyStatus === undefined) {
       throw new Error("Managed replacement requires current Sandbox policy observation.");
     }
-    // Attachment changes require an unchanged policy, including on retry.
+    // Verify the intermediate policy before touching attachments, including on retry.
     const policy = await client.getPolicyStatus(
       { workspace, sandbox: existing.name },
       context.signal,
     );
     if (!sameOpenShellPolicy(policy.policy, desired.policy)) {
-      throw new Error(
-        "Provider replacement requires the current Sandbox policy to remain unchanged.",
-      );
+      throw new Error("Provider replacement requires the verified intermediate Sandbox policy.");
     }
     if (isDeepStrictEqual(current, wanted)) {
       return existing;
     }
     if (!existing.id || existing.workspace !== workspace) {
       throw new Error("Provider replacement requires the exact Sandbox identity and Workspace.");
+    }
+    if (!stopped(existing)) {
+      throw new Error("Stop the previous managed workload before replacing its Providers.");
     }
     const removals = current.filter((name) => !wanted.includes(name));
     const additions = wanted.filter((name) => !current.includes(name));
@@ -611,13 +622,6 @@ export class ManagedOpenShellSandbox extends OpenShellSandboxDriver {
     }
     if (sameOpenShellPolicy(current.policy, desired.policy)) {
       return existing;
-    }
-    // TODO(OpenShell coordinated policy/Provider replacement): remove dependent routes
-    // before changing attachments, then install the final policy. Until then reject both.
-    if (!isDeepStrictEqual(providerNames(existing.spec), providerNames(desired))) {
-      throw new Error(
-        "Provider replacement requires the current Sandbox policy to remain unchanged.",
-      );
     }
     if (!stopped(existing)) {
       throw new Error("Stop the previous managed workload before updating its Sandbox policy.");

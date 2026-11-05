@@ -1,7 +1,7 @@
 ---
 created: "2026-10-22"
-updated: "2026-11-04"
-last_updated_session: authoring-run/58e6dc9e-a980-4300-94d2-c14a0300073b
+updated: "2026-11-05"
+last_updated_session: authoring-run/21b26bb3-10b6-4ed0-a49e-c83cf5c09bfc
 ---
 
 # Managed OpenShell workload flow
@@ -117,25 +117,28 @@ deletion and the Gateway client refuses it.
 `reconcileHarness` verifies Namespace and Agent ownership, then requires stopped
 state before changing the revision. It rejects resource and runtime-class changes.
 `reconcilePolicy` reads the latest stored policy separately from the creation
-specification. With unchanged Provider attachments, it can replace network rules.
-Static policy and middleware bindings must remain unchanged. A resource-version
-check protects the policy write; readback verifies the desired policy and the
-same stopped Sandbox, workload and ownership. A lost response leaves the Sandbox
-stopped; retry adopts an already-stored policy. OCE does not wait for activation
-while stopped.
+specification. Static policy and middleware bindings must remain unchanged.
+When Provider membership differs, `reconcileHarness` first uses `reconcilePolicy`
+to clear the base network rules while stopped. This removes rules that depend on
+old Providers or conflict with new credential scopes; Provider-contributed policy
+remains under OpenShell's control. A resource-version check protects each policy
+write. Readback verifies the requested policy and the same stopped Sandbox,
+workload and ownership. OCE does not wait for activation while stopped.
 
 `reconcileProviders` compares Provider membership independently of list order.
-Provider changes require the current policy to match the desired policy.
-Coordinated policy and Provider changes remain unsupported.
-
-The Driver detaches obsolete Providers before attaching missing ones, because
-replacement sources can supply the same credential environment variable. Each
-mutation uses the observed Sandbox resource version. Readback must confirm the
+After verifying the intermediate policy, it detaches obsolete Providers before
+attaching missing ones, because replacement sources can supply the same credential
+environment variable. Each mutation uses the observed Sandbox resource version. Readback must confirm the
 expected membership, unchanged workload and ownership, and the same stopped
 Sandbox identity. Detachment does not delete a shared Credential Source Provider.
 A failed or uncertain mutation ends the attempt before start; a retry reads the
-stored membership and performs the remaining changes. Git replacement still
-requires separate route and policy lifecycle work.
+stored membership and policy and performs the remaining changes. Once attachments
+match, `reconcilePolicy` installs the final network rules. A lost response after
+the last attachment can therefore resume directly with the final policy. A failed
+final policy write leaves the new attachments on a stopped Sandbox; OCE does not
+roll back or start it. With unchanged membership, only the final policy needs
+reconciliation. Git replacement still requires separate route and policy lifecycle
+work.
 
 The Driver then sends `SandboxUpdates.UpdateSandbox` with the latest observed
 resource version and verifies the workload and latest policy separately. OpenShell
@@ -236,6 +239,8 @@ do not establish cluster isolation or durable replacement after failures.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-05 11:08: Coordinate Provider and network policy replacement while stopped, with recovery from partially committed changes. (authoring-run/21b26bb3-10b6-4ed0-a49e-c83cf5c09bfc - e49e7078393d7685094d44a14122e8444c7ccc46)
 
 - 2026-11-04 21:18: Reconcile network rules separately from workload updates and gate readiness on policy activation in the accompanying implementation. (authoring-run/58e6dc9e-a980-4300-94d2-c14a0300073b - 38fc75b4d6cba2096d6435c0294f213267362df1)
 

@@ -72,7 +72,7 @@ is in the [QA manifest](../../../scripts/ci/test-suites/qa-matrix.json).
 | `git-push-denied`       | No                   | Codex           | Reject a push to any other branch and dispose credentials.                                                                                                 |
 | `slack`                 | No                   | Codex           | Threaded reply and new root message.                                                                                                                       |
 | `openshell-linear-read` | No                   | Codex           | Opt-in shipped OpenShell setup, Linear installation and verified native read.                                                                              |
-| `openshell-provider-replacement` | No | Codex | [Prepared managed OpenShell installation](../openshell.md#provider-replacement): source switch, network grant addition/removal, unchanged redeploy, model turns and shared-source isolation. |
+| `openshell-provider-replacement` | No | Codex | [Prepared managed OpenShell installation](../openshell.md#provider-replacement): separate and combined source/network grant changes, unchanged redeploy, model turns and shared-source isolation. |
 | `codex-search-config`   | No                   | Codex           | API-key Agent user configuration with omitted, false and true capability declarations; persistence after supported stop/deploy.                            |
 
 The [QA matrix test](../../../tests/integration/qa-matrix-real.test.mjs) implements

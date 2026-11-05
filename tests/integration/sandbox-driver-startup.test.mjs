@@ -1018,6 +1018,7 @@ test("managed Harness rendering submits no PVC and keeps the bootstrap outside p
   await t.test("Provider replacement resumes after lost detach and attach responses", async () => {
     let version = 8;
     const mutations = [];
+    let policy = structuredClone(request.spec.policy);
     const sourceA = requirements.credentialAttachments[0].ref;
     const sourceB = openShellProviderName("source-b");
     client.getSandbox = async () =>
@@ -1026,7 +1027,13 @@ test("managed Harness rendering submits no PVC and keeps the bootstrap outside p
         phase,
         resourceVersion: String(version),
       });
-    client.getPolicyStatus = async () => ({ policy: request.spec.policy });
+    client.getPolicyStatus = async () => ({ policy: structuredClone(policy) });
+    client.updatePolicy = async (value) => {
+      assert.equal(phase, "SANDBOX_PHASE_STOPPED");
+      assert.equal(value.expectedResourceVersion, String(version));
+      policy = structuredClone(value.policy);
+      version += 1;
+    };
     let loseResponse;
     const mutate = (operation) => async (_workspace, name, provider, _signal, conditional) => {
       assert.equal(name, request.name);
@@ -1049,7 +1056,10 @@ test("managed Harness rendering submits no PVC and keeps the bootstrap outside p
     // actual attachment list so full-spec readback cannot hide a missed mutation.
     client.updateSandbox = async (value) => {
       assert.equal(value.expectedResourceVersion, String(version));
-      request = { ...value, spec: { ...value.spec, providers: request.spec.providers } };
+      request = {
+        ...value,
+        spec: { ...value.spec, providers: request.spec.providers, policy: request.spec.policy },
+      };
       version += 1;
     };
     const provision = (id, source) =>
@@ -1078,7 +1088,7 @@ test("managed Harness rendering submits no PVC and keeps the bootstrap outside p
     client.getPolicyStatus = async () => ({ policy: { network_policies: {} } });
     await assert.rejects(provision(next, sourceB), /static policy or middleware bindings/);
     assert.equal(phase, "SANDBOX_PHASE_STOPPED");
-    client.getPolicyStatus = async () => ({ policy: request.spec.policy });
+    client.getPolicyStatus = async () => ({ policy: structuredClone(policy) });
     await provision(next, sourceB);
     assert.equal(phase, "SANDBOX_PHASE_READY");
     assert.deepEqual(mutations, [
@@ -1100,7 +1110,7 @@ test("managed Harness rendering submits no PVC and keeps the bootstrap outside p
       /static policy or middleware bindings/,
     );
     assert.equal(mutations.length, 2);
-    client.getPolicyStatus = async () => ({ policy: request.spec.policy });
+    client.getPolicyStatus = async () => ({ policy: structuredClone(policy) });
     client.detachSandboxProvider = async () => ({});
     await assert.rejects(
       provision("rev_00000000-0000-4000-8000-000000000007", sourceA),
@@ -1110,7 +1120,7 @@ test("managed Harness rendering submits no PVC and keeps the bootstrap outside p
   });
 });
 
-test("managed network policy replacement survives lost responses and gates activation", async () => {
+test("managed network policy replacement survives lost responses and gates activation", async (t) => {
   const client = workspaceGatewayClient();
   const options = sandboxInstallation().drivers.sandbox.configuration;
   options.gateway = { workspaceMode: "managed" };
@@ -1206,12 +1216,6 @@ test("managed network policy replacement survives lost responses and gates activ
     await assert.rejects(provision(replacement, next), /static policy or middleware bindings/);
     policy = saved;
   }
-  await assert.rejects(
-    provision(replacement, next, {
-      credentialAttachments: [{ sourceId: "different", ref: openShellProviderName("different") }],
-    }),
-    /current Sandbox policy to remain unchanged/,
-  );
   assert.equal(writes, 0);
   failure = "ignored";
   await assert.rejects(provision(replacement, next), /policy readback differs/);
@@ -1251,6 +1255,81 @@ test("managed network policy replacement survives lost responses and gates activ
     "A later revision removes the rule",
   );
   assert.equal(writes, 3);
+  await t.test(
+    "combined replacement resumes each committed step without starting early",
+    async () => {
+      // These controlled RPC responses exercise OCE recovery and ordering. Actual
+      // OpenShell policy validation is covered by the real replacement scenario.
+      const sourceA = requirements.credentialAttachments[0].ref;
+      const sourceB = openShellProviderName("combined-source");
+      const target = "rev_00000000-0000-4000-8000-000000000010";
+      const mutations = [];
+      let interrupt;
+      const committed = (step) => {
+        mutations.push(step);
+        if (interrupt === step) {
+          throw new Error(`lost ${step} response`);
+        }
+      };
+      const updatePolicy = client.updatePolicy;
+      client.updatePolicy = async (request) => {
+        if (interrupt === "reject-final" && request.policy.network_policies.documentation) {
+          throw new Error("policy rejected by gateway");
+        }
+        await updatePolicy(request);
+        committed(Object.keys(request.policy.network_policies).length === 0 ? "clear" : "final");
+      };
+      for (const operation of ["detach", "attach"]) {
+        client[operation === "detach" ? "detachSandboxProvider" : "attachSandboxProvider"] = async (
+          _workspace,
+          name,
+          provider,
+          _signal,
+          conditional,
+        ) => {
+          assert.equal(name, stored.name);
+          assert.equal(stored.phase, "SANDBOX_PHASE_STOPPED");
+          assert.equal(conditional.expectedResourceVersion, String(version));
+          assert.deepEqual(policy.network_policies, {}, "Withdraw rules before changing Providers");
+          assert.equal(provider, operation === "detach" ? sourceA : sourceB);
+          stored.spec.providers =
+            operation === "detach"
+              ? stored.spec.providers.filter((value) => value !== provider)
+              : [...stored.spec.providers, provider];
+          stored.resourceVersion = String(++version);
+          committed(operation);
+        };
+      }
+      const updateSandbox = client.updateSandbox;
+      client.updateSandbox = async (request) => {
+        assert.ok(policy.network_policies.documentation, "Install final rules before the workload");
+        assert.ok(stored.spec.providers.includes(sourceB));
+        assert.equal(stored.spec.providers.includes(sourceA), false);
+        await updateSandbox(request);
+        committed("workload");
+      };
+      const replace = () =>
+        provision(replacement, target, {
+          credentialAttachments: [{ sourceId: "combined-source", ref: sourceB }],
+        });
+      stored.phase = "SANDBOX_PHASE_STOPPED";
+      // Each response is lost after the gateway commits. The next attempt must
+      // adopt that state, even after all attachments or the workload already match.
+      for (const step of ["clear", "detach", "attach", "reject-final", "final", "workload"]) {
+        interrupt = step;
+        await assert.rejects(replace(), /lost .* response|policy rejected by gateway/);
+        assert.equal(stored.phase, "SANDBOX_PHASE_STOPPED");
+        assert.deepEqual(stored.spec.policy, baseline);
+      }
+      interrupt = undefined;
+      await replace();
+      assert.equal(stored.phase, "SANDBOX_PHASE_READY");
+      assert.equal(stored.id, "stable-policy-sandbox");
+      assert.deepEqual(mutations, ["clear", "detach", "attach", "final", "workload"]);
+      await replace();
+      assert.equal(mutations.length, 5, "An unchanged retry must not clear the final policy");
+    },
+  );
 });
 
 test("managed native replacement restores its startup exposure and withdraws it after enrollment", async (t) => {

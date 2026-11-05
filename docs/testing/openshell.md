@@ -398,7 +398,8 @@ APIs cannot fence them by launch generation.
 ### Provider replacement
 
 Use a disposable loopback k3d installation with this branch's API and worker,
-OpenShell 0.1.7, managed Workspaces, one worker and rebuilt Codex runtime images.
+a gateway meeting the [managed runtime requirements](../reference/drivers/kubernetes-openshell-compute.md),
+managed Workspaces, one worker and rebuilt Codex runtime images.
 Select its kubeconfig and context explicitly. Prepare a ready OCE Namespace, a
 dedicated Codex Configuration and an authorized static model Credential Source.
 The test creates two Agents and two sources that reference the existing model
@@ -457,18 +458,18 @@ export OCC_TEST_OPENSHELL_REPLACEMENT_INPUT_FILE=/tmp/oce-test/replacement.json
 node --test tests/integration/openshell-provider-replacement-real.test.ts
 ```
 
-The test switches one Agent's model source and confirms stable Sandbox identity,
-successful model turns, and continued access for the second Agent using the old
-source. It also redeploys without further changes, then saves a network grant
-through the Agent policy API and deploys again. A real request must succeed only
-for the granted Agent. A later revision removes the grant and must deny the same
-request. Both revisions retain Sandbox identity and Provider attachments, report
-the latest policy loaded, and serve model turns. Cleanup deletes test-created
-Agents, grants and sources; it retains the prepared Namespace, Configuration and
-source. Missing input skips the standalone test. A selected QA run requires it:
-use `OCC_TEST_QA_SCENARIOS=openshell-provider-replacement` with the Kubernetes Codex
-preset. Lost-response recovery is covered separately by the local reconciliation
-tests; this scenario does not inject gateway or worker failures.
+The test changes model sources and network grants separately, then together,
+and redeploys unchanged. It checks stable Sandbox identity, exact Provider
+membership, loaded policy, model turns, and continued peer access. Real curl
+requests must succeed after granting access and fail after removal; the peer
+must remain denied. The example.org grant does not overlap model credentials,
+so this does not reproduce the upstream inspection defect. Local tests cover
+lost-response recovery; this scenario does not inject failures.
+
+Cleanup removes test-created Agents, grants and sources, preserving prepared
+resources. Missing input skips the standalone test. A selected QA run requires
+it: use `OCC_TEST_QA_SCENARIOS=openshell-provider-replacement` with the Kubernetes
+Codex preset.
 
 ## Troubleshooting
 
