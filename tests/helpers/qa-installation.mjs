@@ -140,11 +140,35 @@ export async function recordImageBuildFailure(record, stderr, env) {
   });
 }
 
+function startupCommandTimings(stdout) {
+  // Only the fixed records emitted by internal/occdev/timing.go are public.
+  // Do not retain free-form stdout, including unknown or malformed stage records.
+  const pattern =
+    /(?:^|\n)\[occ-dev-timing\] stage=(runtime-build|controller-build|compose-build-and-start|compose-build|image-pull|image-export|image-import|node-image-pull|cluster-create|k3d-image-import|kubernetes-readiness|helm-install) elapsed_ms=(0|[1-9][0-9]{0,15}) failed=(true|false)(?=\n|$)/g;
+  const records = [];
+  let omittedRecords = 0;
+  for (const match of String(stdout ?? "").matchAll(pattern)) {
+    if (!Number.isSafeInteger(Number(match[2]))) {
+      continue;
+    }
+    records.push({ stage: match[1], elapsedMs: Number(match[2]), failed: match[3] === "true" });
+    if (records.length > 64) {
+      records.shift();
+      omittedRecords++;
+    }
+  }
+  return { records, omittedRecords };
+}
+
 // Runs one command of a QA installation `f` (its env, private directories, and evidence
 // `record`). A failure writes the command's output to the private directory and throws with
-// only redacted stderr; a failed image build's step output becomes redacted QA evidence.
+// redacted stderr; failed image builds and selected startup timings become bounded evidence.
 export async function runQaCommand(f, command, args, options = {}) {
-  const { privateFailureOutput = false, ...executeOptions } = options;
+  const {
+    privateFailureOutput = false,
+    captureStartupTimings = false,
+    ...executeOptions
+  } = options;
   try {
     const result = await execute(command, args, {
       cwd: repository,
@@ -173,12 +197,24 @@ export async function runQaCommand(f, command, args, options = {}) {
       : await recordImageBuildFailure(f.record, error.stderr, executeOptions.env ?? f.env).catch(
           (recordError) => `not recorded (${recordError?.message ?? recordError})`,
         );
+    let startupTimings;
+    if (captureStartupTimings && !privateFailureOutput) {
+      const timings = startupCommandTimings(error.stdout);
+      if (timings.records.length > 0) {
+        try {
+          startupTimings = await f.record(`startup-timings-${Date.now()}`, timings);
+        } catch {
+          // A failed artifact write must not replace the command failure or expose its path.
+          startupTimings = "unavailable";
+        }
+      }
+    }
     // execFile errors embed argv and output, potentially containing tokens.
-    // Keep arguments/stdout private; include only redacted stderr for diagnosis.
+    // Keep arguments and raw stdout private; include redacted stderr and evidence filenames.
     const timing = Number.isInteger(error.elapsedMs)
       ? ` after ${error.elapsedMs} ms (limit ${error.timeoutMs} ms)`
       : "";
-    error.message = `${command.split("/").at(-1)} ${error.timedOut ? "timed out" : "failed"}${timing} (exit ${error.code ?? "unknown"}, signal ${error.signal ?? "none"}); private state: ${f.stateDirectory}${buildOutput ? `; failed image build step output: ${buildOutput}` : ""}${detail ? `; stderr: ${detail}` : ""}`;
+    error.message = `${command.split("/").at(-1)} ${error.timedOut ? "timed out" : "failed"}${timing} (exit ${error.code ?? "unknown"}, signal ${error.signal ?? "none"}); private state: ${f.stateDirectory}${buildOutput ? `; failed image build step output: ${buildOutput}` : ""}${startupTimings ? `; startup timings: ${startupTimings}` : ""}${detail ? `; stderr: ${detail}` : ""}`;
     delete error.cmd;
     delete error.stdout;
     delete error.stderr;
@@ -812,7 +848,7 @@ export async function createQaInstallation(
   const started = await f.run(
     join(repository, "scripts/dev-up"),
     sandboxNetworkPolicyFile ? ["--sandbox-network-policy-file", sandboxNetworkPolicyFile] : [],
-    { timeout: 1_100_000 },
+    { timeout: 1_100_000, captureStartupTimings: true },
   );
   assert.match(
     started,

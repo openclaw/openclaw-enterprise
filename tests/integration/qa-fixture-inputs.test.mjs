@@ -693,6 +693,102 @@ test("QA command failures distinguish deadlines from signal exits without disclo
   );
 });
 
+test("failed QA startup retains only bounded timing records and respects output protection", async (t) => {
+  const { runQaCommand } = await import("../helpers/qa-installation.mjs");
+  const directory = await temporaryDirectory(t, "qa-startup-timings-");
+  const artifacts = await mkdtemp(join(directory, "artifacts-"));
+  const f = {
+    directory,
+    stateDirectory: join(directory, "state"),
+    env: { PATH: process.env.PATH, OCC_TEST_PRIVATE_INPUT: "private-startup-canary" },
+    async record(name, value) {
+      const file = `kubernetes-${name}.json`;
+      await writeFile(join(artifacts, file), JSON.stringify(value), { flag: "wx" });
+      return file;
+    },
+  };
+  // Only exact records from the CLI's timing protocol may cross into uploaded evidence.
+  // Unknown stages, extra fields, malformed numbers and ordinary output stay private.
+  const lines = [
+    ...Array.from(
+      { length: 65 },
+      (_, i) => `[occ-dev-timing] stage=runtime-build elapsed_ms=${i} failed=false`,
+    ),
+    "[occ-dev-timing] stage=private-startup-canary elapsed_ms=1 failed=false",
+    "[occ-dev-timing] stage=runtime-build elapsed_ms=1 failed=false token=private-startup-canary",
+    "[occ-dev-timing] stage=runtime-build elapsed_ms=-1 failed=false",
+    "[occ-dev-timing] stage=runtime-build elapsed_ms=1.5 failed=false",
+    "[occ-dev-timing] stage=runtime-build elapsed_ms=9007199254740992 failed=false",
+    "[occ-dev-timing] stage=runtime-build elapsed_ms=1 failed=unknown",
+    "prefix [occ-dev-timing] stage=runtime-build elapsed_ms=1 failed=false",
+    "[occ-dev-timing] stage=kubernetes-readiness elapsed_ms=80 failed=true",
+  ];
+  const write = `process.stdout.write(process.env.OCC_TEST_PRIVATE_INPUT + '\\n' + ${JSON.stringify(lines.join("\n") + "\n")});`;
+  const run = (end, options = {}, installation = f) =>
+    runQaCommand(installation, process.execPath, ["-e", write + end], options);
+
+  // A real child emits timing records, then reaches the command deadline. The evidence
+  // must survive timeout teardown even when the child handles SIGTERM with exit zero.
+  await assert.rejects(
+    run("process.on('SIGTERM', () => process.exit(0)); setInterval(() => {}, 1000)", {
+      timeout: 1000,
+      captureStartupTimings: true,
+    }),
+    (error) => {
+      assert.equal(error.timedOut, true);
+      assert.match(error.message, /startup timings: kubernetes-startup-timings-\d+\.json/);
+      assert.doesNotMatch(error.message, /private-startup-canary|process\.stdout/);
+      assert.equal(error.stdout, undefined);
+      return true;
+    },
+  );
+  const files = await readdir(artifacts);
+  assert.equal(files.length, 1);
+  const evidence = await readFile(join(artifacts, files[0]), "utf8");
+  const { records, omittedRecords } = JSON.parse(evidence);
+  assert.equal(records.length, 64);
+  assert.equal(omittedRecords, 2);
+  assert.deepEqual(records[0], { stage: "runtime-build", elapsedMs: 2, failed: false });
+  assert.deepEqual(records.at(-1), { stage: "kubernetes-readiness", elapsedMs: 80, failed: true });
+  assert.ok(Buffer.byteLength(evidence) < 6_000);
+  assert.doesNotMatch(
+    evidence,
+    /private-startup-canary|process\.stdout|token=|prefix|9007199254740992/,
+  );
+
+  // Neither a protected command, an ordinary command, nor an allowed exit writes evidence.
+  for (const options of [{ captureStartupTimings: true, privateFailureOutput: true }, {}]) {
+    await assert.rejects(run("process.exit(7)", options), (error) => {
+      assert.equal(error.code, 7);
+      assert.doesNotMatch(error.message, /startup timings|private-startup-canary/);
+      return true;
+    });
+  }
+  await run("process.exit(7)", { captureStartupTimings: true, allowExitCodes: [7] });
+  assert.deepEqual(await readdir(artifacts), files);
+
+  // Evidence is best effort: a storage failure cannot replace the original command failure
+  // or disclose a storage error's potentially private details.
+  await assert.rejects(
+    run(
+      "process.exit(7)",
+      { captureStartupTimings: true },
+      {
+        ...f,
+        async record() {
+          throw new Error("private-startup-canary");
+        },
+      },
+    ),
+    (error) => {
+      assert.equal(error.code, 7);
+      assert.match(error.message, /startup timings: unavailable/);
+      assert.doesNotMatch(error.message, /private-startup-canary/);
+      return true;
+    },
+  );
+});
+
 // Finding 2026: a key whose BEGIN line falls before the failed step's last 200 lines, with no END
 // line, must lose every body line, not only the lines the tail still shows its BEGIN for.
 test("an image build step's unterminated private key is masked past the evidence window", async () => {

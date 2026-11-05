@@ -231,6 +231,14 @@ by itself identify a spontaneous CLI crash. Command arguments and protected outp
 remain private; the existing redacted failure detail is unchanged. The startup
 limit remains 1,100,000 ms.
 
+When available, `startup timings` in the failure message names a JSON file in the
+same artifact. It retains the last 64 recognized CLI timing records: stage,
+elapsed milliseconds, and failure status, plus the number of older records omitted.
+These describe completed commands, including commands that failed; they do not
+identify an unfinished command. Durations can overlap, so do not sum them as wall
+time. Unknown or malformed records and other stdout remain private. Commands with
+protected output produce no timing artifact.
+
 Artifacts expire after seven days. Each OpenShell job reports `scope: focused`
 because it runs one file; complete advisory OpenShell coverage requires all five
 to pass.
