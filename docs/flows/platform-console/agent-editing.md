@@ -112,15 +112,15 @@ an audited read (finding D758).
 generations (including a racing save's `409`) require **Reload draft**.
 Responses must confirm Configuration/Namespace identity, newer generation, and sent
 values/bindings; otherwise outcome is unknown: reload before retrying.
-Focused, disabled **Save Configuration** transfers focus to **Checking Configuration…**;
+Disabling focused **Save Configuration** focuses **Checking Configuration…**;
 success focuses **Edit Configuration** unless focus moved.
 
 **Enable gateway password access** and **Collaboration and safety**
 (`agents/gateway-safety.mts`) stage edits; **Cancel** discards them. Password access writes an env SecretRef to Compute's `OPENCLAW_GATEWAY_PASSWORD` on the default env alias. **Deploy** blocks with saved-setting refusals from `stored-configuration-rules.ts` (same order) or `agents/validate` (Kubernetes-only). A hint replaces the password button if save would refuse its reference.
 
 Saves retain scroll, focus and admitted snapshots; rejected edits stay. Unsaved edits block deployment; pending saves block tab/version changes.
-`apps/controller/src/console/navigation.mts:traverse` restores the pending editor's
-address without reloading for detected missing/equal markers or too-far/unsupported steps.
+For blocked Back/Forward, `apps/controller/src/console/navigation.mts:traverse`
+restores the editor's address without reload for missing/equal markers or detected impossible steps.
 Overflowed markers are untracked.
 A refused write lists required grants without guessing which; a refused preflight read names read
 access, a Workspace file save Agent `operate`. Without Agent `update`, Configuration `read` or
