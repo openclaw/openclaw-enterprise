@@ -603,7 +603,8 @@ test(
       sandboxDriver: protectedGit.owner.require("sandbox"),
       proxyDriver: protectedGit.owner.require("credential_proxy"),
     });
-    const start = () =>
+    let coldStopped: Promise<void> | undefined;
+    const start = (stopAfterColdRefusal = false) =>
       f.start(compute, {
         emit: (e?: Event) => {
           if (e && e.event !== "worker.health") {
@@ -617,6 +618,18 @@ test(
             }
             if (e.event === "worker.completed" && e.workId === workKey && e.outcome === "success") {
               activationOrder.push("complete");
+            }
+            if (
+              stopAfterColdRefusal &&
+              coldStopped === undefined &&
+              e.event === "worker.completed" &&
+              e.revisionId === revision.id &&
+              e.workId?.startsWith(`agent_revision:${revision.id}:maintenance:`) &&
+              e.code === "REPOSITORY_EXECUTION_UNVERIFIED"
+            ) {
+              // The event follows the committed deferral. Stop claiming synchronously,
+              // before the polling helper can make that queued work due again.
+              coldStopped = f.stop();
             }
           }
         },
@@ -876,7 +889,7 @@ test(
         observations,
         events: events.length,
       };
-      await start();
+      await start(true);
       const refused = await waitForRevisionPass(
         "cold worker defers globally withheld execution while independently supervising it",
         f,
@@ -892,7 +905,8 @@ test(
             ),
         30_000,
       );
-      await f.stop();
+      assert.ok(coldStopped);
+      await coldStopped;
       assert.ok(refused.workId?.startsWith(`agent_revision:${revision.id}:maintenance:`));
       assert.equal(refused.outcome, "pending");
       assert.equal(refused.harnessState, "running");
