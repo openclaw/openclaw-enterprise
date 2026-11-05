@@ -1,3 +1,4 @@
+import { sameBinding } from "../drivers/repo/credentials/grant-identity.ts";
 import { protectedRepositoryGitAdmission } from "@openclaw-enterprise/contracts";
 import { isDeepStrictEqual } from "node:util";
 import { randomUUID } from "node:crypto";
@@ -51,6 +52,13 @@ interface Dependencies {
   readonly state: PostgresPlatformState;
   readonly queueOptions: PostgresWorkQueueOptions;
   readonly driver: RepositoryPolicyDriver | undefined;
+  readonly repositoryAdmission?:
+    | {
+        readonly policy: RepositoryPolicyDriver & {
+          readonly resolveBindings: RepositoryPolicyDriver["resolve"];
+        };
+      }
+    | undefined;
   readonly nativeSender?: NativeRepositorySender | undefined;
   readonly verifyExecution?: (
     claim: ClaimedWork,
@@ -69,17 +77,6 @@ function owner(revision: RevisionIdentity) {
     agentId: revision.agentId,
     revisionId: revision.id,
   };
-}
-
-function sameGrant(
-  left: AdmittedRepositoryBinding["grant"],
-  right: AdmittedRepositoryBinding["grant"],
-): boolean {
-  return (
-    left.providerInstanceId === right.providerInstanceId &&
-    left.repositoryId === right.repositoryId &&
-    left.grantId === right.grantId
-  );
 }
 
 function assertRepositorySessionCanOpen(attempts: readonly Attempt[], repositoryRef: string): void {
@@ -145,6 +142,14 @@ export class RepositoryCredentialLifecycle {
   private readonly dependencies: Dependencies;
 
   constructor(dependencies: Dependencies) {
+    const { driver, repositoryAdmission } = dependencies;
+    if (
+      repositoryAdmission !== undefined &&
+      (repositoryAdmission.policy !== driver ||
+        typeof repositoryAdmission.policy.resolveBindings !== "function")
+    ) {
+      throw new Error("The bound repository admission owner is not selected or unavailable.");
+    }
     this.dependencies = dependencies;
   }
 
@@ -187,13 +192,16 @@ export class RepositoryCredentialLifecycle {
     }
     let resolved;
     try {
-      resolved = driver.resolve({
+      const input = {
         namespaceId: revision.namespaceId,
         bindings: snapshot.bindings.map(({ repositoryRef, profile }) => ({
           repositoryRef,
           profile,
         })),
-      });
+      };
+      const admission = this.dependencies.repositoryAdmission;
+      resolved =
+        admission === undefined ? driver.resolve(input) : admission.policy.resolveBindings(input);
     } catch {
       throw new RepositoryCredentialAuthorityError("REPOSITORY_BINDING_UNAVAILABLE");
     }
@@ -211,7 +219,7 @@ export class RepositoryCredentialLifecycle {
           selected === undefined ||
           selected.profile !== binding.profile ||
           selected.backendId !== binding.backendId ||
-          !sameGrant(selected.grant, binding.grant)
+          !sameBinding(selected.grant, binding.grant)
         );
       })
     ) {
@@ -793,7 +801,7 @@ export class RepositoryCredentialLifecycle {
       !Number.isSafeInteger(status.deadlineWallMs) ||
       status.deadlineWallMs <= 0 ||
       status.deadlineWallMs > attempt.deadlineWallMs ||
-      !sameGrant(status.binding, binding.grant)
+      !sameBinding(status.binding, binding.grant)
     ) {
       throw new RepositoryCredentialAuthorityError("INVALID_REPOSITORY_DRIVER_OBSERVATION");
     }

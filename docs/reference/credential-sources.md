@@ -21,6 +21,9 @@ Gateway delivery supports `openai` API keys for dedicated Codex and native
 OpenClaw models, `codex-pat` for dedicated Codex and `bearer-token` for a
 single API endpoint. Selecting a [Credential Refresh Driver](drivers/credential-refresh.md) also enables experimental
 `codex-oauth` device login, `oauth2-client-credentials` and `oauth2-refresh-token`.
+Device starts commit audit with source and session writes; see the
+[device authorization flow](../flows/credential-source-refresh.md#device-authorization-and-configuration).
+
 OpenShell is a development integration. See the
 [OpenShell qualification requirements](drivers/openshell-sandbox.md#qualification-contract),
 [Credential Proxy overview](../design/credential-proxy.md) and
@@ -67,10 +70,11 @@ OCC returns `201` with a `cs_` source ID, binding `ref` and status. Use the
 - `name` is unique within the Namespace.
 - `type` must be offered by the installation. With a Credential Proxy selected,
   registration also requires a protected profile for that type.
-- `config` contains nonsecret catalog fields. OpenShell's `openai` type defaults
-  to `https://api.openai.com/v1`. A custom `base_url` must use HTTPS, a DNS
-  hostname and a path ending in `/v1`. Codex requires the Responses API.
-  OCC normalizes the endpoint before storage. Changing it requires a new source.
+- `config` contains nonsecret catalog fields. OpenShell's `openai` type accepts
+  `authorized_base_url` as immutable destination authorization. Omission authorizes
+  only `https://api.openai.com/v1`; a custom authorization must match the
+  [shared model provider](drivers/kubernetes-compute/model-provider.md).
+  `base_url` cannot select a route. Replace old sources before reuse.
 - `secrets` maps catalog fields to same-Namespace Secret references. OCC rejects
   cross-Namespace references with `400` and missing Secrets with `404`.
 
@@ -109,7 +113,7 @@ bound or deployed.
 
 ## Bind a source to an Agent
 
-Set `credentialSources` to a list of up to eight distinct
+Set `credentialSources` to a list of up to 64 distinct
 `{ "sourceId": "cs_…" }` entries. On update, the list replaces the draft's
 bindings. Omit it to keep them or send `[]` to remove them all.
 

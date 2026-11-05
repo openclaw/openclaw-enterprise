@@ -341,12 +341,36 @@ test(
     // Dedicated workloads and the Harness workspace must remain inside the exact tenant.
     const agentId = `agt_${randomUUID()}`;
     const candidate = revision(driver, readyOwner, agentId, 1);
+    // Human ingress is external; this real Compute lifecycle proves the Gateway
+    // receives distinct identity grants, not just that OCC stores their input.
+    const gatewayAuth = {
+      mode: "trusted-proxy",
+      trustedProxy: {
+        userHeader: "x-occ-identity",
+        allowUsers: ["occ-workspace-files", "oidc:member-01"],
+      },
+      identityScopes: {
+        "occ-workspace-files": ["operator.admin"],
+        "oidc:member-01": ["operator.read", "operator.write"],
+      },
+    };
+    candidate.configuration.gateway.auth = gatewayAuth;
     await waitFor("discovered Agent gateway and immutable revision to become ready", async () => {
       const observation = await driver.prepareRevision(candidate, revisionContext(candidate));
       assert.equal(observation.namespaceId, owner.id);
       return observation.ready ? observation : undefined;
     });
     const gateway = await assertReadyGateway(existingName, agentId, owner.id, candidate);
+    const gatewayConfiguration = await resource(
+      "configmap",
+      `gateway-${hash(agentId)}-rev-${hash(candidate.id)}`,
+      existingName,
+    );
+    // Admitting a human makes the Gateway require the proxy's scope header (finding 2183).
+    assert.deepEqual(JSON.parse(gatewayConfiguration.data["openclaw.json"]).gateway.auth, {
+      ...gatewayAuth,
+      trustedProxy: { ...gatewayAuth.trustedProxy, requiredHeaders: ["x-openclaw-scopes"] },
+    });
     const workload = await resource("deployment", revisionName(candidate), existingName);
     const harnessClaim = await assertHarnessWorkspaceClaim(existingName, owner.id, agentId);
     assert.equal(
@@ -637,11 +661,13 @@ test(
     });
     const discoveryPath = `/namespaces/${namespaceOwner.id}/agents/plugins`;
     const catalog = await fixture.request("POST", discoveryPath, {
+      harnessId: "codex",
       secretRef: modelSecret.data.ref,
     });
     assert.equal(catalog.status, 200);
     assert.equal(catalog.data.plugins[0].remoteId, "fixture-plugin");
     const detail = await fixture.request("POST", `${discoveryPath}/details`, {
+      harnessId: "codex",
       secretRef: modelSecret.data.ref,
       pluginId: "fixture-plugin",
     });
@@ -660,7 +686,12 @@ test(
     );
     observedTokens.length = 0;
     assert.equal(
-      (await fixture.request("POST", discoveryPath, { secretRef: modelSecret.data.ref })).status,
+      (
+        await fixture.request("POST", discoveryPath, {
+          harnessId: "codex",
+          secretRef: modelSecret.data.ref,
+        })
+      ).status,
       200,
     );
     assert.ok(observedTokens.length > 0 && observedTokens.every((token) => token === rotatedPat));
@@ -675,6 +706,23 @@ test(
       slackBotSecretRef: slackBotSecret.data.ref,
       authMethod: "codex_pat",
     });
+    // The regular provisioning API must admit separately identified proxy users
+    // without changing the platform's workspace identity. This fixture proves
+    // persisted handoff and the Compute-rendered Gateway document, not OIDC login
+    // or native Gateway authorization.
+    const gatewayAuth = {
+      mode: "trusted-proxy",
+      trustedProxy: {
+        userHeader: "x-occ-identity",
+        allowUsers: ["occ-workspace-files", "oidc:member-01", "oidc:maintainer-02"],
+      },
+      identityScopes: {
+        "occ-workspace-files": ["operator.admin"],
+        "oidc:member-01": ["operator.read", "operator.write"],
+        "oidc:maintainer-02": ["operator.admin"],
+      },
+    };
+    body.configuration.values.gateway.auth = gatewayAuth;
     assert.equal(
       JSON.stringify(body).includes(rotatedPat),
       false,
@@ -685,6 +733,59 @@ test(
       false,
       "provisioning must carry only saved Secret references, not Slack token values",
     );
+    // Reject unsafe legacy enrollment and malformed human grants at the real
+    // provisioning boundary, before committing an Agent or queuing deployment.
+    for (const [auth, setting] of [
+      [
+        {
+          ...gatewayAuth,
+          trustedProxy: {
+            ...gatewayAuth.trustedProxy,
+            deviceAutoApprove: { enabled: true, scopes: [" operator.admin "] },
+          },
+        },
+        "gateway.auth.trustedProxy.deviceAutoApprove.scopes",
+      ],
+      [
+        {
+          ...gatewayAuth,
+          identityScopes: { ...gatewayAuth.identityScopes, "oidc:member-01": "operator.read" },
+        },
+        "gateway.auth.identityScopes",
+      ],
+      ...["operator.reed", " operator.read", "operator.read "].map((scope) => [
+        {
+          ...gatewayAuth,
+          identityScopes: {
+            ...gatewayAuth.identityScopes,
+            "oidc:member-01": [scope],
+          },
+        },
+        "gateway.auth.identityScopes",
+      ]),
+      ...["", " oidc:member-01", "oidc:member-01 ", "oidc:removed-03"].map((identity) => [
+        {
+          ...gatewayAuth,
+          identityScopes: {
+            ...gatewayAuth.identityScopes,
+            [identity]: ["operator.admin"],
+          },
+        },
+        "gateway.auth.identityScopes",
+      ]),
+    ]) {
+      const invalid = structuredClone(body);
+      invalid.configuration.values.gateway.auth = auth;
+      const denied = await fixture.request(
+        "POST",
+        `/namespaces/${namespaceOwner.id}/agents/provision`,
+        invalid,
+      );
+      assert.equal(denied.status, 409, JSON.stringify(denied.body));
+      assert.equal(denied.body.error.code, "RESOURCE_CONFLICT");
+      assert.ok(denied.body.error.message.includes(setting));
+      assert.equal(denied.data, undefined);
+    }
     const admitted = await fixture.request(
       "POST",
       `/namespaces/${namespaceOwner.id}/agents/provision`,
@@ -732,6 +833,7 @@ test(
     assert.equal(exactRevision.status, 200, JSON.stringify(exactRevision.body));
     assert.equal(exactRevision.data.compute.id, driver.id);
     assert.equal(exactRevision.data.compute.implementation, driver.implementation);
+    assert.deepEqual(exactRevision.data.configuration.gateway.auth, gatewayAuth);
 
     const configuration = await resource(
       "configmap",
@@ -903,6 +1005,23 @@ test(
     );
     assert.equal(initialFailure.agentId, provisioned.agentId);
     assert.equal(initialFailure.revisionId, provisioned.revisionId);
+    // Inspect the actual immutable document rendered by Compute through the API/worker
+    // path. OCC's saved input alone cannot catch a renderer that drops human grants.
+    // Fixture runtime qualification fails later; it does not undo this rendered snapshot.
+    const renderedGatewayConfiguration = await resource(
+      "configmap",
+      `${gatewayName(provisioned.agentId)}-rev-${hash(provisioned.revisionId)}`,
+      gatewayPlacement,
+    );
+    assert.equal(renderedGatewayConfiguration.immutable, true);
+    assert.deepEqual(
+      JSON.parse(renderedGatewayConfiguration.data["openclaw.json"]).gateway.auth,
+      {
+        ...gatewayAuth,
+        trustedProxy: { ...gatewayAuth.trustedProxy, requiredHeaders: ["x-openclaw-scopes"] },
+      },
+      "the provisioning worker must preserve human identities and grants in the rendered Gateway ConfigMap",
+    );
     const initialDeployment = await fixture.request(
       "GET",
       `/namespaces/${namespaceOwner.id}/agents/${provisioned.agentId}/deployments/${provisioned.revisionId}`,

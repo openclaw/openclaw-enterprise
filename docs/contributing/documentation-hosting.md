@@ -7,11 +7,50 @@ the site's visibility.
 
 ## Deploy private documentation
 
-The [documentation workflow](../../.github/workflows/docs-pages.yml) builds
-`dist/docs`, including search, and deploys it to GitHub Pages after pushes to
-`main`. Its manual trigger also deploys only `main`. Select GitHub Actions as the Pages source and use the `github-pages` environment.
-The job grants `pages: write` and `id-token: write`; no deployment secret or
-Cloudflare credential is needed.
+In repository **Settings → Pages**, select **GitHub Actions** as the source and
+confirm visibility is **Private** before publishing. A private repository alone
+does not make a Pages site private. Restrict the `github-pages` environment to
+`main`. Pull requests must pass normal review and merge requirements before
+their content is published.
+
+The [documentation workflow](../../.github/workflows/docs-pages.yml) runs after
+every push to `main`. Manual dispatch is also available; deployment runs only on
+`refs/heads/main`. From the repository root, publish the current `main` with:
+
+```sh
+gh workflow run docs-pages.yml --ref main
+```
+
+Runs share the `pages` concurrency group and do not cancel an active run. The job
+grants `pages: write` and `id-token: write`; no deployment secret, model
+credentials, controller services, or Cloudflare credential is needed. A custom
+domain is optional.
+
+### Build and deployment stages
+
+The workflow installs the pinned documentation dependencies, then:
+
+1. **Validate published OpenAPI examples** runs `openapi:lint` against the
+   published contract and examples.
+2. **Build documentation and search index** runs `docs:build`. Navigation and
+   local links must resolve; the Markdown site and Pagefind index go to `dist/docs/`.
+3. **Upload documentation** and **Deploy private documentation** publish that
+   directory through GitHub Pages and report the deployment URL.
+
+Failure stops that documentation deployment. This workflow is outside the PR
+merge gate, runs no Agent runtime tests, and has no test-lane manifest.
+For local work, follow [preview and validation](../local-preview.md).
+`docs:build` does not replace `docs:check` or visual inspection.
+
+### Verify a deployment
+
+After a successful run, open the URL from its Actions summary or **Settings →
+Pages** as a repository reader. Check a deep page, search, and an interactive
+matrix. A successful deployment alone does not establish usable navigation or
+correct access restrictions. If publication fails, inspect the failed step,
+correct the source or hosting configuration, and rerun from `main`.
+
+### Configure and verify the domain
 
 The custom domain is `docs-enterprise.openclaw.org`. Its DNS record is
 `docs-enterprise CNAME openclaw.github.io` in the `openclaw.org` zone. The zone is
@@ -43,6 +82,16 @@ enforcement and read the settings back:
 gh api --method PUT repos/openclaw/openclaw-enterprise/pages \
   -F https_enforced=true
 ```
+
+### Publication source files
+
+- [Workflow](../../.github/workflows/docs-pages.yml): triggers, permissions,
+  environment, build, and deployment.
+- [Navigation](../docs.json): menus, sidebars, and registered pages.
+- [Site builder](../../scripts/docs-site/build.mjs): Markdown rendering and link validation.
+- [Package scripts](../../package.json) and [Redocly configuration](../../scripts/docs-site/redocly.yaml):
+  OpenAPI lint and documentation build commands.
+- [OpenAPI contract](../../packages/contracts/openapi/occ-api.openapi.json): published API source.
 
 ## Approve public launch
 

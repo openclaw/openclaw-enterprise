@@ -1,19 +1,78 @@
 # Recover a partial production upgrade
 
-Use this page when [Upgrade production images](production-upgrade.md) stops before the release is verified. It assumes the evidence directory, arguments and maintenance restrictions from that run.
+Resume from the original checkout and private
+[upgrade evidence directory](production-upgrade.md). Directory aliases share its
+lock; a different directory identity stops resume before live access.
 
-Keep the evidence directory and maintenance restrictions.
-Do not start another upgrade to recover: its frozen Agent
-inventory and dispatch records are needed to avoid duplicate deployments. If
-preparation did not finish, the helper stopped before mutation; use a new
-evidence directory after resolving the failure. Otherwise, repeat the original
-command with the same arguments, protected file paths, kubeconfig contents,
-OCC URL, scripts, flow, and chart, adding `--resume`. The helper rechecks the
-recorded image pair and eligible nodes. Include the original candidate
-flags and keep their files semantically unchanged. The helper uses the recorded
-candidate, reads the live Secret and Helm release, accepts only the recorded
-baseline or candidate, and continues the recorded fleet. It rejects unrelated drift. The evidence includes
-Secret contents and must remain private.
+For a runtime upgrade, also keep the original private dispatch journal. It is
+`<evidence-directory>.dispatch-state`, beside the resolved evidence directory. Keep the current journal separate from evidence
+backups. A missing or invalid journal stops runtime resume before live access.
+If the journal may have been restored, stop and reconcile from OCC history and
+audit records before starting another run.
+
+`--preflight-only` leaves writers serving without a freeze. It cannot resume;
+reconcile its resources before deploying with fresh evidence and checks.
+
+Keep one operator and the applicable freeze for unfinished deployments. Before
+`prepared`, writers and Helm are unchanged: reconcile, then use fresh evidence.
+Afterward, reconcile processes, release, migration, rollout and dispatch, then
+add `--resume` with unchanged arguments, protected paths, kubeconfig contents,
+OCC URL, scripts, flow and chart. Keep candidates semantically unchanged.
+The helper rechecks the pair, nodes and live state against baseline or candidate.
+
+After verified completion, clean up only: no Helm, Agent rollout, Doctor,
+`--resume` or renewed freeze. The helper writes `completed` after its final
+verification and evidence capture. Any `completed` entry makes `--resume` stop
+before cluster or OCC access. Keep the marker with the original evidence; use a
+new evidence directory for a new upgrade.
+
+If the final command output was lost, inspect the completion marker and retained
+evidence before deciding to resume. If writing the marker failed, reconcile the
+live state first: its absence does not prove the upgrade is unfinished.
+`prepared` survives success and alone is not a reason to resume. Older runs may
+have completed without a `completed` marker.
+
+## Correct unusable comparison inputs
+
+`Cannot compare upgrade YAML` requires readable YAML mappings (including candidates)
+without empty documents and writable evidence. Correct inputs before retrying;
+this does not establish drift.
+
+## Clean up preflight resources
+
+The release owner coordinates one cleanup operator; cleanup alone needs no freeze.
+
+Preflight cleanup is best effort; leftovers can outlast success.
+Preserve evidence and `.upgrade-lock` after interruption (`SIGHUP`, `SIGINT`,
+`SIGTERM`). Before cleanup, unlocking or retrying, confirm the helper and children
+stopped and reconcile accepted operations and temporary resources. Only then
+restore a moved original directory to its original path and remove its empty
+`.upgrade-lock`.
+
+Each successfully acknowledged and recorded create retains
+`preflight-<slot>-identity.json`, with slots `networkpolicy`, `secret`, `api`,
+`worker` and fields `kind`, `name`, `uid`. Optional NetworkPolicy and failed or
+interrupted creates mean fewer than four files may exist. Match kubeconfig contents'
+digest to original `parameters.json`'s `kubeconfigSha256`, and kubeconfig path,
+context, namespace and release to its first four `arguments`, respectively.
+Confirm the owner. Preserve the original intact confirmed record: it identifies
+that create's UID, not current identity, name ownership or deletion authority.
+
+Labels `app.kubernetes.io/instance=<release>` and
+`app.kubernetes.io/component=upgrade-preflight` only discover candidates.
+Stop and consult the owner for old helpers without records or missing, changed,
+replaced, conflicting or uncertain evidence. Also stop for refused creates, lost
+acknowledgement, successful creates without usable UIDs, or explicitly failed or uncertain
+identity writes even if a file exists. None permits deletion or replay. Leave replacements alone; reconcile unknown
+outcomes without repeating requests.
+If the original is gone, no deletion remains.
+
+Authorized manual deletion requires Kubernetes API enforcement of
+`DeleteOptions.preconditions.uid`: delete the original kind, namespace and name
+only if its UID matches the original record. Reading then deleting by name
+cannot prevent replacement.
+
+## Resume an unfinished prepared upgrade
 
 For a failed writer scale, Helm upgrade, or rollout wait, read
 `native-command-failures.tsv` in the evidence directory. Each tab-separated row
@@ -21,15 +80,6 @@ records the operation, component (`api`, `worker`, or `release`), and native exi
 code. Rows remain after resume; they record client failures, not whether a
 request took effect. Reconcile live state as described below before resuming.
 Other failures and killed processes might not produce a row.
-
-The helper retains `.upgrade-lock` on `SIGHUP`, `SIGINT`, or `SIGTERM`; an
-interrupted caller does not prove that its child or remote operation stopped.
-Before removing the lock, establish that no helper or child command is still
-running and reconcile unfinished operations and temporary preflight resources.
-Then remove the empty lock directory and resume with this evidence directory only
-if preparation completed (`prepared` exists); otherwise, start with a fresh
-private evidence directory. This lock covers only processes
-sharing this evidence directory; it cannot stop other operators or automation.
 
 A Helm failure or disconnected response does not prove that the migration
 rolled back. Read the current Helm status and history, inspect the initialization
@@ -54,59 +104,52 @@ helper keeps or returns OCC to zero replicas before retrying the candidate Helm
 release. Prefer a reviewed forward fix; neither Helm rollback nor the helper
 reverses committed migrations.
 
-For an unknown Agent dispatch, the helper saves an Agent readback and stops
-without replaying it. Inspect the exact Agent's authorized version history,
-deployment status, and audit records, and allow any in-flight request to finish.
-An unchanged selected version alone does not prove rejection, and a filtered
-version list does not prove absence. If you can identify the accepted version,
-record a private `dispatch/<same-prefix-as-intent>.json` containing its `id`;
-the helper checks that exact deployment's status on resume. If evidence proves
-the request was not accepted, deploy that Agent once with the ordinary OCC CLI
-and save its successful JSON response under that name. Preserve the `.intent`,
-error, and readback evidence. If the result is still uncertain, stop and
-investigate rather than submitting another request. For a known failed version,
-inspect its failure and explicitly deploy an authorized replacement before
-recording that replacement's response; preserve the original response separately.
-Each deployment snapshots current drafts.
+After an unknown Agent dispatch, requests in the same batch may still finish.
+Before resuming, inspect the Agent's revision history, status and audit records.
+A read showing the earlier revision cannot establish rejection. If you cannot
+confirm an accepted revision, or the journal is incomplete, preserve all records
+and contact the release owner. The helper cannot resume those attempts.
 
-For an accepted version, set `OCC_NAMESPACE` and `OCC_AGENT` to the exact
-Agent IDs, `DISPATCH_PREFIX` to the matching evidence path without `.intent` or
-`.json`, and `REVISION_ID` to the independently confirmed version. Verify the exact Agent and deployment before recording it:
+If you can attribute a revision to the interrupted request, set
+`OCC_NAMESPACE`, `OCC_AGENT` and `REVISION_ID` to the confirmed IDs. Set
+`DISPATCH_PREFIX` to the private evidence path `dispatch/<namespace>--<agent>`.
+Keep the intent, errors and partial responses.
 
 ```bash
-if test -z "$REVISION_ID"; then
-  printf '%s\n' 'Set REVISION_ID to the confirmed revision; do not resume.' >&2
-elif test -e "$DISPATCH_PREFIX.json"; then
-  if jq -e --arg id "$REVISION_ID" '.id == $id' "$DISPATCH_PREFIX.json" > /dev/null; then
-    printf '%s\n' "Deployment $REVISION_ID is already recorded in $DISPATCH_PREFIX.json."
-  else
-    printf '%s\n' "$DISPATCH_PREFIX.json does not record $REVISION_ID; inspect it and do not resume." >&2
-  fi
-elif occ --output json --namespace "$OCC_NAMESPACE" agent deployment-status "$OCC_AGENT" "$REVISION_ID" > "$DISPATCH_PREFIX.confirmed-status.json" &&
+umask 077
+if test -n "$REVISION_ID" && test ! -e "$DISPATCH_PREFIX.json" && test ! -L "$DISPATCH_PREFIX.json" &&
+  occ --output json --namespace "$OCC_NAMESPACE" agent deployment-status "$OCC_AGENT" "$REVISION_ID" > "$DISPATCH_PREFIX.confirmed-status.json" &&
   jq -e --arg namespace "$OCC_NAMESPACE" --arg agent "$OCC_AGENT" --arg revision "$REVISION_ID" \
     '.namespaceId == $namespace and .agentId == $agent and .deploymentId == $revision' "$DISPATCH_PREFIX.confirmed-status.json" &&
-  jq -n --arg id "$REVISION_ID" '{id: $id}' > "$DISPATCH_PREFIX.json.tmp"; then
-  mv "$DISPATCH_PREFIX.json.tmp" "$DISPATCH_PREFIX.json"
+  response=$(mktemp "$DISPATCH_PREFIX.XXXXXXXX.tmp") &&
+  jq -n --arg id "$REVISION_ID" '{id: $id}' > "$response"; then
+  mv "$response" "$DISPATCH_PREFIX.json"
 else
-  printf '%s\n' 'Deployment could not be confirmed; do not resume.' >&2
+  printf '%s\n' 'No response recorded. Inspect the receipt and deployment status before resuming.' >&2
 fi
 ```
 
-Keep the shell's `umask 077`. If the status read is denied or does not identify
-the confirmed deployment, do not create the response file. The block never
-overwrites an existing response file: a rerun reports it when it records the
-same ID, and otherwise says to inspect it. The helper
-rechecks its status on resume; it does not verify how you identified an
-accepted request.
+For a failed revision, inspect the failure and correct the drafts before an
+authorized manual deploy. Keep the earlier receipt and new response separately.
+Verify in revision history that the replacement follows the failed revision
+selected in the journal. Write
+`{"id":"<replacement ID>","replacesDeploymentId":"<current journaled ID>"}`
+to a private temporary file beside the receipt, then rename it to
+`$DISPATCH_PREFIX.json`. Resume checks both deployments before recording the
+replacement. A restored receipt for a superseded revision stays in place for
+inspection. Resume uses the journal's current revision.
 
 If the candidate API and worker refuse to start because of
 [split-layout Gateway storage](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations),
 `--resume` cannot succeed. Keep both namespaces and their storage, and return to
 the previous controller image after the check below.
 
-Before selecting an older controller or runtime image, verify it can read all
-state written by the candidate and restore compatible data if required. Never
-delete Agents, versions, PVCs, or the bootstrap volume to force recovery.
+Before selecting an older image, verify it can read candidate state.
+[Restore the retained candidate database](upgrade-baseline.md#restore-the-retained-candidate-database) if needed.
+Preserve Agents, versions, PVCs and the bootstrap volume.
+After return, [check the original conversation](production-handoff.md#check-conversation-continuity).
+
+For stalled ReplicaSet creation, check [namespace object capacity](upgrade-checklist.md#check-replicaset-capacity).
 
 ## Correct a refused Agent deployment
 
@@ -164,8 +207,9 @@ The stored Installation name must follow the API Name rule: 1 to 200
 characters, with no leading or trailing whitespace, control characters, or line
 or paragraph separators. The upgrade command's startup preflight reads the name
 through OCC and checks it with the selected controller image's rule before any
-writer stops. A failure prints the rule and `INSTALLATION_NAME_INVALID`, deletes
-the preflight resources, and stops; the old release keeps serving. To check
+writer stops. A failure prints the rule and `INSTALLATION_NAME_INVALID`, attempts
+best-effort deletion of preflight resources, and stops; the old release keeps
+serving. Follow [safe cleanup](#clean-up-preflight-resources) before retrying. To check
 before the maintenance window, run this from the candidate checkout:
 
 ```bash
@@ -206,27 +250,26 @@ with `--resume --migration-history-checked`.
 
 ## Correct values the candidate refuses
 
-Before the maintenance window, render the candidate chart with your live values
-from the candidate checkout:
+Before the window, render the candidate chart with live values from its checkout:
 
 ```bash
 helm template oce deploy/helm/openclaw-enterprise -f /secure/occ/values.yaml > /dev/null
 ```
 
-The upgrade command also renders the chart and runs its
-[startup preflight](production-upgrade.md#upgrade-the-control-plane) before it
-stops OCC, so it stops on every row below while the old release keeps serving.
-`helm template` cannot check the last three rows, which the API and worker read
-from the Installation, and a Compose install has no chart. A plain
-`helm upgrade` runs the migration Job before the API and worker fail on those
-rows, and the old release must not then start against the migrated database,
-so correct them first.
+The helper renders and runs its
+[startup preflight](production-upgrade.md#upgrade-the-control-plane), refusing these
+values while old writers serve. `helm template` cannot check every runtime value
+in the mounted Installation; Compose has no chart. On a stock-chart upgrade, the
+initialization Job runs `installation-check`, then the `migration` init container,
+then `bootstrap`, before API and worker rollout. The check can refuse before migration
+starts; later failures can follow a committed migration. Inspect the initialization
+Job and its Pod's container statuses and logs, and the retained database's migration
+history, before choosing recovery. Keep old controllers off a database that may have migrated.
 
-The upgrade command does not accept these changes in candidate files. Edit the
-live values or Installation YAML and apply it with the installed release's
-checkout, as in
+The helper refuses these corrections in candidate files. Apply live values or Installation
+YAML with the installed release's checkout per
 [Apply other Installation changes](production-upgrade.md#apply-other-installation-changes),
-so the baseline files match live state.
+keeping baseline files matched to live state.
 
 | Refused value                                                                                                                                                                     | Correction                                                                                                                                                                                                      |
 | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -243,16 +286,15 @@ so the baseline files match live state.
 
 ## Roll back across human sign-in
 
-Migration `0037` adds the human sign-in state. `helm rollback` skips the
-pre-upgrade migration Job, so it never reverses that migration.
+Helm rollback does not reverse migration `0037`. Never run both controllers together.
 
-Before GitHub sign-in is activated, scale `deployment/openclaw-enterprise-api` to
-zero and wait for its Pods to disappear, run `helm rollback`, then verify password
-sign-in before reopening ingress.
+If the target supports the configured provider and enforces session bindings,
+keep that configuration. [Rehearse the return](upgrade-baseline.md#restore-the-retained-candidate-database).
+Verify a fresh sign-in reaches the original account and a resource it could read before.
 
-After activation, do not roll back; fix forward. The database refuses sessions
-that the previous controller issues without a human sign-in binding, so it
-cannot sign anyone in, and existing sessions expire within 8 hours. Never run
-the previous and current controllers together.
-To roll back anyway, first return to password-only sign-in with
-[stopped maintenance](auth-maintenance.md#deactivate-external-sign-in).
+For a target that issues unbound sessions:
+
+- Before activation, scale `deployment/openclaw-enterprise-api` to zero, wait
+  for its Pods to disappear, roll back, then verify password sign-in before reopening ingress.
+- After activation, fix forward: the database rejects unbound sessions; existing sessions
+  expire within 8 hours. Returning to this target requires [stopped password-only maintenance](auth-maintenance.md#deactivate-external-sign-in).

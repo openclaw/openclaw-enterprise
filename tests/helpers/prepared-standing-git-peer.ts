@@ -1,5 +1,5 @@
+import { selectBundledRepositoryGitCustody } from "../../apps/controller/src/composition/repository-credentials/custody-selection.ts";
 import type { DriverRegistrationRef } from "../../packages/contracts/src/index.ts";
-import { openShellGitRecipientEvidence } from "../../apps/controller/src/drivers/repo/credentials/protected-repository-git-installation.ts";
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -31,20 +31,41 @@ export function clockBehind(behindMs: number): Clock {
   return Object.freeze({ ...system, wallNow: () => system.wallNow() - behindMs });
 }
 
+export interface SelectedRepositories {
+  selectedRepositoryIds: readonly string[];
+  entries: readonly { repositoryRef: string; repositoryId: string; repository: string }[];
+  permissions: Readonly<Record<string, "read" | "write">>;
+}
+
 export async function standingGitOrigin(
   t: TestContext,
   namespaceId: string,
-  tokenLifetimeMs = 135_000,
+  tokenLifetimeMs: number | ((index: number) => number) = 135_000,
   beforeIssue?: () => Promise<void>,
   installationAccess = false,
+  selection?: SelectedRepositories,
+  draftPull = false,
+  pushRef = "refs/heads/review",
 ) {
   const clock = createSystemClock();
   // Keep the prepared owner's real 60 s clock margin and 60 s minimum validity.
   const github: (t: TestContext, options: object) => ReturnType<typeof startGitHubFixture> =
     startGitHubFixture;
-  const gh = await github(t, { clock, tokenLifetimeMs, beforeIssue, installationAccess });
+  const gh = await github(t, {
+    clock,
+    tokenLifetimeMs,
+    beforeIssue,
+    installationAccess,
+    ...(draftPull && {
+      additionalPermissions: [{ metadata: "read", contents: "write", pull_requests: "write" }],
+    }),
+    ...(selection && {
+      expectedRepositoryIds: selection.selectedRepositoryIds.map(Number),
+      additionalRepositories: selection.entries.slice(1),
+      additionalPermissions: [selection.permissions],
+    }),
+  });
   const tls = gh.tls;
-  const pushRef = "refs/heads/review";
   const backendId = "prepared-standing";
   const registrationName = "oce-prepared-git";
   const registry = validateGitHubRepositoryRegistry({
@@ -53,7 +74,7 @@ export async function standingGitOrigin(
     providerInstanceId: "fixture-provider",
     appId: fixtureAppId,
     githubInstallationId: fixtureInstallationId,
-    maximumDurationSeconds: 180,
+    maximumDurationSeconds: selection || draftPull ? 600 : 180,
     allowStandingApprovals: true,
     ...(installationAccess && {
       installationAccess: {
@@ -61,22 +82,30 @@ export async function standingGitOrigin(
         namespaces: [{ namespaceId, accessMode: "installation", allowStandingApproval: true }],
       },
     }),
-    repositories: [
-      {
-        repositoryRef: "source",
-        repository: fixtureRepository,
-        repositoryId: fixtureRepositoryId,
-        namespaces: [
+    repositories: selection
+      ? selection.entries.map((entry) => ({
+          ...entry,
+          namespaces: [
+            { namespaceId, profiles: ["github-repository"], permissions: selection.permissions },
+          ],
+        }))
+      : [
           {
-            namespaceId,
-            profiles: ["git-write"],
-            transport: "git-only",
-            allowStandingApproval: true,
-            pushRefAllowlist: [pushRef],
+            repositoryRef: "source",
+            repository: fixtureRepository,
+            repositoryId: fixtureRepositoryId,
+            namespaces: [
+              {
+                namespaceId,
+                profiles: ["git-write"],
+                transport: draftPull ? "git-and-draft-pr" : "git-only",
+                ...(draftPull && { pullRequestBase: "main" }),
+                allowStandingApproval: true,
+                pushRefAllowlist: [pushRef],
+              },
+            ],
           },
         ],
-      },
-    ],
   });
   const directory = await temporaryDirectory(t, "standing-peer-");
   const controlSocket = join(directory, "control.sock");
@@ -118,8 +147,11 @@ export async function preparedStandingGitPeer(
     beforeIssue?: () => Promise<void>;
     driver?: DriverRegistrationRef;
     installationAccess?: boolean;
-    /** GitHub's token lifetime, by the system clock. */
-    tokenLifetimeMs?: number;
+    selection?: SelectedRepositories;
+    draftPull?: boolean;
+    pushRef?: string;
+    /** GitHub's token lifetime by the system clock, or a function of the 1-based token index. */
+    tokenLifetimeMs?: number | ((index: number) => number);
     /** Only the prepared owner's clock. GitHub, PostgreSQL and the runtime keep real time. */
     ownerClock?: Clock;
   } = {},
@@ -141,6 +173,9 @@ export async function preparedStandingGitPeer(
     options.tokenLifetimeMs,
     options.beforeIssue,
     options.installationAccess,
+    options.selection,
+    options.draftPull,
+    options.pushRef,
   );
   // Public OpenShell requires the GitHub.com authority, not an arbitrary API origin.
   // Replace only the issuer's network destination, before DNS; keep fixture TLS verification,
@@ -148,9 +183,23 @@ export async function preparedStandingGitPeer(
   const issue = new URL(gh.origin);
   assert.equal(issue.hostname, "127.0.0.1");
   const request = https.request;
-  const transport = t.mock.method(https, "request", (input: https.RequestOptions) => {
-    assert.equal(input.hostname, "api.github.com", "the prepared issuer is the only caller");
-    return request({ ...input, hostname: issue.hostname, port: issue.port });
+  const transport = t.mock.method(https, "request", (...args: Parameters<typeof https.request>) => {
+    const input = args[0] as string | URL | https.RequestOptions;
+    if (
+      typeof input === "object" &&
+      !(input instanceof URL) &&
+      input.hostname === "api.github.com"
+    ) {
+      return request({ ...input, hostname: issue.hostname, port: issue.port }, args[1] as never);
+    }
+    const host =
+      input instanceof URL
+        ? input.hostname
+        : typeof input === "string"
+          ? new URL(input).hostname
+          : input.hostname;
+    assert.equal(host, "127.0.0.1", "the controlled peer cannot contact a live provider");
+    return request(...args);
   });
   syncBuiltinESMExports();
   t.after(() => {
@@ -169,8 +218,7 @@ export async function preparedStandingGitPeer(
       ca: tls.ca,
       startWorker: false,
       ...(options.driver && {
-        protectedGitDriver: options.driver,
-        protectedGitEvidence: openShellGitRecipientEvidence,
+        repositoryGitCustody: selectBundledRepositoryGitCustody(options.driver),
       }),
     },
     options.ownerClock,
@@ -250,6 +298,7 @@ export async function preparedStandingGitPeer(
   return {
     registry,
     prepared,
+    origin,
     originCalls: () => origin.traffic().requests,
     installationTransport: {
       httpsRequest: request,

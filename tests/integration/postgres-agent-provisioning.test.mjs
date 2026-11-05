@@ -1,9 +1,15 @@
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
 import pg from "pg";
 
+import {
+  deriveNativeAdminHost,
+  nativeAdminConfigurationSupported,
+} from "../../apps/controller/src/gateway/native-admin.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { openShellSandbox } from "../helpers/openshell-sandbox.mjs";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
@@ -21,8 +27,11 @@ import {
 } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { ConfigurationConflictError } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
-import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import {
+  assertProvisioningSourceStatus,
+  assertProvisioningSourceWithdrawal,
+} from "../helpers/provisioning-source-status.ts";
 import { assertProvisioningRepositoryStatus } from "../helpers/provisioning-repository-status.ts";
 import { provisioningProgress } from "../../packages/occ/src/agent-provisioning.ts";
 import {
@@ -47,16 +56,25 @@ import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { withNamespaceLockHeld } from "../helpers/postgres-namespace-lock.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { expireWorkLease, makeWorkDue } from "../helpers/postgres-worker-revision-support.mjs";
 import {
   AGENT_NAME_CONFLICT,
   BROKER_PROXY_DISABLED,
   COMPUTE_REPOSITORY_UNSUPPORTED,
+  CODEX_MODEL_ONLY,
+  codexRuntimeOffProvider,
   COMPUTE_TOPOLOGY_REPOSITORY_UNSUPPORTED,
   CREDENTIAL_PROXY_INSTALLATION_ACCESS,
   DEPENDENCY_UNAVAILABLE,
+  DEDICATED_STORAGE_ROUTING_REQUIRED,
+  dedicatedOpenClawSandboxRefusal,
+  keepRuntime,
   PROVISIONING_NOT_COMPLETED,
+  runtimeIdRequired,
+  runtimePoliciesConflict,
   SAVED_REPOSITORY_SELECTION_NOT_APPROVED,
+  selectablePrimaryRuntimeRequired,
 } from "../helpers/refusal-text.mjs";
 
 const adminEmail = "postgres-agent-provisioning-v2@example.test";
@@ -408,8 +426,16 @@ function installationDrivers({
     secretDriver,
     ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
     ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
-    ...(repoDriver === undefined ? {} : { repositoryPolicy: repoDriver }),
-    ...(pluginDriver === undefined ? {} : { pluginDriver }),
+    ...(repoDriver === undefined
+      ? {}
+      : {
+          repositoryPolicy: repoDriver,
+          repositoryAdmission: {
+            policy: repoDriver,
+            backendId: "provisioning-repositories",
+          },
+        }),
+    pluginDrivers: pluginDriver === undefined ? [] : [pluginDriver],
     createIAMDriver: (state) =>
       new NativeIAMDriver(state, { id: "native-iam", implementation: "native" }),
   };
@@ -471,17 +497,31 @@ async function createFixture(context, options = {}) {
     sandboxDriver: options.sandboxDriver,
     credentialGatewayDriver: options.credentialGatewayDriver,
   });
-  const app = await composePostgresDevelopment(
-    {
-      mode: "development",
-      host: "127.0.0.1",
-      databaseUrl,
-      authSecret,
-      authBaseURL,
-    },
-    drivers,
-  );
-  const session = await signInToControllerApp(app, credentials);
+  const origin = options.nativeAdmin ? "https://console.oce.localhost:9443" : authBaseURL;
+  let nativeAdminSettings = {};
+  if (options.nativeAdmin) {
+    const directory = await temporaryDirectory(context, "native-admin-provisioning-");
+    const gatewayApiKeyPath = join(directory, "gateway-key");
+    await writeFile(gatewayApiKeyPath, `test-gateway-${randomUUID()}`, { mode: 0o600 });
+    nativeAdminSettings = {
+      nativeAdmin: {
+        enabled: true,
+        domain: "agents.oce.localhost",
+        sharedCookieDomain: "oce.localhost",
+      },
+      gatewayApiKeyPath,
+    };
+  }
+  const settings = {
+    mode: "development",
+    host: "127.0.0.1",
+    databaseUrl,
+    authSecret,
+    authBaseURL: origin,
+    ...nativeAdminSettings,
+  };
+  let app = await composePostgresDevelopment(settings, drivers);
+  const session = await signInToControllerApp(app, credentials, { origin });
 
   context.after(async () => {
     for (const binding of revokedBindings) {
@@ -527,8 +567,8 @@ async function createFixture(context, options = {}) {
     const headers = {
       ...(selectedSession === null ? {} : authenticatedHeaders(selectedSession)),
       ...(body === undefined ? {} : { "content-type": "application/json" }),
-      ...(method === "GET" ? {} : { origin: "http://127.0.0.1" }),
-      host: "127.0.0.1",
+      ...(method === "GET" ? {} : { origin }),
+      host: new URL(origin).host,
     };
     const response = await app.inject({
       method,
@@ -609,6 +649,11 @@ async function createFixture(context, options = {}) {
     workerCompletion = undefined;
   }
 
+  async function restartApi() {
+    await app.close();
+    app = await composePostgresDevelopment(settings, drivers);
+  }
+
   // The signed-in administrator's Principal, whose subject is its account: a test may add
   // other administrators, so the first better-auth Principal is not necessarily this one.
   async function administratorPrincipalId() {
@@ -659,6 +704,7 @@ async function createFixture(context, options = {}) {
     pool,
     configurationDriver,
     revokeCurrentPrincipal,
+    restartApi,
     request,
     secretDriver,
     session,
@@ -762,6 +808,18 @@ test(
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
     const body = provisioningBody(namespace.id, secrets);
 
+    const nativeAdminRefused = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/agents/provision`,
+      {
+        body: { ...body, nativeAdmin: true },
+      },
+    );
+    assert.equal(
+      nativeAdminRefused.status,
+      400,
+      "disabled installation refuses native admin opt-in",
+    );
     const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
       body,
     });
@@ -939,11 +997,8 @@ test(
 function provisioningRepositoryPolicy(namespaceId, profiles, installationAccess = false) {
   return new GitHubRepositoryPolicy(
     {
-      id: "provisioning-repositories",
-      client: new UnixRepositoryCredentialControlClient({
-        controlSocket: "/unused/provisioning/control.sock",
-      }),
-      drivers: { repo: "provisioning-repo" },
+      driverId: "provisioning-repo",
+      backendId: "provisioning-repositories",
     },
     {
       ...(installationAccess && {
@@ -1036,7 +1091,7 @@ test(
   "provisioning worker creates Configuration and Agent from existing Secrets, then hands off one revision",
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
-    const { namespace, fixture, secrets } = await repositoryProvisioningFixture(
+    const { namespace, repoDriver, fixture, secrets } = await repositoryProvisioningFixture(
       context,
       "provisioning-topology",
       { profiles: ["git-read", "git-write"], stopAfterProvisioning: true },
@@ -1047,26 +1102,45 @@ test(
     ).length;
     const body = repositoryProvisioningBody(namespace.id, secrets, { gatewayManagedMode: false });
     const { repositoryAccess } = body;
+    const bound = context.mock.method(repoDriver, "resolveBindings");
+    const legacy = context.mock.method(repoDriver, "resolve");
     const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
       body,
     });
     assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
 
+    assert.equal(bound.mock.callCount(), 1, "fresh planning uses the bound policy exactly once");
+    assert.equal(legacy.mock.callCount(), 0, "fresh planning bypasses the legacy resolver");
+    assert.deepEqual(bound.mock.calls[0]?.arguments, [
+      { namespaceId: namespace.id, bindings: repositoryBindings },
+    ]);
     const queued = await provisioningRow(fixture.pool, namespace.id, body.requestId);
     assert.deepEqual(queued.plan.repositoryBindings, repositoryBindings);
     assert.deepEqual(queued.plan.repositoryAccess, repositoryAccess);
     assert.deepEqual(queued.plan.pluginApprovers, []);
     assert.equal(queued.agent_id, null);
+    assert.equal(Object.hasOwn(queued.plan, "reservedAgentId"), false);
+    // Ordinary admission retains the pre-opt-in plan shape. Reopen the API before
+    // a new worker consumes it, without rewriting persisted work or signing in again.
+    await fixture.restartApi();
     const replay = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
       body,
     });
     assert.equal(replay.status, 202, JSON.stringify(replay.body));
     assert.equal(replay.data.provisioning.workId, admitted.data.provisioning.workId);
+    assert.deepEqual(
+      (await provisioningRow(fixture.pool, namespace.id, body.requestId)).plan,
+      queued.plan,
+    );
+    assert.equal(bound.mock.callCount(), 1, "replay does not repeat repository planning");
+    assert.equal(legacy.mock.callCount(), 0, "replay does not use the legacy resolver");
     const changed = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
       body: { ...body, repositoryAccess: { ...repositoryAccess, defaultProfile: "git-write" } },
     });
     assert.equal(changed.status, 409, JSON.stringify(changed.body));
 
+    const boundCallsBeforeWorker = bound.mock.callCount();
+    const legacyCallsBeforeWorker = legacy.mock.callCount();
     await fixture.startWorker();
     const status = await waitFor(
       "Agent provisioning to queue its initial deployment wait",
@@ -1082,6 +1156,21 @@ test(
       },
     );
     await fixture.stopWorker();
+    const workerBoundCalls = bound.mock.calls.slice(boundCallsBeforeWorker);
+    assert.ok(workerBoundCalls.length > 0, "Worker directly resolves the bound repository policy");
+    for (const call of workerBoundCalls) {
+      assert.equal(call.this, repoDriver);
+      assert.deepEqual(call.arguments, [
+        { namespaceId: namespace.id, bindings: queued.plan.repositoryBindings },
+      ]);
+    }
+    assert.equal(
+      legacy.mock.callCount() - legacyCallsBeforeWorker,
+      0,
+      "Worker bypasses the legacy resolver even when it delegates to resolveBindings",
+    );
+    bound.mock.restore();
+    legacy.mock.restore();
     assert.equal(status.status, "queued");
     assert.match(status.agentId, identifier("agt"));
     assert.match(status.configurationId, identifier("cfg"));
@@ -1115,6 +1204,15 @@ test(
     assert.equal(revisions.length, 1);
     assert.equal(revisions[0].id, status.revisionId);
     assert.equal(revisions[0].configurationGeneration, 1);
+    await fixture.restartApi();
+    const restartedReplay = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/agents/provision`,
+      { body },
+    );
+    assert.equal(restartedReplay.status, 202, JSON.stringify(restartedReplay.body));
+    assert.equal(restartedReplay.data.provisioning.agentId, status.agentId);
+    assert.equal(restartedReplay.data.provisioning.revisionId, status.revisionId);
     assert.deepEqual(revisions[0].pluginApprovers, []);
     const agentPath = `/namespaces/${namespace.id}/agents/${status.agentId}`;
     const agent = await fixture.request("GET", agentPath);
@@ -1192,6 +1290,7 @@ test(
     const { namespace, repoDriver, computeDriver, fixture, secrets } =
       await repositoryProvisioningFixture(context, "provisioning-saved-access");
     const validateRepositoryCredentials = computeDriver.validateRepositoryCredentials;
+    let policyRefusal;
     for (const { change, refuse, message, retry } of [
       {
         change: "compute",
@@ -1204,9 +1303,9 @@ test(
         // An Installation administrator withdrew the approval after the request was accepted.
         // The policy refuses the selection as the Driver contract allows: without a reason.
         refuse: () => {
-          repoDriver.resolve = () => {
+          policyRefusal = context.mock.method(repoDriver, "resolveBindings", () => {
             throw new Error("synthetic withdrawn approval");
-          };
+          });
         },
         message: SAVED_REPOSITORY_SELECTION_NOT_APPROVED,
       },
@@ -1224,7 +1323,6 @@ test(
     ]) {
       // Each case starts from an Installation that delivers the access.
       computeDriver.validateRepositoryCredentials = validateRepositoryCredentials;
-      delete repoDriver.resolve;
       const body = repositoryProvisioningBody(namespace.id, secrets);
       const admitted = await fixture.request(
         "POST",
@@ -1232,18 +1330,29 @@ test(
         { body },
       );
       assert.equal(admitted.status, 202, `${change}: ${JSON.stringify(admitted.body)}`);
-      refuse();
-      const failed = await workerFailure(fixture, namespace.id, body.requestId, change);
-      assert.equal(failed.status, "failed", change);
-      assert.deepEqual(failed.progress.error, { code: "PROVISIONING_REJECTED", message }, change);
-      assert.equal(failed.agent_id, null, `${change}: refused before the work creates its Agent`);
-      const status = await fixture.request("GET", admitted.data.provisioning.url);
-      assert.equal(status.status, 200, `${change}: ${JSON.stringify(status.body)}`);
-      assert.deepEqual(status.data.error, { code: "PROVISIONING_REJECTED", message }, change);
-      if (retry !== undefined) {
-        const retried = await fixture.request("POST", `${admitted.data.provisioning.url}/retry`);
-        assertApiError(retried, 409, "RESOURCE_CONFLICT");
-        assert.equal(retried.body.error.message, retry);
+      try {
+        refuse();
+        const failed = await workerFailure(fixture, namespace.id, body.requestId, change);
+        assert.equal(failed.status, "failed", change);
+        assert.deepEqual(failed.progress.error, { code: "PROVISIONING_REJECTED", message }, change);
+        assert.equal(failed.agent_id, null, `${change}: refused before the work creates its Agent`);
+        assert.equal(
+          failed.revision_id,
+          null,
+          `${change}: refused before the work creates a revision`,
+        );
+        const status = await fixture.request("GET", admitted.data.provisioning.url);
+        assert.equal(status.status, 200, `${change}: ${JSON.stringify(status.body)}`);
+        assert.deepEqual(status.data.error, { code: "PROVISIONING_REJECTED", message }, change);
+        if (retry !== undefined) {
+          const retried = await fixture.request("POST", `${admitted.data.provisioning.url}/retry`);
+          assertApiError(retried, 409, "RESOURCE_CONFLICT");
+          assert.equal(retried.body.error.message, retry);
+        }
+      } finally {
+        policyRefusal?.mock.restore();
+        policyRefusal = undefined;
+        computeDriver.validateRepositoryCredentials = validateRepositoryCredentials;
       }
     }
   },
@@ -1955,6 +2064,10 @@ for (const harnessAuth of ["api_key", "credential_source"]) {
           : []),
       ];
       await revokeAuthority();
+      if (sourceBacked) {
+        const denied = await fixture.request("GET", admitted.data.provisioning.url, { session });
+        assert.equal(denied.status, 403, JSON.stringify(denied.body));
+      }
       await fixture.startWorker();
       const work = await waitFor(
         "provisioning work to fail after authority revocation",
@@ -2134,6 +2247,76 @@ function sourceProvisioningBody(sourceId, harness) {
   };
 }
 
+test(
+  "source provisioning status preserves saved work when its Gateway catalog is unavailable",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const drivers = sourceProvisioningDrivers();
+    drivers.computeDriver.provisionAgentRuntimeCredentials = async () => {
+      throw new Error("synthetic transport failure");
+    };
+    const fixture = await createFixture(context, drivers);
+    const namespace = await fixture.bootstrapNamespace();
+    const { source } = await createProvisioningModelSource(fixture, namespace.id);
+    const body = sourceProvisioningBody(source.id, "openclaw");
+    const admissionPath = `/namespaces/${namespace.id}/agents/provision`;
+    const admitted = await fixture.request("POST", admissionPath, { body });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    const target = { ...admitted.data.provisioning, admissionPath, body };
+    fixture.cancelQueuedWorkAtTeardown(target.workId, "Source status test completed.");
+    await assertProvisioningSourceStatus(context, fixture, drivers.credentialGatewayDriver, target);
+
+    // The actual worker creates the Agent and exact source grant before transport fails.
+    await fixture.startWorker();
+    const failed = await waitFor("source provisioning transport to fail", async () => {
+      const observed = await fixture.request("GET", target.url);
+      assert.equal(observed.status, 200, JSON.stringify(observed.body));
+      return observed.data.status === "failed" ? observed.data : undefined;
+    });
+    await fixture.stopWorker();
+    assert.ok(failed.agentId);
+    fixture.cancelProvisioningAtTeardown(namespace.id, failed.agentId);
+    await assertProvisioningSourceStatus(context, fixture, drivers.credentialGatewayDriver, target);
+
+    // Removing the Agent's exact source permission must still deny the saved read.
+    const revoked = await fixture.pool.query(
+      `DELETE FROM occ.iam_access_bindings WHERE namespace_id = $1
+       AND resource_kind = 'credential_source' AND resource_id = $2 RETURNING id`,
+      [namespace.id, source.id],
+    );
+    assert.equal(revoked.rowCount, 1);
+    const deniedAgent = await fixture.request("GET", target.url);
+    assert.equal(deniedAgent.status, 403, JSON.stringify(deniedAgent.body));
+    await fixture.revokeCurrentPrincipal();
+    const deniedOperator = await fixture.request("GET", target.url);
+    assert.equal(deniedOperator.status, 403, JSON.stringify(deniedOperator.body));
+  },
+);
+
+test(
+  "source provisioning worker rejects a withdrawn type while failed status remains readable",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const drivers = sourceProvisioningDrivers();
+    const fixture = await createFixture(context, drivers);
+    const namespace = await fixture.bootstrapNamespace();
+    const { source } = await createProvisioningModelSource(fixture, namespace.id);
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body: sourceProvisioningBody(source.id, "openclaw"),
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    fixture.cancelQueuedWorkAtTeardown(
+      admitted.data.provisioning.workId,
+      "Source withdrawal test completed.",
+    );
+    await assertProvisioningSourceWithdrawal(
+      fixture,
+      drivers.credentialGatewayDriver,
+      admitted.data.provisioning,
+    );
+  },
+);
+
 for (const harness of ["openclaw", "codex"]) {
   test(
     `guided ${harness} provisioning holds its model source and grants only source access`,
@@ -2297,6 +2480,8 @@ test(
         id: "credential-gateway-replacement",
       },
     });
+    const status = await switched.request("GET", admitted.data.provisioning.url);
+    assert.equal(status.status, 503, JSON.stringify(status.body));
     const replay = await switched.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
       body,
     });
@@ -3177,6 +3362,9 @@ test(
   },
 );
 
+const missingCodexPluginCatalog =
+  "No Plugin Driver is enabled for the codex Harness. Remove the Agent's plugins or enable its catalog.";
+
 test(
   "a Plugin Driver switch leaves the provisioning status readable; retry still refuses the plan",
   { ...requiresPostgres, timeout: 60_000 },
@@ -3231,8 +3419,7 @@ test(
     // Rule out the Configuration outage as the cause of the retry refusal below.
     configurationOutage = false;
 
-    // The administrator restarts the API with a Plugin Driver that does not offer the stored
-    // plugin. Reading status reports the stored work: plugin admission belongs to writes.
+    // Restart with only the OpenClaw catalog. Status still returns the persisted failure.
     const switched = await createFixture(context, {
       computeDriver,
       configurationDriver,
@@ -3243,16 +3430,10 @@ test(
     assert.equal(status.status, 200, JSON.stringify(status.body));
     assert.deepEqual(status.data, failed);
 
-    // Retry would run the plan again, so it is still refused, naming the stored plugin
-    // without a request-body detail, and queues nothing.
+    // Retry must resolve the plan's Codex Harness catalog before validating any plugin ID.
     const retried = await switched.request("POST", `${admitted.data.provisioning.url}/retry`);
     assertApiError(retried, 400, "INVALID_REQUEST");
-    assert.match(
-      retried.body.error.message,
-      new RegExp(
-        `^A plugin selection names a plugin that the selected Plugin Driver \\(occ-plugin\\) does not offer: ${pluginId}\\.`,
-      ),
-    );
+    assert.equal(retried.body.error.message, missingCodexPluginCatalog);
     assert.equal(Object.hasOwn(retried.body.error, "details"), false);
     // A replay of the original request rechecks the stored plan, so it is refused the same way
     // and returns no progress.
@@ -3289,15 +3470,13 @@ test(
     });
     const namespace = await fixture.bootstrapNamespace();
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
-    // A hosted-app plugin ID makes the refusal outgrow the 256-character status message.
-    const pluginId = "codex-plugin:app-69312da8e4dc81919370cb86fd172b6c@openai-curated-remote";
+    const pluginId = "codex-plugin:linear@openai-curated-remote";
     const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
       body: provisioningBody(namespace.id, secrets, { plugins: { [pluginId]: { enabled: true } } }),
     });
     assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
 
-    // The Installation now selects a Plugin Driver that does not offer the stored plugin. Every
-    // attempt would refuse the plan the same way, so the worker fails it on the first one.
+    // The plan was admitted for Codex. A worker with only OpenClaw must refuse it on its first attempt.
     const switched = await createFixture(context, {
       computeDriver,
       configurationDriver,
@@ -3313,17 +3492,8 @@ test(
     await switched.stopWorker();
     const failed = await switched.request("GET", admitted.data.provisioning.url);
     assert.equal(failed.status, 200, JSON.stringify(failed.body));
-    // The refusal names the stored plugin, as HTTP retry would, so Console can say why.
     assert.equal(failed.data.error.code, "PROVISIONING_REJECTED");
-    assert.ok(
-      failed.data.error.message.startsWith(
-        `A plugin selection names a plugin that the selected Plugin Driver (occ-plugin) does not offer: ${pluginId}.`,
-      ),
-      failed.data.error.message,
-    );
-    // Cut to the 256-character cap with an ellipsis that says text is missing.
-    assert.equal(Array.from(failed.data.error.message).length, 256);
-    assert.ok(failed.data.error.message.endsWith("…"), failed.data.error.message);
+    assert.equal(failed.data.error.message, missingCodexPluginCatalog);
     const work = await switched.pool.query(
       "SELECT state, reason_code, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
       [admitted.data.provisioning.workId],
@@ -3356,8 +3526,9 @@ test(
       model: "openai/gpt-5",
       models: { "openai/gpt-5": { agentRuntime: { id: "openclaw" } } },
     };
-    // A fixed Installation shape refuses every attempt the same way: a 409 with the reason,
-    // not a 503 the Console reads as an unknown outcome (finding 1609).
+    // A fixed Installation shape refuses every attempt the same way: a 409 with the reason and
+    // the next step, not a 503 the Console reads as an unknown outcome (findings 1609, 3036).
+    // Codex does not run this openai model without its plugin, so it offers a Codex model.
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const refused = await fixture.request(
         "POST",
@@ -3367,11 +3538,64 @@ test(
       assert.equal(refused.status, 409, JSON.stringify(refused.body));
       assert.deepEqual(refused.body.error, {
         code: "RESOURCE_CONFLICT",
-        message:
-          "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment.",
+        message: dedicatedOpenClawSandboxRefusal(false),
       });
     }
-    // The refusal stored nothing: no provisioning job or Agent.
+    // D832: this dedicated Agent cannot run OpenClaw here, so a refusal for a model Codex runs
+    // offers codex alone, at the request's Configuration rules and its admission alike. openclaw
+    // would only reach the 409, which then names codex (finding 3036).
+    const model = "codex/gpt-5.1";
+    const policy = `agents.defaults.models["${model}"]`;
+    const provider = "models.providers.codex";
+    for (const [defaults, providers, status, message] of [
+      [{ model }, undefined, 400, runtimeIdRequired(policy, "codex")],
+      [
+        { model, models: { [`${model}-mini`]: {} } },
+        undefined,
+        400,
+        selectablePrimaryRuntimeRequired(policy, "codex"),
+      ],
+      [
+        { model, models: { [model]: { agentRuntime: { id: "openclaw" } } } },
+        { codex: { agentRuntime: { id: "codex" } } },
+        400,
+        runtimePoliciesConflict(
+          policy,
+          "openclaw",
+          provider,
+          "codex",
+          keepRuntime("codex", "openclaw"),
+        ),
+      ],
+      [
+        { model, models: { [model]: { agentRuntime: { id: "openclaw" } } } },
+        undefined,
+        409,
+        dedicatedOpenClawSandboxRefusal(true),
+      ],
+      // Codex on an openai model without the Codex plugin: the next step is a codex/<model>
+      // model alone, as openclaw would only reach the 409.
+      [
+        { model: "openai/gpt-5", models: { "openai/gpt-5": { agentRuntime: { id: "codex" } } } },
+        undefined,
+        400,
+        codexRuntimeOffProvider('agents.defaults.models["openai/gpt-5"]', CODEX_MODEL_ONLY),
+      ],
+    ]) {
+      const codexBody = provisioningBody(namespace.id, secrets);
+      codexBody.configuration.values.agents.defaults = defaults;
+      if (providers !== undefined) {
+        codexBody.configuration.values.models = { providers };
+      }
+      const refused = await fixture.request(
+        "POST",
+        `/namespaces/${namespace.id}/agents/provision`,
+        { body: codexBody },
+      );
+      assert.equal(refused.status, status, JSON.stringify(refused.body));
+      assert.equal(refused.body.error.message, message);
+    }
+    // The refusals stored nothing: no provisioning job or Agent.
     assert.deepEqual(await storedProvisioningCounts(fixture.pool, namespace.id), {
       jobs: 0,
       agents: 0,
@@ -4183,7 +4407,7 @@ test(
       [
         {
           outcome: "permanent",
-          reason: "Dedicated Harness storage requires gateway routing and node enrollment.",
+          reason: DEDICATED_STORAGE_ROUTING_REQUIRED,
         },
       ],
     );
@@ -5944,5 +6168,101 @@ test(
       [namespace.id, failed.agentId],
     );
     assert.equal(revisions.rowCount, 1);
+  },
+);
+
+test(
+  "native admin opt-in provisions the exact origin in the first version and preserves retry identity",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    const fixture = await createFixture(context, {
+      nativeAdmin: true,
+      stopAfterProvisioning: true,
+    });
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const path = `/namespaces/${namespace.id}/agents/provision`;
+    const body = provisioningBody(namespace.id, secrets, { nativeAdmin: true });
+    body.configuration.secretBindings.EXTERNAL_SERVICE_TOKEN.delivery = { type: "env" };
+    const existingOrigin = "http://localhost:18789";
+    body.configuration.values.gateway = {
+      controlUi: { enabled: false, allowedOrigins: [existingOrigin] },
+      auth: { password: { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" } },
+    };
+    assert.equal(
+      (await fixture.request("GET", "/installation")).data.capabilities.nativeAdmin,
+      true,
+    );
+    // An incompatible policy must fail before a durable job or Configuration is created.
+    const conflict = structuredClone(body);
+    conflict.configuration.values.gateway.auth.mode = "token";
+    const refused = await fixture.request("POST", path, { body: conflict });
+    assert.equal(refused.status, 400, JSON.stringify(refused.body));
+    assert.deepEqual(await storedProvisioningCounts(fixture.pool, namespace.id), {
+      jobs: 0,
+      agents: 0,
+    });
+    const admitted = await fixture.request("POST", path, { body });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    assert.equal(
+      admitted.data.provisioning.agentId,
+      undefined,
+      "reserved identity is not a created Agent",
+    );
+    const queued = await provisioningRow(fixture.pool, namespace.id, body.requestId);
+    assert.match(queued.plan.reservedAgentId, identifier("agt"));
+    // The reserved identity and prepared policy must survive API restart before
+    // the first worker claim; replay must not reserve another Agent or origin.
+    await fixture.restartApi();
+    const replay = await fixture.request("POST", path, { body });
+    assert.equal(replay.status, 202, JSON.stringify(replay.body));
+    assert.equal(replay.data.provisioning.workId, admitted.data.provisioning.workId);
+    assert.deepEqual(
+      (await provisioningRow(fixture.pool, namespace.id, body.requestId)).plan,
+      queued.plan,
+    );
+    const changed = await fixture.request("POST", path, { body: { ...body, nativeAdmin: false } });
+    assert.equal(
+      changed.status,
+      409,
+      "opting out cannot replay a different plan under the same request ID",
+    );
+    await fixture.startWorker();
+    const status = await waitFor("native admin first revision handoff", async () => {
+      const result = await fixture.request("GET", admitted.data.provisioning.url);
+      assert.equal(result.status, 200, JSON.stringify(result.body));
+      assert.notEqual(result.data.status, "failed", JSON.stringify(result.body));
+      return result.data.revisionId ? result.data : undefined;
+    });
+    await fixture.stopWorker();
+    assert.equal(status.agentId, queued.plan.reservedAgentId);
+    const installation = await fixture.state.loadInstallation();
+    const origin = `https://${deriveNativeAdminHost(installation.id, { id: status.agentId, namespaceId: namespace.id }, "agents.oce.localhost")}:9443`;
+    const configuration = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/configurations/${status.configurationId}`,
+    );
+    assert.equal(configuration.data.generation, 1);
+    assert.deepEqual(configuration.data.values.gateway.controlUi.allowedOrigins, [
+      existingOrigin,
+      origin,
+    ]);
+    assert.equal(configuration.data.values.gateway.publicOrigin, origin);
+    assert.deepEqual(
+      configuration.data.values.gateway.auth.password,
+      body.configuration.values.gateway.auth.password,
+    );
+    assert.deepEqual(configuration.data.secretBindings, body.configuration.secretBindings);
+    const revisions = await fixture.state.read((view) =>
+      view.revisions.listRevisions(namespace.id, status.agentId),
+    );
+    assert.equal(revisions.length, 1);
+    assert.equal(nativeAdminConfigurationSupported(revisions[0], origin), true);
+    // Replay after the worker handoff must still refer to the same Agent and first revision.
+    await fixture.restartApi();
+    const completedReplay = await fixture.request("POST", path, { body });
+    assert.equal(completedReplay.status, 202, JSON.stringify(completedReplay.body));
+    assert.equal(completedReplay.data.provisioning.agentId, status.agentId);
+    assert.equal(completedReplay.data.provisioning.revisionId, status.revisionId);
   },
 );

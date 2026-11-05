@@ -4,6 +4,24 @@ Start with the symptom you can observe. When asking an operator for help, give
 them the Namespace, Agent ID, version ID, approximate time, and any request ID
 the console shows. Never include API keys, tokens, or Secret values.
 
+## Codex refuses the required permission profile
+
+If a dedicated Codex Agent on OpenShell reports `Codex did not grant the requested :danger-full-access profile`, ask the account administrator to check its managed permission requirements. A policy limited to `ReadOnly` or `WorkspaceWrite` cannot meet the [OpenShell permission-profile requirement](../../reference/drivers/openshell-sandbox.md#codex-permission-profile).
+
+Successful login, a ready credential source, or a model reply under another permission profile does not prove compatibility. Use an approved compatible credential or an administrator-approved policy change. For copied API-key or PAT credentials, [update the source](../../reference/credential-sources.md#update-a-source) and redeploy the Agent. Device-login sources reject updates: sign in again, replace the Agent binding and redeploy, following the same reference. Then [verify a model response from the actual Agent](../operate/model-verification.md). Keep managed policy, the Gateway permission check and OpenShell isolation intact.
+
+## The configured model is unavailable
+
+Open the failed version in the Agent’s **Deployment** tab. If the startup model check reports an unavailable model, [choose a model ID for the same credential](../operate/model-verification.md#choose-a-model-for-dedicated-codex).
+
+For the dedicated Codex quickstart, open **Configuration** → **Edit current Configuration**. In the draft, replace the old model ID in these three places:
+
+- Set `agents.defaults.model` to `codex/<new-id>`.
+- Rename its entry in `agents.defaults.models` to the same prefixed ID. Keep the entry’s Codex runtime settings.
+- Set the corresponding `models.providers.codex.models` entry’s `id` and `name` to the new ID without the prefix.
+
+Save the Configuration and select **Deploy new version** on the same Agent. When deployment succeeds, open **Open Agent UI** and send a prompt to confirm the model replies.
+
 ## The Agent or Namespace is missing
 
 Open **Namespaces** and confirm that you selected the intended Namespace. The
@@ -49,6 +67,22 @@ driver refused an object it does not own, such as a Deployment with the Agent's
 workload name but no OCE ownership labels. The driver never adopts such an
 object. Delete it, then deploy again.
 
+For a dedicated Agent, a connected workspace node alone does not establish
+enrollment: OCC must record its device through the setup handoff. If deployment
+stays pending, give the operator the version ID and worker's reason code. Keep
+the node's retained identity and workspace intact; repeated restarts do not prove
+that handoff completed. Unconfirmed credential possession after setup expiry requires the
+[scoped node-Secret recovery](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage);
+do not delete the node identity or workspace. See [workspace-node enrollment](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage).
+
+A second node runner using the same local profile fails immediately. Keep one
+runner per profile. Its lock remains held until clients, runtime shutdown and
+pending endpoint writes finish. Recovery requires a definitely dead owner or a
+process-start identity mismatch; age alone never permits reclaiming a live or
+ambiguous owner. Different profiles remain independent. This local runner lock
+does not coordinate other hosts or arbitrary credential writers; workload
+exclusion remains the execution provider's responsibility.
+
 For an OpenShell `workspace-baseline` failure with `created directory admission
 failed` and `insecure-permissions`, ask the operator to check the node-state
 directory's owner and mode. Its private root must be `0700`; OCE prepares it at
@@ -67,9 +101,8 @@ embedded replacement's model check rejected its key after it replaced the
 previous version; see
 [the selected version after a failed deployment](../../reference/agents/deployment.md#the-active-revision-after-a-failed-deployment).
 That selection cannot tell you whether the model still accepts
-the credential or can answer. Use [Deploy your first Agent](../first-agent.md)
-to verify your local setup or ask an operator to
-[verify a production workload](../deploy/production-agents.md#verify-production-workloads).
+the credential or can answer. [Verify the Agent’s model response](../operate/model-verification.md)
+or ask an operator to [verify the workload](../deploy/production-agents.md#verify-production-workloads).
 Check for an actual answer from the configured model, not just a selected
 version or successful file read.
 
@@ -85,6 +118,43 @@ use the following procedure.
 A dedicated Gateway does not recover its locks. After an unclean exit it stays
 unready with the failed check `gateway-state-lock`, and its log quotes the
 holder. Use the same procedure.
+
+A dedicated Harness Pod that stops without a clean shutdown during native setup,
+for example on a node failure, can leave the lock in its workspace node state. Each
+later version then fails the check `workspace-baseline`, and its log says `cannot
+verify Gateway ownership`. This applies to the Harness Deployment that
+Kubernetes Compute creates; a Harness run by a SandboxDriver has no such
+Deployment. Use the same procedure, with these changes:
+
+- Step 1: The holder is usually an earlier version's Pod that is already
+  deleted. Record the Pod name from the log's `holder N at POD_NAME/pid-ns`
+  text, not the current Pod. Before you stop the Agent (stopping deletes the
+  Harness Deployment), find the Deployment's volume mount at
+  `/home/node/.openclaw-node` and record its claim, `workspace-node-…` subPath
+  and the Pod's `securityContext`. After the stop, `kubectl get pods -A -l openclaw.dev/agent=AGENT_ID`
+  must list no Pod, including `Terminating` Pods, and the holder Pod must not
+  exist. Kubernetes removes a Pod only after its kubelet reports that the
+  containers stopped, unless someone force-deleted the Pod, deleted its node or
+  tainted the node `node.kubernetes.io/out-of-service`; `kubectl get nodes`
+  shows every node Ready without that taint. If one of these occurred, or a
+  node is unreachable, keep the Agent stopped until the
+  infrastructure operator verifies on the node that the holder's containers
+  exited.
+- Step 2: Start the maintenance container from the Harness image with the
+  Harness Pod's `runAsUser` and `runAsGroup`. Do not set `fsGroup`, unless you
+  also copy the Harness Pod's `fsGroupChangePolicy: OnRootMismatch`. With the
+  default policy, the kubelet gives the group read and write access to every
+  file on the claim, and the next version fails `workspace-baseline` with
+  `Runtime pin store owner is unsafe`. Mount only the subPath, not the claim
+  root, at the same path, and set `OPENCLAW_STATE_DIR` to
+  `/home/node/.openclaw-node`. The lock file names depend on this path. A
+  Harness has no configuration mount or profile; skip those items.
+- Step 3: Run the inspection and `--confirm` in the same container, for example
+  a Pod that sleeps, with `kubectl exec` for each command. A new Pod can change
+  the lock files' metadata, and OpenClaw then reports a changed record.
+- If a version already fails with `Runtime pin store owner is unsafe`, stop the
+  Agent and verify as in step 1. From a maintenance container without `fsGroup`, run
+  `chmod -R go-rwx,g-s /home/node/.openclaw-node`, then deploy again.
 
 1. Record the Agent, state volume and original container ID. On Kubernetes,
    also record the Pod UID and node. Stop the Agent in OCC and verify with the
@@ -133,6 +203,15 @@ a successful deployment does not confirm that a third-party connector is usable.
 
 ## An OpenShell Agent stops answering
 
+For a dedicated Codex Agent on OpenShell, if the Sandbox is running but replies
+time out, ask the operator to check the Agent Gateway's route to OpenShell:
+Gateway egress, matching OpenShell ingress
+and, for secure WebSocket (WSS) connections, the served certificate's coverage
+of the advertised service hostname. A successful control-endpoint check does
+not establish that the certificate covers the advertised hostname. Keep
+hostname verification enabled; correct the owning network or certificate
+configuration, then [verify a model response](../operate/model-verification.md).
+
 On OpenShell, OCE asks the gateway to restart the Harness whenever its process
 exits. `occ agent runtime AGENT_ID` shows
 `Harness Sandbox: starting (HARNESS_RESTARTING, last exit code N, restart N)` for
@@ -154,6 +233,10 @@ version whose Harness exited), the Console's **Live serving** shows
 failed `agent` `sandbox` check carrying the same code. Deploy the Agent again
 (`occ agent deploy AGENT_ID`): the new version gets a new Sandbox and the old one
 is removed. `unknown (UNAVAILABLE)` means OCC could not read the Sandbox record.
+
+An older development Sandbox can also fail exact-content adoption after a
+controller upgrade changes its immutable command. Deploy a new Agent revision
+with `occ agent deploy AGENT_ID`; OCE does not rewrite the existing Sandbox command.
 
 ## Read OpenShell sandbox and supervisor logs
 

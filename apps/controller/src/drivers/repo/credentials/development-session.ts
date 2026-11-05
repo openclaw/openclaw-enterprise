@@ -4,7 +4,6 @@ import { createCustody } from "./custody.ts";
 import { createLifecycle } from "./lifecycle.ts";
 import type { LifecycleOwner } from "./lifecycle.ts";
 import { createProviderQueue } from "./provider-queue.ts";
-import type { ProviderQueue } from "./provider-queue.ts";
 import { snapshotBinding } from "./sessions.ts";
 import type { SessionConstructor } from "./session-construction.ts";
 
@@ -14,12 +13,11 @@ export function developmentSessionConstructor(
     factory: RepositoryBackendFactory;
     config: ServiceConfig;
     clock: Clock;
-    providerQueue?: ProviderQueue;
   }>,
 ): SessionConstructor {
   const { factory, clock } = options;
   const limits = Object.freeze({ ...options.config.limits });
-  const queue = options.providerQueue ?? createProviderQueue(limits.providerQueue);
+  const queue = createProviderQueue(limits.providerQueue);
   return (admission, _resolved, hooks) => {
     let lifecycle: LifecycleOwner | undefined = undefined;
     let constructing = true;
@@ -60,11 +58,7 @@ export function developmentSessionConstructor(
       throw error;
     }
     constructing = false;
-    const authority = hooks.authorizeStanding
-      ? { authorizeStanding: () => hooks.authorizeStanding!(admission.authority.sessionId) }
-      : {};
     lifecycle = createLifecycle({
-      ...authority,
       clock,
       authority: admission.authority,
       deadlineMonoMs: admission.deadlineMonoMs,
@@ -76,6 +70,6 @@ export function developmentSessionConstructor(
       admitted: hooks.admitted,
       changed: hooks.changed,
     });
-    return { owned: { custody, driver, lifecycle, ...authority } };
+    return { owned: { custody, driver, lifecycle } };
   };
 }

@@ -3,7 +3,6 @@ import type {
   RepositoryServiceFactory,
 } from "../../../apps/controller/src/drivers/repo/credentials/backend-contracts.ts";
 import type { ServiceConfig } from "../../../apps/controller/src/drivers/repo/credentials/service-contracts.ts";
-import type { ProviderQueue } from "../../../apps/controller/src/drivers/repo/credentials/provider-queue.ts";
 import { appModule } from "./runtime.mjs";
 
 const [
@@ -22,7 +21,6 @@ export function createCredentialService(
     config: ServiceConfig;
     factory: RepositoryServiceFactory;
     clock: Clock;
-    providerQueue?: ProviderQueue;
   }>,
 ): import("../../../apps/controller/src/drivers/repo/credentials/internal-contracts.ts").CredentialServiceOwner {
   const construct =

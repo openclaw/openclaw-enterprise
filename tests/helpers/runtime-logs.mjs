@@ -21,6 +21,7 @@ import { createTestConfigurationDriver } from "./configuration-driver.mjs";
 import { createReadyComputeDriver } from "./development.mjs";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import { grantRole } from "./iam-grants.mjs";
+import { jsonRequestInit } from "./inject-json.mjs";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 
 export const runtimeLogPodUid = "0f3b6c1e-7d52-4f4b-9a2e-5c6d7e8f9a01";
@@ -55,6 +56,8 @@ export function createRuntimeLogComputeDriver(options = {}) {
     extraPods: [],
     /** `false` reports no Gateway Pod, as for a version whose Pods are gone. */
     gatewayPod: true,
+    /** Revisions that report no Gateway Pod, as a version stopped and replaced since. */
+    podlessRevisions: [],
     /**
      * `{ ready }` adds a dedicated Harness Pod and the Agent (Harness) source;
      * `{ created: false }` lists the source with no Pod; `{ ready, stale: true }`
@@ -93,7 +96,9 @@ export function createRuntimeLogComputeDriver(options = {}) {
             }
             const name = podName(binding.revision);
             const pods = [
-              ...(state.gatewayPod === false ? [] : [{ name, uid: state.podUid }]),
+              ...(state.gatewayPod === false || state.podlessRevisions.includes(binding.revision.id)
+                ? []
+                : [{ name, uid: state.podUid }]),
               ...state.extraPods.map((pod) => ({ name: pod.name, uid: pod.uid })),
             ];
             const harnessPods =
@@ -347,16 +352,14 @@ export async function createRuntimeLogFixture(options = {}) {
 
   async function request(method, path, { session = adminSession, serviceKey, body } = {}) {
     const response = await app.fetch(
-      new Request(new URL(path, "http://127.0.0.1"), {
-        method,
-        headers: {
-          ...(serviceKey === undefined
-            ? authenticatedHeaders(session)
-            : { "x-api-key": serviceKey }),
-          ...(body === undefined ? {} : { "content-type": "application/json" }),
-        },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      }),
+      new Request(
+        new URL(path, "http://127.0.0.1"),
+        jsonRequestInit(
+          method,
+          body,
+          serviceKey === undefined ? authenticatedHeaders(session) : { "x-api-key": serviceKey },
+        ),
+      ),
     );
     const text = await response.text();
     return {

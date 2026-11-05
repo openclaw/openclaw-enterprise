@@ -297,7 +297,9 @@ test(
 /** Makes the Agent's row unreadable: the column only checks for an object, the reader each entry. */
 async function unreadableAgent(fixture, owner) {
   await fixture.observerPool.query(
-    `UPDATE occ.agents SET plugins = '{"entries": "unreadable"}'::jsonb WHERE id = $1`,
+    `UPDATE occ.agents SET plugins = '{"entries": "unreadable"}'::jsonb,
+       plugin_driver = '{"id": "occ-plugin", "implementation": "occ/openclaw-plugin"}'::jsonb
+     WHERE id = $1`,
     [owner.id],
   );
   return () => {};
@@ -449,9 +451,13 @@ test(
     stop.succeed();
     await assertWorkEnds(fixture, replacement, "succeeded", "REVISION_SUPERSEDED", due);
     assert.ok(!driver.running.has(replacement.id), "the refused candidate was stopped");
+    // The refused stop counts as the superseded version's own stop (finding 3075), which it
+    // does not repeat, and the newer sweep skips it within the lease.
+    assert.equal(driver.count(replacement), 1);
     // Its sweep retried on the queue's growing backoff while the stop failed. Each failed sweep
     // spent an attempt, so its retry is made due only now that the stop succeeds.
     await waitForWorkStateDue(fixture, newer, "succeeded");
+    assert.equal(driver.count(replacement), 1);
   },
 );
 

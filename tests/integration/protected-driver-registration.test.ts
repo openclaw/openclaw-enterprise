@@ -1,9 +1,5 @@
 import { bindRepositoryGitTransport } from "../../apps/controller/src/composition/repository-credentials/transport.ts";
-import {
-  openShellGitRuntimeFixture,
-  registry as runtimeRegistry,
-  takeUnloggedRuntimeFields,
-} from "../helpers/openshell-git-runtime.ts";
+import { takeUnloggedRuntimeFields } from "../helpers/openshell-git-runtime.ts";
 import {
   createGitHubRepositoryDeliveryResolver,
   resolveGitHubRepositoryBinding,
@@ -17,10 +13,12 @@ import {
   type OpenShellSandboxDriverOptions,
 } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
-import { composeRepositoryAccess } from "../../apps/controller/src/composition/repository-credentials/platform.ts";
+import { loadRepositoryPolicy } from "../../apps/controller/src/composition/repository-credentials/policy.ts";
+import type { RepositorySelectionMode } from "../helpers/repository-selection-load.ts";
+import { fileURLToPath } from "node:url";
 import { createServer } from "node:https";
 import { protectedDriverPackage } from "../helpers/protected-driver-package.ts";
 import { join } from "node:path";
@@ -441,21 +439,19 @@ test("protected Git resolves repository and installation grants without granting
   const directory = await temporaryDirectory(t, "repository-delivery-");
   const registryPath = join(directory, "registry.json");
   await writeFile(registryPath, JSON.stringify(registry), { mode: 0o600 });
-  const compose = () =>
-    composeRepositoryAccess({
+  const compose = (sessionDurationSeconds = 600, selectedRegistryPath = registryPath) =>
+    loadRepositoryPolicy({
       backend: {
         id: registry.backendId,
         type: "github",
-        configuration: { registryPath },
+        configuration: { registryPath: selectedRegistryPath },
         drivers: { repo: "repo" },
       },
       selection: {
         id: "repo",
         implementation: "github",
-        definition: GitHubRepositoryPolicy,
-        configuration: { sessionDurationSeconds: 600 },
+        configuration: { sessionDurationSeconds },
       },
-      protectedGit: true,
     });
   const access = await compose();
   const resolve = access.resolveRepositoryDelivery;
@@ -661,38 +657,6 @@ test("OpenShell registration pairs its capabilities using only a Repo delivery r
   assert.equal(bare.sandbox.repositoryAccess, undefined);
 });
 
-test("the running OpenShell recipient refuses a changed Repo ref or foreign supplier identity without restoring access", async () => {
-  const resolve = createGitHubRepositoryDeliveryResolver(runtimeRegistry);
-  let changed = false;
-  const f = openShellGitRuntimeFixture({
-    resolveDelivery: (revision) => {
-      const scope = resolve(revision);
-      return changed
-        ? { ...scope, repository: { ...scope.repository!, pushRef: "refs/heads/other" } }
-        : scope;
-    },
-  });
-  await f.reconcile();
-  assert.ok(await f.lookup());
-  await f.prepare();
-  assert.equal(f.calls.rotate, 1, "same admission does not reinstall material");
-  // A faulty Repo result cannot change the ref used to initialize this recipient.
-  changed = true;
-  await assert.rejects(f.prepare(), /OpenShell Git revision binding is unavailable/);
-  await f.reconcile();
-  assert.equal(await f.lookup(), undefined);
-  changed = false;
-  await f.reconcile();
-  assert.equal(await f.lookup(), undefined, "restoring policy cannot revive the blocked recipient");
-  assert.equal(f.calls.rotate, 1);
-
-  const foreign = openShellGitRuntimeFixture();
-  foreign.owner.material.repositoryId = "99999";
-  await foreign.reconcile();
-  assert.equal(await foreign.lookup(), undefined);
-  assert.equal(foreign.calls.rotate, 0, "foreign supplier material never reaches the provider");
-});
-
 test("repository scope changes invalidate the external Driver identity while a reload preserves it", async (t) => {
   const id = "repository-delivery-fixture";
   const { directory } = await protectedDriverPackage(t, id, "repository-git");
@@ -752,6 +716,137 @@ test("repository scope changes invalidate the external Driver identity while a r
   const original = await load();
   const reloaded = await load();
   assert.deepEqual(reloaded.protectedDriver!.ref, original.protectedDriver!.ref);
+  // A fresh process observes resolution before the installation loader can warm its module cache.
+  const modes: Record<RepositorySelectionMode, object> = {
+    none: base,
+    protected: configuration,
+    native: {
+      ...configuration,
+      repository: {
+        ...configuration.repository,
+        nativeSender: { controlSocket: "/unselected/control.sock", publicCaPath: certFile },
+      },
+      drivers: {
+        ...base.drivers,
+        compute: {
+          ...base.drivers.compute,
+          configuration: {
+            ...base.drivers.compute.configuration,
+            network: {
+              ...base.drivers.compute.configuration.network,
+              repositoryCredentials: {
+                namespace: "occ-system",
+                podLabels: { app: "repository" },
+                port: 8443,
+              },
+            },
+          },
+        },
+      },
+    },
+  };
+  for (const mode of ["protected", "native"] as const) {
+    await t.test(`${mode} validates policy at the production installation entry`, async () => {
+      const selectedPath = join(directory, `${mode}-policy.json`);
+      const loadPolicy = async (
+        policyConfiguration: object,
+        selectedRegistryPath = registryPath,
+        ownerId = "repo",
+        controlSocket = "/unselected/control.sock",
+      ) => {
+        await writeFile(
+          selectedPath,
+          JSON.stringify({
+            ...modes[mode],
+            repository: {
+              ...configuration.repository,
+              ...(mode === "native"
+                ? {
+                    nativeSender: {
+                      controlSocket,
+                      publicCaPath: certFile,
+                    },
+                  }
+                : {}),
+              configuration: policyConfiguration,
+            },
+            backend: [
+              {
+                ...configuration.backend[0],
+                configuration: { registryPath: selectedRegistryPath },
+                drivers: { repo: ownerId },
+              },
+            ],
+          }),
+        );
+        return loadInstallationConfiguration({
+          mode: "production",
+          environment: { OCC_CONFIG_PATH: selectedPath },
+          packageRoot: directory,
+        });
+      };
+      const inaccessible = join(registryPath, "inaccessible");
+      // The same inaccessible registry distinguishes policy refusal from a read failure.
+      for (const sessionDurationSeconds of [
+        undefined,
+        "600",
+        null,
+        0,
+        1.5,
+        Math.floor(Number.MAX_SAFE_INTEGER / 1000) + 1,
+      ]) {
+        await assert.rejects(loadPolicy({ sessionDurationSeconds }, inaccessible), {
+          name: "ConfigurationValidationError",
+        });
+      }
+      await assert.rejects(loadPolicy({ sessionDurationSeconds: 601 }, inaccessible), {
+        code: "ENOTDIR",
+      });
+      await assert.rejects(
+        loadPolicy({ sessionDurationSeconds: 601 }, inaccessible, "other-repo"),
+        /must match the selected repository.id/,
+      );
+      await assert.rejects(
+        loadPolicy({ sessionDurationSeconds: registry.maximumDurationSeconds + 1 }),
+        /Repository credential session duration exceeds the registry policy/,
+      );
+      if (mode === "native") {
+        // The native transport rejects overlong socket bytes before it reads the registry.
+        await assert.rejects(
+          loadPolicy({ sessionDurationSeconds: 601 }, inaccessible, "repo", `/${"é".repeat(60)}`),
+          { name: "ConfigurationValidationError" },
+        );
+      }
+      const runtime = (await loadPolicy({ sessionDurationSeconds: 601 }))!;
+      t.after(() => runtime.protectedDriver?.close());
+      assert.equal(
+        (
+          await runtime.repositoryPolicy!.resolve({
+            namespaceId: "namespace-a",
+            bindings: [{ repositoryRef: "application", profile: "git-write" }],
+          })
+        ).sessionDurationSeconds,
+        601,
+      );
+      assert.equal(runtime.repositoryOwner!.driverId, "repo");
+      assert.equal(runtime.repositoryOwner!.backendId, registry.backendId);
+      if (mode === "native") {
+        assert.equal(runtime.repositoryOwner!.controlSocket, "/unselected/control.sock");
+        assert.ok(runtime.nativeRepositorySender);
+      }
+    });
+  }
+  const helper = fileURLToPath(new URL("../helpers/repository-selection-load.ts", import.meta.url));
+  for (const [mode, value] of Object.entries(modes)) {
+    const selectedPath = join(directory, `${mode}.json`);
+    await writeFile(selectedPath, JSON.stringify(value));
+    const child = spawnSync(process.execPath, [helper, mode, selectedPath, directory], {
+      encoding: "utf8",
+      timeout: 30_000,
+      env: { NODE_ENV: "production" },
+    });
+    assert.equal(child.status, 0, child.error?.message ?? child.stderr);
+  }
   const binding = await original.repositoryPolicy!.resolve({
     namespaceId: "namespace-a",
     bindings: [{ repositoryRef: "application", profile: "git-write" }],

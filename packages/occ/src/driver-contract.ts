@@ -161,7 +161,10 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
     );
   }
   if (driver.capability === "plugin") {
-    return typeof candidate.listCatalog === "function";
+    return (
+      (candidate.harnessId === "openclaw" || candidate.harnessId === "codex") &&
+      typeof candidate.listCatalog === "function"
+    );
   }
   if (driver.capability === "channel") {
     return (
@@ -200,6 +203,7 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
 function sandboxPolicyContract(candidate: Record<string, unknown>): boolean {
   const policy = candidate.networkPolicy;
   const methods = [
+    "admitProtectedCodexArtifactPolicy",
     "admitNetworkPolicy",
     "observeNetworkPolicy",
     "applyNetworkPolicy",

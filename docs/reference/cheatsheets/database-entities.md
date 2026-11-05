@@ -46,6 +46,7 @@ Stores Agent drafts, their desired runtime state, and the selected version refer
 - `execution_mode`
 - `gateway_managed_mode`
 - `plugins`
+- `plugin_driver` (registered ID and implementation that admitted the saved selections)
 - `plugin_approvers`
 - `repository_bindings`
 - `repository_access` (default and explicit per-repository overrides)
@@ -84,6 +85,10 @@ Stores numbered, immutable snapshots of Agent settings accepted for deployment.
 - `revision_number`
 - `backend_id`
 - `gateway_managed_mode`
+- `first_deployment_digest`: nullable SHA-256 intent digest, permitted only on revision 1;
+  binds the Installation, actor, Namespace, Agent, key, and reviewed Configuration tuple.
+  Private [receipt recovery](../../guides/topics/agent-revisions.md#guarded-first-deployment-and-receipt-recovery)
+  metadata, separate from `admitted_spec` and public revision responses.
 - `admitted_spec`
 - `admitted_at`
 

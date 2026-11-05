@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import type { TestContext } from "node:test";
-import { setTimeout as delay } from "node:timers/promises";
 import type pg from "pg";
 import type {
   Agent,
@@ -18,10 +17,11 @@ import {
   testPool,
   withPool,
 } from "../helpers/postgres-database.mjs";
+import { waitUntil } from "../helpers/wait-for.mjs";
 
 const id = (prefix: string) => `${prefix}_${randomUUID()}`;
 const options = { ...requiresPostgres, timeout: 30_000 };
-async function fixture(t: TestContext) {
+async function fixture(t: TestContext, sourceCount = 2) {
   await ensurePostgresAgentBootstrap(t, {
     label: "revision-owner",
     authSecret: "revision-owner-fixture-signing-secret",
@@ -50,10 +50,10 @@ async function fixture(t: TestContext) {
     },
     createdAt,
   };
-  const sources: CredentialSource[] = ["first", "second"].map((label) => ({
+  const sources: CredentialSource[] = Array.from({ length: sourceCount }, (_, index) => ({
     id: id("cs"),
     namespaceId: ns.id,
-    name: label,
+    name: `source-${index}`,
     type: "openai",
     driverId: "gateway-original",
     ownerCapability: "credential_gateway",
@@ -132,19 +132,59 @@ async function fixture(t: TestContext) {
 
 // Observe a real server lock wait; time alone is not evidence that insertion reached it.
 async function waitForLock(pool: pg.Pool, name: string): Promise<void> {
-  const deadline = Date.now() + 5000;
-  do {
-    const result = await pool.query(
-      "SELECT 1 FROM pg_stat_activity WHERE application_name = $1 AND wait_event_type = 'Lock' AND cardinality(pg_blocking_pids(pid)) > 0",
-      [name],
-    );
-    if (result.rowCount === 1) {
-      return;
-    }
-    await delay(10);
-  } while (Date.now() < deadline);
-  assert.fail("writer did not reach the controlled lock");
+  await waitUntil(
+    "the writer to reach the controlled lock",
+    async () =>
+      (
+        await pool.query(
+          "SELECT 1 FROM pg_stat_activity WHERE application_name = $1 AND wait_event_type = 'Lock' AND cardinality(pg_blocking_pids(pid)) > 0",
+          [name],
+        )
+      ).rowCount === 1,
+    { timeoutMs: 5000, intervalMs: 10 },
+  );
 }
+
+test(
+  "PostgreSQL accepts 64 credential sources per draft and revision and rejects a 65th",
+  options,
+  async (t) => {
+    const { pool, store, ns, agent, sources, input, listed } = await fixture(t, 64);
+    await store.transact((unit) => unit.revisions.createRevision(input));
+    assert.deepEqual(
+      (await store.read((view) => view.agents.findAgent(ns.id, agent.id)))?.credentialSources,
+      agent.credentialSources,
+    );
+    assert.deepEqual(
+      (await store.read((view) => view.revisions.findRevision(ns.id, agent.id, input.id)))
+        ?.credentialSources,
+      listed,
+    );
+
+    // Write as the application role without API validation. The database must reject
+    // an otherwise valid additional source on both the draft and the immutable revision.
+    const extra = { ...sources[0]!, id: id("cs"), name: "extra" };
+    await store.transact((unit) => unit.credentialSources.createCredentialSource(extra));
+    await assert.rejects(
+      pool.query("UPDATE occ.agents SET credential_sources = $1::jsonb WHERE id = $2", [
+        JSON.stringify([...agent.credentialSources!, { sourceId: extra.id }]),
+        agent.id,
+      ]),
+      { code: "23514", constraint: "agents_credential_sources_valid" },
+    );
+    await assert.rejects(
+      pool.query(
+        `INSERT INTO occ.agent_revisions
+         (id, namespace_id, agent_id, revision_number, backend_id, admitted_spec, admitted_at)
+       SELECT $1, namespace_id, agent_id, revision_number + 1, backend_id,
+         jsonb_set(admitted_spec, '{credential_sources}', $2::jsonb), admitted_at
+       FROM occ.agent_revisions WHERE id = $3`,
+        [id("rev"), JSON.stringify([...listed, { ...listed[0]!, sourceId: extra.id }]), input.id],
+      ),
+      { code: "23514", constraint: "agent_revisions_admitted_snapshot" },
+    );
+  },
+);
 
 test("revision insertion owns its snapshot before a source lock wait", options, async (t) => {
   const { pool, store, ns, agent, sources, listed, input, writer } = await fixture(t);

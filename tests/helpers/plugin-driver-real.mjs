@@ -1,4 +1,4 @@
-import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
+import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -271,7 +271,7 @@ function installationConfiguration({
   configuration.drivers.secret.configuration.authentication = authentication;
   configuration.drivers.configuration.id = "configuration-kubernetes-plugin-real";
   configuration.drivers.compute.id = "compute-kubernetes-plugin-real";
-  configuration.drivers.plugin = { id: pluginDriverId, configuration: pluginDriverConfiguration };
+  configuration.drivers.plugin = [{ id: pluginDriverId, configuration: pluginDriverConfiguration }];
   if (workspaceGateway !== undefined) {
     configuration.drivers.compute.configuration.gatewayRouting = workspaceGateway.routing;
     configuration.drivers.compute.configuration.network.gatewayTrustedProxyCidrs =
@@ -1046,17 +1046,25 @@ async function useLocalPluginRuntimeAppServerToken() {
 const codexNativeCatalogScript = String.raw`
 ${PLUGIN_RUNTIME_HELPERS}
 ${codexLocalAppServerTokenScript}
+let catalogStage = "local app-server authentication";
 (async () => {
   await useLocalPluginRuntimeAppServerToken();
-  // Startup has already resolved and installed A from this native catalog.
-  const listed = await codexAppServerRequest("plugin/list", {});
-  const requestedIds = new Set(JSON.parse(process.argv[1]));
+  const deadline = Date.now() + CODEX_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS;
   const entries = [];
-  for (const entry of pluginRuntimeTranslator.codexCatalogEntries(listed)) {
-    if (!requestedIds.has(entry.id)) continue;
-    const [params] = pluginRuntimeTranslator.codexReadParamsForSelections({
-      [entry.id]: { enabled: true, toolDefaults: { approval: "provider_default", reviewer: "auto" } },
-    }, listed);
+  for (const id of new Set(JSON.parse(process.argv[1]))) {
+    // Look up only the requested plugin, through the same paginated search as startup.
+    catalogStage = "plugin/search";
+    let params;
+    try {
+      [params] = await searchCodexSelectionParams({ [id]: {} }, codexAppServerRequest, deadline);
+    } catch (error) {
+      // The plugin-driver scenario supplies alternative candidates that may be absent.
+      if (error.message === "Codex plugin catalog did not contain the selected plugin.") {
+        continue;
+      }
+      throw error;
+    }
+    catalogStage = "plugin/read";
     try {
       const detail = await codexAppServerRequest("plugin/read", params);
       if (!isPlainObject(detail?.plugin) || !Array.isArray(detail.plugin.apps)) {
@@ -1065,15 +1073,18 @@ ${codexLocalAppServerTokenScript}
       const appIds = detail.plugin.apps
         .map((app) => app?.id)
         .filter((id) => typeof id === "string" && id.length > 0);
-      entries.push({ ...entry, remotePluginId: params.pluginName,
+      entries.push({ id, remotePluginId: params.pluginName,
         detailAvailable: true, appCount: detail.plugin.apps.length, appIds });
     } catch {
-      entries.push({ ...entry, remotePluginId: params.pluginName, detailAvailable: false });
+      entries.push({ id, remotePluginId: params.pluginName, detailAvailable: false });
     }
   }
   process.stdout.write(JSON.stringify({ entries }));
-})().catch(() => {
-  process.stderr.write("Native Codex catalog query failed.");
+})().catch((error) => {
+  // RPC errors can contain upstream response text. Emit only locally classified facts.
+  const timedOut = error.message?.startsWith("Codex app-server plugin runtime request timed out during ");
+  const reason = timedOut ? "timed out" : "failed";
+  process.stderr.write("Native Codex catalog query " + reason + " during " + catalogStage + ".");
   process.exitCode = 1;
 });
 `;
@@ -2114,7 +2125,6 @@ export function createNativePluginAssertions({
     assert.ok(Array.isArray(parsed.entries), "native Codex catalog discovery must return entries.");
     return parsed.entries.map((entry) => ({
       id: String(entry.id),
-      name: String(entry.name),
       remotePluginId: String(entry.remotePluginId),
       detailAvailable: entry.detailAvailable === true,
       appCount: Number.isSafeInteger(entry.appCount) ? entry.appCount : undefined,
@@ -2525,8 +2535,8 @@ export async function createPluginDriverRealFixture(
       environment: { ...driverEnvironment, OCC_CONFIG_PATH: workerConfigurationPath },
     }),
   ]);
-  assert.equal(apiDrivers.pluginDriver?.id, pluginDriverId);
-  assert.equal(workerDrivers.pluginDriver?.id, pluginDriverId);
+  assert.equal(apiDrivers.pluginDrivers[0]?.id, pluginDriverId);
+  assert.equal(workerDrivers.pluginDrivers[0]?.id, pluginDriverId);
 
   const serviceAccountDriverFactory =
     codexServiceAccountImport === undefined

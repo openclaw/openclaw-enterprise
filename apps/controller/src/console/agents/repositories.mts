@@ -179,7 +179,9 @@ function validOptions(value: unknown): value is RepositoryOption[] {
       (description !== undefined && typeof description !== "string") ||
       !Array.isArray(allowedProfiles) ||
       allowedProfiles.length === 0 ||
-      !allowedProfiles.every((id: unknown) => repositoryProfile(id)) ||
+      !allowedProfiles.every(
+        (id: unknown) => id === "github-installation" || repositoryProfile(id),
+      ) ||
       refs.has(repositoryRef)
     ) {
       return false;
@@ -222,7 +224,6 @@ export function createRepositoryFields(
     expanded: new Set(),
     undo: undefined,
   };
-  const initialAccess = JSON.stringify(accessIntent());
   // Set before any render: a held form renders before its first read (finding 2909).
   let searchState: SearchState = { query: "", browsing: false, dismissed: false, page: 0 };
   let loadGeneration = 0;
@@ -277,29 +278,39 @@ export function createRepositoryFields(
     cards,
     announcements,
     validation,
-    element(
-      "details",
-      { className: "repository-access-details" },
-      element("summary", {}, "Runtime support and access limits"),
-      element(
-        "p",
-        { className: "hint" },
-        "Embedded OpenClaw and Dedicated Codex on Kubernetes, without a Sandbox Driver. Deployment rechecks runtime compatibility. Model authentication is configured separately.",
-      ),
-      element(
-        "p",
-        { className: "hint" },
-        "GitHub App keys and installation tokens stay outside the Agent. The Agent receives bounded gateway authentication material and client configuration.",
-      ),
-      element(
-        "p",
-        { className: "hint" },
-        "API access is bounded by the selected level and installation token. GraphQL can also return public information allowed by GitHub. Unselected private repositories remain outside the grant.",
-      ),
-    ),
+    initial.agentId
+      ? null
+      : element(
+          "details",
+          { className: "repository-access-details" },
+          element("summary", {}, "Runtime support and access limits"),
+          element(
+            "p",
+            { className: "hint" },
+            "Embedded OpenClaw and Dedicated Codex on Kubernetes, without a Sandbox Driver. Deployment rechecks runtime compatibility. Model authentication is configured separately.",
+          ),
+          element(
+            "p",
+            { className: "hint" },
+            "GitHub App keys and installation tokens stay outside the Agent. The Agent receives bounded gateway authentication material and client configuration.",
+          ),
+          element(
+            "p",
+            { className: "hint" },
+            "API access is bounded by the selected level and installation token. GraphQL can also return public information allowed by GitHub. Unselected private repositories remain outside the grant.",
+          ),
+        ),
   );
   const option = (ref: string) => state.options.find((entry) => entry.repositoryRef === ref);
-  const effective = (ref: string) => state.selected.get(ref) ?? state.profile;
+  // Only new selections may derive the collaborator profile from the Contributor default.
+  // Keep this intent through remove/undo; saved inheritance is never inferred from discovery.
+  const newCollaborators = new Set<string>();
+  const effective = (ref: string) =>
+    state.selected.get(ref) ??
+    (newCollaborators.has(ref) && state.profile === "git-full"
+      ? "github-repository"
+      : state.profile);
+  const initialAccess = JSON.stringify(accessIntent());
   const invalid = (ref: string) => !option(ref)?.allowedProfiles.includes(effective(ref));
   const profileLabel = (profile: string) =>
     repositoryProfile(profile)?.label ?? "Unknown access level";
@@ -379,7 +390,11 @@ export function createRepositoryFields(
     change: (profile: string) => void,
   ) {
     const group = element("div", { className: "repository-profiles" });
-    const contributor = allowed.includes("git-full") ? "git-full" : "git-write";
+    const contributor = allowed.includes("github-repository")
+      ? "github-repository"
+      : allowed.includes("git-full")
+        ? "git-full"
+        : "git-write";
     for (const [value, title, help] of [
       ["git-read", "Read-only", "Read code, pull requests, and issues."],
       [
@@ -435,7 +450,7 @@ export function createRepositoryFields(
       {
         className: "repository-customize",
         "data-access-customize": id,
-        hidden: profile === "git-read",
+        hidden: profile === "git-read" || profile === "github-repository",
       },
       element(
         "summary",
@@ -465,7 +480,7 @@ export function createRepositoryFields(
   function renderAccess() {
     access.hidden = !state.options.length && !state.selected.size;
     const expanded = access.querySelector("details")?.open;
-    const allowed = repositoryProfiles.map((p) => p.id);
+    const allowed = repositoryProfiles.filter((p) => p.id !== "github-repository").map((p) => p.id);
     const custom = [...state.selected].filter(
       ([ref, profile]) =>
         profile !== null &&
@@ -511,6 +526,12 @@ export function createRepositoryFields(
     if (state.undo?.ref === ref) {
       restoreUndo();
     } else {
+      const profiles = option(ref)?.allowedProfiles;
+      if (profiles?.length === 1 && profiles[0] === "github-repository") {
+        newCollaborators.add(ref);
+      } else {
+        newCollaborators.delete(ref);
+      }
       state.selected.set(ref, null);
     }
     state.undo = undefined;
@@ -585,6 +606,9 @@ export function createRepositoryFields(
     if (state.discovery !== "ready" || !state.options.length) {
       return;
     }
+    const searchSummary = matches.length
+      ? `${matches.length} matching ${matches.length === 1 ? "repository" : "repositories"}`
+      : "No repositories match this search. If a repository is missing, ask your Namespace operator.";
     results.append(
       element(
         "div",
@@ -594,7 +618,7 @@ export function createRepositoryFields(
           "p",
           { className: "hint", role: "status" },
           query
-            ? `${matches.length} matching ${matches.length === 1 ? "repository" : "repositories"}`
+            ? searchSummary
             : !small &&
                 !searchState.browsing &&
                 matches.some((entry) => recent.includes(entry.repositoryRef))
@@ -671,15 +695,6 @@ export function createRepositoryFields(
     }
     if (visible.length) {
       results.append(list);
-    }
-    if (!visible.length) {
-      results.append(
-        element(
-          "p",
-          { className: "hint" },
-          query ? "No repositories match this search." : "No approved repositories.",
-        ),
-      );
     }
     if (!small && !searchState.browsing && matches.length > count) {
       results.append(
@@ -999,7 +1014,11 @@ export function createRepositoryFields(
       defaultProfile: state.profile,
       repositories: [...state.selected].map(([repositoryRef, profile]) => ({
         repositoryRef,
-        ...(profile === null ? {} : { profile }),
+        ...(profile !== null
+          ? { profile }
+          : effective(repositoryRef) !== state.profile
+            ? { profile: effective(repositoryRef) }
+            : {}),
       })),
     };
   }
@@ -1023,6 +1042,7 @@ export function createRepositoryFields(
     if (clearSelections) {
       state.options = [];
       state.selected.clear();
+      newCollaborators.clear();
       state.undo = undefined;
       state.expanded.clear();
       state.showAll = false;
@@ -1049,17 +1069,21 @@ export function createRepositoryFields(
           false,
         );
       }
-      state.options = options;
+      state.options = options.flatMap((option) => {
+        const allowedProfiles = option.allowedProfiles.filter((id) => id !== "github-installation");
+        return allowedProfiles.length ? [{ ...option, allowedProfiles }] : [];
+      });
       state.discovery = "ready";
       choices.setAttribute("aria-busy", "false");
-      if (clearSelections) {
-        status.textContent = options.length
-          ? "Select current repositories and an authorization level to retry this Agent, or start a new draft."
-          : "No approved repositories are available for this Namespace. Start a new draft to continue without repository access.";
+      if (!state.options.length) {
+        const next = clearSelections
+          ? "Start a new draft to continue without repository access."
+          : "You can continue without repository access.";
+        status.textContent = `No approved repositories are available for this Namespace. Ask your Namespace operator about missing repositories. ${next}`;
       } else {
-        status.textContent = options.length
-          ? "Select repositories for this Agent. Leave all unselected to continue without repository access."
-          : "No approved repositories are available for this Namespace. You can continue without repository access.";
+        status.textContent = clearSelections
+          ? "Select current repositories and an authorization level to retry this Agent, or start a new draft."
+          : "Select repositories for this Agent. Leave all unselected to continue without repository access.";
       }
       revealInvalidSelections();
       render();

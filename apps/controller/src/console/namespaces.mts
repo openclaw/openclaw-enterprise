@@ -37,7 +37,7 @@ export interface NamespacePageContext {
 
 // The API's Name rule, mirrored because the console loads no contracts code: PLAIN_TEXT_PATTERN
 // and NAME_MAX_CHARACTERS in packages/contracts/src/api/plain-text.ts, counted in characters
-// (code points) as Ajv counts maxLength. tests/conformance/console-namespace-name.test.mjs keeps
+// (code points) as Ajv counts maxLength. tests/conformance/console-namespace-name.test.ts keeps
 // the two equal.
 // eslint-disable-next-line no-control-regex -- the rule refuses control characters by range.
 export const NAME_PATTERN = /^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$/u;
@@ -163,8 +163,12 @@ export function renderNamespaces(
         {
           ...context,
           statusChanged: setStatus,
-          onRemoved(namespace) {
-            const focused = row.contains(document.activeElement);
+          onRemoved(namespace, refocus) {
+            // The check Refresh requested disabled it while it read, which dropped focus to the
+            // page; focus left there goes to the outcome too.
+            const active = document.activeElement;
+            const focused =
+              row.contains(active) || (refocus && (!active || active === document.body));
             row.remove();
             context.onRemoved(namespace);
             outcome.replaceChildren(

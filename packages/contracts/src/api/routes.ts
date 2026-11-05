@@ -17,6 +17,8 @@ import { Type } from "typebox";
 
 import {
   AgentParams,
+  FirstDeploymentIntent,
+  FirstDeploymentRecoveryTuple,
   AgentId,
   NamespaceId,
   SecretId,
@@ -69,6 +71,8 @@ import {
 } from "./common.ts";
 import {
   AgentListResponse,
+  FirstDeploymentReceiptResponse,
+  FirstDeploymentRecoveryResponse,
   AgentDeviceAuthorizationResponse,
   AgentModelListResponse,
   AgentPluginCatalogResponse,
@@ -1238,7 +1242,7 @@ export const occApiRoutes = [
     resourceKind: "agent",
     authorizationTarget: "agent",
     summary:
-      "Read plugin details for an active Agent; caller needs Agent read/update. Curated discovery needs no Secret; hosted discovery needs the Agent's bound Service Accounts Secret with caller and Agent Secret operate grants",
+      "Read plugin details for an active Agent with Agent read/update access. Hosted discovery uses the Agent's bound credential. Managed MCP discovery uses an eligible saved connection. The caller and Agent need operate access to the credential",
     tags: ["Agents"],
     schema: {
       querystring: EmptyQuery,
@@ -1775,6 +1779,50 @@ export const occApiRoutes = [
       params: AgentParams,
       body: AgentRuntimeCredentialsBody,
       response: { 200: AgentRuntimeCredentialResponse, ...createErrors },
+    },
+  },
+  {
+    operationId: "deployAgentFirst",
+    method: "POST",
+    path: "/namespaces/:namespaceId/agents/:agentId/deploy-first",
+    action: "openclaw.agents.deploy",
+    iamAction: "deploy",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary:
+      "Admit the first deployment of an exact reviewed Configuration; requires Configuration read",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: AgentParams,
+      body: FirstDeploymentIntent,
+      response: { 202: FirstDeploymentReceiptResponse, ...createErrors },
+    },
+  },
+  {
+    operationId: "recoverAgentFirstDeployment",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/deploy-first/:key/:expectedConfigurationId/:expectedGeneration",
+    action: "openclaw.agents.deploy",
+    iamAction: "deploy",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary:
+      "Read an exact first-deployment receipt; null does not prove failure; requires Configuration read",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: Type.Object(
+        { ...AgentParams.properties, ...FirstDeploymentRecoveryTuple.properties },
+        { additionalProperties: false },
+      ),
+      response: {
+        200: {
+          ...FirstDeploymentRecoveryResponse,
+          headers: { "Cache-Control": Type.Literal("no-store") },
+        },
+        ...readErrors,
+      },
     },
   },
   {

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  accountPrincipalId,
   assertProviderAttached,
   clientAddresses,
   consoleOrigin as origin,
@@ -131,13 +132,7 @@ test(
       (await state.transact((unit) => unit.audit.list())).filter(
         ({ action }) => action === "authentication.session.end",
       );
-    const memberPrincipal = async () =>
-      (
-        await pool.query(
-          "SELECT principal_id FROM occ.human_authentication_accounts WHERE user_id = $1",
-          [member.id],
-        )
-      ).rows[0].principal_id;
+    const memberPrincipal = () => accountPrincipalId(pool, member.id);
     // Restarts under a changed configuration and expects exactly `gone` to have ended.
     async function assertEnds(cookies, options, overrides, gone) {
       const before = (await ended()).length;

@@ -519,7 +519,7 @@ test(
     );
     const preparedRuntime = join(temporary, "prepared-runtime");
     await cp(runtime, preparedRuntime, { recursive: true });
-    for (const module of ["factory.js", "driver.js", "static-token.js"]) {
+    for (const module of ["config.js", "factory.js", "driver.js", "static-token.js"]) {
       await rm(join(preparedRuntime, "dist/drivers/repo/github/credentials", module));
     }
     const preparedService = spawn(
@@ -869,6 +869,23 @@ test(
       const deniedPush = await invokeHook("refs/heads/main");
       assert.equal(deniedPush.status, 1);
       assert.match(deniedPush.stderr, /repository-push-ref-not-allowed/);
+      // Relocated packages must resolve a linked wrapper from its installed location,
+      // even after the build tree and its dependency graph have been removed.
+      await symlink(
+        relative(
+          checkout,
+          join(client, "dist/drivers/repo/github/credentials/client/hooks/pre-push"),
+        ),
+        join(checkout, "managed-hook"),
+      );
+      await symlink("../../managed-hook", join(checkout, ".git/hooks/pre-push"));
+      const recursiveHook = await invokeHook("refs/heads/agent/allowed");
+      assert.equal(recursiveHook.status, 1);
+      assert.equal(recursiveHook.stdout, "");
+      assert.equal(
+        recursiveHook.stderr,
+        "repository-hook-failed: pre-push: recursive-repository-hook\n",
+      );
       // An unsupported command must reach the router's public error boundary;
       // a missing router or import cannot satisfy this detached-entrypoint check.
       const rejected = invoke("router.js", ["git", "status"]);
@@ -919,10 +936,12 @@ test("credential artifact builder rejects dependencies outside its emitted closu
   const emitted = join(temporary, "apps/controller/dist");
   const entrypoint = join(emitted, "composition/repository-credentials/check-config.js");
   await mkdir(join(emitted, "composition/repository-credentials"), { recursive: true });
-  await cp(
-    join(root, "scripts/build-repository-credentials.mjs"),
-    join(temporary, "scripts/build-repository-credentials.mjs"),
-  );
+  for (const extension of ["mjs", "ts"]) {
+    await cp(
+      join(root, `scripts/build-repository-credentials.${extension}`),
+      join(temporary, `scripts/build-repository-credentials.${extension}`),
+    );
+  }
   await cp(
     join(root, "deploy/runtime/repository-credentials"),
     join(temporary, "deploy/runtime/repository-credentials"),
@@ -1281,10 +1300,12 @@ function isConnectionReset(error: unknown): boolean {
 
 async function stageArtifactInputs(directory: string): Promise<void> {
   await mkdir(join(directory, "scripts"), { recursive: true });
-  await cp(
-    join(root, "scripts/build-repository-credentials.mjs"),
-    join(directory, "scripts/build-repository-credentials.mjs"),
-  );
+  for (const extension of ["mjs", "ts"]) {
+    await cp(
+      join(root, `scripts/build-repository-credentials.${extension}`),
+      join(directory, `scripts/build-repository-credentials.${extension}`),
+    );
+  }
   await cp(join(root, "apps/controller/dist"), join(directory, "apps/controller/dist"), {
     recursive: true,
   });

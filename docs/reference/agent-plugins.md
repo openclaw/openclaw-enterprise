@@ -1,19 +1,18 @@
 # Agent plugins
 
-Plugins add Agent tools or integrations. Selections belong to that Agent,
-separately from its reusable [Configuration](configuration.md). Changes apply on
-the next successful deployment; other Agents and selected versions stay unchanged.
-New Agents start without user-selected plugins.
-
-[Configure Agent plugins](../guides/topics/plugins-configure.md) explains selection,
-deployment and verification. Deploying requires a bundled [Plugin Driver](drivers/plugin.md);
-none is selected by default. OpenClaw Control Plane (OCC) validates policy shape
-and supported controls before saving nonempty selections. Startup runs
-[remaining checks](#failures-and-boundaries).
+Plugin selections belong to an Agent, independently of its reusable
+[Configuration](configuration.md). Changes apply on its next successful deployment.
+New Agents have no selected plugins. Nonempty selections require a [Driver](drivers/plugin.md)
+for the Agent's Harness. OCC checks policy before saving and performs
+[additional checks at startup](#failures-and-boundaries).
+[Configure Agent plugins](../guides/topics/plugins-configure.md)
 
 ## Current support
 
-Dedicated OpenClaw on Kubernetes supports [Google Workspace](../../apps/controller/plugins/oce-google-workspace/plugin.json). Its only policy, `plugins[id].enabled`, controls the Gateway skill and the pinned `gog` command on the worker at deployment. Installation requires no Google account.
+Dedicated OpenClaw on Kubernetes supports both packages together (`plugins[id].enabled`).
+[Google Workspace](../../apps/controller/plugins/oce-google-workspace/plugin.json) installs a Gateway skill and worker CLI.
+[Slack](../guides/topics/plugins-configure.md#configure-slack-search) discovers tools through `tools/list`.
+Agent selections govern worker, Gateway and OpenShell access. Workers advertise 128 MCP tools at most.
 
 Embedded OpenClaw supports the bundled Diffs plugin and its `diffs` tool, with
 plugin/tool enablement and `provider_default` or `none` approval. Both use the
@@ -163,9 +162,9 @@ Approval cannot re-enable a disabled tool.
 
 ### Discover policy controls
 
-Authorized `GET /installation` responses expose the selected Driver's controls
-at `data.capabilities.pluginPolicies`. The field is absent when no PluginDriver
-is selected. It contains:
+Read `data.capabilities.pluginCatalogs` from an authorized `GET /installation`.
+Each entry identifies the `harnessId` and gives its `pluginPolicies` and available
+`pluginDiscovery` settings. Each policy object includes:
 
 - `driver`: the selected `id` and `implementation`.
 - `toolDefaults` and `tools`: each has an `enabled` support Boolean, an `approval`

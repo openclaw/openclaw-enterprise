@@ -1,18 +1,15 @@
 ---
 created: "2026-10-14"
-updated: "2026-10-27"
-last_updated_session: authoring-run/53dd6d74-5181-417f-934c-dd6c8ef6db2d
+updated: 2026-11-05
+last_updated_session: authoring-run/cdb62c1d-61db-4f65-985f-7b44e64f10d0
 ---
 
 # Protected credential request flow
 
 ## Overview
 
-A process in a dedicated Agent asks GitHub for a repository's identity. The
-supervisor sends the authorized request and holds the reply until OpenClaw
-Control Plane (OCC) approves what the process may receive. This flow describes
-the exchange required of the supervisor. The bundled legacy supervisor lacks
-it. See the [release cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
+The supervisor holds an Agent's GitHub identity reply until OpenClaw Control Plane
+(OCC) permits release. See the [legacy supervisor cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
 and [threat model](../reference/security/credential-proxy.md).
 
 ## Entry Points
@@ -32,30 +29,27 @@ and [threat model](../reference/security/credential-proxy.md).
 Suppose the revision admits `github-app-metadata` for repository ID `12345`,
 `acme/widgets`, at `https://api.github.com`.
 
-1. **Match the request.** The supervisor captures the process's bodyless
-   `GET /repos/acme/widgets` and binds the reply to that exchange. The GitHub
-   adapter checks the method, URL, headers and body against the installed route.
-2. **Resolve the token.** OCC checks the installation, binding, withdrawal
-   state and the Agent's current `credential_source:operate`. The resolver
-   selects a usable installation token that the worker already prepared.
-   OCC returns the resulting `Authorization: Bearer …` header to the supervisor.
+1. **Match the request.** The supervisor binds the bodyless `GET /repos/acme/widgets`
+   reply to its exchange. The GitHub adapter checks method, URL, headers and body
+   against the installed route.
+2. **Resolve the token.** OCC checks installation, binding, withdrawal and current
+   `credential_source:operate`, selects a usable worker-prepared token, then returns
+   its `Authorization: Bearer …` header to the supervisor.
 3. **Permit one send.** On the same stream, OCC rechecks authority and the
    token version. If the Agent lost its source grant after resolution, OCC
    refuses the send. Otherwise, the supervisor can start the request by the
    deadline in the permit. Issuing a permit does not confirm receipt by GitHub.
-4. **Release the identity.** The supervisor submits GitHub's complete reply.
-   The adapter checks for a `200` JSON response of at most 64 KiB with the
-   admitted ID and name (ASCII letter case may differ). For example, even if
-   GitHub returns `"full_name":"Acme/Widgets"` and a description, the caller
-   can receive a `200` with `Content-Type: application/json`,
-   `Cache-Control: no-store` and this body.
+4. **Release the identity.** The adapter checks GitHub's complete reply: `200` JSON,
+   at most 64 KiB, with the admitted ID and name (ASCII case may differ). The caller
+   receives `200`, `Content-Type: application/json`, `Cache-Control: no-store`
+   and only this body.
 
 ```json
 { "id": 12345, "full_name": "acme/widgets" }
 ```
 
-If GitHub returns ID `67890` under the same name, the supervisor withholds the
-response. GitHub has already received the request. With the credential-free
+For ID `67890` under the same name, the supervisor withholds the response
+although GitHub received the request. With the credential-free
 profile the same filters apply, but resolution records `no_material_required`
 and the supervisor sends no credential header.
 [GitHub metadata adapter](https://github.com/openclaw/openclaw-enterprise/blob/0418ef3a2c116b73f025281395d92477daf665d2/apps/controller/src/drivers/egress-proxy/github-metadata.ts)
@@ -135,6 +129,12 @@ resolves material nor retries business requests. The worker's active-revision br
 repeat this sequence when work is queued. Default Kubernetes has no periodic maintenance
 interval, so Harness-only restart recovery is not automatic;
 see the [supported recovery boundary](../reference/credential-sources/protected-inference.md#installation-configuration).
+
+`openshell-git-installation.ts:observeOpenShellGitInstallation` completes a model
+OBSERVE per active environment for observed Git routes, including rotations.
+`ObservedHookPreview.completedModelReceipt` caches completion per environment revision.
+Stale or incomplete model receipts keep the route pending without changing the
+original launch witness or startup acknowledgment.
 
 ### 2. Capture identity, operation and first authority decision
 
@@ -248,12 +248,13 @@ stream. Recovery can renew before expiry. A shorter authenticated peer lifetime 
 and held responses despite later progress.
 Limits: five minutes idle, fifteen minutes total, 4 MiB and 16,384 events.
 
-For Responses, check client-assembled SDK output-part snapshots, assistant text across
-parts, items or deltas, and Codex's completed and streamed Plan views. Reject ambiguous
-order or indexes. Inspect function arguments as bounded JSON without recursively
-decoding strings. The
+`openai-responses.ts:isResponsesEvent` validates Responses envelopes, including
+response-only null local-tool metadata and the optional effective image policy.
+Invalid or unknown fields withhold all bytes. Protection scans SDK snapshots,
+joined assistant text and completed/streamed Codex Plans; ambiguous order or indexes
+refuse. Function arguments parse once as bounded JSON. The
 [supported profile](../reference/credential-sources/protected-inference.md#static-source-and-response-policy)
-preserves safe response bytes. The origin has already received the credential.
+preserves safe bytes. The origin already received the credential.
 
 Only this exchange can claim the response. `EgressSendReceipts.observe` atomically records
 the decision and any exact rejection fence without bodies, headers, credentials or handles.
@@ -270,11 +271,15 @@ exact attempt without retrying; returning bytes does not prove delivery.
 
 ### 5. Configure the regular Harness caller
 
-Before credential access, the provider normalizes the nonsecret endpoint and classifies
-the actual request. `apps/controller/src/drivers/compute/plugin-runtime.ts:codexToml` keeps local tools and ordinary Harness components,
-disables provider tools, and uses HTTP Responses without WebSockets or automatic retries.
-The runtime manifest preserves this profile. Its `--ignore-user-config` probe sets request
-and stream retries to zero and never repeats a timed-out protected probe.
+`apps/controller/src/drivers/compute/plugin-runtime.ts:codexToml` keeps local tools,
+disables provider tools, and selects HTTP Responses without WebSockets or retries.
+Its `--ignore-user-config` probe disables
+request/stream retries and never repeats a timed-out protected probe.
+
+`apps/controller/src/drivers/egress-proxy/openai-provider.ts:createOpenAiStaticProvider`
+checks [request forms](../reference/credential-sources/protected-inference.md#static-source-and-response-policy)
+through `openai-responses.ts:validResponsesRequest` before Secret resolution.
+Inline developer tools keep the local-tool restrictions.
 
 ### 6. Reduce the live credential policy
 
@@ -335,6 +340,16 @@ the origin and caller independently.
 None.
 
 ## Changelog
+
+- 2026-11-05 02:35: Refresh model observation after Git credential rotation. (authoring-run/cdb62c1d-61db-4f65-985f-7b44e64f10d0 - 261e4b54cbd0366ff0cba0dc6a00b7890b8e39f2)
+
+- 2026-11-04 08:59: Validate effective image policy in streamed response envelopes. (authoring-run/62d369a1-b693-49c9-badd-c92eeda35a6b - 54ad9dad2610ed99ab8ce8134fb03d3b10ed6be4)
+
+- 2026-11-04 05:11: Separate response metadata validation. (authoring-run/aa69859c-0fd2-4688-97b0-b99dbbd65f95 - b9741c28dacdd6012790be431b97872de6611969)
+
+- 2026-11-04 01:56: Trace inline tool validation. (authoring-run/c172d58e-be9c-43c1-a44d-7853dfb585af - fdca6e74421067adc66dce4f141d153af0355f68)
+
+- 2026-10-30 10:12: Retain guarded OpenShell 0.1.6 preview. (authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008 - 319e24a88facddd38a883bdfd5b226652d2a6e26)
 
 - 2026-10-27 16:00: Document provider pinning. (authoring-run/53dd6d74-5181-417f-934c-dd6c8ef6db2d - e2dfabf042852adea8ed797b48aae122927d6226)
 

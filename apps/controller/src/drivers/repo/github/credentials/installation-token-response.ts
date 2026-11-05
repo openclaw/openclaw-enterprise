@@ -1,16 +1,8 @@
+import type { GitHubPreparationAdmission } from "./prepared-contracts.ts";
+import { permissionsForProfile } from "./profiles.ts";
 import { parseJsonMembers } from "../../credentials/json-members.ts";
 import { providerClockSkewMs, tokenLifetimeMs } from "./driver/lifetime.ts";
 import { isGitHubWireCredential } from "./wire-credential.ts";
-
-type RepositoryPolicy = Readonly<{
-  profile?: never;
-  repositoryId: string;
-  repository: string;
-  permissions: Readonly<Record<string, string>>;
-  minimumValidityMs: number;
-}>;
-
-type InstallationPolicy = Readonly<{ profile: "github-installation"; minimumValidityMs: number }>;
 
 /** Custody identification is independent of evidence that permits using the token. */
 export function parseInstallationTokenResponse(body: Buffer): Readonly<{
@@ -51,7 +43,7 @@ export function validateInstallationTokenResponse<Credential>(
   packet: Record<string, unknown> | undefined,
   credential: Credential | undefined,
   observedWallMs: number,
-  policy: RepositoryPolicy | InstallationPolicy,
+  policy: GitHubPreparationAdmission["grant"] & { readonly minimumValidityMs: number },
 ):
   | Readonly<{
       kind: "validated";
@@ -102,7 +94,7 @@ export function validateInstallationTokenResponse<Credential>(
 
 function validIssuedScope(
   packet: Record<string, unknown>,
-  policy: RepositoryPolicy | InstallationPolicy,
+  policy: GitHubPreparationAdmission["grant"],
 ): boolean {
   const { permissions, repositories, repository_selection: selection } = packet;
   const reported =
@@ -134,15 +126,29 @@ function validIssuedScope(
           new Set(repositories.map((r) => r.full_name.toLowerCase())).size === repositories.length))
     );
   }
-  const expected = Object.entries(policy.permissions);
+  const expected = Object.entries(
+    policy.profile === "github-repository"
+      ? policy.permissions
+      : permissionsForProfile(policy.profile),
+  );
+  const selected =
+    policy.profile === "github-repository"
+      ? policy.repositories
+      : [{ repositoryId: policy.repositoryId, repository: policy.repository }];
   return (
     reported?.length === expected.length &&
     expected.every(([name, level]) => (permissions as Record<string, unknown>)[name] === level) &&
     (!Object.hasOwn(packet, "repository_selection") || selection === "selected") &&
     Array.isArray(repositories) &&
-    repositories.length === 1 &&
-    repositories[0]?.id === Number(policy.repositoryId) &&
-    typeof repositories[0].full_name === "string" &&
-    repositories[0].full_name.toLowerCase() === policy.repository.toLowerCase()
+    repositories.length === selected.length &&
+    new Set(repositories.map((r) => r?.id)).size === selected.length &&
+    selected.every((wanted) =>
+      repositories.some(
+        (r) =>
+          r?.id === Number(wanted.repositoryId) &&
+          typeof r.full_name === "string" &&
+          r.full_name.toLowerCase() === wanted.repository.toLowerCase(),
+      ),
+    )
   );
 }

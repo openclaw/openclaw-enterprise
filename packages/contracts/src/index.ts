@@ -1,3 +1,5 @@
+import type { Static } from "typebox";
+import type { HarnessAuthBindingSchema } from "./api/common.ts";
 import type { ComputeAgentProvisioningCapabilities } from "./drivers/compute/index.ts";
 import type { DriverCapability } from "./drivers/index.ts";
 import type {
@@ -75,6 +77,7 @@ export type {
   PreparedGitHubEgressSource,
   PreparedGitHubUseRequest,
   PreparedGitHubInstallationUseRequest,
+  PreparedGitHubRepositoryUseRequest,
   PreparedGitHubUseResponse,
   PreparedGitHubPullScope,
   PreparedGitHubPullProjection,
@@ -120,6 +123,7 @@ export { SandboxPolicyDecisionSchema, validSandboxPolicyDecision } from "./sandb
 import type { SandboxPolicySnapshot } from "./sandbox-policy.ts";
 
 export type {
+  ProtectedCodexArtifactPolicyAdmission,
   SandboxNetworkGrant,
   SandboxPolicy,
   SandboxPolicySnapshot,
@@ -296,11 +300,17 @@ export interface BackendSummary {
 }
 
 export interface InstallationCapabilities {
+  /** The API offers native admin configuration during Agent provisioning. */
+  readonly nativeAdmin?: true;
   readonly agentProvisioning?: ComputeAgentProvisioningCapabilities;
   /** A selected Credential Gateway requires source-backed model authentication. */
   readonly credentialSources?: { readonly types: readonly CredentialSourceType[] };
-  readonly pluginPolicies?: PluginPolicyCapabilities & { readonly driver: PluginDriverIdentity };
-  readonly pluginDiscovery?: { readonly credential: "required" | "none" };
+  /** Plugin catalogs by Harness. */
+  readonly pluginCatalogs?: readonly {
+    readonly harnessId: "openclaw" | "codex";
+    readonly pluginPolicies: PluginPolicyCapabilities & { readonly driver: PluginDriverIdentity };
+    readonly pluginDiscovery?: { readonly credential: "required" | "none" };
+  }[];
   /** Present only when dedicated native OpenClaw can be admitted. */
   readonly nativeWorkers?: { readonly support: "pinned-runtime" | "custom-image" };
   /**
@@ -614,12 +624,14 @@ export function revisionCredentialSourceSnapshot(
   );
 }
 
-export type HarnessAuthBinding =
-  | { readonly method: "api_key"; readonly source: SecretReference }
-  | { readonly method: "codex_pat"; readonly source: SecretReference }
-  | { readonly method: "codex_pat"; readonly source: ServiceAccountReference }
-  | { readonly method: "credential_source"; readonly sourceId: string }
-  | { readonly method: "runtime" };
+// Expand source alternatives so callers can still Extract a binding by source.kind.
+type ReadonlyAuthBinding<Binding> = Binding extends { source: infer Source }
+  ? Source extends unknown
+    ? { readonly [Key in keyof Binding]: Key extends "source" ? Readonly<Source> : Binding[Key] }
+    : never
+  : Readonly<Binding>;
+
+export type HarnessAuthBinding = ReadonlyAuthBinding<Static<typeof HarnessAuthBindingSchema>>;
 
 /** Private admission metadata. Public APIs expose only HarnessAuthBinding. */
 export type HarnessAuthSnapshot =
@@ -738,6 +750,7 @@ export interface AgentPluginCredentialSlot {
   readonly releaseSha256: string;
   readonly id: string;
   readonly label: string;
+  readonly toolDiscovery?: true;
   readonly sources: readonly { readonly id: string; readonly name: string }[];
 }
 
@@ -802,7 +815,7 @@ export function validPluginApprovers(approvers: unknown): approvers is PluginApp
   return approvers === undefined || Check(PLUGIN_SCHEMA_REFS, PluginApproversSchema, approvers);
 }
 
-function validPluginDriverIdentity(value: unknown): value is PluginDriverIdentity {
+export function validPluginDriverIdentity(value: unknown): value is PluginDriverIdentity {
   if (!Check(PLUGIN_SCHEMA_REFS, PluginDriverIdentitySchema, value)) {
     return false;
   }
@@ -861,10 +874,9 @@ export function pluginRuntimeHarnessRequirement(
   harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
 ): string | undefined {
   if (implementation === CODEX_PLUGIN_DRIVER_IMPLEMENTATION) {
-    return (harness.id === "codex" && harness.mode === "dedicated") ||
-      (harness.id === "openclaw" && harness.mode === "embedded")
+    return harness.id === "codex" && harness.mode === "dedicated"
       ? undefined
-      : "a dedicated Codex Harness or embedded OpenClaw Harness";
+      : "a dedicated Codex Harness";
   }
   if (implementation === OPENCLAW_PLUGIN_DRIVER_IMPLEMENTATION) {
     return harness.id === "openclaw" &&
@@ -875,21 +887,11 @@ export function pluginRuntimeHarnessRequirement(
   return undefined;
 }
 
-/**
- * Whether this Harness reaches the repository credential broker through the Codex network
- * proxy when Compute delivers repository material to it: a dedicated Codex Harness, or an
- * embedded OpenClaw Harness whose plugins run in the Codex Plugin Driver.
- */
+/** Dedicated Codex reaches the repository credential broker through its Harness network proxy. */
 export function codexProxiesRepositoryBroker(
   harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
-  pluginDriverImplementation: string | undefined,
 ): boolean {
-  return (
-    (harness.id === "codex" && harness.mode === "dedicated") ||
-    (harness.id === "openclaw" &&
-      harness.mode === "embedded" &&
-      pluginDriverImplementation === CODEX_PLUGIN_DRIVER_IMPLEMENTATION)
-  );
+  return harness.id === "codex" && harness.mode === "dedicated";
 }
 
 const CODEX_NETWORK_PROXY_SETTING = "plugins.entries.codex.config.appServer.networkProxy";
@@ -1004,6 +1006,8 @@ export interface Agent extends Scope {
   readonly executionMode: HarnessExecutionMode;
   /** Desired Gateway administration mode; each deployment snapshots the selected value. */
   readonly gatewayManagedMode: boolean;
+  /** Driver that admitted the nonempty plugin selection. */
+  readonly pluginDriver?: PluginDriverIdentity;
   readonly plugins?: PluginDesiredState;
   readonly pluginApprovers?: PluginApprovers;
   readonly repositoryBindings?: readonly RepositoryBindingSelection[];
@@ -1030,6 +1034,7 @@ export interface ConfigurationReadError {
 
 export type AgentMetadata = Omit<
   Agent,
+  | "pluginDriver"
   | "plugins"
   | "pluginApprovers"
   | "repositoryBindings"
@@ -1100,6 +1105,16 @@ export interface AgentRevision extends Scope {
   readonly harnessAuth: HarnessAuthSnapshot;
   readonly credentialSources?: readonly CredentialSourceSnapshot[];
   readonly servicePrincipalId: string;
+  readonly createdAt: string;
+}
+
+/** Minimal immutable admission receipt; contains no snapshot or caller intent. */
+export interface FirstDeploymentReceipt {
+  readonly revisionId: string;
+  readonly namespaceId: string;
+  readonly agentId: string;
+  readonly configurationId: string;
+  readonly configurationGeneration: number;
   readonly createdAt: string;
 }
 
@@ -1446,7 +1461,7 @@ export type {
 
 export type JSONSchema = Readonly<Record<string, unknown>>;
 
-export { normalizeSecretBindings } from "./secret-bindings.ts";
+export { isAllowedSecretBindingDestination, normalizeSecretBindings } from "./secret-bindings.ts";
 
 export * from "./api/common.ts";
 export * from "./api/resources.ts";
@@ -1504,6 +1519,7 @@ export type {
   ProtectedRepositoryGitAuthority,
   RepositoryGitBinding,
   ProtectedRepositoryGitMaterial,
+  ProtectedGitHubRepositoryMaterial,
   ProtectedGitHubInstallationMaterial,
   GitHubInstallationSendDecision,
   GitHubInstallationSendPermit,

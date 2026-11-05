@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 import { cleanupLogging, ciOtelBackendResourceKind } from "./logging.mjs";
 import { cleanupKeycloak, keycloakResourceKind } from "./keycloak.mjs";
-import { laneImagesResourceKind, restoreLaneImages } from "./lane-images.mjs";
+import { laneImagesResourceKind, restoreLaneImages } from "./lane-images.ts";
 import { fork, spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { access, chmod, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { withStateLock } from "./state-lock.mjs";
+import { withStateLock } from "./state-lock.ts";
 import { runPostgresAdmin } from "./postgres-admin.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -465,8 +465,57 @@ async function cleanupK3dImage(resource, state) {
   }
 }
 
+async function cleanupFirstAgentImages(resource, state) {
+  assertResourceOwner(resource, state);
+  assertOwnedName("openclaw-ci-first-images-", resource.name, "first-Agent registry");
+  if (!Number.isInteger(resource.port) || resource.port < 1 || resource.port > 65535) {
+    throw new Error("Invalid first-Agent image registry receipt.");
+  }
+  if (resource.controllerImage !== undefined) {
+    const prefix = `127.0.0.1:${resource.port}/${resource.name}/controller@`;
+    if (
+      typeof resource.controllerImage !== "string" ||
+      !resource.controllerImage.startsWith(prefix) ||
+      !/^sha256:[a-f0-9]{64}$/.test(resource.controllerImage.slice(prefix.length))
+    ) {
+      throw new Error("Refusing to remove an unowned first-Agent controller image.");
+    }
+  }
+  const docker = process.env.OCC_DOCKER_BIN ?? "docker";
+  const inspect = async (kind, name) => {
+    try {
+      return JSON.parse((await execFile(docker, [kind, "inspect", name])).stdout)[0];
+    } catch (error) {
+      if (/No such (?:image|object|container)/i.test(error.message)) {
+        return undefined;
+      }
+      throw error;
+    }
+  };
+  const container = await inspect("container", resource.name);
+  if (container) {
+    if (
+      container.Config.Labels?.["openclaw.dev/ci-owner"] !== state.prefix ||
+      !/^[a-f0-9]{64}$/.test(container.Id ?? "") ||
+      (resource.containerId !== undefined && container.Id !== resource.containerId)
+    ) {
+      throw new Error("First-Agent registry changed ownership.");
+    }
+  }
+  if (resource.controllerImage && (await inspect("image", resource.controllerImage))) {
+    // Remove the exact owned reference, without forcing removal from live readers.
+    await execFile(docker, ["image", "rm", resource.controllerImage]);
+  }
+  if (container) {
+    await execFile(docker, ["container", "rm", "--force", "--volumes", container.Id]);
+  }
+}
+
 async function cleanupResource(resource, state) {
   switch (resource.kind) {
+    case "first-agent-image-registry":
+      await cleanupFirstAgentImages(resource, state);
+      break;
     case ciOtelBackendResourceKind:
       assertResourceOwner(resource, state);
       await cleanupLogging(resource, { execFile });
@@ -502,7 +551,7 @@ async function cleanupResource(resource, state) {
   }
 }
 
-// lockTimeoutMs limits the wait for the CI state lock (state-lock.mjs's default otherwise), so a
+// lockTimeoutMs limits the wait for the CI state lock (state-lock.ts's default otherwise), so a
 // caller that has its own limit, such as a test fixture's database drop, stops waiting with it.
 // The selected databases are dropped before that wait, each within databaseDropTimeoutMs.
 async function cleanupResourceIds(statePath, resourceIds, { lockTimeoutMs } = {}) {

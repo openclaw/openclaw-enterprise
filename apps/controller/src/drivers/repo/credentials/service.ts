@@ -1,3 +1,4 @@
+import { sameBinding } from "./grant-identity.ts";
 import type {
   RepositoryServiceFactory,
   ResolvedGrant,
@@ -29,7 +30,6 @@ import {
   snapshotBinding,
   snapshotSessionInput,
   isBoundInput,
-  sameBinding,
 } from "./sessions.ts";
 import type { SessionAdmission } from "./sessions.ts";
 
@@ -294,11 +294,9 @@ export function createCredentialService(
     const closeSelection = () => cancelSelection("SERVICE_CLOSED");
     unclaimedOpens.add(closeSelection);
 
-    type Construct = (
-      authorizeStanding?: (sessionId: string) => Promise<void>,
-    ) => ReturnType<CredentialServiceOwner["open"]>;
+    type Construct = () => ReturnType<CredentialServiceOwner["open"]>;
     function withReservation(construct: Construct): Construct {
-      return (authorizeStanding) => {
+      return () => {
         if (refusal !== undefined) {
           const reason = refusal;
           refusal = "INVALID_ADMISSION";
@@ -307,7 +305,7 @@ export function createCredentialService(
         refusal = "INVALID_ADMISSION";
         unclaimedOpens.delete(closeSelection);
         try {
-          return construct(authorizeStanding);
+          return construct();
         } finally {
           release();
         }
@@ -315,7 +313,7 @@ export function createCredentialService(
     }
     return {
       cancel: () => cancelSelection("INVALID_ADMISSION"),
-      open: withReservation((authorizeStanding) => {
+      open: withReservation(() => {
         if (clock.monotonicNow() >= deadlineMonoMs) {
           throw new Error("INVALID_DEADLINE");
         }
@@ -328,7 +326,6 @@ export function createCredentialService(
         const constructed = constructSession(admission, resolved, {
           admitted: () => !!session && isOpen(session),
           accepting: () => !shuttingDown,
-          ...(authorizeStanding ? { authorizeStanding } : {}),
           changed: () => {
             if (session) {
               changed(session);
@@ -384,11 +381,8 @@ export function createCredentialService(
 
   return Object.freeze({
     prepareOpen,
-    open(
-      input: RepositoryCredentialSessionInput | RepositoryCredentialBoundSessionInput,
-      authorizeStanding?: (sessionId: string) => Promise<void>,
-    ) {
-      return prepareOpen(input).open(authorizeStanding);
+    open(input: RepositoryCredentialSessionInput | RepositoryCredentialBoundSessionInput) {
+      return prepareOpen(input).open();
     },
     observeDisposal(observer: (status: SessionStatus) => void) {
       disposalObservers.add(observer);

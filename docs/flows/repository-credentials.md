@@ -1,7 +1,7 @@
 ---
 created: "2026-09-17"
-updated: 2026-10-30
-last_updated_session: authoring-run/1e62ea7b-b50d-46c8-808e-66f71c8965c7
+updated: 2026-11-05
+last_updated_session: authoring-run/7e95100b-4e77-456d-85a2-e31dc72ccf5e
 ---
 
 # Repository credential service flow
@@ -58,7 +58,7 @@ and [validate](../../apps/controller/src/drivers/repo/credentials/configuration.
 session and capacity settings. The [configuration flow](repository-credential-configuration.md)
 covers protected paths and Kubernetes projections. The standalone check needs no listeners or sessions.
 
-[`runService`](../../apps/controller/src/composition/repository-credentials/service.ts) uses the configured
+`apps/controller/src/composition/repository-credentials/service.ts:runService` uses the configured
 factory's `createPrepared` capability to select a session constructor before either listener starts.
 Both constructors share admission, capacity and shutdown:
 
@@ -133,9 +133,9 @@ All handles are sealed before awaiting callbacks. Unpublished custody occupies
 the configured session capacity until callbacks settle and bytes are disposed.
 
 `apps/controller/src/drivers/repo/github/credentials/client/config.ts:writeClientConfiguration`
-stages private files, synchronizes writes and renames the directory into place.
-CLI output reports status and location. After a write failure, the CLI attempts
-closure and reports the admitted session ID for operator follow-up.
+sets files `0600` and directories `0700` despite umask. `operator open` checks
+`--output` before admission and again when writing; after a write failure it
+closes the session and reports its ID.
 
 ### 3. Authenticate the selected client
 
@@ -234,18 +234,19 @@ the original settlement receives `not-submitted`.
 Missing or uncertain material does not cause request-time issuance. The explicit
 development token factory instead borrows its process-owned static token.
 
-Handler and sender capture allowed origins independently.
+Handler and sender each capture allowed origins.
 `apps/controller/src/drivers/repo/credentials/transport/request-headers.ts:createUpstreamHeaders`
-validates adapter fields within byte and field-count limits, rejects case-insensitive
-duplicates, and removes reserved fields such as `Expect` before request construction.
-After verified TLS, owned exchanges recheck configured standing before first write.
-Prepared sends check their original one-use permit, cancellation and send deadline
-there. Gate denial or confirmed pre-write socket close prevents HTTP writes. The response-header timer starts
-after upload unless headers arrived. Connection, upload, stall and total deadlines
-apply. Upload-pack has separate response-byte, first-header, stall and total
-budgets; other requests retain ordinary limits. Every plan obeys `maxExchangeMs` and
-the session deadline; static-token upload-pack also obeys its lease. The byte counter
-applies backpressure without buffering the pack.
+enforces adapter header byte and count limits, rejects duplicates case-insensitively,
+and strips reserved fields such as `Expect` before request construction.
+After TLS, the first-write gate rechecks the owned lease or the original
+prepared permit, cancellation and deadline. Withdrawal blocks new permits;
+an issued permit allows one send before its deadline. Denial or confirmed
+pre-write closure sends no HTTP request. The response-header timer starts after
+upload unless headers arrived. Connection, upload, stall and total deadlines
+apply. Upload-pack uses separate response-byte, first-header, stall and total
+budgets. Plans obey `maxExchangeMs` and session deadlines; static-token
+upload-pack also obeys its lease. Byte counting applies backpressure without
+pack buffering.
 
 ### 5. Deliver an outcome and release ownership
 
@@ -354,6 +355,8 @@ client and alternate-adapter checks; live-provider behavior requires separate qu
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 13:04: Refresh session construction while preserving current admission and shutdown behavior. (authoring-run/7e95100b-4e77-456d-85a2-e31dc72ccf5e - ec30be0251ac912467c78856edb3a9c989c1ec00)
 
 - 2026-10-30 06:43: Select session construction before startup; retain shared admission and shutdown ownership. (authoring-run/1e62ea7b-b50d-46c8-808e-66f71c8965c7 - f6dd82ffef812be1fb3082bd9c416e23c5da866f)
 

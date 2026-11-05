@@ -16,6 +16,10 @@ export type AgentAccessContext = Pick<
   // The IDs of readable Secrets the caller may not operate, which binding one to the Agent needs
   // (finding 2453); undefined when the answer is unknown. Secret fields mark and refuse them.
   secretsOperateDenied?: SecretsOperateDenied | undefined;
+  // Whether the page is still shown, even when this Agent tab was left or rebuilt since: a
+  // `keepsTab` write's reply then still settles its view and draft (findings 2980, 2981).
+  // Without it, only a shown view settles.
+  isPageCurrent?(): boolean;
 };
 
 // Reads the Secret operate answer, which pages cache. `fresh` drops the cached answer first: a

@@ -8,7 +8,7 @@ import type {
 import type { CustodyOwner } from "./custody.ts";
 import type { LifecycleOwner } from "./lifecycle.ts";
 import type { SessionAdmission } from "./sessions.ts";
-import { sameBinding } from "./sessions.ts";
+import { sameBinding } from "./grant-identity.ts";
 
 export interface ConstructedSession {
   readonly prepared?: PreparedRepositoryBackend;
@@ -16,7 +16,6 @@ export interface ConstructedSession {
     custody: CustodyOwner;
     lifecycle: LifecycleOwner;
     driver: RepositoryBackend;
-    authorizeStanding?: () => Promise<void>;
   }>;
 }
 
@@ -28,7 +27,6 @@ export type SessionConstructor = (
     admitted(): boolean;
     changed(): void;
     retainFailure(drained: Promise<void>): void;
-    authorizeStanding?: (sessionId: string) => Promise<void>;
   }>,
 ) => ConstructedSession;
 
