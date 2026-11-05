@@ -79,9 +79,7 @@ jobs; it is not an alias for `CONTAINER_NODE_BASE_IMAGE`. Model/image requiremen
 and defaults differ by lane: follow its linked suite guide. Missing required
 inputs fail selected lanes.
 
-Calendar requires variables `OCC_TEST_CODEX_CALENDAR_TOOL_NAME` and
-`OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT`; `OCC_TEST_CODEX_CALENDAR_PROMPT` is
-optional. QA model overrides default to `gpt-6-luna`.
+QA model overrides default to `gpt-6-luna`.
 
 For hosted QA scenario exclusions, see [Full Integration](full-integration.md#scenarios).
 

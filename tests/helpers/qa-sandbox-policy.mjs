@@ -28,7 +28,9 @@ export async function verifyQaSandboxPolicy(artifacts, scenario = "network-polic
       : scenario === "authority-recovery"
         ? ["--test-name-pattern=^OpenShell recovered model-source authority after worker restart"]
         : []),
-    "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
+    scenario === "authority-recovery"
+      ? "tests/integration/openshell-authority-recovery-real.test.ts"
+      : "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
   ];
   let output;
   let failed = false;

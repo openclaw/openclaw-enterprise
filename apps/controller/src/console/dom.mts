@@ -258,7 +258,8 @@ export function jsonObjectProblem(text: string): string | undefined {
 }
 
 type JsonObjectDiagnostic =
-  { kind: "valid" } | { kind: "invalid-json" | "number-range"; message: string };
+  | { kind: "valid"; value: Record<string, unknown> }
+  | { kind: "invalid-json" | "number-range"; message: string };
 
 // Model controls distinguish a number-range refusal from existing syntax/shape failures.
 export function jsonObjectDiagnostic(text: string): JsonObjectDiagnostic {
@@ -325,7 +326,7 @@ export function jsonObjectDiagnostic(text: string): JsonObjectDiagnostic {
       }
     }
   }
-  return { kind: "valid" };
+  return { kind: "valid", value: parsed as Record<string, unknown> };
 }
 
 // The offset of the first character that breaks the JSON grammar (RFC 8259), `text.length` when
