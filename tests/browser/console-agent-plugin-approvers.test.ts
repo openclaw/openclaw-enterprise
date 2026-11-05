@@ -164,8 +164,8 @@ test("A dedicated OpenClaw Agent can enable and disable Google Workspace without
   const accounts = dialog.getByRole("group", { name: "Google account", exact: true });
   await accounts.waitFor();
   assert.equal(await accounts.getByRole("checkbox").count(), 0);
-  await dialog
-    .getByText("No compatible, ready credential is available to both you and this Agent.")
+  await accounts
+    .getByText("No compatible saved accounts are available for this slot.", { exact: true })
     .waitFor();
   await checkPolicySupport("Google Workspace");
   async function save(enabled: boolean) {
