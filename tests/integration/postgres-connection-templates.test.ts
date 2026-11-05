@@ -62,6 +62,24 @@ test(
     const list = await inject("GET", "/connection-templates");
     assert.equal(list.statusCode, 200, list.body);
     const templates: ConnectionTemplate[] = list.json().data;
+    // Editing a regular template must never redirect an existing Codex device grant.
+    const native = templates.find((template) => template.builtIn);
+    assert.ok(native?.current.oauthClientId);
+    const nativePath = `/connection-templates/${native.id}`;
+    assert.equal(
+      (await inject("PATCH", nativePath, { displayName: "Replacement" })).statusCode,
+      409,
+    );
+    assert.equal((await inject("DELETE", nativePath)).statusCode, 409);
+    assert.equal((await inject("POST", "/oauth-clients", clientInput(native.id))).statusCode, 409);
+    const clients = await inject("GET", "/oauth-clients");
+    assert.equal(clients.statusCode, 200, clients.body);
+    const nativeClient = clients
+      .json()
+      .data.find((client: { id: string }) => client.id === native.current.oauthClientId);
+    assert.equal(nativeClient?.tokenEndpointAuthMethod, "none");
+    assert.equal(nativeClient.builtIn, true);
+
     const shipped = templates.filter(
       (template) => template.namespaceId === undefined && template.displayName === "Google OAuth",
     );

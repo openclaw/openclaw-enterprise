@@ -2,6 +2,7 @@ import { story } from "./story.ts";
 
 export default { title: "Pages/Credentials" };
 
+export const ConnectedAccounts = story("connectedCodexAccounts");
 export const ConnectionTemplates = story("credentialsTemplateCatalog");
 export const ConnectionTemplatesMobile = story("credentialsTemplateCatalog", {
   name: "Connection templates on mobile",

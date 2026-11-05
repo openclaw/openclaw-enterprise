@@ -3,7 +3,7 @@ import { element } from "./dom.mjs";
 interface CatalogRow {
   name: string;
   details: readonly (string | HTMLElement)[];
-  actions: readonly HTMLButtonElement[];
+  actions: readonly HTMLElement[];
 }
 
 export function oauthCatalog(

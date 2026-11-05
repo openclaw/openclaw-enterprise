@@ -46,6 +46,7 @@ import {
   FirstDeploymentRecoveryTuple,
   AgentId,
   NamespaceId,
+  CodexDeviceSessionId,
   SecretId,
   AgentProvisioningParams,
   PresetParams,
@@ -209,7 +210,7 @@ export const occApiRoutes = [
   {
     operationId: "pollAgentDeviceAuthorization",
     method: "POST",
-    path: "/namespaces/:namespaceId/agents/device-authorizations/:secretId/poll",
+    path: "/namespaces/:namespaceId/agents/device-authorizations/:sessionId/poll",
     action: "openclaw.agents.device_authorization.poll",
     iamAction: "create",
     resourceKind: "agent",
@@ -219,7 +220,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: Type.Object(
-        { namespaceId: NamespaceId, secretId: SecretId },
+        { namespaceId: NamespaceId, sessionId: Type.Union([CodexDeviceSessionId, SecretId]) },
         { additionalProperties: false },
       ),
       body: Type.Object({}, { additionalProperties: false }),
@@ -233,7 +234,7 @@ export const occApiRoutes = [
   {
     operationId: "cancelAgentDeviceAuthorization",
     method: "DELETE",
-    path: "/namespaces/:namespaceId/agents/device-authorizations/:secretId",
+    path: "/namespaces/:namespaceId/agents/device-authorizations/:sessionId",
     action: "openclaw.agents.device_authorization.cancel",
     iamAction: "create",
     resourceKind: "agent",
@@ -243,7 +244,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: Type.Object(
-        { namespaceId: NamespaceId, secretId: SecretId },
+        { namespaceId: NamespaceId, sessionId: Type.Union([CodexDeviceSessionId, SecretId]) },
         { additionalProperties: false },
       ),
       response: { 204: Type.Null(), 501: ErrorResponseRef, ...mutationErrors },
@@ -279,7 +280,7 @@ export const occApiRoutes = [
   {
     operationId: "pollSavedAgentDeviceAuthorization",
     method: "POST",
-    path: "/namespaces/:namespaceId/agents/:agentId/device-authorizations/:secretId/poll",
+    path: "/namespaces/:namespaceId/agents/:agentId/device-authorizations/:sessionId/poll",
     action: "openclaw.agents.device_authorization.poll",
     iamAction: "update",
     resourceKind: "agent",
@@ -289,7 +290,11 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: Type.Object(
-        { namespaceId: NamespaceId, agentId: AgentId, secretId: SecretId },
+        {
+          namespaceId: NamespaceId,
+          agentId: AgentId,
+          sessionId: Type.Union([CodexDeviceSessionId, SecretId]),
+        },
         { additionalProperties: false },
       ),
       body: Type.Object({}, { additionalProperties: false }),
@@ -303,7 +308,7 @@ export const occApiRoutes = [
   {
     operationId: "cancelSavedAgentDeviceAuthorization",
     method: "DELETE",
-    path: "/namespaces/:namespaceId/agents/:agentId/device-authorizations/:secretId",
+    path: "/namespaces/:namespaceId/agents/:agentId/device-authorizations/:sessionId",
     action: "openclaw.agents.device_authorization.cancel",
     iamAction: "update",
     resourceKind: "agent",
@@ -313,7 +318,11 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: Type.Object(
-        { namespaceId: NamespaceId, agentId: AgentId, secretId: SecretId },
+        {
+          namespaceId: NamespaceId,
+          agentId: AgentId,
+          sessionId: Type.Union([CodexDeviceSessionId, SecretId]),
+        },
         { additionalProperties: false },
       ),
       response: { 204: Type.Null(), 501: ErrorResponseRef, ...mutationErrors },
@@ -1091,6 +1100,62 @@ export const occApiRoutes = [
     },
   },
   {
+    operationId: "startNamespaceDeviceAuthorization",
+    method: "POST",
+    path: "/namespaces/:namespaceId/connections/device-authorizations",
+    action: "openclaw.namespaces.connections.device_authorization.start",
+    iamAction: "create",
+    resourceKind: "credential_source",
+    authorizationTarget: "namespace_collection",
+    summary: "Start ChatGPT device sign-in for a saved Codex account",
+    tags: ["Connections"],
+    schema: {
+      querystring: EmptyQuery,
+      params: NamespaceParams,
+      body: Type.Object({}, { additionalProperties: false }),
+      response: { 200: AgentDeviceAuthorizationResponse, 501: ErrorResponseRef, ...createErrors },
+    },
+  },
+  {
+    operationId: "pollNamespaceDeviceAuthorization",
+    method: "POST",
+    path: "/namespaces/:namespaceId/connections/device-authorizations/:sessionId/poll",
+    action: "openclaw.namespaces.connections.device_authorization.poll",
+    iamAction: "create",
+    resourceKind: "credential_source",
+    authorizationTarget: "namespace_collection",
+    summary: "Check a ChatGPT device sign-in and save the approved account",
+    tags: ["Connections"],
+    schema: {
+      querystring: EmptyQuery,
+      params: Type.Object(
+        { namespaceId: NamespaceId, sessionId: CodexDeviceSessionId },
+        { additionalProperties: false },
+      ),
+      body: Type.Object({}, { additionalProperties: false }),
+      response: { 200: AgentDeviceAuthorizationResponse, 501: ErrorResponseRef, ...createErrors },
+    },
+  },
+  {
+    operationId: "cancelNamespaceDeviceAuthorization",
+    method: "DELETE",
+    path: "/namespaces/:namespaceId/connections/device-authorizations/:sessionId",
+    action: "openclaw.namespaces.connections.device_authorization.cancel",
+    iamAction: "create",
+    resourceKind: "credential_source",
+    authorizationTarget: "namespace_collection",
+    summary: "Cancel an unfinished ChatGPT device sign-in",
+    tags: ["Connections"],
+    schema: {
+      querystring: EmptyQuery,
+      params: Type.Object(
+        { namespaceId: NamespaceId, sessionId: CodexDeviceSessionId },
+        { additionalProperties: false },
+      ),
+      response: { 204: Type.Null(), ...mutationErrors },
+    },
+  },
+  {
     operationId: "startNamespaceConnection",
     method: "POST",
     path: "/namespaces/:namespaceId/connections",
@@ -1188,10 +1253,13 @@ export const occApiRoutes = [
     iamAction: "read",
     resourceKind: "namespace",
     authorizationTarget: "namespace",
-    summary: "List completed connections the caller can read in this Namespace",
+    summary: "List completed connections, optionally limited to usable Codex Harness accounts",
     tags: ["Connections"],
     schema: {
-      querystring: EmptyQuery,
+      querystring: Type.Object(
+        { purpose: Type.Optional(Type.Literal("codex-harness")) },
+        { additionalProperties: false },
+      ),
       params: NamespaceParams,
       response: { 200: SavedConnectionListResponse, ...readErrors },
     },

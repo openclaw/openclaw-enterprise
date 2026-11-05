@@ -77,14 +77,14 @@ the console. Use the operator workflow for those Agents.
 
 **Authentication source** determines how the harness gets model credentials:
 
-| Choice                           | Required input and effect                                                                                         |
-| -------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| **None**                         | No binding; deployment remains blocked.                                                                           |
-| **API key**                      | Select a Namespace Secret containing the API key, or create one through the picker.                               |
-| **Service Accounts**             | Select a Namespace Secret containing a service account token; available for the Codex Harness.                    |
-| **ChatGPT OAuth (Experimental)** | Codex Harness only: sign in through a device code; see [credential lifecycle](../deploy/credential-lifecycle.md). |
-| **Operator-managed credentials** | Credentials configured on the runtime host; OCC does not validate them.                                           |
-| **ChatGPT service account**      | Select an already issued account in this Namespace. This selector does not create an account.                     |
+| Choice                           | Required input and effect                                                                                                                                                                |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **None**                         | No binding; deployment remains blocked.                                                                                                                                                  |
+| **API key**                      | Select a Namespace Secret containing the API key, or create one through the picker.                                                                                                      |
+| **Service Accounts**             | Select a Namespace Secret containing a service account token; available for the Codex Harness.                                                                                           |
+| **ChatGPT OAuth (Experimental)** | For a dedicated Codex Agent, select a saved ChatGPT account or connect one with a device code. See [personal Codex login](../deploy/credential-lifecycle.md#use-a-personal-codex-login). |
+| **Operator-managed credentials** | Credentials configured on the runtime host; OCC does not validate them.                                                                                                                  |
+| **ChatGPT service account**      | Select an already issued account in this Namespace. This selector does not create an account.                                                                                            |
 
 **Save authentication source** saves the Agent binding for a future deployment.
 It needs Agent `update`, Configuration `read`, `operate` on each Secret and credential source

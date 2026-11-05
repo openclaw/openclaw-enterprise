@@ -5482,7 +5482,11 @@ export async function renderAgentDetail(
             savedAgent = updated;
             details = null;
           }
-          const credential = harnessCredential(harnessAuth, context.namespaceId);
+          const credential =
+            harnessAuth?.method === "credential_source" &&
+            auth.isPersonalAccount(harnessAuth.sourceId)
+              ? null
+              : harnessCredential(harnessAuth, context.namespaceId);
           if (credential && context.installationAdmin === false) {
             // Granting writes IAM policy, which needs Installation administration. The session
             // already knows this member lacks it, so it sends no grant that would be refused, and

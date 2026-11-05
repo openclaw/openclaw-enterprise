@@ -223,8 +223,9 @@ export function createHarnessAuthFields(
   const oauthLogin = createDeviceLogin({
     context,
     agentId: context.agentId,
+    currentSourceId: binding?.method === "credential_source" ? binding.sourceId : undefined,
     initial: draft?.oauthLogin,
-    hint: "Sign in to explicitly replace this Agent's credential. Save authentication source, then deploy a new version. The deployed login stays in use until deployment.",
+    hint: "Choose a saved ChatGPT account or sign in to connect another. Save the authentication source, then deploy a new version to use it.",
     onChange(source) {
       if (method.value === "credential_source") {
         selectedCredentialSource = source;
@@ -368,6 +369,7 @@ export function createHarnessAuthFields(
     });
   return {
     section,
+    isPersonalAccount: oauthLogin.isPersonalAccount,
     capture: (): HarnessAuthDraft => ({
       method: method.value,
       secretSource: selectedSecretSource,

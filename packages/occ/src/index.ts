@@ -1,3 +1,10 @@
+import type { SavedDeviceSession } from "./device-authorization.ts";
+import {
+  CODEX_HARNESS_TEMPLATE_ID,
+  CODEX_HARNESS_OAUTH_CLIENT_ID,
+  CODEX_PUBLIC_CLIENT_ID,
+  codexDeviceAuthorization,
+} from "@openclaw-enterprise/contracts";
 import { NativeIAMDriver } from "@openclaw-enterprise/iam";
 import { isReducedCredentialPlan } from "./credential-policy-reduction.ts";
 
@@ -391,7 +398,7 @@ import {
   validateSelectedBackendDrivers,
   validateServiceAccountBackendBinding,
 } from "./backends.ts";
-import { accountDeliveryProfileId } from "./account-delivery.ts";
+import { accountDeliveryProfileId, savedCodexAccount } from "./account-delivery.ts";
 import type { StoredOAuthClient } from "./ports/oauth-client.ts";
 import {
   InMemoryPlatformState,
@@ -1357,6 +1364,32 @@ function connectionConsentScopes(
   return selected;
 }
 
+function deviceClientRegistration(client: OAuthClient) {
+  return {
+    issuer: client.issuer,
+    tokenUrl: client.tokenUrl,
+    oauthClientId: client.id,
+    clientId: client.clientId,
+    tokenEndpointAuthMethod: client.tokenEndpointAuthMethod,
+  };
+}
+
+function deviceSessionResponse(session: SavedDeviceSession, ready = false) {
+  return {
+    sessionId: session.id,
+    ...session.authorization,
+    expiresAt: session.expiresAt,
+    status: ready ? ("ready" as const) : ("pending" as const),
+    ...(ready && {
+      source: {
+        kind: "credential_source" as const,
+        namespaceId: session.namespaceId,
+        id: session.credentialSourceId,
+      },
+    }),
+  };
+}
+
 function browserAuthorizationRequest(
   version: Readonly<OAuthConnectionTemplateVersion>,
   client: Readonly<OAuthClient>,
@@ -1793,6 +1826,19 @@ function selectsModel(values: Readonly<OpenClawConfigurationDocument>): boolean 
   return [asRecord(agents?.defaults), ...Object.values(asRecord(agents?.entries) ?? {})].some(
     (entry) => asRecord(entry)?.model !== undefined,
   );
+}
+
+type DeviceConnectionOrigin =
+  | { kind: "namespace"; sessionKey: "namespace" }
+  | { kind: "agent"; sessionKey: string; agentId: string | undefined };
+
+function deviceConnectionOrigin(
+  namespaceConnection: boolean,
+  agentId: string | undefined,
+): DeviceConnectionOrigin {
+  return namespaceConnection
+    ? { kind: "namespace", sessionKey: "namespace" }
+    : { kind: "agent", sessionKey: agentId ?? "create_agent", agentId };
 }
 
 // A Driver names unsupported Configuration content the caller owns; keep that message. Other
@@ -4662,7 +4708,9 @@ export class OpenClawController {
       await this.exactNamespace(state, namespaceId);
       const templates = await state.connectionTemplates.listConnectionTemplates();
       return templates.filter(
-        (template) => template.namespaceId === undefined || template.namespaceId === namespaceId,
+        (template) =>
+          template.id !== CODEX_HARNESS_TEMPLATE_ID &&
+          (template.namespaceId === undefined || template.namespaceId === namespaceId),
       );
     });
   }
@@ -4806,7 +4854,7 @@ export class OpenClawController {
       const admitted = revisionCredentialSource(source, snapshot);
       if (!admitted) {
         throw new ResourceStateConflictError(
-          "The saved account no longer matches the admitted plugin receiver.",
+          "The saved account no longer matches the admitted credential receiver.",
         );
       }
       const gateway = this.ownedCredentialGatewayDriver(admitted);
@@ -4819,34 +4867,58 @@ export class OpenClawController {
         source: { ...admitted, id: delivery.profileId },
         signal,
       };
-      const driver = this.ownedPluginDriver(revision.plugins?.driver, revision.harness.id);
       const token = await this.connectionTokenService().warm(custody, signal);
-      const target = await this.accountTarget(state, account);
-      const uses = this.pluginAccountBindings(driver, revision.plugins?.plugins).filter(
-        (binding) => binding.sourceId === source.id,
-      );
-      const compatible =
-        uses.length > 0 &&
-        uses.every(
-          ({ slot }) => slot.issuers.includes(account.issuer) && slot.acceptsRecipient(target),
+      let runtime: CredentialSource | undefined;
+      let pluginDriver: PluginDriver | undefined;
+      let hasPluginBinding = false;
+      if (source.type === "codex-oauth") {
+        const modelAccount = savedCodexAccount(source, account);
+        if (
+          token &&
+          modelAccount &&
+          revision.harness.id === "codex" &&
+          revision.harness.mode === "dedicated" &&
+          revision.harnessAuth.method === "credential_source" &&
+          revision.harnessAuth.sourceId === source.id &&
+          revision.harnessAuth.loginMode === "chatgptAuthTokens" &&
+          agent.harnessAuth?.method === "credential_source" &&
+          agent.harnessAuth.sourceId === source.id
+        ) {
+          runtime = {
+            ...admitted,
+            config: { ...admitted.config, "oce.codex.account": JSON.stringify(modelAccount) },
+          };
+        }
+      } else {
+        pluginDriver = this.ownedPluginDriver(revision.plugins?.driver, revision.harness.id);
+        const bindings = this.pluginAccountBindings(pluginDriver, revision.plugins?.plugins).filter(
+          (binding) => binding.sourceId === source.id,
         );
-      const runtime =
-        token && compatible
-          ? await this.runtimeAccountSource(
+        hasPluginBinding = bindings.length > 0;
+        if (token && hasPluginBinding) {
+          const target = await this.accountTarget(state, account);
+          if (
+            bindings.every(
+              ({ slot }) => slot.issuers.includes(account.issuer) && slot.acceptsRecipient(target),
+            )
+          ) {
+            runtime = await this.runtimeAccountSource(
               state,
               source,
               { ...account, grantedScopes: token.grantedScopes },
               revision.plugins?.plugins,
-              driver,
-              { target, bindings: uses },
-            )
-          : undefined;
+              pluginDriver,
+              { target, bindings },
+            );
+          }
+        }
+      }
       if (!token || !runtime) {
         if (!gateway.withdrawConnectionToken) {
           throw new ResourceStateConflictError("The sender cannot withdraw this connection token.");
         }
         await this.credentialGatewayOperation(() => gateway.withdrawConnectionToken!(context));
-        if (!expected && token && uses.length > 0 && agent.activeRevisionId === revision.id) {
+        if (!expected && token && hasPluginBinding && agent.activeRevisionId === revision.id) {
           if (!gateway.prepareConnectionSource) {
             throw new ResourceStateConflictError(
               "The sender cannot preserve the withdrawn account attachment.",
@@ -4862,7 +4934,10 @@ export class OpenClawController {
       if (runtime.type !== admitted.type || runtime.driverId !== admitted.driverId) {
         throw new ResourceStateConflictError("The account's admitted sender has changed.");
       }
-      if (this.ownedPluginDriver(revision.plugins?.driver, revision.harness.id) !== driver) {
+      if (
+        pluginDriver &&
+        this.ownedPluginDriver(revision.plugins?.driver, revision.harness.id) !== pluginDriver
+      ) {
         throw new ResourceStateConflictError(
           "The revision's Plugin Driver changed. Retry preparation.",
         );
@@ -4988,6 +5063,7 @@ export class OpenClawController {
         return templates
           .filter(
             (template) =>
+              template.id !== CODEX_HARNESS_TEMPLATE_ID &&
               (template.namespaceId === undefined || template.namespaceId === input.namespaceId) &&
               template.current.oauthClientId !== undefined &&
               slot.issuers.includes(template.current.issuer) &&
@@ -5045,7 +5121,13 @@ export class OpenClawController {
       (client.namespaceId !== undefined && client.namespaceId !== namespaceId) ||
       client.issuer !== version.issuer ||
       client.tokenUrl !== version.tokenUrl ||
-      (version.revocationUrl !== undefined && client.revocationUrl !== version.revocationUrl)
+      (version.revocationUrl !== undefined && client.revocationUrl !== version.revocationUrl) ||
+      (client.id === CODEX_HARNESS_OAUTH_CLIENT_ID &&
+        (version.templateId !== CODEX_HARNESS_TEMPLATE_ID ||
+          client.issuer !== codexDeviceAuthorization.issuer ||
+          client.tokenUrl !== codexDeviceAuthorization.tokenUrl ||
+          client.clientId !== CODEX_PUBLIC_CLIENT_ID ||
+          client.tokenEndpointAuthMethod !== "none"))
     ) {
       throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
     }
@@ -5072,6 +5154,9 @@ export class OpenClawController {
   }> {
     const { namespaceId } = input;
     await this.authorizeConnectionCreation(principalId, namespaceId);
+    if (input.connectionTemplateId === CODEX_HARNESS_TEMPLATE_ID) {
+      throw new ResourceStateConflictError("Use Codex device sign-in for this template.");
+    }
     const selected = intent
       ? await this.withSavedPluginTarget(
           principalId,
@@ -5190,6 +5275,47 @@ export class OpenClawController {
         );
       }
     });
+    const expired = await this.mutate(async (unit) => {
+      const now = this.clock();
+      const retryAt = new Date(now.getTime() + CREDENTIAL_REGISTRATION_FENCE_MS).toISOString();
+      const sessions = await unit.savedConnections.expiredDeviceSessions(now.toISOString(), limit);
+      for (const session of sessions) {
+        if (session.phase === "ready") {
+          await unit.savedConnections.deleteDeviceSession(session.id);
+        } else {
+          // Discard the handle and move this retirement behind the other due attempts.
+          // A worker crash or a failed Secret backend leaves a durable retry at retryAt.
+          await unit.savedConnections.updateDeviceSession(
+            session.id,
+            "cancelled",
+            null,
+            session.nextPollAt,
+            retryAt,
+          );
+        }
+      }
+      return sessions.filter((session) => session.phase !== "ready");
+    });
+    let failed = false;
+    for (const attempt of expired) {
+      try {
+        await this.deleteCredentialSource(
+          attempt.actorId,
+          attempt.namespaceId,
+          attempt.credentialSourceId,
+          undefined,
+          PENDING_CONNECTION,
+        );
+      } catch (error) {
+        // Recently created sources can be retried once their registration fence expires.
+        if (!(error instanceof RetryLaterError)) {
+          failed = true;
+        }
+      }
+    }
+    if (failed) {
+      throw new DependencyUnavailableError("Device sign-in cleanup will retry.");
+    }
   }
 
   async completeNamespaceConnection(
@@ -5441,7 +5567,8 @@ export class OpenClawController {
   async listNamespaceConnections(
     principalId: string,
     namespaceId: string,
-  ): Promise<readonly Readonly<SavedConnection>[]> {
+    purpose?: "codex-harness",
+  ): Promise<readonly (Omit<SavedConnection, "codexAccount"> & { accountLabel?: string })[]> {
     await this.authorize(principalId, "read", {
       kind: "namespace",
       id: namespaceId,
@@ -5449,20 +5576,36 @@ export class OpenClawController {
     });
     return this.read(async (state) => {
       const connections = await state.savedConnections.listNamespaceConnections(namespaceId);
-      const visible: Readonly<SavedConnection>[] = [];
+      const visible: (Omit<SavedConnection, "codexAccount"> & { accountLabel?: string })[] = [];
       for (const connection of connections) {
-        if (
-          await this.canRead(principalId, {
-            kind: "credential_source",
-            namespaceId,
-            id: connection.credentialSourceId,
-          })
-        ) {
-          visible.push({
-            ...connection,
-            destinations: await this.effectiveConnectionDestinations(state, connection),
-          });
+        const { codexAccount, ...publicConnection } = connection;
+        const resource = {
+          kind: "credential_source" as const,
+          namespaceId,
+          id: connection.credentialSourceId,
+        };
+        if (!(await this.canRead(principalId, resource))) {
+          continue;
         }
+        if (purpose === "codex-harness") {
+          const source =
+            codexAccount &&
+            (await state.credentialSources.findCredentialSource(namespaceId, resource.id));
+          if (
+            !source ||
+            !savedCodexAccount(source, connection) ||
+            !(await this.authorizationDecision(principalId, "operate", resource)).decision.allowed
+          ) {
+            continue;
+          }
+        }
+        visible.push({
+          ...publicConnection,
+          ...(codexAccount && {
+            accountLabel: `${codexAccount.planType} · …${codexAccount.accountId.slice(-8)}`,
+          }),
+          destinations: await this.effectiveConnectionDestinations(state, connection),
+        });
       }
       return visible;
     });
@@ -5955,7 +6098,13 @@ export class OpenClawController {
     principalId: string,
   ): Promise<readonly Readonly<ConnectionTemplate>[]> {
     await this.authorizeTemplateAdministration(principalId);
-    return this.read((state) => state.connectionTemplates.listConnectionTemplates());
+    return this.read(async (state) =>
+      (await state.connectionTemplates.listConnectionTemplates()).map((template) =>
+        template.id === CODEX_HARNESS_TEMPLATE_ID
+          ? { ...template, builtIn: true as const }
+          : template,
+      ),
+    );
   }
 
   async getConnectionTemplate(
@@ -5969,7 +6118,7 @@ export class OpenClawController {
     if (!template) {
       throw new ScopeViolationError("The connection template does not exist.");
     }
-    return template;
+    return template.id === CODEX_HARNESS_TEMPLATE_ID ? { ...template, builtIn: true } : template;
   }
 
   async discoverConnectionTemplate(
@@ -6058,6 +6207,11 @@ export class OpenClawController {
     if (!values.oauthClientId) {
       return;
     }
+    if (values.oauthClientId === CODEX_HARNESS_OAUTH_CLIENT_ID) {
+      throw new ResourceStateConflictError(
+        "The native Codex client is reserved for device sign-in.",
+      );
+    }
     const client = await state.connectionTemplates.findOAuthClient(values.oauthClientId);
     if (
       !client ||
@@ -6122,6 +6276,9 @@ export class OpenClawController {
   ) {
     // Resolve the exact authorized target before any administrator-selected outbound discovery.
     await this.getConnectionTemplate(principalId, id);
+    if (id === CODEX_HARNESS_TEMPLATE_ID) {
+      throw new ResourceStateConflictError("OCE manages the Codex device sign-in template.");
+    }
     const values =
       "mode" in input ? await this.effectiveConnectionTemplate(input, discover) : undefined;
     return this.mutate(async (state) => {
@@ -6167,6 +6324,9 @@ export class OpenClawController {
   ) {
     await this.mutate(async (state) => {
       await this.authorizeTemplateAdministration(principalId);
+      if (id === CODEX_HARNESS_TEMPLATE_ID) {
+        throw new ResourceStateConflictError("OCE manages the Codex device sign-in template.");
+      }
       if (!(await state.connectionTemplates.deleteConnectionTemplate(id))) {
         throw new ScopeViolationError("The connection template does not exist.");
       }
@@ -6181,7 +6341,11 @@ export class OpenClawController {
     secretDriverId: _owner,
     ...metadata
   }: StoredOAuthClient): OAuthClient {
-    return immutableCopy(metadata);
+    return immutableCopy(
+      metadata.id === CODEX_HARNESS_OAUTH_CLIENT_ID
+        ? { ...metadata, builtIn: true as const }
+        : metadata,
+    );
   }
 
   async listOAuthClients(principalId: string) {
@@ -6197,6 +6361,9 @@ export class OpenClawController {
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ) {
     const template = await this.getConnectionTemplate(principalId, input.connectionTemplateId);
+    if (template.id === CODEX_HARNESS_TEMPLATE_ID) {
+      throw new ResourceStateConflictError("The Codex device flow uses its native public client.");
+    }
     const assertSelectedVersion = (version: number | undefined) => {
       if (version !== input.connectionTemplateVersion) {
         throw new ResourceStateConflictError(
@@ -10169,6 +10336,356 @@ export class OpenClawController {
     };
   }
 
+  private async authorizeDeviceConnection(
+    principalId: string,
+    namespaceId: string,
+    origin: DeviceConnectionOrigin,
+  ) {
+    await this.authorizeConnectionCreation(principalId, namespaceId);
+    if (origin.kind === "agent") {
+      await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, origin.agentId);
+    }
+  }
+
+  private async startSavedDeviceConnection(
+    principalId: string,
+    namespaceId: string,
+    origin: DeviceConnectionOrigin,
+    browserSessionId: string | undefined,
+    refresh: CredentialRefreshDriver,
+    device: NonNullable<CredentialRefreshDriver["deviceConnection"]>,
+    audit?: (
+      source: Readonly<CredentialSourceMetadata>,
+      phase: "source_registering" | "source_ready" | "session_pending",
+    ) => AuditEvent,
+    holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
+  ) {
+    await this.authorizeDeviceConnection(principalId, namespaceId, origin);
+    if (!browserSessionId) {
+      throw new ScopeViolationError("A signed-in browser is required for device login.");
+    }
+    this.connectionTokenService();
+    const approved = await this.read(async (view) => {
+      const namespace = await this.exactNamespace(view, namespaceId);
+      if (namespace.status !== "ready") {
+        throw new NamespaceNotReadyError();
+      }
+      const template = await view.connectionTemplates.findConnectionTemplate(device.templateId);
+      if (!template || template.namespaceId !== undefined) {
+        throw new ScopeViolationError("The Installation device-login template is unavailable.");
+      }
+      const client = await this.connectionClientForVersion(view, namespaceId, template.current);
+      return { namespace, template, registration: deviceClientRegistration(client) };
+    });
+    const { namespace, template, registration } = approved;
+    const source: CredentialSource = {
+      id: this.nextIdentifier("credential_source"),
+      namespaceId,
+      name: `${template.displayName} ${crypto.randomUUID()}`,
+      type: device.sourceType,
+      config: {
+        issuer: registration.issuer,
+        token_url: registration.tokenUrl,
+        client_id: registration.clientId,
+        oauth_client_id: registration.oauthClientId,
+      },
+      ownerCapability: "credential_refresh",
+      driverId: refresh.id,
+      secrets: {},
+      state: "registering",
+      createdAt: this.timestamp(),
+    };
+    // The provider issues an unclaimed challenge. Do not hold the shared template or a tenant
+    // lock across this network request, and expose the challenge only after its session exists.
+    let started: CredentialSourceDeviceAuthorization;
+    try {
+      started = await device.start(
+        { namespace, source, signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS) },
+        registration,
+      );
+    } catch (error) {
+      throw error instanceof DeviceAuthorizationStartError
+        ? error
+        : new DeviceAuthorizationStartError("unavailable");
+    }
+    const { privateState, expiresAt, ...authorization } = started;
+    return this.mutate(async (unit) => {
+      if ((await this.lockNamespace(unit, namespaceId)).status !== "ready") {
+        throw new NamespaceNotReadyError();
+      }
+      await holdSession?.(unit);
+      await this.authorizeDeviceConnection(principalId, namespaceId, origin);
+      const current = await unit.connectionTemplates.lockConnectionTemplate(device.templateId);
+      if (
+        !current ||
+        current.current.version !== template.current.version ||
+        current.namespaceId !== undefined ||
+        this.credentialRefreshDriver().id !== refresh.id
+      ) {
+        throw new ResourceStateConflictError("The device-login template changed. Connect again.");
+      }
+      const client = await this.connectionClientForVersion(unit, namespaceId, current.current);
+      if (!isDeepStrictEqual(deviceClientRegistration(client), registration)) {
+        throw new ResourceStateConflictError("The device-login client changed. Connect again.");
+      }
+      await unit.credentialSources.createCredentialSource(source);
+      const now = this.timestamp();
+      const session: SavedDeviceSession = {
+        id: `cda_${crypto.randomUUID()}`,
+        namespaceId,
+        credentialSourceId: source.id,
+        actorId: principalId,
+        browserSessionId,
+        origin: origin.sessionKey,
+        connectionTemplateId: template.id,
+        connectionTemplateVersion: current.current.version,
+        authorization,
+        privateState,
+        phase: "pending",
+        expiresAt,
+        nextPollAt: new Date(Date.parse(now) + started.intervalSeconds * 1000).toISOString(),
+      };
+      await unit.savedConnections.createDeviceSession(session);
+      if (audit) {
+        const metadata = this.credentialSourceMetadata(source);
+        await unit.audit.append(audit(metadata, "source_registering"));
+        await unit.audit.append(audit(metadata, "session_pending"));
+      }
+      return deviceSessionResponse(session);
+    });
+  }
+
+  private async lockOwnedDeviceSession(
+    unit: PlatformUnitOfWork,
+    id: string,
+    principalId: string,
+    namespaceId: string,
+    origin: DeviceConnectionOrigin,
+    browserSessionId: string | undefined,
+  ) {
+    const session = await unit.savedConnections.lockDeviceSession(id);
+    if (
+      !session ||
+      session.namespaceId !== namespaceId ||
+      session.actorId !== principalId ||
+      session.origin !== origin.sessionKey ||
+      !browserSessionId ||
+      session.browserSessionId !== browserSessionId
+    ) {
+      throw new ScopeViolationError(
+        "This sign-in attempt does not belong to this browser or Agent.",
+      );
+    }
+    return session;
+  }
+
+  private async pollSavedDeviceConnection(
+    principalId: string,
+    namespaceId: string,
+    id: string,
+    origin: DeviceConnectionOrigin,
+    browserSessionId: string | undefined,
+    holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
+    auditReady?: (sourceId: string) => AuditEvent,
+  ) {
+    await this.authorizeDeviceConnection(principalId, namespaceId, origin);
+    const claimed = await this.mutate(async (unit) => {
+      const session = await this.lockOwnedDeviceSession(
+        unit,
+        id,
+        principalId,
+        namespaceId,
+        origin,
+        browserSessionId,
+      );
+      const now = this.timestamp();
+      if (session.expiresAt <= now || session.phase === "cancelled") {
+        throw new ResourceStateConflictError(
+          "Device login expired or was cancelled. Connect again.",
+        );
+      }
+      if (session.phase === "ready") {
+        const saved = await unit.savedConnections.findSavedConnection(
+          namespaceId,
+          session.credentialSourceId,
+        );
+        if (!saved || saved.revocationRequestedBy || saved.ownerPrincipalId !== principalId) {
+          throw new ResourceStateConflictError("This connected account is unavailable.");
+        }
+        return { response: deviceSessionResponse(session, true) };
+      }
+      if (session.phase === "polling" || session.nextPollAt > now) {
+        return { response: deviceSessionResponse(session) };
+      }
+      const namespace = await this.exactNamespace(unit, namespaceId);
+      const source = await unit.credentialSources.findCredentialSource(
+        namespaceId,
+        session.credentialSourceId,
+      );
+      if (
+        namespace.status !== "ready" ||
+        source?.state !== "registering" ||
+        source.ownerCapability !== "credential_refresh" ||
+        !session.privateState
+      ) {
+        throw new ResourceStateConflictError("This sign-in attempt is unavailable.");
+      }
+      const refresh = this.credentialRefreshDriver();
+      const device = refresh.deviceConnection;
+      if (
+        refresh.id !== source.driverId ||
+        !device ||
+        device.templateId !== session.connectionTemplateId ||
+        device.sourceType !== source.type
+      ) {
+        throw new ResourceStateConflictError("The login Driver changed. Connect again.");
+      }
+      const version = await unit.connectionTemplates.findOAuthConnectionTemplateVersion(
+        session.connectionTemplateId,
+        session.connectionTemplateVersion,
+      );
+      if (!version) {
+        throw new ResourceStateConflictError("The approved device-login template is unavailable.");
+      }
+      const client = await this.connectionClientForVersion(unit, namespaceId, version);
+      // A crash after the provider returns the code must never replay the exchange.
+      // Restore the handle only on an explicit still-pending answer from the provider.
+      await unit.savedConnections.updateDeviceSession(
+        id,
+        "polling",
+        null,
+        session.nextPollAt,
+        session.expiresAt,
+      );
+      await holdSession?.(unit);
+      return {
+        session,
+        privateState: session.privateState,
+        device,
+        version,
+        registration: deviceClientRegistration(client),
+        context: { namespace, source, signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS) },
+      };
+    });
+    if (claimed.response) {
+      return claimed.response;
+    }
+    const { session, privateState, device, version, registration, context } = claimed;
+    const holdClaim = async (unit: PlatformUnitOfWork) => {
+      await holdSession?.(unit);
+      const current = await this.lockOwnedDeviceSession(
+        unit,
+        id,
+        principalId,
+        namespaceId,
+        origin,
+        browserSessionId,
+      );
+      if (
+        current.phase !== "polling" ||
+        current.expiresAt <= this.timestamp() ||
+        this.credentialRefreshDriver().id !== context.source.driverId
+      ) {
+        throw new ResourceStateConflictError("The login changed while completing. Connect again.");
+      }
+      await this.authorizeDeviceConnection(principalId, namespaceId, origin);
+    };
+    try {
+      let receipt: Pick<SavedConnection, "grantedScopes" | "codexAccount"> | undefined;
+      const result = await device.poll(context, privateState, registration, async (grant) => {
+        await this.acceptConnectionTokens(
+          namespaceId,
+          session.credentialSourceId,
+          grant,
+          context.signal,
+          holdClaim,
+        );
+        receipt = {
+          grantedScopes: grant.grantedScopes,
+          ...(grant.codexAccount && { codexAccount: grant.codexAccount }),
+        };
+      });
+      const accepted = receipt;
+      return await this.mutate(async (unit) => {
+        await this.lockNamespace(unit, namespaceId);
+        await holdClaim(unit);
+        if (result.status === "pending" && !accepted) {
+          await unit.savedConnections.updateDeviceSession(
+            id,
+            "pending",
+            privateState,
+            new Date(
+              Date.parse(this.timestamp()) + session.authorization.intervalSeconds * 1000,
+            ).toISOString(),
+            session.expiresAt,
+          );
+          return deviceSessionResponse(session);
+        }
+        if (result.status !== "ready" || !accepted) {
+          throw new DependencyUnavailableError(
+            "The Refresh Driver did not finish the account handoff.",
+          );
+        }
+        await this.grantConnectionOwner(unit, namespaceId, principalId, session.credentialSourceId);
+        const ready = await unit.credentialSources.markCredentialSourceReady(
+          namespaceId,
+          session.credentialSourceId,
+        );
+        if (!ready) {
+          throw new ResourceStateConflictError("The pending account changed during sign-in.");
+        }
+        await unit.savedConnections.createSavedConnection({
+          ...accepted,
+          namespaceId,
+          credentialSourceId: session.credentialSourceId,
+          ownerPrincipalId: principalId,
+          connectionTemplateId: session.connectionTemplateId,
+          connectionTemplateVersion: session.connectionTemplateVersion,
+          issuer: registration.issuer,
+          tokenUrl: registration.tokenUrl,
+          oauthClientId: registration.oauthClientId,
+          clientId: registration.clientId,
+          destinations: version.destinations,
+          requestedScopes: [],
+          createdAt: this.timestamp(),
+        });
+        await unit.savedConnections.updateDeviceSession(
+          id,
+          "ready",
+          null,
+          session.nextPollAt,
+          session.expiresAt,
+        );
+        if (auditReady) {
+          await unit.audit.append(auditReady(session.credentialSourceId));
+        }
+        return deviceSessionResponse(session, true);
+      });
+    } catch (error) {
+      // Cancellation or a lost exchange leaves retirement to the durable cleanup loop. A ready
+      // receipt is authoritative when the final database commit's acknowledgement was lost.
+      await this.mutate(async (unit) => {
+        const current = await unit.savedConnections.lockDeviceSession(id);
+        if (current?.phase === "polling") {
+          await unit.savedConnections.updateDeviceSession(
+            id,
+            "cancelled",
+            null,
+            current.nextPollAt,
+            this.timestamp(),
+          );
+        }
+      }).catch(() => undefined);
+      if (
+        error instanceof ResourceStateConflictError ||
+        error instanceof AuthorizationDeniedError
+      ) {
+        throw error;
+      }
+      throw new RetryLaterError("deviceLoginFailed", error);
+    }
+  }
+
   async startAgentDeviceAuthorization(
     principalId: string,
     namespaceId: string,
@@ -10178,7 +10695,33 @@ export class OpenClawController {
       source: Readonly<CredentialSourceMetadata>,
       phase: "source_registering" | "source_ready" | "session_pending",
     ) => AuditEvent,
+    browserSessionId?: string,
+    namespaceConnection = false,
+    holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ) {
+    const savedRefresh = this.selections.has("credential_refresh")
+      ? this.credentialRefreshDriver()
+      : undefined;
+    const device = savedRefresh?.deviceConnection;
+    if (device?.harnessId === harnessId && savedRefresh) {
+      return this.startSavedDeviceConnection(
+        principalId,
+        namespaceId,
+        deviceConnectionOrigin(namespaceConnection, agentId),
+        browserSessionId,
+        savedRefresh,
+        device,
+        audit,
+        holdSession,
+      );
+    }
+    if (namespaceConnection) {
+      await this.authorizeConnectionCreation(principalId, namespaceId);
+      throw new NotImplementedError(
+        "agent_device_authorization",
+        "The selected Refresh Driver does not support saved device accounts.",
+      );
+    }
     await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
     await this.authorize(principalId, "create", {
       kind: "secret",
@@ -10348,7 +10891,22 @@ export class OpenClawController {
     namespaceId: string,
     secretId: string,
     agentId?: string,
+    browserSessionId?: string,
+    namespaceConnection = false,
+    holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
+    auditReady?: (sourceId: string) => AuditEvent,
   ) {
+    if (secretId.startsWith("cda_") || namespaceConnection) {
+      return this.pollSavedDeviceConnection(
+        principalId,
+        namespaceId,
+        secretId,
+        deviceConnectionOrigin(namespaceConnection, agentId),
+        browserSessionId,
+        holdSession,
+        auditReady,
+      );
+    }
     const { secret, driver, value, session } = await this.readAgentDeviceAuthorization(
       principalId,
       namespaceId,
@@ -10462,7 +11020,35 @@ export class OpenClawController {
     namespaceId: string,
     secretId: string,
     agentId?: string,
+    browserSessionId?: string,
+    namespaceConnection = false,
   ): Promise<void> {
+    if (secretId.startsWith("cda_") || namespaceConnection) {
+      const origin = deviceConnectionOrigin(namespaceConnection, agentId);
+      await this.authorizeDeviceConnection(principalId, namespaceId, origin);
+      await this.mutate(async (unit) => {
+        const session = await this.lockOwnedDeviceSession(
+          unit,
+          secretId,
+          principalId,
+          namespaceId,
+          origin,
+          browserSessionId,
+        );
+        if (session.phase === "ready") {
+          await unit.savedConnections.deleteDeviceSession(session.id);
+        } else {
+          await unit.savedConnections.updateDeviceSession(
+            session.id,
+            "cancelled",
+            null,
+            session.nextPollAt,
+            this.timestamp(),
+          );
+        }
+      });
+      return;
+    }
     const { secret, driver, value, session } = await this.readAgentDeviceAuthorization(
       principalId,
       namespaceId,
@@ -10831,6 +11417,64 @@ export class OpenClawController {
     const discover = prepareDiscovery(driver);
     const recheck = () => validateCurrent(driver, source);
     if (credentialSource !== undefined) {
+      // The operator's catalog request uses a warm model token without granting a workload access.
+      await this.authorize(principalId, "operate", credentialSource);
+      const savedModel = await this.read(async (state) => {
+        const source = await state.credentialSources.findCredentialSource(
+          namespaceId,
+          credentialSource.id,
+        );
+        if (source?.ownerCapability !== "credential_refresh" || source.type !== "codex-oauth") {
+          return undefined;
+        }
+        const namespace = await this.exactNamespace(state, namespaceId);
+        const account = savedCodexAccount(
+          source,
+          await state.savedConnections.findSavedConnection(namespaceId, source.id),
+        );
+        const custody = await state.savedConnections.findTokenCustody(namespaceId, source.id);
+        if (namespace.status !== "ready" || !account || !custody || driver.harnessId !== "codex") {
+          throw new ResourceStateConflictError(
+            "The ChatGPT account is unavailable for this catalog.",
+          );
+        }
+        return { account, custody };
+      });
+      if (savedModel) {
+        return this.invokePluginDiscovery(
+          driver,
+          discover,
+          async (invoke) => {
+            const token = await this.connectionTokenService().warm(
+              savedModel.custody,
+              signal ?? AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+            );
+            if (!token) {
+              throw new ResourceStateConflictError(
+                "The ChatGPT account is unavailable. Reconnect the account.",
+              );
+            }
+            return invoke({
+              accessToken: token.accessToken,
+              accountId: savedModel.account.accountId,
+              ...(savedModel.account.isFedramp !== undefined && {
+                isFedramp: savedModel.account.isFedramp,
+              }),
+            });
+          },
+          async () => {
+            await recheck();
+            await this.authorize(principalId, "operate", credentialSource);
+            const current = await this.read((view) =>
+              view.savedConnections.findSavedConnection(namespaceId, credentialSource.id),
+            );
+            if (!current || current.revocationRequestedBy) {
+              throw new ResourceStateConflictError("The ChatGPT account has been disconnected.");
+            }
+          },
+          signal,
+        );
+      }
       const { gateway, context } = await this.authorizedCredentialSource(
         principalId,
         namespaceId,
@@ -12396,13 +13040,19 @@ export class OpenClawController {
       }
       await this.guardProvisioningConfiguration(state, namespace.id, input.configurationId);
       rejectCrossNamespaceSecretSources(namespace.id, undefined, harnessAuth);
-      await this.authorizeHarnessAuthSource(state, principalId, namespace.id, harnessAuth);
+      const modelGrant = await this.authorizeHarnessAuthSource(
+        state,
+        principalId,
+        namespace.id,
+        harnessAuth,
+      );
       const sources = await this.authorizeAgentCredentialSources(
         state,
         principalId,
         namespace.id,
         credentialSources ?? [],
         harnessAuth,
+        new Set(modelGrant ? [modelGrant.id] : []),
       );
       const agentId = this.nextIdentifier("agent");
       await this.authorizeBindings(
@@ -12457,6 +13107,9 @@ export class OpenClawController {
         status: "active",
         createdAt: this.timestamp(),
       });
+      if (modelGrant) {
+        await this.ensureAgentOperateGrants(state, namespace.id, agent, [modelGrant]);
+      }
       if (initialWorkspaceFiles !== undefined) {
         await state.workspaceSetups.create({
           id: crypto.randomUUID(),
@@ -12834,7 +13487,16 @@ export class OpenClawController {
       }
       if (requestedAuth !== undefined) {
         rejectCrossNamespaceSecretSources(namespace.id, undefined, requestedAuth);
-        await this.authorizeHarnessAuthSource(state, principalId, namespace.id, requestedAuth);
+        const modelGrant = await this.authorizeHarnessAuthSource(
+          state,
+          principalId,
+          namespace.id,
+          requestedAuth,
+        );
+        if (modelGrant && !attached.has(modelGrant.id)) {
+          await this.ensureAgentOperateGrants(state, namespace.id, agent, [modelGrant]);
+          attached.add(modelGrant.id);
+        }
       }
       const auth = requestedAuth === undefined ? previousAuth : requestedAuth;
       let sources =
@@ -15267,9 +15929,9 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
     binding: HarnessAuthBinding | null,
-  ): Promise<void> {
+  ): Promise<CredentialSourceReference | undefined> {
     if (binding === null || binding.method === "runtime") {
-      return;
+      return undefined;
     }
     if (isSecretHarnessAuth(binding)) {
       if (binding.source.namespaceId !== namespaceId) {
@@ -15297,6 +15959,10 @@ export class OpenClawController {
           "The Harness credential source is unavailable in the exact Namespace.",
         );
       }
+      if (source.ownerCapability === "credential_refresh") {
+        await this.savedModelSender(state, source);
+        return { kind: "credential_source", namespaceId, id: source.id };
+      }
       this.ownedCredentialGatewayDriver(source);
     } else {
       if (binding.source.namespaceId !== namespaceId) {
@@ -15309,6 +15975,25 @@ export class OpenClawController {
       });
       await this.exactServiceAccount(state, namespaceId, binding.source.id);
     }
+    return undefined;
+  }
+
+  private async savedModelSender(
+    state: PlatformReadView,
+    source: CredentialSource,
+  ): Promise<CredentialSource> {
+    const account = await state.savedConnections.findSavedConnection(source.namespaceId, source.id);
+    if (!savedCodexAccount(source, account)) {
+      throw new ResourceStateConflictError(
+        "Choose a connected ChatGPT account for the Codex Harness.",
+      );
+    }
+    return {
+      ...source,
+      ownerCapability: "credential_gateway",
+      driverId: this.credentialGatewayDriver().id,
+      config: { oauth_owner: "token_service" },
+    };
   }
 
   private agentCredentialSources(
@@ -15431,6 +16116,10 @@ export class OpenClawController {
       readonly bindings: ReturnType<OpenClawController["pluginAccountBindings"]>;
     },
   ): Promise<CredentialSource | undefined> {
+    // A personal model credential can reach only the dedicated Codex sender.
+    if (source.type === "codex-oauth") {
+      return undefined;
+    }
     const target = resolved?.target ?? (await this.accountTarget(state, account));
     const uses =
       resolved?.bindings ??
@@ -15502,7 +16191,9 @@ export class OpenClawController {
           !account ||
           account.revocationRequestedBy ||
           !attached.has(sourceId) ||
-          (harnessAuth?.method === "credential_source" && harnessAuth.sourceId === sourceId)
+          (harnessAuth?.method === "credential_source" &&
+            harnessAuth.sourceId === sourceId &&
+            !savedCodexAccount(source, account))
         ) {
           throw new ResourceStateConflictError(
             "Attach a ready saved account through an authorized plugin slot.",
@@ -15629,13 +16320,12 @@ export class OpenClawController {
         if (!account || account.revocationRequestedBy) {
           throw new ResourceStateConflictError("The connected account is unavailable.");
         }
-        const runtime = await this.runtimeAccountSource(
-          state,
-          source,
-          account,
-          agent.plugins,
-          driver,
-        );
+        const isModel =
+          agent.harnessAuth?.method === "credential_source" &&
+          agent.harnessAuth.sourceId === sourceId;
+        const runtime = isModel
+          ? await this.savedModelSender(state, source)
+          : await this.runtimeAccountSource(state, source, account, agent.plugins, driver);
         if (runtime) {
           // Each approved presentation has an independent sender profile. Sharing an account
           // cannot change another Agent's protected destination or placeholder.
@@ -15820,8 +16510,7 @@ export class OpenClawController {
     } else if (binding.method === "credential_source") {
       [auth, credentialSourceType] = await this.credentialSourceHarnessAuthSnapshot(
         state,
-        namespaceId,
-        binding,
+        await state.credentialSources.lockCredentialSource(namespaceId, binding.sourceId),
       );
     } else {
       auth = await this.serviceAccountHarnessAuthSnapshot(state, namespaceId, backendId, binding);
@@ -16919,10 +17608,13 @@ export class OpenClawController {
       throw new ScopeViolationError("The connection is not attached to this Agent.");
     }
     const remaining = bindings.filter((binding) => binding.sourceId !== sourceId);
+    const removingModel =
+      agent.harnessAuth?.method === "credential_source" && agent.harnessAuth.sourceId === sourceId;
+    const remainingAuth = removingModel ? null : agent.harnessAuth;
     if (!revokeForAllAgents) {
       const driver = this.ownedPluginDriver(agent.pluginDriver);
       await this.guardAgentProvisioning(state, namespaceId, agentId);
-      this.assertHarnessSourceListed(remaining, agent.harnessAuth);
+      this.assertHarnessSourceListed(remaining, remainingAuth);
       const remainingSources: CredentialSource[] = [];
       for (const binding of remaining) {
         const source = await state.credentialSources.findCredentialSource(
@@ -16946,7 +17638,7 @@ export class OpenClawController {
         driver,
         agent.plugins,
         remainingSources,
-        agent.harnessAuth,
+        remainingAuth,
       );
     }
     const revisions = await state.revisions.listRevisions(namespaceId, agentId);
@@ -16987,7 +17679,7 @@ export class OpenClawController {
         agentId,
         agent.configurationId,
         undefined,
-        undefined,
+        removingModel ? null : undefined,
         undefined,
         undefined,
         undefined,
@@ -17216,7 +17908,10 @@ export class OpenClawController {
         namespaceId: agent.namespaceId,
         id: binding.sourceId,
       });
-      return this.credentialSourceHarnessAuthSnapshot(state, agent.namespaceId, binding);
+      return this.credentialSourceHarnessAuthSnapshot(
+        state,
+        await state.credentialSources.lockCredentialSource(agent.namespaceId, binding.sourceId),
+      );
     }
     const account = await state.serviceAccounts.lockServiceAccount(
       agent.namespaceId,
@@ -17249,19 +17944,18 @@ export class OpenClawController {
   }
 
   private async credentialSourceHarnessAuthSnapshot(
-    state: PlatformUnitOfWork,
-    namespaceId: string,
-    binding: Extract<HarnessAuthBinding, { readonly method: "credential_source" }>,
+    state: PlatformReadView,
+    source: CredentialSource | undefined,
   ): Promise<readonly [HarnessAuthSnapshot, CredentialSourceType]> {
-    const source = await state.credentialSources.lockCredentialSource(
-      namespaceId,
-      binding.sourceId,
-    );
     if (source === undefined || source.state !== "ready") {
       throw new ScopeViolationError("The Harness credential source is unavailable.");
     }
-    const gateway = this.ownedCredentialGatewayDriver(source);
-    const type = await this.credentialSourceType(gateway, source.type);
+    const sender =
+      source.ownerCapability === "credential_refresh"
+        ? await this.savedModelSender(state, source)
+        : source;
+    const gateway = this.ownedCredentialGatewayDriver(sender);
+    const type = await this.credentialSourceType(gateway, sender.type);
     if (type.harnessAuth === undefined) {
       throw new ResourceStateConflictError(
         "The credential source type cannot authenticate a Harness.",
@@ -18312,8 +19006,24 @@ export class OpenClawController {
     // A Configuration that selects no model yet is a draft: the binding has nothing to deliver
     // to, so deployment refuses that pair and save does not.
     const auth = selectsModel(configuration.values) ? await agent.harnessAuth() : undefined;
+    if (
+      auth?.method === "credential_source" &&
+      auth.sourceType === "codex-oauth" &&
+      (harness.id !== "codex" || harness.mode !== "dedicated")
+    ) {
+      throw new ResourceStateConflictError(
+        "A connected ChatGPT model account requires a dedicated Codex Agent.",
+      );
+    }
     if (auth !== undefined && compute.validateHarnessAuth !== undefined) {
-      validateAgentHarnessAuth(compute, harness, auth, values, null);
+      const type =
+        auth.method === "credential_source"
+          ? await this.credentialSourceType(
+              this.credentialGatewayDriver(auth.credentialGatewayId),
+              auth.sourceType,
+            )
+          : undefined;
+      validateAgentHarnessAuth(compute, harness, auth, values, null, type);
     }
     if (
       agent.repositoryBindings !== undefined &&
@@ -18338,6 +19048,17 @@ export class OpenClawController {
   ): Promise<HarnessAuthSnapshot | undefined> {
     if (binding?.method === "runtime") {
       return binding;
+    }
+    if (binding?.method === "credential_source") {
+      const source = await state.credentialSources.findCredentialSource(
+        namespaceId,
+        binding.sourceId,
+      );
+      if (source?.ownerCapability === "credential_refresh") {
+        const [auth] = await this.credentialSourceHarnessAuthSnapshot(state, source);
+        return auth;
+      }
+      return undefined;
     }
     if (binding === null || !isSecretHarnessAuth(binding)) {
       return undefined;

@@ -24,6 +24,7 @@ export const NamespaceId = Type.String({ pattern: `^ns_${UUID_V4}$` });
 export const PresetId = Type.String({ pattern: `^pre_${UUID_V4}$` });
 export const ConfigurationId = Type.String({ pattern: `^cfg_${UUID_V4}$` });
 export const ServiceAccountId = Type.String({ pattern: `^sa_${UUID_V4}$` });
+export const CodexDeviceSessionId = Type.String({ pattern: `^cda_${UUID_V4}$` });
 export const SecretId = Type.String({ pattern: `^sec_${UUID_V4}$` });
 export const CredentialSourceId = Type.String({ pattern: `^cs_${UUID_V4}$` });
 export const IAMRoleId = Type.String({ minLength: 1, maxLength: 200 });

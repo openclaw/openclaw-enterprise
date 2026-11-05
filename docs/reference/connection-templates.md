@@ -4,6 +4,8 @@ Installation administrators can publish a connection template for the Installati
 
 In Console, open **Credentials → Connection templates**. Choose **Create connection template** and set **Template availability** to the whole Installation or a particular Namespace. Select a compatible OAuth client or choose **Create template and register OAuth client**.
 
+The Installation also includes **ChatGPT for Codex** and its native public OAuth client. They use device sign-in and fixed provider endpoints. OCE reserves both registrations for dedicated Codex accounts. See [Codex authentication](drivers/kubernetes-compute/codex-oauth-storage.md).
+
 ## Register a client
 
 OCC owns OAuth client registrations. It stores confidential client secrets through the Installation’s selected Secret Driver. The Helm chart gives OCC a private Kubernetes namespace for these secrets. A public client needs only its provider-issued client ID. You can register either kind before configuring a Credential Gateway or Token Service.

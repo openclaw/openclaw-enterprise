@@ -3,7 +3,7 @@ import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbo
 
 /** A real OpenShell Sandbox Driver whose Kubernetes settings `overrides` overrides (an
  * undefined value removes the setting), with extra `gateway` settings. */
-export function openShellSandbox(t, overrides = {}, gateway = {}) {
+export function openShellSandbox(t, overrides = {}, gateway = {}, selection) {
   const kubernetes = {
     runtimeClassName: "openshell-sandbox",
     // Native OpenClaw workspace preparation requires it.
@@ -27,8 +27,10 @@ export function openShellSandbox(t, overrides = {}, gateway = {}) {
       credential_gateway: "workspace-openshell-credentials",
     },
   };
-  const backend = createOpenShellBackend(definition);
-  t.after(() => backend.client.close());
+  const backend = selection?.backend ?? createOpenShellBackend(definition);
+  if (!selection) {
+    t.after(() => backend.client.close());
+  }
   const sandboxDriver = new OpenShellSandboxDriver(
     {
       gateway: { workspaceMode: "operator", ...gateway },
@@ -44,7 +46,7 @@ export function openShellSandbox(t, overrides = {}, gateway = {}) {
         ],
       },
     },
-    { id: "workspace-openshell-sandbox", backend },
+    selection ?? { id: "workspace-openshell-sandbox", backend },
   );
   return {
     backend,

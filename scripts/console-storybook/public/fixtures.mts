@@ -96,6 +96,7 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     observabilityDenied?: boolean;
     oauthExpired?: boolean;
     oauthPending?: boolean;
+    savedCodexAccount?: boolean;
     serviceAccountsEmpty?: boolean;
     repositoryDescriptionsPending?: boolean;
     repositoryNotConfigured?: boolean;
@@ -129,7 +130,7 @@ type StoredCredentialSource = Pick<
   createdAt: string;
 };
 type DeviceLogin = {
-  session: SecretReference;
+  sessionId: string;
   status: "pending" | "ready";
   verificationUrl: string;
   userCode: string;
@@ -231,6 +232,10 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
   }
   let credentialRegistrationFailed = false;
   const deviceLogins = new Map<string, DeviceLogin>();
+  const savedAccounts = new Map<string, string>();
+  if (scenario.savedCodexAccount) {
+    savedAccounts.set("cs_00000000-0000-4000-8000-000000000080", "Plus · …19c30f81");
+  }
   const secrets = new Map<string, ReturnType<typeof secretMetadata>>();
   const roles: StoredIdentity[] = [];
   const bindings: StoredIdentity[] = [];
@@ -584,22 +589,35 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
         }
         return response([]);
       }
+      if (
+        resource === "connections" &&
+        method === "GET" &&
+        url.searchParams.get("purpose") === "codex-harness"
+      ) {
+        return response(
+          [...savedAccounts].map(([credentialSourceId, accountLabel]) => ({
+            namespaceId,
+            credentialSourceId,
+            accountLabel,
+          })),
+        );
+      }
       const deviceLogin = resource.match(
-        /^agents(?:\/[^/]+)?\/device-authorizations(?:\/([^/]+)(\/poll)?)?$/,
+        /^(?:connections|agents(?:\/[^/]+)?)\/device-authorizations(?:\/([^/]+)(\/poll)?)?$/,
       );
       if (deviceLogin) {
         const [, id, poll] = deviceLogin;
         if (!id && method === "POST") {
-          const session = secretRef(nextId("sec"));
+          const sessionId = nextId("cda");
           const login: DeviceLogin = {
-            session,
+            sessionId,
             status: "pending",
             verificationUrl: "https://auth.openai.com/codex/device",
             userCode: "DEMO-1234",
             expiresAt: new Date(Date.now() + (scenario.oauthExpired ? -1 : 600_000)).toISOString(),
             intervalSeconds: 1,
           };
-          deviceLogins.set(session.id, login);
+          deviceLogins.set(sessionId, login);
           return response(login);
         }
         const login = deviceLogins.get(id ?? "");
@@ -610,12 +628,12 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
           if (!scenario.oauthPending) {
             login.status = "ready";
             login.source ??= { kind: "credential_source", namespaceId, id: nextId("cs") };
+            savedAccounts.set(login.source.id, "Team · …2a49121c");
           }
           return response(login);
         }
         if (!poll && method === "DELETE") {
           deviceLogins.delete(id ?? "");
-          secrets.delete(id ?? "");
           return new Response(null, { status: 204 });
         }
       }

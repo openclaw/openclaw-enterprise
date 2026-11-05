@@ -119,8 +119,8 @@
 - [`discoverSavedAgentPluginDetails`](../api.md#post-namespacesnamespaceidagentsagentidpluginsdetails): Read plugin details for an active Agent with Agent read/update access. Hosted discovery uses the Agent's bound credential. Managed MCP discovery uses an eligible saved connection. The caller and Agent need operate access to the credential.
 - [`discoverSavedAgentPlugins`](../api.md#post-namespacesnamespaceidagentsagentidplugins): List or search plugins for an active Agent; caller needs Agent read/update. Curated discovery needs no Secret; hosted discovery needs the Agent's bound Service Accounts Secret with caller and Agent Secret operate grants.
 - [`lookupChannelDirectory`](../api.md#post-namespacesnamespaceidchanneldirectorylookup): Search a channel directory using an authorized Namespace Secret.
-- [`pollAgentDeviceAuthorization`](../api.md#post-namespacesnamespaceidagentsdeviceauthorizationssecretidpoll): Experimental: Complete device login without returning credential material.
-- [`pollSavedAgentDeviceAuthorization`](../api.md#post-namespacesnamespaceidagentsagentiddeviceauthorizationssecretidpoll): Experimental: Complete device login without returning credential material.
+- [`pollAgentDeviceAuthorization`](../api.md#post-namespacesnamespaceidagentsdeviceauthorizationssessionidpoll): Experimental: Complete device login without returning credential material.
+- [`pollSavedAgentDeviceAuthorization`](../api.md#post-namespacesnamespaceidagentsagentiddeviceauthorizationssessionidpoll): Experimental: Complete device login without returning credential material.
 - [`removeAgentStandingApproval`](../api.md#post-namespacesnamespaceidagentsagentidrepositoryapprovalsapprovalidremove): Remove repository approval independently of configuration or runtime cleanup.
 - [`retryAgentProvisioning`](../api.md#post-namespacesnamespaceidagentsprovisionworkidretry): Retry failed first-time provisioning for one exact work item.
 - [`startAgentDeviceAuthorization`](../api.md#post-namespacesnamespaceidagentsdeviceauthorizations): Experimental: Start a private device login for Agent configuration.
@@ -130,8 +130,8 @@
 - [`validateAgentSandboxPolicy`](../api.md#post-namespacesnamespaceidagentsagentidsandboxpolicyfacetvalidate): Preview Agent network policy admission without saving or applying.
 - [`withdrawAgentCredentialSource`](../api.md#post-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdraw): Revoke one credential source from the selected Agent revision.
 - [`getAgentNativeAdmin`](../api.md#get-namespacesnamespaceidagentsagentidnativeadmin): Resolve native admin UI launch availability for one Agent.
-- [`cancelAgentDeviceAuthorization`](../api.md#delete-namespacesnamespaceidagentsdeviceauthorizationssecretid): Experimental: Discard a local device login without upstream revocation.
-- [`cancelSavedAgentDeviceAuthorization`](../api.md#delete-namespacesnamespaceidagentsagentiddeviceauthorizationssecretid): Experimental: Discard a local device login without upstream revocation.
+- [`cancelAgentDeviceAuthorization`](../api.md#delete-namespacesnamespaceidagentsdeviceauthorizationssessionid): Experimental: Discard a local device login without upstream revocation.
+- [`cancelSavedAgentDeviceAuthorization`](../api.md#delete-namespacesnamespaceidagentsagentiddeviceauthorizationssessionid): Experimental: Discard a local device login without upstream revocation.
 - [`deleteAgent`](../api.md#delete-namespacesnamespaceidagentsagentid): Begin or retry deletion of the requested Agent and its Agent revisions.
 
 ### Agent deployments
@@ -211,7 +211,7 @@
 
 - [`listAgentPluginConnectionTemplates`](../api.md#get-namespacesnamespaceidagentsagentidpluginspluginidcredentialsslotidconnectiontemplates): List compatible OAuth templates for a saved Agent plugin slot.
 - [`listConnectionTemplates`](../api.md#get-connectiontemplates): List all Installation-wide and Namespace-scoped connection templates.
-- [`listNamespaceConnections`](../api.md#get-namespacesnamespaceidconnections): List completed connections the caller can read in this Namespace.
+- [`listNamespaceConnections`](../api.md#get-namespacesnamespaceidconnections): List completed connections, optionally limited to usable Codex Harness accounts.
 - [`listOAuthClients`](../api.md#get-oauthclients): List registered OAuth clients.
 - [`listUsableConnectionTemplates`](../api.md#get-namespacesnamespaceidconnectiontemplates): List connection templates the caller may connect in this Namespace.
 - [`completeNamespaceConnection`](../api.md#get-oauthcallback): Complete a browser connection for the signed-in person who started it.
@@ -221,9 +221,12 @@
 - [`updateConnectionTemplate`](../api.md#patch-connectiontemplatesconnectiontemplateid): Rename a connection template, or create a version with new approved values.
 - [`attachAgentConnection`](../api.md#post-namespacesnamespaceidagentsagentidconnectionscredentialsourceid): Attach a completed account and grant this Agent access to its source.
 - [`discoverConnectionTemplate`](../api.md#post-connectiontemplatesdiscover): Read public MCP resource and authorization server metadata.
+- [`pollNamespaceDeviceAuthorization`](../api.md#post-namespacesnamespaceidconnectionsdeviceauthorizationssessionidpoll): Check a ChatGPT device sign-in and save the approved account.
 - [`rotateOAuthClientSecret`](../api.md#post-oauthclientsoauthclientidrotatesecret): Rotate an OAuth client secret.
 - [`startAgentPluginConnection`](../api.md#post-namespacesnamespaceidagentsagentidconnections): Connect an account and attach it to a saved Agent plugin slot.
 - [`startNamespaceConnection`](../api.md#post-namespacesnamespaceidconnections): Start consent for a reusable account in this Namespace.
+- [`startNamespaceDeviceAuthorization`](../api.md#post-namespacesnamespaceidconnectionsdeviceauthorizations): Start ChatGPT device sign-in for a saved Codex account.
+- [`cancelNamespaceDeviceAuthorization`](../api.md#delete-namespacesnamespaceidconnectionsdeviceauthorizationssessionid): Cancel an unfinished ChatGPT device sign-in.
 - [`deleteConnectionTemplate`](../api.md#delete-connectiontemplatesconnectiontemplateid): Delete a connection template.
 - [`deleteOAuthClient`](../api.md#delete-oauthclientsoauthclientid): Delete an unused OAuth client.
 - [`detachAgentConnection`](../api.md#delete-namespacesnamespaceidagentsagentidconnectionscredentialsourceid): Detach an account from this Agent and withdraw its access.

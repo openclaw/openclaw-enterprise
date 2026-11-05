@@ -1,3 +1,4 @@
+import { codexRefreshExpiry } from "./codex-device-authorization.ts";
 import { isOAuthScopeToken, type OAuthConnectionGrant } from "@openclaw-enterprise/contracts";
 import { BrowserAuthorizationError } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString, isPositiveSafeInteger } from "@openclaw-enterprise/utils";
@@ -39,7 +40,10 @@ export async function requestOAuthTokens(
   tokenUrl: string,
   parameters: URLSearchParams,
   scopeLimit: readonly string[] | undefined,
-  client: Pick<OAuthConnectionGrant, "clientId" | "tokenEndpointAuthMethod" | "resource">,
+  client: Pick<
+    OAuthConnectionGrant,
+    "clientId" | "tokenEndpointAuthMethod" | "resource" | "codexAccount"
+  >,
   clientSecret: string | undefined,
   signal: AbortSignal,
 ) {
@@ -97,13 +101,23 @@ export async function requestOAuthTokens(
   if (
     !isNonEmptyString(body?.access_token) ||
     !/^[A-Za-z0-9._~+/-]+=*$/.test(body.access_token) ||
-    typeof body.token_type !== "string" ||
-    body.token_type.toLowerCase() !== "bearer" ||
-    !isPositiveSafeInteger(body.expires_in)
+    (body.token_type !== undefined &&
+      (typeof body.token_type !== "string" || body.token_type.toLowerCase() !== "bearer")) ||
+    (!client.codexAccount &&
+      (body.token_type === undefined || !isPositiveSafeInteger(body.expires_in)))
   ) {
     throw new BrowserAuthorizationError("invalid_access_token", "fix_configuration");
   }
-  const expiresAt = new Date(startedAt + body.expires_in * 1000);
+  let expiresAt: Date;
+  if (client.codexAccount) {
+    try {
+      expiresAt = new Date(codexRefreshExpiry(body.access_token, client.codexAccount));
+    } catch {
+      throw new BrowserAuthorizationError("account_identity_changed", "retry");
+    }
+  } else {
+    expiresAt = new Date(startedAt + Number(body.expires_in) * 1000);
+  }
   if (!Number.isFinite(expiresAt.getTime()) || expiresAt.getTime() <= Date.now()) {
     throw new BrowserAuthorizationError("invalid_token_expiry", "fix_configuration");
   }
@@ -138,6 +152,7 @@ export function refreshPinnedOAuthGrant(
   grant: Pick<
     OAuthConnectionGrant,
     | "tokenUrl"
+    | "codexAccount"
     | "refreshToken"
     | "clientId"
     | "tokenEndpointAuthMethod"

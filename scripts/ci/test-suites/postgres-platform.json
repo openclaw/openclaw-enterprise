@@ -143,6 +143,10 @@
       "expectedTests": ["PostgreSQL controller work requires exactly one complete target shape"]
     },
     {
+      "path": "tests/integration/postgres-codex-model-account.test.ts",
+      "expectedTests": ["two dedicated Codex Agents independently use one personal model account"]
+    },
+    {
       "path": "tests/integration/postgres-connection-templates.test.ts",
       "expectedTests": [
         "the Installation starts with an editable Google OAuth template and preserves saved destination versions",

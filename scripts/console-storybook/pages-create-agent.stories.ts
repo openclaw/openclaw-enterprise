@@ -247,6 +247,7 @@ export const CreateAnthropic = {
   name: "Anthropic with OpenClaw harness",
 };
 export const CreateCodexPat = { ...story("createCodexPat"), name: "Service Accounts" };
+export const SavedCodexAccount = story("createWithSavedCodexAccount");
 export const CreateOAuth = story("createOAuth");
 export const CreateOAuthPending = story("createOAuthPending");
 export const CreateOAuthReady = story("createOAuthReady");

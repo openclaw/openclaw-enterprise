@@ -303,21 +303,14 @@ export const AGENT_UPDATE_DENIED = notIncluded(
 );
 export const AGENT_SOURCES_DENIED =
   "Saving these settings needs operate on each Secret and credential source this Agent and its Configuration bind, which your access does not include. Ask an Installation administrator for that access.";
-// Device login from Create Agent (Namespace-scoped) and from Agent detail (Agent-scoped): a start
-// creates a Secret and a credential source, which only an Installation administrator can create;
-// a poll or cancel checks the scope again plus operate on the login's Secret (finding 2577).
-const DEVICE_LOGIN_START_REMEDY =
-  "which only an Installation administrator holds: choose another authentication method, or ask one to set up this sign-in.";
-export const DEVICE_LOGIN_START_DENIED = `Your access does not include starting a device login in this Namespace. It needs Agent create, Secret create and credential source create here, ${DEVICE_LOGIN_START_REMEDY}`;
-export const AGENT_DEVICE_LOGIN_START_DENIED = `Your access does not include starting a device login for this Agent. It needs Agent read and update on it, plus Secret create and credential source create in this Namespace, ${DEVICE_LOGIN_START_REMEDY}`;
-export const AGENT_DEVICE_LOGIN_POLL_DENIED = notIncluded(
-  "finishing this device login",
-  "Agent read and update on this Agent, plus Secret operate on the login's Secret and credential source operate on its credential source",
-);
-export const AGENT_DEVICE_LOGIN_CANCEL_DENIED = notIncluded(
-  "cancelling this device login",
-  "Agent read and update on this Agent, plus Secret operate on the login's Secret",
-);
+export const DEVICE_LOGIN_START_DENIED =
+  "Connecting an account requires permission to create credentials in this Namespace.";
+export const AGENT_DEVICE_LOGIN_START_DENIED =
+  "Connecting an account here requires permission to update this Agent and create credentials in its Namespace.";
+export const AGENT_DEVICE_LOGIN_POLL_DENIED =
+  "You cannot finish this sign-in. Use the Console account that started it or ask an administrator to check your access.";
+export const AGENT_DEVICE_LOGIN_CANCEL_DENIED =
+  "You cannot cancel this sign-in. Use the Console account that started it or ask an administrator to check your access.";
 
 // Kubernetes Compute refuses a Dedicated Agent the Installation cannot place (no gateway routing
 // or node enrollment) at Agent save, provisioning and Create Agent's preflight. A Codex Agent

@@ -158,7 +158,7 @@ const provisioning = {
 };
 const device = {
   status: "pending",
-  session: secretRef,
+  sessionId: "cda_2ef976da-2aa8-42e6-bd50-b2d1be6bbb21",
   userCode: "ABCD-EFGH",
   verificationUrl: "https://auth.example.com/device",
   expiresAt: "2026-10-01T12:15:00.000Z",
@@ -269,6 +269,8 @@ const savedAccount = {
 };
 
 export const parameterExamples = {
+  sessionId: device.sessionId,
+  purpose: "codex-harness",
   oauthClientId,
   pluginId: "occ-plugin:google@1.0.0",
   slotId: "account",
@@ -416,6 +418,8 @@ export const requestExamples = {
     secretId: secret.id,
     query: "engineering",
   },
+  startNamespaceDeviceAuthorization: {},
+  pollNamespaceDeviceAuthorization: {},
   startAgentDeviceAuthorization: { harnessId: "codex" },
   startSavedAgentDeviceAuthorization: { harnessId: "codex" },
   pollAgentDeviceAuthorization: {},
@@ -652,6 +656,8 @@ export const responseExamples = {
   },
   getAgentSecretPermissions: { operateDenied: [], unreadableOperateDenied: 0 },
   getNamespaceSecretPermissions: { operateDenied: [] },
+  startNamespaceDeviceAuthorization: device,
+  pollNamespaceDeviceAuthorization: device,
   startAgentDeviceAuthorization: device,
   startSavedAgentDeviceAuthorization: device,
   pollAgentDeviceAuthorization: device,

@@ -1,4 +1,4 @@
-import { click } from "../create-agent-form-data.mts";
+import { click, deviceLoginSourceTypes } from "../create-agent-form-data.mts";
 import type { StoryAction } from "../../story-action.mts";
 
 const openTemplate = [click("Create connection template")];
@@ -9,6 +9,15 @@ const discoverMcp = [
   click("Discover OAuth settings"),
 ];
 export const connectionTemplateScenarios = {
+  connectedCodexAccounts: {
+    group: "Pages/Credentials",
+    name: "Personal ChatGPT accounts",
+    path: "/console/credentials/connected-accounts",
+    savedCodexAccount: true,
+    credentialSourceTypes: deviceLoginSourceTypes,
+    description:
+      "A member can connect a ChatGPT account in the current Namespace and choose it when configuring a Codex Agent.",
+  },
   credentialsTemplateCatalog: {
     group: "Pages/Credentials",
     name: "OAuth connection templates",
@@ -166,7 +175,10 @@ export const connectionTemplateScenarios = {
     path:
       | "/console/secrets"
       | "/console/credentials/connection-templates"
+      | "/console/credentials/connected-accounts"
       | "/console/credentials/oauth-clients";
+    savedCodexAccount?: true;
+    credentialSourceTypes?: typeof deviceLoginSourceTypes;
     actions?: StoryAction[];
     emptyNamespaces?: true;
     oauthCatalog?: "ready" | "error";

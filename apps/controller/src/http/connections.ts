@@ -171,7 +171,8 @@ export function namespaceConnectionHandlers(redirectUri: string | undefined): Re
         .send({ data, meta: { requestId: request.id } });
     },
     async listNamespaceConnections({ controller, context, request, reply, namespaceId }) {
-      const data = await controller.listNamespaceConnections(context.actorId, namespaceId);
+      const { purpose } = request.query as { purpose?: "codex-harness" };
+      const data = await controller.listNamespaceConnections(context.actorId, namespaceId, purpose);
       reply.send({ data, meta: { requestId: request.id } });
     },
     async disconnectNamespaceConnection({

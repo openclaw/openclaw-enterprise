@@ -207,13 +207,28 @@ export function renderConnectionTemplates(
               client?.displayName ?? "No OAuth client assigned",
               String(template.current.version),
             ],
-            actions: [
-              button("Edit", () => edit(template), {
-                size: "sm",
-                "aria-label": `Edit ${template.displayName}`,
-              }),
-              oauthDeleteButton(context, "connection template", template, scope, refresh, create),
-            ],
+            actions: template.builtIn
+              ? [
+                  element(
+                    "span",
+                    { className: "hint", title: "Built-in device sign-in" },
+                    "Built-in",
+                  ),
+                ]
+              : [
+                  button("Edit", () => edit(template), {
+                    size: "sm",
+                    "aria-label": `Edit ${template.displayName}`,
+                  }),
+                  oauthDeleteButton(
+                    context,
+                    "connection template",
+                    template,
+                    scope,
+                    refresh,
+                    create,
+                  ),
+                ],
           };
         }),
       );
@@ -477,6 +492,7 @@ export function openConnectionTemplateEditor(
     const oauth = provider();
     const compatible = clients.filter(
       (item) =>
+        !item.builtIn &&
         oauth?.issuer === item.issuer &&
         oauth.tokenUrl === item.tokenUrl &&
         (!oauth.revocationUrl || item.revocationUrl === oauth.revocationUrl) &&

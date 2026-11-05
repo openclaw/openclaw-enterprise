@@ -41,6 +41,7 @@ import {
   CODEX_OAUTH_CLIENT_ID,
   CODEX_ACCOUNT_CONFIG,
   codexAccountMetadata,
+  codexDeviceConnection,
   codexDeviceAuthorizationState,
   startCodexDeviceAuthorization,
   pollCodexDeviceAuthorization,
@@ -96,6 +97,7 @@ function credentialRefreshStatus(status: OpenShellRefreshStatus): CredentialRefr
  * before expiry, so both roles must belong to one OpenShell Backend.
  */
 export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver {
+  readonly deviceConnection = codexDeviceConnection;
   static readonly configurationSchema = Object.freeze({
     type: "object",
     additionalProperties: false,

@@ -1,3 +1,4 @@
+import type { ExternalChatgptAuth } from "./drivers/credential-gateway/index.ts";
 import type { Secret } from "./index.ts";
 import type { CredentialRefreshStatus } from "./drivers/credential-refresh/index.ts";
 import type {
@@ -115,6 +116,8 @@ export interface OAuthConnectionClient {
 
 /** Trusted handoff from code exchange. The Token Service retains the reusable grant. */
 export interface OAuthConnectionGrant extends OAuthConnectionRegistration {
+  /** Provider identity pinned at native device consent; subsequent tokens must belong to it. */
+  readonly codexAccount?: Omit<ExternalChatgptAuth, "accessTokenPlaceholder">;
   readonly requestedScopes: readonly string[];
   /** Scopes the provider granted. An empty list means no scopes were reported or requested. */
   readonly grantedScopes: readonly string[];

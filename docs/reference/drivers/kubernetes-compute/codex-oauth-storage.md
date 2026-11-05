@@ -1,24 +1,12 @@
 # Experimental Codex OAuth credential storage
 
-Codex OAuth uses a [credential source](../../credential-sources.md) owned by the
-selected Credential Gateway. The external token service owns the provider
-connection and refresh tokens. The dedicated Codex Harness receives a placeholder
-and authenticated account metadata through
-[`chatgptAuthTokens`](../credential-gateway.md#external-chatgpt-authentication).
+The dedicated Codex Harness can use a saved ChatGPT account. The Token Service owns its refresh grant. Each Agent needs permission to use the exact account. The worker checks the current grant before installing an access token at the Agent's Credential Gateway. The Harness receives the placeholder and account metadata through [external ChatGPT authentication](../credential-gateway.md#external-chatgpt-authentication).
 
 ## Enable device login
 
-Select paired Credential Gateway and Refresh Drivers. The Refresh Driver owns
-Codex device authorization; the Gateway supplies usable access tokens for
-configuration and external-auth attachments.
-Its paired Sandbox must inject live credentials for inference and hosted-app
-requests. The experimental OpenShell `codex-oauth` source requires the
-[upstream gateway and supervisor support](../openshell-credential-gateway.md#experimental-codex-oauth-poc).
+Select the OpenShell Refresh and Credential Gateway Drivers, a Token Service with OAuth connection custody, and a Sandbox that supports bearer-token injection for inference and hosted apps. OCE provisions the Installation's **ChatGPT for Codex** template with the native public client. This client uses the provider's device callback and token endpoint authentication method `none`. It requires no client secret. OCE reserves the registration and its destinations for the native device flow.
 
-Follow the [personal login procedure](../../../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login).
-The Console keeps the **Experimental** label and reports unavailable sign-in when
-the selected Gateway lacks the required capability. There is no installation
-opt-in flag.
+Follow the [personal login procedure](../../../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login). Existing Gateway-managed sources continue to use their original refresh owner.
 
 ## Private credential directory
 
@@ -27,11 +15,7 @@ the exact placeholder, account metadata, and an empty refresh token. Native Code
 does not own OAuth refresh. Restarts reconstruct this state from the admitted
 source attachment. Session and workspace persistence remain independent of auth.
 
-OCC's login-session Secret contains an opaque Refresh Driver handle and source identity,
-never the access/refresh-token pair. The credential source survives closing or
-expiry of that session. Plugin configuration requests a usable access token from the source; the token
-service may refresh before returning it. This does not consume the deployed
-credential or require another login.
+OCC binds each pending device authorization to the user, browser session and Namespace. A sign-in started from an existing Agent also records that Agent. The Refresh Driver gives the Token Service the initial tokens, and OCC saves the account and grants its owner access. Closing the login removes the temporary session. Disconnecting the saved account retires its grant.
 
 ## OAuth launch limits
 
@@ -44,10 +28,6 @@ development Agents using that shape need recreation with a new source. The
 platform does not read old runtime credential files back into the service.
 Account metadata changes require a new deployment version. Native checks that depend on
 real access-token claims remain unqualified with an opaque placeholder.
-
-Connection recovery and refresh are the external token service's responsibility.
-Deleting a login-session Secret does not revoke its credential source; remove an
-unused source through credential-source management. Active references block deletion.
 
 ## Device-login verification
 

@@ -2010,6 +2010,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     const params = request.params as Record<string, unknown>;
     if (
       Object.keys(request.query as Record<string, unknown>).length > 0 &&
+      operation.operationId !== "listNamespaceConnections" &&
       operation.operationId !== "listRepositoryOptions" &&
       operation.operationId !== "listAgentRepositoryOptions" &&
       operation.operationId !== "getAgentDeploymentRuntimeLogs" &&
@@ -2559,6 +2560,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }
 
     if (
+      operation.operationId === "startNamespaceDeviceAuthorization" ||
+      operation.operationId === "pollNamespaceDeviceAuthorization" ||
+      operation.operationId === "cancelNamespaceDeviceAuthorization" ||
       operation.operationId === "startAgentDeviceAuthorization" ||
       operation.operationId === "startSavedAgentDeviceAuthorization" ||
       operation.operationId === "pollAgentDeviceAuthorization" ||
@@ -2567,52 +2571,73 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       operation.operationId === "cancelSavedAgentDeviceAuthorization"
     ) {
       const agentId = params.agentId;
+      const namespaceConnection = operation.operationId.endsWith("NamespaceDeviceAuthorization");
+      const target = namespaceConnection
+        ? { kind: "credential_source" as const, namespaceId, id: namespaceId }
+        : { kind: "agent" as const, namespaceId, id: agentId ?? namespaceId };
+      const admitted = admissions.get(request);
+      const browser = admitted?.method === "session" ? admitted.session : undefined;
       let result;
       if (operation.operationId.startsWith("start")) {
         result = await controller.startAgentDeviceAuthorization(
           context.actorId,
           namespaceId,
-          body?.harnessId as string,
+          namespaceConnection ? "codex" : (body?.harnessId as string),
           agentId,
           (source, phase) =>
             event(
               operation,
               request,
-              phase === "session_pending"
-                ? { kind: "agent", id: agentId ?? namespaceId, namespaceId }
-                : source.ref,
+              phase === "session_pending" ? target : source.ref,
               "mutation",
               context,
               undefined,
               { outcome: "success", details: { phase, sourceId: source.id } },
             ),
+          context.sessionId,
+          namespaceConnection,
+          browser ? (unit) => options.auth.holdSession(unit, browser, request) : undefined,
         );
       } else if (operation.operationId.startsWith("poll")) {
         result = await controller.pollAgentDeviceAuthorization(
           context.actorId,
           namespaceId,
-          params.secretId as string,
+          params.sessionId as string,
           agentId,
+          context.sessionId,
+          namespaceConnection,
+          browser ? (unit) => options.auth.holdSession(unit, browser, request) : undefined,
+          (sourceId) =>
+            event(
+              operation,
+              request,
+              { kind: "credential_source", namespaceId, id: sourceId },
+              "mutation",
+              context,
+              undefined,
+              { outcome: "success", details: { phase: "source_ready", sourceId } },
+            ),
         );
       } else {
         await controller.cancelAgentDeviceAuthorization(
           context.actorId,
           namespaceId,
-          params.secretId as string,
+          params.sessionId as string,
           agentId,
+          context.sessionId,
+          namespaceConnection,
         );
       }
-      // Clients poll on the provider interval; audit the transition, not every pending poll.
-      if (!operation.operationId.startsWith("start") && result?.status !== "pending") {
-        await options.auditSink.append(
-          event(
-            operation,
-            request,
-            { kind: "agent", id: agentId ?? namespaceId, namespaceId },
-            "mutation",
-            context,
-          ),
-        );
+      // A saved account records its first ready transition in the same transaction as the owner grant.
+      const savedPoll =
+        operation.operationId.startsWith("poll") &&
+        (namespaceConnection || String(params.sessionId).startsWith("cda_"));
+      if (
+        !operation.operationId.startsWith("start") &&
+        !savedPoll &&
+        result?.status !== "pending"
+      ) {
+        await options.auditSink.append(event(operation, request, target, "mutation", context));
       }
       reply.header("cache-control", "no-store");
       if (result === undefined) {

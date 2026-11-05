@@ -1,3 +1,4 @@
+import { CODEX_HARNESS_TEMPLATE_ID } from "@openclaw-enterprise/contracts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
 import type {
   OAuthClient,
@@ -158,8 +159,8 @@ export function postgresConnectionTemplates(
     hasOtherConnectionIssuer: async (issuer) =>
       (
         await client.query(
-          "SELECT 1 FROM occ.oauth_connection_template_versions WHERE oauth_client_id IS NOT NULL AND issuer <> $1 LIMIT 1",
-          [issuer],
+          "SELECT 1 FROM occ.oauth_connection_template_versions WHERE oauth_client_id IS NOT NULL AND issuer <> $1 AND template_id <> $2 LIMIT 1",
+          [issuer, CODEX_HARNESS_TEMPLATE_ID],
         )
       ).rows.length > 0,
     listConnectionTemplates: async () => Object.freeze(await selectTemplates("", [])),

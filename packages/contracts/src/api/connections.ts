@@ -38,6 +38,7 @@ export const ConnectionStartResponse = Type.Object(
 
 const SavedConnectionSchema = Type.Object(
   {
+    accountLabel: Type.Optional(Type.String()),
     namespaceId: NamespaceId,
     credentialSourceId: CredentialSourceId,
     ownerPrincipalId: Type.String(),

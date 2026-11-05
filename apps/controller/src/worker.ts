@@ -5497,7 +5497,10 @@ export class ControllerWorker {
       const snapshots = revision.credentialSources ?? [];
       const oauthIds = new Set(
         snapshots
-          .filter((snapshot) => snapshot.sourceType === "oauth2-refresh-token")
+          .filter(
+            (snapshot) =>
+              snapshot.accountDelivery || snapshot.sourceType === "oauth2-refresh-token",
+          )
           .map((snapshot) => snapshot.sourceId),
       );
       if (
@@ -5518,7 +5521,7 @@ export class ControllerWorker {
             revision.namespaceId,
             id,
           );
-          if (source?.config.oauth_owner === "token_service") {
+          if (source?.ownerCapability === "credential_refresh") {
             connections.set(id, attached.has(id) && source.state === "ready");
           }
         }
@@ -5956,7 +5959,11 @@ export class ControllerWorker {
           result: { outcome: "permanent", code: "CREDENTIAL_GATEWAY_MISMATCH" },
         };
       }
-      const { source, withdrawal } = await this.resolveRevisionCredentialSource(revision, auth);
+      const modelSnapshot = revisionCredentialSourceSnapshot(revision, auth.sourceId) ?? auth;
+      const { source, withdrawal } = await this.resolveRevisionCredentialSource(
+        revision,
+        modelSnapshot,
+      );
       // A withdrawn source never re-attaches to its revision, for example after Pod loss.
       if (withdrawal !== undefined) {
         return {
@@ -6002,6 +6009,12 @@ export class ControllerWorker {
     }
     const credentialSources: Readonly<CredentialSource>[] = [];
     const preparedAccounts: Readonly<CredentialSource>[] = [];
+    if (
+      harnessAuth.method === "credential_source" &&
+      revisionCredentialSourceSnapshot(revision, harnessAuth.source.id)?.accountDelivery
+    ) {
+      preparedAccounts.push(harnessAuth.source);
+    }
     for (const snapshot of revision.credentialSources ?? []) {
       // The Harness source is listed too; it resolves above through the Harness binding.
       if (snapshot.sourceId === revisionHarnessSourceId(revision)) {

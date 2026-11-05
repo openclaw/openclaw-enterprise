@@ -528,7 +528,7 @@ export const credentialSources = occSchema.table(
     ),
     check(
       "credential_sources_owner_capability_valid",
-      sql`${table.ownerCapability} = 'credential_gateway' OR (${table.ownerCapability} = 'credential_proxy' AND ${table.egress} IS NOT NULL) OR (${table.ownerCapability} = 'credential_refresh' AND ${table.type} = 'oauth2-refresh-token' AND ${table.egress} IS NULL)`,
+      sql`${table.ownerCapability} = 'credential_gateway' OR (${table.ownerCapability} = 'credential_proxy' AND ${table.egress} IS NOT NULL) OR (${table.ownerCapability} = 'credential_refresh' AND ${table.type} IN ('oauth2-refresh-token','codex-oauth') AND ${table.egress} IS NULL)`,
     ),
     check(
       "credential_sources_driver_id_valid",
@@ -2344,9 +2344,9 @@ export const oauthClients = occSchema.table(
       "oauth_clients_secret_owner",
       sql`(${table.tokenEndpointAuthMethod} = 'none') = (${table.secretDriverId} IS NULL) AND (${table.secretDriverId} IS NULL OR length(${table.secretDriverId}) > 0)`,
     ),
-    unique("oauth_clients_pair_unique")
-      .on(table.namespaceId, table.issuer, table.clientId)
-      .nullsNotDistinct(),
+    uniqueIndex("oauth_clients_pair_unique")
+      .on(sql`coalesce(${table.namespaceId}, '')`, table.issuer, table.clientId)
+      .where(sql`${table.id} <> 'ccr_2214406d-8a56-46ff-ae8a-86ed41151cf6'`),
     unique("oauth_clients_identity").on(table.id, table.issuer, table.tokenUrl),
     check(
       "oauth_clients_display_name_check",
@@ -2516,6 +2516,39 @@ export const connectionTokenCustody = occSchema.table(
   ],
 );
 
+export const savedDeviceSessions = occSchema.table(
+  "saved_device_sessions",
+  {
+    id: text("id").primaryKey(),
+    namespaceId: text("namespace_id").notNull(),
+    credentialSourceId: text("credential_source_id").notNull().unique(),
+    actorId: text("actor_id").notNull(),
+    browserSessionId: text("browser_session_id").notNull(),
+    origin: text("origin").notNull(),
+    connectionTemplateId: text("connection_template_id").notNull(),
+    connectionTemplateVersion: integer("connection_template_version").notNull(),
+    authorization: jsonb("device_authorization").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    nextPollAt: timestamp("next_poll_at", { withTimezone: true }).notNull(),
+    phase: text("phase").notNull(),
+    privateState: text("private_state"),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.namespaceId, table.credentialSourceId],
+      foreignColumns: [credentialSources.namespaceId, credentialSources.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.connectionTemplateId, table.connectionTemplateVersion],
+      foreignColumns: [
+        oauthConnectionTemplateVersions.templateId,
+        oauthConnectionTemplateVersions.version,
+      ],
+    }).onDelete("restrict"),
+    index("saved_device_sessions_expiry_idx").on(table.expiresAt),
+  ],
+);
+
 export const savedConnections = occSchema.table(
   "saved_connections",
   {
@@ -2528,6 +2561,7 @@ export const savedConnections = occSchema.table(
     issuer: text("issuer").notNull(),
     tokenUrl: text("token_url").notNull(),
     destinations: jsonb("destinations").notNull(),
+    codexAccount: jsonb("codex_account"),
     mcpServerUrl: text("mcp_server_url"),
     resource: text("resource"),
     requestedScopes: text("requested_scopes").array().notNull(),
