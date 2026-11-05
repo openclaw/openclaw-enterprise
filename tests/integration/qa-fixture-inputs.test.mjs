@@ -276,10 +276,7 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
     OCC_TEST_QA_PRESET: "Codex",
     OCC_TEST_QA_INSTALLATION: "kubernetes",
   });
-  assert.deepEqual(searchConfig.requiredEnv, [
-    "OCC_TEST_QA_OPENAI_KEY_FILE",
-    "OCC_TEST_QA_CODEX_MODEL_BASE_URL",
-  ]);
+  assert.deepEqual(searchConfig.requiredEnv, ["OCC_TEST_QA_CODEX_MODEL_BASE_URL"]);
   assert.equal(searchConfig.browser, false);
   const injectedSearch = selectQaMatrix({
     OCC_TEST_QA_SCENARIOS: "codex-search-config",
