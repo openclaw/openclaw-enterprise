@@ -44,10 +44,12 @@ users remain responsible for secrets they put in workspace files.
 
 ## Enforcement and startup
 
-OpenShell may connect to an unclaimed public IPv4 destination on any TCP port.
-A managed hostname stays reserved across ports. If its policy denies a binary,
-path or method, that denial is final. The public rule grants no general UDP,
-IPv6, private-network, metadata or control-plane access.
+OpenShell's public fallback uses policy DNS for unclaimed hostnames that resolve
+to public IPv4 addresses, on any TCP port. It does not add fallback for raw IP
+targets or explicit proxy commands. A managed hostname stays reserved across
+ports. If its policy denies a binary, path or method, that denial is final.
+The public rule grants no general UDP, IPv6, private-network, metadata or
+control-plane access.
 
 The OpenShell adapter requests `allow_unconfigured_public_tcp`. Before declaring
 the Agent ready or a live policy update applied, it must verify that the
