@@ -85,6 +85,9 @@ const lane = {
 };
 const reportsUrl = "https://reports.example.test/mcp";
 
+const gmailRead = "https://www.googleapis.com/auth/gmail.readonly";
+const gmailModify = "https://www.googleapis.com/auth/gmail.modify";
+
 async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
   assert.ok(issuer && tokenOrigin && secretsFile);
   const secrets = JSON.parse(await readFile(secretsFile, "utf8"));
@@ -101,42 +104,40 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
     redirectUris: [redirectUri],
     attributes: { "pkce.code.challenge.method": "S256" },
   });
-  // Keycloak accepts this optional scope but excludes it from the resulting token. This lets
-  // the slot workflow prove that provider-granted permissions can be narrower than requested.
   const scopes = ["openid"];
   let optionalScopeId: string | undefined;
   if (pluginWorkflow) {
-    const name = `optional-${randomUUID()}`;
-    await keycloakRealmAdmin(issuer, secrets.admin, "POST", "/client-scopes", {
-      name,
-      protocol: "openid-connect",
-      attributes: { "include.in.token.scope": "false" },
-    });
-    const registeredScopes = await keycloakRealmAdmin(
-      issuer,
-      secrets.admin,
-      "GET",
-      "/client-scopes",
-    );
-    const optional = registeredScopes.find((item: { name: string }) => item.name === name);
-    assert.ok(optional);
-    optionalScopeId = optional.id;
-    t.after(() =>
-      keycloakRealmAdmin(issuer, secrets.admin, "DELETE", `/client-scopes/${optional.id}`),
-    );
+    // This disposable issuer grants the names used by the real Gmail request policy.
+    // Reading remains allowed while the optional modification scope varies on refresh.
     const [client] = await keycloakRealmAdmin(
       issuer,
       secrets.admin,
       "GET",
       `/clients?clientId=${clientId}`,
     );
-    await keycloakRealmAdmin(
-      issuer,
-      secrets.admin,
-      "PUT",
-      `/clients/${client.id}/optional-client-scopes/${optional.id}`,
-    );
-    scopes.push(name);
+    for (const name of [gmailRead, gmailModify]) {
+      await keycloakRealmAdmin(issuer, secrets.admin, "POST", "/client-scopes", {
+        name,
+        protocol: "openid-connect",
+        attributes: { "include.in.token.scope": String(name === gmailRead) },
+      });
+      const registered = await keycloakRealmAdmin(issuer, secrets.admin, "GET", "/client-scopes");
+      const scope = registered.find((item: { name: string }) => item.name === name);
+      assert.ok(scope);
+      t.after(() =>
+        keycloakRealmAdmin(issuer, secrets.admin, "DELETE", `/client-scopes/${scope.id}`),
+      );
+      await keycloakRealmAdmin(
+        issuer,
+        secrets.admin,
+        "PUT",
+        `/clients/${client.id}/optional-client-scopes/${scope.id}`,
+      );
+      scopes.push(name);
+      if (name === gmailModify) {
+        optionalScopeId = scope.id;
+      }
+    }
   }
   t.after(async () => {
     const [client] = await keycloakRealmAdmin(
@@ -942,7 +943,7 @@ test(
       .json()
       .data.find((row: { credentialSourceId: string }) => row.credentialSourceId === grant.id);
     assert.deepEqual(narrowAccount.requestedScopes, scopes);
-    assert.deepEqual(narrowAccount.grantedScopes, ["openid"]);
+    assert.deepEqual([...narrowAccount.grantedScopes].sort(), [gmailRead, "openid"]);
     const bindings = { account: grant.id, reports: report.id };
     const updated = await saveBindings(bindings);
     assert.equal(updated.statusCode, 200, updated.body);
@@ -1089,6 +1090,9 @@ test(
       assert.equal(result.status, 200);
       return bearer;
     };
+    const admitted = await prepare(b);
+    assert.ok(admitted?.config.scope);
+    assert.deepEqual(admitted.config.scope.split(" ").sort(), [gmailModify, gmailRead]);
     const original = await usable(primarySender);
     assert.ok((await usable(secondarySender)) === original);
     const rotate = () => owner("POST", base + "/credential-sources/" + shared.id + "/rotate");
@@ -1137,6 +1141,11 @@ test(
     // can no longer be used, even though the account still has an upstream access token.
     await setOptionalScopeVisible(false);
     assert.equal((await rotate()).statusCode, 200);
+    const refreshedAccounts = (await owner("GET", connections)).json().data;
+    const refreshed = refreshedAccounts.find(
+      (account: { credentialSourceId: string }) => account.credentialSourceId === shared.id,
+    );
+    assert.deepEqual([...refreshed.grantedScopes].sort(), [gmailRead, "openid"]);
     assert.equal(await prepare(b), undefined);
     const withdrawn = provider(primarySender);
     assert.deepEqual(Object.keys(withdrawn.credentials), []);
