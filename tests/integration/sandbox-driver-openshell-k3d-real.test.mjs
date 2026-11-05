@@ -7708,6 +7708,7 @@ async function assertImportedNativeSkill(context, topology) {
 
   await worker("rm", shadowFile);
   await worker("rmdir", shadow);
+  await proveMarker(second);
   await deploy({});
   const removed = await client.request("skills.status", {
     agentId: "main",
