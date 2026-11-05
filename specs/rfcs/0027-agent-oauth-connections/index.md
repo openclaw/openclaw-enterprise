@@ -114,12 +114,12 @@ One presentation can serve multiple API hosts. The Sandbox checks each
 request's host, operation and arguments. Public discovery requests carry no
 bearer token. Narrowing the grant withdraws any broader presentation.
 
-An OAuth client is a separate scoped resource. It records the issuer, client ID,
-token endpoint authentication method and trusted destinations for client
-authentication. Its protected credential belongs to the selected Driver. A
-template can be created before a client exists. Consent requires a compatible
-client and pins its identity. An administrator can allow listed OAuth parameters,
-select scopes, and associate a client without duplicating client credentials.
+An administrator registers an OAuth client against a saved template version.
+OCC takes its availability, issuer and client authentication endpoints from that
+version. The administrator supplies the client ID, authentication method and
+any secret. The selected Driver protects the secret. The first registration
+fills an empty client selection. An administrator chooses whether to switch an
+existing selection. Consent pins the selected client's identity.
 
 A version records the approved recipient (for MCP, both the protected resource
 and the server URL). The Agent plugin release owns its named credential slots

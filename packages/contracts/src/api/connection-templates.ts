@@ -89,16 +89,18 @@ export const ConnectionTemplateParams = Type.Object(
   strict,
 );
 export const OAuthClientParams = Type.Object({ oauthClientId: OAuthClientId }, strict);
-const client = {
-  ...create,
-  issuer: HttpsUrl,
-  tokenUrl: HttpsUrl,
-  revocationUrl: Type.Optional(HttpsUrl),
+const registration = {
+  displayName: DisplayName,
   clientId: Type.String({ minLength: 1, maxLength: 256 }),
   tokenEndpointAuthMethod: AuthMethod,
 };
 export const CreateOAuthClientBody = Type.Object(
-  { ...client, clientSecret: Type.Optional(ClientSecret) },
+  {
+    ...registration,
+    connectionTemplateId: ConnectionTemplateId,
+    connectionTemplateVersion: Type.Integer({ minimum: 1 }),
+    clientSecret: Type.Optional(ClientSecret),
+  },
   strict,
 );
 export const RotateOAuthClientSecretBody = Type.Object({ clientSecret: ClientSecret }, strict);
@@ -124,7 +126,15 @@ const Observed = Type.Object(
   strict,
 );
 const publicClient = Type.Object(
-  { ...client, id: OAuthClientId, createdAt: Type.String() },
+  {
+    ...registration,
+    namespaceId: Type.Optional(NamespaceId),
+    issuer: HttpsUrl,
+    tokenUrl: HttpsUrl,
+    revocationUrl: Type.Optional(HttpsUrl),
+    id: OAuthClientId,
+    createdAt: Type.String(),
+  },
   strict,
 );
 export const OAuthConnectionTemplateVersionSchema = Type.Object(

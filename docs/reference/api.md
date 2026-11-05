@@ -1720,7 +1720,7 @@ Example response
 | [`GET /connection-templates/{connectionTemplateId}`](#get-connectiontemplatesconnectiontemplateid) | Get one connection template |
 | [`PATCH /connection-templates/{connectionTemplateId}`](#patch-connectiontemplatesconnectiontemplateid) | Rename a connection template, or create a version with new approved values |
 | [`GET /oauth-clients`](#get-oauthclients) | List registered OAuth clients |
-| [`POST /oauth-clients`](#post-oauthclients) | Register a scoped OAuth client |
+| [`POST /oauth-clients`](#post-oauthclients) | Register an OAuth client from a connection template |
 | [`DELETE /oauth-clients/{oauthClientId}`](#delete-oauthclientsoauthclientid) | Delete an unused OAuth client |
 | [`POST /oauth-clients/{oauthClientId}/rotate-secret`](#post-oauthclientsoauthclientidrotatesecret) | Rotate an OAuth client secret |
 
@@ -2413,7 +2413,7 @@ Example response
 
 <span id="post-oauthclients"></span>
 
-Register a scoped OAuth client
+Register an OAuth client from a connection template
 
 **Operation ID:** `createOAuthClient`
 
@@ -2433,22 +2433,20 @@ Register a scoped OAuth client
 | --- | --- | --- | --- |
 | `clientId` | `string` | Yes | min length: 1; max length: 256 |
 | `clientSecret` | `string` | No | min length: 1; max length: 4096 |
+| `connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `connectionTemplateVersion` | `integer` | Yes | minimum: 1 |
 | `displayName` | `string` | Yes | min length: 1; max length: 200 |
-| `issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
-| `namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
 | `tokenEndpointAuthMethod` | `"none" or "client_secret_basic" or "client_secret_post"` | Yes | — |
-| `tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 
 Example request
 ```json
 {
   "clientId": "example-client",
   "clientSecret": "example-client-secret",
+  "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+  "connectionTemplateVersion": 1,
   "displayName": "Example provider client",
-  "issuer": "https://accounts.example.com",
-  "tokenEndpointAuthMethod": "client_secret_basic",
-  "tokenUrl": "https://accounts.example.com/token"
+  "tokenEndpointAuthMethod": "client_secret_basic"
 }
 ```
 

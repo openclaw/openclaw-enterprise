@@ -182,12 +182,16 @@ const connectionTemplateId = id("ctp");
 const oauthClientId = id("ccr");
 const oauthClientInput = {
   displayName: "Example provider client",
-  issuer: "https://accounts.example.com",
-  tokenUrl: "https://accounts.example.com/token",
   clientId: "example-client",
   tokenEndpointAuthMethod: "client_secret_basic",
 };
-const oauthClient = { ...oauthClientInput, id: oauthClientId, createdAt: time };
+const oauthClient = {
+  ...oauthClientInput,
+  issuer: "https://accounts.example.com",
+  tokenUrl: "https://accounts.example.com/token",
+  id: oauthClientId,
+  createdAt: time,
+};
 const connectionTemplateInput = {
   mode: "manual",
   issuer: oauthClient.issuer,
@@ -274,7 +278,12 @@ export const requestExamples = {
   },
   updateConnectionTemplate: { displayName: "Engineering account" },
   discoverConnectionTemplate: { serverUrl: mcpServerUrl },
-  createOAuthClient: { ...oauthClientInput, clientSecret: "example-client-secret" },
+  createOAuthClient: {
+    ...oauthClientInput,
+    connectionTemplateId,
+    connectionTemplateVersion: 1,
+    clientSecret: "example-client-secret",
+  },
   rotateOAuthClientSecret: { clientSecret: "replacement-example-client-secret" },
   deployAgentFirst: {
     key: "review-1",
