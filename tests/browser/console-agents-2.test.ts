@@ -2141,22 +2141,22 @@ for (const width of [1440, 390]) {
       await editAllow(["keep-plugin"]);
       await chooseList.click();
       await choice.selectOption("gpt-6-sol");
-      assert.deepEqual(record((await readValues()).plugins).allow, ["keep-plugin", "codex"]);
+      assert.deepEqual(record((await readValues()).plugins).allow, ["keep-plugin"]);
       assert.equal(await configuration.getAttribute("aria-invalid"), null);
     }
 
-    // Absence, an empty array, and whole string entries all permit the same merge and retry.
+    // Valid authored lists, including absence and an empty list, survive model changes exactly.
     for (const allow of [undefined, [], ["keep-plugin", "codex"]]) {
       await editAllow(allow);
       await chooseList.click();
       await choice.selectOption("gpt-6-luna");
       const values = await readValues();
       assert.equal(primary(values), "codex/gpt-6-luna");
-      assert.deepEqual(record(values.plugins).allow, allow?.length ? allow : ["codex"]);
+      assert.deepEqual(record(values.plugins).allow, allow);
       assert.equal(await configuration.getAttribute("aria-invalid"), null);
     }
 
-    // Switching to Anthropic does not merge this field and must not acquire this validation.
+    // Switching to Anthropic preserves this field and must not acquire Codex validation.
     await editAllow(7);
     const provider = page.getByLabel("Provider", { exact: true });
     const harness = page.getByLabel("Harness", { exact: true });
@@ -2219,7 +2219,7 @@ for (const width of [1440, 390]) {
     await choice.selectOption("gpt-6-sol");
     assert.equal(primary(await readValues()), "codex/gpt-6-sol");
 
-    // Authentication owns its picker even when the model reset cannot merge the draft.
+    // Authentication owns its picker even when the model reset refuses the malformed draft.
     const keySecret = page.getByLabel("API key Secret", { exact: true });
     const tokenSecret = page.getByLabel("Service account token Secret", { exact: true });
     const authDraft = await editAllow("codex");
@@ -2266,7 +2266,7 @@ for (const width of [1440, 390]) {
     assert.equal(await authMethod.inputValue(), openClawAuth);
     assert.equal(await manual.inputValue(), harnessModel);
     assert.equal(primary(await readValues()), "codex/gpt-6-sol");
-    assert.deepEqual(record((await readValues()).plugins).allow, ["codex"]);
+    assert.deepEqual(record((await readValues()).plugins).allow, []);
     assert.equal(await configuration.getAttribute("aria-invalid"), null);
     assert.deepEqual(errors, []);
     assert.deepEqual(nonAuthWriteRequests(requests), []);
