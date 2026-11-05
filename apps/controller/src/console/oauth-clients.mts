@@ -1,4 +1,4 @@
-import type { ConnectionTemplate, Namespace } from "@openclaw-enterprise/contracts";
+import type { ConnectionTemplate, Namespace, OAuthClient } from "@openclaw-enterprise/contracts";
 import { refusedAsNonAdministrator } from "./api-client.mjs";
 import { button, element } from "./dom.mjs";
 import { oauthCatalog } from "./oauth-catalog.mjs";
@@ -10,7 +10,6 @@ import {
   oauthClients,
   oauthFailure,
   openOAuthClientRegistration,
-  type PublicClient,
 } from "./oauth-client-registration.mjs";
 import { connectionTemplates, openConnectionTemplateEditor } from "./connection-templates.mjs";
 
@@ -28,7 +27,7 @@ export function renderOAuthClients(
     "Token endpoint authentication method",
   ]);
   let redirectUri: string | undefined;
-  let clients: PublicClient[] = [];
+  let clients: OAuthClient[] = [];
   let templates: ConnectionTemplate[] = [];
   async function refresh(message?: string) {
     create.disabled = true;

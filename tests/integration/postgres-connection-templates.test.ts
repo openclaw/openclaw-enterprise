@@ -9,6 +9,10 @@ import { waitFor } from "../helpers/wait-for.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
 import { signedInHeaders } from "../helpers/production-sign-in.mjs";
+import {
+  createBackendController,
+  createBackendFixture,
+} from "../helpers/postgres-backend-state.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
@@ -436,7 +440,9 @@ test(
       ...options,
       transportDatabaseUrl: proxy.url,
     });
-    const { pool, controller: recovered } = await createPostgresAgentApp(t, options);
+    const recovery = await createBackendFixture(t);
+    const { pool } = recovery;
+    const recovered = createBackendController(recovery, { backends: [] });
     const { core, driver } = useInstallationSecretDriver(controller);
     recovered.registerDriver(driver);
     recovered.selectDriver("secret", driver.id);
@@ -471,13 +477,20 @@ test(
     closed = true;
     assert.equal((await response).statusCode, 503);
     assert.equal(core.secrets.size, 2);
-    // Advance just this reservation to its due time, then run maintenance under a new controller.
+    // The worker has a Secret Driver and no Credential Gateway or Refresh Driver.
     const expired = await pool.query(
       "UPDATE occ.oauth_clients SET cleanup_after=now() WHERE client_id=$1 AND cleanup_after IS NOT NULL RETURNING id",
       [stagedClientId],
     );
     assert.equal(expired.rowCount, 1);
-    await recovered.cleanupOAuthClients();
+    const { worker } = recovery.startWorker({ backends: [], secretDriver: driver });
+    await worker.start();
+    await waitFor("the worker to retire the hidden registration", async () => {
+      const remaining = await pool.query("SELECT id FROM occ.oauth_clients WHERE id=$1", [
+        expired.rows[0].id,
+      ]);
+      return remaining.rowCount === 0 ? true : undefined;
+    });
     assert.equal(core.secrets.size, 1);
     assert.equal(
       await recovered.withOAuthClientSecret(

@@ -1541,7 +1541,7 @@ export class ControllerWorker {
         ) {
           this.claimedPassesSinceSweep = 0;
           await this.withdrawPendingHarnessExposure();
-          if (this.credentialRefresh && Date.now() >= this.nextClientCleanup) {
+          if (Date.now() >= this.nextClientCleanup) {
             this.nextClientCleanup = Date.now() + 30_000;
             await this.provisioningController?.cleanupOAuthClients();
           }
