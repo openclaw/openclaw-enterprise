@@ -228,7 +228,7 @@ function writePrivate(filename, contents) {
 
 async function materialize(descriptor) {
   ({ normalizePushRefAllowlist } = await import(
-    "/opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/native-git.js"
+    "/opt/oce/repository-credentials/dist/drivers/repo/credentials/client-contracts.js"
   ));
   validateDescriptor(descriptor);
   const { sourceRoot, targetRoot, manifest } = descriptor;

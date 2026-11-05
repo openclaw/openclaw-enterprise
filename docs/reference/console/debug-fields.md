@@ -9,17 +9,17 @@ continuously poll.
 
 ## Field meanings
 
-| Field                 | Meaning                                                                                                                                                                                                                                                  |
-| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **OCE commit**        | Full source Git commit baked into the OpenClaw Control Plane (OCC) build serving the console. For published OCE images, this is the Enterprise repository revision.                                                                                      |
-| Hash beside **OCE**   | First eight characters of **OCE commit**. Hover to see the full commit. `dev` means valid build metadata is unavailable.                                                                                                                                 |
-| Agent heading         | Name of an Agent you can read in the selected Namespace. Its containers come from its active revision, even when the detail page displays another revision.                                                                                              |
-| **Container**         | Docker: the runtime role, `gateway` or `agent`. Kubernetes: the container name from the Pod specification, including init containers and sidecars.                                                                                                       |
-| **Workload**          | Docker: the container name. Kubernetes: `<namespace>/<pod-name>`, using the Kubernetes namespace, which can differ from the selected OCE Namespace.                                                                                                      |
-| **Docker image**      | Image reference configured on that container, such as `ghcr.io/openclaw/openclaw-enterprise-runtime:main` or a digest-pinned reference. This field is also used for Kubernetes containers.                                                               |
-| **Image ID / digest** | Identity observed for the container's image. Docker supplies its immutable image configuration ID. Kubernetes supplies the container runtime's `imageID`. These values are not necessarily the registry's multi-platform manifest digest.                |
-| **Source commit**     | Full source Git commit recorded when the observed image was built, when available. For OCE runtime images, this identifies the Enterprise source revision used to build the runtime. It does not identify the bundled OpenClaw or Codex package version. |
-| **OpenClaw commit**   | Upstream `openclaw/openclaw` Git commit packaged inside the image. Expand the Agent and find **Container: gateway** to see the OpenClaw gateway image, digest, Enterprise source commit, and this upstream commit together.                              |
+| Field                 | Meaning                                                                                                                                                                                                                                                |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **OCE commit**        | Full source Git commit baked into the OpenClaw Control Plane (OCC) build serving the console. For published OCE images, this is the Enterprise repository commit.                                                                                      |
+| Hash beside wordmark  | First eight characters of **OCE commit**. Hover to see the full commit. `dev` means valid build metadata is unavailable.                                                                                                                               |
+| Agent heading         | Name of an Agent you can read in the selected Namespace. Its containers come from its selected version, even when the detail page displays another version.                                                                                            |
+| **Container**         | Docker: the runtime role, `gateway` or `agent`. Kubernetes: the container name from the Pod specification, including init containers and sidecars.                                                                                                     |
+| **Workload**          | Docker: the container name. Kubernetes: `<namespace>/<pod-name>`, using the Kubernetes namespace, which can differ from the selected OCE Namespace.                                                                                                    |
+| **Docker image**      | Image reference configured on that container, such as `ghcr.io/openclaw/openclaw-enterprise-runtime:main` or a digest-pinned reference. This field is also used for Kubernetes containers.                                                             |
+| **Image ID / digest** | Identity observed for the container's image. Docker supplies its immutable image configuration ID. Kubernetes supplies the container runtime's `imageID`. These values are not necessarily the registry's multi-platform manifest digest.              |
+| **Source commit**     | Full source Git commit recorded when the observed image was built, when available. For OCE runtime images, this identifies the Enterprise source commit used to build the runtime. It does not identify the bundled OpenClaw or Codex package version. |
+| **OpenClaw commit**   | Upstream `openclaw/openclaw` Git commit packaged inside the image. Expand the Agent and find **Container: gateway** to see the OpenClaw gateway image, digest, Enterprise source commit, and this upstream commit together.                            |
 
 A tag such as `:main` can move after deployment while a container keeps using
 its original image. Read **Docker image** as the configured reference and
@@ -34,7 +34,7 @@ and runtime were built or deployed separately.
 
 Docker reads the image's `org.opencontainers.image.revision` (Enterprise) and
 `org.openclaw.image.revision` (OpenClaw) labels using the
-immutable image ID attached to the container. For an external image, the OCI revision
+immutable image ID attached to the container. For an external image, the OCI source commit
 label may describe a different source repository.
 
 Kubernetes reads the OCE runtime's baked build metadata and matches it to the
@@ -58,13 +58,13 @@ OpenClaw provenance; unrelated sidecars normally show this state.
 | **Select a readable Namespace to inspect runtime images.**          | Select a Namespace you can access.                                                                                                                                                                               |
 | **No accessible Agents in this Namespace.**                         | No Agents were returned within your read permissions.                                                                                                                                                            |
 | **Image inspection is unavailable for this Compute Driver.**        | The selected Driver does not support image inspection; SSH is one example.                                                                                                                                       |
-| **No deployed runtime images observed.**                            | The Agent has no active revision, or inspection found no matching containers. This is not a runtime health result.                                                                                               |
+| **No deployed runtime images observed.**                            | The Agent has no selected version, or inspection found no matching containers. This is not a runtime health result.                                                                                              |
 | **Runtime image metadata unavailable. Refresh to retry.**           | An Agent-list or runtime-image request failed. Refresh to retry; persistent failures require checking API and Compute Driver availability.                                                                       |
 
 ## Inspection scope
 
-Inspection uses existing Agent read permissions and the active revision's Compute
-Driver. Docker inspects the revision-owned gateway and Agent containers.
+Inspection uses existing Agent read permissions and the selected version's Compute
+Driver. Docker inspects the Agent gateway and the containers for the selected version.
 Kubernetes inspects its non-terminating gateway and Agent Pods, including regular,
 init, and ephemeral containers.
 

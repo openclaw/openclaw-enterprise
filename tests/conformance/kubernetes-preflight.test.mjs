@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +16,9 @@ import {
   createTestKubernetesComputeDriver,
 } from "../helpers/kubernetes-compute.mjs";
 import { refusingPort } from "../helpers/available-port.mjs";
+import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { loadInstallationFile } from "../helpers/installation-file.mjs";
+import { jsonChunkDestination } from "../helpers/json-lines.mjs";
 
 function driverForVersion(gitVersion) {
   const driver = createTestKubernetesComputeDriver("compute-kubernetes-preflight");
@@ -156,12 +160,7 @@ test("Kubernetes preflight names the unreachable API server endpoint", async (t)
     const lines = [];
     const logger = createOccLogger({
       component: "occ-worker",
-      destination: {
-        write(chunk) {
-          lines.push(JSON.parse(String(chunk)));
-          return true;
-        },
-      },
+      destination: jsonChunkDestination(lines),
     });
     emitOccLogEvent(logger, { event: "worker.startup-error", ...startupDependencyFailure(error) });
     assert.deepEqual(
@@ -248,18 +247,8 @@ test("Kubernetes preflight without a recorded endpoint keeps the original failur
   await assert.rejects(driver.preflight(), (error) => error === refused);
 });
 
-// A two-cluster Driver whose execution cluster answers SelfSubjectAccessReviews from
-// `review(attributes)`, for one tenant Namespace. The upgrade helper's preflight
-// Pods call verifyExecutionTenantGrants with each component's own identity.
-function executionDriver(
-  review,
-  listNamespace = async ({ labelSelector }) => {
-    assert.equal(labelSelector, "openclaw.dev/namespace");
-    return {
-      items: [{ metadata: { name: "oce-tenant", labels: { "openclaw.dev/namespace": "ns" } } }],
-    };
-  },
-) {
+// Two-cluster options; `network` overrides entries of the execution cluster's network.
+function executionOptions(network = {}) {
   const configured = conformanceKubernetesOptions({
     gatewayTrustedProxyCidrs: ["127.0.0.1/32"],
     runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
@@ -279,9 +268,229 @@ function executionDriver(
       harnessEndpointCidrs: ["192.0.2.2/32"],
       gatewayEndpointCidrs: ["192.0.2.1/32"],
       pluginStatusProxySourceCidrs: ["192.0.2.2/32"],
+      ...network,
     },
   };
+  return configured;
+}
+
+test("startup reports Kubernetes configuration errors at their original paths", async (t) => {
+  const config = createInstallationDriverConfiguration();
+  const { compute } = config.drivers;
+  const start = () => loadInstallationFile(t, config);
+  // Keep the startup settings production requires that the driver-level options don't carry.
+  const { images, servicePrincipalCredentials } = compute.configuration;
+  const twoClusters = { ...executionOptions(), images, servicePrincipalCredentials };
+
+  assert.equal((await start()).computeDriver.id, compute.id);
+  compute.configuration = twoClusters;
+  assert.equal((await start()).computeDriver.id, compute.id);
+
+  for (const [change, path, message, code = "INVALID_FORMAT"] of [
+    [
+      (c) => {
+        delete c.executionCluster.authentication.context;
+      },
+      "/executionCluster/authentication/context",
+      "Explicit Kubernetes context must be explicitly configured.",
+      "REQUIRED",
+    ],
+    [
+      (c) => {
+        c.gatewayRouting.gatewayName = "Bad_Name";
+      },
+      "/gatewayRouting/gatewayName",
+      "Gateway routing Gateway name must be a DNS-safe Kubernetes resource name.",
+    ],
+    [
+      (c) => {
+        c.network.gatewayTrustedProxyCidrs = ["0.0.0.0/0"];
+      },
+      "/network/gatewayTrustedProxyCidrs/0",
+      "Trusted proxy CIDRs cannot cover every address.",
+    ],
+    [
+      (c) => {
+        c.authentication.kubeconfigPath = "relative";
+      },
+      "/authentication/kubeconfigPath",
+      "Dedicated kubeconfig path must be absolute.",
+    ],
+    [
+      (c) => {
+        c.executionCluster.authentication.kubeconfigPath = "relative";
+      },
+      "/executionCluster/authentication/kubeconfigPath",
+      "Dedicated kubeconfig path must be absolute.",
+    ],
+    [
+      (c) => {
+        c.executionCluster.network.dns = { ...c.executionCluster.network.dns, namespace: "Bad_NS" };
+      },
+      "/executionCluster/network/dns/namespace",
+      "DNS peer namespace must be a Kubernetes namespace name: a DNS label of at most 63 characters.",
+    ],
+    [
+      (c) => {
+        c.executionCluster.harnessRouting.hostname = "Bad_Host";
+      },
+      "/executionCluster/harnessRouting/hostname",
+      "Harness routing hostname must be a DNS hostname without a port or path.",
+    ],
+    [
+      (c) => {
+        c.executionCluster.authentication = { mode: "inCluster" };
+      },
+      "/executionCluster/authentication",
+      "The execution cluster requires its own explicit kubeconfig.",
+    ],
+    [
+      (c) => {
+        c.executionCluster.network.dns = {
+          namespace: "kube-system",
+          podLabels: { "private/key/name": "dns" },
+        };
+      },
+      "/executionCluster/network/dns/podLabels",
+      "DNS peer label keys must be Kubernetes label keys.",
+    ],
+    [
+      (c) => {
+        c.network.gatewayClients = [c.network.dns];
+      },
+      "/network/gatewayClients",
+      "Gateway routing derives the Envoy gateway client peer; do not configure network.gatewayClients.",
+    ],
+  ]) {
+    compute.configuration = structuredClone(twoClusters);
+    change(compute.configuration);
+    await assert.rejects(start, (error) => {
+      assert.ok(error instanceof ConfigurationValidationError);
+      assert.deepEqual(error.error.details, [{ path, code, message }]);
+      assert.doesNotMatch(
+        JSON.stringify(error.error.details),
+        /relative|Bad_NS|Bad_Host|private\/key\/name/,
+      );
+      return true;
+    });
+  }
+});
+
+// Execution CIDR lists use the trusted proxy rule: no entry may cover every address.
+test("two-cluster CIDR lists refuse ranges that cover every address", () => {
+  const diagnostic = (path, code, message) => (error) => {
+    assert.ok(error instanceof ConfigurationValidationError);
+    assert.deepEqual(error.error.details, [{ path, code, message }]);
+    return true;
+  };
+  for (const [key, description] of [
+    ["harnessEndpointCidrs", "Harness endpoint CIDR"],
+    ["gatewayEndpointCidrs", "Gateway endpoint CIDR"],
+    ["pluginStatusProxySourceCidrs", "Execution status proxy CIDR"],
+  ]) {
+    for (const cidr of ["0.0.0.0/0", "::/0", "::ffff:0:0/96"]) {
+      assert.throws(
+        () => createKubernetesComputeDriver(executionOptions({ [key]: ["192.0.2.9/32", cidr] })),
+        diagnostic(
+          `/executionCluster/network/${key}/1`,
+          "INVALID_FORMAT",
+          `${description}s cannot cover every address.`,
+        ),
+        `${key} ${cidr}`,
+      );
+    }
+    assert.throws(
+      () => createKubernetesComputeDriver(executionOptions({ [key]: [] })),
+      diagnostic(
+        `/executionCluster/network/${key}`,
+        "INVALID_VALUE",
+        "Configuration does not satisfy minItems.",
+      ),
+    );
+    assert.throws(
+      () => createKubernetesComputeDriver(executionOptions({ [key]: ["192.0.2.9/33"] })),
+      diagnostic(
+        `/executionCluster/network/${key}/0`,
+        "INVALID_FORMAT",
+        `${description} 0 must be a valid IPv4 or IPv6 CIDR.`,
+      ),
+    );
+    assert.doesNotThrow(() =>
+      createKubernetesComputeDriver(executionOptions({ [key]: ["10.42.0.0/16", "::/96"] })),
+    );
+  }
+});
+
+// The documented status proxy source is the API server's address; a wider range, such as
+// the Pod CIDR, admits every Pod in it to the status port. It starts, with a warning.
+test("Kubernetes preflight warns about status proxy sources wider than one address", async () => {
+  const configured = executionOptions({
+    pluginStatusProxySourceCidrs: ["192.0.2.2/32", "10.42.0.0/16"],
+  });
+  configured.network.pluginStatusProxySourceCidrs = ["2001:db8::1/128", "2001:db8::/64"];
   const driver = createKubernetesComputeDriver(configured);
+  let identity = 0;
+  const clients = {
+    version: {
+      async getCode() {
+        return { gitVersion: "v1.35.0" };
+      },
+    },
+    core: {
+      async listNamespace() {
+        return { items: [] };
+      },
+      async readNamespace() {
+        identity += 1;
+        return { metadata: { uid: `cluster-${identity}` } };
+      },
+    },
+  };
+  driver.apiClients = Promise.resolve(clients);
+  driver.executionApiClients = Promise.resolve(clients);
+  const warning = (cidr) => ({
+    code: "KUBERNETES_STATUS_PROXY_SOURCE_BROAD",
+    message:
+      `Plugin status proxy CIDR ${cidr} covers more than one address: every Pod in it ` +
+      "can reach the Agent status port. Use the API server /32 or /128 source addresses.",
+  });
+  const result = await driver.preflight();
+  assert.deepEqual(result, {
+    warnings: [warning("2001:db8::/64"), warning("10.42.0.0/16")],
+  });
+  // The worker logs each warning; the log keeps only plain text, so the message must survive.
+  const lines = [];
+  const logger = createOccLogger({
+    component: "occ-worker",
+    destination: jsonChunkDestination(lines),
+  });
+  for (const entry of result.warnings) {
+    emitOccLogEvent(logger, { event: "compute.preflight-warning", ...entry });
+  }
+  assert.deepEqual(
+    lines.map(({ code, message }) => ({ code, message })),
+    result.warnings,
+  );
+
+  const exact = createKubernetesComputeDriver(executionOptions());
+  exact.apiClients = Promise.resolve(clients);
+  exact.executionApiClients = Promise.resolve(clients);
+  assert.deepEqual(await exact.preflight(), { warnings: [] });
+});
+
+// A two-cluster Driver whose execution cluster answers SelfSubjectAccessReviews from
+// `review(attributes)`, for one tenant Namespace. The upgrade helper's preflight
+// Pods call verifyExecutionTenantGrants with each component's own identity.
+function executionDriver(
+  review,
+  listNamespace = async ({ labelSelector }) => {
+    assert.equal(labelSelector, "openclaw.dev/namespace");
+    return {
+      items: [{ metadata: { name: "oce-tenant", labels: { "openclaw.dev/namespace": "ns" } } }],
+    };
+  },
+) {
+  const driver = createKubernetesComputeDriver(executionOptions());
   const reviews = [];
   driver.executionApiClients = Promise.resolve({
     core: { listNamespace },
@@ -374,7 +583,7 @@ test("execution tenant grant check reads every Namespace page before any review"
     (error) =>
       error.constructor.name === "ConfigurationFailure" &&
       error.message ===
-        "The execution cluster's tenant worker grant in Namespace oce-second lacks patch pods. " +
+        "The execution cluster's tenant worker grant in Namespace oce-second lacks patch pods, get jobs, create jobs, delete jobs. " +
           "Upgrade the openclaw-execution chart before this release.",
   );
   assert.deepEqual(events, [
@@ -382,8 +591,14 @@ test("execution tenant grant check reads every Namespace page before any review"
     "list page-2",
     "review oce-first get pods",
     "review oce-first patch pods",
+    "review oce-first get jobs",
+    "review oce-first create jobs",
+    "review oce-first delete jobs",
     "review oce-second get pods",
     "review oce-second patch pods",
+    "review oce-second get jobs",
+    "review oce-second create jobs",
+    "review oce-second delete jobs",
   ]);
 });
 
@@ -397,10 +612,19 @@ test("execution tenant grant check treats a review without a decision as missing
     (error) =>
       error.constructor.name === "ConfigurationFailure" &&
       error.message ===
-        "The execution cluster's tenant worker grant in Namespace oce-tenant lacks patch pods. " +
+        "The execution cluster's tenant worker grant in Namespace oce-tenant lacks patch pods, get jobs, create jobs, delete jobs. " +
           "Upgrade the openclaw-execution chart before this release.",
   );
-  assert.deepEqual(reviews.map(ruleName), ["get pods", "patch pods"]);
+  assert.deepEqual(reviews.map(ruleName), [
+    "get pods",
+    "patch pods",
+    "get jobs",
+    "create jobs",
+    "delete jobs",
+  ]);
+  assert.ok(
+    reviews.filter(({ resource }) => resource === "jobs").every(({ group }) => group === "batch"),
+  );
 });
 
 test("execution tenant grant check reports an invalid Namespace list as incomplete", async () => {

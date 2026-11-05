@@ -1,18 +1,19 @@
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { DockerComputeDriver } from "../../apps/controller/src/drivers/compute/docker/index.ts";
+import { GATEWAY_TOOL_POLICY_SOURCE_COMMIT } from "../../apps/controller/src/drivers/compute/gateway-tool-policy.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { cp, mkdtemp, rm } from "node:fs/promises";
+import { cp, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { waitForResult } from "../helpers/wait-for.mjs";
 
 const execute = promisify(execFile);
 const selected = process.env.OCC_TEST_DOCKER_TOKEN_RETRY === "1";
@@ -98,20 +99,10 @@ async function networkIds(namespaceId) {
   ]);
 }
 
-async function waitFor(description, operation, timeoutMs = 120_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    try {
-      const value = await operation();
-      if (value !== undefined && value !== false) {
-        return value;
-      }
-    } catch {
-      // Containers may disappear between listing and inspection during startup.
-    }
-    await delay(500);
-  }
-  assert.fail(`Timed out waiting for ${description}.`);
+// Containers may disappear between listing and inspection during startup, so a failed
+// read means "not yet".
+function waitFor(description, operation, timeoutMs = 120_000) {
+  return waitForResult(description, operation, { timeoutMs, intervalMs: 500, retryErrors: true });
 }
 
 function containerEnv(container, name) {
@@ -184,6 +175,13 @@ async function buildFixtureImage(tag) {
     const wsDirectory = dirname(kubernetesRequire.resolve("ws/package.json"));
     await cp(fixtureDirectory, context, { recursive: true });
     await cp(wsDirectory, join(context, "ws"), { recursive: true });
+    await writeFile(
+      join(context, "provenance.json"),
+      JSON.stringify({
+        source: "https://github.com/openclaw/openclaw",
+        commit: GATEWAY_TOOL_POLICY_SOURCE_COMMIT,
+      }),
+    );
     await docker(
       [
         "build",
@@ -282,6 +280,7 @@ function revision(driver, owner) {
     configurationId: `cfg_${randomUUID()}`,
     configurationKind: "agent",
     configurationGeneration: 1,
+    executionAdmission: { version: 2, mode: "unprotected" },
     configuration: admitLoggingConfiguration(
       createHarnessConfiguration("codex", "gpt-4.1"),
       "info",

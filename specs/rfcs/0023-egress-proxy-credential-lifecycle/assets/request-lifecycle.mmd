@@ -1,0 +1,48 @@
+---
+title: "Proposed protected request lifecycle"
+config:
+  theme: base
+  htmlLabels: true
+  themeVariables:
+    fontFamily: "Arial, sans-serif"
+    fontSize: "16px"
+    actorBkg: "#EDF2F7"
+    actorBorder: "#879AB0"
+    actorTextColor: "#25364A"
+    noteBkgColor: "#F7F1E5"
+    noteBorderColor: "#B3A078"
+    noteTextColor: "#344054"
+    signalColor: "#748798"
+    signalTextColor: "#25364A"
+  sequence:
+    useMaxWidth: false
+    actorMargin: 18
+    width: 142
+    height: 44
+    diagramMarginX: 12
+    diagramMarginY: 12
+    messageMargin: 16
+    noteMargin: 8
+    mirrorActors: true
+    wrap: true
+---
+sequenceDiagram
+  participant A as Agent execution
+  participant F as Sandbox and<br/>Credential Proxy
+  participant C as OCC and<br/>credential custody
+  participant G as GitHub
+
+  Note over F,C: Before release: bind the execution, supervisor<br/>installation, and enforced policy
+  Note over C,G: OCE prepares the scoped token<br/>in the background, not on request
+
+  A-->>F: Read repository metadata
+  Note over A,F: Pin the originating execution and response path at acceptance
+  F-->>C: 1. Authorize this execution and actual read
+  C-->>F: Resolve only an eligible committed token
+  F-->>C: 2. Authorize that read and selected token version
+  C-->>F: Record dispatch attempt, permit one send
+  Note over F,C: Stale origin, unavailable authority, or ambiguous commit: no send
+
+  F-->>G: Send the read with GitHub authentication
+  G-->>F: Bounded response
+  F-->>A: Approved response to original execution

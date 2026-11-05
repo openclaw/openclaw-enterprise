@@ -1,6 +1,7 @@
 package occcli
 
 import (
+	"cmp"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
@@ -16,8 +17,9 @@ import (
 )
 
 type column struct {
-	title string
-	key   string
+	title  string
+	key    string
+	format func(any) any
 }
 
 func (app *application) printNamespace(value any, collection bool) error {
@@ -50,17 +52,10 @@ func (app *application) printSecret(value any, collection bool) error {
 // and whether OCC stopped examining references. Structured output keeps the
 // full consumers object.
 func (app *application) printSecretDetail(value any) error {
-	if app.output == "table" {
-		if resource, ok := value.(map[string]any); ok {
-			row := maps.Clone(resource)
-			row["consumers"] = secretConsumersText(resource["consumers"])
-			value = row
-		}
-	}
 	return app.printItems(value, false, []column{
 		{title: "ID", key: "id"},
 		{title: "NAME", key: "name"},
-		{title: "CONSUMERS", key: "consumers"},
+		{title: "CONSUMERS", key: "consumers", format: secretConsumersText},
 	})
 }
 
@@ -117,17 +112,26 @@ func (app *application) printCredentialSource(value any, collection bool) error 
 	if collection {
 		return app.printItems(value, collection, columns)
 	}
+	columns = append(columns, column{title: "GATEWAY STATUS", key: "gatewayStatus"})
 	if app.output == "table" {
 		if resource, ok := value.(map[string]any); ok {
 			if status, ok := resource["status"].(map[string]any); ok {
-				// Table output shows the live gateway state; structured output keeps the full status.
+				// Table output shows the live gateway state and, when the driver
+				// reported one, the refresh state. Structured output keeps the
+				// full status and is not given these table-only keys.
 				row := maps.Clone(resource)
 				row["gatewayStatus"] = status["state"]
+				if refresh, ok := status["refresh"].(map[string]any); ok {
+					if state, ok := refresh["state"].(string); ok && state != "" {
+						row["refreshStatus"] = state
+						columns = append(columns, column{title: "REFRESH", key: "refreshStatus"})
+					}
+				}
 				value = row
 			}
 		}
 	}
-	return app.printItems(value, collection, append(columns, column{title: "GATEWAY STATUS", key: "gatewayStatus"}))
+	return app.printItems(value, collection, columns)
 }
 
 func (app *application) printCredentialWithdrawal(value any) error {
@@ -153,6 +157,7 @@ func (app *application) printIAMRole(value any, collection bool) error {
 func (app *application) printIAMAccessBinding(value any, collection bool) error {
 	return app.printItems(value, collection, []column{
 		{title: "ID", key: "id"},
+		{title: "SUBJECT KIND", key: "subjectKind"},
 		{title: "SUBJECT", key: "subjectId"},
 		{title: "ROLE", key: "roleId"},
 		{title: "RESOURCE KIND", key: "resourceKind"},
@@ -191,8 +196,21 @@ func (app *application) printAgent(value any, collection bool) error {
 	})
 }
 
+// neutralDeploymentEndings are the codes of deployment work that a newer
+// revision or a Stop ended. OCC records them as failed, but the revision did
+// not fail, so the revisions table shows the ending instead, as the console
+// does (apps/controller/src/console/agents/list.mts). REPOSITORY_REVISION_STOPPED
+// stays failed: it can also mean the Namespace is not ready.
+var neutralDeploymentEndings = map[string]string{
+	"REVISION_SUPERSEDED":            "superseded",
+	"REPOSITORY_REVISION_SUPERSEDED": "superseded",
+	"REVISION_STOPPED":               "stopped",
+}
+
 // printAgentRevisionList prints rows from describeAgentRevisions. Structured
-// output keeps every field, including active and deploymentStatus.
+// output keeps every field as OCC listed it, including active,
+// deploymentStatus and deploymentErrorCode; the table has no error column, so
+// its STATUS names a neutral ending instead of failed.
 func (app *application) printAgentRevisionList(rows []any) error {
 	if app.output != "table" {
 		return app.printStructured(rows)
@@ -204,6 +222,10 @@ func (app *application) printAgentRevisionList(rows []any) error {
 			row["active"] = "*"
 		} else {
 			row["active"] = ""
+		}
+		code, _ := row["deploymentErrorCode"].(string)
+		if ending, ok := neutralDeploymentEndings[code]; ok && row["deploymentStatus"] == "failed" {
+			row["deploymentStatus"] = ending
 		}
 		table = append(table, row)
 	}
@@ -220,22 +242,52 @@ func (app *application) printAgentRevisionList(rows []any) error {
 
 // printDeploymentStatus shows startup warnings in the table too: a succeeded
 // deployment can still have disabled a selected plugin (PLUGIN_AUTH_REQUIRED,
-// PLUGIN_INSTALL_FAILED). Structured output keeps the full warnings array.
+// PLUGIN_INSTALL_FAILED). The ERROR cell reads "CODE: message" (D608).
+// Structured output keeps the full error and warnings.
 func (app *application) printDeploymentStatus(value any) error {
-	if app.output == "table" {
-		if resource, ok := value.(map[string]any); ok {
-			row := maps.Clone(resource)
-			row["warnings"] = deploymentWarningsText(resource["warnings"])
-			value = row
-		}
-	}
 	return app.printItems(value, false, []column{
 		{title: "ID", key: "deploymentId"},
 		{title: "AGENT", key: "agentId"},
 		{title: "STATUS", key: "status"},
-		{title: "ERROR", key: "error"},
-		{title: "WARNINGS", key: "warnings"},
+		{title: "ERROR", key: "error", format: deploymentErrorText},
+		{title: "WARNINGS", key: "warnings", format: deploymentWarningsText},
 	})
+}
+
+// deploymentErrorText renders a deployment error as "CODE: message" on one
+// line, then the classified cause of a failed startup model check (finding 323)
+// or a pointer to the diagnostic data that only structured output shows. A
+// value without a string code is left as it is, so the table still shows it.
+// Free text (message, cause detail) is collapsed to one line; code and cause
+// kind are schema tokens, and tableCell escapes anything hidden in any of them.
+func deploymentErrorText(value any) any {
+	deploymentError, ok := value.(map[string]any)
+	if !ok {
+		return value
+	}
+	code, ok := deploymentError["code"].(string)
+	if !ok || code == "" {
+		return value
+	}
+	text := code
+	if message, ok := deploymentError["message"].(string); ok && strings.TrimSpace(message) != "" {
+		text += ": " + strings.Join(strings.Fields(message), " ")
+	}
+	data, hasData := deploymentError["data"]
+	if !hasData || data == nil {
+		return text
+	}
+	if data, ok := data.(map[string]any); ok {
+		failure, _ := data["runtimeFailure"].(map[string]any)
+		if cause, ok := failure["cause"].(map[string]any); ok {
+			kind, _ := cause["kind"].(string)
+			detail, _ := cause["detail"].(string)
+			if kind != "" || detail != "" {
+				return text + " (cause: " + strings.TrimSpace(kind+" "+strings.Join(strings.Fields(detail), " ")) + ")"
+			}
+		}
+	}
+	return text + " (details: -o json)"
 }
 
 // deploymentWarningsText renders warnings as "pluginId (CODE)" pairs, or nil
@@ -287,7 +339,7 @@ func (app *application) printUnrevokedServiceAccountDeletion(warnings io.Writer,
 	}
 	noticef(
 		warnings,
-		"warning: the access token of service account %s was not revoked; an administrator must revoke it at the provider (%s). The audit event names its credential ID.",
+		"warning: the access token of service account %s was not revoked; a ChatGPT workspace administrator must revoke it at the provider (%s). The audit event names its credential ID.",
 		id,
 		backend,
 	)
@@ -315,8 +367,33 @@ func (app *application) printItems(value any, collection bool, columns []column)
 		if !ok {
 			return fmt.Errorf("OCC returned an invalid resource collection")
 		}
+		if len(items) == 0 {
+			return app.printEmptyList()
+		}
 	}
 	return printTable(app.out, items, columns)
+}
+
+// emptyListTexts answer an empty list per command. OCC filters these lists by
+// what the caller may read, so an empty list does not mean nothing exists
+// (finding D746).
+var emptyListTexts = map[string]string{
+	"namespace list":             "No Namespaces you can read.",
+	"secret list":                "No Secrets you can read.",
+	"preset list":                "No Presets you can read.",
+	"credential-source list":     "No credential sources you can read.",
+	"service-account list":       "No ServiceAccounts you can read.",
+	"agent list":                 "No Agents you can read.",
+	"iam role list":              "No Roles you can read.",
+	"iam access-binding list":    "No AccessBindings you can read.",
+	"iam service-principal list": "No ServicePrincipals you can read.",
+	"agent revisions":            "No revisions you can read. Revisions need AgentRevision read; ask an Installation administrator.",
+}
+
+// printEmptyList prints the running command's empty-list sentence.
+func (app *application) printEmptyList() error {
+	_, err := fmt.Fprintln(app.out, cmp.Or(emptyListTexts[app.commandPath], "No resources found."))
+	return err
 }
 
 // printBrowsingItems keeps metadata readable while making saved-settings errors visible.
@@ -332,25 +409,32 @@ func (app *application) printBrowsingItems(value any, collection bool, columns [
 		if !ok {
 			return fmt.Errorf("OCC returned an invalid resource collection")
 		}
+		if len(items) == 0 {
+			return app.printEmptyList()
+		}
 	}
-	rows := make([]any, 0, len(items))
 	hasError := false
 	for _, item := range items {
 		resource, ok := item.(map[string]any)
 		if !ok {
 			return fmt.Errorf("OCC returned an invalid resource")
 		}
-		row := maps.Clone(resource)
-		if readError, ok := resource["configurationReadError"].(map[string]any); ok {
-			row["configurationReadError"] = fmt.Sprintf("%s (%s)", displayValue(readError["code"]), displayValue(readError["field"]))
+		if _, ok := resource["configurationReadError"].(map[string]any); ok {
 			hasError = true
 		}
-		rows = append(rows, row)
 	}
 	if hasError {
-		columns = append(columns, column{title: "CONFIGURATION ERROR", key: "configurationReadError"})
+		columns = append(columns, column{title: "CONFIGURATION ERROR", key: "configurationReadError", format: configurationReadErrorText})
 	}
-	return printTable(app.out, rows, columns)
+	return printTable(app.out, items, columns)
+}
+
+func configurationReadErrorText(value any) any {
+	readError, ok := value.(map[string]any)
+	if !ok {
+		return value
+	}
+	return fmt.Sprintf("%s (%s)", displayValue(readError["code"]), displayValue(readError["field"]))
 }
 
 func (app *application) printStructured(value any) error {
@@ -394,7 +478,11 @@ func printTable(out io.Writer, items []any, columns []column) error {
 		}
 		row := make([]string, len(columns))
 		for index, column := range columns {
-			row[index] = tableCell(resource[column.key])
+			value := resource[column.key]
+			if column.format != nil {
+				value = column.format(value)
+			}
+			row[index] = tableCell(value)
 		}
 		if _, err := fmt.Fprintln(writer, strings.Join(row, "\t")); err != nil {
 			return err

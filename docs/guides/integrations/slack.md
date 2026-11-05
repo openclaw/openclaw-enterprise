@@ -22,7 +22,7 @@ go to the Agent's gateway; model credentials are configured separately.
 - Choose a dedicated Codex Agent on Kubernetes and configure its
   [model authentication](../../reference/agents.md#harness-authentication).
   Embedded OpenClaw execution cannot isolate channel credentials from the
-  Harness, and Kubernetes Compute rejects embedded revisions with external
+  Harness, and Kubernetes Compute rejects embedded versions with external
   channels enabled. The Standard OpenClaw preset must leave channels disabled.
 - First deployment generates required connection credentials. It requires Agent
   `deploy`, plus Agent `read` and `operate` when generation is needed.
@@ -42,11 +42,16 @@ proxy permits Slack by default; an external proxy must permit `slack.com`,
 serves Gateway messaging and API directory requests. Tokens remain in Agent-owned
 Secrets, not operator proxy configuration.
 
-Verify directory lookup with a known user/channel before enabling the Agent,
-then verify Socket Mode and message delivery after deployment. A successful
-lookup does not establish runtime delivery. A `503` lookup can mean the API
-cannot reach the selected proxy or Slack; a missing-scope error requires fixing
-the bot's scopes. Exact-ID entry does not bypass credential validation.
+Apply the protected Installation and Helm configuration through the installation
+procedure, then roll out OCC and replace affected Agent revisions. The Compute
+Driver grants Gateway access to the same selected endpoint independently of
+channel enablement. Existing channel placement restrictions still apply.
+
+Verify directory lookup and Slack messaging separately. Directory requests need
+`CONNECT slack.com:443`; Socket Mode also uses Slack's returned WSS endpoints.
+Keep TLS verification enabled, and never put tokens or signed WSS URLs in proxy
+configuration. A successful lookup does not prove Socket Mode or model access.
+See the [directory proxy contract](../../reference/drivers/slack-channel.md#enable-lookup-in-production).
 
 ## Connect and verify
 
@@ -54,8 +59,8 @@ the bot's scopes. Exact-ID entry does not bypass credential validation.
    **Channels** and **Configure Slack** (or **Edit Slack** for an existing setup).
    Start with **Slack credentials** at the top: select a Namespace Secret or
    **Create new Secret...** for each token. The bot token enables channel and
-   people name lookup; the app token is used for Socket Mode. Both are required
-   before deployment. Exact-ID entry remains available without name lookup.
+   people name lookup; the app token is used for Socket Mode. An enabled Slack
+   setup saves only with both. Exact-ID entry remains available without name lookup.
    Enable Slack and choose **Channels**, then select **Specific people** or
    **Everyone in these channels** under channel access. Leave **Require a mention**
    enabled for this setup. New Slack setups use
@@ -68,8 +73,8 @@ the bot's scopes. Exact-ID entry does not bypass credential validation.
    selected bindings. Cancelling the drawer discards selections but keeps any
    newly created Secrets. If multiple Agents use this Configuration, the edit
    also affects their future deployments.
-2. Open **Credentials**. If tokens are still missing, select their Secrets and
-   **Save channel Secrets**. OCC stores them as Namespace Secrets, grants the
+2. Open **Credentials**. If tokens are still missing (a Configuration saved
+   before this check), select their Secrets and **Save channel Secrets**. OCC stores them as Namespace Secrets, grants the
    Agent access, and saves Configuration bindings for gateway delivery. Stored
    Secret bindings confirm storage only; they do not prove Slack accepted the tokens.
    Bound tokens show a synthetic password mask. To replace one token, edit that
@@ -127,11 +132,11 @@ bot. To enable one-to-one messages:
   inspect saved Secrets, IAM bindings, and Configuration before retrying after a
   partial save; those writes are separate and are not automatically rolled back.
 - **Slack replies with a model error:** check the Agent's model authentication
-  and active revision independently. Slack connection alone does not establish
+  and selected version independently. Slack connection alone does not establish
   model access.
 
 ## Related
 
-- [Console channel editing](../../reference/console.md#inspect-detail-revisions-and-channel-drafts)
+- [Console channel editing](../../reference/console/versions-and-channel-drafts.md)
 - [Initial Agent credentials](../../reference/console/create-and-deploy.md#initial-runtime-credentials)
 - [Agent deployment](../../reference/agents/deployment.md)

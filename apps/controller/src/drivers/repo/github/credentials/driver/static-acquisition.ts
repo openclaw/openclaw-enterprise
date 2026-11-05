@@ -60,7 +60,6 @@ export function createStaticTokenAcquisition({
           expiresAt: expiresAtWallMs,
           observedWall: observedWallMs,
           observedMono: clock.monotonicNow(),
-          accepted: true,
         });
         return state.outcome(attempt, {
           kind: "acquired",

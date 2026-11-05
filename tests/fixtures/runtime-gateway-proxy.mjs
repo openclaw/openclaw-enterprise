@@ -128,10 +128,15 @@ async function provePackagedProxy() {
     // proxy host policy, not an unreachable destination or a certificate error.
     await assert.rejects(
       fetch("https://denied.proxy.test/", { signal: AbortSignal.timeout(7_000) }),
+      { name: "TypeError", message: "fetch failed" },
     );
     await stopProxy(handle);
     handle = await startProxy({ proxyUrl: "http://selected-proxy:9" });
-    await assert.rejects(fetchOrigin(), "proxy failure must not fall back to the origin");
+    await assert.rejects(
+      fetchOrigin(),
+      { name: "TypeError", message: "fetch failed" },
+      "proxy failure must not fall back to the origin",
+    );
     await stopProxy(handle);
     handle = undefined;
     assert.equal(await rawConnect(), true, "stopping native routing restores direct sockets");

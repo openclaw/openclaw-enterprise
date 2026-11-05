@@ -1,19 +1,21 @@
 import { spawn, spawnSync } from "node:child_process";
-import { constants } from "node:fs";
+import { constants, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { availableParallelism, cpus, constants as osConstants } from "node:os";
 import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
 import { startAgentNamespaceCapture } from "./k3d-diagnostics.mjs";
+import { stopCleanupCommands } from "./cleanup.mjs";
 import {
   failureInputLimit,
   failureSecrets,
   redactFailure,
   redactFailureDetail,
   redactLogLine,
-  redactOutputLine,
+  redactOutputLines,
 } from "./failure-redaction.mjs";
+import { qualifySkipperRelease } from "./skipper-release.ts";
 import { loadTestSuites } from "./test-suites.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -25,8 +27,9 @@ function usage() {
   return [
     "Usage:",
     "  node scripts/ci/run-tests.mjs audit [--manifest <file>] [--root <dir>]",
-    "  node scripts/ci/run-tests.mjs run <lane> --state <file> --results <file> [--manifest <file>] [--root <dir>]",
-    "  node scripts/ci/run-tests.mjs aggregate <group> --results-dir <dir> [--needs <json-file>] [--lanes <json-array>] [--manifest <file>] [--root <dir>]",
+    "  node scripts/ci/run-tests.mjs check-selection <lane> --file <manifest-path> [--manifest <file>] [--root <dir>]",
+    "  node scripts/ci/run-tests.mjs run <lane> --state <file> --results <file> [--file <manifest-path>] [--manifest <file>] [--root <dir>]",
+    "  node scripts/ci/run-tests.mjs aggregate <group> --results-dir <dir> [--needs <json-file>] [--lanes <json-array>] [--release-selection <file>] [--manifest <file>] [--root <dir>]",
   ].join("\n");
 }
 
@@ -51,7 +54,7 @@ function parseArgs(argv) {
     index += 1;
   }
 
-  if (!["audit", "run", "aggregate"].includes(command)) {
+  if (!["audit", "check-selection", "run", "aggregate"].includes(command)) {
     throw new Error(usage());
   }
 
@@ -115,11 +118,13 @@ function normalizeFile(file, laneName, index, issues) {
   return {
     path: file.path,
     expectedTests: stringArray(file.expectedTests, `${path}.expectedTests`, issues),
+    requiredEnv: stringArray(file.requiredEnv, `${path}.requiredEnv`, issues),
   };
 }
 
 // Files run one at a time unless the lane sets fileConcurrency and lists the file in
-// parallelFiles, the files audited to share the runner, in the order they start.
+// parallelFiles, the files audited to share the runner (which start longest first, ties in
+// listed order; see fileDurations).
 // serialFiles names why a file must run alone. Any other file also runs alone, so a
 // new or unaudited file fails closed.
 function fileModes(lane, laneName, files, issues) {
@@ -168,14 +173,63 @@ function fileConcurrencyLimit(value, path, issues) {
   return value;
 }
 
-function normalizeManifest(raw) {
+// The index may name a table of measured file times (repository path to milliseconds,
+// e.g. medians of green main runs). Shared slots start the longest file first, so a long
+// file never waits for a slot while short ones run. A file without a row starts before
+// every measured one, in parallelFiles order: nothing says it is short.
+function fileDurations(raw, manifestPath, issues) {
+  const durations = new Map();
+  const reference = raw.fileDurations;
+  if (reference === undefined) {
+    return durations;
+  }
+  if (
+    typeof reference !== "string" ||
+    !/^\.\/[A-Za-z0-9._/-]+\.json$/.test(reference) ||
+    reference.split("/").includes("..")
+  ) {
+    issues.push(issue("invalid-manifest", "fileDurations must be a ./relative .json path"));
+    return durations;
+  }
+  let table;
+  try {
+    table = JSON.parse(readFileSync(resolve(dirname(manifestPath), reference), "utf8"));
+  } catch {
+    issues.push(issue("invalid-manifest", `fileDurations ${reference} is not readable JSON`));
+    return durations;
+  }
+  if (!isObject(table) || table.version !== 1 || !isObject(table.files)) {
+    issues.push(
+      issue("invalid-manifest", `fileDurations ${reference} must be version 1 with a files object`),
+    );
+    return durations;
+  }
+  for (const [path, ms] of Object.entries(table.files)) {
+    if (!Number.isInteger(ms) || ms < 0) {
+      issues.push(
+        issue("invalid-manifest", `fileDurations ${path} must be a whole number of milliseconds`),
+      );
+      continue;
+    }
+    durations.set(path, ms);
+  }
+  return durations;
+}
+
+function normalizeManifest(raw, manifestPath) {
   const issues = [];
   const lanes = new Map();
   const groups = new Map();
 
   if (!isObject(raw)) {
-    return { lanes, groups, issues: [issue("invalid-manifest", "manifest must be a JSON object")] };
+    return {
+      lanes,
+      groups,
+      durations: new Map(),
+      issues: [issue("invalid-manifest", "manifest must be a JSON object")],
+    };
   }
+  const durations = fileDurations(raw, manifestPath, issues);
   if (raw.version !== 1) {
     issues.push(issue("invalid-manifest", "manifest version must be 1"));
   }
@@ -218,7 +272,7 @@ function normalizeManifest(raw) {
     groups.set(groupName, stringArray(laneNames, `groups.${groupName}`, issues, true));
   }
 
-  return { lanes, groups, issues };
+  return { lanes, groups, durations, issues };
 }
 
 async function readJson(path) {
@@ -234,6 +288,43 @@ function absoluteInputPath(root, path) {
 
 function repoRelativePath(root, path) {
   return relative(root, absoluteInputPath(root, path)).split(sep).join("/");
+}
+
+function suiteSource(root, data) {
+  if (typeof data.file !== "string" || data.file.length === 0) {
+    return undefined;
+  }
+  try {
+    // Normalizing '..' before resolving a symlink can identify a different file.
+    const rawPath = data.file.startsWith("file://") ? decodeURIComponent(data.file) : data.file;
+    if (rawPath.split(/[/\\]/).includes("..")) {
+      return undefined;
+    }
+    const path = absoluteInputPath(root, data.file);
+    const file = repoRelativePath(root, path);
+    const actual = relative(realpathSync(root), realpathSync(path));
+    if (
+      !file ||
+      file === ".." ||
+      file.startsWith("../") ||
+      isAbsolute(file) ||
+      actual === ".." ||
+      actual.startsWith(`..${sep}`) ||
+      isAbsolute(actual) ||
+      !statSync(path).isFile()
+    ) {
+      return undefined;
+    }
+    const source = { file };
+    for (const key of ["line", "column", "nesting"]) {
+      if (Number.isSafeInteger(data[key]) && data[key] >= (key === "nesting" ? 0 : 1)) {
+        source[key] = data[key];
+      }
+    }
+    return source;
+  } catch {
+    return undefined;
+  }
 }
 
 function resolveRepoPath(root, path, issues, context) {
@@ -271,7 +362,7 @@ async function discoverUnder(root, relativeRoot, files) {
     const relativePath = relative(root, absolutePath).split(sep).join("/");
     if (entry.isDirectory()) {
       await discoverUnder(root, relativePath, files);
-    } else if (entry.isFile() && entry.name.endsWith(".test.mjs")) {
+    } else if (entry.isFile() && /\.test\.(?:mjs|ts)$/.test(entry.name)) {
       files.push(relativePath);
     }
   }
@@ -396,6 +487,8 @@ function mergeEnv(...objects) {
 
 function shouldRemoveInheritedEnv(name) {
   return (
+    name === "ACTIONS_RUNTIME_TOKEN" ||
+    name === "ACTIONS_RESULTS_URL" ||
     name === "KEEP" ||
     name === "DEBUG" ||
     name === "NODE_TEST_CONTEXT" ||
@@ -428,6 +521,130 @@ function testTimeoutMs() {
     return value;
   }
   return 60 * 60 * 1000;
+}
+
+// CI_RUNNER_DEADLINE_MS (Unix epoch milliseconds) is when every file of the lane must have
+// stopped. The run-ci-lane action sets it a few minutes before the job's timeout-minutes, so a
+// hung file is stopped, named and recorded before GitHub cancels the job, which leaves no
+// results and no test name (finding 1209).
+function laneDeadlineMs() {
+  const value = Number(process.env.CI_RUNNER_DEADLINE_MS ?? "");
+  return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
+// Past the deadline, or too close to it (under minStepMs) for a file to start: a test process
+// started then would be stopped before it ran anything (finding 1215).
+function laneDeadlinePassed() {
+  const deadline = laneDeadlineMs();
+  return deadline !== undefined && deadline - Date.now() < minStepMs;
+}
+
+function laneDeadlineIssue(relativePath) {
+  return issue(
+    "lane-deadline",
+    `the lane deadline passed, or was under ${minStepMs} ms away, before this file started: ${relativePath}`,
+    {
+      file: relativePath,
+    },
+  );
+}
+
+// prepareFile and a file's cleanup run in this process, where nothing can stop them, so a hung
+// one ran on to the job timeout with no results (finding 1210). Each now has a limit:
+// preparation the time left before the lane deadline, cleanup a fixed allowance that still
+// applies past the deadline. A step past its limit is abandoned: its file records a
+// prepare-timeout or cleanup-timeout, the setup queue moves on, and the runner exits once its
+// results are written instead of waiting for the step. The job's unconditional Cleanup lane step
+// removes what the step left in the lane state.
+function cleanupAllowanceMs() {
+  const value = Number.parseInt(process.env.CI_RUNNER_CLEANUP_TIMEOUT_MS ?? "", 10);
+  // A cleanup's limit includes its wait for the CI state lock, which test processes also take
+  // to create their databases.
+  return Number.isFinite(value) && value > 0 ? value : 120_000;
+}
+
+function prepareLimitMs() {
+  const deadline = laneDeadlineMs();
+  return deadline === undefined ? undefined : deadline - Date.now();
+}
+
+// Cleanups run one at a time. All of them end by one window past the lane deadline (60 s, or
+// the allowance if shorter), so the cleanups of files the deadline stopped together cannot queue
+// one allowance each past the job timeout.
+function cleanupLimitMs() {
+  const allowance = cleanupAllowanceMs();
+  const deadline = laneDeadlineMs();
+  return deadline === undefined
+    ? allowance
+    : Math.min(allowance, deadline + Math.min(allowance, 60_000) - Date.now());
+}
+
+// Timers can fire a few milliseconds before Date.now() reaches their end, so a remaining
+// limit this short counts as none.
+const minStepMs = 1_000;
+
+let abandonedSteps = 0;
+
+class StepTimeoutError extends Error {
+  constructor(limitMs, started) {
+    super(started ? `step exceeded ${limitMs} ms` : "no time was left to start the step");
+    this.name = "StepTimeoutError";
+    this.limitMs = limitMs;
+    this.started = started;
+  }
+}
+
+// Runs step() for at most limitMs (no limit when undefined); it never starts without time left.
+function withinLimit(step, limitMs) {
+  if (limitMs === undefined) {
+    return step();
+  }
+  if (limitMs < minStepMs) {
+    return Promise.reject(new StepTimeoutError(0, false));
+  }
+  return new Promise((resolvePromise, reject) => {
+    const timer = setTimeout(() => {
+      abandonedSteps += 1;
+      reject(new StepTimeoutError(limitMs, true));
+    }, limitMs);
+    Promise.resolve()
+      .then(step)
+      .then(
+        (value) => {
+          clearTimeout(timer);
+          resolvePromise(value);
+        },
+        (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
+  });
+}
+
+// The file's timeout: the per-file limit, cut to what is left before the lane deadline, but
+// never under minStepMs. A file starts only with at least that much left (laneDeadlinePassed),
+// so the floor only absorbs the moments between that check and the start. A file started with a
+// second or two left can still be stopped during Node's startup; its timeout then says no test
+// was running.
+function fileTimeout() {
+  const limitMs = testTimeoutMs();
+  const deadline = laneDeadlineMs();
+  if (deadline === undefined || deadline - Date.now() >= limitMs) {
+    return { timeoutMs: limitMs, laneDeadline: false };
+  }
+  const timeoutMs = Math.min(limitMs, Math.max(minStepMs, deadline - Date.now()));
+  return { timeoutMs, laneDeadline: timeoutMs < limitMs };
+}
+
+// Longest measured first; unmeasured files lead, and ties keep parallelFiles order (the
+// sort is stable).
+function startOrder(paths, durations) {
+  const rank = (path) => durations.get(path) ?? Number.POSITIVE_INFINITY;
+  return [...paths].sort((left, right) => {
+    const [a, b] = [rank(left), rank(right)];
+    return a === b ? 0 : a > b ? -1 : 1;
+  });
 }
 
 // The lane's audited files may share up to fileConcurrency slots, capped by the CPUs
@@ -477,7 +694,7 @@ function sanitizePreparationError(error) {
   if (
     code !== "CI_PREPARATION_COMMAND_FAILED" ||
     !["database-create", "database-schema", "database-migrate"].includes(stage) ||
-    !["spawn", "exit", "signal", "timeout"].includes(failure)
+    !["spawn", "exit", "signal", "timeout", "connect", "query"].includes(failure)
   ) {
     return result;
   }
@@ -572,6 +789,16 @@ function killGroup(pgid, signal) {
 }
 
 const forwardedSignals = ["SIGINT", "SIGTERM", "SIGHUP"];
+
+// GitHub cancels a step by signalling only its shell, which waits for this runner, and then
+// kills that shell. The signals never reach this runner: it carries on as an orphan beside the
+// job's always() Cleanup lane step, and the two cleanups can race. So a runner whose starting
+// parent is gone is being cancelled, and a cleanup that fails then is reported as cancelled.
+const startingParentPid = process.ppid;
+
+function jobCancelling() {
+  return process.ppid !== startingParentPid;
+}
 
 function forwardSignal(signal) {
   // This runner ends at once, so nothing would follow up on a file that ignores
@@ -791,9 +1018,7 @@ function failureDetails(events, absolutePath, secrets, root) {
     })),
     omittedTests: Math.max(0, failed.length - maxFailureDetailTests),
     output: {
-      lines: output.lines.map((line) =>
-        redactOutputLine(line, secrets, root, failureOutputLineChars),
-      ),
+      lines: redactOutputLines(output.lines, secrets, root, failureOutputLineChars),
       omittedLines: output.omitted,
     },
   };
@@ -866,6 +1091,50 @@ function imageDigests(env) {
   );
 }
 
+function validateExpectedTests(path, expectedTests, tests, issues) {
+  if (expectedTests.length === 0) {
+    return;
+  }
+  const statusByName = new Map();
+  for (const testCase of tests) {
+    if (!isObject(testCase) || typeof testCase.name !== "string") {
+      issues.push(
+        issue("invalid-test-evidence", "test evidence contains an invalid case entry", {
+          file: path,
+        }),
+      );
+      return;
+    }
+    const previousStatus = statusByName.get(testCase.name);
+    // A pass cannot erase a non-passing occurrence of the same required name.
+    if (previousStatus === undefined || previousStatus === "passed") {
+      const status = ["passed", "failed", "skipped", "todo"].includes(testCase.status)
+        ? testCase.status
+        : "invalid";
+      statusByName.set(testCase.name, status);
+    }
+  }
+  for (const name of expectedTests) {
+    const status = statusByName.get(name);
+    if (status === undefined) {
+      issues.push(
+        issue("missing-expected-test", `expected test did not run: ${name}`, {
+          file: path,
+          name,
+        }),
+      );
+    } else if (status !== "passed") {
+      issues.push(
+        issue("expected-test-not-passed", `expected test did not pass: ${name}`, {
+          file: path,
+          name,
+          status,
+        }),
+      );
+    }
+  }
+}
+
 async function runFile(root, lane, file, statePath, prepareFile, setup = (step) => step()) {
   const issues = [];
   const relativePath = repoRelativePath(root, file.path);
@@ -880,15 +1149,38 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
     return emptyFileResult(relativePath, issues);
   }
 
+  // A file queued behind a hung one starts nothing past the lane deadline.
+  if (laneDeadlinePassed()) {
+    issues.push(laneDeadlineIssue(relativePath));
+    return emptyFileResult(relativePath, issues);
+  }
+
+  // An abandoned preparation or cleanup most likely still holds the CI state lock. This file's
+  // preparation would wait for it until the deadline and then report a prepare-timeout of its own.
+  if (abandonedSteps > 0) {
+    issues.push(
+      issue(
+        "setup-abandoned",
+        `not started: an earlier file's preparation or cleanup did not finish: ${relativePath}`,
+        { file: relativePath },
+      ),
+    );
+    return emptyFileResult(relativePath, issues);
+  }
+
   if (prepareFile) {
     try {
       const result =
         (await setup(() =>
-          prepareFile({
-            lane: { name: lane.name, env: lane.env, requiredEnv: lane.requiredEnv },
-            file,
-            statePath,
-          }),
+          withinLimit(
+            () =>
+              prepareFile({
+                lane: { name: lane.name, env: lane.env, requiredEnv: lane.requiredEnv },
+                file,
+                statePath,
+              }),
+            prepareLimitMs(),
+          ),
         )) ?? {};
       prepared.env = validatePreparedEnv(result.env);
       prepared.cleanup = result.cleanup ?? null;
@@ -896,6 +1188,19 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
         throw new Error("prepareFile cleanup must be a function");
       }
     } catch (error) {
+      if (error instanceof StepTimeoutError) {
+        // Its turn in the setup queue came after the deadline, or it ran into the deadline.
+        issues.push(
+          error.started
+            ? issue(
+                "prepare-timeout",
+                `prepareFile did not finish within ${error.limitMs} ms, cut to the lane deadline: ${relativePath}`,
+                { file: relativePath, step: "prepare", timeoutMs: error.limitMs },
+              )
+            : laneDeadlineIssue(relativePath),
+        );
+        return emptyFileResult(relativePath, issues);
+      }
       const sanitized = sanitizePreparationError(error);
       issues.push(
         issue("prepare-failed", `prepareFile failed for ${relativePath}`, {
@@ -911,12 +1216,14 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
     }
   }
 
-  const env = mergeEnv(
-    baseChildEnv([...lane.requiredEnv, ...lane.optionalEnv]),
-    lane.env,
-    prepared.env,
-  );
-  for (const name of lane.requiredEnv) {
+  // A preparation that ended just as its limit ran out; the cleanup below still runs.
+  if (laneDeadlinePassed()) {
+    issues.push(laneDeadlineIssue(relativePath));
+  }
+
+  const requiredEnv = [...lane.requiredEnv, ...file.requiredEnv];
+  const env = mergeEnv(baseChildEnv([...requiredEnv, ...lane.optionalEnv]), lane.env, prepared.env);
+  for (const name of requiredEnv) {
     if (env[name] === undefined || env[name] === "") {
       issues.push(
         issue("missing-env", `lane ${lane.name} requires env ${name}`, {
@@ -929,11 +1236,13 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
 
   let nodeResult = null;
   let tests = [];
+  let skippedSuites = [];
   let fileFailure;
   let details;
   let nodeElapsedMs;
   let agentActivity;
   let measurements = [];
+  let timeout;
   try {
     if (issues.length === 0) {
       agentActivity = await startAgentNamespaceCapture({
@@ -949,10 +1258,11 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
       // The capture names a private directory for the file's container log records.
       Object.assign(env, agentActivity?.env);
       const nodeStarted = performance.now();
+      timeout = fileTimeout();
       nodeResult = await runNode(["--test", "--test-reporter", reporterPath, absolutePath], {
         cwd: root,
         env,
-        timeout: testTimeoutMs(),
+        timeout: timeout.timeoutMs,
       });
       nodeElapsedMs = Math.round(performance.now() - nodeStarted);
 
@@ -995,6 +1305,16 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
           error: failureError(event.data.error),
           durationMs: event.data.durationMs,
         }));
+      // A skipped describe() never registers its tests, so only its suite event shows the skip.
+      skippedSuites = events
+        .filter(
+          (event) =>
+            event.type === "test:pass" &&
+            event.data?.testType === "suite" &&
+            event.data.skip !== undefined &&
+            event.data.name !== absolutePath,
+        )
+        .map((event) => ({ name: event.data.name, source: suiteSource(root, event.data) }));
     }
   } catch (error) {
     issues.push(
@@ -1009,13 +1329,35 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
     await setup(async () => agentActivity?.finish({ env }));
     if (prepared.cleanup) {
       try {
-        await setup(prepared.cleanup);
+        await setup(() => withinLimit(prepared.cleanup, cleanupLimitMs()));
         cleanupResult = { status: "passed" };
       } catch (error) {
-        cleanupResult = { status: "failed", error: sanitizeError(error) };
-        issues.push(
-          issue("cleanup-failed", `cleanup failed for ${relativePath}`, { file: relativePath }),
-        );
+        if (error instanceof StepTimeoutError) {
+          cleanupResult = { status: "timeout", timeoutMs: error.limitMs };
+          issues.push(
+            issue(
+              "cleanup-timeout",
+              error.started
+                ? `cleanup did not finish within ${error.limitMs} ms: ${relativePath}`
+                : `the cleanup window after the lane deadline closed before cleanup started: ${relativePath}`,
+              { file: relativePath, step: "cleanup", timeoutMs: error.limitMs },
+            ),
+          );
+        } else if (jobCancelling()) {
+          // Keep the sanitized error: a parent that died for another reason (OOM-killed step
+          // shell, closed terminal) also reads as a cancellation.
+          cleanupResult = { status: "cancelled", error: sanitizeError(error) };
+          issues.push(
+            issue("cleanup-cancelled", `cleanup stopped by job cancellation for ${relativePath}`, {
+              file: relativePath,
+            }),
+          );
+        } else {
+          cleanupResult = { status: "failed", error: sanitizeError(error) };
+          issues.push(
+            issue("cleanup-failed", `cleanup failed for ${relativePath}`, { file: relativePath }),
+          );
+        }
       }
     }
   }
@@ -1029,34 +1371,23 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   }
 
   if (nodeResult?.error?.code === "ETIMEDOUT") {
+    // Name the tests it was running in the job log too: the diagnostics report is an artifact.
+    const names = (details?.interruptedTests ?? []).map(({ name }) => JSON.stringify(name));
+    const running = names.slice(0, 5);
+    if (names.length > running.length) {
+      running.push(`and ${names.length - running.length} more`);
+    }
     issues.push(
-      issue("test-timeout", `selected file exceeded the runner timeout: ${relativePath}`, {
-        file: relativePath,
-      }),
+      issue(
+        "test-timeout",
+        `selected file exceeded the runner timeout (${timeout.timeoutMs} ms${timeout.laneDeadline ? ", cut to the lane deadline" : ""}): ${relativePath}${running.length === 0 ? "; no test was running (stopped in a hook, teardown or top-level code)" : ` while running ${running.join(", ")}`}`,
+        { file: relativePath },
+      ),
     );
   }
 
   if (nodeResult) {
-    const testsByName = new Map(tests.map((testCase) => [testCase.name, testCase]));
-    for (const name of file.expectedTests) {
-      const expected = testsByName.get(name);
-      if (!expected) {
-        issues.push(
-          issue("missing-expected-test", `expected test did not run: ${name}`, {
-            file: relativePath,
-            name,
-          }),
-        );
-      } else if (expected.status !== "passed") {
-        issues.push(
-          issue("expected-test-not-passed", `expected test did not pass: ${name}`, {
-            file: relativePath,
-            name,
-            status: expected.status,
-          }),
-        );
-      }
-    }
+    validateExpectedTests(relativePath, file.expectedTests, tests, issues);
 
     for (const skipped of tests.filter((testCase) =>
       ["skipped", "todo"].includes(testCase.status),
@@ -1066,6 +1397,16 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
           file: relativePath,
           name: skipped.name,
           status: skipped.status,
+        }),
+      );
+    }
+    for (const suite of skippedSuites) {
+      issues.push(
+        issue("unexpected-skip", `selected suite did not run its tests: ${suite.name}`, {
+          file: relativePath,
+          name: suite.name,
+          ...(suite.source ? { source: suite.source } : {}),
+          status: "skipped",
         }),
       );
     }
@@ -1082,7 +1423,12 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   if (status === "failed" && (details !== undefined || timedOut)) {
     await recordFailure(setup, statePath, lane.name, relativePath, {
       ...(timedOut
-        ? { reason: "timeout", timeoutMs: testTimeoutMs(), elapsedMs: nodeElapsedMs }
+        ? {
+            reason: "timeout",
+            timeoutMs: timeout.timeoutMs,
+            ...(timeout.laneDeadline ? { laneDeadline: true } : {}),
+            elapsedMs: nodeElapsedMs,
+          }
         : { reason: "failed" }),
       ...(details ?? { tests: [], omittedTests: 0, output: { lines: [], omittedLines: 0 } }),
     });
@@ -1103,12 +1449,27 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   };
 }
 
-async function runLane(root, manifest, laneName, statePath, resultsPath) {
-  const source = sourceEvidence(root);
-  const lane = manifest.lanes.get(laneName);
-  const issues = [...manifest.issues, ...source.issues];
-  const files = [];
-  let preservedNodeExitCode = 0;
+function selectLane(manifest, laneName, selectedFile) {
+  let lane = manifest.lanes.get(laneName);
+  const issues = [...manifest.issues];
+
+  if (lane && selectedFile !== undefined) {
+    const selected = lane.files.find((file) => file.path === selectedFile);
+    if (!selected) {
+      issues.push(
+        issue("invalid-file-selection", "--file must exactly match a file in the selected lane", {
+          lane: laneName,
+        }),
+      );
+    } else {
+      // Keep the manifest's expected tests, environment and cleanup requirements.
+      lane = {
+        ...lane,
+        files: [selected],
+        parallelFiles: lane.parallelFiles.filter((path) => path === selected.path),
+      };
+    }
+  }
 
   if (!lane) {
     issues.push(
@@ -1117,14 +1478,24 @@ async function runLane(root, manifest, laneName, statePath, resultsPath) {
   } else if (lane.files.length === 0) {
     issues.push(issue("selected-zero", `lane ${laneName} selects no files`, { lane: laneName }));
   }
+  return { lane, issues };
+}
+
+async function runLane(root, manifest, laneName, statePath, resultsPath, selectedFile) {
+  const source = sourceEvidence(root);
+  const { lane, issues } = selectLane(manifest, laneName, selectedFile);
+  issues.push(...source.issues);
+  const files = [];
+  let preservedNodeExitCode = 0;
 
   const prepareFile = await loadPrepare(root);
   const startedAt = new Date().toISOString();
   const laneStarted = performance.now();
   const concurrency = lane ? fileConcurrency(lane, issues) : 1;
   if (lane && lane.fileConcurrency > 1) {
+    const measured = lane.parallelFiles.filter((path) => manifest.durations.has(path)).length;
     process.stderr.write(
-      `run-tests: ${lane.name} runs up to ${concurrency} files at a time (fileConcurrency ${lane.fileConcurrency}, available parallelism ${availableParallelism()}, CPUs ${cpus().length})\n`,
+      `run-tests: ${lane.name} runs up to ${concurrency} files at a time (fileConcurrency ${lane.fileConcurrency}, available parallelism ${availableParallelism()}, CPUs ${cpus().length})${measured > 0 ? `, longest first (${measured} of ${lane.parallelFiles.length} shared files measured)` : ""}\n`,
     );
   }
   if (lane && issues.length === 0) {
@@ -1137,6 +1508,7 @@ async function runLane(root, manifest, laneName, statePath, resultsPath) {
       return next;
     };
     const results = new Array(lane.files.length);
+    let annotateFailure = process.env.GITHUB_ACTIONS === "true";
     const runAt = async (index, mode) => {
       const fileStarted = performance.now();
       const result = await runFile(root, lane, lane.files[index], statePath, prepareFile, setup);
@@ -1146,6 +1518,17 @@ async function runLane(root, manifest, laneName, statePath, resultsPath) {
       result.startOffsetMs = Math.round(fileStarted - laneStarted);
       result.wallDurationMs = Math.round(performance.now() - laneStarted) - result.startOffsetMs;
       results[index] = result;
+      if (annotateFailure && result.status === "failed") {
+        annotateFailure = false;
+        // A workflow command must never contain the child test's name, path, or output.
+        const message =
+          result.counts.failed > 0 && result.cleanup?.status === "passed"
+            ? "A test file reported failed tests and its cleanup passed."
+            : "A test file failed.";
+        process.stderr.write(
+          `::error title=Test lane failure::${message} Final lane results will follow.\n`,
+        );
+      }
       process.stderr.write(
         `run-tests: ${result.status} ${result.path} ${(result.wallDurationMs / 1000).toFixed(1)}s${mode === "parallel" ? " (parallel)" : ""}\n`,
       );
@@ -1153,10 +1536,12 @@ async function runLane(root, manifest, laneName, statePath, resultsPath) {
     const indexes = lane.files.map((_, index) => index);
     const parallel =
       concurrency > 1
-        ? lane.parallelFiles.map((path) => lane.files.findIndex((file) => file.path === path))
+        ? startOrder(lane.parallelFiles, manifest.durations).map((path) =>
+            lane.files.findIndex((file) => file.path === path),
+          )
         : [];
     // Serial files run first and alone, in manifest order; then audited files share
-    // `concurrency` slots, started in parallelFiles order.
+    // `concurrency` slots, started longest first (see fileDurations).
     for (const index of indexes.filter((entry) => !parallel.includes(entry))) {
       await runAt(index, "serial");
     }
@@ -1184,6 +1569,7 @@ async function runLane(root, manifest, laneName, statePath, resultsPath) {
     command: "run",
     sourceSha: source.sha,
     lane: laneName,
+    scope: selectedFile === undefined ? "full" : "focused",
     status,
     exitCode: preservedNodeExitCode || (status === "passed" ? 0 : 1),
     fileConcurrency: concurrency,
@@ -1269,6 +1655,13 @@ function validateLaneEvidence(summary, laneName, lane, issues) {
     );
     return;
   }
+  if (summary.scope === "focused") {
+    issues.push(
+      issue("focused-lane-evidence", `focused results do not complete lane ${laneName}`, {
+        lane: laneName,
+      }),
+    );
+  }
   if (summary.status === "passed" && summary.exitCode !== 0) {
     issues.push(
       issue("lane-exit-mismatch", `lane ${laneName} reported success with a nonzero exit`, {
@@ -1311,8 +1704,10 @@ function validateLaneEvidence(summary, laneName, lane, issues) {
           file: expectedFile.path,
         }),
       );
+    } else {
+      validateExpectedTests(expectedFile.path, expectedFile.expectedTests, observed.tests, issues);
     }
-    if (observed.cleanup?.status === "failed") {
+    if (observed.cleanup != null && observed.cleanup.status !== "passed") {
       issues.push(
         issue("cleanup-failed", `lane ${laneName} file cleanup did not pass`, {
           lane: laneName,
@@ -1345,7 +1740,16 @@ function selectedLaneNames(groupLanes, selection, issues) {
   return groupLanes.filter((lane) => lanes.includes(lane));
 }
 
-async function aggregateGroup(root, manifest, groupName, resultsDir, needsPath, selection) {
+async function aggregateGroup(
+  root,
+  manifest,
+  groupName,
+  resultsDir,
+  needsPath,
+  selection,
+  releaseSelection,
+) {
+  let releaseQualification;
   const source = sourceEvidence(root);
   const issues = [...manifest.issues, ...source.issues];
   let laneNames = laneNamesForTarget(manifest, groupName);
@@ -1362,6 +1766,14 @@ async function aggregateGroup(root, manifest, groupName, resultsDir, needsPath, 
     laneNames = selectedLaneNames(laneNames, selection, issues);
   }
 
+  if (releaseSelection && !laneNames?.includes("skipper-prepared-git-installed")) {
+    issues.push(
+      issue(
+        "release-selection-lane-missing",
+        "release selection requires installed Skipper evidence",
+      ),
+    );
+  }
   let needs = null;
   if (needsPath) {
     try {
@@ -1442,6 +1854,23 @@ async function aggregateGroup(root, manifest, groupName, resultsDir, needsPath, 
       }
       if (lane && summary.status === "passed") {
         validateLaneEvidence(summary, laneName, lane, issues);
+        if (releaseSelection && laneName === "skipper-prepared-git-installed") {
+          try {
+            releaseQualification = qualifySkipperRelease(
+              await readJson(releaseSelection),
+              summary,
+              currentSha,
+            );
+          } catch {
+            issues.push(
+              issue(
+                "skipper-release-mismatch",
+                "installed Skipper evidence does not qualify the selected release",
+                { lane: laneName },
+              ),
+            );
+          }
+        }
       }
     } catch (error) {
       issues.push(
@@ -1458,6 +1887,7 @@ async function aggregateGroup(root, manifest, groupName, resultsDir, needsPath, 
     command: "aggregate",
     sourceSha: currentSha,
     group: groupName,
+    ...(releaseQualification && issues.length === 0 ? { releaseQualification } : {}),
     status: issues.length === 0 ? "passed" : "failed",
     lanes,
     issues,
@@ -1473,7 +1903,16 @@ async function main() {
   const { command, positionals, options } = parseArgs(process.argv.slice(2));
   const root = resolve(options.root ?? repositoryRoot);
   const manifestPath = resolve(root, options.manifest ?? defaultManifestPath);
-  const manifest = normalizeManifest(loadTestSuites(manifestPath));
+  const manifest = normalizeManifest(loadTestSuites(manifestPath), manifestPath);
+
+  if (command === "check-selection") {
+    if (!positionals[0] || options.file === undefined) {
+      throw new Error(`check-selection requires <lane> and --file\n${usage()}`);
+    }
+    const { issues } = selectLane(manifest, positionals[0], options.file);
+    logIssues(issues);
+    return issues.length === 0 ? 0 : 1;
+  }
 
   if (command === "audit") {
     const summary = await auditManifest(root, manifest);
@@ -1492,6 +1931,7 @@ async function main() {
       laneName,
       resolve(root, options.state),
       resolve(root, options.results),
+      options.file,
     );
   }
 
@@ -1506,9 +1946,90 @@ async function main() {
     resolve(root, options["results-dir"]),
     options.needs ? resolve(root, options.needs) : null,
     options.lanes,
+    options["release-selection"] ? resolve(root, options["release-selection"]) : null,
   );
   process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
   return summary.status === "passed" ? 0 : 1;
+}
+
+// Parent pid of every process, from /proc on Linux (CI runners) or ps elsewhere. Synchronous,
+// so a step still running in this process cannot start a command between listing and killing.
+function processParents() {
+  const parents = new Map();
+  let entries;
+  try {
+    entries = readdirSync("/proc");
+  } catch {
+    const listed = spawnSync("ps", ["-A", "-o", "pid=", "-o", "ppid="], {
+      encoding: "utf8",
+      timeout: 5_000,
+    });
+    for (const line of listed.stdout?.split("\n") ?? []) {
+      const [pid, ppid] = line.trim().split(/\s+/).map(Number);
+      // ps itself is this process's child, gone by now.
+      if (pid > 0 && pid !== listed.pid) {
+        parents.set(pid, ppid);
+      }
+    }
+    return parents;
+  }
+  for (const entry of entries.filter((name) => /^\d+$/.test(name))) {
+    try {
+      // "pid (comm) state ppid ...": comm can hold spaces and parentheses.
+      const stat = readFileSync(`/proc/${entry}/stat`, "utf8");
+      parents.set(Number(entry), Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]));
+    } catch {
+      // The process has exited.
+    }
+  }
+  return parents;
+}
+
+// Every process this runner started that is still running, with their descendants. Each is
+// stopped (SIGSTOP) before any is killed: a stopped process starts no child, and it keeps its
+// children in this tree, where a killed parent's children would move to another parent. A
+// child started before its parent's stop is found by the next listing, so the listing repeats
+// until it finds no process it has not stopped (finding 2182); then all of them are killed. A
+// process that starts a child and exits on its own before its stop still loses that child.
+function killDescendants() {
+  // Stop owned cleanup groups before the snapshot can kill their supervisors
+  // alone. A command's already-orphaned descendants are absent from this tree.
+  stopCleanupCommands();
+  const stopped = new Set();
+  // Each pass that finds a new process is another generation started after the last listing;
+  // the bound only keeps a process that forks without end from holding the runner.
+  for (let pass = 0; pass < 100; pass += 1) {
+    const children = new Map();
+    for (const [pid, ppid] of processParents()) {
+      children.set(ppid, [...(children.get(ppid) ?? []), pid]);
+    }
+    const found = [];
+    for (let queue = [process.pid]; queue.length > 0;) {
+      const next = children.get(queue.shift()) ?? [];
+      found.push(...next.filter((pid) => !stopped.has(pid)));
+      queue.push(...next);
+    }
+    if (found.length === 0) {
+      break;
+    }
+    for (const pid of found) {
+      // Recorded even when the stop fails, so a process that refuses it cannot keep the listing
+      // going.
+      stopped.add(pid);
+      try {
+        process.kill(pid, "SIGSTOP");
+      } catch {
+        // It has exited.
+      }
+    }
+  }
+  for (const pid of stopped) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // It has exited.
+    }
+  }
 }
 
 try {
@@ -1516,4 +2037,12 @@ try {
 } catch (error) {
   console.error(error.message);
   process.exitCode = 1;
+}
+// An abandoned preparation or cleanup can keep this process alive (a child it waits for, a
+// timer); the results are written, so stop here. Its commands run in this process's group and
+// would outlive it as orphans on a self-hosted runner (finding 1225), so end them first. Every
+// test file's process group has exited by now.
+if (abandonedSteps > 0) {
+  killDescendants();
+  process.exit();
 }

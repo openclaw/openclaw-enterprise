@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Pull Docker Hub images on a GitHub-hosted runner through Google's public
 # mirror (findings 973 and 977; see "Docker Hub mirror" in
-# docs/testing/first-agent-smoke.md).
+# docs/testing/ci.md#first-agent-smoke).
 #
 #   setup   Point the runner's Docker Engine at mirror.gcr.io with debug
 #           logging, and make later steps use a Docker client configuration

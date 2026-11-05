@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strconv"
+	"time"
 )
 
 // RuntimeLogPage is one page of sanitized runtime log records. Records keep the
@@ -192,13 +195,7 @@ func (client *Client) DeleteServiceAccount(namespaceID, serviceAccountID string,
 		}
 		return nil, nil
 	case http.StatusOK:
-		var envelope responseEnvelope
-		var data any
-		if json.Unmarshal(responseBody, &envelope) != nil || len(envelope.Data) == 0 ||
-			len(envelope.Meta) == 0 || json.Unmarshal(envelope.Data, &data) != nil {
-			return nil, fmt.Errorf("OCC returned an invalid response (HTTP %d)", status)
-		}
-		return data, nil
+		return decodeResponseData(status, responseBody)
 	default:
 		if status >= http.StatusOK && status < http.StatusMultipleChoices {
 			return nil, fmt.Errorf("OCC returned an unexpected response (HTTP %d)", status)
@@ -332,9 +329,21 @@ func (client *Client) GetAgent(namespaceID, agentID string) (any, error) {
 	return client.get("namespaces", namespaceID, "agents", agentID)
 }
 
+// GetAgentCallerPermissions reads the caller's advisory permission summary for
+// one Agent (update, deploy, operate, delete). It does not authorize a later
+// request; the CLI uses it only to choose advice.
+func (client *Client) GetAgentCallerPermissions(namespaceID, agentID string) (any, error) {
+	return client.get("namespaces", namespaceID, "agents", agentID, "permissions")
+}
+
 // UpdateAgent updates an Agent from a JSON document.
 func (client *Client) UpdateAgent(namespaceID, agentID string, body jsontext.Value) (any, error) {
 	return client.send(http.MethodPatch, []string{"namespaces", namespaceID, "agents", agentID}, body)
+}
+
+// GetAgentHarnessStatus reads the Sandbox record of a running Agent's active dedicated Harness.
+func (client *Client) GetAgentHarnessStatus(namespaceID, agentID string) (any, error) {
+	return client.get("namespaces", namespaceID, "agents", agentID, "harness-status")
 }
 
 // GetAgentRuntimeCredentials fetches runtime credential metadata for an Agent.
@@ -360,9 +369,161 @@ func (client *Client) DeployAgent(namespaceID, agentID string) (any, error) {
 	)
 }
 
-// ListAgentRevisions lists the readable immutable revisions of an Agent.
-func (client *Client) ListAgentRevisions(namespaceID, agentID string) (any, error) {
-	return client.get("namespaces", namespaceID, "agents", agentID, "revisions")
+// FirstDeploymentIntent identifies the reviewed saved Configuration and one caller intent.
+// Key is nonsecret and must be reused unchanged for exact recovery.
+type FirstDeploymentIntent struct {
+	Key                     string `json:"key"`
+	ExpectedConfigurationID string `json:"expectedConfigurationId"`
+	ExpectedGeneration      int64  `json:"expectedGeneration"`
+}
+
+const firstDeploymentUUIDPattern = `[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}`
+
+var firstDeploymentKey = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$`)
+var firstDeploymentConfiguration = regexp.MustCompile(`^cfg_` + firstDeploymentUUIDPattern + `$`)
+var firstDeploymentRevision = regexp.MustCompile(`^rev_` + firstDeploymentUUIDPattern + `$`)
+var firstDeploymentNamespace = regexp.MustCompile(`^ns_` + firstDeploymentUUIDPattern + `$`)
+var firstDeploymentAgent = regexp.MustCompile(`^agt_` + firstDeploymentUUIDPattern + `$`)
+
+// Validate checks each intent field before client construction or a request.
+func (intent FirstDeploymentIntent) Validate() error {
+	if !firstDeploymentConfiguration.MatchString(intent.ExpectedConfigurationID) {
+		return fmt.Errorf("--configuration must be an exact Configuration ID")
+	}
+	if intent.ExpectedGeneration < 1 || intent.ExpectedGeneration > 9007199254740991 {
+		return fmt.Errorf("--generation must be a positive safe integer")
+	}
+	if !firstDeploymentKey.MatchString(intent.Key) {
+		return fmt.Errorf("--key must start with an ASCII letter or digit and contain 1–128 ASCII letters, digits, or ._~-")
+	}
+	return nil
+}
+
+// DeployAgentFirst admits only the first deployment of the reviewed Configuration.
+// It uses a distinct route, so older servers fail closed.
+func (client *Client) DeployAgentFirst(namespaceID, agentID string, intent FirstDeploymentIntent) (any, error) {
+	if err := intent.Validate(); err != nil {
+		return nil, err
+	}
+	receipt, err := client.send(http.MethodPost, []string{"namespaces", namespaceID, "agents", agentID, "deploy-first"}, intent)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateFirstDeploymentReceipt(receipt, namespaceID, agentID, intent); err != nil {
+		return nil, err
+	}
+	return receipt, nil
+}
+
+// RecoverAgentFirstDeployment only reads the original admission. A nil result is
+// not evidence that an in-flight request failed. It must never trigger a redeploy.
+func (client *Client) RecoverAgentFirstDeployment(namespaceID, agentID string, intent FirstDeploymentIntent) (any, error) {
+	if err := intent.Validate(); err != nil {
+		return nil, err
+	}
+	receipt, err := client.get("namespaces", namespaceID, "agents", agentID, "deploy-first", intent.Key, intent.ExpectedConfigurationID, strconv.FormatInt(intent.ExpectedGeneration, 10))
+	if err != nil || receipt == nil {
+		return nil, err
+	}
+	if err := validateFirstDeploymentReceipt(receipt, namespaceID, agentID, intent); err != nil {
+		return nil, err
+	}
+	return receipt, nil
+}
+
+// Both admission and recovery must identify the exact requested intent before
+// callers can treat the response as its receipt. Never echo an invalid payload.
+func validateFirstDeploymentReceipt(value any, namespaceID, agentID string, intent FirstDeploymentIntent) error {
+	receipt, ok := value.(map[string]any)
+	if !ok || len(receipt) != 6 {
+		return fmt.Errorf("OCC returned an invalid first-deployment receipt")
+	}
+	revision, _ := receipt["revisionId"].(string)
+	namespace, _ := receipt["namespaceId"].(string)
+	agent, _ := receipt["agentId"].(string)
+	configuration, _ := receipt["configurationId"].(string)
+	createdAt, _ := receipt["createdAt"].(string)
+	const timestampLayout = "2006-01-02T15:04:05.000Z"
+	created, timeErr := time.Parse(timestampLayout, createdAt)
+	if !firstDeploymentRevision.MatchString(revision) || !firstDeploymentNamespace.MatchString(namespace) ||
+		!firstDeploymentAgent.MatchString(agent) || !firstDeploymentConfiguration.MatchString(configuration) ||
+		namespace != namespaceID || agent != agentID || configuration != intent.ExpectedConfigurationID ||
+		receipt["configurationGeneration"] != float64(intent.ExpectedGeneration) ||
+		timeErr != nil || created.Format(timestampLayout) != createdAt {
+		return fmt.Errorf("OCC returned an invalid first-deployment receipt")
+	}
+	return nil
+}
+
+// AgentRevisionPage is one page of readable revision summaries, newest first.
+// NextCursor is empty on the last page.
+type AgentRevisionPage struct {
+	Revisions  []any
+	NextCursor string
+}
+
+// ListAgentRevisions reads one page of an Agent's readable revision summaries,
+// newest first. A zero limit uses OCC's default; an empty cursor starts at the
+// newest revision. Read an exact revision for its saved settings.
+func (client *Client) ListAgentRevisions(namespaceID, agentID string, limit int, cursor string) (*AgentRevisionPage, error) {
+	query := url.Values{}
+	if limit > 0 {
+		query.Set("limit", strconv.Itoa(limit))
+	}
+	if cursor != "" {
+		query.Set("cursor", cursor)
+	}
+	status, header, responseBody, err := client.executeQuery(
+		http.MethodGet,
+		[]string{"namespaces", namespaceID, "agents", agentID, "revisions"},
+		query,
+		nil,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, client.apiError(status, header, responseBody)
+	}
+	var envelope struct {
+		Data []any `json:"data"`
+		Meta struct {
+			NextCursor *string `json:"nextCursor"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal(responseBody, &envelope); err != nil || envelope.Data == nil {
+		return nil, fmt.Errorf("OCC returned an invalid response (HTTP %d)", status)
+	}
+	page := &AgentRevisionPage{Revisions: envelope.Data}
+	if envelope.Meta.NextCursor != nil {
+		page.NextCursor = *envelope.Meta.NextCursor
+	}
+	return page, nil
+}
+
+// LatestAgentRevision returns the newest revision summary the caller can read,
+// or nil when there is none. A cursor reflects a read check in its issuing request;
+// a later page may be empty if access changes. The loop also supports older servers.
+func (client *Client) LatestAgentRevision(namespaceID, agentID string) (any, error) {
+	cursor := ""
+	for {
+		page, err := client.ListAgentRevisions(namespaceID, agentID, 100, cursor)
+		if err != nil {
+			return nil, err
+		}
+		if len(page.Revisions) > 0 {
+			return page.Revisions[0], nil
+		}
+		if page.NextCursor == "" || page.NextCursor == cursor {
+			return nil, nil
+		}
+		cursor = page.NextCursor
+	}
+}
+
+// GetAgentRevision reads the immutable settings and number of an exact revision.
+func (client *Client) GetAgentRevision(namespaceID, agentID, revisionID string) (any, error) {
+	return client.get("namespaces", namespaceID, "agents", agentID, "revisions", revisionID)
 }
 
 // GetAgentDeployment fetches durable deployment status for one Agent revision.
@@ -434,4 +595,29 @@ func (client *Client) DeleteAgent(namespaceID, agentID string) (any, error) {
 		[]string{"namespaces", namespaceID, "agents", agentID},
 		nil,
 	)
+}
+
+// GetAgentSandboxPolicy reads desired policy and confirmed application evidence.
+func (client *Client) GetAgentSandboxPolicy(namespaceID, agentID, facet string) (any, error) {
+	return client.get("namespaces", namespaceID, "agents", agentID, "sandbox-policy", facet)
+}
+
+// UpdateAgentSandboxPolicy saves an expected-version replacement without applying it.
+func (client *Client) UpdateAgentSandboxPolicy(namespaceID, agentID, facet string, body jsontext.Value) (any, error) {
+	return client.send(http.MethodPut, []string{"namespaces", namespaceID, "agents", agentID, "sandbox-policy", facet}, body)
+}
+
+// ApplyAgentSandboxPolicy requests live application; acknowledgement is not enforcement evidence.
+func (client *Client) ApplyAgentSandboxPolicy(namespaceID, agentID, facet, revisionID string, expectedVersion int) (any, error) {
+	return client.send(http.MethodPost, []string{"namespaces", namespaceID, "agents", agentID, "sandbox-policy", facet, "apply"}, map[string]any{"revisionId": revisionID, "expectedVersion": expectedVersion})
+}
+
+// TEMPORARY_API_WILL_BREAK_IN_FUTURE_SetAgentSandboxPolicyEditing changes future edit permission admission, preserving grants.
+func (client *Client) TEMPORARY_API_WILL_BREAK_IN_FUTURE_SetAgentSandboxPolicyEditing(namespaceID, agentID, facet string, enabled bool) (any, error) {
+	return client.send(http.MethodPatch, []string{"namespaces", namespaceID, "agents", agentID, "sandbox-policy", facet, "editing"}, map[string]any{"enabled": enabled})
+}
+
+// GetAgentSandboxRecommendations reads bounded provider suggestions, independently of logs.
+func (client *Client) GetAgentSandboxRecommendations(namespaceID, agentID, facet, revisionID string) (any, error) {
+	return client.get("namespaces", namespaceID, "agents", agentID, "revisions", revisionID, "sandbox-policy", facet, "recommendations")
 }

@@ -3,6 +3,11 @@
 openclaw_node_version_matches() {
   local actual="$1"
   local requested="$2"
+  [[ "$actual" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  openclaw_node_version_at_least "$actual" "24.22.1" || return 1
+  if [[ "${actual%%.*}" == "26" ]]; then
+    openclaw_node_version_at_least "$actual" "26.12.1" || return 1
+  fi
   if [[ -z "$requested" ]]; then
     return 0
   fi
@@ -10,9 +15,9 @@ openclaw_node_version_matches() {
     *x)
       [[ "${actual%%.*}" == "${requested%%.*}" ]] || return 1
       if [[ "${requested%%.*}" == "24" ]]; then
-        openclaw_node_version_at_least "$actual" "24.16.0"
+        openclaw_node_version_at_least "$actual" "24.22.1"
       elif [[ "${requested%%.*}" == "26" ]]; then
-        openclaw_node_version_at_least "$actual" "26.1.0"
+        openclaw_node_version_at_least "$actual" "26.12.1"
       else
         (( ${requested%%.*} > 26 ))
       fi
@@ -225,15 +230,16 @@ openclaw_download_node() {
 openclaw_ensure_node() {
   local requested_node="${1:-}"
   requested_node="${requested_node#v}"
-  if [[ -z "$requested_node" ]]; then
-    return 0
-  fi
-
   local active_node_version node_bin
   active_node_version="$(openclaw_active_node_version)"
   if openclaw_node_version_matches "$active_node_version" "$requested_node"; then
     echo "Using active Node ${active_node_version} at $(command -v node)"
     return 0
+  fi
+
+  if [[ -z "$requested_node" ]]; then
+    echo "::error::Node >=24.22.1 (26.x >=26.12.1) is required; found '${active_node_version:-missing}'."
+    return 1
   fi
 
   node_bin="$(openclaw_find_toolcache_node "$requested_node" || true)"
@@ -246,7 +252,7 @@ openclaw_ensure_node() {
 
   active_node_version="$(openclaw_active_node_version)"
   if ! openclaw_node_version_matches "$active_node_version" "$requested_node"; then
-    echo "::error::Expected Node '${requested_node}', but active node is '${active_node_version:-missing}' at $(command -v node || true)"
+    echo "::error::Expected Node '${requested_node}' satisfying >=24.22.1 (26.x >=26.12.1), but active node is '${active_node_version:-missing}' at $(command -v node || true)"
     return 1
   fi
 }

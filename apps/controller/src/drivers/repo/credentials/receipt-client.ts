@@ -1,7 +1,7 @@
 import { request } from "node:http";
 import { dirname, join } from "node:path";
 import type { RepositoryCredentialBoundSessionInput, SessionStatus } from "./service-contracts.ts";
-import { sameBinding } from "./sessions.ts";
+import { sameBinding } from "./grant-identity.ts";
 
 /** The broker sends only admission identities and already-observed terminal evidence. */
 export class RepositoryReceiptClient {
@@ -23,7 +23,7 @@ export class RepositoryReceiptClient {
     if (result.kind === "missing") {
       return { kind: "missing" as const };
     }
-    if (result.kind === "reserved") {
+    if (result.kind === "reserved" || result.kind === "standing-reserved") {
       return { kind: "reserved" as const };
     }
     if (result.kind === "disposed") {
@@ -153,6 +153,8 @@ export class RepositoryReceiptClient {
           incoming.on("data", (chunk: Buffer) => {
             size += chunk.length;
             if (size > 16384) {
+              // destroy() without an error emits neither "end" nor "error": settle first.
+              reject(new Error("RECEIPT_UNAVAILABLE"));
               incoming.destroy();
             } else {
               chunks.push(chunk);

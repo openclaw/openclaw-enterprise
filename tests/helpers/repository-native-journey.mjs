@@ -2,11 +2,77 @@ import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   codexRepositoryEvidenceScript,
+  codexRepositoryRequirementsScript,
   completedToolResult,
   expandTranscriptMessage,
   sessionEvidenceScript,
 } from "./normal-agent-tools.mjs";
 import { submitRepositoryTaskScript } from "./repository-credentials-installed.mjs";
+import { parseNativeRolloutProvenance } from "./native-rollout-provenance.mjs";
+
+// Read only the rollout named by the exact owned thread/read response. Raw
+// rollout data stays inside this process; only the parser's fixed
+// diagnostic schema and source-availability booleans leave the container.
+// TODO: remove this capture after the QA permission-profile mismatch is diagnosed.
+export const nativeRolloutProvenanceScript = String.raw`
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const parse = ${parseNativeRolloutProvenance.toString()};
+  let rolloutReaderAvailable = false;
+  let expectedProfileKnown = false;
+  let finished = false;
+  const finish = (receipt = parse({})) => {
+    if (finished) return;
+    finished = true;
+    process.stdout.write(JSON.stringify({ ...receipt, rolloutReaderAvailable, expectedProfileKnown }), () => process.exit(0));
+  };
+  const deadline = setTimeout(() => finish(), 10000);
+  (async () => {
+    const input = JSON.parse(process.argv[1]);
+    const root = "/home/node/.codex/sessions";
+    const file = input.rolloutPath;
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+    if (!uuid.test(input.expectedThreadId) || !uuid.test(input.expectedTurnId)
+        || typeof file !== "string" || file.length > 1024 || path.resolve(file) !== file
+        || !file.startsWith(root + "/") || !path.basename(file).startsWith("rollout-")
+        || !file.endsWith("-" + input.expectedThreadId + ".jsonl")) return finish();
+    const relative = path.relative(root, file).split(path.sep);
+    if (relative.length !== 4 || !/^\d{4}$/.test(relative[0]) || !/^\d{2}$/.test(relative[1]) || !/^\d{2}$/.test(relative[2])) return finish();
+    let current = root;
+    for (const part of relative) {
+      current = path.join(current, part);
+      if (fs.lstatSync(current).isSymbolicLink()) return finish();
+    }
+    if (fs.realpathSync(file) !== file) return finish();
+    const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    let text;
+    try {
+      const before = fs.fstatSync(fd);
+      // The descriptor must still name that run-owned session file after open.
+      if (!before.isFile() || before.nlink !== 1 || before.size > 8 * 1024 * 1024 || before.uid !== process.getuid()
+          || (before.mode & 0o022) !== 0 || fs.realpathSync("/proc/self/fd/" + fd) !== file) return finish();
+      const bytes = Buffer.alloc(before.size);
+      let read = 0;
+      while (read < bytes.length) {
+        const count = fs.readSync(fd, bytes, read, bytes.length - read, read);
+        if (count === 0) return finish();
+        read += count;
+      }
+      const after = fs.fstatSync(fd);
+      if (after.nlink !== 1 || after.size !== before.size || after.ino !== before.ino || after.dev !== before.dev) return finish();
+      text = bytes.toString("utf8");
+      rolloutReaderAvailable = true;
+    } finally { fs.closeSync(fd); }
+    // Expected profile metadata must already be supplied by a trusted caller.
+    // Never open configuration or credential files to derive a diagnostic match.
+    const expectedProfileId = input.expectedProfileId;
+    expectedProfileKnown = typeof expectedProfileId === "string" && expectedProfileId.length > 0 && expectedProfileId.length <= 256;
+    const receipt = parse({ text, expectedThreadId: input.expectedThreadId, expectedTurnId: input.expectedTurnId,
+      expectedCwd: input.expectedCwd, ...(expectedProfileKnown ? { expectedProfileId } : {}) });
+    clearTimeout(deadline);
+    finish(receipt);
+  })().catch(() => { clearTimeout(deadline); finish(); });
+`;
 
 export const repositoryFailureSummaryScript = String.raw`
   ${expandTranscriptMessage.toString()}
@@ -93,6 +159,8 @@ export async function verifyNativeRepositoryJourney({
   remote,
   readSession,
   submitViaLoopback = false,
+  // Prepared native Git with git-only transport grants one branch and no PR route.
+  pullRequest = true,
 }) {
   const agentPath = `/namespaces/${agent.namespaceId}/agents/${agent.id}`;
   let remoteEvidence;
@@ -109,11 +177,17 @@ export async function verifyNativeRepositoryJourney({
   const sandboxProbe = `${outsideDirectory}/repository-sandbox-${f.suffix}.cjs`;
   const sandboxFile = `${workspace}/repository-sandbox-${f.suffix}.txt`;
   const sandboxContent = `sandbox-${f.suffix}\n`;
+  const systemSkill = "/home/node/.codex/skills/.system/skill-creator/SKILL.md";
+  const codexHomeSentinel = `/home/node/.codex/skill-access-sentinel-${f.suffix}`;
+  let systemSkillHash;
   const outsideContent = `outside-${f.suffix}\n`;
   const sandboxScript = [
     'const fs=require("node:fs")',
     `if(fs.readFileSync(${JSON.stringify(outside)},"utf8")!==${JSON.stringify(outsideContent)})process.exit(71)`,
     `fs.writeFileSync(${JSON.stringify(sandboxFile)},${JSON.stringify(sandboxContent)})`,
+    `if(!fs.readFileSync(${JSON.stringify(systemSkill)},"utf8").includes("name: skill-creator"))process.exit(72)`,
+    `try{fs.appendFileSync(${JSON.stringify(systemSkill)},"modified");process.exit(73)}catch(error){if(!["EACCES","EPERM","EROFS"].includes(error.code))throw error}`,
+    `try{fs.readFileSync(${JSON.stringify(codexHomeSentinel)});process.exit(74)}catch(error){if(!["EACCES","EPERM","ENOENT"].includes(error.code))throw error}`,
     'let denied="NO_ERROR"',
     `try{fs.writeFileSync(${JSON.stringify(outside)},"escaped")}catch(error){denied=error.code}`,
     'if(!["EACCES","EPERM","EROFS"].includes(denied))process.exit(70)',
@@ -122,9 +196,12 @@ export async function verifyNativeRepositoryJourney({
   if (dedicated) {
     // Keep the probe in the same read-only mount as its sentinel. Native Codex
     // executes a stable path instead of reformatting an inline JavaScript argument.
-    await consumerExec(
-      `const fs=require("node:fs");fs.mkdirSync(${JSON.stringify(outsideDirectory)},{recursive:true});fs.writeFileSync(${JSON.stringify(outside)},${JSON.stringify(outsideContent)});fs.writeFileSync(${JSON.stringify(sandboxProbe)},${JSON.stringify(sandboxScript)})`,
-    );
+    systemSkillHash = (
+      await consumerExec(
+        `const fs=require("node:fs");const crypto=require("node:crypto");fs.mkdirSync(${JSON.stringify(outsideDirectory)},{recursive:true});fs.writeFileSync(${JSON.stringify(outside)},${JSON.stringify(outsideContent)});fs.writeFileSync(${JSON.stringify(sandboxProbe)},${JSON.stringify(sandboxScript)});fs.writeFileSync(${JSON.stringify(codexHomeSentinel)},"synthetic-sentinel");process.stdout.write(crypto.createHash("sha256").update(fs.readFileSync(${JSON.stringify(systemSkill)})).digest("hex"))`,
+      )
+    ).trim();
+    assert.match(systemSkillHash, /^[a-f0-9]{64}$/);
   }
   const commandSpecs = [
     ...(dedicated
@@ -164,8 +241,10 @@ export async function verifyNativeRepositoryJourney({
       argv: ["git", "push", "origin", `HEAD:refs/heads/${branch}`],
     },
     ...(!readOnly
+      ? [{ operation: "readCommit", workdir: checkout, argv: ["git", "rev-parse", "HEAD"] }]
+      : []),
+    ...(!readOnly && pullRequest
       ? [
-          { operation: "readCommit", workdir: checkout, argv: ["git", "rev-parse", "HEAD"] },
           {
             operation: "nativePr",
             workdir: checkout,
@@ -201,15 +280,18 @@ export async function verifyNativeRepositoryJourney({
         `${operation}: working directory=${JSON.stringify(workdir)}\n\`\`\`sh\n${argv.map(quoteArgument).join(" ")}\n\`\`\``,
     )
     .join("\n");
+  const deliverable = pullRequest
+    ? "exactly one commit and exactly one same-repository ready-for-review PR. readCommit prints the full commit SHA and nativePr prints the PR URL; do not substitute echo commands for either operation. Do not close the PR or delete its branch."
+    : "exactly one commit and do not open a PR. readCommit prints the full commit SHA; do not substitute an echo command for it. Do not delete the branch.";
   const embeddedPrompt = `Complete this authorized disposable repository task once with your exec tool and normal image-installed git/gh commands. Each Git/gh operation below must be its own standalone exec.command, with the specified exec.workdir. Execute the exact arguments in the listed order. Do not use shell cd, chaining, pipelines, redirection, comments, substitutions or wrappers in those Git/gh commands. Run foreground commands and stop on any failure. If exec nevertheless reports a running process, use process.poll on that exact session until completion before continuing. Do not install tools, read credentials, use alternate tokens, force push, call a provider HTTP API to create the PR, or delegate.
-After clone, its natural destination is ${checkout}. The readBase output must equal ${baseSha}; stop if it differs. Between branch and add, use exec.workdir=${JSON.stringify(checkout)} for every configuration and file-writing exec call. Configure local disposable Git identity Repository proof <repository-proof@example.invalid>, then use a separate exec call of your own to write exactly the following JSON-encoded bytes to the new file at absolute path ${JSON.stringify(`${checkout}/${file}`)}: ${JSON.stringify(content)}. Author that file yourself; do not change any other file. Make exactly one commit and exactly one same-repository ready-for-review PR. readCommit prints the full commit SHA and nativePr prints the PR URL; do not substitute echo commands for either operation. Do not close the PR or delete its branch. Finish your final response with the exact token ${completionMarker} on its own line.
+After clone, its natural destination is ${checkout}. The readBase output must equal ${baseSha}; stop if it differs. Between branch and add, use exec.workdir=${JSON.stringify(checkout)} for every configuration and file-writing exec call. Configure local disposable Git identity Repository proof <repository-proof@example.invalid>, then use a separate exec call of your own to write exactly the following JSON-encoded bytes to the new file at absolute path ${JSON.stringify(`${checkout}/${file}`)}: ${JSON.stringify(content)}. Author that file yourself; do not change any other file. Make ${deliverable} Finish your final response with the exact token ${completionMarker} on its own line.
 ${commands}`;
   const sandboxInstructions =
     "sandboxProbe intentionally attempts a forbidden outside-workspace write. Exit status 0 with SANDBOX_DENIED followed by SANDBOX_PROBE_PASSED is the expected successful result: the sandbox blocked that write. Continue with clone and the remaining operations after this success. A nonzero probe exit status is a failure.";
   const dedicatedPrompt = `Complete this authorized disposable repository task once using native Codex shell commands in your workspace. Execute every listed operation, including sandboxProbe, once, in order, as a separate foreground command with its specified working directory. Use the exact arguments; do not add shell cd, chaining, pipelines, redirection, comments, substitutions or wrappers to Git/gh commands. Use non-login shells. ${sandboxInstructions} Stop on any command failure. Do not request escalation, install tools, read credentials, use alternate tokens, force push, call a provider HTTP API to create the PR, or delegate.
-After clone, its natural destination is ${checkout}. readBase must equal ${baseSha}; stop if it differs. Between branch and add, configure local Git identity Repository proof <repository-proof@example.invalid> and author exactly these JSON-encoded bytes in the new file ${JSON.stringify(`${checkout}/${file}`)}: ${JSON.stringify(content)}. Do not change any other file. Make one commit and one same-repository ready-for-review PR. readCommit must print the actual commit SHA and nativePr the actual PR URL. Do not close the PR or delete the branch. Finish your final response with the exact token ${completionMarker} on its own line.
+After clone, its natural destination is ${checkout}. readBase must equal ${baseSha}; stop if it differs. Between branch and add, configure local Git identity Repository proof <repository-proof@example.invalid> and author exactly these JSON-encoded bytes in the new file ${JSON.stringify(`${checkout}/${file}`)}: ${JSON.stringify(content)}. Do not change any other file. Make ${deliverable} Finish your final response with the exact token ${completionMarker} on its own line.
 ${nativeCommands}`;
-  const readOnlyPrompt = `Complete this authorized read-only repository check using native Codex shell commands. Execute every listed operation once, in order, as a separate foreground command with the specified working directory and exact arguments. Use non-login shells and do not use shell cd, chaining, pipelines, redirection, substitutions or wrappers. Do not request escalation, use alternate credentials, or delegate. ${sandboxInstructions} The sandboxProbe must succeed; clone and fetch must succeed and readBase must equal ${baseSha}. The push is intentionally unauthorized: attempt it exactly once and continue after it fails. Do not create a PR or retry; the attempted push must be the only remote write attempt. Finish your final response with the exact token ${completionMarker} on its own line.
+  const readOnlyPrompt = `Complete this authorized repository check using native Codex shell commands: read the repository, then attempt one push to a branch outside your grant. Execute every listed operation once, in order, as a separate foreground command with the specified working directory and exact arguments. Use non-login shells and do not use shell cd, chaining, pipelines, redirection, substitutions or wrappers. Do not request escalation, use alternate credentials, or delegate. ${sandboxInstructions} The sandboxProbe must succeed; clone and fetch must succeed and readBase must equal ${baseSha}. The push is intentionally unauthorized: attempt it exactly once and continue after it fails. Do not create a PR or retry; the attempted push must be the only remote write attempt. Finish your final response with the exact token ${completionMarker} on its own line.
 ${nativeCommands}`;
   const prompt = readOnly ? readOnlyPrompt : dedicated ? dedicatedPrompt : embeddedPrompt;
 
@@ -239,7 +321,11 @@ ${nativeCommands}`;
       httpStatus: Number.isSafeInteger(response.status) ? response.status : null,
       ...(response.failure === undefined ? {} : { failure: response.failure }),
     };
-    assert.equal(response.status, 200);
+    assert.equal(
+      response.status,
+      200,
+      "repository Gateway submission must return HTTP 200; see task diagnostics",
+    );
   } catch (error) {
     taskFailure = error;
     if (taskTransport.outcome === "unresolved") {
@@ -259,17 +345,160 @@ ${nativeCommands}`;
   });
   // A timeout is an unknown mutation outcome. Read actual trace and provider
   // state once; never replay a model task or create the PR in the runner.
-  const readNativeTrace = async () =>
-    JSON.parse(
-      await exec(codexRepositoryEvidenceScript, [completionMarker, JSON.stringify(commandSpecs)]),
-    );
-  let nativeTrace = dedicated ? await readNativeTrace() : undefined;
-  // The gateway can finish its HTTP response while its native Codex turn is
-  // still running. Observe that same turn; never submit the task again.
-  while (nativeTrace?.status === "inProgress") {
-    assert.ok(Date.now() < taskDeadline, "native repository turn must finish within ten minutes");
-    await delay(1_000);
-    nativeTrace = await readNativeTrace();
+  // One positive scenario per installation reads policy after refusal. This
+  // query does not depend on thread creation and never replays the model task.
+  if (dedicated && !readOnly && taskTransport.httpStatus === 500) {
+    try {
+      await f.record("Native requirements read attempted", {
+        evidenceKind: "diagnostic-only",
+        observerStage: "command-start",
+        status: "attempted",
+      });
+      let requirements;
+      let observerStage = "command-execution";
+      try {
+        const output = await exec(codexRepositoryRequirementsScript);
+        observerStage = "response-parse";
+        requirements = JSON.parse(output);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        requirements = {
+          evidenceKind: "diagnostic-only",
+          available: false,
+          observerStage,
+          reason:
+            observerStage === "response-parse"
+              ? "invalid-observer-json"
+              : /E2BIG|argument list too long/i.test(message)
+                ? "command-argument-limit"
+                : /timeout|timed out/i.test(message)
+                  ? "command-timeout"
+                  : "command-execution-failed",
+        };
+      }
+      await f.record("Native requirements read result", requirements);
+    } catch {
+      /* Diagnostic failure cannot replace the original submission error. */
+    }
+  }
+  const readNativeTrace = async () => {
+    const output = await exec(codexRepositoryEvidenceScript, [
+      completionMarker,
+      JSON.stringify(commandSpecs),
+    ]);
+    try {
+      return JSON.parse(output);
+    } catch {
+      throw new Error("native observer returned unavailable metadata");
+    }
+  };
+  let nativeTrace;
+  if (dedicated) {
+    try {
+      nativeTrace = await readNativeTrace();
+    } catch (error) {
+      try {
+        const message = error instanceof Error ? error.message : "";
+        await f.record("Native thread observer execution unavailable", {
+          evidenceKind: "diagnostic-only",
+          observerStage: "command-or-parse",
+          available: false,
+          reason: /E2BIG|argument list too long/i.test(message)
+            ? "command-argument-limit"
+            : /timeout|timed out/i.test(message)
+              ? "command-timeout"
+              : "observer-execution-or-parse-failed",
+        });
+      } catch {
+        /* Preserve the original task failure. */
+      }
+      if (taskFailure) {
+        throw taskFailure;
+      }
+      throw error;
+    }
+    if (nativeTrace.status === "unavailable") {
+      try {
+        await f.record("Captured native observer unavailable diagnostics", {
+          evidenceKind: "diagnostic-only",
+          observerStage: nativeTrace.observerStage,
+          observerReason: nativeTrace.observerReason,
+          failure: nativeTrace.failure,
+        });
+      } catch {
+        /* Preserve the original submission failure. */
+      }
+      if (taskFailure) {
+        throw taskFailure;
+      }
+      assert.fail("the exact native repository turn is unavailable; see observer diagnostics");
+    }
+  }
+  try {
+    // The gateway can finish its HTTP response while its native Codex turn is
+    // still running. Observe that same turn; never submit the task again.
+    while (nativeTrace?.status === "inProgress") {
+      assert.ok(Date.now() < taskDeadline, "native repository turn must finish within ten minutes");
+      await delay(1_000);
+      nativeTrace = await readNativeTrace();
+    }
+  } finally {
+    if (nativeTrace) {
+      try {
+        const provenance = JSON.parse(
+          await consumerExec(
+            nativeRolloutProvenanceScript,
+            [
+              JSON.stringify({
+                rolloutPath: nativeTrace.rolloutPath,
+                expectedThreadId: nativeTrace.threadId,
+                expectedTurnId: nativeTrace.turnId,
+                expectedCwd: workspace,
+              }),
+            ],
+            undefined,
+            15_000,
+          ),
+        );
+        await f.record(
+          "Captured native turn permission provenance; repository acceptance pending",
+          provenance,
+        );
+      } catch {
+        // Source unavailability cannot replace the actual task or isolation failure.
+      }
+      try {
+        await f.record("Captured native Codex command diagnostics; repository acceptance pending", {
+          evidenceKind: "diagnostic-only",
+          status: nativeTrace.status,
+          cwdMatchesExpectedWorkspace: nativeTrace.cwdMatchesExpectedWorkspace === true,
+          classificationMeaning: "text-pattern hints, not verified causes or successful operations",
+          threadId: nativeTrace.threadId,
+          turnId: nativeTrace.turnId,
+          commands: nativeTrace.commands.map(
+            ({
+              operations,
+              status,
+              exitCode,
+              http400,
+              pushRefRefused,
+              sandboxDenied,
+              failureCategories,
+            }) => ({
+              operations,
+              status,
+              exitCode,
+              http400,
+              pushRefRefused,
+              sandboxDenied,
+              failureCategories,
+            }),
+          ),
+        });
+      } catch {
+        // Evidence writes must not replace the actual native task failure.
+      }
+    }
   }
   const readTrace = async () =>
     JSON.parse(
@@ -285,33 +514,30 @@ ${nativeCommands}`;
       ]),
     );
   let trace = await readTrace();
+  const initialTurn = trace.codexTurns?.find((turn) => turn.turnPrefix === nativeTrace?.turnId);
+  try {
+    await f.record("Captured initial Gateway delivery diagnostics; repository acceptance pending", {
+      evidenceKind: "diagnostic-only",
+      nativeCompleted: nativeTrace?.status === "completed",
+      turnSeen: initialTurn !== undefined,
+      promptSeen: initialTurn?.promptSeen === true,
+      terminalAssistantDelivered: initialTurn?.terminalAssistantDelivered === true,
+      terminalAssistantMarkerSeen: initialTurn?.terminalAssistantSeen === true,
+    });
+  } catch {
+    // Diagnostics must not replace the native task or delivery failure.
+  }
   // Native completion and its gateway transcript are separate deliveries. Wait
-  // for this exact turn's terminal mirror before checking all evidence below.
+  // for this exact turn's runtime-owned terminal mirror, independent of wording.
   while (
     nativeTrace?.status === "completed" &&
     !trace.codexTurns?.some(
-      (turn) => turn.turnPrefix === nativeTrace.turnId && turn.terminalAssistantSeen,
+      (turn) => turn.turnPrefix === nativeTrace.turnId && turn.terminalAssistantDelivered,
     )
   ) {
     assert.ok(Date.now() < taskDeadline, "native repository completion must reach its gateway");
     await delay(1_000);
     trace = await readTrace();
-  }
-  if (nativeTrace) {
-    await f.record("Captured native Codex command diagnostics; repository acceptance pending", {
-      evidenceKind: "diagnostic-only",
-      threadId: nativeTrace.threadId,
-      turnId: nativeTrace.turnId,
-      commands: nativeTrace.commands.map(
-        ({ operations, status, exitCode, http400, sandboxDenied }) => ({
-          operations,
-          status,
-          exitCode,
-          http400,
-          sandboxDenied,
-        }),
-      ),
-    });
   }
   // Preserve the normalized call/result evidence before any remote-state
   // assertion can fail and ordinary cleanup removes the Agent transcript.
@@ -405,6 +631,11 @@ ${nativeCommands}`;
     const probe = nativeTrace.commands.find((command) =>
       command.operations.includes("sandboxProbe"),
     );
+    assert.notEqual(
+      probe?.exitCode,
+      74,
+      "native sandbox unexpectedly read neighboring Codex state; outside-workspace write denial was not reached",
+    );
     assert.ok(
       probe?.status === "completed" && probe.exitCode === 0 && probe.sandboxDenied,
       "the actual native command must report an outside-workspace write denial",
@@ -427,19 +658,29 @@ ${nativeCommands}`;
       ),
     );
     assert.deepEqual(files, [sandboxContent, outsideContent]);
+    const skillHashAfter = (
+      await consumerExec(
+        `const fs=require("node:fs");const crypto=require("node:crypto");process.stdout.write(crypto.createHash("sha256").update(fs.readFileSync(${JSON.stringify(systemSkill)})).digest("hex"))`,
+      )
+    ).trim();
+    assert.equal(
+      skillHashAfter,
+      systemSkillHash,
+      "the installed system skill must remain unchanged",
+    );
   }
   const branchResponse = await observe("GET", `git/ref/heads/${branch}`, undefined, [200, 404]);
   if (readOnly) {
     assert.equal(nativeTrace.status, "completed");
     assert.equal(trace.exists, true);
     assert.equal(trace.userMarkerSeen, true);
-    assert.equal(trace.terminalAssistantMarkerSeen, true);
+    assert.equal(trace.assistantError, false);
     const mirroredTurn = trace.codexTurns.find(
       ({ turnPrefix }) => turnPrefix === nativeTrace.turnId,
     );
     assert.ok(
       mirroredTurn?.promptSeen &&
-        mirroredTurn.terminalAssistantSeen &&
+        mirroredTurn.terminalAssistantDelivered &&
         mirroredTurn.toolCallMirrorSeen &&
         mirroredTurn.toolResultMirrorSeen,
     );
@@ -469,9 +710,15 @@ ${nativeCommands}`;
         assert.equal(command.status, "failed");
         assert.ok(
           Number.isInteger(command.exitCode) && command.exitCode !== 0,
-          "the read-only push must fail",
+          "the push outside the grant must fail",
         );
-        assert.equal(command.http400, true, "the broker must reject receive-pack discovery");
+        // Prepared native Git grants git-write on one branch: the client's pre-push
+        // guard refuses any other branch before anything is sent.
+        assert.equal(
+          command.pushRefRefused,
+          true,
+          "the pre-push guard must refuse the branch outside the grant",
+        );
       } else {
         assert.equal(command.status, "completed");
         assert.equal(command.exitCode, 0, `${operation} must succeed`);
@@ -494,39 +741,42 @@ ${nativeCommands}`;
     assert.equal(branchResponse.status, 200, "model task must push its branch");
     const commitSha = branchResponse.data.object.sha;
     const { data: commit } = await observe("GET", `commits/${commitSha}`);
-    assert.deepEqual(
-      commit.parents.map((p) => p.sha),
-      [baseSha],
-    );
-    assert.deepEqual(
-      commit.files.map((value) => ({ filename: value.filename, status: value.status })),
-      [{ filename: file, status: "added" }],
-    );
     const { data: remoteFile } = await observe("GET", `contents/${file}?ref=${commitSha}`);
-    assert.equal(Buffer.from(remoteFile.content, "base64").toString("utf8"), content);
+    assertNativeRepositoryCommit({
+      baseSha,
+      parents: commit.parents.map((p) => p.sha),
+      file,
+      files: commit.files.map((value) => ({ filename: value.filename, status: value.status })),
+      content,
+      observedContent: Buffer.from(remoteFile.content, "base64").toString("utf8"),
+    });
     const { data: pulls } = await observe(
       "GET",
       `pulls?state=all&head=${encodeURIComponent(repository.split("/")[0] + ":" + branch)}&per_page=100`,
     );
-    assert.equal(pulls.length, 1);
+    assert.equal(pulls.length, pullRequest ? 1 : 0);
     const pull = pulls[0];
-    assert.equal(pull.head.repo.id, Number(app.repositoryId));
-    assert.equal(pull.head.ref, branch);
-    assert.equal(pull.head.sha, commitSha);
-    assert.equal(pull.base.repo.id, Number(app.repositoryId));
-    assert.equal(pull.base.ref, base);
-    assert.equal(pull.body, marker);
-    assert.equal(pull.state, "open");
-    assert.equal(pull.draft, false);
-    remoteEvidence = { commitSha, pullNumber: pull.number };
+    if (pull) {
+      assert.equal(pull.head.repo.id, Number(app.repositoryId));
+      assert.equal(pull.head.ref, branch);
+      assert.equal(pull.head.sha, commitSha);
+      assert.equal(pull.base.repo.id, Number(app.repositoryId));
+      assert.equal(pull.base.ref, base);
+      assert.equal(pull.body, marker);
+      assert.equal(pull.state, "open");
+      assert.equal(pull.draft, false);
+    }
+    remoteEvidence = { commitSha, ...(pull ? { pullNumber: pull.number } : {}) };
     assert.equal(trace.exists, true);
     if (!dedicated) {
       assert.equal(trace.promptReportSource, "run");
       assert.ok(trace.promptToolNames.includes("exec"));
     }
     assert.equal(trace.userMarkerSeen, true);
-    assert.equal(trace.assistantMarkerSeen, true);
-    assert.equal(trace.terminalAssistantMarkerSeen, true);
+    if (!dedicated) {
+      assert.equal(trace.assistantMarkerSeen, true);
+      assert.equal(trace.terminalAssistantMarkerSeen, true);
+    }
     assert.equal(trace.assistantError, false);
     let paired = trace.calls
       .filter((call) => call.name === "exec")
@@ -539,7 +789,7 @@ ${nativeCommands}`;
       );
       assert.ok(
         mirroredTurn?.promptSeen &&
-          mirroredTurn.terminalAssistantSeen &&
+          mirroredTurn.terminalAssistantDelivered &&
           mirroredTurn.toolCallMirrorSeen &&
           mirroredTurn.toolResultMirrorSeen,
         "native repository commands must belong to the Gateway's mirrored task turn",
@@ -586,16 +836,18 @@ ${nativeCommands}`;
       ),
       "the successful git rev-parse HEAD result must identify the independently observed commit",
     );
-    const expectedPullUrl = `https://github.com/${remote.full_name}/pull/${pull.number}`;
-    assert.equal(pull.html_url, expectedPullUrl);
-    assert.ok(
-      paired.some(
-        (call) =>
-          call.operations.includes("nativePr") &&
-          call.completion.pullUrls.includes(expectedPullUrl),
-      ),
-      "the successful native gh pr create result must identify this authorized repository PR",
-    );
+    if (pull) {
+      const expectedPullUrl = `https://github.com/${remote.full_name}/pull/${pull.number}`;
+      assert.equal(pull.html_url, expectedPullUrl);
+      assert.ok(
+        paired.some(
+          (call) =>
+            call.operations.includes("nativePr") &&
+            call.completion.pullUrls.includes(expectedPullUrl),
+        ),
+        "the successful native gh pr create result must identify this authorized repository PR",
+      );
+    }
     assert.equal(taskFailure, undefined, "task transport failed despite reconciled remote outcome");
     await f.record("Model tools and independent provider readback agree", {
       sessionKey,
@@ -608,9 +860,23 @@ ${nativeCommands}`;
       baseSha,
       branch,
       file,
-      pullNumber: pull.number,
+      ...(pull ? { pullNumber: pull.number } : {}),
       toolCallIds: paired.map((call) => call.id),
     });
   }
   return remoteEvidence;
+}
+
+/** Compare the commit received independently of the Agent's own checkout and reply. */
+export function assertNativeRepositoryCommit({
+  baseSha,
+  parents,
+  file,
+  files,
+  content,
+  observedContent,
+}) {
+  assert.deepEqual(parents, [baseSha]);
+  assert.deepEqual(files, [{ filename: file, status: "added" }]);
+  assert.equal(observedContent, content);
 }

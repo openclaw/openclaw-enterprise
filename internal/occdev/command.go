@@ -10,16 +10,19 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // Options selects the checkout and output destinations for a development command.
 type Options struct {
-	Repository  string
-	KeyOutput   string
-	ComposeArgs []string
-	Volumes     bool
-	Out         io.Writer
-	Err         io.Writer
+	Repository                      string
+	KeyOutput                       string
+	SandboxNetworkPolicyFile        string
+	SandboxNetworkPolicyCeilingFile string
+	ComposeArgs                     []string
+	Volumes                         bool
+	Out                             io.Writer
+	Err                             io.Writer
 }
 
 type runner struct {
@@ -32,6 +35,9 @@ type runner struct {
 	// legacyNATUnconfirmed records that the preflight could not confirm the
 	// host's legacy iptables nat table, so a k3d failure names it.
 	legacyNATUnconfirmed bool
+	// imageRegistry is the loopback registry the k3d node pulls selected
+	// images from (OCC_DEVELOPMENT_IMAGE_REGISTRY_CONTAINER); nil without it.
+	imageRegistry *developmentImageRegistry
 }
 
 func newRunner(opts Options) *runner {
@@ -59,7 +65,9 @@ func (r *runner) command(ctx context.Context, name string, args ...string) *exec
 func (r *runner) output(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd := r.command(ctx, name, args...)
 	cmd.Stderr = io.Discard
+	started := time.Now()
 	data, err := cmd.Output()
+	r.commandTiming(name, args, started, err)
 	// Never include subprocess output here: bootstrap/config output can contain credentials.
 	if err != nil {
 		return nil, fmt.Errorf("%s %s failed: %w", name, strings.Join(args, " "), err)
@@ -70,7 +78,10 @@ func (r *runner) run(ctx context.Context, name string, args ...string) error {
 	cmd := r.command(ctx, name, args...)
 	cmd.Stdout = r.opts.Out
 	cmd.Stderr = r.opts.Err
-	if err := cmd.Run(); err != nil {
+	started := time.Now()
+	err := cmd.Run()
+	r.commandTiming(name, args, started, err)
+	if err != nil {
 		return fmt.Errorf("%s failed: %w", name, err)
 	}
 	return nil
@@ -81,15 +92,27 @@ func (r *runner) compose(ctx context.Context, state *developmentState, args ...s
 func (r *runner) composeOutput(ctx context.Context, state *developmentState, args ...string) ([]byte, error) {
 	return r.output(ctx, r.engine, append(state.composeCommand(), args...)...)
 }
+
+// selectEngine selects a container engine for the Compose commands the
+// Kubernetes profile drives through Go; its provider preference must match
+// composeProvider so occ dev up and occ dev down agree.
 func (r *runner) selectEngine(ctx context.Context, requested string) error {
-	return r.selectContainerEngine(ctx, requested, true)
+	return r.selectContainerEngine(ctx, requested, true, composeProvider)
+}
+
+// selectDockerComputeEngine selects a container engine for stopping a Docker
+// Compute stack. scripts/dev-up starts that stack with standalone
+// podman-compose, so occ dev down must pin the same provider: a different
+// provider's project labels make its compose down remove nothing.
+func (r *runner) selectDockerComputeEngine(ctx context.Context, requested string) error {
+	return r.selectContainerEngine(ctx, requested, true, podmanComposeProvider)
 }
 
 func (r *runner) selectImageEngine(ctx context.Context, requested string) error {
-	return r.selectContainerEngine(ctx, requested, false)
+	return r.selectContainerEngine(ctx, requested, false, nil)
 }
 
-func (r *runner) selectContainerEngine(ctx context.Context, requested string, requireCompose bool) error {
+func (r *runner) selectContainerEngine(ctx context.Context, requested string, requireCompose bool, provider func() (string, error)) error {
 	if requested != "auto" && requested != "docker" && requested != "podman" {
 		return fmt.Errorf("OCC_DEVELOPMENT_CONTAINER_ENGINE must be auto, docker, or podman")
 	}
@@ -130,11 +153,11 @@ func (r *runner) selectContainerEngine(ctx context.Context, requested string, re
 		}
 		if engine == "podman" {
 			if requireCompose {
-				provider, err := exec.LookPath("podman-compose")
+				found, err := provider()
 				if err != nil {
 					continue
 				}
-				r.env["PODMAN_COMPOSE_PROVIDER"] = provider
+				r.env["PODMAN_COMPOSE_PROVIDER"] = found
 			}
 		}
 		if _, err := r.output(ctx, engine, "info"); err != nil {
@@ -153,6 +176,28 @@ func (r *runner) selectContainerEngine(ctx context.Context, requested string, re
 	}
 	return fmt.Errorf("a running %s container engine is required", requested)
 }
+
+// composeProvider resolves the Compose provider Podman's `podman compose`
+// delegates to. The Kubernetes-profile Compose command passes
+// --project-directory, which standalone podman-compose does not support, so
+// prefer docker-compose, which reaches Podman through the DOCKER_HOST endpoint
+// startup pins, and keep podman-compose for hosts without it. Up and down must
+// agree, or a host with only docker-compose could start a stack it cannot stop.
+func composeProvider() (string, error) {
+	for _, candidate := range []string{"docker-compose", "podman-compose"} {
+		if found, err := exec.LookPath(candidate); err == nil {
+			return found, nil
+		}
+	}
+	return "", fmt.Errorf("Podman Compose requires docker-compose or podman-compose on PATH")
+}
+
+// podmanComposeProvider resolves the standalone podman-compose provider that
+// scripts/dev-up requires and pins for Docker Compute.
+func podmanComposeProvider() (string, error) {
+	return exec.LookPath("podman-compose")
+}
+
 func (r *runner) pinEndpoint(ctx context.Context) error {
 	endpoint := r.env["DOCKER_HOST"]
 	if r.engine == "podman" {

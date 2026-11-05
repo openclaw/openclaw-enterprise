@@ -2,11 +2,13 @@ package occdev
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -90,5 +92,38 @@ func TestBootstrapAuthorizationStopsWithStartupContext(t *testing.T) {
 				t.Fatalf("canceled authorization must not export the final key: %v", err)
 			}
 		})
+	}
+}
+
+// The reader's Node process is PID 1 and ignores SIGTERM, and the deferred
+// delete waits for the Pod, so the default 30 s grace period was idle time.
+func TestBootstrapKeyReaderStopsWithinOneSecond(t *testing.T) {
+	commands := fakeProfileCommands(t, map[string]string{
+		"kubectl": `"apply -f "*|*"wait --for=condition=Ready "*|*"delete pod bootstrap-key-reader "*) ;;`,
+	})
+	state := &developmentState{PlatformNamespace: "bootstrap-fixture", directory: t.TempDir()}
+	r := newRunner(Options{Repository: t.TempDir()})
+	// The key read is not a fixture case, so the reader fails after its Pod is applied.
+	_, _, err := r.copyAndVerifyKubernetesKey(context.Background(), state, "controller:fixture", "http://127.0.0.1:1", time.Second)
+	if err == nil || !strings.Contains(err.Error(), "exec bootstrap-key-reader") {
+		t.Fatalf("expected the unfixtured key read to fail, got %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(state.directory, "bootstrap-key-reader.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pod struct {
+		Spec struct {
+			TerminationGracePeriodSeconds *int `json:"terminationGracePeriodSeconds"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(data, &pod); err != nil {
+		t.Fatal(err)
+	}
+	if pod.Spec.TerminationGracePeriodSeconds == nil || *pod.Spec.TerminationGracePeriodSeconds != 1 {
+		t.Fatalf("bootstrap key reader grace period = %v, want 1 second", pod.Spec.TerminationGracePeriodSeconds)
+	}
+	if log := strings.Join(commands(), "\n"); !strings.Contains(log, "delete pod bootstrap-key-reader") {
+		t.Fatalf("bootstrap key reader was not deleted:\n%s", log)
 	}
 }

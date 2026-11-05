@@ -1,0 +1,24 @@
+{
+  "qualification": "synthetic component fixture, not installed evidence",
+  "protobuf_hex": "0a12726563656970742d73616e64626f782d6964122435616636646630612d626634302d343365362d386139302d666130316237363231653164180122403838636461333636323563653134313438636565333566346538376338363163653163323466353030303836396336616532613666313263663831336234633128f1b4e4c7cfd2daeef00130c9b188c8f2d3e48a2c3a396f70656e7368656c6c2e73757065727669736f722d6d6964646c65776172652e687474702d63726564656e7469616c2d6163636573732e7631",
+  "receipt": {
+    "sandbox_id": "receipt-sandbox-id",
+    "instance_id": "5af6df0a-bf40-43e6-8a90-fa01b7621e1d",
+    "policy_version": 1,
+    "policy_hash": "88cda36625ce14148cee35f4e87c861ce1c24f5000869c6ae2a6f12cf813b4c1",
+    "config_revision": "17356145727020538481",
+    "provider_env_revision": "3176606324465211593",
+    "enforced_capabilities": ["openshell.supervisor-middleware.http-credential-access.v1"]
+  },
+  "verified_extension_claims": {
+    "iss": "openshell-gateway:receipt-gateway",
+    "aud": "urn:receipt-test",
+    "sub": "spiffe://openshell/sandbox/receipt-sandbox-id",
+    "iat": 1791987212,
+    "exp": 1791988112,
+    "jti": "30721ab5-254e-45e5-216f-14a42af1d3ed",
+    "caller_kind": "supervisor",
+    "sandbox_id": "receipt-sandbox-id",
+    "instance_id": "5af6df0a-bf40-43e6-8a90-fa01b7621e1d"
+  }
+}

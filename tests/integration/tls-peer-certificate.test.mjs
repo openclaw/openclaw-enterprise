@@ -6,6 +6,9 @@ import { tlsPeerCertificate } from "../helpers/tls-peer-certificate.mjs";
 
 // TCP is reachable, but the peer never answers the TLS ClientHello. This must
 // hit the helper's absolute deadline, not the file runner's much longer timeout.
+// The peer never answers, so a short deadline cannot race real work.
+const timeoutMs = 200;
+
 test(
   "TLS certificate acquisition times out and closes a stalled handshake",
   { timeout: 15_000 },
@@ -31,16 +34,17 @@ test(
         host: "127.0.0.1",
         port: server.address().port,
         servername: "localhost",
+        timeoutMs,
       });
       const limit = new Promise((_, reject) => {
         watchdog = setTimeout(
           () => reject(new Error("certificate acquisition exceeded its deadline")),
-          12_000,
+          5_000,
         );
       });
       await assert.rejects(
         Promise.race([acquisition, limit]),
-        /TLS certificate handshake timed out after 10000 ms/,
+        new RegExp(`TLS certificate handshake timed out after ${timeoutMs} ms`),
       );
       // Observe the remote close before fixture cleanup can hide a leaked socket.
       await Promise.race([peerClosed, limit]);

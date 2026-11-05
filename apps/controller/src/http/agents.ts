@@ -5,6 +5,7 @@ import {
   type AgentRead,
   type AgentRevisionRead,
   type AgentRuntimeCredentialsBody,
+  type FirstDeploymentIntent,
 } from "@openclaw-enterprise/contracts";
 import {
   accessBindingsRemovedWithAgent,
@@ -16,12 +17,20 @@ import {
   type HarnessResolver,
   type ProvisionAgentInput,
   type UpdateAgentInput,
+  type ValidateAgentCreateInput,
 } from "@openclaw-enterprise/occ";
 import type { FastifyRequest } from "fastify";
+import {
+  prepareNativeAdminConfiguration,
+  type NativeAdminAccessConfig,
+} from "../gateway/native-admin.ts";
 import { dependencyUnavailable, failure } from "./errors.ts";
 import type { RequestContext, ResourceHandler, ResourceHandlers } from "./types.ts";
 
 interface AgentHandlerOptions {
+  readonly nativeAdmin: NativeAdminAccessConfig | undefined;
+  readonly publicOrigin: string | undefined;
+  readonly installationId: string;
   readonly resolveHarness: HarnessResolver;
   readonly requireCredentialCsrf: (request: FastifyRequest) => void;
   readonly rejectDeployment: (request: FastifyRequest, context: RequestContext) => Promise<void>;
@@ -32,6 +41,7 @@ function clientAgent(agent: Readonly<AgentRead>): Record<string, unknown> {
     return { ...agent };
   }
   return {
+    sandboxPolicyEditing: agent.sandboxPolicyEditing === true,
     id: agent.id,
     namespaceId: agent.namespaceId,
     name: agent.name,
@@ -39,6 +49,7 @@ function clientAgent(agent: Readonly<AgentRead>): Record<string, unknown> {
     configurationId: agent.configurationId,
     backendId: agent.backendId,
     executionMode: agent.executionMode,
+    gatewayManagedMode: agent.gatewayManagedMode,
     plugins: agent.plugins,
     pluginApprovers: agent.pluginApprovers,
     repositoryBindings: agent.repositoryBindings,
@@ -63,6 +74,7 @@ function clientAgentProvisioning(
   namespaceId: string,
 ): Record<string, unknown> {
   return {
+    requestId: provisioning.requestId,
     workId: provisioning.workId,
     status: provisioning.status,
     phase: provisioning.phase,
@@ -73,6 +85,7 @@ function clientAgentProvisioning(
     revisionId: provisioning.revisionId,
     url: provisioning.url ?? agentProvisioningUrl(namespaceId, provisioning.workId),
     error: provisioning.error,
+    progress: provisioning.progress,
   };
 }
 
@@ -89,9 +102,11 @@ function clientRevision(revision: Readonly<AgentRevisionRead>): Record<string, u
     configurationKind: revision.configurationKind,
     configurationGeneration: revision.configurationGeneration,
     backendId: revision.backendId,
+    gatewayManagedMode: revision.gatewayManagedMode,
     configuration: revision.configuration,
     harness: revision.harness,
-    compute: revision.compute,
+    compute: { id: revision.compute.id, implementation: revision.compute.implementation },
+    sandboxDriverId: revision.sandboxDriverId,
     secretDriverId: revision.secretDriverId,
     secretBindings: revision.secretBindings,
     plugins: revision.plugins,
@@ -124,17 +139,11 @@ async function listRepositoryOptions({
   params,
   namespaceId,
 }: Parameters<ResourceHandler>[0]) {
-  const query = request.query as { descriptionRefs?: string };
-  const descriptionRefs = query.descriptionRefs?.split(",") ?? [];
-  if (new Set(descriptionRefs).size !== descriptionRefs.length) {
-    throw failure(400, "INVALID_REQUEST", "Repository description references must be unique.");
-  }
   const result = await controller
     .listRepositoryOptions(
       context.actorId,
       namespaceId,
       context.operation.operationId === "listAgentRepositoryOptions" ? params.agentId : undefined,
-      descriptionRefs,
     )
     .catch((error: unknown) => {
       if (error instanceof RepositoryOptionsUnavailableError) {
@@ -149,7 +158,7 @@ async function listRepositoryOptions({
       allowedProfiles,
       ...(description === undefined ? {} : { description }),
     })),
-    meta: { requestId: request.id, descriptionsPending: result.descriptionsPending },
+    meta: { requestId: request.id, ...(result.notConfigured ? { notConfigured: true } : {}) },
   });
 }
 
@@ -183,6 +192,50 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
   return {
     listRepositoryOptions,
     listAgentRepositoryOptions: listRepositoryOptions,
+    async listAgentStandingApprovals({ controller, context, namespaceId, params, request, reply }) {
+      const data = await controller.listAgentStandingApprovals(
+        context.actorId,
+        namespaceId,
+        params.agentId!,
+      );
+      reply.header("cache-control", "no-store").send({ data, meta: { requestId: request.id } });
+    },
+    async listAgentStandingApprovalScopes({
+      controller,
+      context,
+      namespaceId,
+      params,
+      request,
+      reply,
+    }) {
+      const data = await controller.listAgentStandingApprovalScopes(
+        context.actorId,
+        namespaceId,
+        params.agentId!,
+      );
+      reply.header("cache-control", "no-store").send({ data, meta: { requestId: request.id } });
+    },
+    async removeAgentStandingApproval({
+      controller,
+      context,
+      namespaceId,
+      params,
+      body,
+      reply,
+      mutationEvent,
+      transactIAM,
+    }) {
+      await transactIAM(async (unit) => {
+        await controller.removeAgentStandingApproval(context.actorId, {
+          namespaceId,
+          agentId: params.agentId!,
+          approvalId: params.approvalId!,
+          expectedGeneration: (body as { expectedGeneration: number }).expectedGeneration,
+        });
+        await unit.audit.append(mutationEvent({ kind: "agent", id: params.agentId!, namespaceId }));
+      });
+      reply.status(204).send();
+    },
     async provisionAgent({
       controller,
       context,
@@ -192,7 +245,9 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
       namespaceId,
       mutationEvent,
     }) {
-      const input = body as Omit<ProvisionAgentInput, "namespaceId">;
+      const { nativeAdmin, ...input } = body as Omit<ProvisionAgentInput, "namespaceId"> & {
+        nativeAdmin?: boolean;
+      };
       validateWorkspaceSetup(input);
       const provisioned = await controller.provisionAgent(
         context.actorId,
@@ -203,6 +258,30 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
             id: provisioned.provisioning.agentId ?? provisioned.provisioning.workId,
             namespaceId,
           }),
+        nativeAdmin === true
+          ? {
+              key: "native-admin",
+              prepare: (agent, values) => {
+                if (
+                  !options.nativeAdmin?.enabled ||
+                  !options.nativeAdmin.domain ||
+                  !options.publicOrigin
+                ) {
+                  throw failure(
+                    400,
+                    "INVALID_REQUEST",
+                    "Native admin UI access is not enabled on this Installation.",
+                  );
+                }
+                return prepareNativeAdminConfiguration(values, {
+                  agent,
+                  installationId: options.installationId,
+                  publicOrigin: options.publicOrigin,
+                  domain: options.nativeAdmin.domain,
+                });
+              },
+            }
+          : undefined,
       );
       const result = {
         provisioning: clientAgentProvisioning(provisioned.provisioning, namespaceId),
@@ -213,11 +292,27 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
       const input = body as Omit<CreateAgentInput, "namespaceId">;
       validateWorkspaceSetup(input);
       const agent = await controller.transact(async (unit) => {
-        const created = await controller.createAgent(context.actorId, { ...input, namespaceId });
+        const created = await controller.createAgent(
+          context.actorId,
+          { ...input, namespaceId },
+          options.resolveHarness,
+        );
         await unit.audit.append(mutationEvent({ kind: "agent", id: created.id, namespaceId }));
         return clientAgent(created);
       });
       reply.status(201).send({ data: agent, meta: { requestId: request.id } });
+    },
+    // Writes nothing and records no mutation: a refusal names the same rule createAgent would.
+    async validateAgentCreate({ controller, context, reply, body, namespaceId }) {
+      const input = body as Omit<ValidateAgentCreateInput, "namespaceId">;
+      validateWorkspaceSetup(input);
+      await controller.validateAgentCreate(
+        context.actorId,
+        { ...input, namespaceId },
+        options.resolveHarness,
+      );
+      reply.header("cache-control", "no-store");
+      reply.status(204).send();
     },
     async listAgents({ controller, context, request, reply, namespaceId }) {
       const agents = await controller.listAgents(context.actorId, namespaceId);
@@ -289,14 +384,25 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
       body,
       namespaceId,
       mutationEvent,
+      transactIAM,
     }) {
       const agentId = params.agentId!;
-      const agent = await controller.transact(async (unit) => {
-        const updated = await controller.updateAgent(context.actorId, {
-          ...(body as Omit<UpdateAgentInput, "namespaceId" | "agentId">),
-          namespaceId,
-          agentId,
-        });
+      const update = body as Omit<UpdateAgentInput, "namespaceId" | "agentId">;
+      // Standing approval changes hold the same session authority as an IAM policy write.
+      const transact =
+        update.repositoryStandingApproval === undefined
+          ? controller.transact.bind(controller)
+          : transactIAM;
+      const agent = await transact(async (unit) => {
+        const updated = await controller.updateAgent(
+          context.actorId,
+          {
+            ...update,
+            namespaceId,
+            agentId,
+          },
+          options.resolveHarness,
+        );
         await unit.audit.append(mutationEvent({ kind: "agent", id: updated.id, namespaceId }));
         return clientAgent(updated);
       });
@@ -334,6 +440,11 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
       const images = await controller.getAgentRuntimeImages(context.actorId, namespaceId, agentId);
       reply.send({ data: images, meta: { requestId: request.id } });
     },
+    async getAgentHarnessStatus({ controller, context, request, reply, params, namespaceId }) {
+      const agentId = params.agentId!;
+      const status = await controller.getAgentHarnessStatus(context.actorId, namespaceId, agentId);
+      reply.send({ data: status, meta: { requestId: request.id } });
+    },
     async getAgentRuntimeCredentials({ controller, context, request, reply, params, namespaceId }) {
       const agentId = params.agentId!;
       const status = await controller.getAgentRuntimeCredentialStatus(
@@ -370,6 +481,56 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
         return provisioned;
       });
       reply.send({ data: status, meta: { requestId: request.id } });
+    },
+    async deployAgentFirst({
+      controller,
+      context,
+      request,
+      reply,
+      params,
+      namespaceId,
+      mutationEvent,
+    }) {
+      try {
+        const receipt = await controller.deployAgentFirst(
+          context.actorId,
+          { namespaceId, agentId: params.agentId! },
+          request.body as FirstDeploymentIntent,
+          options.resolveHarness,
+          (admitted) =>
+            mutationEvent(
+              { kind: "agent_revision", id: admitted.revision.id, namespaceId },
+              undefined,
+              admitted.authorization,
+            ),
+        );
+        reply.status(202).send({ data: receipt, meta: { requestId: request.id } });
+      } catch (error) {
+        if (error instanceof NamespaceNotReadyError) {
+          await options.rejectDeployment(request, context);
+        }
+        throw error;
+      }
+    },
+    async recoverAgentFirstDeployment({
+      controller,
+      context,
+      request,
+      reply,
+      params,
+      namespaceId,
+    }) {
+      reply.header("cache-control", "no-store");
+      const receipt = await controller.recoverAgentFirstDeployment(
+        context.actorId,
+        { namespaceId, agentId: params.agentId! },
+        {
+          key: params.key!,
+          expectedConfigurationId: params.expectedConfigurationId!,
+          expectedGeneration: Number(params.expectedGeneration),
+        },
+      );
+      reply.status(200).send({ data: receipt, meta: { requestId: request.id } });
     },
     async deployAgent({ controller, context, request, reply, params, namespaceId, mutationEvent }) {
       const agentId = params.agentId!;
@@ -409,10 +570,31 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
     },
     async listAgentRevisions({ controller, context, request, reply, params, namespaceId }) {
       const agentId = params.agentId!;
-      const revisions = await controller.listRevisions(context.actorId, namespaceId, agentId);
+      // The route schema admits only decimal limits 1-100 and `v1.<revision number>` cursors.
+      const query = request.query as { limit?: string; cursor?: string };
+      // Without a limit the page holds the default 50 revisions.
+      const page = await controller.listRevisions(context.actorId, namespaceId, agentId, {
+        limit: query.limit === undefined ? 50 : Number(query.limit),
+        ...(query.cursor === undefined ? {} : { before: Number(query.cursor.slice(3)) }),
+      });
       reply.send({
-        data: revisions.map(clientRevision),
-        meta: { requestId: request.id },
+        data: page.revisions.map((summary) => ({
+          id: summary.id,
+          namespaceId: summary.namespaceId,
+          agentId: summary.agentId,
+          revision: summary.revision,
+          backendId: summary.backendId,
+          configurationId: summary.configurationId,
+          configurationGeneration: summary.configurationGeneration,
+          harness: summary.harness,
+          createdAt: summary.createdAt,
+          deploymentStatus: summary.deploymentStatus,
+          deploymentErrorCode: summary.deploymentErrorCode,
+        })),
+        meta: {
+          requestId: request.id,
+          nextCursor: page.nextBefore === undefined ? null : `v1.${page.nextBefore}`,
+        },
       });
     },
     async getAgentRevision({ controller, context, request, reply, params, namespaceId }) {

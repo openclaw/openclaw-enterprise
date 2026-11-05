@@ -7,6 +7,93 @@ your organization's private operations record. The deployment guides cover
 installation and runtime checks; your organization is responsible for service
 commitments, regulatory compliance, and recovery targets for the workload.
 
+## Record the initialization Job for handoff
+
+Use the CLI from the chart's source revision. Exclude other install, upgrade and
+Job writers until the installer exits. Choose a new receipt directory under a
+private, durable parent for this target. Use a filesystem that enforces owner-only
+permissions and supports hard links and directory sync. Keep the receipt after install.
+
+The CLI syncs `intent.json` (target, attempt ID, time and input hashes) and
+`dispatch.json` before starting Helm once. While Helm waits, it can save the
+first recognized, attempt-marked Job UID in `job.json`. `helm-result.json` records
+Helm's separate outcome. A missing result means unknown. A failed or disconnected
+Helm client can leave the Job running and the database changed. Do not rerun install
+or switch to upgrade.
+
+The installer removes private temporary copies of the kubeconfig, chart and
+values on normal exit. After a forced kill, confirm its Helm process has exited
+before removing that installation's `occ-install-*` temporary directory. A forced kill during handoff can also leave an `occ-handoff-*`
+directory with the reader's private kubeconfig.
+Share only the receipt with the authorized reader.
+
+## Resume an installation in progress
+
+Use the matching CLI, `kubectl`, your own trusted kubeconfig, and permission to
+get the named Job (normally `<release>-initialization`). The CLI may also read API
+discovery and check whether the Namespace exists after a missing Job. Neither
+Namespace access nor permission to list Jobs or Pods is required. If the CLI
+release is unavailable, run `go run ./cmd/occ` from the matching checkout.
+
+Run `plan` for the Job result and recovery steps, or use `doctor` to inspect the Job.
+The example uses the release name and Kubernetes namespace from the custom Helm
+guide. Substitute the values recorded for your installation.
+
+```bash
+target=(--kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT"
+        --kube-namespace openclaw-system --release oce)
+# For an installation started by occ, use its original receipt directory.
+target+=(--receipt "$INSTALL_RECEIPT_DIRECTORY")
+# For an older installation without a receipt, instead use
+# --expect-job-uid "$RECORDED_JOB_UID" only if captured during that attempt.
+occ installation plan "${target[@]}"
+```
+
+With a receipt, the commands compare the recorded cluster connection, namespace
+and release before reading the Job. A different context name or credential can
+select the same connection. Keep the same server URL (including path), TLS and
+kubeconfig proxy settings. Neither command changes the receipt or cluster.
+
+- **Completed.** For the original checkpoint, match the first-install marker,
+  captured UID, chart steps and terminal completion. Without a captured UID, a
+  copy of the marker on a replacement can look identical. The commands report
+  the current Job but leave the original outcome unknown. For a legacy install,
+  supply only a UID recorded while the installer excluded replacement. Without
+  a receipt or UID, exit zero describes the current Job only.
+  Ask the release operator to verify Helm status and API and worker readiness.
+  Job completion does not establish current database state or authorize replay.
+- **Recorded Job replaced or missing.** Recover the original installation record.
+  A later Job with the same name and a different UID cannot establish what happened
+  to that attempt, even if its chart labels have changed.
+- **Not found, no UID recorded.** Confirm with the database, identity, and volume owners whether
+  this is a first installation. A missing Job is not permission to bootstrap again.
+- **Failed.** With a matching Job UID, `plan` shows a Pod lookup for an operator
+  who can already list Pods in that namespace; it does not list Pods itself. That
+  operator sets `POD_READER_KUBECONFIG` to their own trusted kubeconfig and
+  `POD_READER_CONTEXT` to its matching context in their shell, then runs the
+  displayed command. Match the Pod's controlling owner UID to the recorded Job UID
+  before interpreting the migration and bootstrap exit codes; a label alone is
+  insufficient. `<none>` means no current terminated exit code was reported;
+  neither `<none>` nor an empty result proves that no Pod ran or no effects occurred.
+  The selected columns limit what is printed, not what Kubernetes authorizes or
+  returns. If needed, ask for a short, redacted diagnostic, not raw logs or
+  credentials. Ask the database and storage owners for current state and output
+  provenance; treat unverified state or provenance as unknown. Preserve the attempt
+  and do not retry.
+- **Unknown or incomplete.** An unreadable Job remains unknown, even if kubectl
+  reports a login problem or refusal; it is not evidence that the Job is absent.
+  Confirm the target. For a reported login problem, use a separately authorized
+  read-only session. For a reported refusal, confirm the intended reader with the
+  access owner without restoring temporary privilege or requesting broader access.
+  `FailureTarget` alone does not establish terminal failure. An interrupted
+  initialization may already have changed state.
+
+The Job UID identifies the initialization, not a later API operation. If an API
+attempt had an uncertain outcome, reconcile that original attempt before another
+write; do not replay the uncertain operation. Confirm removal of temporary
+access with its owner, then use the [workload checks](#verify-the-deployed-workflow)
+below.
+
 ## Choose the first workflow
 
 Start with one task and a small group. For example, let an Agent read a
@@ -62,12 +149,12 @@ and web pages as untrusted inputs when deciding which actions may run.
 
 ## Verify the deployed workflow
 
-Keep a short evidence record identifying the Namespace, Agent, revision,
+Keep a short evidence record identifying the Namespace, Agent, version,
 verification time, expected result, and observed result. Store credential
 references rather than values.
 
 1. Complete the [production workload checks](production-agents.md#verify-production-workloads):
-   the expected revision, denied and allowed gateway access, and a real model
+   the expected version, denied and allowed gateway access, and a real model
    turn through the selected runtime. A deployment response of `202` means work
    was admitted; `activeRevisionId` alone is not serving-health evidence.
 2. Submit a representative business request through the intended channel. Verify
@@ -81,7 +168,7 @@ references rather than values.
    test records. Verify the integration's duplicate-prevention behavior; OCC
    deployment reconciliation does not establish exactly-once CRM updates or
    message delivery.
-5. Repeat the relevant checks after a revision, credential, plugin, or access
+5. Repeat the relevant checks after a version, credential, plugin, or access
    policy change. Confirm that unrelated Agents retain their intended behavior.
 
 ## Connect alerts to a response
@@ -110,7 +197,7 @@ business effects in their destination system.
 Agree on acceptable downtime and data loss before relying on the workflow.
 Controller lease recovery handles interrupted reconciliation; it is not a
 backup or a complete Installation restore. There is currently no general OCC
-backup/restore command or explicit Agent-revision rollback endpoint.
+backup/restore command or explicit Agent rollback endpoint.
 
 Record the protection and recovery owner for each required asset:
 
@@ -137,22 +224,39 @@ external actions. Substitute test credentials and disable copied production
 channels and scheduled work before allowing test egress. Verify state, access,
 and the business workflow; measure recovery time and the age of recovered data.
 Before an actual cutover, fence old writers and workloads. RWO storage and normal
-revision routing do not provide independent process fencing during a node
+version routing do not provide independent process fencing during a node
 partition.
 
 For an update, retain the reviewed deployment inputs and a verified recovery
 point, rehearse the candidate in a separate environment, and repeat the workload
 checks before widening use. Define the failure response with the infrastructure
 owner; reverting a Helm release or image does not restore database, Secret, or
-workspace state. An immutable revision freezes requested configuration and
-references, not every referenced Secret value or resolved plugin release. See
-[revision snapshots](../../reference/agents/deployment.md#revisions-and-deployment)
+workspace state. A saved version fixes the requested configuration and
+references. Referenced Secret values and resolved plugin releases can change. See
+[version snapshots](../../reference/agents/deployment.md#revisions-and-deployment)
 and [plugin lifecycle](../../reference/agent-plugins.md#lifecycle).
+
+### Check conversation continuity
+
+Before the upgrade, choose a test conversation on an existing Agent and note a
+harmless exchange. After recovery, reopen that conversation on the same Agent.
+Find the earlier exchange, then send a follow-up and check for a new reply.
+Repeat the check if you return to the old build. A new chat or a restored
+workspace file can work even when the original history is missing.
+
+For dedicated Codex, the Gateway claim holds the conversation and the
+[Harness claim](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
+holds `codex-sessions`. To check native thread continuity, record the thread ID
+before the change and verify the follow-up used that same thread. Keep IDs and
+results private; omit message bodies and credentials.
+
+[Re-creating a split-layout tenant](split-layout-upgrade.md#export-and-re-create)
+assigns new Agent IDs; the separate archive keeps old conversations for reference.
 
 ## Complete the handoff
 
 The business and platform owners should be able to locate the accepted workflow,
-deployed revision, access and data decisions, credential renewal dates, alert
+deployed version, access and data decisions, credential renewal dates, alert
 responses, and recovery evidence without the original installer. Record unresolved
 limits and the decision to accept them or defer the workload. Revisit the handoff
 when a new integration, permission, runtime, or data category changes those assumptions.

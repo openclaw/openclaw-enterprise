@@ -1,12 +1,24 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import {
+  accessSync,
+  constants,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { stopProcess } from "../helpers/stop-process.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const runner = join(root, "scripts/test-files.mjs");
@@ -38,6 +50,29 @@ function invoke(args, cwd = root) {
 }
 
 const passing = "import test from 'node:test'; test('passes', () => {});\n";
+
+// The escape target must sit outside this checkout, but TMPDIR may be inside it.
+// HOME is consulted only when TMPDIR is unusable; a missing or unwritable base is skipped.
+function outsideRepository() {
+  const checkout = realpathSync(root);
+  for (const candidate of [tmpdir, homedir]) {
+    let base;
+    try {
+      base = realpathSync(candidate());
+      accessSync(base, constants.W_OK);
+    } catch {
+      continue;
+    }
+    if (!statSync(base).isDirectory()) {
+      continue;
+    }
+    const path = relative(checkout, base);
+    if (path === ".." || path.startsWith(`..${sep}`) || isAbsolute(path)) {
+      return base;
+    }
+  }
+  throw new Error("Neither TMPDIR nor HOME is a writable directory outside this repository");
+}
 
 test("runs actual passing, skipped and todo tests without converting expected failure to failure", (t) => {
   const f = fixture(t);
@@ -77,7 +112,7 @@ test("validates every path and option before starting any selected file", (t) =>
     "valid.test.mjs",
     `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(marker)}, 'ran');`,
   );
-  const outside = mkdtempSync(join(tmpdir(), "oce-outside-tests-"));
+  const outside = mkdtempSync(join(outsideRepository(), "oce-outside-tests-"));
   t.after(() => rmSync(outside, { recursive: true, force: true }));
   const escaped = join(outside, "escape.test.mjs");
   writeFileSync(escaped, passing);
@@ -175,11 +210,9 @@ for (const signal of ["SIGTERM", "SIGINT"]) {
       child.stderr.resume();
       const closed = once(child, "close");
       let testPid;
-      t.after(() => {
+      t.after(async () => {
         output.close();
-        if (child.exitCode === null && child.signalCode === null) {
-          child.kill("SIGKILL");
-        }
+        await stopProcess(child, { signal: "SIGKILL" });
         if (testPid) {
           try {
             process.kill(testPid, "SIGKILL");

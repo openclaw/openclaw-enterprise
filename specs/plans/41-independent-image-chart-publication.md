@@ -14,7 +14,7 @@ both images were published before chart metadata returned 404. The combined
 publication job reported failure after successful image publication. The
 production installation guide and upgrade script use the checked-in chart;
 no automated consumer of the published chart was found in this repository.
-The [published chart guide](../../.github/chart-publication.md) documents manual use.
+The [published chart guide](../../docs/release/chart-publication.md) documents manual use.
 
 ## Scope
 
@@ -75,8 +75,8 @@ Existing image recovery remains unchanged.
 2. Give the chart job its exact receipt download, existing publication tooling,
    protected environment, and workflow-level publication lock. Add a final job that
    reports both publication results even when a dependency fails.
-3. Update [image publication](../../.github/containers.md),
-   [chart publication](../../.github/chart-publication.md),
+3. Update [image publication](../../docs/release/containers.md),
+   [chart publication](../../docs/release/chart-publication.md),
    [production installation](../../docs/guides/deploy/production-installation.md), and
    the [publication flow](../../docs/flows/container-publication.md). Keep local-chart
    installation as the documented default.

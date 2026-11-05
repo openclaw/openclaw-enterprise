@@ -1,7 +1,14 @@
-import { createHash } from "node:crypto";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
-import type { Agent, AgentRevision } from "@openclaw-enterprise/contracts";
+import type {
+  Agent,
+  AgentRevision,
+  OpenClawConfigurationDocument,
+} from "@openclaw-enterprise/contracts";
+import { ConfigurationHarnessError } from "@openclaw-enterprise/occ";
 import { unsupportedNativeGatewayAuthFields } from "./auth-fields.ts";
+import { deriveNativeAdminHost } from "./native-admin-host.mjs";
+
+export { deriveNativeAdminHost } from "./native-admin-host.mjs";
 
 export interface NativeAdminAccessConfig {
   readonly enabled: boolean;
@@ -27,18 +34,6 @@ export function normalizeNativeAdminDomain(domain: string | undefined): string |
     throw new Error("Native admin Agent domain must be a DNS hostname.");
   }
   return normalized;
-}
-
-export function deriveNativeAdminHost(
-  installationId: string,
-  agent: Pick<Agent, "namespaceId" | "id">,
-  domain: string,
-): string {
-  const digest = createHash("sha256")
-    .update(`${installationId}\0${agent.namespaceId}\0${agent.id}`)
-    .digest("hex")
-    .slice(0, 32);
-  return `agent-${digest}.${domain}`;
 }
 
 export function nativeAdminGatewayHttpBase(endpoint: string): string | undefined {
@@ -100,12 +95,112 @@ export function nativeAdminConfigurationSupported(
     Array.isArray(scopes) &&
     scopes.includes("operator.admin") &&
     approval?.enabled === true &&
-    Array.isArray(approval.scopes) &&
-    approval.scopes.includes("operator.admin") &&
     ui?.enabled === true &&
     Array.isArray(ui.allowedOrigins) &&
     ui.allowedOrigins.includes(origin) &&
     ui.dangerouslyDisableDeviceAuth !== true &&
     ui.dangerouslyAllowHostHeaderOriginFallback !== true
   );
+}
+
+/** Prepare the explicit opt-in before provisioning saves the initial Configuration. */
+export function prepareNativeAdminConfiguration(
+  values: Readonly<OpenClawConfigurationDocument>,
+  input: {
+    agent: Pick<Agent, "id" | "namespaceId">;
+    installationId: string;
+    publicOrigin: string;
+    domain: string;
+  },
+): Readonly<OpenClawConfigurationDocument> {
+  const record = (value: unknown, path: string): Record<string, unknown> => {
+    if (value === undefined) {
+      return {};
+    }
+    const result = asRecord(value);
+    if (!result) {
+      throw new ConfigurationHarnessError(`Native admin UI requires ${path} to be an object.`);
+    }
+    return result;
+  };
+  const gateway = record(values.gateway, "gateway");
+  const ui = record(gateway.controlUi, "gateway.controlUi");
+  const auth = record(gateway.auth, "gateway.auth");
+  const proxy = record(auth.trustedProxy, "gateway.auth.trustedProxy");
+  const approval = record(proxy.deviceAutoApprove, "gateway.auth.trustedProxy.deviceAutoApprove");
+  const identities = record(auth.identityScopes, "gateway.auth.identityScopes");
+  if (
+    (auth.mode !== undefined && auth.mode !== "trusted-proxy") ||
+    unsupportedNativeGatewayAuthFields(auth).length > 0 ||
+    (proxy.userHeader !== undefined && proxy.userHeader !== "x-occ-identity") ||
+    ui.dangerouslyDisableDeviceAuth === true ||
+    ui.dangerouslyAllowHostHeaderOriginFallback === true
+  ) {
+    throw new ConfigurationHarnessError(
+      "Native admin UI conflicts with the gateway authentication policy. Review gateway.auth and gateway.controlUi in Configuration JSON.",
+    );
+  }
+  const append = (value: unknown, entry: string, path: string): string[] => {
+    if (value === undefined) {
+      return [entry];
+    }
+    if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
+      throw new ConfigurationHarnessError(
+        `Native admin UI requires ${path} to be a list of strings.`,
+      );
+    }
+    return [...new Set([...value, entry])];
+  };
+  const target = new URL(input.publicOrigin);
+  target.hostname = deriveNativeAdminHost(
+    input.installationId,
+    input.agent,
+    normalizeNativeAdminDomain(input.domain)!,
+  );
+  return {
+    ...values,
+    gateway: {
+      ...gateway,
+      publicOrigin: target.origin,
+      controlUi: {
+        ...ui,
+        enabled: true,
+        allowedOrigins: append(
+          ui.allowedOrigins,
+          target.origin,
+          "gateway.controlUi.allowedOrigins",
+        ),
+      },
+      auth: {
+        ...auth,
+        mode: "trusted-proxy",
+        trustedProxy: {
+          ...proxy,
+          userHeader: "x-occ-identity",
+          allowUsers: append(
+            proxy.allowUsers,
+            "occ-workspace-files",
+            "gateway.auth.trustedProxy.allowUsers",
+          ),
+          deviceAutoApprove: {
+            ...approval,
+            enabled: true,
+            scopes: append(
+              approval.scopes,
+              "operator.admin",
+              "gateway.auth.trustedProxy.deviceAutoApprove.scopes",
+            ),
+          },
+        },
+        identityScopes: {
+          ...identities,
+          "occ-workspace-files": append(
+            identities["occ-workspace-files"],
+            "operator.admin",
+            "gateway.auth.identityScopes.occ-workspace-files",
+          ),
+        },
+      },
+    },
+  };
 }

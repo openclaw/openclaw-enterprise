@@ -157,7 +157,13 @@ export async function withRuntimeImageFixture(docker, directory, run, { receiptP
     ) {
       throw new Error(`Docker returned invalid reference information for ${id}`);
     }
-    return { repoTags, repoDigests };
+    // Docker's containerd image store lists `<repository>@<image ID>` for each
+    // repository the image is tagged in; those entries follow the tags. Any other
+    // digest records a pull or push, which this fixture never makes. Inspect cannot
+    // tell such an entry from a record pulled by that exact digest, which would
+    // need this run's own nonce-unique image pulled back under an owned repository.
+    const derived = new Set(repoTags.map((tag) => `${tag.slice(0, tag.lastIndexOf(":"))}@${id}`));
+    return { repoTags, foreignDigests: repoDigests.filter((digest) => !derived.has(digest)) };
   }
 
   async function ensureUnusedTag(tag) {
@@ -345,10 +351,10 @@ export async function withRuntimeImageFixture(docker, directory, run, { receiptP
       }
       for (const id of images.keys()) {
         const image = await inspect(id);
-        const { repoTags, repoDigests } = references(image, id);
+        const { repoTags, foreignDigests } = references(image, id);
         if (
           image.Id !== id ||
-          repoDigests.length ||
+          foreignDigests.length ||
           repoTags.some((tag) => tags.get(tag) !== id) ||
           [...tags].some(([tag, target]) => target === id && !repoTags.includes(tag))
         ) {
@@ -381,8 +387,8 @@ export async function withRuntimeImageFixture(docker, directory, run, { receiptP
           continue;
         }
         const image = await inspect(id);
-        const { repoTags, repoDigests } = references(image, id);
-        if (image.Id !== id || repoTags.length || repoDigests.length) {
+        const { repoTags, foreignDigests } = references(image, id);
+        if (image.Id !== id || repoTags.length || foreignDigests.length) {
           throw new Error(`Image ${id} still has references`);
         }
         await receipt("image-remove", "pending", id);

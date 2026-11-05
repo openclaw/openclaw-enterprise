@@ -4,11 +4,13 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { run as runProcess } from "../fixtures/repository-credentials/process.mjs";
+import { prepareObservabilityNativeRepository } from "./observability-native-repository.mjs";
 import { installProductionHelmControlPlane } from "./production-helm-real.mjs";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import {
   createKubernetesClient,
   createKubernetesInstallationConfiguration,
+  explicitK3dSelection,
   kubectlArguments,
   validateExplicitK3dLoopbackContext,
 } from "./kubernetes-real.mjs";
@@ -17,28 +19,29 @@ export const observabilitySelection = {
   skip:
     process.env.OCC_TEST_PRODUCTION_OBSERVABILITY === "1"
       ? false
-      : "Select k3d-observability with the CI runner; see docs/testing/metrics.md.",
+      : "Select k3d-observability with the CI runner; see docs/testing/local.md#kubernetes-observability-acceptance.",
   timeout: 1_200_000,
 };
 
 // Own only test resources. API calls, lifecycle, telemetry and policy enforcement
 // all use the installed production implementations, with a credential-free runtime fixture.
-export async function installObservabilityControlPlane(t, { modelTurns = false } = {}) {
+export async function installObservabilityControlPlane(
+  t,
+  { modelTurns = false, nativeRepository = false } = {},
+) {
   if (modelTurns) {
     for (const name of ["OPENAI_API_KEY", "OCC_TEST_OPENAI_MODEL"]) {
       assert.ok(process.env[name], `${name} is required for explicit model-turn validation`);
     }
   }
-  const selection = {
-    kubeconfigPath: process.env.OCC_TEST_KUBERNETES_KUBECONFIG,
-    kubernetesContext: process.env.OCC_TEST_KUBERNETES_CONTEXT,
-  };
+  const selection = explicitK3dSelection();
   await validateExplicitK3dLoopbackContext(selection);
   const images = Object.fromEntries(
     [
       ["controller", "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE"],
       ["postgres", "OCC_TEST_PRODUCTION_POSTGRES_IMAGE"],
       ["node", "OCC_TEST_PRODUCTION_NODE_IMAGE"],
+      ...(nativeRepository ? [["credentials", "OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE"]] : []),
       ...(modelTurns
         ? [
             ["runtime", "OCC_TEST_KUBERNETES_GATEWAY_IMAGE"],
@@ -80,7 +83,13 @@ export async function installObservabilityControlPlane(t, { modelTurns = false }
       ...options,
       allowFailure: true,
     });
-    assert.equal(result.code, 0, redact(`${command}: ${result.stderr}`));
+    // Validation errors can quote the submitted Secret, including escaped PEM
+    // or base64 data. Never expose diagnostics from a command with private stdin.
+    assert.equal(
+      result.code,
+      0,
+      options.input ? `${command} failed with input` : redact(`${command}: ${result.stderr}`),
+    );
     return result.stdout;
   };
   const kubectl = (...args) => run("kubectl", kubectlArguments(selection, args));
@@ -158,6 +167,20 @@ export async function installObservabilityControlPlane(t, { modelTurns = false }
       : {}),
     cluster: `observability-${suffix}`,
   });
+  const repositoryCredentials = nativeRepository
+    ? await prepareObservabilityNativeRepository({
+        configuration,
+        system,
+        release,
+        directory,
+        suffix,
+        images,
+        secrets,
+        run,
+        apply,
+        metadata,
+      })
+    : undefined;
   await installProductionHelmControlPlane({
     selection,
     images,
@@ -168,6 +191,7 @@ export async function installObservabilityControlPlane(t, { modelTurns = false }
     configuration,
     authBaseURL: "https://observability.example.invalid",
     installationName: "Observability acceptance",
+    repositoryCredentials,
     databaseName: `openclaw_k8s_observability_${suffix}`,
     apiClients: [{ namespace: system, podLabels: { app: "operator" } }],
     run,

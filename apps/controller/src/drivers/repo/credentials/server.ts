@@ -2,15 +2,14 @@ import { createServer as createHttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
-import { connect } from "node:net";
 import { chmod, lstat, realpath, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { prepareControlSocket } from "../../../backends/repository-credentials/control-socket.ts";
 import type {
   CredentialServiceOwner,
   RunningListeners,
   TlsMaterial,
 } from "./internal-contracts.ts";
-import type { RepositoryDescriptions } from "./service-contracts.ts";
 import { createControlAdmission, handleControl } from "./control.ts";
 import { createAgentHandler } from "./transport/agent.ts";
 import type { AgentHandlerOptions } from "./transport/agent.ts";
@@ -19,59 +18,9 @@ import { sendError } from "./transport/errors.ts";
 export interface StartListenersOptions extends AgentHandlerOptions {
   readonly service: CredentialServiceOwner;
   readonly tls: TlsMaterial;
-  readonly repositoryDescriptions?: RepositoryDescriptions;
 }
 
 export type BoundListeners = RunningListeners & Readonly<{ address: AddressInfo }>;
-
-export async function prepareControlSocket(socketPath: string, timeoutMs: number): Promise<void> {
-  let previous;
-  try {
-    previous = await lstat(socketPath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return;
-    }
-    throw error;
-  }
-  if (
-    !previous.isSocket() ||
-    (previous.mode & 0o7777) !== 0o600 ||
-    previous.uid !== process.getuid?.()
-  ) {
-    throw new Error("control-socket-exists");
-  }
-  // A crash can leave this owner's socket behind. Only an explicit refusal
-  // proves it is eligible for recovery; timeout or other errors fail closed.
-  await new Promise<void>((done, reject) => {
-    const probe = connect(socketPath);
-    const timer = setTimeout(() => probe.destroy(new Error("control-socket-exists")), timeoutMs);
-    probe.once("close", () => clearTimeout(timer));
-    probe.once("connect", () => {
-      probe.destroy();
-      reject(new Error("control-socket-exists"));
-    });
-    probe.once("error", (error: NodeJS.ErrnoException) => {
-      if (error.code === "ECONNREFUSED") {
-        done();
-      } else {
-        reject(new Error("control-socket-exists"));
-      }
-    });
-  });
-  const current = await lstat(socketPath);
-  if (
-    !current.isSocket() ||
-    current.dev !== previous.dev ||
-    current.ino !== previous.ino ||
-    current.mode !== previous.mode ||
-    current.uid !== previous.uid ||
-    current.gid !== previous.gid
-  ) {
-    throw new Error("control-socket-exists");
-  }
-  await unlink(socketPath);
-}
 
 export async function startListeners(options: StartListenersOptions): Promise<BoundListeners> {
   const { config, service, clock } = options;
@@ -91,7 +40,8 @@ export async function startListeners(options: StartListenersOptions): Promise<Bo
   const agentSockets = new Set<Socket>();
   const controlSockets = new Set<Socket>();
   const active = new WeakSet<Socket>();
-  let admitting = true;
+  let admitting = false;
+  let stopping = false;
   let socketIdentity: Readonly<{ dev: number; ino: number }> | undefined;
   const limits = config.limits;
   const serverOptions = {
@@ -120,7 +70,7 @@ export async function startListeners(options: StartListenersOptions): Promise<Bo
     service,
     config,
     clock,
-    options.factory.resolveBound !== undefined,
+    "createPrepared" in options.factory,
   );
   const stopObserving = service.observeDisposal(admissions.observe);
   const route =
@@ -136,14 +86,7 @@ export async function startListeners(options: StartListenersOptions): Promise<Bo
       void (
         kind === "agent"
           ? onAgent(request, response)
-          : handleControl(
-              request,
-              response,
-              config,
-              clock,
-              admissions,
-              options.repositoryDescriptions,
-            )
+          : handleControl(request, response, config, clock, admissions)
       ).catch(() => sendError(response, 503, "unavailable"));
     };
   for (const [server, handler, sockets] of [
@@ -177,9 +120,10 @@ export async function startListeners(options: StartListenersOptions): Promise<Bo
   let agentClose: Promise<void> | undefined;
   let controlClose: Promise<void> | undefined;
   const stopAdmission = () => {
-    if (!admitting) {
+    if (stopping) {
       return;
     }
+    stopping = true;
     admitting = false;
     agentClose = new Promise((done) => agent.close(() => done()));
     controlClose = new Promise((done) => control.close(() => done()));
@@ -233,6 +177,9 @@ export async function startListeners(options: StartListenersOptions): Promise<Bo
     await chmod(socketPath, 0o600);
     const info = await lstat(socketPath);
     socketIdentity = { dev: info.dev, ino: info.ino };
+    // Admit only after socket setup. The caller installs shutdown handlers in
+    // the promise continuation, before the next connection can be dispatched.
+    admitting = true;
     return { stopAdmission, close, address: agent.address() as AddressInfo };
   } catch {
     await close();

@@ -8,7 +8,7 @@
 
 ## Outcome and scope
 
-The local [first-Agent workflow](../../docs/guides/first-agent.md) can explicitly
+The local [first-Agent workflow](https://github.com/openclaw/openclaw-enterprise/blob/ba611818fe29271bb882316a8c9604350e470d42/docs/guides/first-agent.md) can explicitly
 select a dedicated Codex Harness in a Kubernetes development installation. When
 the Installation selects OpenShell, the command registers the model key through
 the existing Credential Gateway and completes a real model turn through the

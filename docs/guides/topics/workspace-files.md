@@ -18,7 +18,7 @@ AgentRevision.
    undeployed draft; deploy it with **Deploy new version** on its Agent page.
    Creation saves the inputs privately, and the first deployment applies them
    before execution starts.
-4. Once the revision is active, open **Workspace files** on the Agent and reload
+4. Once the selected version has a reachable gateway, open **Workspace files** on the Agent and reload
    the files to check the contents.
 
 If creation says that defaults changed, reload the form and review the defaults
@@ -35,15 +35,18 @@ defines API omission, empty values, and the pinned defaults contract.
 ## Edit a file
 
 You need `read` on the Agent to load files and `operate` to save them. The Agent
-must have an active revision and a reachable gateway. Platform workspace access
+must have a selected version and a reachable gateway. Platform workspace access
 is documented for [Kubernetes](../deploy/workspace-routing.md#agent-workspace-files);
 it is not available with the bundled [SSH Driver](../../reference/drivers/ssh-compute.md#credentials-and-supported-boundaries).
 
 1. Open **Agents**, select the Agent in the intended Namespace, and open
    **Workspace files**.
-2. The four files are listed with their own **Reload** and **Save**. Use
-   **Reload** before editing if another person might have changed the file;
-   reloading discards your unsaved changes.
+2. Choose **Instructions** (`AGENTS.md`), **Personality** (`SOUL.md`), **Identity**
+   (`IDENTITY.md`), or **User context** (`USER.md`). On a phone, use the
+   **Workspace file** dropdown. Read the description above the editor to check
+   the file's role. Switching files keeps unsaved edits. Use **Reload** before
+   editing if another person might have changed the file; reloading discards
+   that file's unsaved changes.
 3. Edit the text, then select **Save** for that file. Saving creates or replaces
    only the selected file. Each file can contain up to 16 KiB of UTF-8 text.
 4. Reload the file to confirm the expected content was stored.
@@ -55,7 +58,8 @@ for credential values.
 ## If files cannot be loaded or saved
 
 - **Immediately after deployment:** the gateway may still be starting. Confirm
-  the expected [revision](agent-revisions.md) became active, then reload. If
+  OCC selected the expected [version](agent-revisions.md) and its gateway is
+  reachable, then reload. If
   access stays unavailable, have an operator check
   [workspace routing](../deploy/workspace-routing.md#agent-workspace-files).
 - **A save has an unknown outcome:** it may have succeeded. Reload the affected

@@ -132,9 +132,10 @@ async function stop() {
   await exited;
   clearTimeout(killTimer);
 }
+// Each wait below checks its deadline after a read, so the last read happens at or past it.
 async function waitForNode(expectedId) {
   const deadline = Date.now() + 60_000;
-  while (Date.now() < deadline) {
+  for (;;) {
     if (child.exitCode !== null) {
       throw new Error(`Native worker exited: ${childLog}`);
     }
@@ -145,6 +146,9 @@ async function waitForNode(expectedId) {
         assert.equal(node.nodeId, expectedId);
       }
       return node.nodeId;
+    }
+    if (Date.now() >= deadline) {
+      break;
     }
     await setTimeout(250);
   }
@@ -157,7 +161,7 @@ async function waitForNode(expectedId) {
 async function waitForConfirmedSetup(setupId, nodeId) {
   const deadline = Date.now() + 20_000;
   let status;
-  while (Date.now() < deadline) {
+  for (;;) {
     status = await call("device.pair.setupStatus", { setupId });
     if (status.completion) {
       assert.equal(status.completion.deviceId, nodeId);
@@ -166,16 +170,22 @@ async function waitForConfirmedSetup(setupId, nodeId) {
     if (status.deliveryUncertain) {
       assert.equal(status.deliveryUncertain.deviceId, nodeId);
     }
+    if (Date.now() >= deadline) {
+      break;
+    }
     await setTimeout(250);
   }
   throw new Error(`Setup completion was never confirmed: ${JSON.stringify(status)}`);
 }
 async function waitForDisconnect(nodeId) {
   const deadline = Date.now() + 20_000;
-  while (Date.now() < deadline) {
+  for (;;) {
     const result = await call("node.list");
     if (!result.nodes.some((item) => item.nodeId === nodeId && item.connected)) {
       return;
+    }
+    if (Date.now() >= deadline) {
+      break;
     }
     await setTimeout(250);
   }

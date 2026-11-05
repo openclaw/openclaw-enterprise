@@ -92,7 +92,7 @@ prevents direct Internet fallback; this is not whole-Harness containment.
   not live networking or model execution.
 - The packaged runtime's Gateway peer suite checks genuine Codex transport,
   TLS routing, denial, outage, and bypass revocation without model credentials;
-  see [image testing](../testing/images.md#runtime-image-startup-test-environment).
+  see [image testing](../testing/docker.md#runtime-image-startup-test-environment).
 - Real model qualification uses the selected Kubernetes API/worker topology cases
   in [Kubernetes testing](../testing/kubernetes.md), with a disposable enforcing
   cluster, approved images, and existing authorized credentials.
