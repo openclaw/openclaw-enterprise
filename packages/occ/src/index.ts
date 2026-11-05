@@ -388,10 +388,10 @@ import {
   validateSelectedBackendDrivers,
   validateServiceAccountBackendBinding,
 } from "./backends.ts";
+import type { StoredOAuthClient } from "./ports/oauth-client.ts";
 import {
   InMemoryPlatformState,
   type ConnectionTokenCustody,
-  type StoredOAuthClient,
   type PlatformReadView,
   type PlatformOperation,
   type PlatformStateStore,
