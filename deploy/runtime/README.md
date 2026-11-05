@@ -16,8 +16,7 @@ pinned package manager, frozen dependency lockfile, and upstream Docker assembly
 For a package registry mirror, supply the separate Corepack and pnpm build
 secrets described in [the image build guide](../../docs/guides/deploy/production-installation.md#build-through-a-package-registry-mirror).
 The selected upstream source pins stock Codex `0.164.0`. Both Codex entrypoints
-use that same installation and frozen upstream lockfile; no dependency downgrade
-or Codex binary patch is applied. The seccomp profile retains its existing syscall
+use this installation and frozen lockfile without dependency downgrades or binary patches. The seccomp profile retains its existing syscall
 rules; version admission does not replace native startup and sandbox verification.
 Codex and Slack come from that same source. Its restricted workspace-node commands
 and persistent device identity support split storage; published `2026.9.5` packages
@@ -61,7 +60,6 @@ or renewal under the same binding. Fresh setup comes first; a typed bootstrap re
 allows one validated saved-token retry. See [node enrollment](../../docs/reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
 for Gateway/TLS-pin checks, local credential retirement when switching targets,
 and pairing recovery. Remove this bridge when the selected source provides that contract.
-The source archive and patch hashes identify the resulting custom build.
 Provenance `patches` maps every patch the Dockerfile applies, in order, to its
 SHA-256; `scripts/build-runtime-assets.mjs` holds that list, and a test checks it
 against the Dockerfile.

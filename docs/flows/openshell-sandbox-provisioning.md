@@ -249,8 +249,7 @@ completed preparation exits successfully on SIGTERM with normal termination grac
 Sandbox creation waits for every writer Pod.
 Preparation requires `userNamespaces: false`, at most one operator-mode ServiceAccount
 and the pinned Gateway's default identity, without model credentials, ServiceAccount
-tokens, capabilities, or direct Pod creation. Mode support and admission report
-these setting requirements before deployment.
+tokens, capabilities, or direct Pod creation. Admission reports these requirements before deployment.
 
 After Sandbox readiness, `initializeWorkspace` validates the setup Secret's
 Namespace, Agent and setup identity, then sends initializer/JSON stdin through
@@ -317,7 +316,7 @@ and `OPENCLAW_CODEX_PROVIDER_PERMISSION_PROFILE`; owned k3d pins the provider ho
 without Harness storage mounts. `gatewayNativeHookRelayConfiguration` uses
 `harnessHome` and Compute-owned relay URL/auth. Egress permits only the provider
 peer/port; the direct Agent Service stays inactive without a Harness route.
-Preparation preserves a serving predecessor; activation rechecks the candidate.
+Preparation preserves the serving predecessor; activation rechecks candidates.
 Without `harnessEndpoint`, Codex uses Kubernetes transport and `/home/node/workspace`.
 Native OpenClaw enrolls outbound into its admitted workspace.
 

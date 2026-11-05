@@ -228,6 +228,10 @@ failed `agent` `sandbox` check carrying the same code. Deploy the Agent again
 (`occ agent deploy AGENT_ID`): the new version gets a new Sandbox and the old one
 is removed. `unknown (UNAVAILABLE)` means OCC could not read the Sandbox record.
 
+An older development Sandbox can also fail exact-content adoption after a
+controller upgrade changes its immutable command. Deploy a new Agent revision
+with `occ agent deploy AGENT_ID`; OCE does not rewrite the existing Sandbox command.
+
 ## Read OpenShell sandbox and supervisor logs
 
 The [Sandbox source](agent-logs.md#sandbox-source) shows only what the OpenShell
