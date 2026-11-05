@@ -19,7 +19,8 @@ interface DeletionContext extends NamespacePageContext {
   /** `refocus`: a requested check found it removed while its Refresh held focus. */
   onRemoved(namespace: Namespace, refocus: boolean): void;
   onResume?(handler: () => void): void;
-  statusChanged(status: Namespace["status"]): void;
+  /** `undefined` clears the confirmed badge status for display only. */
+  statusChanged(status: Namespace["status"] | undefined): void;
 }
 
 const POLL_MS = 3000;
@@ -159,7 +160,10 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
       }
       if (
         result.id !== namespace.id ||
-        !["ready", "provisioning", "failed", "deleting"].includes(String(result.status))
+        (result.status !== "ready" &&
+          result.status !== "provisioning" &&
+          result.status !== "failed" &&
+          result.status !== "deleting")
       ) {
         throw new Error("Invalid Namespace status response");
       }
@@ -175,7 +179,7 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
         ? ""
         : "This Namespace still exists. You can review it before deciding to delete again.";
       requestId = undefined;
-      context.statusChanged(result.status as Namespace["status"]);
+      context.statusChanged(result.status);
       await readPermissions();
     } catch (cause) {
       if (!current() || sent !== generation) {
@@ -197,6 +201,7 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
       }
       accessEnded = error.status === 403;
       unknown = true;
+      context.statusChanged(undefined);
       invalidateConfirmation?.();
       message = accessEnded
         ? "This Namespace is no longer readable. It may have been deleted or your access changed. Refresh Namespaces to check your access."
@@ -508,6 +513,7 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
           message = describeFailure(cause, { mutation: true });
         } else {
           unknown = true;
+          context.statusChanged(undefined);
           message =
             "Outcome unknown. Deletion may have started. Select Refresh status before deciding to try again.";
         }

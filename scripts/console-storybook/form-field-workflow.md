@@ -22,6 +22,14 @@ each story at 1440 and at 390.
 5. Open **Pages / Agent detail / Plugin selections JSON error**. The JSON
    shows "Enter a valid Plugin selections JSON object." under it and has
    focus; the status line below Save does not repeat it.
+   Replace the draft with
+   `{"sample":{"enabled":true,"driverPolicy":{"destructiveEnabled":1e400}}}`.
+   Collapse the raw editor and select **Save plugin selections**. The editor
+   opens, takes focus, and explains that the number is too large or too small
+   to save. No Agent GET preflight or PATCH starts. Open **Configure plugins**:
+   the existing invalid-JSON guidance appears, focus stays in the dialog, and
+   the raw text stays unchanged. These are simulated UI checks; the owning
+   browser test checks refusal and correction through the real Controller.
 6. Open **Authentication source required fields**. The API key Secret field
    shows "API key Secret is required." and has focus; its list stays closed,
    so nothing covers the error. Click the field or press ArrowDown to open
@@ -46,6 +54,19 @@ each story at 1440 and at 390.
     file, with focus.
 12. With a screen reader, focus each field with an error: it reads the label,
     then the error and the help.
+
+## Stored Preset refusal
+
+Open **Pages / Create Agent / Preset with a non-text primary** at 1440 and 390 px.
+The refusal explains that the primary model must be text and offers another
+Preset or a template fix. The chooser stays open with **Marker** set to
+`Retained chooser draft`. Follow the story steps to check navigation preserves
+Marker, **Research assistant** opens a normal Agent form, and explicit selection
+of **default-codex** gives the same refusal as the shortcut.
+
+This preview uses the production form with a simulated GET for one older stored
+Preset; the current Controller refuses to save that numeric primary. Keep
+**Preset with an invalid field** as the separate execution-mode check.
 
 ## Native admin at creation
 

@@ -14,6 +14,7 @@ import {
   fileBrowser,
   hasFocus,
   holdRequests,
+  isRecord,
   login,
   newPage,
   pathRequests,
@@ -162,8 +163,14 @@ test("a lost Namespace deletion response requires a status read without automati
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Uncertain cleanup");
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
+  const path = `/namespaces/${namespace.id}`;
+  const url = `${fixture.origin}${path}`;
   await login(page, fixture, `/console/namespaces?namespace=${namespace.id}`);
-  const lost = await holdRequests(t, page, `${fixture.origin}/namespaces/${namespace.id}`, {
+  const row = page
+    .getByRole("listitem")
+    .filter({ has: page.getByRole("link", { name: namespace.name, exact: true }) });
+  const badge = row.locator(".namespace-cell-status .badge");
+  const lost = await holdRequests(t, page, url, {
     method: "DELETE",
     afterServer: true,
     loseResponse: true,
@@ -171,7 +178,9 @@ test("a lost Namespace deletion response requires a status read without automati
   });
   await page.getByRole("button", { name: "Delete Uncertain cleanup", exact: true }).click();
   await page.getByRole("button", { name: "Delete Namespace", exact: true }).click();
-  await lost.requested;
+  const accepted = await lost.requested;
+  assert.ok(accepted);
+  assert.equal(accepted.status(), 202);
   lost.release();
   await page
     .getByText(
@@ -179,19 +188,67 @@ test("a lost Namespace deletion response requires a status read without automati
       { exact: true },
     )
     .waitFor();
+  assert.equal(await badge.textContent(), "Status unknown");
+  assert.equal(await badge.getAttribute("data-tone"), "warning");
   assert.equal(
     await page.getByRole("button", { name: "Request deletion again", exact: true }).count(),
     0,
   );
-  await page
-    .getByRole("button", { name: "Refresh Uncertain cleanup deletion status", exact: true })
-    .click();
-  await page.getByRole("button", { name: "Request deletion again", exact: true }).waitFor();
-  assert.equal(
-    (await fixture.request("GET", `/namespaces/${namespace.id}`)).data.status,
-    "deleting",
+  // Corrupt only the status of the real row after the accepted write. This models an
+  // invalid wire value, not a status that a conforming Controller produces.
+  await page.route(
+    url,
+    async (route) => {
+      assert.equal(route.request().method(), "GET");
+      const response = await route.fetch();
+      assert.equal(response.status(), 200);
+      const body: unknown = await response.json();
+      assert.ok(isRecord(body) && isRecord(body.data));
+      assert.equal(body.data.id, namespace.id);
+      assert.equal(body.data.status, "deleting");
+      await route.fulfill({
+        response,
+        json: { ...body, data: { ...body.data, status: [body.data.status] } },
+      });
+    },
+    { times: 1 },
   );
-  assert.equal(pathRequests(requests, "DELETE", `/namespaces/${namespace.id}`).length, 1);
+  const refresh = page.getByRole("button", {
+    name: "Refresh Uncertain cleanup deletion status",
+    exact: true,
+  });
+  const retry = page.getByRole("button", { name: "Request deletion again", exact: true });
+  await refresh.click();
+  await page
+    .getByText("Could not check deletion status. Select Refresh status to check again.", {
+      exact: true,
+    })
+    .waitFor();
+  assert.equal(await badge.textContent(), "Status unknown");
+  assert.equal(await badge.getAttribute("data-tone"), "warning");
+  assert.equal(await retry.count(), 0);
+  assert.equal(
+    await page.getByRole("button", { name: "Delete Uncertain cleanup", exact: true }).count(),
+    0,
+  );
+  assert.equal(pathRequests(requests, "DELETE", path).length, 1);
+  const recovered = page.waitForResponse(
+    (response) => response.url() === url && response.request().method() === "GET",
+  );
+  await refresh.click();
+  const response = await recovered;
+  assert.equal(response.status(), 200);
+  const body: unknown = await response.json();
+  assert.ok(isRecord(body) && isRecord(body.data));
+  assert.equal(body.data.id, namespace.id);
+  assert.equal(body.data.status, "deleting");
+  await retry.waitFor();
+  await row.getByText("Deleting…", { exact: true }).waitFor();
+  assert.equal(await badge.getAttribute("data-tone"), "warning");
+  const current: unknown = (await fixture.request("GET", path)).data;
+  assert.ok(isRecord(current));
+  assert.equal(current.status, "deleting");
+  assert.equal(pathRequests(requests, "DELETE", path).length, 1);
 });
 
 test("Namespace deletion permission is advisory and a later revocation is enforced by the real write", async (t) => {
@@ -589,6 +646,13 @@ for (const outcome of [
         exact: true,
       });
       const otherDelete = page.getByRole("button", { name: "Delete Unaffected team", exact: true });
+      // A closed dialog leaves the role query before its queued close event restores focus.
+      await waitForFocusedLabel(
+        page,
+        outcome === "external focus"
+          ? "Delete Unaffected team"
+          : "Refresh Observed cleanup deletion status",
+      );
       assert.equal(await hasFocus(outcome === "external focus" ? otherDelete : recovery), true);
       assert.equal(await retry.count(), 0);
       // A retained DOM event must not revive a closed prompt, even after a successful read

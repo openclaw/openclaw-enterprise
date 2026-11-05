@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-10-29
-last_updated_session: authoring-run/1839d93c-8cde-4ebb-b994-4b1333cc7ada
+updated: 2026-11-05
+last_updated_session: authoring-run/1a621287-125a-41d1-baae-06e4b9f829f7
 ---
 
 # Agent Presets flow
@@ -176,6 +176,13 @@ The user then selects **Use Preset**. The shared
 walks JSON once, rejects missing or mistyped inputs and duplicate rendered native
 keys, and preserves runtime placeholders and unresolved SecretRefs.
 
+An older stored Preset can contain a non-null, non-text primary model that current
+Controller admission refuses. `agents/create.mts:renderAgentForm` rejects that
+selected primary before opening the form. The chooser explains that it must be
+text and keeps entered variables. Select another Preset or ask a Preset editor
+to fix the template. A null primary remains unset so the user can choose a model.
+Partial Presets and valid roster-only selections still open.
+
 Rendering makes no requests. Success opens the Agent form with rendered settings
 and optional ephemeral Secret metadata for grants. The alphabetic chooser moves
 password values into the masked credential input and clears detached controls;
@@ -306,6 +313,8 @@ or an immutable saved version.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-05 21:30: Explain the non-text primary refusal and retained chooser recovery. (authoring-run/1a621287-125a-41d1-baae-06e4b9f829f7 - 516f7563fffa2e2d3f626cbe21a81367281ba1a1)
 
 - 2026-10-29 11:06: Clear Secret recovery when credential context changes and group its notice with choices. (authoring-run/1839d93c-8cde-4ebb-b994-4b1333cc7ada - 6e83f6e7409fb4fa238cd4230f1136d278794926)
 
