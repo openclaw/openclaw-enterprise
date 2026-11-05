@@ -92,7 +92,8 @@ Run `postgres-repository-sessions.test.mjs`,
 worker version tests with `OCC_TEST_DATABASE_URL` set. The
 `postgres-openshell-standing-selected-repository.test.ts` case follows one
 `github-repository` binding through approval, deployment, its original session
-deadline, changed-recipient refusal, successor issuance, and withdrawal. It uses the real PostgreSQL worker
+deadline, changed-recipient refusal, successor issuance, and withdrawal. A separate
+issuer with standing permission removed must refuse issuance. It uses the real PostgreSQL worker
 and credential owner with controlled OpenShell and GitHub protocol peers.
 These checks do not prove a running Kubernetes Pod or model turn.
 

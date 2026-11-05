@@ -212,23 +212,25 @@ export async function preparedStandingGitPeer(
     transport.mock.restore();
     syncBuiltinESMExports();
   });
-  const prepared = await startPreparedGitHubGitOwner(
-    {
-      registry,
-      pool,
-      driverId: backendId,
-      implementation: "github",
-      backendId,
-      privateKeyPath,
-      custodyKeyPath,
-      ca: tls.ca,
-      startWorker: false,
-      ...(options.driver && {
-        repositoryGitCustody: selectBundledRepositoryGitCustody(options.driver),
-      }),
-    },
-    options.ownerClock,
-  );
+  const startOwner = (selectedRegistry = registry) =>
+    startPreparedGitHubGitOwner(
+      {
+        registry: selectedRegistry,
+        pool,
+        driverId: backendId,
+        implementation: "github",
+        backendId,
+        privateKeyPath,
+        custodyKeyPath,
+        ca: tls.ca,
+        startWorker: false,
+        ...(options.driver && {
+          repositoryGitCustody: selectBundledRepositoryGitCustody(options.driver),
+        }),
+      },
+      options.ownerClock,
+    );
+  const prepared = await startOwner();
   // The directory is private to this case. No receipt service, broker, session bearer, or
   // prepared-use socket exists before, during, or after either Git transfer.
   const noBroker = async () => {
@@ -304,6 +306,7 @@ export async function preparedStandingGitPeer(
   return {
     registry,
     prepared,
+    startOwner,
     origin,
     originCalls: () => origin.traffic().requests,
     installationTransport: {

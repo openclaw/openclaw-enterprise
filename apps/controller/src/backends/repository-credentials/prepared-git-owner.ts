@@ -233,6 +233,17 @@ export async function startPreparedGitHubGitOwner(
     (session) => {
       const { driver, binding, namespaceId } = session;
       const { repositoryRef, profile } = binding;
+      if (session.standingApprovalId !== undefined) {
+        const scope = resolveGitHubStandingApprovalScope(registry, { namespaceId, binding });
+        if (
+          (profile === "github-repository" && session.bindings?.length !== 1) ||
+          !scope ||
+          session.standingApprovalScopeFingerprint !==
+            repositoryApprovalFingerprint({ namespaceId, agentId: session.agentId, binding, scope })
+        ) {
+          return;
+        }
+      }
       if (binding.profile === "github-repository") {
         if (
           !selected ||
@@ -277,16 +288,6 @@ export async function startPreparedGitHubGitOwner(
           : !repo || !pushRef || profile !== "git-write")
       ) {
         return;
-      }
-      if (session.standingApprovalId !== undefined) {
-        const scope = resolveGitHubStandingApprovalScope(registry, { namespaceId, binding });
-        if (
-          !scope ||
-          session.standingApprovalScopeFingerprint !==
-            repositoryApprovalFingerprint({ namespaceId, agentId: session.agentId, binding, scope })
-        ) {
-          return;
-        }
       }
       const admitted = resolveGitHubRepositoryBinding(registry, {
         namespaceId,

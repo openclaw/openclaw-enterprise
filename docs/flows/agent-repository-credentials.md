@@ -289,33 +289,30 @@ fresh installation tokens under the same grant until the version deadline.
 
 ### 6. Maintain, recover and retire ownership
 
-The [worker](../../apps/controller/src/worker.mjs) gives `ProtectedRepositoryGitAuthority`
-to the [sender binder](../../apps/controller/src/composition/repository-credentials/transport.ts)
-and owns maintenance and shutdown. Missing authority or mismatched Drivers stop binding
-before store or sender calls. OpenShell connects the store first; bare Sandboxes have no Git.
+The [worker](../../apps/controller/src/worker.mjs) supplies `ProtectedRepositoryGitAuthority`
+to the [binder](../../apps/controller/src/composition/repository-credentials/transport.ts), owning maintenance and shutdown.
+Missing authority or mismatched Drivers prevent binding. OpenShell connects the store first;
+bare Sandboxes have no Git.
 
-If supplied, external `reconcile` runs serially with a 25-second abort signal and one second
-between calls. Close aborts and joins. Independent readback settles the original delivery
-without reinstalling or restoring withdrawn access.
+External `reconcile` runs serially with a 25-second timeout and one-second interval.
+Close aborts and joins. Readback settles delivery without reinstalling or restoring withdrawn access.
 
 Activation and maintenance commit together with the same actor. Maintenance uses 30 seconds,
-the native sender interval or a shorter Compute interval. Restart invalidates missing known
-sessions without reminting. Users can deploy during cleanup.
+the sender interval or a shorter Compute interval. Restart invalidates missing sessions without
+reminting; cleanup permits deployment.
 
-[Preview, save and deploy](../../packages/occ/src/index.ts) require explicit standing permission
-and current scope. The [worker](../../apps/controller/src/worker/repository-credentials.ts) uses
-the selected Installation policy, or the registered Repo Driver when unbound. Contradictory
-policy selection prevents startup. The worker rechecks [eligibility](../../packages/occ/src/repository-approval.ts)
-under Namespace then Agent locks. Withdrawal or a changed scope fingerprint raises
-`REPOSITORY_STANDING_POLICY_CHANGED` before successor release.
+[Preview, save and deploy](../../packages/occ/src/index.ts) require standing permission and current scope.
+The [worker](../../apps/controller/src/worker/repository-credentials.ts) uses Installation policy,
+or the registered Repo Driver when unbound; contradictory selection prevents startup.
+[Eligibility](../../packages/occ/src/repository-approval.ts) is rechecked under Namespace then Agent locks.
+Withdrawal or scope changes raise `REPOSITORY_STANDING_POLICY_CHANGED` before successor release.
 The [GitHub registry](../../apps/controller/src/drivers/repo/github/credentials/registry.ts)
 includes canonical permissions and exact repository identity in `github-repository`
-approval scopes. Delivery rechecks both registry opt-ins and the current exact
+approval scopes. Issuance and delivery recheck registry opt-ins and the exact
 grant before material selection; standing delivery requires one binding.
-After a mandatory-hook launch is acknowledged, the [OpenShell observer](../../apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts)
-can verify its expired predecessor for renewal. It rechecks the hook policy and
-recipient; this identity-only path cannot authorize an expired Git request or an
-unacknowledged launch.
+After mandatory-hook launch acknowledgement, the [OpenShell observer](../../apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts)
+verifies expired predecessors for renewal, rechecking hook policy and recipient.
+This cannot authorize expired requests, unacknowledged launches or observed-only previews.
 
 Prepared native Git issues the first token after activation publishes the version. Deployment runs
 `apps/controller/src/worker.ts:ControllerWorker.assertRepositoryGitMaterial`
@@ -329,9 +326,9 @@ maintenance accepts only these two failure codes. Otherwise the
 version is retired like any failed repository version
 ([reference](../reference/repository-credentials/prepared-native-git.md#deployment-and-the-first-token)).
 
-Without standing Git evidence, the worker keeps Git closed and observes the Harness without
-preparing or activating it. Each pass rechecks model authority, withdrawal, stop and replacement.
-The worker checks again within five seconds. Harness readiness cannot authorize Git. See the [standing Worker test](../../tests/integration/postgres-standing-session-worker.test.ts).
+Without standing evidence, Git stays closed. The worker observes the Harness without preparation
+or activation, rechecking model authority, withdrawal, stop and replacement within five seconds.
+Harness readiness cannot authorize Git ([test](../../tests/integration/postgres-standing-session-worker.test.ts)).
 
 `apps/controller/src/worker.ts:ControllerWorker.processRepositoryCleanup` consumes
 owner-bound Work without admission or material delivery. Terminal-runtime Work fences
@@ -349,12 +346,10 @@ through `recoverPendingCredentialWithdrawals`, preserving outstanding work and m
 holds. The v7 reducer observes stored operations without reapplying.
 See [tests](../../tests/integration/postgres-standing-expiry-authority.test.ts).
 
-`ControllerWorker.processAgentDeletion` retires Compute and queues cleanup without waiting
-for sessions. Cleanup uses its version key for dispatch and audits.
-`PostgresWorkQueue.completeAgentDeletion` calls `occ.finalize_agent_deletion` under the claim
-to detach attempts, delete live rows and audit deletion atomically. Attempts and cleanup
-survive without fabricated disposal. Unresolved provisioning effects defer completion
-without consuming retries.
+`ControllerWorker.processAgentDeletion` retires Compute and queues version-keyed cleanup
+without waiting for sessions. Under the claim, `PostgresWorkQueue.completeAgentDeletion`
+calls `occ.finalize_agent_deletion` to atomically detach attempts, delete live rows and audit.
+Attempts and cleanup survive. Unresolved provisioning effects defer completion without consuming retries.
 
 Compute retirement waits for owned Pods to stop before removing material. It preserves Secrets
 referenced by Pods and current Deployments, and limits deletion to exact ownership with UID
@@ -364,8 +359,7 @@ remains retryable after partial failure; service restart cannot prove remote tok
 
 ## Debugging and Verification
 
-Compare `occ agent get AGENT_ID --output json` with the admitted `activeRevisionId`.
-Inspect worker events for
+Compare `occ agent get AGENT_ID --output json` with `activeRevisionId`. Inspect
 `REPOSITORY_BINDING_CHANGED`, `REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED`,
 `REPOSITORY_SESSION_RECOVERY_UNSAFE`, `REPOSITORY_GIT_TOKEN_QUARANTINED`, `REPOSITORY_GIT_TOKEN_PENDING`, `REPOSITORY_CLEANUP_PENDING` or
 `REPOSITORY_CLEANUP_COMPLETE`. Check registry identity and deadline before retry.
@@ -376,15 +370,12 @@ A cleanup that stays pending logs `worker.repository-cleanup-warning` with its
 or `name-one-repository-ref` requires explicit selection. Inspect metadata
 and Pod generation without printing credentials.
 
-The [test guide](../testing/repository-credentials.md) distinguishes lifecycle,
-installed-runtime and live-provider proof. The
-[image volume case](../testing/docker.md#repository-runtime-volume-test-environment)
-checks Docker mounts; Helm checks rendered ingress. Neither proves CNI enforcement.
-Console recordings cover fixture/API behavior, not model, Slack or GitHub execution.
-The registered Driver test pushes two commits to one draft PR at a local provider.
-On the same Agent revision, the shipped Codex client completes a turn before and after Git
-withdrawal. On a team installation, verify that the Agent updates the PR itself, Git is
-denied before reaching the provider, and chat continues.
+The [test guide](../testing/repository-credentials.md) distinguishes lifecycle, installed-runtime
+and live-provider proof. [Docker mount](../testing/docker.md#repository-runtime-volume-test-environment)
+and rendered Helm checks do not prove CNI enforcement; console fixtures do not prove model,
+Slack or GitHub execution. The registered Driver test pushes two commits to one local draft PR
+and checks Codex turns before and after withdrawal on the same revision. On a team installation,
+verify Agent-authored PR updates, withdrawal denial before provider contact, and continued chat.
 
 ## Related docs
 

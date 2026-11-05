@@ -234,6 +234,7 @@ async function repositoryGitJourney(
   ]);
   let admitted: AgentRevision | undefined;
   let issuanceStarted = false;
+  let checkingIssuerPolicy = false;
   const issuanceRelease = deferred();
   const peer = await preparedStandingGitPeer(t, f.observerPool, f.namespace.id, {
     driver: owner.ref,
@@ -260,6 +261,9 @@ async function repositoryGitJourney(
         "issuance follows committed activation",
       );
       order.push("issue-after-activation");
+      if (checkingIssuerPolicy) {
+        return;
+      }
       issuanceStarted = true;
       await issuanceRelease.promise;
     },
@@ -520,7 +524,9 @@ async function repositoryGitJourney(
   const start = () =>
     f.start(compute, {
       emit: ({ event, code, outcome }: { event?: string; code?: string; outcome?: string }) => {
-        if (standing) workerEvents.push({ event, code, outcome });
+        if (standing) {
+          workerEvents.push({ event, code, outcome });
+        }
       },
       ...{ repositoryGitMaterial: peer.prepared.revisionMaterial },
       transformDrivers: (d: { installation: { drivers: object } }) => ({
@@ -549,6 +555,20 @@ async function repositoryGitJourney(
     }
     assert.equal((await f.currentAgent(agent))?.activeRevisionId, revision.id);
     order.push("active");
+    if (standing) {
+      // The issuer independently reads current registry policy. An admitted approval
+      // cannot issue a token through an owner whose registry removed its opt-in.
+      const { allowStandingApprovals: _allowStandingApprovals, ...disabled } = peer.registry;
+      const refusingOwner = await peer.startOwner(disabled);
+      checkingIssuerPolicy = true;
+      try {
+        await refusingOwner.maintain();
+        assert.equal(peer.gh.issuesOfTokens.length, 0);
+      } finally {
+        checkingIssuerPolicy = false;
+        await refusingOwner.close();
+      }
+    }
     // Hold the real provider request until the runtime has observed absent material.
     // This makes the pending state deterministic without a sleep or a fabricated token.
     let issuanceError: unknown;

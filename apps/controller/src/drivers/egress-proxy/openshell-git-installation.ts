@@ -369,7 +369,7 @@ export async function observeOpenShellGitInstallation(
   const admitted = entry.installed;
   if (
     predecessor &&
-    (!entry.preview || entry.preview.release === "acknowledged") &&
+    (!entry.preview || (entry.preview.mandatory && entry.preview.release === "acknowledged")) &&
     entry.opened &&
     entry.revision.repositoryCredentials?.standingApprovalId &&
     entry.supervisor?.sandboxId === sandbox.id &&
