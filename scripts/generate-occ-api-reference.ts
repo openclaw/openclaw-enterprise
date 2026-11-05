@@ -171,145 +171,86 @@ const permissionScopeQualifiers: Record<string, string> = {
   saved_sandbox_policy_additions: " (when saved network policy additions exist)",
 };
 
-function renderedExamples(content: Media, contentType: string) {
-  return Object.values(content.examples ?? {}).map(({ summary, value }) =>
-    [
-      summary ?? "Example",
-      contentType === "text/plain" ? "```text" : "```json",
-      contentType === "text/plain" ? value : JSON.stringify(value, null, 2),
-      "```",
-    ].join("\n"),
-  );
+function renderedExamples(content: unknown, contentType: string) {
+  return entries(field(content, "examples") ?? {}).map(([, example]) => [
+    field(example, "summary") ?? "Example",
+    contentType === "text/plain" ? "```text" : "```json",
+    contentType === "text/plain" ? field(example, "value") : JSON.stringify(field(example, "value"), null, 2),
+    "```",
+  ].join("\n"));
 }
 
-function operationReference(path: string, method: string, operation: Operation, document: Document, { headingLevel = 2 }: { headingLevel?: number } = {}) {
+function operationReference(path: string, method: string, operation: unknown, document: unknown, { headingLevel = 2 }: { headingLevel?: number } = {}) {
   const childHeading = "#".repeat(Math.min(headingLevel + 1, 6));
-  const sections = [
+  const sections: unknown[] = [
     `${"#".repeat(headingLevel)} \`${method.toUpperCase()} ${path}\``,
     `<span id="${operationAnchor(path, method)}"></span>`,
-    operation.summary ?? "No summary.",
-    `**Operation ID:** \`${operation.operationId ?? `${method}_${path}`}\``,
-    `**Permissions:** ${operation.description ?? "No IAM permission required."}`,
+    field(operation, "summary") ?? "No summary.",
+    `**Operation ID:** \`${field(operation, "operationId") ?? `${method}_${path}`}\``,
+    `**Permissions:** ${field(operation, "description") ?? "No IAM permission required."}`,
   ];
-
-  if (operation["x-openclaw-permissions"]?.length) {
-    sections.push(
-      [
-        "| Action | Resource | Scope |",
-        "| --- | --- | --- |",
-        ...operation["x-openclaw-permissions"].map(({ action, resourceKind, scope, condition }) => {
-          const qualifier = permissionScopeQualifiers[condition ?? ""] ?? "";
-          return `| \`${action}\` | \`${resourceKind}\` | \`${scope}\`${qualifier} |`;
-        }),
-      ].join("\n"),
-    );
+  const permissions = field(operation, "x-openclaw-permissions");
+  if (optionalField(permissions, "length")) {
+    sections.push(["| Action | Resource | Scope |", "| --- | --- | --- |", ...array(permissions).map((permission) => {
+      const condition = field(permission, "condition");
+      const qualifier = permissionScopeQualifiers[String(condition)] ?? "";
+      return `| \`${field(permission, "action")}\` | \`${field(permission, "resourceKind")}\` | \`${field(permission, "scope")}\`${qualifier} |`;
+    })].join("\n"));
   }
-
-  if (operation.parameters?.length) {
-    sections.push(
-      `${childHeading} Parameters`,
-      [
-        "| Name | In | Type | Required | Constraints | Example |",
-        "| --- | --- | --- | --- | --- | --- |",
-        ...operation.parameters.map((parameter) => {
-          const columns = [
-            `\`${parameter.name}\``,
-            parameter.in,
-            `\`${schemaType(parameter.schema, document)}\``,
-            parameter.required ? "Yes" : "No",
-            schemaConstraints(parameter.schema),
-            JSON.stringify(parameter.examples?.example?.value)?.replaceAll("|", "\\|") ?? "—",
-          ];
-          return `| ${columns.join(" | ")} |`;
-        }),
-      ].join("\n"),
-    );
+  const parameters = field(operation, "parameters");
+  if (optionalField(parameters, "length")) {
+    sections.push(`${childHeading} Parameters`, ["| Name | In | Type | Required | Constraints | Example |", "| --- | --- | --- | --- | --- | --- |", ...array(parameters).map((parameter) => {
+      const schema = field(parameter, "schema");
+      const value = optionalField(optionalField(field(parameter, "examples"), "example"), "value");
+      return `| ${[`\`${field(parameter, "name")}\``, field(parameter, "in"), `\`${schemaType(schema, document)}\``, field(parameter, "required") ? "Yes" : "No", schemaConstraints(schema), JSON.stringify(value)?.replaceAll("|", "\\|") ?? "—"].join(" | ")} |`;
+    })].join("\n"));
   }
-
-  if (operation.requestBody) {
-    sections.push(
-      `${childHeading} Request body`,
-      `**Required:** ${operation.requestBody.required ? "Yes" : "No"}`,
-    );
-
-    for (const [contentType, content] of Object.entries(operation.requestBody.content ?? {})) {
-      sections.push(
-        `**Content type:** \`${contentType}\``,
-        schemaTable(content.schema, document),
-        ...renderedExamples(content, contentType),
-      );
+  const requestBody = field(operation, "requestBody");
+  if (requestBody) {
+    sections.push(`${childHeading} Request body`, `**Required:** ${field(requestBody, "required") ? "Yes" : "No"}`);
+    for (const [contentType, content] of entries(field(requestBody, "content") ?? {})) {
+      sections.push(`**Content type:** \`${contentType}\``, schemaTable(field(content, "schema"), document), ...renderedExamples(content, contentType));
     }
   }
-
-  sections.push(
-    `${childHeading} Responses`,
-    [
-      "| Status | Meaning |",
-      "| --- | --- |",
-      ...Object.entries(operation.responses).map(([status, response]) => {
-        const description = response.description;
-        const meaning =
-          description && description !== "Default Response"
-            ? description
-            : (STATUS_CODES[status] ?? description);
-        return `| \`${status}\` | ${meaning?.replaceAll("|", "\\|")} |`;
-      }),
-    ].join("\n"),
-  );
-
-  for (const [status, response] of Object.entries(operation.responses)) {
-    if (!status.startsWith("2")) {
-      continue;
-    }
-
-    for (const [contentType, content] of Object.entries(response.content ?? {})) {
-      sections.push(
-        `**\`${status}\` response body:** \`${contentType}\``,
-        schemaTable(content.schema, document),
-        ...renderedExamples(content, contentType),
-      );
+  const responses = entries(field(operation, "responses"));
+  sections.push(`${childHeading} Responses`, ["| Status | Meaning |", "| --- | --- |", ...responses.map(([status, response]) => {
+    const description = field(response, "description");
+    const meaning = description && description !== "Default Response" ? description : STATUS_CODES[status] ?? description;
+    return `| \`${status}\` | ${meaning == null ? undefined : text(meaning).replaceAll("|", "\\|")} |`;
+  })].join("\n"));
+  for (const [status, response] of responses) {
+    if (!status.startsWith("2")) continue;
+    for (const [contentType, content] of entries(field(response, "content") ?? {})) {
+      sections.push(`**\`${status}\` response body:** \`${contentType}\``, schemaTable(field(content, "schema"), document), ...renderedExamples(content, contentType));
     }
   }
-
   return sections.join("\n\n");
 }
 
 function operationRows(operations: Entry[]) {
-  return [
-    "| Operation | Summary |",
-    "| --- | --- |",
-    ...operations.map(({ anchor, method, operation, path }) => {
-      return `| [\`${method.toUpperCase()} ${path}\`](#${anchor}) | ${operation.summary ?? "No summary."} |`;
-    }),
-  ].join("\n");
+  return ["| Operation | Summary |", "| --- | --- |", ...operations.map(({ anchor, method, operation, path }) => `| [\`${method.toUpperCase()} ${path}\`](#${anchor}) | ${field(operation, "summary") ?? "No summary."} |`)].join("\n");
 }
 
-function errorSchema(document: Document, entries: Entry[]) {
-  const schemas = entries
-    .flatMap(({ operation }) => Object.entries(operation.responses))
-    .filter(([status, response]) => {
-      return !status.startsWith("2") && response.content?.["application/json"]?.schema;
-    })
-    .flatMap(([, response]) => response.content?.["application/json"]?.schema ? [response.content["application/json"].schema] : []);
-  const detailed = schemas.filter(
-    (schema) => resolveSchema(schema, document)?.properties?.error?.properties?.details,
-  );
-  // Prefer the shared envelope component over a route's inline copy of it.
-  return detailed.find((schema) => schema.$ref) ?? detailed[0] ?? schemas[0];
+function errorSchema(document: unknown, operationList: Entry[]) {
+  const schemas = operationList.flatMap(({ operation }) => entries(field(operation, "responses")))
+    .filter(([status, response]) => !status.startsWith("2") && optionalField(optionalField(optionalField(response, "content"), "application/json"), "schema"))
+    .map(([, response]) => field(field(field(response, "content"), "application/json"), "schema"));
+  const detailed = schemas.filter((schema) => optionalField(optionalField(optionalField(optionalField(resolveSchema(schema, document), "properties"), "error"), "properties"), "details"));
+  return detailed.find((schema) => field(schema, "$ref")) ?? detailed[0] ?? schemas[0];
 }
 
 function generatedComment() {
   return "<!-- Generated from packages/contracts/openapi/occ-api.openapi.json. Do not edit directly. -->";
 }
 
-function tableOfContents(titles: string[]) {
+function tableOfContents(titles: unknown[]) {
   const links = titles.map((title) => `- [${title}](#${tagAnchor(title)})`);
   return `## Table of contents\n\n${links.join("\n")}`;
 }
 
-function introduction(document: Document) {
+function introduction(document: unknown) {
   return [
-    `Version \`${document.info.version}\`; OpenAPI \`${document.openapi}\`.`,
+    `Version \`${field(field(document, "info"), "version")}\`; OpenAPI \`${field(document, "openapi")}\`.`,
     [
       "This reference is generated from the",
       "[checked-in OpenAPI contract](../../packages/contracts/openapi/occ-api.openapi.json).",
@@ -332,24 +273,16 @@ function introduction(document: Document) {
   ];
 }
 
-function operationEntries(document: Document): Entry[] {
-  return Object.entries(document.paths).flatMap(([path, operations]) =>
-    Object.entries(operations)
-      .filter(([method]) => httpMethods.has(method))
-      .map(([method, operation]) => ({
-        anchor: operationAnchor(path, method),
-        method,
-        operation,
-        operationId: operation.operationId,
-        path,
-        tag: operation.tags?.[0] ?? "Untagged",
-      })),
-  );
+function operationEntries(document: unknown): Entry[] {
+  return entries(field(document, "paths")).flatMap(([path, operations]) => entries(operations)
+    .filter(([method]) => httpMethods.has(method))
+    .map(([method, operation]) => ({ anchor: operationAnchor(path, method), method, operation,
+      operationId: field(operation, "operationId"), path, tag: optionalField(field(operation, "tags"), "0") ?? "Untagged" })));
 }
 
 function referenceGroups(entries: Entry[]): Group[] {
   const groups: Group[] = [];
-  const byTag = new Map<string, Group>();
+  const byTag = new Map<unknown, Group>();
   for (const entry of entries) {
     let group = byTag.get(entry.tag);
     if (!group) {
@@ -366,9 +299,9 @@ function referenceGroups(entries: Entry[]): Group[] {
   return groups;
 }
 
-function referencePage(document: Document, groups: Group[], entries: Entry[]) {
+function referencePage(document: unknown, groups: Group[], operationList: Entry[]) {
   const sections = [];
-  const schema = errorSchema(document, entries);
+  const schema = errorSchema(document, operationList);
 
   if (schema) {
     sections.push(
@@ -430,7 +363,7 @@ function referencePage(document: Document, groups: Group[], entries: Entry[]) {
     );
   }
 
-  const schemas = Object.entries(document.components?.schemas ?? {});
+  const schemas = entries(optionalField(optionalField(document, "components"), "schemas") ?? {});
   if (schemas.length) {
     sections.push(
       "## Shared schemas",
@@ -440,7 +373,7 @@ function referencePage(document: Document, groups: Group[], entries: Entry[]) {
         "| --- | --- |",
         ...schemas.map(
           ([name, schema]) =>
-            `| \`${schema.title ?? name}\` | \`${schemaType(schema, document)}\` |`,
+            `| \`${field(schema, "title") ?? name}\` | \`${schemaType(schema, document)}\` |`,
         ),
       ].join("\n"),
     );
@@ -451,7 +384,7 @@ function referencePage(document: Document, groups: Group[], entries: Entry[]) {
     .map((heading) => heading.slice(3));
   const page = [
     "---\ntags: [nolimit]\n---",
-    `# ${document.info.title} reference`,
+    `# ${field(field(document, "info"), "title")} reference`,
     generatedComment(),
     ...introduction(document),
     tableOfContents(titles),
@@ -460,7 +393,7 @@ function referencePage(document: Document, groups: Group[], entries: Entry[]) {
   return `${page.join("\n\n")}\n`;
 }
 
-function cheatSheetEntityOrder(title: string) {
+function cheatSheetEntityOrder(title: unknown) {
   const index = cheatSheetEntities.findIndex((entity) => entity.title === title);
   if (index !== -1) {
     return index;
@@ -497,7 +430,7 @@ function cheatSheetOperationOrder({ method, operationId, path }: ValidEntry) {
 }
 
 function cheatSheetPage(entries: Entry[]) {
-  const groups = new Map<string, ValidEntry[]>();
+  const groups = new Map<unknown, ValidEntry[]>();
   const operationIds = new Set<string>();
   const operationAnchors = new Map<string, string>();
 
@@ -513,10 +446,11 @@ function cheatSheetPage(entries: Entry[]) {
     operationIds.add(entry.operationId);
 
     const route = `${entry.method.toUpperCase()} ${entry.path}`;
-    if (typeof entry.operation.summary !== "string" || !entry.operation.summary.trim()) {
+    const operationSummary = field(entry.operation, "summary");
+    if (typeof operationSummary !== "string" || !operationSummary.trim()) {
       throw new Error(`Missing OpenAPI summary for ${route}.`);
     }
-    const summary = entry.operation.summary.trim().replace(/\s+/g, " ");
+    const summary = operationSummary.trim().replace(/\s+/g, " ");
 
     if (operationAnchors.has(entry.anchor)) {
       throw new Error(
@@ -566,7 +500,7 @@ function cheatSheetPage(entries: Entry[]) {
   return `${sections.join("\n\n")}\n`;
 }
 
-export function generateApiReferenceOutputs(document: Document): [Output, Output] {
+export function generateApiReferenceOutputs(document: unknown): [Output, Output] {
   const entries = operationEntries(document);
   const groups = referenceGroups(entries);
   const outputs: [Output, Output] = [
@@ -584,7 +518,7 @@ export function generateApiReferenceOutputs(document: Document): [Output, Output
   return outputs;
 }
 
-export function generateApiReference(document: Document) {
+export function generateApiReference(document: unknown) {
   return generateApiReferenceOutputs(document)[0].content;
 }
 
@@ -626,7 +560,7 @@ async function run() {
     throw new Error("Usage: node scripts/generate-occ-api-reference.ts [--check]");
   }
 
-  const document = JSON.parse(await readFile(documentPath, "utf8"));
+  const document: unknown = JSON.parse(await readFile(documentPath, "utf8"));
   const outputs = generateApiReferenceOutputs(document);
 
   if (arguments_[0] === "--check") {
