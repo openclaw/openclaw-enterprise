@@ -3,49 +3,25 @@ import { STATUS_CODES } from "node:http";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-type Schema = {
-  $ref?: string;
-  title?: string;
-  const?: unknown;
-  enum?: unknown[];
-  anyOf?: Schema[];
-  type?: string;
-  items?: Schema;
-  additionalProperties?: boolean | Schema;
-  properties?: Record<string, Schema>;
-  required?: string[];
-  format?: string;
-  minLength?: number;
-  maxLength?: number;
-  minimum?: number;
-  maximum?: number;
-  minItems?: number;
-  maxItems?: number;
-  pattern?: string;
-  default?: unknown;
-  description?: string;
-};
-type Media = { schema: Schema; examples?: Record<string, { summary?: string; value: unknown }> };
-type Operation = {
-  operationId?: string;
-  summary?: string;
-  description?: string;
-  tags?: string[];
-  "x-openclaw-permissions"?: { action: string; resourceKind: string; scope: string; condition?: string }[];
-  parameters?: { name: string; in: string; schema: Schema; required?: boolean; examples?: Record<string, { value: unknown }> }[];
-  requestBody?: { required?: boolean; content?: Record<string, Media> };
-  responses: Record<string, { description?: string; content?: Record<string, Media> }>;
-};
-type Document = {
-  info: { title: string; version: string };
-  openapi: string;
-  paths: Record<string, Record<string, Operation>>;
-  components?: { schemas?: Record<string, Schema> };
-};
-type Entry = { anchor: string; method: string; operation: Operation; operationId: string | undefined; path: string; tag: string };
+type Entry = { anchor: string; method: string; operation: unknown; operationId: unknown; path: string; tag: unknown };
 type ValidEntry = Entry & { operationId: string; summary: string };
-type Group = { title: string; anchor: string; operations: Entry[] };
+type Group = { title: unknown; anchor: string; operations: Entry[] };
 type Output = { label: string; path: string; content: string };
+
+function hasFields(value: unknown): value is Record<string, unknown> {
+  return (typeof value === "object" && value !== null) || typeof value === "function";
+}
+function fields(value: unknown): Record<string, unknown> {
+  if (value == null) throw new TypeError("Cannot read nullish value");
+  const boxed: unknown = Object(value);
+  if (!hasFields(boxed)) throw new TypeError("Expected object");
+  return boxed;
+}
+function field(value: unknown, key: string): unknown { return fields(value)[key]; }
+function optionalField(value: unknown, key: string): unknown { return value == null ? undefined : field(value, key); }
+function entries(value: unknown): [string, unknown][] { return Object.entries(fields(value)); }
+function array(value: unknown): unknown[] { if (!Array.isArray(value)) throw new TypeError("Expected array"); return value; }
+function text(value: unknown): string { if (typeof value !== "string") throw new TypeError("Expected string"); return value; }
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const documentPath = new URL("../packages/contracts/openapi/occ-api.openapi.json", import.meta.url);
@@ -91,7 +67,7 @@ const cheatSheetEntities: { title: string; tag?: string; paths?: string[] }[] = 
   { title: "Backends" },
 ];
 
-function slugifySegment(value: string) {
+function slugifySegment(value: unknown) {
   return (
     String(value)
       .trim()
@@ -101,7 +77,7 @@ function slugifySegment(value: string) {
   );
 }
 
-function tagAnchor(tag: string) {
+function tagAnchor(tag: unknown) {
   return slugifySegment(tag);
 }
 
@@ -113,131 +89,74 @@ function operationAnchor(path: string, method: string) {
   return `${method.toLowerCase()}-${pathId}`;
 }
 
-function schemaType(schema: Schema, document: Document): string | undefined {
-  if (schema.$ref) {
-    const name = schema.$ref.split("/").at(-1);
-    return document.components?.schemas?.[name ?? ""]?.title ?? name;
+function schemaType(schema: unknown, document: unknown): unknown {
+  const ref = field(schema, "$ref");
+  if (ref) {
+    const name = text(ref).split("/").at(-1);
+    return optionalField(optionalField(optionalField(optionalField(document, "components"), "schemas"), name ?? ""), "title") ?? name;
   }
-
-  if (Object.hasOwn(schema, "const")) {
-    return JSON.stringify(schema.const);
-  }
-  if (schema.enum) {
-    return schema.enum.map((value) => JSON.stringify(value)).join(" or ");
-  }
-  if (schema.anyOf) {
-    return schema.anyOf.map((alternative) => schemaType(alternative, document)).join(" or ");
-  }
-  if (schema.type === "array") {
-    return `array<${schemaType(schema.items ?? {}, document)}>`;
-  }
-  if (
-    schema.type === "object" &&
-    schema.additionalProperties &&
-    typeof schema.additionalProperties === "object"
-  ) {
-    return `object<string, ${schemaType(schema.additionalProperties, document)}>`;
-  }
-
-  return schema.format ? `${schema.type} (${schema.format})` : (schema.type ?? "any");
+  if (Object.hasOwn(fields(schema), "const")) return JSON.stringify(field(schema, "const"));
+  const values = field(schema, "enum");
+  if (values) return array(values).map((value) => JSON.stringify(value)).join(" or ");
+  const anyOf = field(schema, "anyOf");
+  if (anyOf) return array(anyOf).map((value) => schemaType(value, document)).join(" or ");
+  const type = field(schema, "type");
+  if (type === "array") return `array<${schemaType(field(schema, "items") ?? {}, document)}>`;
+  const additional = field(schema, "additionalProperties");
+  if (type === "object" && additional && typeof additional === "object") return `object<string, ${schemaType(additional, document)}>`;
+  const format = field(schema, "format");
+  return format ? `${type} (${format})` : type ?? "any";
 }
 
-function isSchema(value: unknown): value is Schema {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function resolveSchema(schema: Schema, document: Document): Schema {
-  if (!schema?.$ref) {
-    return schema;
-  }
-
-  if (!schema.$ref.startsWith("#/")) {
-    return schema;
-  }
-
+function resolveSchema(schema: unknown, document: unknown): unknown {
+  const ref = optionalField(schema, "$ref");
+  if (!ref || !text(ref).startsWith("#/")) return schema;
   let value: unknown = document;
-  for (const segment of schema.$ref.slice(2).split("/")) {
-    if (typeof value !== "object" || value === null) {
-      return schema;
-    }
-    value = Object.entries(value).find(([key]) => key === segment.replaceAll("~1", "/").replaceAll("~0", "~"))?.[1];
+  for (const segment of text(ref).slice(2).split("/")) {
+    value = optionalField(value, segment.replaceAll("~1", "/").replaceAll("~0", "~"));
   }
-  return isSchema(value) ? value : schema;
+  return value ?? schema;
 }
 
-function schemaConstraints(schema: Schema) {
-  const constraints = [];
-
-  if (schema.minLength !== undefined) {
-    constraints.push(`min length: ${schema.minLength}`);
+function schemaConstraints(schema: unknown) {
+  const constraints: string[] = [];
+  for (const [key, label] of [["minLength", "min length"], ["maxLength", "max length"], ["minimum", "minimum"], ["maximum", "maximum"], ["minItems", "min items"], ["maxItems", "max items"]] as const) {
+    const value = field(schema, key);
+    if (value !== undefined) constraints.push(`${label}: ${value}`);
   }
-  if (schema.maxLength !== undefined) {
-    constraints.push(`max length: ${schema.maxLength}`);
-  }
-  if (schema.minimum !== undefined) {
-    constraints.push(`minimum: ${schema.minimum}`);
-  }
-  if (schema.maximum !== undefined) {
-    constraints.push(`maximum: ${schema.maximum}`);
-  }
-  if (schema.minItems !== undefined) {
-    constraints.push(`min items: ${schema.minItems}`);
-  }
-  if (schema.maxItems !== undefined) {
-    constraints.push(`max items: ${schema.maxItems}`);
-  }
-  if (schema.pattern) {
-    constraints.push(`pattern: \`${schema.pattern.replaceAll("|", "\\|")}\``);
-  }
-  if (schema.default !== undefined) {
-    constraints.push(`default: ${JSON.stringify(schema.default)}`);
-  }
-  if (schema.description) {
-    constraints.push(schema.description.replaceAll("|", "\\|"));
-  }
-
+  const pattern = field(schema, "pattern");
+  if (pattern) constraints.push(`pattern: \`${text(pattern).replaceAll("|", "\\|")}\``);
+  const defaultValue = field(schema, "default");
+  if (defaultValue !== undefined) constraints.push(`default: ${JSON.stringify(defaultValue)}`);
+  const description = field(schema, "description");
+  if (description) constraints.push(text(description).replaceAll("|", "\\|"));
   return constraints.join("; ") || "—";
 }
 
-function schemaRows(schema: Schema, document: Document, parent = ""): string[] {
+function schemaRows(schema: unknown, document: unknown, parent = ""): string[] {
   const resolvedSchema = resolveSchema(schema, document);
-  const rows = [];
-
-  for (const [name, property] of Object.entries(resolvedSchema.properties ?? {})) {
+  const rows: string[] = [];
+  for (const [name, property] of entries(field(resolvedSchema, "properties") ?? {})) {
     const resolvedProperty = resolveSchema(property, document);
-    const field = parent ? `${parent}.${name}` : name;
-    const required = resolvedSchema.required?.includes(name) ? "Yes" : "No";
-    const columns = [
-      `\`${field}\``,
-      `\`${schemaType(property, document)}\``,
-      required,
-      schemaConstraints(resolvedProperty),
-    ];
-    rows.push(`| ${columns.join(" | ")} |`);
-
-    if (resolvedProperty.type === "object" && resolvedProperty.properties) {
-      rows.push(...schemaRows(resolvedProperty, document, field));
-    } else if (resolvedProperty.type === "array") {
-      const resolvedItems = resolvedProperty.items && resolveSchema(resolvedProperty.items, document);
-      if (resolvedItems!.properties) {
-        rows.push(...schemaRows(resolvedItems!, document, `${field}[]`));
-      }
+    const fieldName = parent ? `${parent}.${name}` : name;
+    const required = optionalField(resolvedSchema, "required");
+    const isRequired = required == null ? false : typeof required === "string" ? required.includes(name) : array(required).includes(name);
+    rows.push(`| \`${fieldName}\` | \`${schemaType(property, document)}\` | ${isRequired ? "Yes" : "No"} | ${schemaConstraints(resolvedProperty)} |`);
+    const type = field(resolvedProperty, "type");
+    if (type === "object" && field(resolvedProperty, "properties")) {
+      rows.push(...schemaRows(resolvedProperty, document, fieldName));
+    } else if (type === "array") {
+      const items = resolveSchema(field(resolvedProperty, "items"), document);
+      if (field(items, "properties")) rows.push(...schemaRows(items, document, `${fieldName}[]`));
     }
   }
-
   return rows;
 }
 
-function schemaTable(schema: Schema, document: Document) {
-  const resolvedSchema = resolveSchema(schema, document);
-  const rows = schemaRows(resolvedSchema, document);
-  if (rows.length === 0) {
-    return `Schema: \`${schemaType(schema, document)}\`.`;
-  }
-
-  return ["| Field | Type | Required | Constraints |", "| --- | --- | --- | --- |", ...rows].join(
-    "\n",
-  );
+function schemaTable(schema: unknown, document: unknown) {
+  const rows = schemaRows(resolveSchema(schema, document), document);
+  if (!rows.length) return `Schema: \`${schemaType(schema, document)}\`.`;
+  return ["| Field | Type | Required | Constraints |", "| --- | --- | --- | --- |", ...rows].join("\n");
 }
 
 const permissionScopeQualifiers: Record<string, string> = {
