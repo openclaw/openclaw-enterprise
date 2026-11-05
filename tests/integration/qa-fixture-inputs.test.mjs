@@ -668,6 +668,7 @@ test("QA command failures distinguish deadlines from signal exits without disclo
             JSON.stringify(error),
             /private-timeout-canary|process\.on|kill -PIPE/,
           );
+          assert.doesNotMatch(error.message, /private-timeout-canary|process\.on|kill -PIPE/);
           assert.equal(error.stdout, undefined);
           assert.equal(error.stderr, undefined);
           assert.equal(error.cmd, undefined);
