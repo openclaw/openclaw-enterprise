@@ -59,6 +59,7 @@
     "tests/integration/production-image-upgrade.test.mjs",
     "tests/integration/production-upgrade-chart-inputs.test.ts",
     "tests/conformance/test-files.test.mjs",
+    "tests/conformance/update-contributors.test.mjs",
     "tests/conformance/socket-directory.test.mjs",
     "tests/conformance/temporary-directory.test.mjs",
     "tests/integration/production-controller-security.test.mjs",
@@ -171,6 +172,9 @@
     },
     {
       "path": "tests/conformance/contracts.test.mjs"
+    },
+    {
+      "path": "tests/conformance/update-contributors.test.mjs"
     },
     {
       "path": "tests/docs/docs-length.test.mjs"

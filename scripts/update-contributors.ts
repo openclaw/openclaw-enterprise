@@ -12,12 +12,18 @@ const correctionsPath = new URL("./contributors.json", import.meta.url);
 const startMarker = "<!-- contributors:start -->";
 const endMarker = "<!-- contributors:end -->";
 
-function github(endpoint, paginated = false) {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function github(endpoint: string, paginated: true): unknown[];
+function github(endpoint: string, paginated?: false): unknown;
+function github(endpoint: string, paginated = false): unknown {
   const args = ["api", "--hostname", "github.com", endpoint];
   if (paginated) {
     args.push("--paginate", "--slurp");
   }
-  let value;
+  let value: unknown;
   try {
     value = JSON.parse(
       execFileSync("gh", args, {
@@ -45,25 +51,26 @@ function github(endpoint, paginated = false) {
 }
 
 function readCorrections() {
-  let corrections;
+  let corrections: unknown;
   try {
     corrections = JSON.parse(readFileSync(correctionsPath, "utf8"));
   } catch {
     throw new Error("Could not read scripts/contributors.json as JSON. README unchanged.");
   }
   assert.ok(
-    corrections && typeof corrections === "object" && !Array.isArray(corrections),
+    isRecord(corrections),
     "contributors.json must be an object keyed by numeric GitHub account ID.",
   );
+  const validated = new Map<
+    string,
+    { include: boolean; exclude: boolean; displayName: string | undefined }
+  >();
   for (const [id, correction] of Object.entries(corrections)) {
     assert.ok(
       /^[1-9]\d*$/.test(id) && Number.isSafeInteger(Number(id)),
       "Contributor correction keys must be positive numeric GitHub account IDs.",
     );
-    assert.ok(
-      correction && typeof correction === "object" && !Array.isArray(correction),
-      `Correction ${id} must be an object.`,
-    );
+    assert.ok(isRecord(correction), `Correction ${id} must be an object.`);
     assert.ok(
       Object.keys(correction).every((key) =>
         ["include", "exclude", "displayName", "url", "reason"].includes(key),
@@ -95,7 +102,7 @@ function readCorrections() {
     );
     let url;
     try {
-      url = new URL(correction.url);
+      url = new URL(String(correction.url));
     } catch {
       throw new Error(`Correction ${id} needs a public HTTPS evidence URL.`);
     }
@@ -103,26 +110,39 @@ function readCorrections() {
       url.protocol === "https:" && !url.username && !url.password,
       `Correction ${id} needs a public HTTPS evidence URL without credentials.`,
     );
+    validated.set(id, {
+      include: correction.include === true,
+      exclude: correction.exclude === true,
+      displayName: typeof correction.displayName === "string" ? correction.displayName : undefined,
+    });
   }
-  return corrections;
+  return validated;
 }
 
-function accountId(user) {
+function accountId(user: unknown) {
   assert.ok(
-    user && Number.isSafeInteger(user.id) && user.id > 0,
+    isRecord(user) && typeof user.id === "number" && Number.isSafeInteger(user.id) && user.id > 0,
     "GitHub returned an unresolved contributor. Add an explicit correction before retrying.",
   );
   return String(user.id);
 }
 
-function escapeAttribute(value) {
+function escapeAttribute(value: string) {
   return value.replace(/[&<>"']/g, (character) => {
-    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[character];
+    return (
+      new Map([
+        ["&", "&amp;"],
+        ["<", "&lt;"],
+        [">", "&gt;"],
+        ['"', "&quot;"],
+        ["'", "&#39;"],
+      ]).get(character) ?? character
+    );
   });
 }
 
 function updateContributors() {
-  assert.equal(process.argv.length, 2, "Usage: node scripts/update-contributors.mjs");
+  assert.equal(process.argv.length, 2, "Usage: node scripts/update-contributors.ts");
   const readme = readFileSync(readmePath, "utf8");
   assert.ok(
     readme.split(startMarker).length === 2 && readme.split(endMarker).length === 2,
@@ -134,18 +154,28 @@ function updateContributors() {
   const corrections = readCorrections();
   const metadata = github(`repos/${repository}`);
   assert.ok(
-    metadata.full_name === repository && typeof metadata.default_branch === "string",
+    isRecord(metadata) &&
+      metadata.full_name === repository &&
+      typeof metadata.default_branch === "string",
     "GitHub returned an unexpected repository identity or default branch.",
   );
   const branchEndpoint = `repos/${repository}/commits/${encodeURIComponent(metadata.default_branch)}`;
-  const baseline = github(branchEndpoint).sha;
+  const branch = github(branchEndpoint);
+  assert.ok(
+    isRecord(branch) && typeof branch.sha === "string",
+    "GitHub returned an invalid default-branch SHA.",
+  );
+  const baseline = branch.sha;
   assert.match(baseline, /^[0-9a-f]{40}$/, "GitHub returned an invalid default-branch SHA.");
-  const ids = new Set();
+  const ids = new Set<string>();
   for (const user of github(`repos/${repository}/contributors?per_page=100`, true)) {
     ids.add(accountId(user));
   }
   for (const pr of github(`repos/${repository}/pulls?state=closed&per_page=100`, true)) {
-    assert.ok(pr && Object.hasOwn(pr, "merged_at") && pr.base, "Invalid GitHub PR data.");
+    assert.ok(
+      isRecord(pr) && Object.hasOwn(pr, "merged_at") && isRecord(pr.base),
+      "Invalid GitHub PR data.",
+    );
     if (pr.merged_at && pr.base.ref === metadata.default_branch) {
       // Deleted authors have no account ID to resolve; retain the prior-wall guard below.
       if (pr.user === null) {
@@ -155,7 +185,7 @@ function updateContributors() {
       ids.add(accountId(pr.user));
     }
   }
-  for (const [id, correction] of Object.entries(corrections)) {
+  for (const [id, correction] of corrections) {
     if (correction.include) {
       ids.add(id);
     }
@@ -170,17 +200,22 @@ function updateContributors() {
     .slice(start, end)
     .matchAll(/avatars\.githubusercontent\.com\/u\/(\d+)\?/g)) {
     const id = match[1];
+    assert.ok(id);
     assert.ok(
-      ids.has(id) || corrections[id]?.exclude,
+      ids.has(id) || corrections.get(id)?.exclude,
       `Previously credited account ${id} is missing. Retry later or add an explicit inclusion/exclusion with evidence.`,
     );
   }
   const people = [];
   for (const id of ids) {
-    if (corrections[id]?.exclude) {
+    if (corrections.get(id)?.exclude) {
       continue;
     }
     const user = github(`user/${id}`);
+    assert.ok(
+      isRecord(user),
+      "GitHub returned an unresolved contributor. Add an explicit correction before retrying.",
+    );
     assert.equal(accountId(user), id, "GitHub returned a different account ID.");
     if (user.type === "Bot") {
       continue;
@@ -191,7 +226,7 @@ function updateContributors() {
         /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/.test(user.login),
       `Account ${id} is not a resolved human GitHub account; add an explicit exclusion if appropriate.`,
     );
-    people.push({ id, login: user.login, display: corrections[id]?.displayName ?? user.login });
+    people.push({ id, login: user.login, display: corrections.get(id)?.displayName ?? user.login });
   }
   assert.ok(people.length > 0, "No human contributors found; refusing to empty the README wall.");
   people.sort((left, right) => {
@@ -213,11 +248,9 @@ function updateContributors() {
         .join(" "),
     );
   }
-  assert.equal(
-    github(branchEndpoint).sha,
-    baseline,
-    "Default branch changed during collection; retry.",
-  );
+  const finalBranch = github(branchEndpoint);
+  assert.ok(isRecord(finalBranch), "Default branch changed during collection; retry.");
+  assert.equal(finalBranch.sha, baseline, "Default branch changed during collection; retry.");
   assert.equal(
     readFileSync(readmePath, "utf8"),
     readme,
@@ -237,6 +270,6 @@ function updateContributors() {
 try {
   updateContributors();
 } catch (error) {
-  console.error(error.message);
+  console.error(error instanceof Error ? error.message : String(error));
   process.exitCode = 1;
 }
