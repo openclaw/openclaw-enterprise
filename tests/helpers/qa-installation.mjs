@@ -144,12 +144,11 @@ function startupCommandTimings(stdout) {
   // Only the fixed records emitted by internal/occdev/timing.go are public.
   // Do not retain free-form stdout, including unknown or malformed stage records.
   const pattern =
-    /^\[occ-dev-timing\] stage=(runtime-build|controller-build|compose-build-and-start|compose-build|image-pull|image-export|image-import|node-image-pull|cluster-create|k3d-image-import|kubernetes-readiness|helm-install) elapsed_ms=(0|[1-9][0-9]{0,15}) failed=(true|false)$/;
+    /(?:^|\n)\[occ-dev-timing\] stage=(runtime-build|controller-build|compose-build-and-start|compose-build|image-pull|image-export|image-import|node-image-pull|cluster-create|k3d-image-import|kubernetes-readiness|helm-install) elapsed_ms=(0|[1-9][0-9]{0,15}) failed=(true|false)(?=\n|$)/g;
   const records = [];
   let omittedRecords = 0;
-  for (const line of String(stdout ?? "").split("\n")) {
-    const match = pattern.exec(line);
-    if (!match || !Number.isSafeInteger(Number(match[2]))) {
+  for (const match of String(stdout ?? "").matchAll(pattern)) {
+    if (!Number.isSafeInteger(Number(match[2]))) {
       continue;
     }
     records.push({ stage: match[1], elapsedMs: Number(match[2]), failed: match[3] === "true" });
