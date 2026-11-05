@@ -321,6 +321,11 @@ INVOCATION='${invocation}' MODEL="$OCC_TEST_OPENAI_MODEL" BASE_URL="\${${selecte
         recorded.args,
         /tests\/integration\/sandbox-driver-openshell-k3d-real\.test\.mjs/,
       );
+      assert.match(recorded.args, /--test-concurrency=1/);
+      assert.match(
+        recorded.args,
+        /tests\/integration\/openshell-gateway-tool-policy-real\.test\.ts/,
+      );
       assert.equal(recorded.openShellHarness, "openclaw");
     } else {
       assert.match(recorded.args, /--test-name-pattern=production dedicated Codex consumes Envoy/);
@@ -334,12 +339,17 @@ INVOCATION='${invocation}' MODEL="$OCC_TEST_OPENAI_MODEL" BASE_URL="\${${selecte
     assert.match(
       recorded.args,
       selectedHarness === "openclaw"
-        ? /--test tests\/integration\/sandbox-driver-openshell-k3d-real\.test\.mjs/
+        ? /--test --test-concurrency=1 tests\/integration\/openshell-gateway-tool-policy-real\.test\.ts tests\/integration\/sandbox-driver-openshell-k3d-real\.test\.mjs/
         : /^scripts\/k3d-demo\.mjs$/,
     );
     assert.equal(recorded.demoState, join(state, "demo.json"));
     assert.equal(recorded.harness, selectedHarness);
     if (selectedHarness === "openclaw") {
+      assert.match(recorded.args, /--test-concurrency=1/);
+      assert.match(
+        recorded.args,
+        /tests\/integration\/openshell-gateway-tool-policy-real\.test\.ts/,
+      );
       assert.equal(recorded.openShellHarness, "openclaw");
     }
   }

@@ -9,7 +9,6 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
-import { captureChild } from "./child-processes.mjs";
 import { createInstallationDriverConfiguration } from "./installation-driver-configuration.mjs";
 import { kubectlGetJson } from "./kubernetes-api-read.mjs";
 import { waitFor as pollFor } from "./wait-for.mjs";
@@ -670,13 +669,19 @@ export function createKubernetesClient({
 }
 
 async function applyManifest(kubectlArgumentsForSelection, manifest, { redactions = [] } = {}) {
-  const { status, stderr } = await captureChild(
-    "kubectl",
-    kubectlArgumentsForSelection(["apply", "-f", "-"]),
-    { input: manifest },
-  );
+  const child = spawn("kubectl", kubectlArgumentsForSelection(["apply", "-f", "-"]), {
+    stdio: ["pipe", "ignore", "pipe"],
+  });
+  let stderr = "";
+  child.stderr.setEncoding("utf8").on("data", (chunk) => {
+    stderr = (stderr + chunk).slice(-4096);
+  });
+  // kubectl can reject its arguments before reading the manifest. Its exit status reports why.
+  child.stdin.on("error", () => {});
+  child.stdin.end(manifest);
+  const [status] = await once(child, "close");
   if (status !== 0) {
-    throw new Error(`kubectl apply failed (${status}): ${redact(stderr.slice(-4096), redactions)}`);
+    throw new Error(`kubectl apply failed (${status}): ${redact(stderr, redactions)}`);
   }
 }
 

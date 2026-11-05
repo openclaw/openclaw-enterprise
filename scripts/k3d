@@ -779,7 +779,8 @@ if [ "$action" = "demo" ]; then
   if [ "$harness" = "openclaw" ]; then
     info "Starting the dedicated native OpenClaw Control UI demo through OpenShell."
     if ! node \
-      --test \
+      --test --test-concurrency=1 \
+      tests/integration/openshell-gateway-tool-policy-real.test.ts \
       tests/integration/sandbox-driver-openshell-k3d-real.test.mjs; then
       rm -f "$demo_file"
       exit 1
@@ -796,7 +797,8 @@ fi
 if [ "$harness" = "openclaw" ]; then
   info "Running the dedicated native OpenClaw integration through OpenShell."
   node \
-    --test \
+    --test --test-concurrency=1 \
+    tests/integration/openshell-gateway-tool-policy-real.test.ts \
     tests/integration/sandbox-driver-openshell-k3d-real.test.mjs
   echo "Dedicated native OpenClaw with OpenShell integration passed."
 else
