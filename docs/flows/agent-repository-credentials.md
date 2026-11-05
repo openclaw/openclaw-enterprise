@@ -131,7 +131,7 @@ selects the Backend's GitHub policy. Its Backend ID must match the registry.
 and rejects missing or mismatched ownership for configured repository access.
 Startup rejects `drivers.repo` in every mode before worker or attempt creation.
 
-OpenShell parsing and chart listener constraints belong to
+OpenShell parsing and chart constraints belong to
 `apps/controller/src/drivers/egress-proxy/openshell-configuration.ts`.
 
 Bundled deploy calls `resolveBindings` in `OpenClawController.admitRepositoryCredentials`;
