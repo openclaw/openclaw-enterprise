@@ -287,16 +287,16 @@ rejected App key (`credential_unavailable`).
 
 ## Route state, restarts and recovery
 
-`REPOSITORY_GIT_ROUTE_PENDING` means the worker has not verified the current
-Sandbox, supervisor and provider generation, or material is unavailable.
-`REPOSITORY_GIT_ROUTE_BLOCKED` closes Git until a new revision; continued chat
-requires independent model access and verified Git-only removal. Unsafe identity
-changes, overlapping GitHub access from retained providers or failed observation
-can require runtime retirement instead. Git-only removal records one conditional
-detach request. While Git stays attached, the worker sends that same request again;
-a moved Sandbox version or an outcome the gateway cannot tell retires the runtime.
-An empty OpenShell profile workspace selects the platform profile, not a same-named
-Workspace profile.
+`REPOSITORY_GIT_ROUTE_PENDING` means Sandbox, supervisor or provider-generation
+verification is incomplete, or material is unavailable. `REPOSITORY_GIT_ROUTE_BLOCKED`
+closes Git until a new revision. Continued chat requires independent model access
+and verified Git-only removal. Unsafe identity changes, retained GitHub access or
+failed observation can require retirement. Removal records one conditional detach
+request, repeated while Git stays attached; a changed Sandbox version or unknown
+gateway outcome retires the runtime.
+An empty profile workspace selects the platform profile. Files-only profiles can
+remain attached: omitted protobuf endpoint/credential lists mean empty lists.
+Exact profile identity and Git-overlap checks still apply.
 
 A transient observation failure closes access until the same installation verifies,
 with retry backoff from 1 s to 10 s. The held-launch paths (`github-repository`,
