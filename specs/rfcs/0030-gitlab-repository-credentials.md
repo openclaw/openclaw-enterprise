@@ -33,6 +33,28 @@ checks the current execution, Agent revision, project, profile, operation, and
 withdrawal state immediately before GitLab I/O. A valid PAT does not authorize
 a request by itself.
 
+### Current authority for an open session
+
+The current authority for an existing GitLab session is the OCC persisted
+standing approval for the exact active Agent revision, Namespace, project
+binding, profile, approval generation, and scope fingerprint. The admission
+snapshot is only the session's original binding; it is not current authority.
+
+Before each GitLab request starts, the selected delivery owner must obtain or
+validate a short-lived send permit against that OCC state. The permit must
+match the session's active revision and binding and must be rejected when the
+Namespace grant is withdrawn, the project or profile is reassigned, the
+approval generation changes, or the scope fingerprint no longer matches.
+The check must complete before the first upstream byte. PAT availability,
+session liveness, cancellation, and a deadline are necessary local checks but
+are not sufficient authority.
+
+The native PAT implementation in this branch does not yet perform this OCC
+current-grant check. It checks local token availability and timing only. The
+first supported path therefore remains a release gate until the owner and
+permit contract are implemented and demonstrated through the regular Agent
+workflow.
+
 The supported lifecycle is:
 
 1. **Create:** The operator creates a project service account and PAT in
@@ -154,7 +176,7 @@ Support lets teams keep GitLab as their source of truth and retain their review 
 
 1. **Product maintainers:** Approve or reject shipping native development-only PAT delivery for the first supported path. Approval must name the protected PAT owner and the supported creation, scope, expiry, rotation, and retirement procedure.
 2. **Credential and Repo maintainers:** Which exact GitLab API operations and audit details do the selected profiles require?
-3. **Credential and Repo maintainers:** Define the current-grant authority source and lifetime rule for an already-open session. A Namespace withdrawal or project/profile reassignment must deny the next request before GitLab I/O; a PAT’s continued validity is not sufficient.
+3. **Credential and Repo maintainers:** Implement and qualify the current-grant authority contract above. A Namespace withdrawal or project/profile reassignment must deny the next request before GitLab I/O; a PAT’s continued validity is not sufficient.
 4. **Future Token Service maintainers:** What provider contract will replace the protected live PAT, including preparation, custody, renewal, retirement, and the same final-send authorization boundary?
 
 ## References

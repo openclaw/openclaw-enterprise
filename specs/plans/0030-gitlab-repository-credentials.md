@@ -76,6 +76,7 @@ The provider core and Installation-native selection are implemented on `feat/git
 - [x] Native sender session flow, Installation selection, Console options, and the mixed-provider refusal.
 - [ ] Composed proof: allowed effects, forbidden operation refused before GitLab receives it, withdrawal, and uncertain-write recovery.
 - [ ] Upgrade proof: load an existing Installation and its persisted repository bindings after this change, then exercise the selected Agent workflow without regenerating the bindings.
+- [ ] Current-grant owner: connect final-send authorization to the OCC standing approval for the exact active revision, binding, generation, and scope fingerprint; admission-time binding and PAT liveness alone are insufficient.
 
 ## Manual Notes
 
