@@ -217,7 +217,11 @@ or queue schedules.
 The fixture owns its loopback Kubernetes installation and cleanup. Its supervisor
 trust image adds only the private origin's public CA; the executable must match
 the pinned stock image. Record the tested source, image digests and each
-observation. This proves the selected installation and controlled Git boundary,
+observation. The lane's result artifact retains these receipts under
+`files[].measurements`, bound to its `sourceSha` and the selected test file.
+Receipts contain digests, Kubernetes UIDs, counters and fixed outcomes; opaque
+runtime identifiers use SHA-256 fingerprints. The final `cleanup` receipt is
+emitted only after all owned resources are removed. This proves the selected installation and controlled Git boundary,
 not live GitHub access or a different published image set.
 
 The case is registered in the `openshell` lane. For a reviewed same-repository PR,

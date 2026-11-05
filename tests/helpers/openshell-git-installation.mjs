@@ -8,6 +8,10 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import {
+  openShellGitRetentionKind,
+  projectOpenShellGitRetention,
+} from "../../scripts/ci/openshell-git-retention.mjs";
 import { run } from "../fixtures/repository-credentials/process.mjs";
 import { startSkipperPrivateGitOrigin } from "../fixtures/skipper-private-git-origin.mjs";
 import { availablePort } from "./available-port.mjs";
@@ -230,6 +234,14 @@ async function installOpenShellGit(t) {
   }
   const cleanup = [];
   const stackCleanup = [];
+  const measurement = (event, data) => {
+    const value = { kind: openShellGitRetentionKind, event, ...data };
+    assert.ok(
+      projectOpenShellGitRetention(value),
+      "qualification receipt must have a safe CI projection",
+    );
+    t.diagnostic(`openclaw-ci-measurement ${JSON.stringify(value)}`);
+  };
   // Stop workloads before the issuer, and run every cleanup even after a failure.
   t.after(async () => {
     tearingDown = true;
@@ -244,6 +256,7 @@ async function installOpenShellGit(t) {
     if (errors.length) {
       throw new AggregateError(errors, "Installed Git fixture cleanup failed");
     }
+    measurement("cleanup", { outcome: "passed" });
   });
   const stack = await localFirstAgentStack(
     {
@@ -260,13 +273,13 @@ async function installOpenShellGit(t) {
   assert.match(state.dockerHost, /^unix:\/\//);
   const directory = await mkdtemp(join(tmpdir(), "oce-installed-git-"));
   cleanup.push(() => rm(directory, { recursive: true, force: true }));
-  // Callers record identities, digests and counters only; never execution output
-  // or provider contents. Keep the evidence after the private directory is removed.
+  // The CI reporter retains only the closed identity/digest/counter projection
+  // after this private file is removed, including on passing runs.
   const checkpoint = async (event, data) => {
     const record = JSON.stringify({ event, ...data });
     assert.ok(record.length <= 16_384, "qualification metadata must remain bounded");
     await appendFile(join(directory, "observations.jsonl"), `${record}\n`, { mode: 0o600 });
-    t.diagnostic(record);
+    measurement(event, data);
   };
   // Infrastructure processes cannot inherit either model credential or ambient
   // GitHub credentials. Only the API Secret request below carries the model key.
