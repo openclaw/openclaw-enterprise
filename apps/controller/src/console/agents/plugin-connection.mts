@@ -17,14 +17,28 @@ export interface SlotConnection {
 export function pluginConnectionControl(
   slot: AgentPluginCredentialSlot,
   connections: SlotConnection,
+  currentSourceId?: string,
 ) {
   const notice = element("p", { className: "hint", role: "status" });
   const panel = element("div");
   let busy = false;
-  const open = button("Choose a connection template", () => void choose(), {
-    tone: "secondary",
-    size: "sm",
-  });
+  const currentSource = slot.sources.find((source) => source.id === currentSourceId);
+  const currentName = currentSourceId ? (currentSource?.name ?? "the current account") : undefined;
+  const needsConsent = currentSourceId
+    ? currentSource?.authorization === "required"
+    : slot.sources.some((source) => source.authorization === "required");
+  const open = button(
+    needsConsent
+      ? "Authorize for this server"
+      : currentName
+        ? "Connect a different account"
+        : "Choose a connection template",
+    () => void choose(),
+    {
+      tone: "secondary",
+      size: "sm",
+    },
+  );
   const root = element("div", { className: "stack" }, open, panel, notice);
   const unavailable = connections.unavailable(slot);
   if (unavailable) {

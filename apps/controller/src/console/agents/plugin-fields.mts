@@ -1021,8 +1021,36 @@ export function createPluginFields({
                 }),
             ),
           );
-          if (slot.connectAccount && slotConnection && !current) {
-            details.append(pluginConnectionControl(slot, slotConnection));
+          const needsConsent = slot.sources.some((source) => source.authorization === "required");
+          if (slotConnection && !stale) {
+            if (slot.connectAccount) {
+              details.append(
+                pluginConnectionControl(
+                  slot,
+                  slotConnection,
+                  typeof current === "string" ? current : undefined,
+                ),
+              );
+            } else if (needsConsent) {
+              const reason = slotConnection.unavailable(slot);
+              details.append(
+                element(
+                  "p",
+                  { className: "hint" },
+                  reason ??
+                    "This slot needs a connection template and permission to start consent for this server.",
+                ),
+              );
+            }
+          }
+          if (slot.sources.some((source) => !source.authorization)) {
+            details.append(
+              element(
+                "p",
+                { className: "hint" },
+                "Save plugin selections to bind a selected account and grant this Agent access.",
+              ),
+            );
           }
           if (!slot.sources.length) {
             details.append(
@@ -1248,7 +1276,7 @@ export function createPluginFields({
           );
           details.append(load);
         }
-      } else if (!enablementOnly && tools.size === 0) {
+      } else if (!enablementOnly && !hasManagedTools && tools.size === 0) {
         details.append(element("p", { className: "hint" }, "No tools listed for this plugin."));
       }
       if (entry.toolError) {

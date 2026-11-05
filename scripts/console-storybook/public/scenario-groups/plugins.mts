@@ -123,6 +123,40 @@ export function pluginConnectionReturn(
 }
 
 export const pluginsScenarios = {
+  namedSlotAccounts: {
+    ...namedSlotScenario,
+    pluginSelections: JSON.stringify({
+      [namedPlugin]: {
+        enabled: true,
+        driverPolicy: {
+          releaseSha256: namedRelease,
+          credentials: { support: savedSupportAccount.id },
+        },
+      },
+    }),
+    description:
+      "The Support slot already has its approved account. Another saved account needs provider consent for this server.",
+    steps: [
+      "Open Connect a different account to see which saved account it will replace. The separate Reports slot keeps its own account selection.",
+    ],
+  },
+  namedSlotAuthorize: {
+    ...namedSlotScenario,
+    name: "Authorize a saved account for this server",
+    actions: [...namedSlotScenario.actions, click("Authorize for this server")],
+  },
+  unrestrictedSlotScopes: {
+    ...namedSlotScenario,
+    name: "Choose OAuth scopes without a template limit",
+    connectionPreview: "unrestricted",
+    actions: [...namedSlotScenario.actions, click("Authorize for this server")],
+    description:
+      "Review required and suggested permissions for the Support account. An unrestricted template also accepts additional scope names.",
+    steps: [
+      "Select Support MCP. Keep the required read permission, leave the optional write permission unchecked, and enter another scope. Connect and attach shows the selected scopes at the simulated provider handoff.",
+      "Reset and choose Support OAuth. Connect with the Additional scopes field empty to request provider defaults.",
+    ],
+  },
   pluginConnectChoose: googleSlotStory("choose"),
   pluginConnectBound: googleSlotStory("bound"),
   pluginConnectEmpty: googleSlotStory("empty"),
