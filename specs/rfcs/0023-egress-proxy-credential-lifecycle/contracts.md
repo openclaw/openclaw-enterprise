@@ -167,12 +167,13 @@ returns a single-use custody handle and nonsecret evidence, or a refusal. Enforc
 runtime. Only the admitted trusted sender can consume the handle, never an Agent, UI, arbitrary
 callback or diagnostic. Bind evidence to SourceKey, binding, grant hash, isolation, store-qualified material
 identity, value version and `usableUntil`. Caller limits may tighten, never widen, admitted policy.
-Resolve neither contacts the provider nor signs, issues, refreshes or schedules work.
+For a dynamic credential, OCC delegates freshness to the Token Service. The sender
+receives only committed material for the authorized operation.
 
 | Interface                                                                       | Responsibility                                                                                                            |
 | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
 | `SecretDriver.readCredentialInput(secret, material, permit, retention, bounds)` | Read the authorized static target with an immutable version, authoritative observation time and expiry where present.     |
-| `WarmCredentialReader.readWarm`                                                 | Read eligible committed dynamic material for the exact grant and isolation; a cold or expired read starts no preparation. |
+| `WarmCredentialReader.readWarm`                                                 | Read eligible committed material for the exact grant and isolation after the Token Service resolves freshness. |
 
 | Lifecycle owner interface                                   | Responsibility                                                                                                                                                                                                                                          |
 | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -180,13 +181,25 @@ Resolve neither contacts the provider nor signs, issues, refreshes or schedules 
 | `prepare`, `removeRefresh`                                  | Separately authorized management may ensure readiness or request rotation. Removal stops preparation and settles owned artifacts. Retain a family while another admitted source or grant depends on it.                                                 |
 | `CredentialIssuer.issue`, `inspect`, `retire`               | Bind attempt, input version, grant, family, epoch and deadline. Distinguish known refusal, no dispatch, candidate and uncertain exchange. Inspect without repeating issuance. Retire exact custody and report provider revocation only where supported. |
 
-For OCE-managed dynamic credentials, the **Token Service** owns this lifecycle and the warm
-reader. Start with the worker's existing background preparation, encrypted custody and fenced
-issuer attempts. The GitHub adapter issues, validates and retires an installation token. A trusted
-sender can receive only eligible, committed material for its admitted grant and isolation. The
-authorizer can check that the exact installed attempt and value version are still current without
-reading the token. A cold or expired lookup issues nothing. Distinguish confirmed retirement,
-expiry without confirmed revocation, and an operation whose outcome is still unknown.
+OCC and its trusted callers use two Token Service operations for OCE-managed dynamic credentials.
+
+- `register` records the approved source and grant with one lifecycle owner. The GitHub owner
+  accepts an installation, the permitted repositories and permissions, and authority to read the
+  App signing key. It mints an installation token within those limits. For a saved OAuth
+  account, OCC hands the Token Service the refresh grant and first access token from consent.
+  The OAuth owner keeps that grant and uses the approved client registration for renewal.
+- `resolve` uses the registered grant, the caller's authority, minimum remaining validity and
+  original deadline. If the current token meets those limits, it returns immediately. When
+  renewal is due, the owner starts or joins background work for that grant. If the token is
+  missing, expired or too close to expiry for this request, the owner starts or joins preparation
+  for the exact grant. The caller waits only within its remaining time. An unsuccessful or
+  cancelled wait releases no material.
+
+Scheduled and request-triggered renewals share the same owner and durable attempt. A caller may
+tighten its validity requirement within policy. It cannot change the grant through resolution.
+The trusted sender must still prove that the selected attempt and value version are current.
+See the [request protocol](protocol.md#dynamic-material) for the authorization checks surrounding
+a wait and the [renewal protocol](protocol.md#prepare-and-renew-credentials) for uncertain outcomes.
 
 These interfaces can run in one process. [Protected Git](github-installation-access.md#let-a-team-keep-git-access-until-it-removes-approval)
 uses this owner. OpenShell can remain the lifecycle owner for a different credential family.
