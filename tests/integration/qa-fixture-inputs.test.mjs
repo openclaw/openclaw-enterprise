@@ -217,14 +217,7 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
       { cell: "kubernetes/Codex", scenarios: ["console-secrets"] },
     ],
   );
-  assert.deepEqual(selected.cells[1].unselected, [
-    "codex-search-config",
-    "custom-responses",
-    "console-secrets",
-    "git-write",
-    "git-push-denied",
-    "slack",
-  ]);
+  assert.deepEqual(selected.cells[1].unselected, ["git-write", "git-push-denied", "slack"]);
   assert.deepEqual(selected.cells[0].notApplicable, [
     "codex-search-config",
     "git-write",
