@@ -1,4 +1,9 @@
-import type { AuditEvent, OAuthClient, OccApiOperationId } from "@openclaw-enterprise/contracts";
+import type {
+  AuditEvent,
+  ConnectionEndpoint,
+  OAuthClient,
+  OccApiOperationId,
+} from "@openclaw-enterprise/contracts";
 import type {
   CreateConnectionTemplateInput,
   CreateOAuthClientInput,
@@ -8,7 +13,6 @@ import type {
 } from "@openclaw-enterprise/occ";
 import type { FastifyReply, FastifyRequest } from "fastify";
 
-import { googleWorkspaceDestinations } from "../drivers/plugin/google-workspace/operations.ts";
 import type { discoverMcpAuthorization } from "../connections/mcp-discovery.ts";
 
 function presentClient(client: OAuthClient) {
@@ -27,11 +31,16 @@ type TemplateHandler = (input: {
   mutationEvent: (templateId: string) => AuditEvent;
 }) => Promise<void>;
 
+export function listConnectionTemplates(
+  googleWorkspaceDestinations: readonly ConnectionEndpoint[],
+): TemplateHandler {
+  return async ({ meta, controller, actorId, reply }) => {
+    const data = await controller.listConnectionTemplates(actorId);
+    reply.send({ data, meta: { ...meta, googleWorkspaceDestinations } });
+  };
+}
+
 export const connectionTemplateHandlers: Partial<Record<OccApiOperationId, TemplateHandler>> = {
-  async listConnectionTemplates({ meta, controller, actorId, reply }) {
-    const templates = await controller.listConnectionTemplates(actorId);
-    reply.send({ data: templates, meta: { ...meta, googleWorkspaceDestinations } });
-  },
   async createConnectionTemplate({
     holdSession,
     meta,

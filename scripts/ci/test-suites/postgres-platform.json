@@ -137,7 +137,7 @@
     {
       "path": "tests/integration/postgres-connection-templates.test.ts",
       "expectedTests": [
-        "a Google API recipient pins the provider and can be narrowed in a new template version",
+        "Google defaults and edited HTTPS destination rows stay pinned to the saved template version",
         "an administrator registers OAuth clients against a pinned template and its availability",
         "OAuth client rotation updates its stable private reference across an unknown commit",
         "the worker removes an unpublished OAuth client after interrupted creation",

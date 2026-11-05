@@ -11,6 +11,8 @@ note under it says so.
 
 Open **Credentials → OAuth clients → Register OAuth client** as an Installation administrator. Choose **Create connection template**, then **Use Google OAuth settings**. Choose availability. Expand **API destinations** to review each proposed host, port and path. Add or remove rows before saving. Choose **Create template** to return to registration. Register the displayed redirect URI with Google and enter the credentials Google issued. [Connection templates](../../reference/connection-templates.md)
 
+When you edit a saved manual template, add only hosts you trust to receive existing accounts’ access tokens.
+
 ## Create and use a Secret
 
 1. Select **Create Secret** and enter a unique name and value. Names cannot be
