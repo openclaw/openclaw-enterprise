@@ -4,6 +4,12 @@ Start with the symptom you can observe. When asking an operator for help, give
 them the Namespace, Agent ID, version ID, approximate time, and any request ID
 the console shows. Never include API keys, tokens, or Secret values.
 
+## Codex refuses the required permission profile
+
+If a dedicated Codex Agent on OpenShell reports `Codex did not grant the requested :danger-full-access profile`, ask the account administrator to check its managed permission requirements. A policy limited to `ReadOnly` or `WorkspaceWrite` cannot meet the [OpenShell permission-profile requirement](../../reference/drivers/openshell-sandbox.md#codex-permission-profile).
+
+Successful login, a ready credential source, or a model reply under another permission profile does not prove compatibility. Use an approved compatible credential or an administrator-approved policy change, then [verify a model response from the actual Agent](../operate/model-verification.md). Keep managed policy, the Gateway permission check and OpenShell isolation intact.
+
 ## The configured model is unavailable
 
 Open the failed version in the Agent’s **Deployment** tab. If the startup model check reports an unavailable model, [choose a model ID for the same credential](../operate/model-verification.md#choose-a-model-for-dedicated-codex).

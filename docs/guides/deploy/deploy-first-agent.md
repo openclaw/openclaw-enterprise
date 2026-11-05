@@ -6,6 +6,8 @@ Complete the installation setup for [local k3d](local-setup.md), [Kubernetes](ku
 
 Choose one credential for the dedicated Codex Agent. Both paths use the [OpenShell Credential Gateway](../../reference/drivers/openshell-credential-gateway.md#source-type-catalog).
 
+Before selecting either credential, confirm its account policy meets the [OpenShell permission-profile requirement](../../reference/drivers/openshell-sandbox.md#codex-permission-profile).
+
 ### Option A. ChatGPT service account token
 
 To use Codex plugins, choose a [ChatGPT service account](https://learn.chatgpt.com/docs/enterprise/service-accounts) with the plugins you need enabled. For a new source, save its Codex access token in a private file outside the checkout.
