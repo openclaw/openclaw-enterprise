@@ -292,7 +292,7 @@ Missing authority or mismatched Drivers block store/sender calls. OpenShell conn
 Close aborts and joins. Readback settles delivery without reinstalling or restoring withdrawn access.
 
 Activation and maintenance commit atomically, preserving actors. Maintenance uses 30 seconds,
-the sender interval or shorter Compute interval. Restart invalidates missing sessions
+sender interval or shorter Compute interval. Restart invalidates missing sessions
 without reminting; cleanup permits deployment.
 [Prepared custody](../../apps/controller/src/drivers/repo/github/credentials/prepared-postgres.ts)
 erases standing tokens after verified expiry plus skew; uncertain revocations remain unresolved.
@@ -304,7 +304,7 @@ using Installation policy or the unbound Repo Driver. Contradictory selection pr
 Withdrawal or scope changes raise `REPOSITORY_STANDING_POLICY_CHANGED` before successor release.
 [Registry](../../apps/controller/src/drivers/repo/github/credentials/registry.ts) fingerprints bind `github-repository` permissions and identity.
 Issuance and delivery recheck opt-ins and grants before selecting material; standing delivery requires one binding.
-The [OpenShell observer](../../apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts)
+[OpenShell observer](../../apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts)
 rechecks expired predecessor policy and recipient after mandatory-hook acknowledgement.
 Renewal never authorizes expired requests, unacknowledged launches or observed-only previews.
 
@@ -333,16 +333,16 @@ inventory and invalidation do not prove disposal. Retained attempts survive vers
 `ControllerWorker.withdrawExpiredRepositoryAccess` retires the original version after IAM
 refusal, confirmed actor/Agent-principal absence, required model-source withdrawal or
 unsupported Git withdrawal. Model withdrawal precedes Gateway readiness.
-Failed reads stay pending without authority-loss evidence; optional withdrawals cannot justify retirement. `recoverPendingCredentialWithdrawals` recovers exhausted original
+Failed reads remain pending absent authority-loss evidence; optional withdrawals cannot justify retirement. `recoverPendingCredentialWithdrawals` recovers exhausted original
 and companion maintenance, preserving work and manual-replay holds. The v7 reducer observes
 stored operations without reapplying.
-See [tests](../../tests/integration/postgres-standing-expiry-authority.test.ts).
+[Tests](../../tests/integration/postgres-standing-expiry-authority.test.ts).
 
 `apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts:observeOpenShellGitPredecessor`
-guards subtraction and standing succession with matching identity/generation,
-a ready current Sandbox and observation under 15 seconds old.
-`witnessOpenShellGitLaunch` returns unverified identity for matching expired model evidence
-on cold observation; the worker independently supervises and durably defers renewal.
+guards subtraction and standing succession. Expired predecessors require matching identity/generation,
+the current ready Sandbox instance and an observation under 15 seconds old.
+Cold `witnessOpenShellGitLaunch` observation returns unverified identity for matching expired model evidence;
+independent worker supervision durably defers renewal.
 `subtractExpiredOpenShellGit` confirms revoked Git, ready model and
 [retained profiles](../../apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts)
 between reports, including recovery.
@@ -358,7 +358,7 @@ Attempts and cleanup survive; unresolved provisioning defers without consuming r
 Compute retirement removes material after owned Pods stop, preserving Pod/Deployment-referenced Secrets
 and requiring exact ownership and UID preconditions.
 Stop removes only its version's route, preserving newer resources. Route/Deployment deletion
-requires observed resourceVersion. Partial cleanup remains retryable; restart cannot prove token revocation.
+requires observed resourceVersion. Partial cleanup is retryable; restart cannot prove token revocation.
 
 ## Debugging and Verification
 
@@ -389,6 +389,8 @@ and continued chat on team installations.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 17:57: Qualify expiry. (authoring-run/3a354167-c2fd-45c5-97ef-b9e0e6dbdd4e - 6cd36f95f8184beb29fd2126543e64761696d5a4)
 
 - 2026-11-05 17:50: Merge standing renewal and retained-profile flow updates. (authoring-run/3a354167-c2fd-45c5-97ef-b9e0e6dbdd4e - 77e658f9a5459afc747230e26356191b6446f60b)
 
