@@ -14836,6 +14836,10 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
                   probeTemplate = template;
                   return "/isolated-probe";
                 },
+                // This fresh Gateway has no pending maintenance marker.
+                lstatSync() {
+                  throw Object.assign(new Error("File not found"), { code: "ENOENT" });
+                },
                 writeFileSync(path, value) {
                   files.set(path, value);
                 },
