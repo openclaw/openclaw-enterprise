@@ -160,7 +160,6 @@ async function repositoryGitJourney(
   const runtime = new OpenShellGitRuntime(
     {
       registrationName: "oce-prepared-git",
-      protectedExecution: true,
       authority: {
         host: "127.0.0.1",
         port,
