@@ -28,25 +28,35 @@ test("runtime image test routes only to its dedicated hosted job", () => {
 });
 
 const baseId = `sha256:${"b".repeat(64)}`;
-const ids = [`sha256:${"1".repeat(64)}`, `sha256:${"2".repeat(64)}`];
+const ids = [`sha256:${"1".repeat(64)}`, `sha256:${"2".repeat(64)}`] as const;
 const containerId = "c".repeat(64);
 
 // The fake models command effects and lost responses; no daemon is involved.
-function fakeEngine(options = {}) {
+function fakeEngine(options: {
+  buildResponseLost?: boolean;
+  createResponseLost?: boolean;
+  retagResponseLost?: boolean;
+  containerRemoveFails?: boolean;
+  omitReferences?: boolean;
+  containerdStore?: boolean;
+  imageRemoveResponseLost?: boolean;
+} = {}) {
   const tags = new Map([["base:fixture", baseId]]);
   const images = new Set([baseId]);
-  const containers = new Set();
-  const digests = new Map();
-  const calls = [];
+  const containers = new Set<string>();
+  const digests = new Map<string, string[]>();
+  const calls: (string | undefined)[][] = [];
   let builds = 0;
-  const docker = async (...args) => {
+  const docker = async (...args: (string | undefined)[]) => {
     calls.push(args);
     if (args[0] === "build") {
       const id = ids[builds++];
       const tag = args[args.indexOf("-t") + 1];
+      const iidfile = args[args.indexOf("--iidfile") + 1];
+      assert.ok(id && tag && iidfile);
       images.add(id);
       tags.set(tag, id);
-      await writeFile(args[args.indexOf("--iidfile") + 1], id);
+      await writeFile(iidfile, id);
       if (options.buildResponseLost) {
         throw new Error("build response lost");
       }
@@ -60,6 +70,7 @@ function fakeEngine(options = {}) {
       return { stdout: `${containerId}\n` };
     }
     if (args[0] === "tag") {
+      assert.ok(args[2] && args[1]);
       tags.set(args[2], args[1]);
       if (options.retagResponseLost) {
         throw new Error("retag response lost");
@@ -75,6 +86,7 @@ function fakeEngine(options = {}) {
       return { stdout: "" };
     }
     if (args[0] === "image" && args[1] === "inspect") {
+      assert.ok(args[2]);
       const id = tags.get(args[2]) ?? args[2];
       if (!images.has(id)) {
         throw new Error("No such image");
@@ -97,6 +109,7 @@ function fakeEngine(options = {}) {
     if (args[0] === "image" && args[1] === "rm") {
       assert.equal(args[2], "--no-prune");
       const ref = args[3];
+      assert.ok(ref);
       const id = tags.get(ref) ?? ref;
       if (tags.has(ref)) {
         tags.delete(ref);
@@ -117,7 +130,7 @@ function fakeEngine(options = {}) {
   return { docker, tags, images, containers, digests, calls };
 }
 
-async function withDirectory(run) {
+async function withDirectory<T>(run: (directory: string) => Promise<T>) {
   const directory = await mkdtemp(join(tmpdir(), "runtime-fixture-control-"));
   try {
     return await run(directory);
@@ -126,7 +139,7 @@ async function withDirectory(run) {
   }
 }
 
-async function buildPair(fixture, directory) {
+async function buildPair(fixture: Parameters<Parameters<typeof withRuntimeImageFixture>[2]>[0], directory: string) {
   const first = await fixture.build("fixture:first", join(directory, "first.iid"), "first", baseId);
   const second = await fixture.build(
     "fixture:second",
@@ -137,7 +150,7 @@ async function buildPair(fixture, directory) {
   return { first, second };
 }
 
-function imageRemovals(engine) {
+function imageRemovals(engine: ReturnType<typeof fakeEngine>) {
   return engine.calls.filter((args) => args[0] === "image" && args[1] === "rm");
 }
 
@@ -374,14 +387,17 @@ test("runtime fixture records pending effects and successful cleanup", async () 
         error.errors[0].message === "image removal response lost" &&
         /image cleanup incomplete or outcome unknown/.test(error.errors.at(-1).message),
     );
-    const result = JSON.parse(await readFile(receiptPath, "utf8"));
+    const result: unknown = JSON.parse(await readFile(receiptPath, "utf8"));
+    assert.ok(result && typeof result === "object" && "status" in result && "pending" in result && "images" in result && "history" in result);
+    assert.ok(result.pending && typeof result.pending === "object" && "operation" in result.pending && "reference" in result.pending);
+    assert.ok(Array.isArray(result.history));
     assert.equal(result.status, "unknown");
     assert.equal(result.pending.operation, "image-tag-remove");
     assert.equal(result.pending.reference, "fixture:second");
     assert.deepEqual(result.images, ids);
     assert.ok(
       result.history.some(
-        (entry) => entry.operation === "image-tag-remove" && entry.status === "pending",
+        (entry: unknown) => entry !== null && typeof entry === "object" && "operation" in entry && "status" in entry && entry.operation === "image-tag-remove" && entry.status === "pending",
       ),
     );
   });
@@ -396,9 +412,10 @@ test("runtime fixture records pending effects and successful cleanup", async () 
       },
       { receiptPath },
     );
-    const result = JSON.parse(await readFile(receiptPath, "utf8"));
+    const result: unknown = JSON.parse(await readFile(receiptPath, "utf8"));
+    assert.ok(result && typeof result === "object" && "status" in result && "images" in result && "tags" in result);
     assert.equal(result.status, "complete");
-    assert.equal(result.pending, undefined);
+    assert.equal("pending" in result, false);
     assert.deepEqual(result.images, []);
     assert.deepEqual(result.tags, []);
   });
@@ -448,11 +465,12 @@ test("runtime fixture refuses existing tags and foreign image references", async
   });
   // A pull or push digest, and a containerd-store digest for a repository the
   // fixture holds no tag in, are references the fixture did not create.
-  for (const [store, digest] of [
+  const foreignDigests: [Parameters<typeof fakeEngine>[0], string][] = [
     [{}, `fixture@sha256:${"9".repeat(64)}`],
     [{ containerdStore: true }, `fixture@sha256:${"9".repeat(64)}`],
     [{ containerdStore: true }, `foreign@${ids[0]}`],
-  ]) {
+  ];
+  for (const [store, digest] of foreignDigests) {
     await withDirectory(async (directory) => {
       const engine = fakeEngine(store);
       await assert.rejects(
@@ -481,18 +499,18 @@ test("runtime fixture CLI binds the driver's socket without inherited endpoint o
     BUILDX_BUILDER: "remote-builder",
     OTHER: "kept",
   };
-  let call;
+  const calls: Parameters<Parameters<typeof localDockerCli>[0]>[] = [];
   const docker = localDockerCli(
     (...args) => {
-      call = args;
-      const execution = Promise.resolve({ stdout: "ok" });
-      execution.child = { pid: 123 };
-      return execution;
+      calls.push(args);
+      return Object.assign(Promise.resolve({ stdout: "ok" }), { child: { pid: 123 } });
     },
     inherited,
     (pid) => assert.equal(pid, 123),
   );
   assert.deepEqual(await docker("image", "inspect", "owned"), { stdout: "ok" });
+  const call = calls[0];
+  assert.ok(call);
   assert.equal(call[0], "docker");
   assert.deepEqual(call[1], ["--host=unix:///var/run/docker.sock", "image", "inspect", "owned"]);
   assert.deepEqual(call[2].env, { PATH: "/bin", OTHER: "kept" });
@@ -511,9 +529,7 @@ test("runtime fixture refuses further Docker commands after an unsettled group",
   const docker = localDockerCli(
     () => {
       calls += 1;
-      const execution = Promise.resolve({ stdout: `${containerId}\n` });
-      execution.child = { pid: 123 };
-      return execution;
+      return Object.assign(Promise.resolve({ stdout: `${containerId}\n` }), { child: { pid: 123 } });
     },
     {},
     () => {
@@ -531,6 +547,22 @@ test("runtime fixture refuses further Docker commands after an unsettled group",
   await assert.rejects(docker("image", "inspect", "base"), /unsettled process group/);
   assert.equal(calls, 1);
   assert.equal(docker.disposition().unknown, 1);
+});
+
+test("process group observation preserves thrown value property access", (t) => {
+  const missing = Object.assign(new Error("missing"), { code: "ESRCH" });
+  const values: unknown[] = [missing, { code: "ESRCH" }, 42, null, undefined];
+  for (const value of values) {
+    const kill = t.mock.method(process, "kill", () => { throw value; });
+    if (value === missing || (typeof value === "object" && value !== null && "code" in value)) {
+      assert.doesNotThrow(() => assertProcessGroupSettled(123));
+    } else if (value == null) {
+      assert.throws(() => assertProcessGroupSettled(123), TypeError);
+    } else {
+      assert.throws(() => assertProcessGroupSettled(123), (error) => error === value);
+    }
+    kill.mock.restore();
+  }
 });
 
 test("process group observation detects a surviving descendant", async () => {
