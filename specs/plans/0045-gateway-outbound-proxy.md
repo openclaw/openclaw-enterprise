@@ -11,6 +11,13 @@ rfc: ../rfcs/0019-gateway-outbound-proxy.md
 - **Proposal:** [RFC-0019](../rfcs/0019-gateway-outbound-proxy.md), not yet accepted.
 - **Source baseline:** `80725162a946f80652b939a32a57ee4e922eeb5c`
 
+**Blocked on upstream refresh.** Checked against upstream
+`0ecbe50bfe0df315fda06a90274b9e218b48d96c` on 2026-11-05: the baseline is
+2,655 upstream commits behind. Both this task number and the linked RFC number
+are occupied upstream. Preserve the experiment's evidence, refresh the code
+against current contracts, allocate available identifiers, and repeat affected
+verification before treating this as a current OCE implementation.
+
 ## Outcome and scope
 
 Select one operator-managed proxy, either bundled or external, for native
@@ -35,6 +42,8 @@ The bridge must be removed when OC provides the owning internal-transport hook.
 
 ## Implementation
 
+- [ ] Refresh against current upstream, reconcile its Driver/configuration and
+      Credential Proxy contracts, and correct colliding specification identifiers.
 - [x] Extend the existing bundled proxy and Helm packaging, not platform core.
 - [x] Render one endpoint for directory clients and embedded/dedicated Gateways.
 - [x] Preserve internal Codex transport through a lifecycle-owned exact bypass.

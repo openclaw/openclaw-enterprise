@@ -6,6 +6,23 @@ author: miguelbranco80
 
 # Proposal: one Gateway outbound proxy
 
+> **Stale-base draft — not ready for acceptance.** This experiment started from
+> fork baseline `80725162a946f80652b939a32a57ee4e922eeb5c` (2026-10-10).
+> Upstream checked on 2026-11-05 at
+> `0ecbe50bfe0df315fda06a90274b9e218b48d96c` has RFCs through 0029;
+> RFC-0019 already belongs to Keycloak verification. The linked TASK-0045 also
+> collides with an upstream plan. Refresh the implementation against upstream,
+> then allocate both identifiers again and update their links. The identifiers
+> below describe this fork experiment, not available upstream numbers.
+
+The refresh must account for upstream
+[Driver configuration contributions](https://github.com/openclaw/openclaw-enterprise/blob/0ecbe50bfe0df315fda06a90274b9e218b48d96c/specs/rfcs/0022-driver-configuration-contributions.md),
+[Credential Proxy ownership](https://github.com/openclaw/openclaw-enterprise/blob/0ecbe50bfe0df315fda06a90274b9e218b48d96c/specs/rfcs/0023-egress-proxy-credential-lifecycle/index.md),
+and [accepted Driver value inspection](https://github.com/openclaw/openclaw-enterprise/blob/0ecbe50bfe0df315fda06a90274b9e218b48d96c/specs/rfcs/0025-installation-driver-values.md).
+This CONNECT-routing proposal does not provide Credential Proxy's per-request
+authorization or credential mediation. Passing tests below do not qualify the
+current upstream implementation.
+
 - **ID:** RFC-0019
 - **Created:** 2026-11-05
 - **Last updated:** 2026-11-05
