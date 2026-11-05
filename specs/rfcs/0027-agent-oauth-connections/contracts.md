@@ -65,37 +65,13 @@ by the Agent's policy. Newly advertised tools require explicit selection and dep
 
 ### Client registrations
 
-OCE manages client registrations through the Driver. It keys each registration
-by the trusted `issuer` and `clientId` pair because client IDs are unique only
-within an authorization server. [RFC 6749 §2.2](https://www.rfc-editor.org/rfc/rfc6749#section-2.2)
+OCC owns the OAuth client registration. An Installation administrator registers the provider-issued client ID against a template. OCC records the registration's availability, issuer, client ID, authentication method and allowed token endpoint. A client ID identifies an application within its issuer. [RFC 6749 §2.2](https://www.rfc-editor.org/rfc/rfc6749#section-2.2)
 
-- `registerClient({ issuer, clientId, tokenUrl, tokenEndpointAuthMethod }, clientSecret?)` stores the resolved client
-  and any secret in the Driver's protected store. A public MCP client can omit the secret.
-  Templates with the same pair share the returned `clientRegistrationId`. The
-  same `clientId` at another issuer gets a separate registration.
-- `rotateClientSecret(clientRegistrationId, clientSecret)` replaces the secret
-  at the same private reference. An exchange, refresh or revocation that
-  authenticates the client resolves its current secret before the request.
-- `removeClient(clientRegistrationId)` removes the private registration once
-  its template versions and saved accounts have been released. OCC cleans up
-  interrupted creations and deletions after a restart.
-
-Each saved grant records the registration reference. The selected Driver
-supplies its current client authentication for the pinned issuer, client ID
-and provider endpoints. The Token Service keeps the user's refresh token.
-A rejected client secret requires an administrator to fix the registration.
-A revoked user grant requires the user to reconnect.
+A public client uses `none` and needs only its client ID. For `client_secret_basic` or `client_secret_post`, OCC stores the secret with the Installation's Secret Driver and keeps a private reference on the registration. The Console and public API expose only registration metadata. OCC can create a template, register a client, rotate a secret and delete an unused registration with OpenShell unconfigured. It durably tracks interrupted secret creation and deletion so cleanup can finish after a restart.
 
 ### Client authentication and account custody
 
-The Credential Refresh Driver supports independently registered clients. It
-advertises the authentication methods it implements and accepts a registration
-with a method and the corresponding write-only material. A public client has
-method `none`. Confidential clients may use `client_secret_basic` or
-`client_secret_post`. A method requiring a signing key is offered only by a
-Driver that implements signing. The registration pins the destination that may
-receive its credentials. Browser start, exchange and renewal use the resolved
-client and the same protected resource when resource indicators apply.
+At the initial code exchange, OCC resolves the current secret for the pinned registration if its authentication method requires one. A successful exchange hands the user's refresh grant and first access token to the Token Service. On subsequent renewal the Token Service obtains the same registration's current client authentication for the pinned issuer and token endpoint. Rotation at the same registration applies to existing accounts. If the provider rejects the client secret, the administrator can fix the registration and retry. Revoking the user's grant requires new consent.
 
 Connecting an account commits the grant in Token Service custody. The Token
 Service records the requested scopes and the scopes the provider granted.
