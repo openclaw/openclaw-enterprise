@@ -7,6 +7,8 @@ import {
   AgentRuntimeCredentialResponse,
   AgentRuntimeLogsResponse,
   AgentRuntimeResponse,
+  ConnectionTemplateSchema,
+  OAuthConnectionTemplateVersionSchema,
   CredentialSourceResponse,
   ErrorDetail as ErrorDetailSchema,
   ErrorResponse,
@@ -55,7 +57,6 @@ import {
   AgentPrincipalAuthorizationError,
   AuthorizationDeniedError,
   DeletionRetryOwnedError,
-  BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
   ComputeProvisioningRefusedError,
   createRuntimeLogCursorCodec,
   DependencyUnavailableError,
@@ -68,6 +69,7 @@ import {
   type DeployAgentAuthorization,
   type HarnessResolver,
   type OpenClawController,
+  type PlatformUnitOfWork,
 } from "@openclaw-enterprise/occ";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
 import Fastify, {
@@ -97,6 +99,8 @@ import {
   type PreparedAuthAccount,
 } from "./auth/index.ts";
 import { CONSOLE_CONTENT_SECURITY_POLICY, readConsoleAsset } from "./console-assets.ts";
+import { createBootstrapResources } from "./composition/installation-bootstrap.ts";
+import { discoverMcpAuthorization } from "./connections/mcp-discovery.ts";
 import { listManagedMcpToolNames } from "./connections/mcp-tool-discovery.ts";
 import type { ConsoleTheme } from "./console-theme.ts";
 import {
@@ -137,6 +141,7 @@ import {
   limitNativeAdminReturn,
 } from "./http/native-admin.ts";
 import { presetHandlers } from "./http/presets.ts";
+import { connectionTemplateHandlers } from "./http/connection-templates.ts";
 import {
   isRuntimeLogDownload,
   RUNTIME_LOG_DOWNLOAD_ACTION,
@@ -188,6 +193,7 @@ export interface ControllerAppOptions {
   readonly auth: ControllerAuth;
   readonly workspaceFilesAccess?: ControllerWorkspaceFilesAccess;
   readonly workspaceFileRequestTimeoutMs?: number;
+  readonly discoverMcpAuthorization?: typeof discoverMcpAuthorization;
   readonly readManagedMcpToolNames?: typeof listManagedMcpToolNames;
   readonly nativeAdmin?: NativeAdminAccessConfig;
   readonly nativeAdminGatewayApiKey?: () => Promise<string>;
@@ -1820,6 +1826,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     auditSink: options.auditSink,
   });
 
+  const connectionOrigin = publicOrigin ?? browserOrigin?.origin;
   const handlers: ResourceHandlers = {
     ...resourceHandlers,
     ...sandboxPolicyHandlers,
@@ -2202,9 +2209,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           created.selectDriver("sandbox", options.sandboxDriver.id);
         }
         await created.transact(async (unit) => {
-          await created.createNamespace(context.actorId, {
-            name: BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
-          });
+          await createBootstrapResources(created, context.actorId);
           await unit.audit.append(
             event(operation, request, target, "bootstrap", context, decision.evidence),
           );
@@ -2233,6 +2238,56 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         scope: "installation",
       });
       reply.send({ data: { configurations }, meta: { requestId: request.id } });
+      return;
+    }
+
+    const templateHandler = connectionTemplateHandlers[operation.operationId];
+    if (templateHandler) {
+      const admitted = admissions.get(request);
+      if (!admitted) {
+        throw failure(503, "DEPENDENCY_UNAVAILABLE", "The request admission is unavailable.");
+      }
+      const session = admitted.method === "session" ? admitted.session : undefined;
+      const run = () =>
+        templateHandler({
+          ...(session && {
+            holdSession: (unit: PlatformUnitOfWork) =>
+              options.auth.holdSession(unit, session, request),
+          }),
+          meta: {
+            requestId: request.id,
+            ...(connectionOrigin ? { redirectUri: `${connectionOrigin}/oauth/callback` } : {}),
+          },
+          discover: options.discoverMcpAuthorization ?? discoverMcpAuthorization,
+          controller: controller!,
+          actorId: context.actorId,
+          request,
+          reply,
+          mutationEvent: (resourceId) =>
+            event(
+              operation,
+              request,
+              { kind: "installation", id: installationId },
+              "mutation",
+              context,
+              undefined,
+              {
+                outcome: "success",
+                details: resourceId.startsWith("ccr_")
+                  ? { oauthClientId: resourceId }
+                  : { connectionTemplateId: resourceId },
+              },
+            ),
+        });
+      if (
+        session &&
+        operation.method !== "GET" &&
+        operation.operationId !== "discoverConnectionTemplate"
+      ) {
+        await options.auth.withSessionAuthority(session, run);
+      } else {
+        await run();
+      }
       return;
     }
 
@@ -4408,6 +4463,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     routes.addSchema(AgentRuntimeCredentialResponse);
     routes.addSchema(SecretResponse);
     routes.addSchema(CredentialSourceResponse);
+    routes.addSchema(OAuthConnectionTemplateVersionSchema);
+    routes.addSchema(ConnectionTemplateSchema);
     routes.get<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
       nativeAdminReturnOperation.path,
       {
