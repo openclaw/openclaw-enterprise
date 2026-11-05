@@ -390,24 +390,56 @@ test("client authentication can recover with the same grant and a repaired regis
     { resource: "https://unapproved.test" },
   ]) {
     await driver.update(custody.secret, JSON.stringify({ ...JSON.parse(material), ...edited }));
-    await assert.rejects(service.renew(custody, t.signal, resolveClient, version), {
-      code: "client_unavailable",
-    });
+    const refused = await service.renew(custody, t.signal, resolveClient, version);
+    assert.equal(refused.failureCode, "client_registration_mismatch");
+    assert.equal(await service.warm(custody, t.signal), undefined);
   }
   assert.equal(requests, 0);
   assert.equal(readSecret.mock.callCount(), 0);
   await driver.update(custody.secret, material);
-  const refused = await service.renew(custody, t.signal, resolveClient, version);
+  // A registration store outage keeps the same upstream grant. Re-observing the old SQL due
+  // version after interruption must recover the persisted retry without making another read.
+  const unavailable = t.mock.fn(async () => {
+    throw new Error("Registration credentials unavailable");
+  });
+  const down = await service.renew(
+    custody,
+    t.signal,
+    async () => ({ registration: grant, readSecret: unavailable }),
+    version,
+  );
+  assert.equal(down.failureCode, "client_unavailable");
+  assert.equal(down.recoveryAction, "retry");
+  assert.ok(Date.parse(down.schedule.nextRefreshAt) > Date.now());
+  assert.notEqual(down.schedule.version, version);
+  const previousDue = await worker.renew(
+    custody,
+    t.signal,
+    async () => ({ registration: grant, readSecret: unavailable }),
+    version,
+  );
+  assert.deepEqual(previousDue, down);
+  assert.equal(unavailable.mock.callCount(), 1);
+  assert.equal(requests, 0);
+  const refused = await service.renew(custody, t.signal, resolveClient, down.schedule.version);
   assert.equal(refused.state, "failed");
   assert.equal(refused.failureCode, "client_refused");
   assert.equal(refused.recoveryAction, "fix_configuration");
   assert.ok(refused.schedule.nextRefreshAt);
   assert.equal(await service.warm(custody, t.signal), undefined);
-  const refusedAgain = await worker.renew(custody, t.signal, resolveClient, version);
+  const refusedAgain = await worker.renew(
+    custody,
+    t.signal,
+    resolveClient,
+    refused.schedule.version,
+  );
   assert.equal(refusedAgain.failureCode, "client_refused");
   assert.equal(refusedAgain.recoveryAction, "fix_configuration");
   storedSecret = currentSecret;
-  assert.equal((await worker.renew(custody, t.signal, resolveClient, version)).state, "ready");
+  assert.equal(
+    (await worker.renew(custody, t.signal, resolveClient, refusedAgain.schedule.version)).state,
+    "ready",
+  );
   assert.ok(!driver.valueFor(custody.secret).includes(currentSecret));
   // A definitive grant refusal is terminal, even with a working client credential.
   revoked = true;

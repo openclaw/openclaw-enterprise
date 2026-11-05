@@ -13,6 +13,8 @@ import { BrowserAuthorizationError } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import type { refreshPinnedOAuthGrant } from "../../drivers/credential-refresh/oauth-token-endpoint.ts";
 
+type ClientRetry = "client_refused" | "client_unavailable" | "client_registration_mismatch";
+
 type OAuthMaterial = OAuthConnectionGrant & {
   readonly sourceId: string;
   readonly namespaceId: string;
@@ -20,7 +22,7 @@ type OAuthMaterial = OAuthConnectionGrant & {
   readonly renewAt: string;
 } & (
     | { readonly phase: "ready" }
-    | { readonly phase: "client_refused" }
+    | { readonly phase: ClientRetry }
     | { readonly phase: "renewing"; readonly renewalDeadline: string }
   );
 
@@ -55,7 +57,13 @@ function material(value: string, custody: OAuthConnectionCustody): StoredConnect
     return data as unknown as FailedRefresh;
   }
   if (
-    (data.phase !== "ready" && data.phase !== "renewing" && data.phase !== "client_refused") ||
+    ![
+      "ready",
+      "renewing",
+      "client_refused",
+      "client_unavailable",
+      "client_registration_mismatch",
+    ].includes(String(data.phase)) ||
     ![
       "version",
       "scope",
@@ -121,35 +129,45 @@ function status(current: StoredConnection): OAuthConnectionStatus {
   if (!current) {
     return { state: "pending" };
   }
-  if (current.phase === "ready" || current.phase === "client_refused") {
-    const schedule = {
-      nextRefreshAt: current.renewAt,
-      schedule: {
-        version: current.version,
-        nextRefreshAt: current.renewAt,
-        grantedScopes: current.scope.split(" "),
-      },
-      expiresAt: current.expiresAt,
-    };
-    if (current.phase === "client_refused") {
-      return {
-        ...schedule,
-        state: "failed",
-        failureCode: "client_refused",
-        recoveryAction: "fix_configuration",
-      };
-    }
-    return { ...schedule, state: Date.now() < Date.parse(current.expiresAt) ? "ready" : "pending" };
+  if (current.phase === "failed") {
+    const failureCode = current.failureCode;
+    const recoveryAction = ["grant_refused", "refresh_outcome_unknown"].includes(failureCode)
+      ? "reauthorize"
+      : "fix_configuration";
+    return { state: "failed", failureCode, recoveryAction };
   }
   if (current.phase === "renewing") {
     // Only a persisted terminal CAS can retire downstream delivery and its renewal schedule.
     return { state: "pending", expiresAt: current.expiresAt };
   }
-  const failureCode = current.failureCode;
-  const recoveryAction = ["grant_refused", "refresh_outcome_unknown"].includes(failureCode)
-    ? "reauthorize"
-    : "fix_configuration";
-  return { state: "failed", failureCode, recoveryAction };
+  const schedule = {
+    nextRefreshAt: current.renewAt,
+    schedule: {
+      version: current.version,
+      nextRefreshAt: current.renewAt,
+      grantedScopes: current.scope.split(" "),
+    },
+    expiresAt: current.expiresAt,
+  };
+  if (current.phase !== "ready") {
+    return {
+      ...schedule,
+      state: "failed",
+      failureCode: current.phase,
+      recoveryAction: current.phase === "client_unavailable" ? "retry" : "fix_configuration",
+    };
+  }
+  return { ...schedule, state: Date.now() < Date.parse(current.expiresAt) ? "ready" : "pending" };
+}
+
+function retryClient(current: OAuthMaterial, phase: ClientRetry): OAuthMaterial {
+  // A new version also fences an earlier due SQL schedule if its acknowledgement was lost.
+  return {
+    ...current,
+    phase,
+    version: randomUUID(),
+    renewAt: new Date(Date.now() + 60_000).toISOString(),
+  };
 }
 
 function failure(custody: OAuthConnectionCustody, failureCode: string): FailedRefresh {
@@ -212,8 +230,7 @@ export class OAuthConnectionTokens implements OAuthConnectionTokenService {
       signal.throwIfAborted();
       if (
         !stored ||
-        stored.phase === "failed" ||
-        stored.phase === "client_refused" ||
+        (stored.phase !== "ready" && stored.phase !== "renewing") ||
         Date.parse(stored.expiresAt) <= Date.now() ||
         (stored.phase === "renewing" && Date.parse(stored.renewalDeadline) <= Date.now())
       ) {
@@ -266,27 +283,44 @@ export class OAuthConnectionTokens implements OAuthConnectionTokenService {
       return fenced ? status(unknown) : this.status(custody, signal);
     }
     // Recover an already renewed grant before consuming its refresh token again.
-    const renewAfter = scheduledVersion === undefined ? current.renewAt : current.expiresAt;
+    const renewAfter =
+      scheduledVersion === undefined || current.phase !== "ready"
+        ? current.renewAt
+        : current.expiresAt;
     if (current.version !== scheduledVersion && Date.parse(renewAfter) > Date.now()) {
       return observed;
     }
     // Authenticate the pinned registration before claiming the grant. A store failure here
     // is safe to retry because the issuer has received nothing.
-    const { registration, readSecret } = await resolveClient();
-    if (
-      current.oauthClientId !== registration.oauthClientId ||
-      current.issuer !== registration.issuer ||
-      current.clientId !== registration.clientId ||
-      current.tokenUrl !== registration.tokenUrl ||
-      current.tokenEndpointAuthMethod !== registration.tokenEndpointAuthMethod ||
-      current.resource !== registration.resource
-    ) {
-      throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
-    }
-    const clientSecret =
-      registration.tokenEndpointAuthMethod === "none" ? undefined : await readSecret?.(signal);
-    if (registration.tokenEndpointAuthMethod !== "none" && !isNonEmptyString(clientSecret)) {
-      throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
+    let clientSecret: string | undefined;
+    try {
+      const { registration, readSecret } = await resolveClient();
+      if (
+        current.oauthClientId !== registration.oauthClientId ||
+        current.issuer !== registration.issuer ||
+        current.clientId !== registration.clientId ||
+        current.tokenUrl !== registration.tokenUrl ||
+        current.tokenEndpointAuthMethod !== registration.tokenEndpointAuthMethod ||
+        current.resource !== registration.resource
+      ) {
+        throw new BrowserAuthorizationError("client_registration_mismatch", "fix_configuration");
+      }
+      clientSecret =
+        registration.tokenEndpointAuthMethod === "none" ? undefined : await readSecret?.(signal);
+      if (registration.tokenEndpointAuthMethod !== "none" && !isNonEmptyString(clientSecret)) {
+        throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
+      }
+    } catch (error) {
+      // No request reached the issuer. Preserve this grant and schedule a bounded retry,
+      // including when a downstream credential store or the registration itself is unavailable.
+      const phase =
+        error instanceof BrowserAuthorizationError && error.code === "client_registration_mismatch"
+          ? "client_registration_mismatch"
+          : "client_unavailable";
+      const next = retryClient(current, phase);
+      return (await driver.compareAndSwap!(custody.secret, previous, JSON.stringify(next)))
+        ? status(next)
+        : this.status(custody, signal);
     }
     signal.throwIfAborted();
     const deadline = Date.now() + RENEWAL_BUDGET_MS;
@@ -323,11 +357,7 @@ export class OAuthConnectionTokens implements OAuthConnectionTokenService {
       // for another attempt with the registration's current credential.
       next =
         error instanceof BrowserAuthorizationError && error.code === "client_refused"
-          ? {
-              ...current,
-              phase: "client_refused",
-              renewAt: new Date(Date.now() + 60_000).toISOString(),
-            }
+          ? retryClient(current, "client_refused")
           : failure(
               custody,
               error instanceof BrowserAuthorizationError ? error.code : "refresh_outcome_unknown",

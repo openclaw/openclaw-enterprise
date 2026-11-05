@@ -8352,18 +8352,22 @@ export class OpenClawController {
     });
     if ("managedSource" in rotation) {
       const source = rotation.managedSource;
-      return this.transact(async (unit) => {
-        this.auditUncommittedCredentialEffect(failureAudit, "CREDENTIAL_REFRESH_ROTATION_FAILED");
-        const refresh = await this.maintainConnectionToken(source.namespaceId, source.id);
-        if (!refresh) {
+      const failureCode = "CREDENTIAL_REFRESH_ROTATION_FAILED";
+      const refresh = await this.transact(async (unit) => {
+        this.auditUncommittedCredentialEffect(failureAudit, failureCode);
+        const status = await this.maintainConnectionToken(source.namespaceId, source.id);
+        if (!status) {
           throw new ResourceStateConflictError("The connected account was retired.");
         }
-        assertRefreshMinted(refresh);
-        if (audit) {
-          await unit.audit.append(audit);
+        const outcome = status.state === "ready" ? audit : failureAudit?.(failureCode);
+        if (outcome) {
+          await unit.audit.append(outcome);
         }
-        return this.credentialSourceMetadata(source, { state: "ready", refresh });
+        return status;
       });
+      // Commit the new retry schedule and its audit even when no token was minted.
+      assertRefreshMinted(refresh);
+      return this.credentialSourceMetadata(source, { state: "ready", refresh });
     }
     return rotation;
   }

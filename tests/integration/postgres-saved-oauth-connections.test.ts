@@ -359,6 +359,25 @@ test(
     const original = await prepared();
     const alice = await subject(original);
     assert.ok(alice);
+    // Lose access to the operator's registration before dispatch. The scheduler must back off
+    // without losing the user's grant, and the owner can retry as soon as access returns.
+    const unavailable = t.mock.method(refresh, "readClientSecret", async () => {
+      throw new Error("registration store unavailable");
+    });
+    assert.equal((await owner("POST", source + "/rotate")).statusCode, 503);
+    unavailable.mock.restore();
+    const unavailableStatus = (await owner("GET", source)).json().data.status.refresh;
+    assert.deepEqual(
+      [unavailableStatus.state, unavailableStatus.failureCode, unavailableStatus.recoveryAction],
+      ["failed", "client_unavailable", "retry"],
+    );
+    const deferred = await pool.query(
+      "SELECT next_refresh_at > now() AS deferred FROM occ.connection_token_custody WHERE namespace_id=$1 AND credential_source_id=$2",
+      [namespaceId, id],
+    );
+    assert.equal(deferred.rows[0].deferred, true);
+    assert.equal((await owner("POST", source + "/rotate")).statusCode, 200);
+    assert.equal(await subject(await prepared()), alice);
     // The original grant must refresh after the provider and the OCE administrator rotate the client.
     const replacement = await rotateKeycloakClientSecret(
       issuer,
