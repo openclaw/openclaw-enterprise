@@ -996,8 +996,11 @@ function nativeConfiguration(harnessId, slack, options = {}) {
       allow: ["*"],
       fs: { workspaceOnly: true },
     };
-    // Admit the Memory tool owner through the same explicit plugin policy as Codex.
+    // Admission and slot selection are separate. Select the intended recall tool owner
+    // explicitly; provider status/search alone does not prove agent-tool registration.
     configuration.plugins.allow.push("memory-core");
+    configuration.plugins.entries["memory-core"] = { enabled: true };
+    configuration.plugins.slots = { ...configuration.plugins.slots, memory: "memory-core" };
     // Exercise remote file indexing without projecting the Harness model key into Gateway.
     configuration.memory = {
       search: {
@@ -6001,6 +6004,31 @@ async function assertDedicatedWorkspaceRuntime(context, topology, claim, private
     };
     let memoryTrace;
     try {
+      // A scoped catalog can contain declarations. Native call/result evidence below
+      // must prove execution; provider lookup or a catalog entry cannot substitute for it.
+      const catalog = await gatewayCall(
+        topology,
+        "tools.catalog",
+        { agentId: "main", includePlugins: true },
+        10_000,
+      );
+      evidence.memorySearchCatalogued =
+        catalog.groups?.some((group) => group.tools?.some(({ id }) => id === "memory_search")) ===
+        true;
+      evidence.memoryOwnerCatalogued =
+        catalog.groups?.some(
+          (group) =>
+            group.pluginId === "memory-core" &&
+            group.tools?.some(({ id }) => id === "memory_search"),
+        ) === true;
+      process.stderr.write(
+        `k3d dedicated: Memory capability selection ${JSON.stringify(evidence)}\n`,
+      );
+      assert.equal(
+        evidence.memorySearchCatalogued,
+        true,
+        "the selected Agent must catalogue Memory search",
+      );
       // Discover and call once. Retrying model turns hides missing tool exposure and cannot
       // turn a guessed answer or an operator search into native Memory integration proof.
       evidence.modelRequests += 1;

@@ -493,10 +493,12 @@ async function assertManagedNativeConfigWriteRejected(page, nativeOrigin, topolo
     },
   };
   await editor.fill(serializeConfig(parsed));
-  // The pinned Gateway includes the policy identifier in the save status's accessible name.
+  // The pinned UI renders the policy identifier in the live status text;
+  // the status has no accessible name.
   const retryReadOnlySave = page
     .locator("openclaw-settings-save-indicator")
-    .getByRole("status", { name: /\bOPENCLAW_CONFIG_READONLY\b/ })
+    .getByRole("status")
+    .filter({ hasText: /\bOPENCLAW_CONFIG_READONLY\b/ })
     .getByRole("button", { name: "Retry", exact: true })
     .first();
   await retryReadOnlySave.waitFor({ state: "hidden" });

@@ -180,12 +180,43 @@ process.exit(result.status ?? 1);
         maxBuffer: 16 * 1024 * 1024,
       }),
       (error) => {
-        assert.match(
-          error.stdout,
-          /Verifying Kubernetes network isolation before configuring gateway trust/,
+        // A cold build can fail before the policy probe. Preserve its category
+        // without including launcher output, which can contain private state.
+        const output = [error.stdout, error.stderr]
+          .filter((value) => typeof value === "string")
+          .map((value) => value.slice(-65_536))
+          .join("\n");
+        const buildError =
+          [
+            ["space", /no space left on device|\bENOSPC\b/i],
+            ["oom", /out of memory|cannot allocate memory|\boom[- ]kill(?:ed|er)?\b/i],
+            ["download", /failed to (?:download|fetch)|download failed/i],
+            ["compile", /\berror TS\d{4}\b|compilation failed|failed to compile/i],
+          ].find(([, pattern]) => pattern.test(output))?.[0] ?? "unknown";
+        const exit = Number.isSafeInteger(error.code) ? error.code : "unknown";
+        let signal = "unknown";
+        if (error.signal == null) {
+          signal = "none";
+        } else if (
+          ["SIGTERM", "SIGKILL", "SIGABRT", "SIGSEGV", "SIGINT", "SIGHUP"].includes(error.signal)
+        ) {
+          signal = error.signal;
+        }
+        const diagnostic = `dev-up exit ${exit}, signal ${signal}, build-error ${buildError}.`;
+        assert.ok(
+          /Verifying Kubernetes network isolation before configuring gateway trust/.test(
+            error.stdout,
+          ),
+          `Launcher did not reach the network isolation guard; ${diagnostic}`,
         );
-        assert.match(error.stderr, /Kubernetes NetworkPolicy enforcement could not be verified/);
-        assert.doesNotMatch(error.stdout, /Installing OCE in Namespace/);
+        assert.ok(
+          /Kubernetes NetworkPolicy enforcement could not be verified/.test(error.stderr),
+          `Launcher did not report failed NetworkPolicy enforcement; ${diagnostic}`,
+        );
+        assert.ok(
+          !/Installing OCE in Namespace/.test(error.stdout),
+          `Launcher installed OCE despite failed NetworkPolicy enforcement; ${diagnostic}`,
+        );
         return true;
       },
     );
