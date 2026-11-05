@@ -263,3 +263,5 @@ RFC-0019, RFC-0021 and RFC-0022 are now assigned to other proposals.
 | `0019-egress-proxy-credential-lifecycle/` | [RFC-0023](../../specs/rfcs/0023-egress-proxy-credential-lifecycle/index.md) |
 | `0021-egress-proxy-credential-lifecycle/` | [RFC-0023](../../specs/rfcs/0023-egress-proxy-credential-lifecycle/index.md) |
 | `0022-egress-proxy-credential-lifecycle/` | [RFC-0023](../../specs/rfcs/0023-egress-proxy-credential-lifecycle/index.md) |
+
+The unmerged managed OpenClaw plugin proposal in [#3142](https://github.com/openclaw/openclaw-enterprise/pull/3142) moved from `0024-managed-native-openclaw-plugins.md` to [RFC-0029](../../specs/rfcs/0029-managed-openclaw-plugins.md) when RFC-0024 was assigned to Sandbox/Harness mode support. Its linked plan retains its original filename.
