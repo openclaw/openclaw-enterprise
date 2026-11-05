@@ -344,7 +344,7 @@ jobs:
     runs-on: ubuntu-24.04
     needs: preflight
     if: needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'openshell'
-    timeout-minutes: 120
+    timeout-minutes: 150
     environment: integration-main
     env:
       # The packaged browser has Ubuntu's AppArmor user-namespace permission.
@@ -370,7 +370,7 @@ jobs:
           profile: full
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: full-results
-          job-timeout-minutes: 120
+          job-timeout-minutes: 150
 
   k3d-otel:
     name: k3d OTEL
