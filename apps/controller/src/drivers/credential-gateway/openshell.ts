@@ -22,7 +22,7 @@ import {
   ScopeViolationError,
   StoredCredentialSourceConfigError,
 } from "@openclaw-enterprise/occ";
-import { asRecord, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
+import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { isAbsolute } from "node:path";
 import { verifyManagedPluginRegistration } from "../sandbox/openshell-plugin-policy.ts";
 import { managedMcpProviderEndpoint } from "../sandbox/openshell-managed-mcp-policy.ts";
@@ -45,6 +45,7 @@ import { exactDnsName, validateOpenAiSourceBaseUrl } from "../credential-source-
 import { normalizeOpenAiBaseUrl } from "../openai-endpoint.ts";
 
 import {
+  ensureOpenShellProviderProfile,
   MANAGED_BY_LABEL,
   MANAGED_BY,
   SOURCE_ID_LABEL,
@@ -93,7 +94,6 @@ export interface OpenShellCredentialGatewaySelection {
 class OpenShellCredentialGatewayFailure extends Error {}
 
 const NAMESPACE_ID_LABEL = "openclaw.dev/namespace-id";
-const PROFILE_DIGEST_ANNOTATION = "openclaw.dev/profile-digest";
 const OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const OPENAI_AUTHORIZED_BASE_URL_CONFIG = "authorized_base_url";
 
@@ -1421,31 +1421,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     signal: AbortSignal,
   ): Promise<void> {
     const base = type.profile(sourceId, config, this.options, gateway, this.modelProvider);
-    const digest = sha256Hex(JSON.stringify(base));
-    const profile: OpenShellProviderProfile = {
-      ...base,
-      annotations: { [PROFILE_DIGEST_ANNOTATION]: digest },
-    };
-    const existing = await client.getProviderProfile(workspace, base.id, signal);
-    if (existing?.annotations[PROFILE_DIGEST_ANNOTATION] === digest) {
-      return;
-    }
-    try {
-      if (existing === undefined) {
-        await client.importProviderProfile(workspace, profile, signal);
-      } else {
-        await client.updateProviderProfile(workspace, profile, existing.resourceVersion, signal);
-      }
-    } catch (error) {
-      // A concurrent writer with the same configuration (another deployment, or a replay)
-      // already stored this exact profile.
-      const current = await client
-        .getProviderProfile(workspace, base.id, signal)
-        .catch(() => undefined);
-      if (current?.annotations[PROFILE_DIGEST_ANNOTATION] !== digest) {
-        throw error;
-      }
-    }
+    await ensureOpenShellProviderProfile(client, workspace, base, signal);
   }
 }
 
