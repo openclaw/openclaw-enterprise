@@ -3,14 +3,12 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
-import { OAuthConnectionTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
 import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
 import type { ControllerAppOptions } from "../../apps/controller/src/index.ts";
 import { validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.ts";
 import {
   DependencyUnavailableError,
   PostgresHumanAuthentication,
-  refreshPinnedOAuthGrant,
 } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
 import { keycloakRealmAdmin, rotateKeycloakClientSecret } from "../helpers/ci-keycloak-realm.mjs";
@@ -96,6 +94,7 @@ test(
       attributes: {
         "pkce.code.challenge.method": "S256",
         "exclude.issuer.from.auth.response": "true",
+        "access.token.lifespan": "90",
       },
     });
     t.after(async () => {
@@ -113,15 +112,14 @@ test(
     // The API and Token Service use the fixture Secret store. Keycloak authenticates the
     // registration and issues actual tokens without OpenShell or a Credential Refresh Driver.
     const secretDriver = { ...createTestSecretDriver(), capability: "secret" as const };
-    const preparedTokens = new TokenService(
-      new OAuthConnectionTokens(secretDriver, refreshPinnedOAuthGrant),
-    );
+    const preparedTokens = new TokenService();
     const serverUrl = "https://api.connections.test/mcp";
     let discoveredResource = serverUrl;
     const tokenUrl = `${tokenOrigin}/realms/oce/protocol/openid-connect/token`;
     const { app, controller, state, principal, inject, pool, adminAccount } =
       await createPostgresAgentApp(t, {
         label: "saved-account",
+        poolOptions: { max: 1, connectionTimeoutMillis: 5000 },
         authSecret: "saved-account-test-auth-secret-minimum-32-bytes",
         secretDriver,
         controllerOptions: { preparedTokens },
@@ -143,6 +141,9 @@ test(
           provisionAuthAccount: (...args: Parameters<typeof provision>) => provision(...args),
         },
       });
+    preparedTokens.configureAccounts(state, secretDriver, (ref) =>
+      controller.resolveConnectionClient(ref),
+    );
     const auth = new PostgresHumanAuthentication(
       state,
       controller.installation.id,
@@ -518,14 +519,14 @@ test(
       [oauthClientId, clientId, issuer, tokenUrl, [recipient], ["openid"], ["openid"]],
     );
     // The trusted Token Service consumer can use the grant. Saving/rotating alone creates no sender.
-    async function prepared() {
-      const custody = await state.read((view) =>
-        view.savedConnections.findTokenCustody(namespaceId, id),
-      );
-      assert.ok(custody);
-      const token = await preparedTokens.oauthConnections!.warm(
-        custody,
-        new AbortController().signal,
+    async function prepared(minimumValidityMs = 0) {
+      const token = await preparedTokens.resolve(
+        { namespaceId, sourceId: id },
+        {
+          signal: t.signal,
+          deadlineAt: new Date(Date.now() + 10_000).toISOString(),
+          minimumValidityMs,
+        },
       );
       assert.ok(token);
       return token.accessToken;
@@ -544,6 +545,25 @@ test(
     const original = await prepared();
     const alice = await subject(original);
     assert.ok(alice);
+    async function setIssuedLifetime(seconds: number) {
+      const [client] = await keycloakRealmAdmin(
+        issuer!,
+        secrets.admin,
+        "GET",
+        `/clients?clientId=${clientId}`,
+      );
+      await keycloakRealmAdmin(issuer!, secrets.admin, "PUT", `/clients/${client.id}`, {
+        ...client,
+        attributes: { ...client.attributes, "access.token.lifespan": String(seconds) },
+      });
+    }
+    // Only a newly issued token can satisfy this request's minimum remaining lifetime.
+    await setIssuedLifetime(300);
+    const [resolved, joined] = await Promise.all([prepared(120_000), prepared(120_000)]);
+    assert.equal(joined, resolved);
+    assert.notEqual(resolved, original);
+    assert.equal(await subject(resolved), alice);
+
     // Lose access to the operator's registration before dispatch. The scheduler must back off
     // without losing the user's grant, and the owner can retry as soon as access returns.
     const unavailable = t.mock.method(secretDriver.installationSecrets, "withValue", async () => {
@@ -633,11 +653,24 @@ test(
     });
     assert.equal(updatedClient.statusCode, 200);
     assert.equal(updatedClient.json().data.id, oauthClientId);
+    await setIssuedLifetime(10);
     const rotated = await inject("POST", `${source}/rotate`, undefined);
     assert.equal(rotated.statusCode, 200, rotated.body);
     const renewed = await prepared();
     assert.equal(renewed !== original, true);
     assert.equal(await subject(renewed), alice);
+    // Let this short-lived token actually expire before any worker starts. A normal resolve
+    // must obtain its replacement with the current client secret and the original user's grant.
+    await setIssuedLifetime(300);
+    const expiring = await preparedTokens.accountStatus({ namespaceId, sourceId: id }, t.signal);
+    await waitFor(
+      "Keycloak's access token to expire",
+      async () => (Date.now() >= Date.parse(expiring.expiresAt!) ? true : undefined),
+      { timeoutMs: 20_000, intervalMs: 100 },
+    );
+    const afterExpiry = await prepared();
+    assert.notEqual(afterExpiry, renewed);
+    assert.equal(await subject(afterExpiry), alice);
     const afterRotation = await owner("GET", connections);
     assert.equal(afterRotation.statusCode, 200, afterRotation.body);
     assert.deepEqual(
@@ -652,27 +685,75 @@ test(
       mcpConfig,
     );
     assert.equal(restoreMcp.statusCode, 200, restoreMcp.body);
-    // The SQL revocation survives a transient custody failure. A worker with the same
-    // Secret store and Token Service finishes it after the API request has returned.
-    const unavailableDelete = t.mock.method(
+    // Publish the due schedule used for rotation but make no resolve request. A separate worker
+    // must use the saved account's refresh grant and publish a new version before it is read.
+    const prior = await state.read((view) =>
+      view.savedConnections.findTokenCustody(namespaceId, id),
+    );
+    await state.transact((unit) =>
+      unit.savedConnections.recordTokenSchedule(namespaceId, id, "due"),
+    );
+    async function startAccountWorker() {
+      const fixture = await createBackendFixture(t);
+      const { worker } = fixture.startWorker({
+        backends: [],
+        secretDriver,
+        tokenService: new TokenService(),
+      });
+      await worker.start();
+      return worker;
+    }
+    const worker = await startAccountWorker();
+    await waitFor("background renewal to publish a new scheduled version", async () => {
+      const current = await state.read((view) =>
+        view.savedConnections.findTokenCustody(namespaceId, id),
+      );
+      return current?.scheduledVersion && current.scheduledVersion !== prior?.scheduledVersion
+        ? true
+        : undefined;
+    });
+    const background = await prepared();
+    assert.notEqual(background, afterExpiry);
+    assert.equal(await subject(background), alice);
+    await worker.stop();
+    const observed = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const read = secretDriver.withValue.bind(secretDriver);
+    const slowRead = t.mock.method(
       secretDriver,
-      "delete",
-      async () => {
-        throw new DependencyUnavailableError("Secret store unavailable");
+      "withValue",
+      async (...args: Parameters<typeof read>) => {
+        const selected = await read(...args);
+        observed.resolve();
+        await release.promise;
+        return selected;
       },
       { times: 1 },
     );
+    const resolving = preparedTokens.resolve(
+      { namespaceId, sourceId: id },
+      {
+        signal: t.signal,
+        deadlineAt: new Date(Date.now() + 10_000).toISOString(),
+        minimumValidityMs: 0,
+      },
+    );
+    await observed.promise;
+    // The SQL revocation survives a transient custody failure. A worker with the same
+    // Secret store and Token Service finishes it after the API request has returned.
+    const unavailableDelete = t.mock.method(secretDriver, "delete", async () => {
+      throw new DependencyUnavailableError("Secret store unavailable");
+    });
     const interrupted = await owner("DELETE", `${connections}/${id}`);
     assert.equal(interrupted.statusCode, 503, interrupted.body);
-    unavailableDelete.mock.restore();
     assert.ok(secretDriver.has(privateRef));
-    const recovery = await createBackendFixture(t);
-    const { worker } = recovery.startWorker({
-      backends: [],
-      secretDriver,
-      tokenService: preparedTokens,
-    });
-    await worker.start();
+    // Releasing a read after OCC committed revocation must withhold the already-read bearer.
+    release.resolve();
+    assert.equal(await resolving, undefined);
+    slowRead.mock.restore();
+    unavailableDelete.mock.restore();
+    await startAccountWorker();
+
     await waitFor("the worker to retire the disconnected account", async () => {
       const remaining = await state.read((view) =>
         view.savedConnections.findSavedConnection(namespaceId, id),
@@ -732,7 +813,7 @@ test(
       authSecret: "saved-account-test-auth-secret-minimum-32-bytes",
     });
     const waiting = await begin();
-    const lock = await pool.connect();
+    const lock = await peer.pool.connect();
     let blocked;
     let verifier: string;
     try {
@@ -744,7 +825,7 @@ test(
       verifier = held.rows[0].pkce_verifier;
       blocked = owner("GET", waiting.callback);
       await waitForLockWaiter(
-        pool,
+        peer.pool,
         held.rows[0].pid,
         "OAuth callback waiting to consume its private attempt",
       );

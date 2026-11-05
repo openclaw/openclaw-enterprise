@@ -27,7 +27,7 @@ import type {
   EgressMaterialEvidence,
   EgressSelectionEvidence,
   ProtectedEgressSource,
-  TokenService,
+  PreparedTokenIssuer,
   StaticEgressSource,
   VersionedSecretValue,
 } from "@openclaw-enterprise/contracts";
@@ -78,7 +78,7 @@ export interface EgressAuthorityPorts {
     lifetime: CredentialReadLifetime,
     isProviderCurrent: () => boolean,
   ): Promise<VersionedSecretValue & { readonly materialId: string }>;
-  readonly resolvePrepared?: TokenService["resolve"];
+  readonly resolvePrepared?: PreparedTokenIssuer["resolve"];
   /** Check the exact selection, then mint once immediately before the possible-send receipt. */
   authorizeSend(
     use: CapturedEgressUse,

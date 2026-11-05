@@ -30,7 +30,6 @@ export {
 } from "./state/prepared-github-state.ts";
 export type { PreparedGitHubMetadataAdmission } from "./state/prepared-github-state.ts";
 import {
-  PENDING_OAUTH_CONNECTION,
   connectionValuesChanged,
   isOAuthScopeToken,
   normalizeConnectionDestinations,
@@ -167,6 +166,8 @@ import type {
   OAuthConnectionTemplateVersion,
   SavedConnection,
   OAuthConnectionGrant,
+  OAuthConnectionStatus,
+  OAuthAccountRef,
   OAuthConnectionClient,
   OAuthClient,
   McpAuthorizationMetadata,
@@ -393,7 +394,6 @@ import {
 import type { StoredOAuthClient } from "./ports/oauth-client.ts";
 import {
   InMemoryPlatformState,
-  type ConnectionTokenCustody,
   type PlatformReadView,
   type PlatformOperation,
   type PlatformStateStore,
@@ -4768,6 +4768,7 @@ export class OpenClawController {
     const { namespaceId, credentialSourceId } = session;
     let exchangeStarted = false;
     let handoffStarted = false;
+    let schedule: NonNullable<OAuthConnectionStatus["schedule"]>;
     let approved: Pick<
       SavedConnection,
       | "issuer"
@@ -4836,7 +4837,7 @@ export class OpenClawController {
         return exchangeAuthorizationCode(request, session.pkceVerifier, code, clientSecret, signal);
       });
       handoffStarted = true;
-      await this.acceptConnectionTokens(
+      schedule = await this.acceptConnectionTokens(
         namespaceId,
         credentialSourceId,
         grant,
@@ -4879,6 +4880,11 @@ export class OpenClawController {
         if (!ready) {
           throw new ResourceStateConflictError("The pending connection changed. Connect again.");
         }
+        await state.savedConnections.recordTokenSchedule(namespaceId, credentialSourceId, {
+          scheduledVersion: schedule.version,
+          nextRefreshAt: schedule.nextRefreshAt,
+          grantedScopes: schedule.grantedScopes,
+        });
         const connection = await state.savedConnections.createSavedConnection({
           ...approved,
           namespaceId,
@@ -5091,8 +5097,8 @@ export class OpenClawController {
   }
 
   private connectionTokenService() {
-    const service = this.preparedTokens?.oauthConnections;
-    if (!service) {
+    const service = this.preparedTokens;
+    if (!service?.supportsAccounts) {
       throw new NotImplementedError(
         "connection_templates",
         "This Installation has no Token Service for browser connections.",
@@ -5107,71 +5113,26 @@ export class OpenClawController {
     grant: OAuthConnectionGrant,
     signal: AbortSignal,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
-  ): Promise<void> {
-    const service = this.connectionTokenService();
-    const driver = this.secretDriver();
-    const custody = await this.mutate(async (unit) => {
-      const source = await unit.credentialSources.lockCredentialSource(namespaceId, sourceId);
-      if (
-        source?.state !== "registering" ||
-        source.ownerCapability !== "token_service" ||
-        (await unit.savedConnections.findTokenCustody(namespaceId, sourceId))
-      ) {
-        throw new ResourceStateConflictError(
-          "The pending connection cannot accept an OAuth grant.",
-        );
-      }
-      await holdSession?.(unit);
-      const identity = {
-        id: this.nextIdentifier("secret"),
-        namespaceId,
-        name: "OAuth connection custody",
-      };
-      const backendRef = await this.secretOperation(() =>
-        driver.create(identity, PENDING_OAUTH_CONNECTION),
-      );
-      const custody = {
-        namespaceId,
-        sourceId,
-        secret: { ...identity, driverId: driver.id, backendRef, createdAt: this.timestamp() },
-      };
-      this.registerRollback(() => this.secretOperation(() => driver.delete(custody.secret)));
-      await unit.savedConnections.createTokenCustody(custody);
-      return custody;
-    });
-    await this.mutate(async (unit) => {
-      const source = await unit.credentialSources.lockCredentialSource(namespaceId, sourceId);
-      if (source?.state !== "registering") {
-        throw new ResourceStateConflictError("The connection was retired during consent.");
-      }
-      await holdSession?.(unit);
-      await service.accept(custody, grant, signal);
-      await this.recordConnectionTokenSchedule(unit, custody, signal);
-    });
-  }
-
-  private async recordConnectionTokenSchedule(
-    unit: PlatformUnitOfWork,
-    custody: ConnectionTokenCustody,
-    signal: AbortSignal,
   ) {
-    const { schedule } = await this.connectionTokenService().status(custody, signal);
+    const service = this.connectionTokenService();
+    if (holdSession) {
+      await this.mutate(holdSession);
+    }
+    const reference = await service.register({ account: { namespaceId, sourceId }, grant }, signal);
+    const { schedule } = await service.accountStatus(reference, signal);
     if (!schedule) {
       throw new ResourceStateConflictError(
         "No eligible access token is prepared for this account.",
       );
     }
-    await unit.savedConnections.recordTokenSchedule(custody.namespaceId, custody.sourceId, {
-      scheduledVersion: schedule.version,
-      nextRefreshAt: schedule.nextRefreshAt,
-      grantedScopes: schedule.grantedScopes,
-    });
+    return schedule;
   }
 
-  private async connectionRefreshClient(
-    namespaceId: string,
-    sourceId: string,
-  ): Promise<OAuthConnectionClient> {
+  /** Used by the installed Token Service to authenticate the original client on each renewal. */
+  async resolveConnectionClient({
+    namespaceId,
+    sourceId,
+  }: OAuthAccountRef): Promise<OAuthConnectionClient> {
     return this.read(async (view) => {
       const account = await view.savedConnections.findSavedConnection(namespaceId, sourceId);
       if (!account || account.revocationRequestedBy) {
@@ -5208,43 +5169,11 @@ export class OpenClawController {
     });
   }
 
-  async maintainConnectionToken(namespaceId: string, sourceId: string) {
-    const custody = await this.read(async (view) => {
-      const source = await view.credentialSources.findCredentialSource(namespaceId, sourceId);
-      if (source?.state !== "ready" || source.ownerCapability !== "token_service") {
-        return undefined;
-      }
-      return view.savedConnections.findTokenCustody(namespaceId, sourceId);
-    });
-    if (!custody) {
-      return undefined;
-    }
-    const signal = AbortSignal.timeout(CONNECTION_OPERATION_TIMEOUT_MS);
-    const service = this.connectionTokenService();
-    if (!custody.due) {
-      return service.status(custody, signal);
-    }
-    const result = await service.renew(
-      custody,
-      signal,
-      () => this.connectionRefreshClient(namespaceId, sourceId),
-      custody.scheduledVersion,
+  maintainConnectionToken(namespaceId: string, sourceId: string) {
+    return this.connectionTokenService().maintainAccount(
+      { namespaceId, sourceId },
+      AbortSignal.timeout(CONNECTION_OPERATION_TIMEOUT_MS),
     );
-    if (result.state === "pending") {
-      return result;
-    }
-    await this.mutate(async (unit) => {
-      const source = await unit.credentialSources.lockCredentialSource(namespaceId, sourceId);
-      if (source?.state !== "ready") {
-        return;
-      }
-      if (result.state === "failed" && !result.schedule) {
-        await unit.savedConnections.recordTokenSchedule(namespaceId, sourceId, "stopped");
-      } else {
-        await this.recordConnectionTokenSchedule(unit, custody, signal);
-      }
-    });
-    return result;
   }
 
   private assertConnectionTokenCustody(): void {
@@ -8473,18 +8402,24 @@ export class OpenClawController {
     if ("managedSource" in rotation) {
       const source = rotation.managedSource;
       const failureCode = "CREDENTIAL_REFRESH_ROTATION_FAILED";
-      const refresh = await this.transact(async (unit) => {
-        this.auditUncommittedCredentialEffect(failureAudit, failureCode);
-        const status = await this.maintainConnectionToken(source.namespaceId, source.id);
-        if (!status) {
+      let refresh: OAuthConnectionStatus | undefined;
+      try {
+        refresh = await this.maintainConnectionToken(source.namespaceId, source.id);
+        if (!refresh) {
           throw new ResourceStateConflictError("The connected account was retired.");
         }
-        const outcome = status.state === "ready" ? audit : failureAudit?.(failureCode);
+        const outcome = refresh.state === "ready" ? audit : failureAudit?.(failureCode);
         if (outcome) {
-          await unit.audit.append(outcome);
+          await this.transact((unit) => unit.audit.append(outcome));
         }
-        return status;
-      });
+      } catch (error) {
+        if (failureAudit) {
+          await this.transact((unit) => unit.audit.append(failureAudit(failureCode))).catch(
+            () => undefined,
+          );
+        }
+        throw error;
+      }
       // Commit the new retry schedule and its audit even when no token was minted.
       assertRefreshMinted(refresh);
       return this.credentialSourceMetadata(source, { state: "ready", refresh });
@@ -8584,15 +8519,10 @@ export class OpenClawController {
       return { namespace: exact, source: found };
     });
     if (source.ownerCapability === "token_service") {
-      const custody = await this.read((view) =>
-        view.savedConnections.findTokenCustody(namespaceId, source.id),
+      const refresh = await this.connectionTokenService().accountStatus(
+        { namespaceId, sourceId: source.id },
+        AbortSignal.timeout(CONNECTION_OPERATION_TIMEOUT_MS),
       );
-      const refresh = custody
-        ? await this.connectionTokenService().status(
-            custody,
-            AbortSignal.timeout(CONNECTION_OPERATION_TIMEOUT_MS),
-          )
-        : { state: "pending" as const };
       return this.credentialSourceMetadata(source, {
         state: source.state === "ready" ? refresh.state : "pending",
         refresh,
@@ -8772,15 +8702,10 @@ export class OpenClawController {
     gateway: CredentialGatewayDriver | undefined,
   ): Promise<void> {
     if (source.ownerCapability === "token_service") {
-      const custody = await this.read((view) =>
-        view.savedConnections.findTokenCustody(namespace.id, source.id),
+      await this.connectionTokenService().retireAccount(
+        { namespaceId: namespace.id, sourceId: source.id },
+        AbortSignal.timeout(CONNECTION_OPERATION_TIMEOUT_MS),
       );
-      if (custody) {
-        await this.connectionTokenService().retire(
-          custody,
-          AbortSignal.timeout(CONNECTION_OPERATION_TIMEOUT_MS),
-        );
-      }
       return;
     }
     const placed = gateway ? await this.credentialNamespace(namespace) : namespace;

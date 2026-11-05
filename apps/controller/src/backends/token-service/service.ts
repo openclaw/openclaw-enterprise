@@ -1,9 +1,15 @@
-import type { PostgresPlatformStateOptions } from "@openclaw-enterprise/occ";
+import type { PlatformStateStore, PostgresPlatformStateOptions } from "@openclaw-enterprise/occ";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type {
   EgressRef,
-  OAuthConnectionTokenService,
+  OAuthAccountRef,
+  OAuthConnectionGrant,
+  OAuthConnectionClient,
+  OAuthConnectionAccessToken,
+  PreparedTokenSelection,
+  ResolvedToken,
+  SecretDriver,
   EgressSourceKey,
   PreparedTokenSource,
   Secret,
@@ -11,6 +17,7 @@ import type {
   PreparedTokenIssuer,
   TokenService as TokenServiceContract,
 } from "@openclaw-enterprise/contracts";
+import { OAuthAccountTokens } from "./oauth-connection.ts";
 import type { TokenIssue } from "./preparation.ts";
 
 type PostgresProof = NonNullable<PostgresPlatformStateOptions["preparedTokenProof"]>;
@@ -36,10 +43,37 @@ export function runPreparation(owner: Preparation, outer: AbortSignal) {
  * input authority and custody. A request can prepare only its authorized registration.
  */
 export class TokenService implements TokenServiceContract {
-  readonly oauthConnections: OAuthConnectionTokenService | undefined;
+  private accounts?: OAuthAccountTokens;
 
-  constructor(oauthConnections?: OAuthConnectionTokenService) {
-    this.oauthConnections = oauthConnections;
+  configureAccounts(
+    state: PlatformStateStore,
+    secrets: SecretDriver,
+    resolveClient: (ref: OAuthAccountRef) => Promise<OAuthConnectionClient>,
+  ) {
+    this.accounts = new OAuthAccountTokens(state, secrets, resolveClient);
+  }
+
+  get supportsAccounts() {
+    return this.accounts !== undefined;
+  }
+
+  private accountOwner() {
+    if (!this.accounts) {
+      throw new Error("The Installation has no saved account token owner.");
+    }
+    return this.accounts;
+  }
+
+  accountStatus(ref: OAuthAccountRef, signal: AbortSignal) {
+    return this.accountOwner().status(ref, signal);
+  }
+
+  maintainAccount(ref: OAuthAccountRef, signal: AbortSignal) {
+    return this.accountOwner().maintain(ref, signal);
+  }
+
+  retireAccount(ref: OAuthAccountRef, signal: AbortSignal) {
+    return this.accountOwner().retire(ref, signal);
   }
 
   private readonly issuers = new Map<string, PreparedTokenIssuer>();
@@ -72,10 +106,24 @@ export class TokenService implements TokenServiceContract {
     return issuer && isDeepStrictEqual(issuer.provider, provider) ? issuer : undefined;
   }
 
-  async register(
-    { source, secret }: { readonly source: PreparedTokenSource; readonly secret: Readonly<Secret> },
+  register(
+    registration: { readonly source: PreparedTokenSource; readonly secret: Readonly<Secret> },
     signal: AbortSignal,
-  ): Promise<EgressSourceKey> {
+  ): Promise<EgressSourceKey>;
+  register(
+    registration: { readonly account: OAuthAccountRef; readonly grant: OAuthConnectionGrant },
+    signal: AbortSignal,
+  ): Promise<OAuthAccountRef>;
+  async register(
+    registration:
+      | { readonly source: PreparedTokenSource; readonly secret: Readonly<Secret> }
+      | { readonly account: OAuthAccountRef; readonly grant: OAuthConnectionGrant },
+    signal: AbortSignal,
+  ) {
+    if ("account" in registration) {
+      return this.accountOwner().register(registration.account, registration.grant, signal);
+    }
+    const { source, secret } = registration;
     const issuer = this.issuer(source.key.provider);
     if (!issuer) {
       throw new Error("The token issuer for this registration is unavailable.");
@@ -84,17 +132,65 @@ export class TokenService implements TokenServiceContract {
     return source.key;
   }
 
-  async resolve(reference: EgressSourceKey, options: TokenResolveOptions) {
-    const { signal, deadlineAt, minimumValidityMs } = options;
+  resolve(
+    reference: EgressSourceKey,
+    options: TokenResolveOptions,
+  ): Promise<PreparedTokenSelection | undefined>;
+  resolve(
+    reference: OAuthAccountRef,
+    options: TokenResolveOptions,
+  ): Promise<OAuthConnectionAccessToken | undefined>;
+  resolve(
+    reference: EgressSourceKey | OAuthAccountRef,
+    options: TokenResolveOptions,
+  ): Promise<ResolvedToken | undefined>;
+  async resolve(reference: EgressSourceKey | OAuthAccountRef, options: TokenResolveOptions) {
+    const { signal: caller, minimumValidityMs } = options;
+    const deadline = Date.parse(options.deadlineAt);
+    const remaining = deadline - Date.now();
     if (
-      signal.aborted ||
-      !(Date.parse(deadlineAt) > Date.now()) ||
+      !Number.isFinite(remaining) ||
+      remaining <= 0 ||
+      caller.aborted ||
       !Number.isFinite(minimumValidityMs) ||
       minimumValidityMs < 0
     ) {
       return undefined;
     }
-    return this.issuer(reference.provider)?.resolve(reference, options);
+    const issuer = "provider" in reference ? this.issuer(reference.provider) : undefined;
+    const signals = [caller, AbortSignal.timeout(Math.min(remaining, 2_147_483_647))];
+    if (issuer?.shutdownSignal) {
+      signals.push(issuer.shutdownSignal);
+    }
+    const signal = AbortSignal.any(signals);
+    if (signal.aborted) {
+      return undefined;
+    }
+    let cancel!: () => void;
+    const stopped = new Promise<undefined>((resolve) => {
+      cancel = () => resolve(undefined);
+    });
+    signal.addEventListener("abort", cancel, { once: true });
+    try {
+      // Each caller has its own time budget. A provider can finish an already-dispatched
+      // renewal after a caller leaves, but a delayed read must never release its bytes.
+      const bounded = { ...options, signal };
+      const selected =
+        "sourceId" in reference
+          ? this.accountOwner().resolve(reference, bounded)
+          : issuer?.resolve(reference, bounded);
+      const token = await Promise.race([stopped, selected]);
+      if (!token || signal.aborted) {
+        return undefined;
+      }
+      const now = Date.now();
+      const expiresAt = Date.parse(token.expiresAt);
+      const usableUntil =
+        "usableUntil" in token ? Math.min(expiresAt, Date.parse(token.usableUntil)) : expiresAt;
+      return now < deadline && usableUntil > now + minimumValidityMs ? token : undefined;
+    } finally {
+      signal.removeEventListener("abort", cancel);
+    }
   }
 
   /** One serialized discovery, retirement and preparation loop for an independently owned set. */

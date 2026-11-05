@@ -72,8 +72,7 @@ A public client uses `none` and needs only its client ID. For `client_secret_bas
 
 At the initial code exchange, OCC resolves the current secret for the pinned registration if its authentication method requires one. A successful exchange hands the user's refresh grant and first access token to the Token Service. On subsequent renewal the Token Service obtains the same registration's current client authentication for the pinned issuer and token endpoint. Rotation at the same registration applies to existing accounts. If the provider rejects the client secret, the administrator can fix the registration and retry. Revoking the user's grant requires new consent.
 
-Connecting an account commits the grant in Token Service custody. The Token
-Service records the requested scopes and the scopes the provider granted.
+OCC registers the exchanged grant with the Token Service and keeps the stable account reference. Resolution checks the token’s remaining lifetime. Authorized delivery can start or join renewal as [RFC-0023 specifies](../0023-egress-proxy-credential-lifecycle/contracts.md#credential-access-and-lifecycle). The Token Service records the requested scopes and the scopes the provider granted.
 When the provider omits `scope`, the Token Service records the requested
 scopes. If both omitted it, it records no known scopes. Explicit requests and
 renewals cannot acquire permissions beyond those requested or previously
@@ -202,7 +201,7 @@ sender cannot enforce the policy.
 | Exchange refused or no refresh token returned               | Source deleted; `fix_configuration`            | Administrator corrects the connection template |
 | Timeout after the exchange started                          | Source stays `registering`                     | Delete and reconnect; OCC never replays a code |
 | Issuer revokes the grant                                    | `status.refresh.recoveryAction: reauthorize`   | **Reconnect** and redeploy                     |
-| Token custody unavailable before source creation            | Connection cannot start                         | Restore the Token Service and Secret Driver                                          |
+| Token custody unavailable before source creation            | Connection cannot start                        | Restore the Token Service and Secret Driver    |
 | OIDC metadata mismatch or unreachable provider              | Version rejected with `400`                    | Administrator corrects `issuer` or URLs        |
 | ID token from a wrong issuer, untrusted key, or wrong nonce | Source deleted; `fix_configuration`            | Administrator checks the provider; reconnect   |
 | Manual destination rows edited                              | Existing senders reconcile the current rows    | Retry a failed reconciliation                  |

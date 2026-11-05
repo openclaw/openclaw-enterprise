@@ -153,8 +153,13 @@ const reviewedImports = {
   // refresh adapter can POST that grant. The Token Service receives no general HTTP capability.
   "backends/token-service/oauth-connection.ts": {
     "node:crypto": ["randomUUID"],
-    "@openclaw-enterprise/contracts": ["PENDING_OAUTH_CONNECTION", "isOAuthScopeToken"],
-    "@openclaw-enterprise/occ": ["BrowserAuthorizationError"],
+    "node:timers/promises": ["setTimeout"],
+    "@openclaw-enterprise/contracts": ["isOAuthScopeToken"],
+    "@openclaw-enterprise/occ": [
+      "BrowserAuthorizationError",
+      "ResourceStateConflictError",
+      "refreshPinnedOAuthGrant",
+    ],
     "@openclaw-enterprise/utils": ["asRecord", "isNonEmptyString"],
   },
   // Token Service compares complete admissions. Provider I/O remains in the existing adapter.

@@ -73,6 +73,7 @@ export class PostgresPreparedGitHubLifecycle implements PreparedTokenIssuer {
   private readonly clock = createSystemClock();
   private readonly maintenance;
   private readonly closing = new AbortController();
+  readonly shutdownSignal = this.closing.signal;
   private readonly requested = new Map<string, Promise<string | undefined>>();
   private report: (
     code:
@@ -387,51 +388,11 @@ export class PostgresPreparedGitHubLifecycle implements PreparedTokenIssuer {
     reference: EgressSourceKey,
     options: TokenResolveOptions,
   ): Promise<PreparedTokenSelection | undefined> {
-    const { deadlineAt, signal: caller, minimumValidityMs } = options;
-    const deadline = Date.parse(deadlineAt);
-    const remaining = deadline - Date.now();
-    if (
-      !Number.isFinite(remaining) ||
-      remaining <= 0 ||
-      caller.aborted ||
-      this.closing.signal.aborted ||
-      !Number.isFinite(minimumValidityMs) ||
-      minimumValidityMs < 0 ||
-      minimumValidityMs >= tokenLifetimeMs
-    ) {
-      return;
+    const { minimumValidityMs } = options;
+    if (minimumValidityMs >= tokenLifetimeMs) {
+      return undefined;
     }
-    const signal = AbortSignal.any([
-      caller,
-      this.closing.signal,
-      AbortSignal.timeout(Math.min(remaining, 2_147_483_647)),
-    ]);
-    // The caller can leave while the database or provider is still answering. Custody
-    // also enforces the original absolute deadline before releasing the selected bytes.
-    return new Promise((resolve, reject) => {
-      const cancel = () => resolve(undefined);
-      signal.addEventListener("abort", cancel, { once: true });
-      this.resolveRegistered(reference, { signal, deadlineAt }, minimumValidityMs)
-        .then((material) => {
-          const now = Date.now();
-          resolve(
-            material &&
-              !signal.aborted &&
-              now < deadline &&
-              Date.parse(material.usableUntil) > now + minimumValidityMs
-              ? material
-              : undefined,
-          );
-        }, reject)
-        .finally(() => signal.removeEventListener("abort", cancel));
-    });
-  }
-
-  private async resolveRegistered(
-    reference: EgressSourceKey,
-    lifetime: CredentialReadLifetime,
-    minimumValidityMs: number,
-  ) {
+    const lifetime = options;
     const deadline = Date.parse(lifetime.deadlineAt);
     const active = () => !lifetime.signal.aborted && Date.now() < deadline;
     const source = await this.db.registeredSource(reference);

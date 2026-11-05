@@ -66,16 +66,14 @@ export type {
   PreparedTokenCurrentProof,
   PreparedTokenIssuer,
   OAuthConnectionAccessToken,
-  OAuthConnectionCustody,
   OAuthConnectionGrant,
   OAuthConnectionClient,
   OAuthConnectionRegistration,
   OAuthConnectionStatus,
-  OAuthConnectionTokenService,
+  OAuthAccountRef,
   TokenResolveOptions,
   TokenService,
 } from "./prepared-token.ts";
-export { PENDING_OAUTH_CONNECTION } from "./prepared-token.ts";
 export {
   preparedGitHubType,
   preparedGitHubProviderRef,

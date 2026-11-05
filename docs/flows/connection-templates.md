@@ -65,7 +65,7 @@ OCC verifies the person's Namespace permission and pins the selected template ve
 
 ### 4. Exchange the code and save the account
 
-`packages/occ/src/index.ts:completeNamespaceConnection` and `apps/controller/src/backends/token-service/oauth-connection.ts:accept`
+`packages/occ/src/index.ts:completeNamespaceConnection` and `apps/controller/src/backends/token-service/oauth-connection.ts:register`
 
 On callback, OCC consumes the matching attempt once and rechecks the person's session and authority. It checks a returned issuer against the pinned issuer. If another issuer has a registered client at consent start or callback, OCC requires the issuer in the response. OCC sends the code and verifier to the pinned token endpoint, includes the MCP resource when applicable, and reads the current client secret if the registration requires one. If the exchange times out, the person starts a new attempt.
 
@@ -77,7 +77,7 @@ The Token Service stores the access token and refresh grant in a private Secret.
 
 When listing a manual account, OCC returns the current destinations from the same template if its issuer and mode still match. For MCP it returns the original destinations only while the issuer, mode, server URL and protected resource match. A missing or incompatible template yields an empty list. The original consent receipt identifies the registration and token endpoint for renewal.
 
-When renewal is due, the worker calls the Token Service. It checks the saved grant against the registration, reads the current client secret through OCC if needed and sends the refresh request. A conditional write protects against concurrent renewal or disconnect. OCC records the next renewal and any narrower grant.
+OCC registers the returned grant under the Namespace and credential source ID. The worker renews due accounts. A trusted consumer resolves the same reference with a deadline and required remaining lifetime. If it needs a fresher token, the Token Service starts or joins renewal for that account. It rechecks that the account is active before releasing the committed token. On renewal, the Token Service checks the saved grant against its registration and reads the current client secret through OCC when required. A conditional write protects against concurrent renewal or disconnect. OCC records the next renewal and any narrower grant.
 
 ## Debugging and Verification
 

@@ -55,7 +55,7 @@ help: Google's device-code flow does not permit Gmail scopes. Gmail needs the
 browser authorization-code flow, with an OCC callback.
 
 After the code exchange, browser connections use the [RFC-0023 Token Service lifecycle](../0023-egress-proxy-credential-lifecycle/contracts.md#credential-access-and-lifecycle).
-It separates background refresh from the worker's outbound request.
+An authorized delivery can join renewal for that account within the request deadline.
 
 ## Goals
 

@@ -1188,8 +1188,7 @@ export class ControllerWorker {
   private nextClientCleanup = 0;
   private readonly proxyDriver: CredentialProxyDriver | undefined;
   private readonly protectedDriver: InstalledDriver | undefined;
-  private readonly preparedTokens:
-    import("@openclaw-enterprise/contracts").TokenService | undefined;
+  private readonly preparedTokens: InstallationRuntimeDrivers["tokenService"];
   private readonly backends: readonly BackendDefinition[];
   private readonly backendMap: ReadonlyMap<string, BackendDefinition>;
   private readonly requireComputePreflight: boolean;
@@ -1452,6 +1451,11 @@ export class ControllerWorker {
             provisioningOptions,
             this.repositoryAdmission,
           );
+    if (this.secretDriver) {
+      this.preparedTokens?.configureAccounts(this.state, this.secretDriver, (ref) =>
+        provisioning.resolveConnectionClient(ref),
+      );
+    }
     const protectedDriver = this.protectedDriver;
     if (protectedDriver !== undefined) {
       provisioning.installDriver(protectedDriver, ["sandbox", "credential_proxy"]);
@@ -1673,7 +1677,7 @@ export class ControllerWorker {
     controller: OpenClawController,
     installationId: string,
   ): Promise<void> {
-    const canRenew = this.preparedTokens?.oauthConnections !== undefined;
+    const canRenew = this.preparedTokens?.supportsAccounts === true;
     const pollMs = Math.min(this.pollIntervalMs, 250);
     const cleanupIntervalMs = 5_000;
     const batchSize = 4;
@@ -1730,7 +1734,7 @@ export class ControllerWorker {
   /** Retire one account per maintenance pass, then wait before rescanning the same IDs. */
   private async sweepConnectionRevocation(): Promise<void> {
     if (
-      !this.preparedTokens?.oauthConnections ||
+      !this.preparedTokens?.supportsAccounts ||
       !this.provisioningController ||
       this.connectionRevocationScanAfter > Date.now()
     ) {

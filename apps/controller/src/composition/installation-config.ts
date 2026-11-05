@@ -57,7 +57,6 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { NativeIAMDriver, type NativeIAMStateStore } from "@openclaw-enterprise/iam";
 import {
-  refreshPinnedOAuthGrant,
   InstalledDriver,
   SandboxRepositoryRecipientUnverifiedError,
   AuthorizationDeniedError,
@@ -105,7 +104,6 @@ import {
 import { OCCPluginDriver, CodexPluginDriver } from "../drivers/plugin/index.ts";
 import { createGatewayNodeEnrollment } from "../gateway/node-enrollment-client.ts";
 import { readWorkspaceFilesApiKey } from "./workspace-files.ts";
-import { OAuthConnectionTokens } from "../backends/token-service/oauth-connection.ts";
 import { TokenService } from "../backends/token-service/service.ts";
 import { githubMetadataProvider } from "../drivers/egress-proxy/github-metadata.ts";
 import type { PostgresPreparedGitHubLifecycle } from "../drivers/repo/github/credentials/prepared-lifecycle.ts";
@@ -1297,9 +1295,7 @@ export async function loadInstallationConfiguration(options: {
       installationSecretNamespace: environment.OCC_INSTALLATION_SECRET_NAMESPACE,
     },
   );
-  const tokenService = new TokenService(
-    new OAuthConnectionTokens(secretDriver, refreshPinnedOAuthGrant),
-  );
+  const tokenService = new TokenService();
   let preparedGitHub: PostgresPreparedGitHubLifecycle | undefined;
   if (preparedGitHubKeyPath !== undefined) {
     const { PostgresPreparedGitHubLifecycle } =
