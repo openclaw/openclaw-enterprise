@@ -698,6 +698,7 @@ function revisionFromRow(
     compute: AgentRevision["compute"];
     sandbox_driver_id?: AgentRevision["sandboxDriverId"];
     sandbox_policy?: AgentRevision["sandboxPolicy"];
+    network_egress_mode?: AgentRevision["networkEgressMode"];
     harness_auth: AgentRevision["harnessAuth"] & { readonly protectedExecutionVersion?: number };
     credential_sources?: AgentRevision["credentialSources"];
     egress_plan?: AgentRevision["egressPlan"];
@@ -777,6 +778,9 @@ function revisionFromRow(
     harness: admitted.harness,
     compute: admitted.compute,
     ...(admitted.sandbox_policy === undefined ? {} : { sandboxPolicy: admitted.sandbox_policy }),
+    ...(admitted.network_egress_mode === undefined
+      ? {}
+      : { networkEgressMode: admitted.network_egress_mode }),
     ...(admitted.sandbox_driver_id === undefined
       ? {}
       : { sandboxDriverId: admitted.sandbox_driver_id }),
@@ -3974,6 +3978,9 @@ export class PostgresPlatformState implements PlatformStateStore {
               draft_spec: revision.configuration,
               harness: revision.harness,
               compute: revision.compute,
+              ...(revision.networkEgressMode === undefined
+                ? {}
+                : { network_egress_mode: revision.networkEgressMode }),
               ...(revision.sandboxPolicy === undefined
                 ? {}
                 : { sandbox_policy: revision.sandboxPolicy }),

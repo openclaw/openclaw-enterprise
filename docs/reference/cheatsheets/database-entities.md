@@ -77,7 +77,8 @@ See [per-Agent policies](../sandbox-policies.md).
 
 Stores numbered, immutable snapshots of Agent settings accepted for deployment.
 `admitted_spec` includes the explicit v2
-[execution admission decision](../credential-sources/protected-inference.md#execution-admission-cutoff).
+[execution admission decision](../credential-sources/protected-inference.md#execution-admission-cutoff)
+and optional [network egress mode](../configuration/network-egress.md).
 
 - `id`
 - `namespace_id`

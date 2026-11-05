@@ -10,6 +10,7 @@ import (
 )
 
 func TestK3dStartupRejectsConflictingHostPortsBeforeSetup(t *testing.T) {
+	t.Setenv("OCC_DEVELOPMENT_NETWORK_EGRESS_MODE", "restricted")
 	for _, tc := range []struct{ name, plane, mode, api, kubernetes, browser string }{
 		{"OpenShell API collision", "kubernetes", "openshell", "6443", "6443", "8443"},
 		{"no sandbox API collision", "kubernetes", "none", "6443", "6443", "8443"},
@@ -53,6 +54,7 @@ func TestK3dStartupRejectsConflictingHostPortsBeforeSetup(t *testing.T) {
 }
 
 func TestComposeKubernetesStartupRejectsRenderedAPIPortCollisionBeforeSetup(t *testing.T) {
+	t.Setenv("OCC_DEVELOPMENT_NETWORK_EGRESS_MODE", "restricted")
 	for _, tc := range []struct{ name, shellAPI, rendered, kubernetes string }{
 		// A Compose file or --env-file published the API on a port the shell did not name.
 		{"env file moved the API port", "3000", "6443", "6443"},
@@ -66,6 +68,7 @@ func TestComposeKubernetesStartupRejectsRenderedAPIPortCollisionBeforeSetup(t *t
 }
 
 func TestComposeKubernetesStartupLetsAnEnvFileMoveTheDefaultAPIPort(t *testing.T) {
+	t.Setenv("OCC_DEVELOPMENT_NETWORK_EGRESS_MODE", "restricted")
 	// .env.example sets OPENCLAW_DEV_PORT; a copied .env that moves it off the
 	// Kubernetes API port must not be refused from the shell default alone.
 	commands := composeAPIPortCollisionFixture(t, "", "4000", "3000")
@@ -155,6 +158,7 @@ func composeAPIPortCollisionFixture(t *testing.T, shellAPI, renderedAPI, kuberne
 // Exercise the actual launcher and subprocess cancellation, with external tool
 // responses stopped at startup. Hosted cases prove the real database/cluster.
 func TestComposeSelectedRuntimeStartupDrainsBeforeRollback(t *testing.T) {
+	t.Setenv("OCC_DEVELOPMENT_NETWORK_EGRESS_MODE", "restricted")
 	for _, failing := range []string{"database", "cluster"} {
 		t.Run(failing, func(t *testing.T) {
 			root := t.TempDir()

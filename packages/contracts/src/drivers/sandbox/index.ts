@@ -186,6 +186,8 @@ export type HarnessExecutionModeSupport =
   | { readonly supported: false; readonly reason?: string };
 
 export interface SandboxDriver extends Driver {
+  /** Mediates public TCP access while retaining explicit credential and control routes. */
+  readonly publicNetworkEgress?: true;
   /**
    * OpenClaw mode support, set in the constructor from Driver identity and Installation settings.
    * Refusal reasons contain only the setting name and a corrective action.

@@ -931,6 +931,7 @@ func TestOpenShellCandidateSelectionRejectsIncompleteOrInvalidInputs(t *testing.
 }
 
 func TestOpenShellCandidateStartupRejectsBeforeResourceEffects(t *testing.T) {
+	t.Setenv("OCC_DEVELOPMENT_NETWORK_EGRESS_MODE", "restricted")
 	for _, mode := range []string{"compose", "kubernetes"} {
 		for _, component := range []string{"GATEWAY", "SANDBOX", "SUPERVISOR"} {
 			for _, failure := range []string{"partial", "malformed", "missing", "wrong revision", "missing label"} {

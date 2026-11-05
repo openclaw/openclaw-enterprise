@@ -281,6 +281,27 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
     sandbox.cells.every((cell) => cell.scenarios.length === 0),
     "OpenShell uses its prepared enforcement lane, not Sandbox-free installations",
   );
+  const publicEgressInput = {
+    OCC_TEST_QA_SCENARIOS: "public-egress",
+    OCC_TEST_QA_PRESET: "Codex",
+    OCC_TEST_QA_INSTALLATION: "kubernetes",
+  };
+  const publicEgress = selectQaMatrix(publicEgressInput);
+  assert.ok(publicEgress.cells.every((cell) => cell.scenarios.length === 0));
+  assert.deepEqual(publicEgress.requiredEnv, [
+    "OCC_TEST_PUBLIC_EGRESS_INPUTS",
+    "OCC_TEST_PUBLIC_EGRESS_SERVICE_KEY",
+    "OCC_TEST_DATABASE_URL",
+  ]);
+  assert.throws(() => validateQaInputs(publicEgress, {}), /PUBLIC_EGRESS_INPUTS is required/);
+  assert.throws(
+    () => selectQaMatrix({ ...publicEgressInput, OCC_TEST_QA_INSTALLATION: "compose" }),
+    /explicit Kubernetes setup/,
+  );
+  assert.throws(
+    () => selectQaMatrix({ ...publicEgressInput, OCC_TEST_QA_PRESET: "OpenClaw" }),
+    /not applicable/,
+  );
   const searchConfig = selectQaMatrix({
     OCC_TEST_QA_SCENARIOS: "codex-search-config",
     OCC_TEST_QA_PRESET: "Codex",

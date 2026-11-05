@@ -34,6 +34,7 @@ const { loadYaml } = createRequire(new URL("../../apps/controller/package.json",
 
 function input(controlPlane) {
   return {
+    networkEgressMode: "restricted",
     controlPlane: {
       releaseName: "oce",
       namespace: "openclaw-system",

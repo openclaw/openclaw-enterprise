@@ -1161,9 +1161,29 @@ function buildInput(rawInput, diagnostics) {
   closed(
     input,
     "input",
-    ["controlPlane", "runtime", "channels", "codex", "repository", "publicGithubRead", "presets"],
+    [
+      "networkEgressMode",
+      "controlPlane",
+      "runtime",
+      "channels",
+      "codex",
+      "repository",
+      "publicGithubRead",
+      "presets",
+    ],
     diagnostics,
   );
+  const networkEgressMode = input.networkEgressMode;
+  if (networkEgressMode !== "public" && networkEgressMode !== "restricted") {
+    diagnostics.errors.push(
+      'networkEgressMode is required: select "restricted" for these profiles; public mode uses the OpenShell quickstart in docs/guides/deploy/kubernetes-setup.md.',
+    );
+  }
+  if (networkEgressMode === "public") {
+    diagnostics.errors.push(
+      'networkEgressMode "public" requires a paired Sandbox and Credential Gateway. Use docs/guides/deploy/kubernetes-setup.md with compatible OpenShell images, or select "restricted" for these profiles.',
+    );
+  }
   const controlPlane = section(input, "controlPlane", diagnostics);
   const runtime = section(input, "runtime", diagnostics);
   const channels = section(input, "channels", diagnostics, false);
@@ -1316,6 +1336,7 @@ function buildInput(rawInput, diagnostics) {
   );
 
   return {
+    networkEgressMode,
     controlPlane,
     runtime,
     channels,
@@ -1481,6 +1502,7 @@ function collectorExporter(loggingCollector, enabled, diagnostics) {
 
 function buildRendered(profile, parsed, diagnostics) {
   const {
+    networkEgressMode,
     controlPlane,
     runtime,
     channels,
@@ -1840,6 +1862,7 @@ function buildRendered(profile, parsed, diagnostics) {
   };
 
   const installation = {
+    networkEgressMode,
     occ: {
       cluster: clusterName,
     },

@@ -364,6 +364,7 @@ func TestDevelopmentImageImportKeepsTheArchivePathForOtherImages(t *testing.T) {
 // rather than exported, and the registry leaves the network before the
 // rollback deletes the cluster (and with it the network).
 func TestK3dRegistryAttachmentOrdering(t *testing.T) {
+	t.Setenv("OCC_DEVELOPMENT_NETWORK_EGRESS_MODE", "restricted")
 	root := t.TempDir()
 	state := filepath.Join(root, "state")
 	cluster := "occ-dev-registry"

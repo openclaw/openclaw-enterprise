@@ -4,6 +4,10 @@
 # Build deploy/runtime/Dockerfile once for both image slots. For local k3d,
 # use the [local image build](../../../docs/guides/deploy/local-operations.md#build-images-for-local-kubernetes)
 # to fill real digests. See [Installation setup](../../../docs/guides/deploy/production-installation.md#configure-the-installation).
+# This direct-credential profile requires restricted egress.
+# For public access with Credential Gateway, use the OpenShell quickstart.
+networkEgressMode: restricted
+
 occ:
   # Identify the Kubernetes cluster dedicated to this Installation.
   # See [Installation setup](../../../docs/guides/deploy/production-installation.md#configure-the-installation).

@@ -420,7 +420,12 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 	// reached a 4Gi limit.
 	gatewayResources := map[string]any{"requests": map[string]string{"cpu": "100m", "memory": "2560Mi"}, "limits": map[string]string{"cpu": "2", "memory": "4Gi"}}
 	harnessResources := map[string]any{"requests": map[string]string{"cpu": "100m", "memory": "768Mi"}, "limits": map[string]string{"cpu": "2", "memory": "6Gi"}}
+	networkEgressMode := s.NetworkEgressMode
+	if networkEgressMode == "" {
+		networkEgressMode = "restricted"
+	}
 	config := map[string]any{
+		"networkEgressMode":           networkEgressMode,
 		"sandboxNetworkPolicyCeiling": s.SandboxNetworkPolicyCeiling,
 		"occ":                         map[string]string{"cluster": s.Cluster}, "backend": []any{},
 		"drivers": map[string]any{

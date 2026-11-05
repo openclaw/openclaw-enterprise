@@ -74,6 +74,7 @@ func TestDockerComputeStartupRefusesKeycloakSignIn(t *testing.T) {
 }
 
 func TestUpRefusesKeycloakWithTheComposeControlPlane(t *testing.T) {
+	t.Setenv("OCC_DEVELOPMENT_NETWORK_EGRESS_MODE", "restricted")
 	t.Setenv("OCC_DEVELOPMENT_SIGN_IN", "keycloak")
 	t.Setenv("OCC_DEVELOPMENT_COMPUTE_DRIVER", "kubernetes")
 	t.Setenv("OCC_DEVELOPMENT_CONTROL_PLANE", "compose")
@@ -85,6 +86,7 @@ func TestUpRefusesKeycloakWithTheComposeControlPlane(t *testing.T) {
 }
 
 func TestUpRefusesKeycloakReservedPortConflictsBeforeCreatingState(t *testing.T) {
+	t.Setenv("OCC_DEVELOPMENT_NETWORK_EGRESS_MODE", "restricted")
 	for _, setting := range []string{"OCC_DEVELOPMENT_BROWSER_PORT", "OPENCLAW_DEV_PORT", "OCC_DEVELOPMENT_KUBERNETES_API_PORT"} {
 		t.Run(setting, func(t *testing.T) {
 			for key, value := range keycloakProfileEnv() {

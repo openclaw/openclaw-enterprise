@@ -1,15 +1,16 @@
 ---
 created: 2026-10-15
-updated: "2026-10-29"
-last_updated_session: "01a1891d-5b6b-7071-b482-793a9dd01044"
+updated: "2026-11-05"
+last_updated_session: "authoring-run/2b54c1e7-77a6-45ab-9919-fbe2b81bfa21"
 ---
 
 # Agent sandbox policy flow
 
 ## Overview
 
-OCC persists governed network additions for one Agent, freezes them at deployment,
-and optionally applies a later version through its Sandbox Driver. Denial logs
+OCC freezes the Installation's network egress mode and governed per-Agent network
+additions at deployment. It can apply a later additions version through the
+Sandbox Driver; changing the egress mode requires a successor revision. Denial logs
 and provider recommendations supply independent context for a user review.
 This trace describes the implemented source; runtime proof has separate limits.
 
@@ -32,7 +33,10 @@ graph TD
   Preview -->|valid| U2["Review proposal"]
   U2 --> A["OCC save admission<br/>IAM, schema and ceiling"]
   A --> P["PostgreSQL<br/>desired policy version"]
-  P --> D["Explicit deployment<br/>immutable snapshot"]
+  Mode["Installation egress mode"] --> Cap["Check selected<br/>Driver capabilities"]
+  Cap --> D["Explicit deployment<br/>immutable snapshot"]
+  P --> D
+  D --> Runtime["Compute and Sandbox<br/>enforce revision mode"]
   P --> W["Live application work<br/>exact running revision"]
   W --> C["Persist provider CAS<br/>before mutation"]
   C --> S["Sandbox Driver<br/>apply canonical policy"]
@@ -122,9 +126,34 @@ cleans its exact IAM access.
 
 ### 2. Freeze deployment or enqueue live application
 
-`packages/occ/src/index.ts:deployAgent` freezes the Driver's defaults and additions
-into `AgentRevision.sandboxPolicy`. The OpenShell Driver provisions from this
-snapshot rather than re-reading changed defaults.
+The protected Kubernetes quickstart and `internal/occdev/up.go` select public
+mode with external credential custody. Ordinary installation profiles require
+restricted mode. `installationControllerOptions` gives API and worker the same
+choice; omission remains restricted.
+
+`packages/occ/src/index.ts:admitAgentDeployment` checks Compute and Sandbox
+`publicNetworkEgress` support after authorization. `assertCredentialGatewayDelivery`
+refuses raw model credentials; CredentialSource authentication requires paired
+Sandbox and Credential Gateway owners. Kubernetes Compute rechecks delivery on
+execution and rejects public embedded Secret bindings. Dedicated channel bindings
+remain in the separate Gateway.
+
+Admission freezes `networkEgressMode` independently of `sandboxPolicy`.
+PostgreSQL's immutable `admitted_spec` constrains the value; retries use that
+snapshot, not changed Installation settings. Existing omitted values stay restricted.
+
+`apps/controller/src/drivers/sandbox/openshell.ts:sandboxSpec` and
+`apps/controller/src/drivers/egress-proxy/openshell.ts:openShellEgressConfiguration`
+compile public mode into `allow_unconfigured_public_tcp`. Managed routes and
+artifact grants remain independent. The proxy compares the complete configuration
+before wiring. Readiness and live application require an applied-mode acknowledgment
+matching the loaded policy hash/version and effective configuration.
+
+Initial acceptance can precede networking startup. A missing applied bit or
+pending generation yields `TransientDependencyError`; Compute returns incomplete
+without workload-stop hooks. The worker's convergence deadline bounds the wait
+without spending retry attempts. Explicit denial, false applied mode, or conflicting
+same-generation evidence fails. Live additions preserve the revision's mode.
 
 `applyAgentSandboxPolicy` authorizes Agent `manage_policy` and SandboxPolicy
 `update` and `read` before any refusal that names saved additions, then requires
@@ -238,7 +267,7 @@ the policy read, only the network policy card states it; the suggestions card is
 - Compare the application revision with the active Agent revision and inspect
   attributable audit evidence before retrying a stale or unconfirmed request.
 - [PostgreSQL admission integration](../../tests/integration/postgres-agent-sandbox-policy.test.mjs)
-  exercises HTTP/IAM/storage; the [OpenShell runtime lane](../../tests/integration/sandbox-driver-openshell-k3d-real.test.mjs)
+  exercises HTTP/IAM/storage; the [public egress runtime lane](../testing/public-egress.md)
   owns real enforcement proof. Storybook proves simulated presentation only.
 - [Console batch browser tests](../../tests/browser/console-policy-denials.test.ts)
   cover selection across pages, stable Follow, deduplication, preservation of saved
@@ -257,6 +286,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-05 20:34: Trace the accompanying revision-bound public egress mode through Installation selection, admission, storage and Driver compilation. (authoring-run/2b54c1e7-77a6-45ab-9919-fbe2b81bfa21 - a1c1f0cbd82b151d88442370feba0ce95ea9a6d9)
 
 - 2026-10-29 12:37: Link Installation inspection to its startup projection owner. (01a1891d-5b6b-7071-b482-793a9dd01044 - 32b59e204e)
 

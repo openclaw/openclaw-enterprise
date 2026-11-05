@@ -12,6 +12,7 @@
         "Canonical migration commands preserve main data and serialize fresh/repeat runners",
         "Canonical migration refuses unexplained histories before mutation",
         "Credential Proxy preview receipts require the exact history before the shared migration",
+        "Canonical network egress migration preserves admitted revisions",
         "Canonical repository-prefix upgrade retains exact attempt cleanup context",
         "External ChatGPT migration rejects retired OAuth state and admits only source metadata",
         "Drizzle generates repository schema migrations without redundant regeneration",

@@ -4,6 +4,7 @@ const scenarioPresets = {
   "sandbox-policy": ["Codex"],
   "plugin-install": ["Codex"],
   "openshell-linear-read": ["Codex"],
+  "public-egress": ["Codex"],
   "model-ui": ["OpenClaw", "Codex"],
   "codex-search-config": ["Codex"],
   "console-secrets": ["OpenClaw", "Codex"],
@@ -33,6 +34,7 @@ export function selectQaMatrix(env = process.env) {
               "sandbox-policy",
               "plugin-install",
               "openshell-linear-read",
+              "public-egress",
               "codex-search-config",
             ].includes(name),
         )
@@ -61,19 +63,23 @@ export function selectQaMatrix(env = process.env) {
       preset: name,
       scenarios: scenarios.filter(
         (scenario) =>
-          !["sandbox-policy", "plugin-install", "openshell-linear-read"].includes(scenario) &&
-          scenarioPresets[scenario].includes(name),
+          !["sandbox-policy", "plugin-install", "openshell-linear-read", "public-egress"].includes(
+            scenario,
+          ) && scenarioPresets[scenario].includes(name),
       ),
       unselected: allScenarios.filter(
         (scenario) =>
-          !["sandbox-policy", "plugin-install", "openshell-linear-read"].includes(scenario) &&
+          !["sandbox-policy", "plugin-install", "openshell-linear-read", "public-egress"].includes(
+            scenario,
+          ) &&
           scenarioPresets[scenario].includes(name) &&
           !scenarios.includes(scenario),
       ),
       notApplicable: allScenarios.filter(
         (scenario) =>
-          !["sandbox-policy", "plugin-install", "openshell-linear-read"].includes(scenario) &&
-          !scenarioPresets[scenario].includes(name),
+          !["sandbox-policy", "plugin-install", "openshell-linear-read", "public-egress"].includes(
+            scenario,
+          ) && !scenarioPresets[scenario].includes(name),
       ),
     })),
   );
@@ -115,12 +121,23 @@ export function selectQaMatrix(env = process.env) {
   const sandboxPolicy = scenarios.includes("sandbox-policy");
   const pluginInstall = scenarios.includes("plugin-install");
   const linearRead = scenarios.includes("openshell-linear-read");
+  const publicEgress = scenarios.includes("public-egress");
+  if (publicEgress) {
+    assert.equal(installation, "kubernetes", "public egress requires explicit Kubernetes setup");
+    assert.equal(preset, "Codex", "public egress requires the Codex preset");
+    requiredEnv.push(
+      "OCC_TEST_PUBLIC_EGRESS_INPUTS",
+      "OCC_TEST_PUBLIC_EGRESS_SERVICE_KEY",
+      "OCC_TEST_DATABASE_URL",
+    );
+  }
   assert.ok(
     exclusions.length === 0 ||
       activeScenarios.length > 0 ||
       sandboxPolicy ||
       pluginInstall ||
-      linearRead,
+      linearRead ||
+      publicEgress,
     "All selected QA scenarios require a custom Codex permission profile",
   );
   if (linearRead) {
@@ -170,6 +187,7 @@ export function selectQaMatrix(env = process.env) {
     sandboxPolicy,
     pluginInstall,
     linearRead,
+    publicEgress,
     cells,
     scenarios,
     requiredEnv,
@@ -179,7 +197,7 @@ export function selectQaMatrix(env = process.env) {
       exclusions.length === 0 &&
       installation === "all" &&
       preset === "all" &&
-      scenarios.length === allScenarios.length - 4
+      scenarios.length === allScenarios.length - 5
         ? "full"
         : "partial:selected",
   };

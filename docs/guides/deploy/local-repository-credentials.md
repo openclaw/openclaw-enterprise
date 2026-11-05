@@ -47,6 +47,7 @@ Set the directory to mode `0700` and the private key to mode `0600`. Then run:
 export OCC_DEVELOPMENT_REPOSITORY_INPUT_DIRECTORY='/absolute/private/repository-inputs'
 export OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes
 export OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes
+export OCC_DEVELOPMENT_NETWORK_EGRESS_MODE=restricted
 export OCC_DEVELOPMENT_SANDBOX_DRIVER=none
 ./scripts/dev-up
 ```

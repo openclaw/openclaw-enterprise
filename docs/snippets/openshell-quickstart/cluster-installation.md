@@ -10,6 +10,11 @@ Exclude other install, upgrade and Job writers. Use a local chart and the matchi
 `$RUN_DIR/install-receipt` directory for [read-only handoff](production-handoff.md#resume-an-installation-in-progress).
 After an interrupted install, reconcile that receipt before any further writes.
 
+The template selects public network egress for a new installation. Set
+`NETWORK_EGRESS_MODE=restricted` before rendering to require explicit allowlists.
+Public mode requires a compatible OpenShell release; see
+[OpenShell Sandbox](../../reference/drivers/openshell-sandbox.md).
+
 For CoreDNS, read the Kubernetes DNS zone below. For other DNS servers, get `CLUSTER_DOMAIN` from your cluster administrator. Confirm this DNS suffix before continuing.
 
 ```bash
@@ -35,6 +40,7 @@ route_host="occ-gateway-362888b35fce.envoy-gateway-system.svc.${CLUSTER_DOMAIN:?
 # API_CIDRS includes the API Service and endpoint /32s.
 jq -n --arg cluster "$CLUSTER_NAME" --arg runtime "${RUNTIME_IMAGE:?}" --arg storageClass "${STORAGE_CLASS:?}" \
   --arg hostname "$route_host" --arg openshellIP "$os_ip" \
+  --arg networkEgressMode "${NETWORK_EGRESS_MODE:-public}" \
   --argjson proxyCidrs '["127.0.0.1/32"]' -f "$assets/installation.jq" \
   > "$RUN_DIR/installation.json"
 jq -n --arg cluster "$CLUSTER_NAME" --arg controller "${CONTROLLER_IMAGE:?}" --arg email "${ADMIN_EMAIL:?}" \

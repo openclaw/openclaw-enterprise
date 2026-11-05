@@ -9,6 +9,7 @@ import (
 )
 
 func TestClusterNameStartupBoundaries(t *testing.T) {
+	t.Setenv("OCC_DEVELOPMENT_NETWORK_EGRESS_MODE", "restricted")
 	// k3d v5.8.3 CheckName caps names at 32 and requires an alphanumeric
 	// ending. Development startup additionally owns the narrower prefix and alphabet.
 	for _, test := range []struct {

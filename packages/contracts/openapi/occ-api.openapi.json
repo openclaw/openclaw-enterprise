@@ -21329,6 +21329,13 @@
                           "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
+                        "networkEgressMode": {
+                          "anyOf": [
+                            { "const": "public", "type": "string" },
+                            { "const": "restricted", "type": "string" }
+                          ],
+                          "description": "Outbound network policy frozen for this revision. Public selects the Driver's public TCP mode while retaining managed credential routes. Restricted, including omission, retains the selected Driver's restricted behavior."
+                        },
                         "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
                         "plugins": {
                           "additionalProperties": false,
@@ -28049,6 +28056,13 @@
                             "namespaceId": {
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
+                            },
+                            "networkEgressMode": {
+                              "anyOf": [
+                                { "const": "public", "type": "string" },
+                                { "const": "restricted", "type": "string" }
+                              ],
+                              "description": "Outbound network policy frozen for this revision. Public selects the Driver's public TCP mode while retaining managed credential routes. Restricted, including omission, retains the selected Driver's restricted behavior."
                             },
                             "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
                             "plugins": {

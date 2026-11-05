@@ -70,6 +70,7 @@ is in the [QA manifest](../../../scripts/ci/test-suites/qa-matrix.json).
 | `calendar`              | Yes (Codex)          | Codex           | Successful Calendar read, approvals and tool restrictions.                                                                                                 |
 | `slack`                 | No                   | Codex           | Threaded reply and new root message.                                                                                                                       |
 | `openshell-linear-read` | No                   | Codex           | Opt-in shipped OpenShell setup, Linear installation and verified native read.                                                                              |
+| `public-egress`         | No                   | Codex           | Prepared Kubernetes Installation: public TCP, restricted control, and managed Git/model credential custody.                                                |
 | `codex-search-config`   | No                   | Codex           | API-key Agent user configuration with omitted, false and true capability declarations; persistence after supported stop/deploy.                            |
 
 The [QA matrix test](../../../tests/integration/qa-matrix-real.test.mjs) implements
@@ -82,6 +83,11 @@ The OpenShell jobs cover `sandbox-policy` and `plugin-install` automatically.
 To select these scenarios locally through the QA matrix, prepare their OpenShell
 fixtures: [network policy](../openshell-coverage.md#qa-matrix-selector) or
 [plugin installation](../openshell.md#codex-plugin-installation).
+
+`public-egress` reuses its [connected scenario](../public-egress.md) against a
+separately prepared Kubernetes Installation. Select `Codex` and `kubernetes`
+explicitly. Hosted advisory jobs do not supply its fresh credential custody,
+controlled public endpoint, or coordinated configuration rollout.
 
 `model-ui` checks the example console theme through sign-in and Agent use. On
 Kubernetes, dedicated Agents use `nativeAdmin: true` and must start with
@@ -150,7 +156,7 @@ OpenShell files or the local installation suite. For those suites, follow
 `OCC_TEST_QA_PRESET` accepts `all` (default), `OpenClaw`, `Codex`.
 `OCC_TEST_QA_SCENARIOS` accepts `all` (default) or comma-separated selectors.
 `all` excludes the explicit `sandbox-policy`, `plugin-install`,
-`openshell-linear-read`, and `codex-search-config` selectors.
+`openshell-linear-read`, `public-egress`, and `codex-search-config` selectors.
 Invalid or wholly inapplicable selections fail before provisioning; missing
 inputs fail selected checks. Omitting `OCC_TEST_QA_MATRIX=1` skips the suite.
 

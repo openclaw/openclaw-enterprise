@@ -33,7 +33,7 @@ or Agent configuration.
 
 ## Installation startup configuration
 
-Set `OCC_CONFIG_PATH` to the absolute path of a trusted YAML file. Production
+Set `OCC_CONFIG_PATH` to a trusted YAML file’s absolute path. Production
 requires this setting; development can omit it to retain its existing local
 defaults. When provided, both API and worker processes must read the same file.
 The [production Kubernetes deployment guide](../guides/deploy/production-installation.md#configure-the-installation)
@@ -60,6 +60,8 @@ network additions. It grants no default access; an absent or empty array delegat
 none. API and worker must use the same trusted value. See
 [Sandbox policies](sandbox-policies.md#authority-and-admission) for
 its grant schema and authorization boundaries.
+
+See [network egress modes](configuration/network-egress.md) for `networkEgressMode` defaults and Driver requirements.
 
 The optional `observability` block sets one external console destination:
 

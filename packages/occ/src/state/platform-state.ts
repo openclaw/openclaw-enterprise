@@ -947,6 +947,9 @@ function assertAdmittedAgentRevision(revision: AgentRevision): void {
     (revision.compute.admission !== undefined &&
       (typeof revision.compute.admission !== "string" ||
         !/^[\x20-\x7e]{1,1024}$/.test(revision.compute.admission))) ||
+    (revision.networkEgressMode !== undefined &&
+      revision.networkEgressMode !== "public" &&
+      revision.networkEgressMode !== "restricted") ||
     (revision.sandboxDriverId !== undefined && !isNonEmptyString(revision.sandboxDriverId)) ||
     (revision.secretDriverId !== undefined && !isNonEmptyString(revision.secretDriverId)) ||
     Object.hasOwn(revision, "serviceAccount") ||
