@@ -301,7 +301,7 @@ jobs:
       - name: Run OpenAPI check
         run: pnpm openapi:check
       - name: Check and build documentation
-        run: pnpm docs:install && pnpm openapi:lint && pnpm docs:check && pnpm docs:build
+        run: pnpm docs:install && pnpm openapi:lint && pnpm exec tsc --project scripts/docs-site/tsconfig.json --pretty false && pnpm docs:check && pnpm docs:build
   affected-packages:
     name: Affected Packages (advisory)
     needs: impact
