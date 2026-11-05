@@ -1,15 +1,15 @@
 ---
 created: "2026-09-21"
 updated: 2026-11-05
-last_updated_session: authoring-run/root-deployment_docs
+last_updated_session: authoring-run/a85a4857-880b-4f7b-8fe2-d648c86e601e
 ---
 
 # OpenShell Sandbox provisioning flow
 
 ## Overview
 
-Kubernetes Compute provisions dedicated Codex and OpenClaw Harnesses through
-OpenShell. [Credential sources](credential-source-lifecycle.md) supply model access.
+Kubernetes Compute provisions Codex and OpenClaw Harnesses through OpenShell.
+[Credential sources](credential-source-lifecycle.md) supply model access.
 
 ## Entry Points
 
@@ -89,34 +89,35 @@ graph TD
 
 Both `openshell` launchers require Landlock, support Node and x64/ARM64 Codex
 independently of launcher architecture, verify 0.1.6 charts and pin
-Gateway/supervisor/sandbox images. They import OCE images first to prevent k3s
-garbage collection. `writeInstallation` selects curated Codex plugins for API
-provisioning and the selected Credential Gateway supplies credentials.
+Gateway/supervisor/sandbox images. Importing OCE images first prevents k3s garbage
+collection. `writeInstallation` selects curated Codex plugins; the selected
+Credential Gateway supplies credentials.
 
 `dev-up` validates Kubernetes/OpenShell before `occ dev up`.
 `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` selects Kubernetes-only: in-cluster
 authentication, `oce-system`, imported PostgreSQL and [per-Agent HTTPS](../guides/deploy/local-setup.md).
-Its launcher checks port collisions and records engine, cluster, Namespace,
-ports and key path. Compose runs PostgreSQL/OCC with a k3d-targeting worker.
-The retired local static-inference profile no longer provisions an authority
-or verifies middleware chart configuration.
+The launcher checks port collisions, recording engine, cluster, Namespace, ports
+and key path. Compose runs PostgreSQL/OCC with a k3d worker.
 
-After Sandbox rollout failure, `prepareOpenShell` calls
+On rollout failure, `prepareOpenShell` calls
 `internal/occdev/agent_sandbox_rollout_diagnostics.go:captureAgentSandboxRollout`
-once, preserving rollback's original error. Diagnostics include Deployment,
+once, preserving rollback errors. Diagnostics include Deployment,
 UID-linked ReplicaSets/Pods and Warning reasons, excluding messages, environment,
-full labels and logs. Unavailable, malformed or oversized results are marked.
+full labels and logs. Unavailable, malformed or oversized results are identified.
 Limits: 15-second context; three seconds/256 KiB per command; 32 KiB per record.
 No retries; 200 ms pipe draining cannot terminate descendants.
 
 `network.providerHarness` records Gateway ClusterIP, Pod selector and TCP/8080.
-Agent Gateways alias its advertised hostname without changing HTTP Host;
-policy permits only those Pods/port. Both launchers install private Envoy routing
-and operator Workspaces. Gateway ingress admits API, worker, supervisor callbacks
-and dedicated Agent Gateways; the public quickstart's
-`docs/snippets/openshell-quickstart/kubernetes/service-policies.py` reads live selectors and admits these callers on TCP/8080, retaining each Namespace's
-supervisor policy when another is applied. Tenant callers must still match the namespace ownership label. The quickstart platform helper records each policy set before applying it; uninstall deletes every recorded set. See [local deployment](../guides/deploy/local-kubernetes-development.md)
-and the [local protected-profile retirement notice](../guides/deploy/local-openshell-images.md#select-the-protected-profile).
+Agent Gateways alias its hostname, preserving HTTP Host; policy permits only those
+Pods/port. Both launchers install private Envoy routing and operator Workspaces.
+`docs/snippets/openshell-quickstart/kubernetes/service-policies.py` uses live
+selectors to admit API, worker, supervisors and Agent Gateways on TCP/8080.
+Supervisor grants accumulate per Namespace; callers must match ownership labels.
+Protected Git preserves Gateway DNS/API egress using Service addresses, DNS
+selectors/ports and ready API endpoints. Empty discovery warns and removes stale
+backend grants; failed reads abort. Policies are recorded before application and
+deleted on uninstall. See [local deployment](../guides/deploy/local-kubernetes-development.md)
+and the [retired local protected profile](../guides/deploy/local-openshell-images.md#select-the-protected-profile).
 
 `internal/occdev/sandbox_network_policy.go:loadSandboxNetworkPolicies` validates
 policies (maximum 1 MiB) before provisioning; persisted rules augment generated
@@ -399,7 +400,11 @@ model execution.
 
 ## Changelog
 
+- 2026-11-05 14:17: Revoke empty API grants. (authoring-run/a85a4857-880b-4f7b-8fe2-d648c86e601e - 2b92aa9b35de6e7633b960dfd7edcf1fd3fd46ea)
+
 - 2026-11-05 12:54: Reject projected identity at admission. (authoring-run/root-deployment_docs - 894a5b6698049c41fba27f5c2c0764e86b4c0632)
+
+- 2026-11-05 11:46: Preserve Gateway DNS and Kubernetes API egress when enabling protected Git. (authoring-run/42be4d0d-c90e-4ade-bfa2-a8b8df80fc1d - a69245cb064932a4c7bf27df3fd8646a0107c4e4)
 
 - 2026-11-05 02:27: Enable `push.negotiate`. (authoring-run/bbe8db1d-f7e2-4322-80db-fbdf882659e2 - b4c30b3593105309904715c7dfff29c987dbb885)
 
