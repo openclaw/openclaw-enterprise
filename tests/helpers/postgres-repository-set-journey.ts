@@ -22,6 +22,7 @@ import type {
   ProxyRevisionContext,
 } from "../../packages/contracts/src/index.ts";
 import { InstalledDriver } from "../../packages/occ/src/index.ts";
+import type { InstallationRuntimeDrivers } from "../../apps/controller/src/composition/installation-config.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
@@ -660,24 +661,51 @@ async function repositoryGitJourney(
       }
     },
   };
+  // Observe the real bound policy calls; neither spy replaces its decisions.
+  const legacyResolve = t.mock.method(driver, "resolve");
+  const boundResolve = t.mock.method(driver, "resolveBindings");
+  const selectDrivers = (d: InstallationRuntimeDrivers) => ({
+    ...d,
+    repositoryPolicy: driver,
+    repositoryAdmission: { policy: driver, backendId: peer.registry.backendId },
+    protectedDriver: owner,
+    sandboxDriver: sandbox,
+    proxyDriver: proxy,
+    credentialGatewayDriver: gateway,
+    installation: {
+      ...d.installation,
+      drivers: { ...d.installation.drivers, credential_gateway: { id: gateway.id } },
+    },
+  });
   const start = () =>
     f.start(compute, {
       emit: (event) => events.push(event),
       ...{ repositoryGitMaterial: peer.prepared.revisionMaterial },
-      transformDrivers: (d: { installation: { drivers: object } }) => ({
-        ...d,
-        repositoryPolicy: driver,
-        protectedDriver: owner,
-        sandboxDriver: sandbox,
-        proxyDriver: proxy,
-        credentialGatewayDriver: gateway,
-        installation: {
-          ...d.installation,
-          drivers: { ...d.installation.drivers, credential_gateway: { id: gateway.id } },
-        },
-      }),
+      transformDrivers: selectDrivers,
     });
   try {
+    if (!narrowProfile) {
+      const otherPolicy = new GitHubRepositoryPolicy(
+        { driverId: driver.id, backendId: peer.registry.backendId },
+        peer.registry,
+      );
+      const otherResolve = t.mock.method(otherPolicy, "resolveBindings");
+      await assert.rejects(
+        () =>
+          f.start(compute, {
+            transformDrivers: (d: InstallationRuntimeDrivers) => ({
+              ...selectDrivers(d),
+              repositoryAdmission: { policy: otherPolicy, backendId: peer.registry.backendId },
+            }),
+          }),
+        /The bound repository admission owner is not selected or unavailable/,
+      );
+      assert.equal(otherResolve.mock.callCount(), 0);
+      assert.equal(boundResolve.mock.callCount(), 0);
+      assert.equal(legacyResolve.mock.callCount(), 0);
+      assert.equal(peer.gh.issuesOfTokens.length, 0, "a mismatched owner cannot issue credentials");
+      assert.equal(wire.world.writes, 0);
+    }
     await start();
     try {
       await f.work(work, "succeeded");
@@ -689,6 +717,8 @@ async function repositoryGitJourney(
       throw preparationError;
     }
     assert.equal((await f.currentAgent(agent))?.activeRevisionId, revision.id);
+    assert.ok(boundResolve.mock.callCount() > 0, "the Worker resolves admitted bindings");
+    assert.equal(legacyResolve.mock.callCount(), 0, "the bound Worker skips the legacy resolver");
     order.push("active");
     // Hold the real provider request until the runtime has observed absent material.
     // This makes the pending state deterministic without a sleep or a fabricated token.

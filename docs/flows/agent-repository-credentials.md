@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
 updated: "2026-11-05"
-last_updated_session: authoring-run/59690b44-bb41-4790-af17-a75ac75d5ea7
+last_updated_session: authoring-run/b4f3318d-1490-44c4-83ed-29c470715c8f
 ---
 
 # Agent repository credential flow
@@ -289,42 +289,40 @@ fresh installation tokens under the same grant until the version deadline.
 
 ### 6. Maintain, recover and retire ownership
 
-The [worker](../../apps/controller/src/worker.mjs) passes the selected `ProtectedRepositoryGitAuthority`
-to the [sender binder](../../apps/controller/src/composition/repository-credentials/transport.ts),
-retaining maintenance and shutdown. Missing authority or mismatched Drivers prevent
-route-store and sender calls. Bundled OpenShell connects its route store first;
-a bare Sandbox runs without Git.
+The [worker](../../apps/controller/src/worker.mjs) owns maintenance and shutdown and binds the selected
+`ProtectedRepositoryGitAuthority` through the [sender binder](../../apps/controller/src/composition/repository-credentials/transport.ts).
+Missing authority or mismatched Drivers prevent route-store and sender calls.
+OpenShell connects first; bare Sandboxes have no Git.
 
-The worker calls an external binding’s `reconcile` with a 25-second abort signal,
-waiting one second after each call finishes; closing aborts and joins it. Readback
-settles delivery without reinstalling or restoring withdrawn access.
+Optional `reconcile` runs with a 25-second abort signal, one second after the preceding call
+finishes. Close aborts and joins. Readback settles delivery without reinstalling or restoring
+withdrawn access.
 
-Activation and maintenance commit atomically, preserving the actor.
-Maintenance uses 30 seconds, the native sender interval or a shorter Compute interval.
-Restart invalidates missing known sessions without reminting; cleanup permits deployment.
+Activation and maintenance commit atomically, preserving the actor. Maintenance uses 30 seconds,
+the native sender interval or a shorter Compute interval. Restart invalidates missing known
+sessions without reminting; cleanup permits deployment.
 
-[Preview, save and deploy](../../packages/occ/src/index.ts) require explicit repository policy
-permission and current scope for standing approval.
-The
-[worker](../../apps/controller/src/worker/repository-credentials.ts) rechecks
-[eligibility](../../packages/occ/src/repository-approval.ts) under Namespace then Agent locks.
-Withdrawal or a changed scope fingerprint raises `REPOSITORY_STANDING_POLICY_CHANGED` before successor release.
+[Preview, save and deploy](../../packages/occ/src/index.ts) require current scope and standing permission.
+The [worker](../../apps/controller/src/worker/repository-credentials.ts) rechecks
+[eligibility](../../packages/occ/src/repository-approval.ts) under Namespace then Agent locks,
+using the selected Installation policy or registered Repo Driver when unbound.
+Contradictory selection prevents startup. Withdrawal or a changed scope fingerprint raises
+`REPOSITORY_STANDING_POLICY_CHANGED` before successor release.
 
-Prepared native Git issues a version's first token only after activation publishes it. The
-deployment's Work then runs `apps/controller/src/worker.ts:ControllerWorker.assertRepositoryGitMaterial`
-(`PreparedRepositoryGitStore.revisionMaterial`): it waits at `REPOSITORY_GIT_MATERIAL_PENDING`
+Prepared native Git issues its first token after version publication. Deployment runs
+`apps/controller/src/worker.ts:ControllerWorker.assertRepositoryGitMaterial`
+(`PreparedRepositoryGitStore.revisionMaterial`) and waits at `REPOSITORY_GIT_MATERIAL_PENDING`
 until each open session has a committed token and fails with `REPOSITORY_GIT_TOKEN_QUARANTINED`
-when an attempt is quarantined. For an existing Agent (`activatedEarlierRevision`),
+for quarantined attempts. For existing Agents (`activatedEarlierRevision`),
 `continueRevisionWithoutGit` fails the deployment with `continuingRevision` and queues maintenance
-in one transaction under Namespace then Agent locks, so the version keeps running. A token still
-pending at the convergence deadline takes the same path with `REPOSITORY_GIT_TOKEN_PENDING`;
-maintenance accepts only these two failure codes. Otherwise the
-version is retired like any failed repository version
+atomically under Namespace then Agent locks, keeping the version running. Tokens
+pending at the convergence deadline use this path with `REPOSITORY_GIT_TOKEN_PENDING`;
+maintenance accepts only these two failure codes. Otherwise, the worker retires the version
 ([reference](../reference/repository-credentials/prepared-native-git.md#deployment-and-the-first-token)).
 
-Without standing Git evidence, the worker keeps Git closed and observes the Harness without
-preparing or activating it. Within five seconds it rechecks model authority, withdrawal,
-stop and replacement. Harness readiness cannot authorize Git
+Without standing Git evidence, the worker observes the Harness without preparation or activation;
+Git stays closed. Each pass rechecks model authority, withdrawal, stop and replacement,
+then repeats within five seconds. Harness readiness cannot authorize Git
 ([test](../../tests/integration/postgres-standing-session-worker.test.ts)).
 
 `apps/controller/src/worker.ts:ControllerWorker.processRepositoryCleanup` consumes
@@ -399,7 +397,11 @@ denied before reaching the provider, and chat continues.
 
 ## Changelog
 
+- 2026-11-05 12:15: Combine flow updates. (authoring-run/b4f3318d-1490-44c4-83ed-29c470715c8f - 17ed5c428c74952d299cf9dbd627551a7d7c24fa)
+
 - 2026-11-05 11:58: Trace files-only profile verification. (authoring-run/59690b44-bb41-4790-af17-a75ac75d5ea7 - bc8ce0445c880b5cc69f5514efe13c1633589796)
+
+- 2026-11-05 11:20: Trace the selected repository policy in Worker validation. (authoring-run/69db70f5-508f-488f-9329-f7df994260ec - 66bc76b266fe0ba0e35498bbe6d7abe2e74ac0e5)
 
 - 2026-11-05 01:05: Trace Git-only branch-pattern authorization. (authoring-run/f65a98dd-79e1-45e2-a740-b7e73c1d9dd3 - dde29ac47a)
 
