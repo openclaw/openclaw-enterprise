@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { registerHooks } from "node:module";
 import { jsonErrorOffset, jsonObjectProblem } from "../../apps/controller/src/console/dom.mts";
 
-const at = (line, column) =>
+const at = (line: number, column: number) =>
   `Invalid JSON at line ${line}, column ${column}. Enter a valid JSON object.`;
 
 test("text after the JSON value names where it starts (finding 1939)", () => {
@@ -45,13 +46,14 @@ test("an invisible or space-like character elsewhere is named at its position", 
 });
 
 test("space-like separators and curly quotes are named at their position (finding 1959)", () => {
-  const named = (where, fix) => `Invalid JSON${where}: ${fix}. Enter a valid JSON object.`;
+  const named = (where: string, fix: string) =>
+    `Invalid JSON${where}: ${fix}. Enter a valid JSON object.`;
   for (const [character, name] of [
     ["\u2028", "invisible line separator"],
     ["\u2029", "invisible paragraph separator"],
     ["\u202F", "narrow non-breaking space"],
     ["\u3000", "full-width space"],
-  ]) {
+  ] as const) {
     assert.equal(
       jsonObjectProblem(`{"a":${character}1}`),
       named(" at line 1, column 6", `remove the ${name} there`),
@@ -113,7 +115,11 @@ test("columns count characters as the reader sees them, not UTF-16 units (findin
 
 // The choseong, jungseong, compatibility and halfwidth Hangul fillers.
 const HANGUL_FILLERS = ["\u115F", "\u1160", "\u3164", "\uFFA0"];
-const codePoint = (character) => `U+${character.codePointAt(0).toString(16).toUpperCase()}`;
+const codePoint = (character: string) => {
+  const point = character.codePointAt(0);
+  assert.ok(point !== undefined);
+  return `U+${point.toString(16).toUpperCase()}`;
+};
 
 test("invisible characters earlier on the line take no column (finding 1949)", () => {
   // A left-to-right mark, a soft hyphen and a word joiner: the stray x is the 18th visible
@@ -140,14 +146,40 @@ test("an uppercase exponent and an escaped slash are valid JSON before a later e
 test("without Intl.Segmenter, columns still count code points, not UTF-16 units (finding 1950)", async () => {
   // The segmenter is read when the module loads, so this loads a second copy without it.
   const segmenter = Object.getOwnPropertyDescriptor(Intl, "Segmenter");
-  delete Intl.Segmenter;
-  let fallback;
+  assert.ok(segmenter);
+  let fallback: typeof import("../../apps/controller/src/console/dom.mts");
+  let resolvedFresh = false;
   try {
-    fallback = await import("../../apps/controller/src/console/dom.mts?no-segmenter");
+    assert.ok(Reflect.deleteProperty(Intl, "Segmenter"));
+    // Keep the import statically typed while giving only this import a fresh module URL.
+    const hook = registerHooks({
+      resolve(specifier, context, nextResolve) {
+        const resolved = nextResolve(specifier, context);
+        if (
+          specifier === "../../apps/controller/src/console/dom.mts" &&
+          context.parentURL === import.meta.url
+        ) {
+          resolvedFresh = true;
+          return { ...resolved, url: `${resolved.url}?no-segmenter` };
+        }
+        return resolved;
+      },
+    });
+    try {
+      fallback = await import("../../apps/controller/src/console/dom.mts");
+    } finally {
+      hook.deregister();
+    }
   } finally {
     Object.defineProperty(Intl, "Segmenter", segmenter);
   }
+  assert.ok(resolvedFresh, "the scoped import resolved to the fresh module URL");
+  assert.notEqual(fallback.jsonObjectProblem, jsonObjectProblem);
+  assert.notEqual(fallback.jsonErrorOffset, jsonErrorOffset);
+  assert.deepEqual(Object.getOwnPropertyDescriptor(Intl, "Segmenter"), segmenter);
   assert.equal(typeof Intl.Segmenter, "function");
+  // The fresh copy counts the combining mark separately, proving it loaded without Segmenter.
+  assert.equal(fallback.jsonObjectProblem('{"name": "e\u0301", x}'), at(1, 16));
   // Each emoji is one code point, two UTF-16 units: the stray x is the 16th character.
   assert.equal(fallback.jsonObjectProblem('{"name": "\u{1F600}\u{1F680}", x}'), at(1, 16));
   // Invisible characters take no column there either (finding 1949).
@@ -200,7 +232,7 @@ test("the scan agrees with the engine wherever the engine names a position", () 
   const base =
     '{\n  "a": [1, -2.5e+3, 4E-1, 0, true, false, null, "x\\n\\u00e9\\"y\\/\\r"],\n  "b": {"c": {}, "d": []}\r\n}';
   const characters = [...'"{}[],:x01-.eE+/u\\ \t\n\rt', "\u0001", "\uFEFF"];
-  const variants = new Set();
+  const variants = new Set<string>();
   for (let index = 0; index <= base.length; index += 1) {
     variants.add(base.slice(0, index));
     variants.add(base.slice(0, index) + base.slice(index + 1));
@@ -215,6 +247,7 @@ test("the scan agrees with the engine wherever the engine names a position", () 
     try {
       JSON.parse(text);
     } catch (error) {
+      assert.ok(error instanceof SyntaxError);
       message = error.message;
     }
     const offset = jsonErrorOffset(text);

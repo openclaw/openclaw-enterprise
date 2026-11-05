@@ -605,14 +605,14 @@ export const UNBROKEN_ALTERNATIVES = [
   // No character may match two of these, nor a combining mark start one: each overlap doubles the
   // ways to split a run, so a failed match on a joiner-run name backtracked for seconds (finding
   // 1999). One ideograph is a combining mark (U+16FE4), and letter emoji have their own line, so
-  // the last line skips both. tests/conformance/console-agent-name-runs.test.mjs checks it.
+  // the last line skips both. tests/conformance/console-agent-name-runs.test.ts checks it.
   String.raw`(?![\p{M}${LETTER_EMOJI}])[${IDEOGRAPHIC}](?=\p{M}*[\u2060\u200d])`,
 ];
 const UNBROKEN_CHARACTER = UNBROKEN_ALTERNATIVES.join("|");
 const RUN_CHARACTER = String.raw`(?:${UNBROKEN_CHARACTER})\p{M}*`;
 // A run of em dashes breaks only at its ends (LB17), so it is a run of its own (finding 1971).
 // The wide space, hyphen or dash a line breaks after stays on that line, so it counts too.
-// Exported for tests/conformance/console-agent-name-runs.test.mjs, which checks its shape.
+// Exported for tests/conformance/console-agent-name-runs.test.ts, which checks its shape.
 export const UNBROKEN_RUN = new RegExp(
   String.raw`\u2014{21,}|(?:${RUN_CHARACTER}){21,}|(?:${RUN_CHARACTER}){20}[${WIDE_SPACES}${DASHES}-]`,
   "u",
