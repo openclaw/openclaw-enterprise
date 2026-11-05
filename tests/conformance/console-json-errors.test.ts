@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { registerHooks } from "node:module";
 import { jsonErrorOffset, jsonObjectProblem } from "../../apps/controller/src/console/dom.mts";
 
 const at = (line: number, column: number) =>
@@ -147,35 +146,20 @@ test("without Intl.Segmenter, columns still count code points, not UTF-16 units 
   // The segmenter is read when the module loads, so this loads a second copy without it.
   const segmenter = Object.getOwnPropertyDescriptor(Intl, "Segmenter");
   assert.ok(segmenter);
-  let fallback: typeof import("../../apps/controller/src/console/dom.mts");
-  let resolvedFresh = false;
+  let fallback: unknown;
   try {
     assert.ok(Reflect.deleteProperty(Intl, "Segmenter"));
-    // Keep the import statically typed while giving only this import a fresh module URL.
-    const hook = registerHooks({
-      resolve(specifier, context, nextResolve) {
-        const resolved = nextResolve(specifier, context);
-        if (
-          specifier === "../../apps/controller/src/console/dom.mts" &&
-          context.parentURL === import.meta.url
-        ) {
-          resolvedFresh = true;
-          return { ...resolved, url: `${resolved.url}?no-segmenter` };
-        }
-        return resolved;
-      },
-    });
-    try {
-      fallback = await import("../../apps/controller/src/console/dom.mts");
-    } finally {
-      hook.deregister();
-    }
+    fallback = await import(
+      new URL("../../apps/controller/src/console/dom.mts?no-segmenter", import.meta.url).href
+    );
   } finally {
     Object.defineProperty(Intl, "Segmenter", segmenter);
   }
-  assert.ok(resolvedFresh, "the scoped import resolved to the fresh module URL");
+  assert.ok(typeof fallback === "object" && fallback !== null && "jsonObjectProblem" in fallback);
+  const isCallable = (value: unknown): value is (text: string) => unknown =>
+    typeof value === "function";
+  assert.ok(isCallable(fallback.jsonObjectProblem));
   assert.notEqual(fallback.jsonObjectProblem, jsonObjectProblem);
-  assert.notEqual(fallback.jsonErrorOffset, jsonErrorOffset);
   assert.deepEqual(Object.getOwnPropertyDescriptor(Intl, "Segmenter"), segmenter);
   assert.equal(typeof Intl.Segmenter, "function");
   // The fresh copy counts the combining mark separately, proving it loaded without Segmenter.

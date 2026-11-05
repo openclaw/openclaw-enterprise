@@ -1,3 +1,5 @@
+/// <reference lib="es2024.string" />
+
 import assert from "node:assert/strict";
 import test from "node:test";
 
