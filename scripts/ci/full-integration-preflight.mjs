@@ -31,10 +31,10 @@ const credentialedLanes = new Set([
   "openshell",
 ]);
 
-export function selectLane({ eventName, inputLane, ref, repositoryFixture }) {
+export function selectLane({ eventName, inputLane, ref }) {
   if (eventName === "workflow_dispatch") {
-    if (ref === cutoverRef && (inputLane !== "qa-matrix" || repositoryFixture !== "isolated")) {
-      throw new Error("Cutover branch dispatch must select qa-matrix with the isolated fixture.");
+    if (ref === cutoverRef) {
+      throw new Error("The cutover proof branch accepts push events only.");
     }
     return inputLane;
   }
@@ -44,16 +44,8 @@ export function selectLane({ eventName, inputLane, ref, repositoryFixture }) {
   throw new Error(`Unsupported full integration event: ${eventName}`);
 }
 
-export function assertSourceRef(ref, lane, eventName = "workflow_dispatch", repositoryFixture) {
+export function assertSourceRef(ref, lane, eventName = "workflow_dispatch") {
   if (eventName === "push" && ref === cutoverRef) {
-    return;
-  }
-  if (
-    eventName === "workflow_dispatch" &&
-    ref === cutoverRef &&
-    lane === "qa-matrix" &&
-    repositoryFixture === "isolated"
-  ) {
     return;
   }
   if (
@@ -150,9 +142,8 @@ export async function validateFullIntegrationPreflight({
     eventName: env.GITHUB_EVENT_NAME,
     inputLane: env.INPUT_LANE,
     ref: env.GITHUB_REF,
-    repositoryFixture: env.INPUT_QA_REPOSITORY_FIXTURE,
   });
-  assertSourceRef(env.GITHUB_REF, selected, env.GITHUB_EVENT_NAME, env.INPUT_QA_REPOSITORY_FIXTURE);
+  assertSourceRef(env.GITHUB_REF, selected, env.GITHUB_EVENT_NAME);
   const required = requiredEnvironmentsForLane(selected);
   for (const environmentName of required) {
     const environment = await github({

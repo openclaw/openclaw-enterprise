@@ -16,7 +16,7 @@ clusters, and provider services. The workflow collects the selected results in
 ## Trigger
 
 Manual dispatch selects one supported `lane` or `all` on `main`. The temporary
-proof routes accept a push or the focused isolated-repository dispatch on
+proof route accepts a push on
 `dev/kevinlin/integration-main-cutover`; see the [environment policy](configuration.md#environments).
 A scheduled advisory run does not run the Full Integration workflow.
 
@@ -49,6 +49,14 @@ repository. [Manually prepared lanes](../manual-tests.md)
 remain excluded. QA's default `all` also excludes its four
 [explicit scenario selectors](qa-advisory.md#select-scenarios).
 
+In the hosted QA matrix, the CI account can select only built-in Codex
+permission profiles. Both Compose and Kubernetes run OpenClaw model/UI checks
+and Console Secrets for both presets. The matrix excludes Codex model/UI,
+Calendar, Git write, denied Git push, and Slack because each starts a native
+Codex turn with a custom permission profile. The test log and `matrix.json`
+list the exclusions. The separate Slack Live lane still runs. A local QA run
+with an account that supports custom profiles can select all five scenarios.
+
 <a id="run-it"></a>
 
 ## Execution
@@ -62,8 +70,7 @@ commit, then dispatch the selected lane or `all` on `main`:
 gh workflow run full-integration.yml --ref main -f lane=all
 ```
 
-Branch exceptions are listed in [environment policy](configuration.md#environments). `qa_repository_fixture` applies to both
-`qa-matrix` and `all`; QA and focused Slack runs execute serially.
+See the [environment policy](configuration.md#environments) for branch exceptions.
 
 ### Run the hosted local installation lane
 

@@ -46,59 +46,6 @@ test("full integration workflow carries QA and installation outcomes into select
   }
 });
 
-test("qa-matrix repository fixture dispatch keeps default and isolated credentials separate", async () => {
-  const workflow = await readFile(
-    new URL("../../.github/workflows/full-integration.yml", import.meta.url),
-    "utf8",
-  );
-  assert.match(
-    workflow,
-    /qa_repository_fixture:[\s\S]*?default: default[\s\S]*?options:[\s\S]*?- default[\s\S]*?- isolated/,
-  );
-
-  const defaultStep = workflow.match(
-    /- name: Materialize approved QA credentials\n([\s\S]*?)\n\s+- name: Materialize isolated QA repository credentials/,
-  )?.[1];
-  assert.ok(defaultStep, "default QA credential materialization step is missing");
-  assert.match(defaultStep, /if: \(inputs\.qa_repository_fixture \|\| 'default'\) == 'default'/);
-  assert.doesNotMatch(defaultStep, /REPOSITORY_OBSERVER_TOKEN/);
-  assert.match(
-    defaultStep,
-    /REPOSITORY_REGISTRY_FILE: scripts\/ci\/qa-repositories\/default\.json/,
-  );
-  assert.match(defaultStep, /REPOSITORY_APP_KEY: \$\{\{ secrets\.REPOSITORY_APP_KEY \}\}/);
-
-  const isolatedStep = workflow.match(
-    /- name: Materialize isolated QA repository credentials\n([\s\S]*?)\n\s+- uses: \.\/\.github\/actions\/run-ci-lane/,
-  )?.[1];
-  assert.ok(isolatedStep, "isolated QA repository materialization step is missing");
-  assert.match(isolatedStep, /if: inputs\.qa_repository_fixture == 'isolated'/);
-  assert.match(isolatedStep, /QA_REPOSITORY_FIXTURE: isolated/);
-  assert.match(
-    isolatedStep,
-    /QA_ISOLATED_REPOSITORY_FULL_NAME: \$\{\{ vars\.QA_ISOLATED_REPOSITORY_FULL_NAME \}\}/,
-  );
-  assert.doesNotMatch(isolatedStep, /REPOSITORY_OBSERVER_TOKEN/);
-  assert.doesNotMatch(isolatedStep, /QA_ISOLATED_REPOSITORY_OBSERVER_TOKEN/);
-  assert.match(
-    isolatedStep,
-    /REPOSITORY_REGISTRY_FILE: scripts\/ci\/qa-repositories\/isolated\.json/,
-  );
-  assert.match(
-    isolatedStep,
-    /REPOSITORY_APP_KEY: \$\{\{ secrets\.QA_ISOLATED_REPOSITORY_APP_KEY \}\}/,
-  );
-  assert.doesNotMatch(isolatedStep, /secrets\.REPOSITORY_(?:OBSERVER_TOKEN|REGISTRY_JSON|APP_KEY)/);
-  assert.equal(
-    (defaultStep.match(/run: node scripts\/ci\/qa-matrix-credentials\.mjs/g) ?? []).length,
-    1,
-  );
-  assert.equal(
-    (isolatedStep.match(/run: node scripts\/ci\/qa-matrix-credentials\.mjs/g) ?? []).length,
-    1,
-  );
-});
-
 const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
 
 function qaRegistry(repositories) {
@@ -486,7 +433,7 @@ test("integration environment policy admits only main and the exact proof branch
   }
 });
 
-test("preflight checks the shared environment for main and both narrow cutover proof routes", async () => {
+test("preflight checks the shared environment for main and the cutover push", async () => {
   for (const selected of [
     ...[...credentialedLanes, "all"].map((lane) => ({
       ref: "refs/heads/main",
@@ -495,13 +442,6 @@ test("preflight checks the shared environment for main and both narrow cutover p
       policies: mainOnlyPolicies,
     })),
     { ref: cutoverRef, lane: "all", event: "push", policies: cutoverPolicies },
-    {
-      ref: cutoverRef,
-      lane: "qa-matrix",
-      event: "workflow_dispatch",
-      fixture: "isolated",
-      policies: cutoverPolicies,
-    },
   ]) {
     const fetched = [];
     const result = await validateFullIntegrationPreflight({
@@ -509,7 +449,6 @@ test("preflight checks the shared environment for main and both narrow cutover p
         GITHUB_REF: selected.ref,
         GITHUB_EVENT_NAME: selected.event,
         INPUT_LANE: selected.lane,
-        INPUT_QA_REPOSITORY_FIXTURE: selected.fixture,
         GITHUB_REPOSITORY: "openclaw/openclaw-enterprise",
         GITHUB_TOKEN: "token",
         GITHUB_ACTOR: "kevinlin-openai",
@@ -551,26 +490,6 @@ test("preflight refuses other credentialed branches and cutover dispatch selecti
         /must run from main/,
       );
     }
-    if (lane !== "qa-matrix") {
-      await assert.rejects(
-        () =>
-          validateFullIntegrationPreflight({
-            env: {
-              GITHUB_REF: cutoverRef,
-              GITHUB_REPOSITORY: "openclaw/openclaw-enterprise",
-              GITHUB_ACTOR: "kevinlin-openai",
-              GITHUB_TRIGGERING_ACTOR: "kevinlin-openai",
-              GITHUB_EVENT_NAME: "workflow_dispatch",
-              INPUT_LANE: lane,
-              INPUT_QA_REPOSITORY_FIXTURE: "isolated",
-            },
-            github,
-          }),
-        /must select qa-matrix with the isolated fixture/,
-      );
-    }
-  }
-  for (const fixture of [undefined, "default"]) {
     await assert.rejects(
       () =>
         validateFullIntegrationPreflight({
@@ -580,12 +499,11 @@ test("preflight refuses other credentialed branches and cutover dispatch selecti
             GITHUB_ACTOR: "kevinlin-openai",
             GITHUB_TRIGGERING_ACTOR: "kevinlin-openai",
             GITHUB_EVENT_NAME: "workflow_dispatch",
-            INPUT_LANE: "qa-matrix",
-            INPUT_QA_REPOSITORY_FIXTURE: fixture,
+            INPUT_LANE: lane,
           },
           github,
         }),
-      /must select qa-matrix with the isolated fixture/,
+      /accepts push events only/,
     );
   }
   for (const identity of [
@@ -605,7 +523,6 @@ test("preflight refuses other credentialed branches and cutover dispatch selecti
               GITHUB_TRIGGERING_ACTOR: "kevinlin-openai",
               GITHUB_EVENT_NAME: event,
               INPUT_LANE: "qa-matrix",
-              INPUT_QA_REPOSITORY_FIXTURE: "isolated",
               ...identity,
             },
             github,
@@ -709,71 +626,33 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
       }
     }
   }
-  // Only the guarded isolated route can leave the shared Slack queue. Evaluate
-  // the shipped expressions and real selector together to protect that boundary.
-  const isolatedProof = {
-    github: { ...approvedProof, event_name: "workflow_dispatch" },
-    inputs: { lane: "qa-matrix", qa_repository_fixture: "isolated" },
-  };
-  const expression = (value, context) =>
-    runInNewContext(value.replace(/^\$\{\{\s*|\s*\}\}$/g, ""), context);
-  const qaEnvironment = workflow.jobs["qa-matrix"].env;
-  for (const [github, inputs, focused] of [
-    [isolatedProof.github, isolatedProof.inputs, true],
-    [{ ...isolatedProof.github, event_name: "push" }, {}, false],
-    [{ ...isolatedProof.github, ref: "refs/heads/main" }, isolatedProof.inputs, false],
-    [{ ...isolatedProof.github, ref: "refs/heads/other" }, isolatedProof.inputs, false],
-    [{ ...isolatedProof.github, repository: "other/repository" }, isolatedProof.inputs, false],
-    [{ ...isolatedProof.github, actor: "other-writer" }, isolatedProof.inputs, false],
-    [{ ...isolatedProof.github, triggering_actor: "other-writer" }, isolatedProof.inputs, false],
-    [isolatedProof.github, { ...isolatedProof.inputs, lane: "all" }, false],
-    [isolatedProof.github, { ...isolatedProof.inputs, qa_repository_fixture: "default" }, false],
-  ]) {
-    const context = { github, inputs };
-    const env = {
-      OCC_TEST_QA_INSTALLATION: qaEnvironment.OCC_TEST_QA_INSTALLATION,
-      OCC_TEST_QA_PRESET: expression(qaEnvironment.OCC_TEST_QA_PRESET, context),
-      OCC_TEST_QA_SCENARIOS: expression(qaEnvironment.OCC_TEST_QA_SCENARIOS, context),
-    };
-    assert.equal(
-      runInNewContext(group, context),
-      focused ? "full-integration-isolated-repository-proof" : "full-integration",
+  // Exercise the hosted workflow input through the same selector that determines
+  // which credentials to materialize and which real installation cells run.
+  const qaJob = workflow.jobs["qa-matrix"];
+  const qaManifest = JSON.parse(await read("scripts/ci/test-suites/qa-matrix.json"));
+  const qaRunnerEnv = Object.fromEntries(
+    Object.entries(qaJob.env).filter(([name]) => qaManifest.optionalEnv.includes(name)),
+  );
+  const qaSelection = selectQaMatrix(qaRunnerEnv);
+  assert.equal(qaSelection.scope, "partial:selected");
+  assert.deepEqual(qaSelection.installations, ["compose", "kubernetes"]);
+  for (const cell of qaSelection.cells) {
+    assert.deepEqual(
+      cell.scenarios,
+      cell.preset === "OpenClaw" ? ["model-ui", "console-secrets"] : ["console-secrets"],
     );
-    const selection = selectQaMatrix(env);
-    assert.deepEqual(selection.installations, ["compose", "kubernetes"]);
-    assert.equal(selection.scope, focused ? "partial:selected" : "full");
-    if (focused) {
-      assert.deepEqual(
-        selection.cells.map(({ preset }) => preset),
-        ["Codex", "Codex"],
-      );
-      for (const cell of selection.cells) {
-        assert.deepEqual(cell.scenarios, ["git-write", "git-push-denied"]);
-      }
-      assert.equal(
-        selection.requiredEnv.some((name) => name.includes("SLACK")),
-        false,
-      );
-    } else {
-      assert.equal(env.OCC_TEST_QA_PRESET, "all");
-      assert.equal(env.OCC_TEST_QA_SCENARIOS, "all");
-      assert.ok(selection.requiredEnv.some((name) => name.includes("SLACK")));
-    }
-    const isolatedCredentials = workflow.jobs["qa-matrix"].steps.find(
-      ({ name }) => name === "Materialize isolated QA repository credentials",
-    ).env;
-    for (const name of [
-      "OPENAI_API_KEY",
-      "SLACK_APP_TOKEN",
-      "SLACK_BOT_TOKEN",
-      "SLACK_SENDER_TOKEN",
-    ]) {
-      assert.equal(
-        expression(isolatedCredentials[name], { env, secrets: { [name]: "synthetic-value" } }),
-        focused ? "" : "synthetic-value",
-      );
-    }
   }
+  assert.equal(qaSelection.exclusions.length, 2);
+  assert.deepEqual(qaSelection.requiredEnv, [
+    "OCC_TEST_QA_OPENAI_KEY_FILE",
+    "OCC_TEST_QA_CODEX_TOKEN_FILE",
+  ]);
+  assert.deepEqual(
+    Object.keys(
+      qaJob.steps.find(({ name }) => name === "Materialize selected QA credentials").env,
+    ).sort(),
+    ["CODEX_ACCESS_TOKEN", "OPENAI_API_KEY"],
+  );
   const job = workflow.jobs["dev-up-k3d"];
   assert.equal(job.environment, undefined);
   assert.equal(job.env, undefined);

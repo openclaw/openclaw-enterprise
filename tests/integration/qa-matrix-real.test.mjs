@@ -47,6 +47,7 @@ test(
       executionFilters,
       concurrency,
       exclusions: [
+        ...selection.exclusions,
         ...(selection.linearRead
           ? []
           : ["OpenShell Linear READ requires the explicit openshell-linear-read scenario"]),
@@ -56,6 +57,9 @@ test(
     });
     await save();
     context.diagnostic(`QA evidence: ${artifacts}`);
+    for (const exclusion of selection.exclusions) {
+      context.diagnostic(`Excluded: ${exclusion}`);
+    }
     if (selection.sandboxPolicy) {
       const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
       await stage(
