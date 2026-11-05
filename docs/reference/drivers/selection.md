@@ -59,7 +59,7 @@ Sandbox packages in trusted YAML in either mode.
 | `credential_gateway` | [CredentialGatewayDriver](credential-gateway.md)                            | Required with the bundled OpenShell Sandbox, otherwise omitted; bundled OpenShell Backend member only.                                                   |
 | `credential_refresh` | [CredentialRefreshDriver](credential-refresh.md)                            | Optional; bundled OpenShell only, on the selected Credential Gateway's Backend.                                                                          |
 | `service_account`    | [ServiceAccountDriver](service-account.md)                                  | Optional bundled ChatGPT Backend member; no installed-package selector.                                                                                  |
-| `plugin`             | [PluginDriver](plugin.md)                                                   | Optional bundled `occ-plugin` or `codex-plugin`; no installed-package selector.                                                                          |
+| `plugin`             | [PluginDriver](plugin.md)                                                   | Optional: `occ-plugin`, `codex-plugin`, or both, by Harness.                                                                                             |
 | `repo`               | [RepositoryPolicyDriver](../repository-credentials.md#repo-driver-contract) | Optional bundled GitHub Backend member; Kubernetes supports native Git or the protected sender described below.                                          |
 
 Installed packages run unsandboxed with control-plane authority and
@@ -102,6 +102,10 @@ recipient before release.
 | v5        | Online authorization returns a decision by `replyBy`. Bundled OpenShell supports selected repository sets and single `git-write` grants with a verified mandatory pre-credentials binding. An authorized request may finish after withdrawal. |
 | v6        | Bundled OpenShell preview: observe the request hook per start; this does not prove the hook cannot later be disabled.                                                                                                                         |
 | v7        | Exact dispatch plus verified policy reduction v2; can retain independently admitted routes and the same recipient when Git is removed.                                                                                                        |
+
+Observed OpenShell Git routes keep the original launch acknowledgment during credential
+rotation. They reopen only after the model provider observation matches the new
+shared provider environment; stale or incomplete observations leave the route pending.
 
 A lost authorization reply records possible use. Do not retry the exchange.
 Stock OpenShell lacks v7 qualification. For isolation and release requirements,

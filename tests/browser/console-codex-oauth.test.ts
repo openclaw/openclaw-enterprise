@@ -26,7 +26,7 @@ import {
   revokeAdministratorGrant,
   settlePageRequests,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import {
   trackSettledFetches,
   waitForIdleFetches,

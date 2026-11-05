@@ -202,9 +202,9 @@ for profile-specific allowed/denied requests and the required model-source choic
 
 ## Use the admitted repository
 
-The Sandbox sets process-scoped `safe.directory` for its exact approved mount,
+The Sandbox sets process-scoped `safe.directory` for its approved mount,
 allowing root-owned workspaces without trusting nested repositories or changing
-persistent Git configuration.
+persistent Git configuration. `push.negotiate=true` reduces redundant transfers; [push request limits](../../guides/repository-credentials/openshell-enrollment.md#plan-for-request-limits) apply.
 
 With `github-repository`, use selected HTTPS Git URLs. API operations
 use token permissions. Both API scopes refuse runner-token and deploy-key

@@ -35,7 +35,7 @@ import {
   settlePageRequests,
   waitForEnabled,
   writeRequests,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import {
   settledFetches,
   trackSettledFetches,

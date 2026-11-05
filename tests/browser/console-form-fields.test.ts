@@ -29,7 +29,7 @@ import {
   newPage,
   nonAuthWriteRequests,
   shippedPreset,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import { routeInstallationWithoutProvisioning } from "./console-agents-test-support.mjs";
 
 // Form fields share one pattern (UX plan C3): a label, the control, its error, then its help.

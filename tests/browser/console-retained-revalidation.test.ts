@@ -19,7 +19,7 @@ import {
   settledView,
   stopFocusTrail,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import { confirmAgentAction, responseTo } from "./console-action-helpers.ts";
 import {
   heldView,

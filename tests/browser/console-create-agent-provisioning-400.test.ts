@@ -56,7 +56,7 @@ import {
   selectSecret,
   setSlackSelection,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import { trackSettledFetches } from "./console-fetch-accounting.ts";
 import {
   agentPostRequests,
