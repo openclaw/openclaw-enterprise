@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import { isDeepStrictEqual } from "node:util";
 
 import type {
   OpenShellProviderResponse,
@@ -34,19 +35,9 @@ interface RuntimePod {
   };
 }
 
-interface StandingApproval {
-  id: string;
-  generation: number;
-  status: string;
-}
-
 interface OriginToken {
   uses: number;
   revoked: boolean;
-}
-
-function fingerprint(value: unknown): string {
-  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
 async function observeUntil<T>(
@@ -68,8 +59,8 @@ async function observeUntil<T>(
 }
 
 test(
-  "OpenShell retains its runtime after Git withdrawal and worker restart",
-  { skip: !selected, timeout: 35 * 60_000 },
+  "OpenShell retains its runtime after Git expiry and worker restart",
+  { skip: !selected, timeout: 45 * 60_000 },
   async (t) => {
     // This owns a real Helm installation, PostgreSQL and authenticated stock Gateway.
     // The only controlled upstream is a private Git server and its App token issuer.
@@ -110,33 +101,31 @@ test(
     const transport = await request("POST", `${path}/runtime-credentials`, {});
     assert.equal(transport.transportConfigured, true);
 
-    // Standing withdrawal is the supported operation that removes Git while the
-    // independent model permission keeps this execution alive before its deadline.
-    const scopes = await request("GET", `${path}/repository-approval-scopes`);
-    assert.equal(scopes.length, 1);
-    assert.equal(scopes[0].binding.repositoryRef, repositoryRef);
-    assert.ok(scopes[0].scopeFingerprint);
-    const approvalId = randomUUID();
-    await request("PATCH", path, {
-      configurationId: configuration.id,
-      repositoryStandingApproval: {
-        repositoryRef,
-        approvalId,
-        approved: true,
-        duration: "until-removed",
-        expectedScopeFingerprint: scopes[0].scopeFingerprint,
-      },
-    });
+    // The selected-repository profile grants finite access. Use its actual
+    // admission deadline; neither the application clock nor queue is patched.
+    const admissionStartedAt = Date.now();
     const revision = await request("POST", `${path}/deploy`);
+    const admissionReturnedAt = Date.now();
     assert.equal(revision.harness.id, "codex");
     assert.equal(revision.harnessAuth.method, "credential_source");
-    assert.equal(revision.harnessAuth.loginMode, "api_key");
+    assert.equal(revision.harnessAuth.sourceId, modelSource.id);
+    const deadlineWallMs = revision.repositoryCredentials?.deadlineWallMs;
+    assert.ok(Number.isSafeInteger(deadlineWallMs));
+    assert.ok(deadlineWallMs >= admissionStartedAt + 600_000);
+    assert.ok(deadlineWallMs <= admissionReturnedAt + 600_000);
+    await evidence("finite-git-grant", { revisionId: revision.id, deadlineWallMs });
     await observeUntil(
       "real Agent startup",
       t.signal,
       async () => {
-        const current = await request("GET", path);
-        return current.activeRevisionId === revision.id ? current : undefined;
+        const [current, deployment] = await Promise.all([
+          request("GET", path),
+          request("GET", `${path}/deployments/${revision.id}`),
+        ]);
+        assert.notEqual(deployment.status, "failed", "the original deployment failed");
+        return current.activeRevisionId === revision.id && deployment.status === "succeeded"
+          ? current
+          : undefined;
       },
       10 * 60_000,
     );
@@ -144,7 +133,7 @@ test(
     const selector = `openclaw.dev/agent=${agent.id},openclaw.dev/revision=${revision.id},openclaw.dev/workload-role=agent`;
     const readExecution = async () => {
       const current = await request("GET", path);
-      assert.equal(current.activeRevisionId, revision.id, "withdrawal replaced the revision");
+      assert.equal(current.activeRevisionId, revision.id, "expiry replaced the revision");
       const pods = JSON.parse(
         await fixture.kube(["get", "pods", "-A", "-l", selector, "-o", "json"]),
       ) as { items: RuntimePod[] };
@@ -199,6 +188,14 @@ test(
     };
     const original = await readExecution();
     await evidence("initial-runtime", original.identity);
+    const supervisorTarget = {
+      sandboxName: original.sandbox.name,
+      sandboxId: original.sandbox.id,
+    };
+    const supervisor = await fixture.verifySupervisorImage(supervisorTarget);
+    assert.equal(supervisor.workloadPodUid, original.identity.podUid);
+    assert.equal(supervisor.sandboxId, original.identity.sandboxId);
+    await evidence("installed-supervisor", supervisor);
     const modelKubectl = async (...args: (string | { input?: string; timeout?: number })[]) => {
       const options = args.pop();
       assert.ok(options && typeof options === "object");
@@ -269,7 +266,8 @@ test(
     assert.match(origin.repository, /^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$/);
     const gitUrl = `https://github.com/${origin.repository}.git`;
     const directory = `/sandbox/enterprise/git-retention-${suffix}`;
-    const git = `LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 git -c credential.helper= -c protocol.version=2 ls-remote '${gitUrl}' refs/heads/main`;
+    const git = `LC_ALL=C GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 git -c protocol.version=2 ls-remote '${gitUrl}' refs/heads/main`;
+    assert.ok(Date.now() < deadlineWallMs, "initial Git must start before its finite deadline");
     const beforeGit = origin.snapshot();
     const successfulGit = await execute(target, [
       "sh",
@@ -281,6 +279,7 @@ test(
       `${origin.initialSha}\trefs/heads/main`,
     );
     const afterGit = origin.snapshot();
+    assert.ok(Date.now() < deadlineWallMs, "initial Git must finish before its finite deadline");
     assert.ok(afterGit.connections > beforeGit.connections);
     assert.ok(afterGit.requests > beforeGit.requests);
     assert.ok(afterGit.tokens.some((token: OriginToken) => token.uses > 0 && !token.revoked));
@@ -290,24 +289,20 @@ test(
       connections: afterGit.connections,
       requests: afterGit.requests,
     });
-    await verifyModelTurn("before-withdrawal");
+    await verifyModelTurn("before-expiry");
+    assert.ok(Date.now() < deadlineWallMs, "initial model turn must finish before Git expires");
 
-    const approvals = (await request("GET", `${path}/repository-approvals`)) as StandingApproval[];
-    const approval = approvals.find(({ id }) => id === approvalId);
-    assert.ok(approval && Number.isSafeInteger(approval.generation));
-    await request("POST", `${path}/repository-approvals/${approvalId}/remove`, {
-      expectedGeneration: approval.generation,
-    });
-    const removed = (
-      (await request("GET", `${path}/repository-approvals`)) as StandingApproval[]
-    ).find(({ id }) => id === approvalId);
-    assert.ok(removed);
-    assert.equal(removed.status, "removed");
-    assert.equal(removed.generation, approval.generation + 1);
-    await fixture.waitForWithdrawal({ agentId: agent.id, revisionId: revision.id });
+    await observeUntil(
+      "the admitted Git deadline",
+      t.signal,
+      async () => (Date.now() >= deadlineWallMs ? true : undefined),
+      deadlineWallMs - Date.now() + 10_000,
+    );
+    const expiry = await fixture.waitForExpiry({ agentId: agent.id, revisionId: revision.id });
+    await evidence("git-expiry-observed", { deadlineWallMs, ...expiry });
     // Wait for acknowledged retirement and observable supplier subtraction, so a
     // background token DELETE cannot be mistaken for a denied Git connection.
-    await observeUntil("Git withdrawal and token retirement", t.signal, async () => {
+    await observeUntil("Git expiry and token retirement", t.signal, async () => {
       const { sandbox, identity } = await readExecution();
       assert.deepEqual(identity, original.identity);
       const attached = sandbox.spec?.providers;
@@ -325,17 +320,18 @@ test(
       const before = origin.snapshot();
       const { sandbox, identity } = await readExecution();
       assert.deepEqual(identity, original.identity, `${stage}: runtime identity changed`);
+      assert.deepEqual(await fixture.verifySupervisorImage(supervisorTarget), supervisor);
       const attached = sandbox.spec?.providers;
       assert.ok(Array.isArray(attached));
       assert.deepEqual([...attached].sort(), retainedNames);
       for (const saved of retained) {
         const provider = await gatewayClient.getProvider(workspace, saved.name, t.signal);
         assert.ok(provider);
-        // Provider configuration may include private runtime material. Compare
-        // digests so an assertion failure cannot print it into the CI log.
+        // Compare maps semantically without printing private runtime material
+        // when an assertion fails or treating protobuf map order as identity.
         assert.equal(
-          fingerprint(provider),
-          fingerprint(saved.provider),
+          isDeepStrictEqual(provider, saved.provider),
+          true,
           `${stage}: independent provider changed`,
         );
         const profile = await gatewayClient.getProviderProfile(
@@ -344,8 +340,8 @@ test(
           t.signal,
         );
         assert.equal(
-          fingerprint(profile),
-          fingerprint(saved.profile),
+          isDeepStrictEqual(profile, saved.profile),
+          true,
           `${stage}: independent profile changed`,
         );
       }
@@ -378,7 +374,7 @@ test(
         requests: before.requests,
       });
     };
-    await verifyRetainedExecution("after-withdrawal");
+    await verifyRetainedExecution("after-expiry");
     // An actual Deployment restart discards all worker and Driver memory. Its
     // PostgreSQL route and custody Secret must still identify this same execution.
     const restart = await fixture.restartWorker({ agentId: agent.id, revisionId: revision.id });

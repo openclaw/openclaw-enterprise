@@ -99,7 +99,7 @@
     },
     {
       "path": "tests/integration/openshell-git-retention-real.test.ts",
-      "expectedTests": ["OpenShell retains its runtime after Git withdrawal and worker restart"]
+      "expectedTests": ["OpenShell retains its runtime after Git expiry and worker restart"]
     }
   ],
   "optionalEnv": [

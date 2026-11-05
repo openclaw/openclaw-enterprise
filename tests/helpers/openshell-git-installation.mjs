@@ -174,14 +174,23 @@ async function trustedSupervisor({ command, cleanup, directory, cluster, ca, che
     : `docker.io/library/${importedRepository}`;
   const reference = `${repository}@${imported[2]}`;
   await command("docker", [...containerd, "tag", imported[0], reference]);
-  await checkpoint("supervisor-trust", { parent, reference, binaryHash });
+  const configDigest = (
+    await command("docker", ["image", "inspect", "--format", "{{.Id}}", tag])
+  ).trim();
+  assert.match(configDigest, /^sha256:[a-f0-9]{64}$/);
+  await checkpoint("supervisor-trust", { parent, reference, binaryHash, configDigest });
   const slash = repository.indexOf("/");
   return {
-    registry: repository.slice(0, slash),
-    repository: repository.slice(slash + 1),
-    digest: imported[2],
-    tag: "",
-    pullPolicy: "Never",
+    reference,
+    binaryHash,
+    configDigest,
+    image: {
+      registry: repository.slice(0, slash),
+      repository: repository.slice(slash + 1),
+      digest: imported[2],
+      tag: "",
+      pullPolicy: "Never",
+    },
   };
 }
 
@@ -303,7 +312,10 @@ async function installOpenShellGit(t) {
   const request = async (method, path, body) => {
     const response = await fetch(new URL(path, stack.environment.OCC_URL), {
       method,
-      headers: { "x-api-key": admin.data.key, "content-type": "application/json" },
+      headers: {
+        "x-api-key": admin.data.key,
+        ...(body === undefined ? {} : { "content-type": "application/json" }),
+      },
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: AbortSignal.any([t.signal, AbortSignal.timeout(30_000)]),
     });
@@ -427,8 +439,7 @@ async function installOpenShellGit(t) {
     providerInstanceId: "isolated-git-fixture",
     appId: origin.appId,
     githubInstallationId: origin.installationId,
-    maximumDurationSeconds: 86400,
-    allowStandingApprovals: true,
+    maximumDurationSeconds: 600,
     repositories: [
       {
         repositoryRef: origin.repositoryRef,
@@ -438,7 +449,6 @@ async function installOpenShellGit(t) {
           {
             namespaceId: namespace.id,
             profiles: ["github-repository"],
-            allowStandingApproval: true,
             permissions: { metadata: "read", contents: "write" },
           },
         ],
@@ -501,10 +511,6 @@ async function installOpenShellGit(t) {
       ...supervisorPolicy,
       metadata: { ...supervisorPolicy.metadata, namespace: sandboxNamespace },
     },
-    {
-      ...policy("allow-installed-git-authority", gatewayLabels, [authorityRule]),
-      metadata: metadata("allow-installed-git-authority"),
-    },
   ]);
   const installation = loadYaml(await readFile(join(stack.directory, "installation.yaml"), "utf8"));
   const sandbox = installation.drivers.sandbox;
@@ -514,6 +520,20 @@ async function installOpenShellGit(t) {
   backend.drivers.credential_proxy = sandbox.id;
   installation.drivers.credential_proxy = { id: sandbox.id, configuration: {} };
   sandbox.configuration.gateway.networkPolicyResources.push(supervisorPolicy);
+  // The protected sender owns GitHub TLS inspection. Remove only Local Setup's
+  // exact uninspected Git rule; preserve every unrelated operator policy.
+  const networkPolicies = sandbox.configuration.policy.networkPolicies;
+  const sourceControl = networkPolicies.filter(({ name }) => name === "source-control");
+  assert.deepEqual(sourceControl, [
+    {
+      name: "source-control",
+      endpoints: [{ host: "github.com", ports: [443], tls: "skip" }],
+      binaries: [{ path: "/usr/bin/git" }],
+    },
+  ]);
+  sandbox.configuration.policy.networkPolicies = networkPolicies.filter(
+    (rule) => rule !== sourceControl[0],
+  );
   installation.backend.push({
     id: "repository-backend",
     type: "github",
@@ -522,7 +542,7 @@ async function installOpenShellGit(t) {
   });
   installation.repository = {
     id: "repository-credentials",
-    configuration: { sessionDurationSeconds: 86400 },
+    configuration: { sessionDurationSeconds: 600 },
     openShell: {
       registrationName: "oce-prepared-git",
       authority: {
@@ -539,7 +559,7 @@ async function installOpenShellGit(t) {
     preparedGitHub: {
       custodyKeyPath: "/etc/openclaw/prepared-repository/custody.key",
       privateKeyPath: "/etc/openclaw/prepared-repository/private-key.pem",
-      apiOrigin: `https://${originHost}`,
+      apiOrigin: "https://api.github.com",
       issuerCaPath: "/etc/openclaw/prepared-repository-ca/ca.crt",
     },
   };
@@ -589,7 +609,7 @@ async function installOpenShellGit(t) {
     { timeout: 190_000 },
   );
 
-  gatewayValues.supervisor.image = await trustedSupervisor({
+  const supervisor = await trustedSupervisor({
     command,
     cleanup,
     directory,
@@ -597,6 +617,7 @@ async function installOpenShellGit(t) {
     ca: tls.ca,
     checkpoint,
   });
+  gatewayValues.supervisor.image = supervisor.image;
   gatewayValues.gatewayConfig["openshell.supervisor.middleware"] = [
     {
       name: "oce-prepared-git",
@@ -620,7 +641,7 @@ async function installOpenShellGit(t) {
   const gatewayFile = join(directory, "gateway-values.json");
   await writeFile(gatewayFile, JSON.stringify(gatewayValues), { mode: 0o600 });
   const charts = (await readdir(join(stack.directory, "openshell/chart"))).filter((name) =>
-    /^openshell-0\.1\.6\.tgz$/.test(name),
+    /^helm-chart-0\.1\.6\.tgz$/.test(name),
   );
   assert.equal(charts.length, 1);
   await command(
@@ -676,6 +697,86 @@ async function installOpenShellGit(t) {
       return undefined;
     }
   });
+  const verifySupervisorImage = async ({ sandboxName, sandboxId }) => {
+    const selected = await gatewayClient.getSandbox(
+      { workspace: sandboxNamespace, name: sandboxName },
+      t.signal,
+    );
+    assert.equal(selected?.id, sandboxId, "the selected Sandbox must retain its identity");
+    const resource = JSON.parse(
+      await kube([
+        "get",
+        "sandboxes.agents.x-k8s.io",
+        sandboxName,
+        "-n",
+        sandboxNamespace,
+        "-o",
+        "json",
+      ]),
+    );
+    assert.equal(resource.metadata.labels?.["openshell.ai/sandbox-id"], sandboxId);
+    const pods = JSON.parse(
+      await kube(["get", "pods", "-n", sandboxNamespace, "-o", "json"]),
+    ).items;
+    const workloads = pods.filter(
+      (pod) =>
+        pod.metadata.labels?.["openshell.ai/boundary-role"] === "workload" &&
+        pod.metadata.ownerReferences?.some(
+          (owner) => owner.kind === "Sandbox" && owner.uid === resource.metadata.uid,
+        ),
+    );
+    assert.equal(workloads.length, 1, "the selected Sandbox must have exactly one workload Pod");
+    const workload = workloads[0];
+    assert.equal(workload.metadata.annotations?.["openshell.ai/sandbox-id"], sandboxId);
+    const boundaryPair = workload.metadata.labels?.["openshell.ai/boundary-pair"];
+    assert.ok(boundaryPair, "the workload must identify its supervisor boundary pair");
+    const supervisors = pods.filter(
+      (pod) =>
+        pod.metadata.labels?.["openshell.ai/boundary-role"] === "supervisor" &&
+        pod.metadata.labels?.["openshell.ai/boundary-pair"] === boundaryPair,
+    );
+    assert.equal(
+      supervisors.length,
+      1,
+      "the workload must have exactly one matching supervisor Pod",
+    );
+    const pod = supervisors[0];
+    assert.equal(pod.metadata.annotations?.["openshell.ai/sandbox-id"], sandboxId);
+    assert.ok(
+      pod.metadata.ownerReferences?.some(
+        (owner) => owner.kind === "Sandbox" && owner.uid === resource.metadata.uid,
+      ),
+      "the supervisor must belong to the selected Sandbox resource",
+    );
+    const container = pod.spec.containers.find(({ name }) => name === "supervisor");
+    const status = pod.status.containerStatuses?.find(({ name }) => name === "supervisor");
+    assert.ok(
+      container && status?.ready && status.state.running,
+      "the supervisor must be running and ready",
+    );
+    assert.equal(
+      container.image,
+      supervisor.reference,
+      "the supervisor must select the imported trust-only image",
+    );
+    // CRI implementations report either the manifest or image-config digest.
+    // Both were observed from this build, never inferred from the requested tag.
+    const runningDigest = status.imageID.match(/sha256:[a-f0-9]{64}$/)?.[0];
+    assert.ok(
+      [supervisor.image.digest, supervisor.configDigest].includes(runningDigest),
+      "the running supervisor image must match the imported trust-only build",
+    );
+    return {
+      sandboxId,
+      workloadPodUid: workload.metadata.uid,
+      supervisorPodName: pod.metadata.name,
+      supervisorPodUid: pod.metadata.uid,
+      image: container.image,
+      imageId: status.imageID,
+      containerId: status.containerID,
+      binaryHash: supervisor.binaryHash,
+    };
+  };
   const worker = async () => {
     const pods = JSON.parse(
       await kube(["get", "pods", "-n", platform, "-l", selector(workerLabels), "-o", "json"]),
@@ -740,8 +841,10 @@ async function installOpenShellGit(t) {
     }
     return undefined;
   };
-  const waitForWithdrawal = async (identity) =>
-    eventually("observed repository withdrawal", async () => {
+  // The scenario waits for the public deadline before starting this bounded
+  // observation. No clock override or explicit withdrawal drives expiry.
+  const waitForExpiry = async (identity) =>
+    eventually("observed repository expiry", async () => {
       const pod = await worker();
       return (
         pod && completedWork(pod, identity, (event) => event.code === "REPOSITORY_ACCESS_WITHDRAWN")
@@ -789,7 +892,8 @@ async function installOpenShellGit(t) {
     gatewayClient,
     workspace: sandboxNamespace,
     sandboxNamespace,
-    waitForWithdrawal,
+    waitForExpiry,
+    verifySupervisorImage,
     restartWorker,
     checkpoint,
   };

@@ -13,7 +13,7 @@ QA Matrix Advisory is one workflow with three groups of test jobs:
 
 - **QA matrix:** Codex model responses, Calendar access, and Console Secrets on
   Compose and Kubernetes installations.
-- **OpenShell:** six parallel jobs for sandbox policy, credentials, Git withdrawal, plugins,
+- **OpenShell:** six parallel jobs for sandbox policy, credentials, Git expiry, plugins,
   installation, and Agent redeployment.
 - **Local installation:** the hosted local setup tests.
 
@@ -111,7 +111,7 @@ job calls `run-ci-lane` with `lane: openshell` and its selected `test-file`. The
 | [Sandbox enforcement](../../../tests/integration/sandbox-driver-openshell-k3d-real.test.mjs)       | Provider credential delivery, authenticated Codex access, and Gateway tool policy during normal Agent work.                                                                      |
 | [Kubernetes first Agent](../../../tests/integration/local-first-agent-openshell-k3d-real.test.mjs) | The first-Agent and native redeployment workflow with the control plane in Kubernetes.                                                                                           |
 | [Codex plugin installation](../../../tests/integration/openshell-plugin-install-real.test.ts)      | Selected Codex plugin installation and retention through the OpenShell Agent workflow.                                                                                           |
-| [Git withdrawal and restart](../../../tests/integration/openshell-git-retention-real.test.ts)      | Authenticated Git, standing-approval withdrawal, continued model and file operations, denied origin access, and recovery after an installed worker restart.                      |
+| [Git expiry and restart](../../../tests/integration/openshell-git-retention-real.test.ts)          | Authenticated Git, finite-grant expiry, continued model and file operations, denied origin access, and recovery after an installed worker restart.                               |
 
 The runner requires the selected files' credentials, expected tests, and cleanup.
 A failed job does not cancel its peers. Hosted preparation builds first-Agent

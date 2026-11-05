@@ -196,7 +196,7 @@ of a different published image set, even at the same OCE commit.
 Run `node --test tests/integration/skipper-release.test.ts` for positive and adverse
 offline checks through the actual aggregate CLI. They do not execute an installed journey.
 
-## Verify OpenShell Git withdrawal and restart
+## Verify OpenShell Git expiry and restart
 
 The [installed retention case](../../tests/integration/openshell-git-retention-real.test.ts)
 uses the ordinary authenticated OpenShell installation, a dedicated Codex Agent,
@@ -205,12 +205,14 @@ and an `openai` CredentialSource. Its native startup probe uses the authorized
 Git and App issuance use a private HTTPS fixture with real `git-http-backend`.
 No live GitHub repository or ambient GitHub credential is used.
 
-The case first requires successful authenticated Git and a real model response.
-It then withdraws the Agent's standing approval and requires the same revision,
-Sandbox and runtime containers to complete a file operation and another model
-response while a fresh Git request fails without reaching the origin. It restarts
-the installed worker with persisted PostgreSQL state and custody material, then
-repeats those observations.
+The case selects a finite 600-second repository grant and requires successful
+authenticated Git and a real model response before the API's returned deadline.
+After the grant expires and the worker withdraws access, the same
+revision, Sandbox and runtime containers must complete a file operation and
+another model response while a fresh Git request fails without reaching the
+origin. The case restarts the installed worker with persisted PostgreSQL state
+and custody material, then repeats those observations. It does not adjust clocks
+or queue schedules.
 
 The fixture owns its loopback Kubernetes installation and cleanup. Its supervisor
 trust image adds only the private origin's public CA; the executable must match
