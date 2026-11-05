@@ -105,8 +105,8 @@ operations are allowed there. Saving pins the effective values. A later
 discovery can propose a new version.
 
 Manual templates list HTTPS destinations. Each row binds a host, port and path.
-The Google starter fills editable rows from the Google Workspace release’s
-reviewed operations. The administrator controls where existing accounts can send
+Each Installation starts with an editable Google OAuth template whose
+destinations cover the Google Workspace release’s reviewed operations. The administrator controls where existing accounts can send
 access tokens, including newly added hosts. A request must match a current row,
 the selected plugin operation and the Agent’s deployed policy. The provider
 enforces its grant. Public discovery requests carry no bearer token.

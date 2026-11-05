@@ -57,7 +57,6 @@ import {
   AgentPrincipalAuthorizationError,
   AuthorizationDeniedError,
   DeletionRetryOwnedError,
-  BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
   ComputeProvisioningRefusedError,
   createRuntimeLogCursorCodec,
   DependencyUnavailableError,
@@ -100,6 +99,7 @@ import {
   type PreparedAuthAccount,
 } from "./auth/index.ts";
 import { CONSOLE_CONTENT_SECURITY_POLICY, readConsoleAsset } from "./console-assets.ts";
+import { createBootstrapResources } from "./composition/installation-bootstrap.ts";
 import { discoverMcpAuthorization } from "./connections/mcp-discovery.ts";
 import { listManagedMcpToolNames } from "./connections/mcp-tool-discovery.ts";
 import type { ConsoleTheme } from "./console-theme.ts";
@@ -141,7 +141,7 @@ import {
   limitNativeAdminReturn,
 } from "./http/native-admin.ts";
 import { presetHandlers } from "./http/presets.ts";
-import { connectionTemplateRoutes } from "./composition/connection-template-routes.ts";
+import { connectionTemplateHandlers } from "./http/connection-templates.ts";
 import {
   CONNECTION_CALLBACK_PATH,
   connectionCallbackOperation,
@@ -2237,9 +2237,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           created.selectDriver("sandbox", options.sandboxDriver.id);
         }
         await created.transact(async (unit) => {
-          await created.createNamespace(context.actorId, {
-            name: BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
-          });
+          await createBootstrapResources(created, context.actorId);
           await unit.audit.append(
             event(operation, request, target, "bootstrap", context, decision.evidence),
           );
@@ -2271,7 +2269,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
-    const templateHandler = connectionTemplateRoutes[operation.operationId];
+    const templateHandler = connectionTemplateHandlers[operation.operationId];
     if (templateHandler) {
       const admitted = admissions.get(request);
       if (!admitted) {

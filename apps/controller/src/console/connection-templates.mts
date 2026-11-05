@@ -9,13 +9,13 @@ import {
   openOAuthClientRegistration,
   advertisedClientMethods,
   availabilityLabel,
+  availableInNamespace,
   oauthClients,
   oauthFailure as failure,
   type PublicClient,
 } from "./oauth-client-registration.mjs";
 import { button, element, field, validateFields } from "./dom.mjs";
 import { resourceActionIcon } from "./resource-actions.mjs";
-import { googleOAuthProvider } from "./oauth-providers.mjs";
 import type { ConsolePageContext } from "./page-context.mjs";
 
 type Context = Pick<ConsolePageContext, "request" | "isCurrent">;
@@ -26,11 +26,7 @@ function option(value: string, label: string) {
 export async function connectionTemplates(context: Context) {
   return (await context.request("/connection-templates", {
     installationAdministration: "required",
-    includeMeta: true,
-  })) as {
-    data: ConnectionTemplate[];
-    meta: { googleWorkspaceDestinations: ConnectionEndpoint[] };
-  };
+  })) as ConnectionTemplate[];
 }
 
 function destinationEditor(initial: readonly ConnectionEndpoint[], onEdit: () => void) {
@@ -94,19 +90,14 @@ function destinationEditor(initial: readonly ConnectionEndpoint[], onEdit: () =>
     body.append(row);
     return controls.host;
   }
-  function replace(values: readonly ConnectionEndpoint[]) {
-    panel.open = values.length === 0;
-    body.replaceChildren();
-    rows.clear();
-    for (const value of values) {
-      append(value);
-    }
-    if (!rows.size) {
-      append();
-    }
-    updateRows();
+  panel.open = initial.length === 0;
+  for (const value of initial) {
+    append(value);
   }
-  replace(initial);
+  if (!rows.size) {
+    append();
+  }
+  updateRows();
   const add = button(
     "Add destination",
     () => {
@@ -134,7 +125,6 @@ function destinationEditor(initial: readonly ConnectionEndpoint[], onEdit: () =>
   panel.append(summary, element("div", { className: "connection-destination-scroll" }, table), add);
   return {
     element: panel,
-    replace,
     controls: () => Array.from(rows.values()).flatMap(({ host, port, path }) => [host, port, path]),
     values: () =>
       Array.from(rows.values(), ({ host, port, path }) => ({
@@ -199,7 +189,6 @@ export function renderConnectionTemplates(
   );
   let clients: PublicClient[] = [];
   let savedTemplates: ConnectionTemplate[] = [];
-  let googleDestinations: ConnectionEndpoint[] = [];
   let redirectUri: string | undefined;
   async function refresh(saved?: string) {
     create.disabled = true;
@@ -213,24 +202,9 @@ export function renderConnectionTemplates(
       if (!context.isCurrent()) {
         return;
       }
-      const clientList = available;
-      clients = clientList.data;
-      savedTemplates = templates.data;
-      googleDestinations = templates.meta.googleWorkspaceDestinations;
-      redirectUri = clientList.meta?.redirectUri;
-      catalog.append(
-        element(
-          "section",
-          { className: "connection-template-row" },
-          element("h3", {}, googleOAuthProvider.displayName),
-          element(
-            "p",
-            { className: "hint" },
-            "Start with the Google Workspace plugin’s editable API destinations and register your own OAuth client.",
-          ),
-          button("Set up Google OAuth", () => edit(undefined, googleOAuthProvider), { size: "sm" }),
-        ),
-      );
+      clients = available.data;
+      savedTemplates = templates.filter((item) => availableInNamespace(item, currentNamespace));
+      redirectUri = available.meta?.redirectUri;
       for (const template of savedTemplates) {
         const scope = availabilityLabel(template, namespaces);
         const client = clients.find((item) => item.id === template.current.oauthClientId);
@@ -248,7 +222,9 @@ export function renderConnectionTemplates(
           ),
         );
       }
-      notice.textContent = saved || (savedTemplates.length ? "" : "No saved connection templates.");
+      notice.textContent =
+        saved ||
+        (savedTemplates.length ? "" : "No connection templates are available for this selection.");
       create.disabled = false;
       return true;
     } catch (cause) {
@@ -264,15 +240,13 @@ export function renderConnectionTemplates(
     }
   }
 
-  function edit(template?: ConnectionTemplate, preset?: typeof googleOAuthProvider) {
+  function edit(template?: ConnectionTemplate) {
     openConnectionTemplateEditor(context, {
       parent: section,
       namespaces,
       currentNamespace,
       clients,
-      googleDestinations,
       template,
-      preset,
       onSaved(saved) {
         void refresh(`Saved ${saved.displayName}, version ${saved.current.version}.`);
       },
@@ -308,15 +282,13 @@ export function openConnectionTemplateEditor(
     namespaces: readonly Namespace[];
     currentNamespace: string | null;
     clients: readonly PublicClient[];
-    googleDestinations: readonly ConnectionEndpoint[];
     template?: ConnectionTemplate | undefined;
-    preset?: typeof googleOAuthProvider | undefined;
     onSaved: (saved: ConnectionTemplate) => void;
     onUnconfirmed: () => void;
     onRegister?: (saved: ConnectionTemplate) => void;
   },
 ) {
-  const { parent, namespaces, currentNamespace, clients, template, preset } = options;
+  const { parent, namespaces, currentNamespace, clients, template } = options;
   const version = template?.current;
   const dialog = element("dialog", {
     className: "dialog dialog--framed connection-template-dialog",
@@ -355,15 +327,10 @@ export function openConnectionTemplateEditor(
     value: version?.revocationUrl ?? "",
   });
   const destinations = destinationEditor(version?.destinations ?? [], markEdited);
-  const googleStarter =
-    !template && !preset
-      ? button("Use Google OAuth settings", applyGoogleSettings, { size: "sm" })
-      : undefined;
   const manual = element(
     "fieldset",
     { className: "connection-template-fields" },
     element("legend", {}, "OAuth provider"),
-    googleStarter ?? null,
     field({ label: "Issuer URL", control: issuer }),
     field({ label: "Authorization URL", control: authorizationUrl }),
     field({ label: "Token URL", control: tokenUrl }),
@@ -424,21 +391,6 @@ export function openConnectionTemplateEditor(
       .join("\n");
   }
   parameters.value = formatParameters(version?.authorizationParameters ?? {});
-  function applyGoogleSettings() {
-    if (!name.value.trim()) {
-      name.value = googleOAuthProvider.displayName;
-    }
-    issuer.value = googleOAuthProvider.issuer;
-    authorizationUrl.value = googleOAuthProvider.authorizationUrl;
-    tokenUrl.value = googleOAuthProvider.tokenUrl;
-    revocationUrl.value = googleOAuthProvider.revocationUrl;
-    destinations.replace(options.googleDestinations);
-    parameters.value = formatParameters(googleOAuthProvider.authorizationParameters);
-    clientChoices();
-    if (googleStarter) {
-      googleStarter.hidden = true;
-    }
-  }
   const client = element("select");
   const status = element("p", { className: "hint", role: "status" });
   let edited = false;
@@ -728,20 +680,6 @@ export function openConnectionTemplateEditor(
   mode.addEventListener("change", showMode);
   for (const control of [issuer, tokenUrl, revocationUrl, scope]) {
     control.addEventListener("input", () => clientChoices());
-  }
-  if (googleStarter) {
-    inputs.addEventListener("input", () => {
-      googleStarter.hidden =
-        [issuer, authorizationUrl, tokenUrl, revocationUrl, parameters].some((input) =>
-          input.value.trim(),
-        ) ||
-        destinations
-          .values()
-          .some(({ host, port, path }) => host !== "" || port !== 443 || path !== "/**");
-    });
-  }
-  if (preset) {
-    applyGoogleSettings();
   }
   showMode();
   clientChoices(version?.oauthClientId);

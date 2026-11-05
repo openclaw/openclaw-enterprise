@@ -2363,7 +2363,11 @@ async function loadPage({
         const render =
           current.feature === oauthClientsPage ? renderOAuthClients : renderConnectionTemplates;
         view.append(
-          render({ request: viewRequest, isCurrent: viewIsCurrent }, namespaces, selectedNamespace),
+          render(
+            { request: viewRequest, isCurrent: viewIsCurrent },
+            namespaces,
+            namespaces.find((item) => item.id === selectedNamespace)?.id ?? null,
+          ),
         );
       } else if (installationAdmin === false) {
         showRequiredAccess();
