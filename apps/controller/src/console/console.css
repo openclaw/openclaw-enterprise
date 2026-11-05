@@ -652,13 +652,15 @@ p {
   padding: var(--space-6) var(--space-4) var(--space-4);
   display: flex;
   flex-direction: column;
-  position: relative;
-  min-height: 100dvh;
-  align-self: stretch;
+  position: sticky;
+  top: 0;
+  height: 100dvh;
+  min-height: 0;
+  align-self: start;
+  overflow-y: auto;
   z-index: 3;
-  /* The account row sits at the bottom of the stretched sidebar. As the browser's scroll anchor
-     it pinned the page to its end, so content that grew anywhere moved the reader's view
-     (finding 3012). The anchor comes from the page content instead. */
+  /* Keep the account control in the viewport as the document scrolls. Page content,
+     rather than the navigation, supplies the browser's scroll anchor. */
   overflow-anchor: none;
 }
 .sidebar .brand,
@@ -1406,7 +1408,7 @@ p {
   font-size: var(--text-sm);
   overflow-wrap: anywhere;
 }
-/* Settings (UX spec 3.10): an account card and a session card in one 720 px column. */
+/* Settings cards share one 720 px column. */
 .settings-page {
   display: grid;
   gap: var(--space-6);
@@ -1417,6 +1419,14 @@ p {
   font-size: var(--text-xl);
   line-height: var(--text-xl--line-height);
 }
+.settings-debug-control {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--control-h);
+  cursor: pointer;
+}
+
 .settings-account {
   display: flex;
   align-items: center;

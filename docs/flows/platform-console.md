@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-11-03
-last_updated_session: authoring-run/4b6abf1f-bb48-4679-b2b0-4a62ba2834f6
+updated: 2026-11-05
+last_updated_session: authoring-run/4f118861-18d8-403b-a287-90ac81564c99
 ---
 
 # Platform console request flow
@@ -9,7 +9,7 @@ last_updated_session: authoring-run/4b6abf1f-bb48-4679-b2b0-4a62ba2834f6
 ## Overview
 
 `/console/` renders session-authorized resources.
-The [console reference](../reference/console.md) owns user-visible behavior.
+See the [console reference](../reference/console.md).
 
 ## Entry Points
 
@@ -39,7 +39,7 @@ graph TD
     NR -->|unavailable| D
     C1 -->|callback redirect| B1
     B1 -->|authenticated| D["Read readable Namespaces and validate selection"]
-    D -->|debug=true| DBG["Read accessible Agents and runtime image metadata"]
+    D -->|Debug mode enabled| DBG["Read accessible Agents and runtime image metadata"]
     DBG --> F
     D --> E["Request current page resource"]
     E --> NC["Create Namespace"]
@@ -106,40 +106,36 @@ graph TD
 
 ### 1. Compose discovery metadata and serve public assets
 
-`apps/controller/src/api-startup.mjs:startApi` loads an optional
-[theme bundle](../reference/console/theming.md) once. Invalid bundles stop startup;
-ConfigMap links must resolve inside the bundle. `renderConsoleThemeShell` escapes
-branding and links the generated stylesheet. `console/shell.mts:brandContents`
-renders the name as text. `/console/theme/` serves only referenced images and
-generated CSS, returns a plain 404 for missing assets, and uses `no-store` so an
-API restart can replace the theme.
+`apps/controller/src/api-startup.mjs:startApi` loads the [theme bundle](../reference/console/theming.md) once. Invalid bundles stop startup;
+ConfigMap links stay inside the bundle. `renderConsoleThemeShell` escapes branding;
+`console/shell.mts:brandContents` renders names as text. `/console/theme/` serves
+images and generated CSS with `no-store`; missing assets return 404.
 
-Startup (see Entry Points) passes safe Backend `{id,type}` summaries to `createFastifyApp`.
-[Backend-managed delivery](service-account-driver-credential-delivery.md) owns
-Driver activation. Requests do not reread configuration or credentials.
+Startup passes Backend `{id,type}` summaries to `createFastifyApp`.
+[Backend-managed delivery](service-account-driver-credential-delivery.md) owns activation.
 
-`apps/controller/src/console-assets.ts:readConsoleAsset` serves allowlisted assets
-and the shared HTML shell with MIME types and same-origin CSP. Unknown console
-paths return the shell with `404`; API routes retain JSON errors.
-`encodedAsset` compresses static scripts and styles once (brotli or gzip, per
-`Accept-Encoding`, with `Vary`), unless an explicit `identity` weight beats both
-encodings. The shell, which also answers sign-in, stays identity.
+`apps/controller/src/console-assets.ts:readConsoleAsset` serves allowlisted HTML and assets with MIME types and same-origin CSP. Unknown paths return the
+shell with 404; API errors remain JSON. `encodedAsset` caches brotli/gzip output
+according to `Accept-Encoding` and `Vary`; higher-weight `identity` wins.
+HTML, including sign-in, stays uncompressed.
 
-`scripts/build-console-metadata.mjs` bakes the publisher's checked
-`OCC_BUILD_REVISION` into HTML. With `debug=true`, `shell.mts:renderShell` displays
-the full commit; invalid or absent metadata remains unknown.
+`scripts/build-console-metadata.mjs` stamps `OCC_BUILD_REVISION` into HTML.
+`internal/occdev/openshell_k3d.go:importDevelopmentController` calls `scripts/build-controller.mjs`
+to resolve Git `HEAD`, excluding uncommitted edits; missing metadata stops builds.
+`shell.mts:renderShell` displays it in Debug mode.
 
-`runtime-images.mts:renderRuntimeImages` issues at most three concurrent reads for
-readable Agents in the selected Namespace.
-`packages/occ/src/index.ts:OpenClawController.getAgentRuntimeImages` authorizes
-exact Agent read, resolves its selected version, then calls its Compute Driver.
-The [Compute contract](../reference/drivers/compute.md) owns workload inspection
-and Enterprise/OpenClaw provenance. Navigation preserves `debug=true`; removing it
-stops reads. Missing provenance stays explicit.
+`console.mts:readDebugPreference` enables diagnostics only for local-storage
+`oce.console.debug=true`. Storage failures default to off. `settingsView` saves,
+clears retained views, and rebuilds the shell; failures show an error.
+`navigation.mts` removes the old query flag.
+
+`runtime-images.mts:renderRuntimeImages` limits reads to three concurrent requests
+for readable Agents in the selected Namespace. `packages/occ/src/index.ts:OpenClawController.getAgentRuntimeImages`
+authorizes Agent read, resolves its selected version, and calls its Compute Driver.
+Disabling Debug mode stops new reads. See the
+[Compute contract](../reference/drivers/compute.md) for provenance.
 
 ### 2. Resolve the session before private reads
-
-`apps/controller/src/console/console.mjs:loadPage`
 
 `agents/collection.mts:renderAgentList` focuses the Agent-name link for plain row
 clicks. Links, buttons (including disabled ones), modified clicks, and selected
@@ -322,7 +318,7 @@ including other Namespace selections, because the permission is Installation-wid
 The [detail action flow](platform-console/agent-stop-and-deletion.md#stop-agent) traces
 acceptance, uncertainty, and replay guards. `agents/deletion.mts:refreshStatus` owns polling: 404 returns to Agents;
 Postacceptance 403 stops polling without claiming completion.
-The [Agent reference](../reference/agents.md#deletion) owns asynchronous cleanup.
+See [asynchronous cleanup](../reference/agents.md#deletion).
 
 Logout first hides private state, then calls the sign-out endpoint.
 Confirmed success or session inspection proving absence replaces history with
@@ -371,6 +367,10 @@ gateway startup and file availability.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 11:26: Move Debug mode from URL state to a saved browser preference in Settings. (authoring-run/4f118861-18d8-403b-a287-90ac81564c99 - 0351eb77180fbeea7c70114af7c8937a521b90b4)
+
+- 2026-11-05 19:21: Record automatic Git SHA detection for local controller builds. (authoring-run/b294b13a-1a99-4f9a-8377-d76d11bfe62f - 0351eb77180fbeea7c70114af7c8937a521b90b4)
 
 - 2026-11-03 15:16: Preserve page position during navigation. (authoring-run/4b6abf1f-bb48-4679-b2b0-4a62ba2834f6 - 44c2f77b611207eef71a69f82ab692c26dbea2bc)
 

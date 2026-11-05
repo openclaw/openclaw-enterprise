@@ -608,7 +608,7 @@ func (r *runner) importDevelopmentController(ctx context.Context, state *develop
 		}
 	} else {
 		base := r.setting("OCC_DEVELOPMENT_NODE_BASE_IMAGE", developmentNodeBase)
-		if err := r.run(ctx, r.engine, "build", "--target", "runtime", "--build-arg", "NODE_BASE_IMAGE="+base, "--tag", image, "."); err != nil {
+		if err := r.run(ctx, "node", "scripts/build-controller.mjs", r.engine, "--target", "runtime", "--build-arg", "NODE_BASE_IMAGE="+base, "--tag", image); err != nil {
 			return "", err
 		}
 	}
