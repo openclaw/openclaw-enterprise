@@ -34,7 +34,16 @@ COPY packages/contracts/package.json packages/contracts/package.json
 COPY packages/iam/package.json packages/iam/package.json
 COPY packages/occ/package.json packages/occ/package.json
 COPY packages/utils/package.json packages/utils/package.json
+RUN --mount=type=secret,id=corepack-env,required=false \
+    --mount=type=secret,id=build-ca,required=false \
+    set -eu; \
+    if [ -f /run/secrets/build-ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/build-ca; fi; \
+    COREPACK_ENV_FILE=/run/secrets/corepack-env corepack pnpm --version
 RUN --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
+    --mount=type=secret,id=build-ca,required=false \
+    set -eu; \
+    if [ -f /run/secrets/build-ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/build-ca; fi; \
+    COREPACK_ENABLE_NETWORK=0 \
     corepack pnpm install --frozen-lockfile --ignore-scripts --store-dir=/tmp/pnpm-store \
     && rm -rf /tmp/pnpm-store
 
@@ -157,6 +166,13 @@ ENV OPENCLAW_BUILD_TIMESTAMP=${OPENCLAW_BUILD_TIMESTAMP}
 ENV OPENCLAW_PREFER_PNPM=1
 WORKDIR /source
 COPY --from=openclaw-source /inputs/ ./
+RUN --mount=type=secret,id=corepack-env,required=false \
+    --mount=type=secret,id=build-ca,required=false \
+    --mount=type=bind,source=deploy/runtime/install-attempts.sh,target=/tmp/install-attempts.sh \
+    set -eu; \
+    if [ -f /run/secrets/build-ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/build-ca; fi; \
+    corepack enable; \
+    COREPACK_ENV_FILE=/run/secrets/corepack-env sh /tmp/install-attempts.sh corepack pnpm --version
 
 FROM openclaw-dependency-inputs AS openclaw-patched-source
 # Keep package-store downloads out of retained layers; installed files remain.
@@ -169,8 +185,7 @@ RUN --mount=type=secret,id=build-ca,required=false \
     --mount=type=bind,source=deploy/runtime/install-attempts.sh,target=/tmp/install-attempts.sh \
     set -eu; \
     if [ -f /run/secrets/build-ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/build-ca; fi; \
-    corepack enable; \
-    sh /tmp/install-attempts.sh node /tmp/with-pinned-matrix-sdk-crypto.mjs /tmp/matrix-sdk-crypto \
+    COREPACK_ENABLE_NETWORK=0 sh /tmp/install-attempts.sh node /tmp/with-pinned-matrix-sdk-crypto.mjs /tmp/matrix-sdk-crypto \
     pnpm install --frozen-lockfile --store-dir=/tmp/pnpm-store \
       --config.supportedArchitectures.os=linux \
       --config.supportedArchitectures.cpu="$(node -p 'process.arch')" \
@@ -239,12 +254,11 @@ RUN --mount=type=secret,id=build-ca,required=false \
     --mount=type=bind,source=deploy/runtime/install-attempts.sh,target=/tmp/install-attempts.sh \
     set -eu; \
     if [ -f /run/secrets/build-ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/build-ca; fi; \
-    corepack enable; \
     set -- --filter . --filter ./ui --filter './packages/*'; \
     while IFS= read -r plugin; do \
       set -- "$@" --filter "./extensions/$plugin"; \
     done < openclaw-workspace-plugin-dirs; \
-    sh /tmp/install-attempts.sh node /tmp/with-pinned-matrix-sdk-crypto.mjs /tmp/matrix-sdk-crypto \
+    COREPACK_ENABLE_NETWORK=0 sh /tmp/install-attempts.sh node /tmp/with-pinned-matrix-sdk-crypto.mjs /tmp/matrix-sdk-crypto \
     pnpm install --frozen-lockfile --prod "$@" --store-dir=/tmp/pnpm-store \
       --config.supportedArchitectures.os=linux \
       --config.supportedArchitectures.cpu="$(node -p 'process.arch')" \

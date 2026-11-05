@@ -99,11 +99,38 @@ else
 fi
 ```
 
-If a runtime build fails certificate verification when downloading a package behind an HTTPS proxy, add `--secret "id=build-ca,src=$CA_BUNDLE"` to the runtime `docker buildx build` command above. Set `CA_BUNDLE` to a PEM file with the public trust roots and the approved proxy CA certificate. The runtime Dockerfile mounts this file only during the download steps. Image registry TLS uses the builder's own trust configuration.
+If a build fails certificate verification when downloading a package behind an HTTPS proxy or from a private package registry, add `--secret "id=build-ca,src=$CA_BUNDLE"` to both `docker buildx build` commands above. Set `CA_BUNDLE` to a PEM file with the public trust roots and the approved proxy or registry CA certificate. Both Dockerfiles mount this file only during the download steps. Keep TLS verification enabled. Image registry TLS uses the builder's own trust configuration.
 
 Before installation, [check each digest](../../testing/docker.md#check-published-images)
 on native hosts for every target architecture, without skips. Configure pull
 credentials only when the selected registry requires them.
+
+### Build through a package registry mirror
+
+When building either image from source, Corepack downloads the pinned pnpm
+version, then pnpm installs dependencies. Corepack does not read npmrc. To
+route both downloads through a mirror, supply the secrets for their respective
+steps to each `docker buildx build` command:
+
+```bash
+--secret "id=corepack-env,src=$COREPACK_ENV_FILE" \
+--secret "id=npmrc,src=$NPMRC_FILE"
+```
+
+Keep both files outside the checkout and readable only by their owner. The
+Corepack file uses dotenv syntax: set `COREPACK_NPM_REGISTRY` to the mirror's
+credential-free HTTPS base URL **without a trailing slash**. When authentication
+is required, use `COREPACK_NPM_TOKEN`; Corepack sends this bearer token only to
+the configured registry origin. Do not use `COREPACK_NPM_USERNAME` and
+`COREPACK_NPM_PASSWORD`: Corepack can send those Basic credentials to a different
+archive host named by registry metadata. If the mirror uses a private CA,
+supply the `build-ca` bundle described above. Keep Corepack integrity checks enabled.
+
+Configure pnpm's registry and a separate read-only dependency credential in
+npmrc. The runtime's permitted dependency lifecycle scripts can read this file.
+The build mounts it only during dependency installation and mounts
+`corepack-env` only during bootstrap. Omitting `corepack-env` keeps Corepack's
+default registry selection.
 
 ## Configure the Installation
 
