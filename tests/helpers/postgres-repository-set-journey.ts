@@ -714,6 +714,17 @@ async function repositoryGitJourney(
       assert.equal(legacyResolve.mock.callCount(), 0);
       assert.equal(peer.gh.issuesOfTokens.length, 0, "a mismatched owner cannot issue credentials");
       assert.equal(wire.world.writes, 0);
+      assert.deepEqual(
+        await f.state.read((view) =>
+          view.repositorySessions.listRevisionAttempts({
+            namespaceId: revision.namespaceId,
+            agentId: revision.agentId,
+            revisionId: revision.id,
+          }),
+        ),
+        [],
+        "a mismatched policy cannot open a repository session before issuing credentials",
+      );
     }
     await start();
     try {
