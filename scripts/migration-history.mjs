@@ -151,6 +151,15 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 65 && completedCount > 65) {
     return "preAgentDeployIntent";
   }
+  if (count === 66 && completedCount > 66) {
+    return "preAgentCredentialSourceLimit";
+  }
+  if (count === 67 && completedCount > 67) {
+    return "preAgentPluginDriver";
+  }
+  if (count === 68 && completedCount > 68) {
+    return "preConnectionTemplates";
+  }
   if (count === completedCount) {
     return "completed";
   }
@@ -256,7 +265,7 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 62) {
     return "prePreparedAttemptSettlement";
   }
-  if (count === 66) {
+  if (count === 70) {
     return "preEndpointAuthorization";
   }
   if (count === 64) {

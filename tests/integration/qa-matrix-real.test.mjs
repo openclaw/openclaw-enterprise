@@ -19,7 +19,7 @@ test(
   async (context) => {
     const selection = selectQaMatrix();
     validateQaInputs(selection);
-    const { createQaInstallation, prepareQaPreset, createQaAgent } =
+    const { createQaInstallation, prepareQaPluginCatalogs, createQaAgent } =
       await import("../helpers/qa-installation.mjs");
     const { protectedText, grantQaSecret } = await import("../helpers/qa-secrets.mjs");
     const { verifyQaCustomResponses } = await import("../helpers/qa-custom-responses.mjs");
@@ -48,6 +48,7 @@ test(
       executionFilters,
       concurrency,
       exclusions: [
+        ...selection.exclusions,
         ...(selection.linearRead
           ? []
           : ["OpenShell Linear READ requires the explicit openshell-linear-read scenario"]),
@@ -57,6 +58,9 @@ test(
     });
     await save();
     context.diagnostic(`QA evidence: ${artifacts}`);
+    for (const exclusion of selection.exclusions) {
+      context.diagnostic(`Excluded: ${exclusion}`);
+    }
     if (selection.sandboxPolicy) {
       const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
       await stage(
@@ -95,11 +99,19 @@ test(
           const f = await stage(
             installationContext,
             installation,
-            "shipped startup, default Namespace and presets",
-            () =>
-              createQaInstallation(installationContext, installation, artifacts, {
-                repositoryInputs: selection.repository,
-              }),
+            "shipped startup, default Namespace, presets and both plugin catalogs",
+            async () => {
+              const fixture = await createQaInstallation(
+                installationContext,
+                installation,
+                artifacts,
+                {
+                  repositoryInputs: selection.repository,
+                },
+              );
+              await prepareQaPluginCatalogs(fixture);
+              return fixture;
+            },
           );
           const cells = selection.cells.filter(
             (cell) => cell.installation === installation && cell.scenarios.length > 0,
@@ -136,6 +148,10 @@ test(
               async (cellContext) => {
                 const ready = await stage(cellContext, cell, "prepare preset runtime", async () => {
                   assert.ok(f, "blocked by installation startup failure");
+                  assert.ok(
+                    !f.retained && f.pendingRepositories.size === 0,
+                    "blocked by unresolved repository cleanup",
+                  );
                   await prepareQaPreset(f, preset);
                   if (selectedCell.scenarios.includes("codex-search-config")) {
                     f.configuration.drivers.compute.configuration.runtime.modelProvider = {
@@ -223,7 +239,10 @@ test(
                   [
                     "model-ui",
                     async (agent, step) => {
-                      await step(
+                      // Retain the exact revision's redacted cause before ordinary Agent cleanup.
+                      const modelStep = (title, action) =>
+                        step(title, () => agent.native.withRuntimeFailureLogs(agent, action));
+                      await modelStep(
                         "real model nonce, unauthenticated denial and exact identity",
                         async () => {
                           const gateway = await f.gatewayUrl(agent);
@@ -367,7 +386,7 @@ test(
                           },
                         );
                       }
-                      await step(
+                      await modelStep(
                         "trusted native UI and live WebSocket model response",
                         async () => {
                           assert.ok(browser, "blocked by browser setup failure");
@@ -376,21 +395,21 @@ test(
                       );
                     },
                   ],
-                  [
-                    "git-write",
-                    async (agent, step) => {
-                      await step(
-                        "native repository clone/edit/commit/push to the granted branch and disposal",
-                        async () => {
-                          assert.ok(repositoryReady, "blocked by repository setup failure");
-                          await verifyQaRepository(f, agent);
-                        },
-                      );
-                    },
-                  ],
                 ];
                 if (preset === "Codex") {
                   scenarios.push(
+                    [
+                      "git-write",
+                      async (agent, step) => {
+                        await step(
+                          "native repository clone/edit/commit/push to the granted branch and disposal",
+                          async () => {
+                            assert.ok(repositoryReady, "blocked by repository setup failure");
+                            await verifyQaRepository(f, agent);
+                          },
+                        );
+                      },
+                    ],
                     [
                       "codex-search-config",
                       async (agent, step) => {

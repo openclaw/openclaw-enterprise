@@ -6,7 +6,6 @@ import { createServer, isIPv4 } from "node:net";
 import {
   appendFile,
   chmod,
-  lstat,
   mkdir,
   mkdtemp,
   readFile,
@@ -63,6 +62,7 @@ const allowedLanes = new Set(Object.keys(laneDefinitions));
 const fixtureLanes = new Set([
   "k3d-fixture-configuration",
   "k3d-fixture-state",
+  "k3d-fixture-network",
   "k3d-fixture-plugins",
 ]);
 // These lanes' tests use no Ingress, LoadBalancer Service, metrics API or
@@ -770,16 +770,6 @@ async function createDatabase(statePath, state, server, { kind, label, source, l
   };
 }
 
-async function requirePathMode0600(path, description) {
-  const info = await stat(path);
-  if (!info.isFile()) {
-    throw new Error(`${description} must be a file: ${path}`);
-  }
-  if ((info.mode & 0o777) !== 0o600) {
-    throw new Error(`${description} must have mode 0600: ${path}`);
-  }
-}
-
 function assertImmutableImageReference(image, name) {
   if (!/^\S+@sha256:[a-f0-9]{64}$/i.test(image ?? "")) {
     throw new Error(`${name} must be an immutable image@sha256 reference.`);
@@ -809,15 +799,6 @@ function assertImmutableOptionalEnvImages(names, env = process.env) {
 
 async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
   const name = laneName(lane);
-  // TODO: Remove this refusal once installed repository qualification can remove its
-  // remote branch and pull request only while they still match what the run created.
-  // Refuse before prerequisite checks so operators do not provision inputs for it. When
-  // removing it, restore the input-validation cases this refusal replaced in ci-prepare.test.mjs.
-  if (name === "repository-credentials-installed") {
-    throw new Error(
-      "Installed repository qualification is temporarily unavailable until safe remote cleanup is supported.",
-    );
-  }
   const prepare = lanePrepare(name);
   const effectiveEnv = effectiveLaneEnv(name);
   if (prepare.k3d && name !== "openshell" && effectiveEnv.OPENCLAW_CI_K3S_IMAGE) {
@@ -854,12 +835,6 @@ async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
       "OCC_TEST_KUBERNETES_GATEWAY_IMAGE and OCC_TEST_KUBERNETES_AGENT_IMAGE must be supplied together; omit both to build the runtime images.",
     );
   }
-  if (prepare.mode0600Env) {
-    await requirePathMode0600(
-      effectiveEnv[prepare.mode0600Env],
-      prepare.mode0600Description ?? prepare.mode0600Env,
-    );
-  }
   if (name === "production-tui") {
     const candidates = Object.keys(productionUpgradeImages);
     if (candidates.some((variable) => effectiveEnv[variable])) {
@@ -877,74 +852,6 @@ async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
       }
     } else {
       assertNodeBaseImage(effectiveEnv.NODE_BASE_IMAGE);
-    }
-  }
-  if (name === "repository-credentials-installed") {
-    const imageMode = effectiveEnv.OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE_MODE || "source";
-    if (imageMode === "release") {
-      assertImmutableEnvImages(
-        ["OCC_TEST_PRODUCTION_CONTROLLER_IMAGE", "OCC_TEST_KUBERNETES_RUNTIME_IMAGE"],
-        effectiveEnv,
-      );
-    } else if (imageMode === "source") {
-      assertNodeBaseImage(effectiveEnv.NODE_BASE_IMAGE);
-    } else {
-      throw new Error("OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE_MODE must be source or release.");
-    }
-    if (effectiveEnv.OCC_TEST_REPOSITORY_CREDENTIALS_AUTHORIZED !== "1") {
-      throw new Error(
-        "Installed repository qualification requires explicit write and cleanup authorization.",
-      );
-    }
-    if (
-      !/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(
-        effectiveEnv.OCC_TEST_REPOSITORY_CREDENTIALS_REPOSITORY,
-      )
-    ) {
-      throw new Error(
-        "OCC_TEST_REPOSITORY_CREDENTIALS_REPOSITORY must select one owner/repository.",
-      );
-    }
-    for (const input of ["APP_CONFIG_FILE", "APP_KEY_FILE"]) {
-      const variable = `OCC_TEST_REPOSITORY_CREDENTIALS_${input}`;
-      const path = effectiveEnv[variable];
-      if (!isAbsolute(path)) {
-        throw new Error(`${variable} must be an absolute protected file.`);
-      }
-      const info = await lstat(path);
-      if (
-        !info.isFile() ||
-        info.nlink !== 1 ||
-        (info.uid !== process.getuid() && info.uid !== 0) ||
-        info.size === 0 ||
-        info.size > 262144
-      ) {
-        throw new Error(`${variable} must be a bounded regular private file with a trusted owner.`);
-      }
-      if ((info.mode & 0o777) !== 0o600) {
-        throw new Error(`${variable} must have mode 0600.`);
-      }
-    }
-    const cidrs = effectiveEnv.OCC_TEST_REPOSITORY_CREDENTIALS_UPSTREAM_CIDRS.split(",");
-    if (
-      cidrs.length > 64 ||
-      cidrs.some((cidr) => {
-        const [address, prefix, extra] = cidr.split("/");
-        return (
-          extra !== undefined ||
-          prefix !== "32" ||
-          !isIPv4(address) ||
-          /^(?:0\.|10\.|127\.|169\.254\.|172\.(?:1[6-9]|2[0-9]|3[01])\.|192\.168\.)/.test(address)
-        );
-      })
-    ) {
-      throw new Error(
-        "OCC_TEST_REPOSITORY_CREDENTIALS_UPSTREAM_CIDRS must select approved public IPv4 /32 addresses.",
-      );
-    }
-    const gh = effectiveEnv.OCC_TEST_REPOSITORY_CREDENTIALS_GH_BINARY;
-    if (gh && !isAbsolute(gh)) {
-      throw new Error("OCC_TEST_REPOSITORY_CREDENTIALS_GH_BINARY must be absolute when supplied.");
     }
   }
 }
@@ -1346,8 +1253,17 @@ async function buildRuntimeImages(
       : state.prefix;
   const tagBase =
     registryOutput ?? `localhost/${ownedName("openclaw-ci-image", label, { maxLength: 48 })}`;
+  const openclawSource = runtime ? process.env.OCC_K3D_OPENCLAW_SOURCE : undefined;
   if (controller) {
     assertNodeBaseImage(nodeBaseImage);
+  }
+  if (openclawSource !== undefined) {
+    if (!isAbsolute(openclawSource) || !(await stat(join(openclawSource, "Dockerfile"))).isFile()) {
+      throw new Error("OCC_K3D_OPENCLAW_SOURCE must select an absolute OpenClaw source checkout");
+    }
+    if (!/^[a-f0-9]{40,64}$/u.test(process.env.OCC_K3D_OPENCLAW_COMMIT ?? "")) {
+      throw new Error("OCC_K3D_OPENCLAW_COMMIT must identify the selected OpenClaw source");
+    }
   }
   const builds = [];
   if (controller) {
@@ -1376,18 +1292,31 @@ async function buildRuntimeImages(
     builds.push({
       role: "runtime",
       tag,
-      args: [
-        ...imageBuildArgs(state, "runtime", localStore),
-        ...plainProgress,
-        ...revisionArgs,
-        ...openclawBuildArguments(await readOpenclawSource()),
-        "--pull=false",
-        "-f",
-        runtimeDockerfile,
-        "-t",
-        tag,
-        repositoryRoot,
-      ],
+      args:
+        openclawSource === undefined
+          ? [
+              ...imageBuildArgs(state, "runtime", localStore),
+              ...plainProgress,
+              ...revisionArgs,
+              ...openclawBuildArguments(await readOpenclawSource()),
+              "--pull=false",
+              "-f",
+              runtimeDockerfile,
+              "-t",
+              tag,
+              repositoryRoot,
+            ]
+          : [
+              "build",
+              ...(localStore && basename(process.env.OCC_DOCKER_BIN ?? "docker") !== "podman"
+                ? ["--builder", "default", "--load"]
+                : []),
+              "--build-arg",
+              "OPENCLAW_DOCKER_BUILD_SKIP_DTS=1",
+              "-t",
+              tag,
+              openclawSource,
+            ],
       env: {
         OCC_TEST_RUNTIME_IMAGE: tag,
         OCC_DOCKER_RUNTIME_IMAGE: tag,
@@ -1447,6 +1376,9 @@ async function buildRuntimeImages(
 // installation, Agent workflow and teardown. The loopback registry is CI-owned.
 async function prepareFirstAgentImages(statePath, state, env, file) {
   imageBuildArgs(state, "runtime", false); // Validate the hosted cache boundary before resources.
+  if (process.env.OCC_K3D_OPENCLAW_SOURCE) {
+    throw new Error("First-Agent image preparation requires the checkout's pinned runtime source.");
+  }
   const builder = process.env.OCC_CI_FIRST_AGENT_BUILDER;
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]+$/.test(builder ?? "")) {
     throw new Error("First-Agent image preparation requires its selected job builder.");
@@ -2975,6 +2907,7 @@ async function prepareLane({ lane, statePath, file }) {
       break;
     case "k3d-fixture-configuration":
     case "k3d-fixture-state":
+    case "k3d-fixture-network":
     case "k3d-fixture-plugins": {
       // PostgreSQL, cluster creation and the fixture build are independent.
       const [, cluster, built] = await timedPreparation(
@@ -3051,30 +2984,49 @@ async function prepareLane({ lane, statePath, file }) {
         OCC_TEST_PRODUCTION_POSTGRES_IMAGE: inputs.OCC_TEST_PRODUCTION_POSTGRES_IMAGE,
         OCC_TEST_OBSERVABILITY_COLLECTOR_IMAGE: production.logging.collector.image,
       };
-      const [cluster, built, , fixture] = await timedPreparation(name, "cluster-build-pull", () =>
-        prepareTogether([
-          () => ensureK3dCluster(resolvedStatePath, state),
-          async () => {
-            await ensureDockerSourceImage(state, inputs.NODE_BASE_IMAGE, "NODE_BASE_IMAGE");
-            return buildRuntimeImages(resolvedStatePath, state, {
-              controller: true,
-              nodeBaseImage: inputs.NODE_BASE_IMAGE,
-              localStore: true,
-            });
-          },
-          () =>
-            prepareTogether(
-              Object.entries(externalImages)
-                .filter(([, image]) => image !== inputs.NODE_BASE_IMAGE)
-                .map(
-                  ([variable, image]) =>
-                    () =>
-                      ensureDockerSourceImage(state, image, variable),
-                ),
-              2,
-            ),
-          () => buildFixtureImage(resolvedStatePath, state),
-        ]),
+      const [cluster, built, , fixture, serviceTag] = await timedPreparation(
+        name,
+        "cluster-build-pull",
+        () =>
+          prepareTogether([
+            () => ensureK3dCluster(resolvedStatePath, state),
+            async () => {
+              await ensureDockerSourceImage(state, inputs.NODE_BASE_IMAGE, "NODE_BASE_IMAGE");
+              return buildRuntimeImages(resolvedStatePath, state, {
+                controller: true,
+                nodeBaseImage: inputs.NODE_BASE_IMAGE,
+                localStore: true,
+              });
+            },
+            () =>
+              prepareTogether(
+                Object.entries(externalImages)
+                  .filter(([, image]) => image !== inputs.NODE_BASE_IMAGE)
+                  .map(
+                    ([variable, image]) =>
+                      () =>
+                        ensureDockerSourceImage(state, image, variable),
+                  ),
+                2,
+              ),
+            () => buildFixtureImage(resolvedStatePath, state),
+            () =>
+              prepareRepositoryCredentials({
+                repositoryRoot,
+                imagePrefix: `localhost/${ownedName("openclaw-ci-image", state.prefix, { maxLength: 48 })}`,
+                execFile,
+                serviceOnly: true,
+                registerImage: async (tag) => {
+                  const resource = addResource(state, "image-tag", { name: tag });
+                  await writeState(resolvedStatePath, state);
+                  return resource;
+                },
+                markImageReady: async (resource, imageId) => {
+                  resource.imageId = imageId;
+                  await markResourceReady(resolvedStatePath, state, resource);
+                },
+              }),
+          ]),
       );
       env.OCC_TEST_KUBERNETES_KUBECONFIG = cluster.kubeconfig;
       env.OCC_TEST_KUBERNETES_CONTEXT = cluster.context;
@@ -3093,6 +3045,7 @@ async function prepareLane({ lane, statePath, file }) {
             },
             ...Object.entries({
               OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: built.env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE,
+              OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE: serviceTag,
               ...externalImages,
             }).map(([variable, image]) => async () => {
               progress(name, `Importing ${variable}.`);
@@ -3155,52 +3108,6 @@ async function prepareLane({ lane, statePath, file }) {
       );
       break;
     }
-    case "repository-credentials-installed": {
-      await commandAvailable(process.env.OCC_HELM_BIN ?? "helm", ["version", "--short"]);
-      const cluster = await ensureK3dCluster(resolvedStatePath, state);
-      const routing = await prepareGatewayRouting({ cluster, execFile });
-      Object.assign(env, routing.env);
-      env.OCC_TEST_KUBERNETES_KUBECONFIG = cluster.kubeconfig;
-      env.OCC_TEST_KUBERNETES_CONTEXT = cluster.context;
-      const inputs = effectiveLaneEnv(name, env);
-      const sourceImages =
-        inputs.OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE_MODE === "release"
-          ? {
-              OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: inputs.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE,
-              OCC_TEST_KUBERNETES_RUNTIME_IMAGE: inputs.OCC_TEST_KUBERNETES_RUNTIME_IMAGE,
-            }
-          : undefined;
-      await prepareProductionImages(resolvedStatePath, state, cluster, env, {
-        localStore: true,
-        sourceImages,
-      });
-      env.OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE = (
-        await registerImageInK3d(
-          resolvedStatePath,
-          state,
-          cluster,
-          process.env.OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE,
-          "OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE",
-        )
-      ).reference;
-      progress(name, "Deriving and installing the dedicated Codex seccomp profile.");
-      const seccomp = await prepareCodexSeccompProfile({
-        cluster,
-        image: env.OCC_TEST_KUBERNETES_RUNTIME_IMAGE,
-        execFile,
-        kubectl: cluster.kubectl ?? process.env.OCC_KUBECTL_BIN ?? "kubectl",
-        codexVersion: await kubernetesCodexVersion(env),
-      });
-      env.OCC_TEST_KUBERNETES_CODEX_SECCOMP_PROFILE = seccomp.profileName;
-      cluster.codexSeccompProfile = seccomp.profileName;
-      cluster.codexSeccompProfiles = seccomp.nodes;
-      await writeState(resolvedStatePath, state);
-      if (process.env.OCC_TEST_REPOSITORY_CREDENTIALS_GH_BINARY) {
-        env.OCC_TEST_REPOSITORY_CREDENTIALS_GH_BINARY =
-          process.env.OCC_TEST_REPOSITORY_CREDENTIALS_GH_BINARY;
-      }
-      break;
-    }
     case "docker-model":
       Object.assign(
         env,
@@ -3216,7 +3123,7 @@ async function prepareLane({ lane, statePath, file }) {
       await ensurePostgresServer(resolvedStatePath, state);
       const cluster = await prepareK3dModelLane(resolvedStatePath, state, env, {
         buildController: true,
-        buildRuntime: name !== "slack",
+        buildRuntime: true,
       });
       const routing = await prepareGatewayRouting({ cluster, execFile });
       Object.assign(env, routing.env);
@@ -3263,10 +3170,6 @@ async function prepareLane({ lane, statePath, file }) {
       await prepareLaneLogging(resolvedStatePath, state, env, cluster);
       break;
     }
-    case "provider-account":
-      await ensurePostgresServer(resolvedStatePath, state);
-      await prepareK3dModelLane(resolvedStatePath, state, env, { buildRuntime: true });
-      break;
     case "openshell": {
       // These files exercise the installer in their own Local Setup. Preparing a
       // second stack here builds the same images and installs unused services.

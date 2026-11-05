@@ -23,15 +23,54 @@ import { createResourceScope } from "../fixtures/repository-credentials/resource
 import { maskPrivateKeyLines } from "../../scripts/ci/failure-redaction.mjs";
 
 function execute(command, args, options) {
-  const { input, allowExitCodes = [0], ...rest } = options;
+  const { input, allowExitCodes = [0], timeout = 0, ...rest } = options;
+  assert.ok(Number.isInteger(timeout) && timeout >= 0, "command timeout must be non-negative");
+  const started = performance.now();
   return new Promise((accept, reject) => {
+    let timedOut = false;
+    let timer;
+    const fail = (error, stdout = "", stderr = "") =>
+      reject(
+        Object.assign(error, {
+          stdout,
+          stderr,
+          timedOut,
+          elapsedMs: Math.round(performance.now() - started),
+          timeoutMs: timeout,
+        }),
+      );
     const child = execFile(command, args, rest, (error, stdout, stderr) => {
-      if (error && !allowExitCodes.includes(error.code)) {
-        reject(Object.assign(error, { stdout, stderr }));
+      clearTimeout(timer);
+      if (timedOut) {
+        fail(
+          error ??
+            Object.assign(new Error("command deadline exceeded"), {
+              code: child.exitCode,
+              signal: child.signalCode,
+            }),
+          stdout,
+          stderr,
+        );
+      } else if (error && !allowExitCodes.includes(error.code)) {
+        fail(error, stdout, stderr);
       } else {
         accept({ stdout, stderr });
       }
     });
+    if (timeout > 0) {
+      timer = setTimeout(() => {
+        timedOut = true;
+        // Match execFile's timeout teardown, but retain the deadline as the primary
+        // cause even if writing to a closed pipe ends the child with SIGPIPE.
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        try {
+          child.kill(rest.killSignal ?? "SIGTERM");
+        } catch (error) {
+          fail(error);
+        }
+      }, timeout);
+    }
     child.stdin.end(input);
   });
 }
@@ -136,7 +175,10 @@ export async function runQaCommand(f, command, args, options = {}) {
         );
     // execFile errors embed argv and output, potentially containing tokens.
     // Keep arguments/stdout private; include only redacted stderr for diagnosis.
-    error.message = `${command.split("/").at(-1)} failed (exit ${error.code ?? "unknown"}, signal ${error.signal ?? "none"}); private state: ${f.stateDirectory}${buildOutput ? `; failed image build step output: ${buildOutput}` : ""}${detail ? `; stderr: ${detail}` : ""}`;
+    const timing = Number.isInteger(error.elapsedMs)
+      ? ` after ${error.elapsedMs} ms (limit ${error.timeoutMs} ms)`
+      : "";
+    error.message = `${command.split("/").at(-1)} ${error.timedOut ? "timed out" : "failed"}${timing} (exit ${error.code ?? "unknown"}, signal ${error.signal ?? "none"}); private state: ${f.stateDirectory}${buildOutput ? `; failed image build step output: ${buildOutput}` : ""}${detail ? `; stderr: ${detail}` : ""}`;
     delete error.cmd;
     delete error.stdout;
     delete error.stderr;
@@ -500,8 +542,19 @@ export async function createQaInstallation(
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         signal: AbortSignal.timeout(30_000),
       });
-      assert.ok(response.ok, `OCC ${method} ${path}: HTTP ${response.status}`);
       const text = await response.text();
+      let code = "unknown";
+      if (!response.ok) {
+        try {
+          const candidate = JSON.parse(text).error?.code;
+          if (typeof candidate === "string" && /^[A-Z][A-Z0-9_]{0,79}$/.test(candidate)) {
+            code = redactedQaTail(candidate, f.env, { lines: 1, lineChars: 80 });
+          }
+        } catch {
+          // Do not print an unstructured error body or provider response.
+        }
+      }
+      assert.ok(response.ok, `OCC ${method} ${path}: HTTP ${response.status} (${code})`);
       return text ? JSON.parse(text).data : undefined;
     },
     async compose(...args) {
@@ -710,6 +763,7 @@ export async function createQaInstallation(
       throw error;
     }
     await f.run(join(repository, "scripts/dev-down"), [], { timeout: 300_000 });
+    await f.cleanupRepositoryInputs?.();
   });
   await f.record("ownership", {
     cluster,
@@ -882,26 +936,34 @@ export async function prepareQaConsoleTheme(f) {
   });
 }
 
-export async function prepareQaPreset(f, presetName) {
-  assert.ok(
-    !f.retained && f.pendingRepositories.size === 0,
-    "blocked by unresolved repository cleanup",
+export async function prepareQaPluginCatalogs(f) {
+  f.configuration.drivers.plugin = [
+    { id: "occ-plugin", configuration: {} },
+    { id: "codex-plugin", configuration: { catalogSource: "openai-curated" } },
+  ];
+  await f.saveInstallation(f.configuration);
+  const { capabilities } = await f.api("GET", "/installation");
+  const catalogs = Object.fromEntries(
+    capabilities.pluginCatalogs.map(({ harnessId, pluginPolicies }) => [
+      harnessId,
+      pluginPolicies.driver.id,
+    ]),
   );
-  const codex = presetName === "Codex";
-  const desiredPlugin = codex ? "codex-plugin" : "occ-plugin";
-  // The launcher's Gateway resources match the production example, whose memory
-  // limit covers the full native repository workload; only the plugin varies.
-  if (f.configuration.drivers.plugin?.id !== desiredPlugin) {
+  assert.deepEqual(catalogs, { openclaw: "occ-plugin", codex: "codex-plugin" });
+  for (const [harnessId, q, expectedId] of [
+    ["openclaw", "Google Workspace", "occ-plugin:google@1.0.0"],
+    ["codex", "Linear", "codex-plugin:linear@openai-curated-remote"],
+  ]) {
+    const { plugins } = await f.api("POST", `/namespaces/${f.namespace.id}/agents/plugins`, {
+      harnessId,
+      q,
+    });
     assert.ok(
-      f.agents.every((agent) => agent.stopped),
-      "stop the prior Agent before changing the installation runtime configuration",
+      plugins.some(({ id }) => id === expectedId),
+      `missing ${expectedId} in the ${harnessId} catalog`,
     );
-    f.configuration.drivers.plugin = {
-      id: desiredPlugin,
-      configuration: codex ? { catalogSource: "openai-curated" } : {},
-    };
-    await f.saveInstallation(f.configuration);
   }
+  await f.record("plugin-catalogs", catalogs);
 }
 
 export async function createQaAgent(
@@ -942,6 +1004,7 @@ export async function createQaAgent(
     modelSecret: "provided-through-secret-api",
   });
   const values = rendered.configuration.values;
+  const pluginDriverId = codex ? "codex-plugin" : "occ-plugin";
   let endpoint;
   if (customResponses) {
     endpoint = process.env.OCC_TEST_QA_RESPONSES_BASE_URL;
@@ -961,9 +1024,8 @@ export async function createQaAgent(
     values.agents.defaults.model = reference;
     values.agents.defaults.models = { [reference]: { agentRuntime: { id: "openclaw" } } };
   }
-  assert.equal(
-    f.configuration.drivers.plugin?.id,
-    codex ? "codex-plugin" : "occ-plugin",
+  assert.ok(
+    f.configuration.drivers.plugin?.some(({ id }) => id === pluginDriverId),
     "prepare the preset before starting parallel Agent scenarios",
   );
   values.gateway.http = { endpoints: { chatCompletions: { enabled: true } } };
@@ -1070,9 +1132,12 @@ export async function createQaAgent(
         deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
       },
     };
-    await f.api("PATCH", `/namespaces/${f.namespace.id}/configurations/${configuration.id}`, {
-      values,
-    });
+    // Later provider changes must start from the admitted native-admin configuration.
+    agent.configuration = await f.api(
+      "PATCH",
+      `/namespaces/${f.namespace.id}/configurations/${configuration.id}`,
+      { values },
+    );
   }
   if (!provisionNativeAdmin) {
     await grantQaSecret(f, agent, secret.id, `${agent.name}-model`);

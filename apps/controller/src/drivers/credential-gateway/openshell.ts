@@ -13,7 +13,6 @@ import type {
   CredentialSourceInput,
   CredentialSourceStatus,
   CredentialSourceType,
-  CredentialSourceToken,
 } from "@openclaw-enterprise/contracts";
 import {
   configurationSettingMessage,
@@ -29,7 +28,7 @@ import { verifyManagedPluginRegistration } from "../sandbox/openshell-plugin-pol
 import { managedMcpProviderEndpoint } from "../sandbox/openshell-managed-mcp-policy.ts";
 import {
   managedCredentialBinding,
-  managedMcpCredentialBinding,
+  managedMcpCredentialBindings,
   managedMcpInstallForSourceConfig,
   managedMcpSlotAcceptsSource,
 } from "../plugin/managed-catalog.ts";
@@ -46,6 +45,10 @@ import { exactDnsName, validateOpenAiSourceBaseUrl } from "../credential-source-
 import { normalizeOpenAiBaseUrl } from "../openai-endpoint.ts";
 
 import {
+  MANAGED_BY_LABEL,
+  MANAGED_BY,
+  SOURCE_ID_LABEL,
+  openShellOwnedBy,
   openShellProviderName,
   openShellWorkspaceName,
   type OpenShellGateway,
@@ -57,13 +60,14 @@ import {
   OpenShellProviderAlreadyExistsError,
   type OpenShellGatewayClient,
   type OpenShellProviderProfile,
-  type OpenShellProviderResponse,
-  type OpenShellRefreshStrategy,
 } from "../sandbox/openshell-gateway-client.ts";
 
 import {
   CODEX_OAUTH_TYPE,
   CODEX_ACCESS_TOKEN_ENV,
+  OPEN_SHELL_REFRESH_SOURCE_TYPES,
+} from "../../backends/openshell-refresh-sources.ts";
+import {
   CODEX_ACCOUNT_CONFIG,
   CODEX_OAUTH_TOKEN_URL,
   codexAccountMetadata,
@@ -88,25 +92,13 @@ export interface OpenShellCredentialGatewaySelection {
 
 class OpenShellCredentialGatewayFailure extends Error {}
 
-const MANAGED_BY_LABEL = "app.kubernetes.io/managed-by";
-const MANAGED_BY = "openclaw-enterprise";
-const SOURCE_ID_LABEL = "openclaw.dev/credential-source-id";
 const NAMESPACE_ID_LABEL = "openclaw.dev/namespace-id";
 const PROFILE_DIGEST_ANNOTATION = "openclaw.dev/profile-digest";
 const OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const OPENAI_AUTHORIZED_BASE_URL_CONFIG = "authorized_base_url";
 
-/** How the paired Credential Refresh Driver configures one `refresh` type. */
-export interface OpenShellRefreshSourceType {
-  readonly strategy: OpenShellRefreshStrategy;
-  /** Non-secret config fields sent as refresh material under the same names. */
-  readonly configMaterial: readonly string[];
-}
-
 interface OpenShellSourceType {
   readonly catalog: CredentialSourceType;
-  /** Present for `refresh` types: the gateway stores no static value for them. */
-  readonly refresh?: OpenShellRefreshSourceType;
   /**
    * Rejects invalid non-secret configuration before any gateway effect. Returns the
    * configuration to store when it differs from the written one, such as a normalized URL.
@@ -124,7 +116,7 @@ interface OpenShellSourceType {
     sourceId: string,
     config: Readonly<Record<string, string>>,
     options: OpenShellCredentialGatewayOptions,
-    gateway?: OpenShellGatewayPlacement,
+    gateway: () => OpenShellGatewayPlacement | undefined,
     modelProvider?: ModelProviderConfiguration,
   ): Omit<OpenShellProviderProfile, "annotations">;
 }
@@ -375,6 +367,7 @@ function bearerProfile(
   options: OpenShellCredentialGatewayOptions,
   displayName: string,
   credential: Pick<OpenShellProviderProfile["credentials"][number], "name" | "refresh">,
+  credentialKey: string = config.env_var ?? "",
 ): Omit<OpenShellProviderProfile, "annotations"> {
   return {
     id: openShellProviderName(sourceId),
@@ -383,7 +376,7 @@ function bearerProfile(
     credentials: [
       {
         ...credential,
-        envVars: [config.env_var ?? ""],
+        envVars: [credentialKey],
         required: true,
         authStyle: "bearer",
         headerName: "authorization",
@@ -397,7 +390,6 @@ function bearerProfile(
 
 function oauth2SourceType(
   type: "oauth2-client-credentials" | "oauth2-refresh-token",
-  strategy: OpenShellRefreshStrategy,
   secrets: CredentialSourceType["secrets"],
   material: readonly {
     readonly name: string;
@@ -405,6 +397,7 @@ function oauth2SourceType(
     readonly secret: boolean;
   }[],
 ): OpenShellSourceType {
+  const refresh = OPEN_SHELL_REFRESH_SOURCE_TYPES[type];
   return {
     catalog: Object.freeze({
       type,
@@ -412,33 +405,40 @@ function oauth2SourceType(
       secrets,
       rotation: "refresh",
     }),
-    refresh: Object.freeze({ strategy, configMaterial: Object.freeze(["client_id", "scope"]) }),
     validate: (config, options, gateway) => validateOAuth2Config(type, config, options, gateway()),
-    credentials: (config) => Object.freeze({ access_token: config.env_var ?? "" }),
+    credentials: (config) => Object.freeze({ access_token: refresh.credentialKey(config) }),
     // The token endpoint lives only in the profile: OpenShell refuses it as refresh material.
     profile: (sourceId, config, options, gateway) => {
+      const placement = gateway();
       checkStoredHost(config);
       // A source stored before the token_url host rules fails here until it is replaced.
       if (
         !tokenUrlHostAllowed(config.token_url ?? "") ||
-        !tokenUrlHostOutsideGateway(config.token_url ?? "", gateway) ||
+        !tokenUrlHostOutsideGateway(config.token_url ?? "", placement) ||
         !tokenUrlPortAllowed(config.token_url ?? "")
       ) {
         throw new StoredCredentialSourceConfigError("token_url");
       }
-      return bearerProfile(sourceId, config, options, `OAuth2 ${type} (OpenClaw Enterprise)`, {
-        name: "access_token",
-        refresh: {
-          strategy,
-          tokenUrl: config.token_url ?? "",
-          scopes: [],
-          material: [
-            { name: "client_id", required: true, secret: false },
-            { name: "scope", required: false, secret: false },
-            ...material,
-          ],
+      return bearerProfile(
+        sourceId,
+        config,
+        options,
+        `OAuth2 ${type} (OpenClaw Enterprise)`,
+        {
+          name: "access_token",
+          refresh: {
+            strategy: refresh.strategy,
+            tokenUrl: config.token_url ?? "",
+            scopes: [],
+            material: [
+              { name: "client_id", required: true, secret: false },
+              { name: "scope", required: false, secret: false },
+              ...material,
+            ],
+          },
         },
-      });
+        refresh.credentialKey(config),
+      );
     },
   };
 }
@@ -465,25 +465,24 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
       deviceAuthorization: Object.freeze({ harnessId: "codex" }),
       harnessAuth: Object.freeze({ modelProvider: "openai", loginMode: "chatgptAuthTokens" }),
     }),
-    refresh: Object.freeze({
-      strategy: "PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_REFRESH_TOKEN",
-      configMaterial: Object.freeze(["client_id"]),
-    }),
     validate() {},
-    credentials: () => Object.freeze({ access_token: CODEX_ACCESS_TOKEN_ENV }),
-    profile: (sourceId, _config, options) => ({
+    credentials: (config) =>
+      Object.freeze({
+        access_token: OPEN_SHELL_REFRESH_SOURCE_TYPES[CODEX_OAUTH_TYPE].credentialKey(config),
+      }),
+    profile: (sourceId, config, options) => ({
       id: openShellProviderName(sourceId),
       displayName: "Codex OAuth (Experimental)",
       category: "PROVIDER_PROFILE_CATEGORY_INFERENCE" as const,
       credentials: [
         {
           name: "access_token",
-          envVars: [CODEX_ACCESS_TOKEN_ENV],
+          envVars: [OPEN_SHELL_REFRESH_SOURCE_TYPES[CODEX_OAUTH_TYPE].credentialKey(config)],
           required: true,
           authStyle: "bearer",
           headerName: "authorization",
           refresh: {
-            strategy: "PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_REFRESH_TOKEN",
+            strategy: OPEN_SHELL_REFRESH_SOURCE_TYPES[CODEX_OAUTH_TYPE].strategy,
             tokenUrl: CODEX_OAUTH_TOKEN_URL,
             scopes: [],
             refreshBeforeSeconds: 300,
@@ -702,7 +701,6 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
   },
   oauth2SourceType(
     "oauth2-client-credentials",
-    "PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_CLIENT_CREDENTIALS",
     Object.freeze([
       Object.freeze({
         name: "client_secret",
@@ -714,7 +712,6 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
   ),
   oauth2SourceType(
     "oauth2-refresh-token",
-    "PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_REFRESH_TOKEN",
     Object.freeze([
       Object.freeze({
         name: "refresh_token",
@@ -803,7 +800,7 @@ function catalogTypes(
   return SOURCE_TYPES.filter(
     (entry) =>
       (entry.catalog.harnessAuth !== undefined || options.toolBinaries !== undefined) &&
-      (entry.refresh === undefined || refresh),
+      (entry.catalog.rotation !== "refresh" || refresh),
   );
 }
 
@@ -831,31 +828,6 @@ function findSourceType(types: readonly OpenShellSourceType[], type: string): Op
     throw new ScopeViolationError("The OpenShell Credential Gateway does not support this type.");
   }
   return found;
-}
-
-/** The refresh configuration of a `refresh` type, for the paired Credential Refresh Driver. */
-export function openShellRefreshSourceType(type: string):
-  | (OpenShellRefreshSourceType & {
-      readonly credentialKey: (config: Readonly<Record<string, string>>) => string;
-    })
-  | undefined {
-  const found = SOURCE_TYPES.find((entry) => entry.catalog.type === type);
-  if (found?.refresh === undefined) {
-    return undefined;
-  }
-  return Object.freeze({
-    ...found.refresh,
-    credentialKey: (config: Readonly<Record<string, string>>) =>
-      Object.values(found.credentials(config))[0] ?? "",
-  });
-}
-
-function ownedBy(provider: OpenShellProviderResponse, sourceId: string): boolean {
-  return (
-    provider.labels[MANAGED_BY_LABEL] === MANAGED_BY &&
-    provider.labels[SOURCE_ID_LABEL] === sourceId &&
-    provider.type === openShellProviderName(sourceId)
-  );
 }
 
 /**
@@ -1089,7 +1061,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     const credentials = providerCredentials(type, input);
     const name = openShellProviderName(context.source.id);
     const existing = await client.getProvider(workspace, name, context.signal);
-    if (existing !== undefined && !ownedBy(existing, context.source.id)) {
+    if (existing !== undefined && !openShellOwnedBy(existing, context.source.id)) {
       throw new ScopeViolationError(
         "An OpenShell provider with this source's name is not owned by the source.",
       );
@@ -1102,7 +1074,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       type,
       context.source.id,
       input.config,
-      this.placement(context),
+      () => this.placement(context),
       context.signal,
     );
     try {
@@ -1126,7 +1098,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       }
       // Replay after an uncertain create adopts only this exact source's provider.
       const existing = await client.getProvider(workspace, name, context.signal);
-      if (existing === undefined || !ownedBy(existing, context.source.id)) {
+      if (existing === undefined || !openShellOwnedBy(existing, context.source.id)) {
         throw new ScopeViolationError(
           "An OpenShell provider with this source's name is not owned by the source.",
         );
@@ -1145,7 +1117,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     input: CredentialSourceInput,
   ): Promise<CredentialSourceStatus> {
     const type = sourceType(input.type, this.options, this.refresh);
-    if (type.refresh !== undefined) {
+    if (type.catalog.rotation === "refresh") {
       throw new ScopeViolationError(
         "A refresh-type source has no static value; reconfigure its refresh material instead.",
       );
@@ -1157,7 +1129,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     if (existing === undefined) {
       return { state: "absent" };
     }
-    if (!ownedBy(existing, context.source.id)) {
+    if (!openShellOwnedBy(existing, context.source.id)) {
       throw new ScopeViolationError(
         "An OpenShell provider with this source's name is not owned by the source.",
       );
@@ -1170,7 +1142,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       type,
       context.source.id,
       context.source.config,
-      this.placement(context),
+      () => this.placement(context),
       context.signal,
     );
     await client.updateProviderCredentials(
@@ -1180,27 +1152,6 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       context.signal,
     );
     return { state: "ready" };
-  }
-
-  async withSourceToken<T>(
-    context: CredentialSourceContext,
-    use: (token: CredentialSourceToken) => Promise<T>,
-  ): Promise<T> {
-    const provider = await this.codexProvider(context);
-    const account = codexAccountMetadata(provider.config);
-    // Only the operator channel can export credentials. OpenShell may refresh to
-    // satisfy its lifetime guarantee; the Driver never receives refresh material here.
-    const token = await this.credentialClient(context).getProviderCredential(
-      openShellWorkspaceName(context.namespace),
-      provider.name,
-      CODEX_ACCESS_TOKEN_ENV,
-      context.signal,
-    );
-    return use({
-      accessToken: token.value,
-      accountId: account.accountId,
-      ...(account.isFedramp === undefined ? {} : { isFedramp: account.isFedramp }),
-    });
   }
 
   async sourceStatus(context: CredentialSourceContext): Promise<CredentialSourceStatus> {
@@ -1213,7 +1164,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     if (provider === undefined) {
       return { state: "absent" };
     }
-    if (!ownedBy(provider, context.source.id)) {
+    if (!openShellOwnedBy(provider, context.source.id)) {
       return { state: "failed", reason: "The OpenShell provider is not owned by this source." };
     }
     if (context.source.type === CODEX_OAUTH_TYPE && !provider.config[CODEX_ACCOUNT_CONFIG]) {
@@ -1229,7 +1180,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     const client = this.client(context);
     const existing = await client.getProvider(workspace, name, context.signal);
     if (existing !== undefined) {
-      if (!ownedBy(existing, context.source.id)) {
+      if (!openShellOwnedBy(existing, context.source.id)) {
         throw new ScopeViolationError(
           "An OpenShell provider with this source's name is not owned by the source.",
         );
@@ -1248,13 +1199,19 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
   ): Promise<readonly CredentialSourceAttachment[]> {
     const workspace = openShellWorkspaceName(context.namespace);
     const client = this.client(context);
-    const binding = managedCredentialBinding(context.revision.plugins?.plugins);
-    const mcpBinding = managedMcpCredentialBinding(context.revision.plugins?.plugins);
-    const mcpSource = context.sources.find(({ id }) => id === mcpBinding?.sourceId);
-    if (mcpBinding && mcpSource && !managedMcpSlotAcceptsSource(mcpBinding.install, mcpSource)) {
-      throw new ScopeViolationError(
-        "The attached MCP account does not match the reviewed credential slot.",
-      );
+    const binding = managedCredentialBinding(
+      context.revision.plugins?.plugins,
+      managedGoogleInstall,
+    );
+    for (const { install, sourceId } of managedMcpCredentialBindings(
+      context.revision.plugins?.plugins,
+    )) {
+      const source = context.sources.find(({ id }) => id === sourceId);
+      if (source && !managedMcpSlotAcceptsSource(install, source)) {
+        throw new ScopeViolationError(
+          "The attached MCP account does not match the reviewed credential slot.",
+        );
+      }
     }
     for (const source of context.sources.filter(({ config }) => config.protocol === "mcp")) {
       const install = managedMcpInstallForSourceConfig(source.config);
@@ -1341,7 +1298,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       }
       const name = openShellProviderName(source.id);
       const provider = await client.getProvider(workspace, name, context.signal);
-      if (provider === undefined || !ownedBy(provider, source.id)) {
+      if (provider === undefined || !openShellOwnedBy(provider, source.id)) {
         throw new OpenShellCredentialGatewayFailure(
           "The OpenShell provider for a bound credential source is unavailable.",
         );
@@ -1354,7 +1311,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         type,
         source.id,
         source.config,
-        this.placement(context),
+        () => this.placement(context),
         context.signal,
       );
       attachments.push(
@@ -1491,37 +1448,8 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     return detached === undefined ? absent() : settle(detached.receiptId);
   }
 
-  private async codexProvider(
-    context: CredentialSourceContext,
-  ): Promise<OpenShellProviderResponse> {
-    if (
-      context.source.type !== CODEX_OAUTH_TYPE ||
-      context.source.driverId !== this.id ||
-      context.source.namespaceId !== context.namespace.id
-    ) {
-      throw new ScopeViolationError("The Codex OAuth source is not owned by this gateway.");
-    }
-    const provider = await this.client(context).getProvider(
-      openShellWorkspaceName(context.namespace),
-      openShellProviderName(context.source.id),
-      context.signal,
-    );
-    if (!provider || !ownedBy(provider, context.source.id)) {
-      throw new ScopeViolationError(
-        "The OpenShell provider is not owned by this Codex OAuth source.",
-      );
-    }
-    return provider;
-  }
-
   private client(context: CredentialGatewayContext & { readonly namespace: { name: string } }) {
     return this.backend.client.clientForNamespace(context.namespace.name);
-  }
-
-  private credentialClient(
-    context: CredentialGatewayContext & { readonly namespace: { name: string } },
-  ) {
-    return this.backend.client.credentialClientForNamespace(context.namespace.name);
   }
 
   private placement(
@@ -1536,7 +1464,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     type: OpenShellSourceType,
     sourceId: string,
     config: Readonly<Record<string, string>>,
-    gateway: OpenShellGatewayPlacement | undefined,
+    gateway: () => OpenShellGatewayPlacement | undefined,
     signal: AbortSignal,
   ): Promise<void> {
     const base = type.profile(sourceId, config, this.options, gateway, this.modelProvider);
@@ -1573,7 +1501,7 @@ function providerCredentials(
   input: CredentialSourceInput,
 ): Record<string, string> {
   // OpenShell mints a refresh type's token; its secrets are refresh material, not credentials.
-  if (type.refresh !== undefined) {
+  if (type.catalog.rotation === "refresh") {
     return {};
   }
   return Object.fromEntries(

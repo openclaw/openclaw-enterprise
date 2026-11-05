@@ -1,5 +1,9 @@
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
-import { assertExecutionAdmission } from "@openclaw-enterprise/contracts";
+import {
+  assertExecutionAdmission,
+  validateConnectionTemplateDestinations,
+  MAX_AGENT_CREDENTIAL_SOURCES,
+} from "@openclaw-enterprise/contracts";
 import { memoryEgressSendReceipts } from "./egress-send-receipts.ts";
 import type { EgressSendReceiptRepository, StoredSendReceipt } from "../egress-send-receipts.ts";
 import { isDeepStrictEqual } from "node:util";
@@ -8,6 +12,7 @@ import type {
   EgressInstallation,
   EgressMaterialEvidence,
 } from "@openclaw-enterprise/contracts";
+import type { StoredOAuthClient } from "../ports/oauth-client.ts";
 import type { CredentialPolicyReductionState } from "../ports/credential-policy-reduction.ts";
 import { validateSandboxNetworkGrants } from "@openclaw-enterprise/contracts";
 import { RepositoryTransactionLifetime } from "../ports/transaction.ts";
@@ -28,6 +33,8 @@ import {
   validRepositoryRevisionState,
 } from "./repository-credential-state.ts";
 import type {
+  ConnectionTemplate,
+  OAuthConnectionTemplateVersion,
   AccessBinding,
   Agent,
   AgentRead,
@@ -53,6 +60,7 @@ import type {
   Namespace,
   NamespaceStatus,
   PluginDesiredState,
+  PluginDriverIdentity,
   PluginApprovers,
   Preset,
   PresetSummary,
@@ -78,6 +86,7 @@ import {
   harnessAuthBindingFromSnapshot,
   normalizeSecretBindings,
   validPluginRevisionState,
+  validPluginDriverIdentity,
   validPluginApprovers,
   isBackendId,
 } from "@openclaw-enterprise/contracts";
@@ -229,6 +238,7 @@ export interface AgentRepository extends AgentReadRepository {
     repositoryAccess?: RepositoryAccess | null,
     credentialSources?: readonly AgentCredentialSourceBinding[],
     gatewayManagedMode?: boolean,
+    pluginDriver?: PluginDriverIdentity | null,
   ): Promise<Readonly<Agent> | undefined>;
   compareAndSetActiveRevision(
     namespaceId: string,
@@ -347,6 +357,44 @@ export interface ConfigurationRepository extends ConfigurationReadRepository {
     secretBindings?: SecretBindings,
   ): Promise<Readonly<ConfigurationOwnership> | undefined>;
   deleteConfiguration(namespaceId: string, configurationId: string): Promise<boolean>;
+}
+
+export interface ConnectionTemplateReadRepository {
+  listOAuthClientCleanups(limit: number): Promise<readonly string[]>;
+  findConnectionTemplate(templateId: string): Promise<Readonly<ConnectionTemplate> | undefined>;
+  countNamespaceConnectionTemplates(namespaceId: string): Promise<number>;
+  listConnectionTemplates(): Promise<readonly Readonly<ConnectionTemplate>[]>;
+  findOAuthConnectionTemplateVersion(
+    templateId: string,
+    version: number,
+  ): Promise<Readonly<OAuthConnectionTemplateVersion> | undefined>;
+  listOAuthClients(): Promise<readonly Readonly<StoredOAuthClient>[]>;
+  countNamespaceOAuthClients(namespaceId: string): Promise<number>;
+  findOAuthClient(registrationId: string): Promise<Readonly<StoredOAuthClient> | undefined>;
+}
+
+export interface ConnectionTemplateRepository extends ConnectionTemplateReadRepository {
+  lockOAuthClient(id: string): Promise<Readonly<StoredOAuthClient> | undefined>;
+  lockOAuthClientForCleanup(
+    id: string,
+    dueOnly: boolean,
+  ): Promise<Readonly<StoredOAuthClient> | undefined>;
+  setOAuthClientCleanup(id: string, cleanupAfter: string | null): Promise<void>;
+  lockConnectionTemplate(templateId: string): Promise<Readonly<ConnectionTemplate> | undefined>;
+  createOAuthClient(
+    registration: StoredOAuthClient,
+    cleanupAfter?: string,
+  ): Promise<Readonly<StoredOAuthClient>>;
+  /** False while a connection template version still names the registration. */
+  deleteOAuthClient(registrationId: string, retainForCleanup?: boolean): Promise<boolean>;
+  /** Inserts the template and its first version together. */
+  createConnectionTemplate(template: ConnectionTemplate): Promise<Readonly<ConnectionTemplate>>;
+  /** Renames, or appends `version` as the next version and makes it current. */
+  updateConnectionTemplate(
+    templateId: string,
+    changes: { readonly displayName?: string; readonly version?: OAuthConnectionTemplateVersion },
+  ): Promise<Readonly<ConnectionTemplate> | undefined>;
+  deleteConnectionTemplate(templateId: string): Promise<boolean>;
 }
 
 export interface PresetReadRepository {
@@ -618,6 +666,16 @@ function normalizedPlugins(plugins?: PluginDesiredState): PluginDesiredState | u
   return normalizePluginDesiredState(plugins, invalidPluginState);
 }
 
+function assertPluginDriverSelection(
+  driver: PluginDriverIdentity | undefined,
+  plugins: PluginDesiredState | undefined,
+): void {
+  const hasPlugins = Object.keys(plugins ?? {}).length > 0;
+  if (hasPlugins ? !validPluginDriverIdentity(driver) : driver !== undefined) {
+    throw new ScopeViolationError("Only a nonempty plugin selection has a Plugin Driver owner.");
+  }
+}
+
 function normalizedPluginApprovers(approvers?: PluginApprovers): PluginApprovers | undefined {
   return normalizePluginApprovers(approvers, invalidPluginState);
 }
@@ -877,7 +935,7 @@ export function validCredentialSourceSnapshots(value: unknown): boolean {
   if (value === undefined) {
     return true;
   }
-  if (!Array.isArray(value) || value.length === 0 || value.length > 8) {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_AGENT_CREDENTIAL_SOURCES) {
     return false;
   }
   const seen = new Set<string>();
@@ -1041,6 +1099,7 @@ export interface PlatformReadView {
   readonly installations: InstallationReadRepository;
   readonly namespaces: NamespaceReadRepository;
   readonly configurations: ConfigurationReadRepository;
+  readonly connectionTemplates: ConnectionTemplateReadRepository;
   readonly presets: PresetReadRepository;
   readonly secrets: SecretReadRepository;
   readonly credentialSources: CredentialSourceReadRepository;
@@ -1061,6 +1120,7 @@ export interface PlatformUnitOfWork extends PlatformReadView {
   readonly installations: InstallationRepository;
   readonly namespaces: NamespaceRepository;
   readonly configurations: ConfigurationRepository;
+  readonly connectionTemplates: ConnectionTemplateRepository;
   readonly presets: PresetRepository;
   readonly secrets: SecretRepository;
   readonly credentialSources: CredentialSourceRepository;
@@ -1115,6 +1175,12 @@ interface PlatformSnapshot {
   installation: Readonly<Installation> | undefined;
   readonly namespaces: Map<string, Readonly<PersistedNamespace>>;
   readonly configurations: Map<string, Readonly<ConfigurationOwnership>>;
+  readonly connectionTemplates: Map<string, Readonly<ConnectionTemplate>>;
+  readonly clientRegistrations: Map<
+    string,
+    Readonly<StoredOAuthClient> & { cleanupAfter?: string }
+  >;
+  readonly oauthConnectionTemplateVersions: Map<string, Readonly<OAuthConnectionTemplateVersion>>;
   readonly presets: Map<string, Readonly<Preset>>;
   readonly secrets: Map<string, Readonly<Secret>>;
   readonly credentialSources: Map<string, Readonly<CredentialSource>>;
@@ -1236,6 +1302,9 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
         storedCopy(configuration),
       ]),
     ),
+    connectionTemplates: new Map(snapshot.connectionTemplates),
+    clientRegistrations: new Map(snapshot.clientRegistrations),
+    oauthConnectionTemplateVersions: new Map(snapshot.oauthConnectionTemplateVersions),
     presets: new Map(Array.from(snapshot.presets, ([key, preset]) => [key, storedCopy(preset)])),
     secrets: new Map(Array.from(snapshot.secrets, ([key, secret]) => [key, storedCopy(secret)])),
     egressRejected: new Set(snapshot.egressRejected),
@@ -1836,6 +1905,197 @@ function repositories(
     const preset = snapshot.presets.get(agentKey(namespaceId, presetId));
     return preset === undefined ? undefined : immutableCopy(preset);
   };
+  const versionKey = (templateId: string, version: number) => `${templateId}\u0000${version}`;
+  const findConnectionTemplate: ConnectionTemplateReadRepository["findConnectionTemplate"] = async (
+    templateId,
+  ) => {
+    const template = snapshot.connectionTemplates.get(templateId);
+    return template === undefined ? undefined : immutableCopy(template);
+  };
+  const assertTemplateVersion = (
+    template: ConnectionTemplate,
+    version: OAuthConnectionTemplateVersion,
+  ) => {
+    validateConnectionTemplateDestinations(version);
+    if (!version.oauthClientId) {
+      return;
+    }
+    const registration = snapshot.clientRegistrations.get(version.oauthClientId);
+    if (
+      !registration ||
+      registration.cleanupAfter !== undefined ||
+      (registration.namespaceId !== undefined &&
+        registration.namespaceId !== template.namespaceId) ||
+      registration.issuer !== version.issuer ||
+      registration.tokenUrl !== version.tokenUrl ||
+      (version.revocationUrl !== undefined &&
+        registration.revocationUrl !== version.revocationUrl) ||
+      version.templateId !== template.id
+    ) {
+      throw new ResourceStateConflictError(
+        "The OAuth client registration must match the template scope and client.",
+      );
+    }
+  };
+  const connectionTemplates: ConnectionTemplateRepository = {
+    findConnectionTemplate,
+    countNamespaceConnectionTemplates: async (namespaceId) =>
+      Array.from(snapshot.connectionTemplates.values()).filter(
+        (template) => template.namespaceId === namespaceId,
+      ).length,
+    listConnectionTemplates: async () =>
+      Object.freeze(
+        Array.from(snapshot.connectionTemplates.values())
+          .sort((a, b) => a.id.localeCompare(b.id))
+          .map((template) => immutableCopy(template)),
+      ),
+    findOAuthConnectionTemplateVersion: async (templateId, version) => {
+      const found = snapshot.oauthConnectionTemplateVersions.get(versionKey(templateId, version));
+      return found === undefined ? undefined : immutableCopy(found);
+    },
+    listOAuthClients: async () =>
+      Object.freeze(
+        Array.from(snapshot.clientRegistrations.values())
+          .filter((row) => row.cleanupAfter === undefined)
+          .map((row) => immutableCopy(row))
+          .sort((a, b) => a.id.localeCompare(b.id)),
+      ),
+    countNamespaceOAuthClients: async (namespaceId) =>
+      Array.from(snapshot.clientRegistrations.values()).filter(
+        (client) => client.namespaceId === namespaceId,
+      ).length,
+    findOAuthClient: async (id) => {
+      const row = snapshot.clientRegistrations.get(id);
+      return row?.cleanupAfter === undefined ? row : undefined;
+    },
+    lockOAuthClient: async (id) => connectionTemplates.findOAuthClient(id),
+    listOAuthClientCleanups: async (limit) =>
+      [...snapshot.clientRegistrations.values()]
+        .filter((row) => row.cleanupAfter && Date.parse(row.cleanupAfter) <= Date.now())
+        .sort((a, b) => a.cleanupAfter!.localeCompare(b.cleanupAfter!))
+        .slice(0, limit)
+        .map((row) => row.id),
+    lockOAuthClientForCleanup: async (id, dueOnly) => {
+      const row = snapshot.clientRegistrations.get(id);
+      return row?.cleanupAfter && (!dueOnly || Date.parse(row.cleanupAfter) <= Date.now())
+        ? row
+        : undefined;
+    },
+    setOAuthClientCleanup: async (id, cleanupAfter) => {
+      const row = snapshot.clientRegistrations.get(id);
+      if (row) {
+        const { cleanupAfter: _old, ...client } = row;
+        snapshot.clientRegistrations.set(
+          id,
+          immutableCopy({ ...client, ...(cleanupAfter && { cleanupAfter }) }),
+        );
+      }
+    },
+    lockConnectionTemplate: findConnectionTemplate,
+    createOAuthClient: async (registration, cleanupAfter) => {
+      assertInitialized(snapshot);
+      if (
+        (registration.tokenEndpointAuthMethod === "none") !==
+          (registration.secretDriverId === undefined) ||
+        registration.secretDriverId === ""
+      ) {
+        throw new ResourceConflictError(
+          "Only confidential OAuth clients have a private Secret Driver.",
+        );
+      }
+      if (
+        registration.namespaceId !== undefined &&
+        !snapshot.namespaces.has(registration.namespaceId)
+      ) {
+        throw new ResourceStateConflictError("The client registration Namespace does not exist.");
+      }
+      // The issuer and client ID identify a registration within the template's scope.
+      if (
+        snapshot.clientRegistrations.has(registration.id) ||
+        Array.from(snapshot.clientRegistrations.values()).some(
+          (existing) =>
+            existing.namespaceId === registration.namespaceId &&
+            existing.issuer === registration.issuer &&
+            existing.clientId === registration.clientId,
+        )
+      ) {
+        throw new ResourceConflictError("The OAuth client is already registered.");
+      }
+      const saved = immutableCopy(registration);
+      snapshot.clientRegistrations.set(
+        saved.id,
+        immutableCopy({ ...registration, ...(cleanupAfter && { cleanupAfter }) }),
+      );
+      return immutableCopy(saved);
+    },
+    deleteOAuthClient: async (registrationId, retainForCleanup) => {
+      if (
+        Array.from(snapshot.oauthConnectionTemplateVersions.values()).some(
+          (version) => version.oauthClientId === registrationId,
+        )
+      ) {
+        return false;
+      }
+      if (retainForCleanup) {
+        await connectionTemplates.setOAuthClientCleanup(registrationId, new Date().toISOString());
+        return snapshot.clientRegistrations.has(registrationId);
+      }
+      return snapshot.clientRegistrations.delete(registrationId);
+    },
+    createConnectionTemplate: async (template) => {
+      assertInitialized(snapshot);
+      if (snapshot.connectionTemplates.has(template.id)) {
+        throw new ResourceConflictError(
+          "The server generated an existing connection template identity.",
+        );
+      }
+      assertTemplateVersion(template, template.current);
+      const saved = immutableCopy(template);
+      snapshot.connectionTemplates.set(saved.id, saved);
+      snapshot.oauthConnectionTemplateVersions.set(
+        versionKey(saved.id, saved.current.version),
+        saved.current,
+      );
+      return immutableCopy(saved);
+    },
+    updateConnectionTemplate: async (templateId, changes) => {
+      const current = snapshot.connectionTemplates.get(templateId);
+      if (current === undefined) {
+        return undefined;
+      }
+      if (changes.version !== undefined) {
+        assertTemplateVersion(current, changes.version);
+        // Mirrors the database: versions advance by one and never change.
+        if (changes.version.version !== current.current.version + 1) {
+          throw new ResourceStateConflictError("Connection template versions advance by one.");
+        }
+        snapshot.oauthConnectionTemplateVersions.set(
+          versionKey(templateId, changes.version.version),
+          immutableCopy(changes.version),
+        );
+      }
+      const saved = immutableCopy({
+        ...current,
+        ...(changes.displayName === undefined ? {} : { displayName: changes.displayName }),
+        ...(changes.version === undefined ? {} : { current: changes.version }),
+      });
+      snapshot.connectionTemplates.set(templateId, saved);
+      return immutableCopy(saved);
+    },
+    deleteConnectionTemplate: async (templateId) => {
+      if (!snapshot.connectionTemplates.has(templateId)) {
+        return false;
+      }
+      snapshot.connectionTemplates.delete(templateId);
+      for (const key of Array.from(snapshot.oauthConnectionTemplateVersions.keys())) {
+        if (key.startsWith(`${templateId}\u0000`)) {
+          snapshot.oauthConnectionTemplateVersions.delete(key);
+        }
+      }
+      return true;
+    },
+  };
+
   const presets: PresetRepository = {
     findPreset,
     listPresets: async (namespaceId) =>
@@ -2861,6 +3121,7 @@ function repositories(
         throw new ScopeViolationError("The Agent Backend identity is invalid.");
       }
       const plugins = normalizedPlugins(agent.plugins);
+      assertPluginDriverSelection(agent.pluginDriver, plugins);
       const pluginApprovers = normalizedPluginApprovers(agent.pluginApprovers);
       const repositoryBindings = normalizedRepositoryBindings(agent.repositoryBindings);
       const repositoryAccess = normalizedRepositoryAccess(
@@ -3003,6 +3264,7 @@ function repositories(
       nextRepositoryAccess,
       nextCredentialSources,
       gatewayManagedMode,
+      nextPluginDriver,
     ) => {
       const current = await agents.findAgent(namespaceId, agentId);
       if (!current) {
@@ -3041,6 +3303,9 @@ function repositories(
       assertHarnessCredentialSourceListed(association, agentCredentialSources);
       const nextBackendId = backendId === undefined ? current.backendId : backendId;
       const plugins = nextPlugins === undefined ? current.plugins : normalizedPlugins(nextPlugins);
+      const pluginDriver =
+        nextPluginDriver === undefined ? current.pluginDriver : (nextPluginDriver ?? undefined);
+      assertPluginDriverSelection(pluginDriver, plugins);
       const pluginApprovers =
         nextPluginApprovers === undefined
           ? current.pluginApprovers
@@ -3062,6 +3327,7 @@ function repositories(
       const {
         repositoryAccess: _currentRepositoryAccess,
         plugins: _currentPlugins,
+        pluginDriver: _currentPluginDriver,
         pluginApprovers: _currentPluginApprovers,
         repositoryBindings: _currentRepositoryBindings,
         credentialSources: _currentCredentialSources,
@@ -3073,6 +3339,7 @@ function repositories(
         backendId: nextBackendId,
         executionMode: executionMode ?? current.executionMode,
         gatewayManagedMode: gatewayManagedMode ?? current.gatewayManagedMode,
+        ...(pluginDriver === undefined ? {} : { pluginDriver }),
         harnessAuth: association,
         ...(agentCredentialSources === undefined || agentCredentialSources.length === 0
           ? {}
@@ -3581,6 +3848,7 @@ function repositories(
     installations,
     namespaces,
     configurations,
+    connectionTemplates,
     presets,
     secrets,
     credentialSources,
@@ -3871,6 +4139,9 @@ export class InMemoryPlatformState implements PlatformStateStore {
     installation: undefined,
     namespaces: new Map(),
     configurations: new Map(),
+    connectionTemplates: new Map(),
+    clientRegistrations: new Map(),
+    oauthConnectionTemplateVersions: new Map(),
     presets: new Map(),
     secrets: new Map(),
     credentialSources: new Map(),

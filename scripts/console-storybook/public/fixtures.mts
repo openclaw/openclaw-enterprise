@@ -1,3 +1,4 @@
+import { createConnectionTemplateFixture } from "./connection-template-fixture.mts";
 import { createNetworkPolicyFixture } from "./network-policy-fixture.mts";
 import { createPresetFixtures } from "./preset-fixture.mts";
 import type {
@@ -37,6 +38,7 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     "pluginCapabilities" | "pluginDiscoveryCredential"
   > &
   Parameters<typeof installationDriverConfigurations>[0] & {
+    oauthCatalog?: string;
     namespaceRechecks?: readonly (string | number)[];
     namespaceName?: string;
     namespaceStatus?: string;
@@ -384,6 +386,12 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
     credentials,
     deploymentError: (checkedAt) => candidateDeploymentError(scenario, checkedAt),
   });
+  const templates = createConnectionTemplateFixture(
+    scenario.oauthCatalog,
+    createdAt,
+    namespaceId,
+    nextId,
+  );
   const presets = createPresetFixtures(scenario, namespaceId, auth);
   const networkPolicy = createNetworkPolicyFixture(scenario, {
     namespaceId,
@@ -426,6 +434,10 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
     if (path === "/api/auth/sign-out" && method === "POST") {
       signedIn = false;
       return response({});
+    }
+    const templateResponse = templates(path, method, body);
+    if (templateResponse) {
+      return templateResponse;
     }
     if (path === "/installation/driver-configurations" && method === "GET") {
       return response(installationDriverConfigurations(scenario));

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
 updated: 2026-11-04
-last_updated_session: authoring-run/a8b6b1f4-19b7-48f0-bb5b-f86a5dcf62a9
+last_updated_session: authoring-run/4dc828f0-0acc-4001-b6e2-3f57824db925
 ---
 
 # Compose development flow
@@ -165,8 +165,7 @@ Meanwhile, `internal/occdev/concurrent.go:concurrently` imports the controller
 image, then checks network isolation while importing PostgreSQL and, when
 configured, repository images. The first independent failure cancels the others
 and is reported. A sandbox refusal or failed check rolls back the owned cluster
-before Installation setup or credential delivery. OpenShell retains its
-routing-controller installation, then runtime-import order. Both paths install
+before Installation setup or credential delivery. Both paths install
 the platform only after the check, then gate on authenticated readiness.
 
 `internal/occdev/kubernetes.go:importDevelopmentImage` exports each selected
@@ -177,7 +176,16 @@ resolves the imported digest from containerd, rejects missing or ambiguous
 results, and removes the archive. Tagged builds share this path.
 `internal/occdev/registry_k3d.go:pullDevelopmentImage` pulls digest-pinned
 `OCC_DEVELOPMENT_IMAGE_REGISTRY_CONTAINER` images instead; `state.json` records
-the registry attachment for `occ dev down` to detach.
+the registry attachment for `occ dev down` to detach. Kubernetes-only uses its
+owned k3d network; Compose uses its exact recorded Compose network and selects
+only a runtime image with the current checkout label. Both detach after imports
+and on rollback, including recovery after interrupted startup.
+For Kubernetes-only OpenShell, runtime import follows PostgreSQL/repository imports
+in their existing concurrent branch. OpenShell asset preparation follows those
+imports while network probes finish. This installs the Agent Sandbox controller
+and CRDs and imports images; platform installation and credential delivery still
+wait for every branch, including successful network verification. Image builds
+remain serial, and the large runtime import precedes smaller OpenShell assets.
 
 ### 5. Prepare the optional OpenShell development profile
 
@@ -310,6 +318,8 @@ describes accepted selectors.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 20:46: Overlap selected-image setup while retaining joined readiness and rollback gates. (authoring-run/4dc828f0-0acc-4001-b6e2-3f57824db925 - 7951de4edf7abadc02725484771bcd6207ed9b9d)
 
 - 2026-11-04 08:53: Remove retired local authority provisioning and retain authenticated Gateway readiness and recorded-state cleanup. (authoring-run/a8b6b1f4-19b7-48f0-bb5b-f86a5dcf62a9 - d0421ca03868db643faa8ba2d13e784fc637cc2e)
 

@@ -56,7 +56,9 @@ token, change its repository or permissions, or grant access to a model.
 Enable `allowStandingApprovals` in the Installation's repository registry and
 `allowStandingApproval` for that repository in the Agent's Namespace. Upgrade the API, worker,
 receipt owner and credential service together before enabling this policy. A deployment admitted
-with a finite grant keeps its original deadline.
+with a finite grant keeps its original deadline. This includes `github-repository`:
+select one repository and review its explicit permission map before approving.
+Standing approval is unavailable when the Agent selects multiple repositories.
 
 1. Read `GET …/agents/{agentId}/repository-approval-scopes`. Review the resolved repository,
    permissions and allowed operations, and retain its `scopeFingerprint`.

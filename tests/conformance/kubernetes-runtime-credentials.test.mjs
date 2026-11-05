@@ -28,7 +28,7 @@ import { readJsonLinesSync } from "../helpers/json-lines.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 
-const { AGENT_RUNTIME_ENTRYPOINT } = runtimeEntrypoints;
+const { COMPUTE_AGENT_RUNTIME_ENTRYPOINT: AGENT_RUNTIME_ENTRYPOINT } = runtimeEntrypoints;
 const namespace = Object.freeze({
   id: "ns_runtime_00000000-0000-4000-8000-000000000001",
   name: "Runtime credential tenant",

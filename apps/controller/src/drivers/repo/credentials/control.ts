@@ -47,8 +47,7 @@ export function createControlAdmission(
   service: SessionControl & Pick<CredentialServiceOwner, "prepareOpen">,
   config: ServiceConfig,
   clock: Clock,
-  durableRequired: boolean,
-  preparedAuthority = false,
+  preparedAuthority: boolean,
 ) {
   const records = new Map<string, AdmissionRecord>();
   const sessions = new Map<string, string>();
@@ -58,7 +57,7 @@ export function createControlAdmission(
   >();
   // Fences that sweep retries for unfenced reservations; an open of the same id waits on them.
   const refencing = new Map<string, Promise<boolean>>();
-  const journal = durableRequired
+  const journal = preparedAuthority
     ? new RepositoryReceiptClient(config.gateway.controlSocket, randomUUID())
     : undefined;
   let disposed = false;
@@ -212,6 +211,9 @@ export function createControlAdmission(
     }
     const recoverOnly = input.recoverOnly === true;
     const snapshot = snapshotSessionInput(input);
+    if (recoverOnly && !isBoundInput(snapshot)) {
+      throw new Error("INVALID_ADMISSION");
+    }
     const admittedInput = isBoundInput(snapshot)
       ? snapshot
       : Object.freeze({
@@ -352,25 +354,6 @@ export function createControlAdmission(
       throw new Error("ADMISSION_MISSING");
     }
     const forgetAt = clock.monotonicNow() + Math.max(0, admissionWindowMs - age);
-    if (recoverOnly) {
-      const record: AdmissionRecord = {
-        input: admittedInput,
-        sessionId: undefined,
-        forgetAt,
-        durable: false,
-        ready: Promise.resolve(),
-        terminal: undefined,
-        unbound: false,
-        saved: false,
-        writing: undefined,
-        cancel: () => {},
-      };
-      records.set(id, record);
-      record.cancel = clock.schedule(Math.max(0, admissionWindowMs - age), () =>
-        records.delete(id),
-      );
-      throw new Error("ADMISSION_MISSING");
-    }
     opened ??= service.open(admittedInput);
     const record: AdmissionRecord = {
       input: admittedInput,

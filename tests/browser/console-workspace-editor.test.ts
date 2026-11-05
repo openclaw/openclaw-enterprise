@@ -1,5 +1,6 @@
 /// <reference lib="es2025.regexp" />
 
+import { waitForLiveControls } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -15,9 +16,9 @@ import { WORKSPACE_DEFAULTS } from "../../packages/contracts/src/workspace-defau
 import { proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
+  deploymentStatusResponse,
   apiRequests,
   detailUrl,
-  deploymentStatusResponse,
   expectNoText,
   holdRequests,
   login,
@@ -26,18 +27,20 @@ import {
   nonAuthWriteRequests,
   pathRequests,
   settlePageRequests,
-  trackSettledFetches,
   waitForCondition,
   waitForEnabled,
-  waitForIdleFetches,
   waitForInputValue,
+} from "./console-agents-browser-helpers.ts";
+
+import {
+  trackSettledFetches,
+  waitForIdleFetches,
   waitForSettledFetches,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-fetch-accounting.ts";
 import {
   deploymentRecordUrl,
   expectDeploymentOutcome,
-} from "./console-deployment-activity-helpers.mjs";
-import { waitForLiveControls } from "./console-agents-test-support.mjs";
+} from "./console-deployment-activity-helpers.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
   callerDenied,

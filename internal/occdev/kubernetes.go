@@ -443,8 +443,8 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 		compute := config["drivers"].(map[string]any)["compute"].(map[string]any)["configuration"].(map[string]any)
 		compute["runtime"].(map[string]any)["codexSeccompProfile"] = codexSeccompProfile
 	}
-	config["drivers"].(map[string]any)["plugin"] = map[string]any{
-		"id": "codex-plugin", "configuration": map[string]any{"catalogSource": "openai-curated"},
+	config["drivers"].(map[string]any)["plugin"] = []map[string]any{
+		{"id": "codex-plugin", "configuration": map[string]any{"catalogSource": "openai-curated"}},
 	}
 	if s.SandboxDriver == "none" {
 		config["presets"] = map[string]any{"includeDefaults": true}
@@ -545,8 +545,6 @@ func openShellInstallationConfiguration(s *developmentState, workspaceResources 
 	return map[string]any{
 		"id": openShellSandboxID,
 		"configuration": map[string]any{
-			// Keep the existing delay before the first Gateway uses the route.
-			"startupDelayMs": 30000,
 			"gateway": map[string]any{
 				"workspaceMode": "operator",
 				"operatorNamespaceLabels": map[string]string{

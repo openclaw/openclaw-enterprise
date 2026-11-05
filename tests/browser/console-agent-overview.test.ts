@@ -19,12 +19,14 @@ import {
   createRuntimeLogComputeDriver,
 } from "../helpers/runtime-logs.mjs";
 import {
+  deploymentStatusResponse,
+  persistedDeploymentError,
+  routeFailedDeployment,
   AGENT_READ,
   apiRequests,
   asksBeforeUnload,
   consoleViewports,
   denyRevisionRead,
-  deploymentStatusResponse as legacyDeploymentStatusResponse,
   detailUrl,
   fileBrowser,
   grantSecretOperate,
@@ -33,20 +35,21 @@ import {
   nativeValues,
   newPage,
   nextFrames,
-  persistedDeploymentError as legacyPersistedDeploymentError,
   recordLayoutShifts,
-  routeFailedDeployment,
   routeOneVersionPerPage,
-  settledFetches as legacySettledFetches,
   settledView,
   takeLayoutShifts,
-  trackSettledFetches,
   waitForChosenVersion,
   waitForCondition,
   waitForEnabled,
+} from "./console-agents-browser-helpers.ts";
+
+import {
+  settledFetches as legacySettledFetches,
+  trackSettledFetches,
   waitForIdleFetches,
   waitForSettledFetches,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-fetch-accounting.ts";
 import {
   deploymentDetailsOpen as legacyDeploymentDetailsOpen,
   deploymentRecordUrl,
@@ -54,8 +57,8 @@ import {
   expectVersionRecord as legacyExpectVersionRecord,
   openDeploymentActivity as legacyOpenDeploymentActivity,
   showDeploymentTab,
-} from "./console-deployment-activity-helpers.mjs";
-import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
+} from "./console-deployment-activity-helpers.ts";
+import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 
 import {
   CONFIGURATION_EDITS_PENDING,
@@ -70,21 +73,7 @@ import {
   NO_TEST_REQUEST,
 } from "../helpers/refusal-text.mjs";
 
-type DeploymentResponseOptions = {
-  status: string;
-  error?: ReturnType<typeof persistedDeploymentError> | null;
-  attempt?: { at: Date; code: string };
-  nextAttemptAt?: string;
-};
-function isCallable(value: unknown): value is (...args: unknown[]) => unknown {
-  return typeof value === "function";
-}
-function deploymentStatusResponse(revision: Revision, options: DeploymentResponseOptions) {
-  const respond: unknown = legacyDeploymentStatusResponse;
-  assert.ok(isCallable(respond));
-  const response = record(respond(revision, options));
-  return { json: record(response.json) };
-}
+type DeploymentResponseOptions = Parameters<typeof deploymentStatusResponse>[1];
 
 const versionChooser = (scope: Page | Locator) =>
   scope.getByLabel("Viewing version", { exact: true });
@@ -119,12 +108,6 @@ declare global {
 async function requiredAnswer(answer: Promise<Parameters<Route["fulfill"]>[0]> | null) {
   assert.ok(answer);
   return answer;
-}
-
-function persistedDeploymentError(...args: Parameters<typeof legacyPersistedDeploymentError>) {
-  const error = legacyPersistedDeploymentError(...args);
-  assert.ok(error);
-  return error;
 }
 
 // Narrow raw responses and domain-specific values at their usages.
@@ -179,6 +162,54 @@ async function agentPage(
   const { page } = await newPage(t, fixture, { browser });
   return { fixture, namespace, agent, page };
 }
+
+test("an individual Agent keeps its fallback heading through a failed read and keyboard Retry", async (t) => {
+  const { fixture, namespace, agent, page } = await agentPage(
+    t,
+    "Heading recovery",
+    "Recovered Agent",
+  );
+  const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+  const waitForAgentRead = (): ReturnType<Page["waitForResponse"]> =>
+    page.waitForResponse(
+      (response) => response.url() === agentUrl && response.request().method() === "GET",
+    );
+  const requests = apiRequests(page, fixture.origin);
+  // Hold only the exact Agent read; the Controller still handles session and Namespace access.
+  const first = await holdRequests(t, page, agentUrl, {
+    once: true,
+    method: "GET",
+    fulfill: apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Service unavailable."),
+  });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await first.requested;
+  const heading = page.getByRole("heading", { level: 1 });
+  assert.equal(await heading.textContent(), "Agent details");
+  assert.equal(await page.getByRole("heading", { name: agent.name, exact: true }).count(), 0);
+
+  const failed = waitForAgentRead();
+  first.release();
+  assert.equal((await failed).status(), 503);
+  await page.getByText("Request unavailable", { exact: true }).waitFor();
+  assert.equal(await heading.textContent(), "Agent details");
+
+  // Keyboard Retry must focus the neutral destination while waiting, then the real name.
+  const retry = await holdRequests(t, page, agentUrl, { once: true, method: "GET" });
+  await page.getByRole("button", { name: "Retry", exact: true }).focus();
+  await page.keyboard.press("Enter");
+  await retry.requested;
+  await page.waitForFunction(() => globalThis.document.activeElement?.tagName === "H1");
+  assert.equal(await heading.textContent(), "Agent details");
+  const recovered = waitForAgentRead();
+  retry.release();
+  assert.equal((await recovered).status(), 200);
+  await page.getByRole("heading", { level: 1, name: agent.name, exact: true }).waitFor();
+  assert.equal(await heading.evaluate((node) => node.matches(":focus")), true);
+  assert.deepEqual(
+    requests.filter((request) => !["GET", "HEAD"].includes(request.method)),
+    [],
+  );
+});
 
 // A runtime log Compute Driver with the Agent runtime log API enabled.
 function runtimeLogs() {
@@ -912,7 +943,7 @@ test("Agent detail keeps Stop when its Agent reread fails after a first deployme
   const { fixture, namespace, agent, page } = await agentPage(t, "Reread fails", "Reread fails");
   const first = await fixture.deployAgent(namespace.id, agent.id);
   const recordUrl = deploymentRecordUrl(fixture, namespace.id, agent.id, first.id);
-  let status = "queued";
+  let status: DeploymentResponseOptions["status"] = "queued";
   await page.route(recordUrl, (route) =>
     route.fulfill(deploymentStatusResponse(first, { status })),
   );
@@ -2044,6 +2075,7 @@ test("Every failed deployment code has its own message and next step", async () 
       "INVALID_REVISION_OWNER",
       "INVALID_TARGET",
       "KUBERNETES_SECRET_WRITE_FORBIDDEN",
+      "PLUGIN_DRIVER_MISMATCH",
       "REPOSITORY_BINDING_UNAVAILABLE",
       "REPOSITORY_GIT_PROFILE_UNSUPPORTED",
       "REPOSITORY_GIT_SENDER_UNQUALIFIED",
@@ -2507,12 +2539,17 @@ test("a late first deployment read moves nothing above the version tabs", async 
   assert.equal(await freshnessNote.evaluate((node) => node.checkVisibility()), true);
 
   const unavailable = apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Service unavailable.");
-  for (const c of [
+  const outcomes: {
+    status: DeploymentResponseOptions["status"] | "read error";
+    label: string;
+    stillOn: string[];
+  }[] = [
     { status: "succeeded", label: "Completed", stillOn: ["draft", "version"] },
     { status: "running", label: "In progress", stillOn: ["draft", "version"] },
     { status: "failed", label: "Failed", stillOn: [] },
     { status: "read error", label: "Unavailable", stillOn: ["draft"] },
-  ]) {
+  ];
+  for (const c of outcomes) {
     for (const view of ["draft", "version"]) {
       const name = `${c.status} on the ${view}`;
       let respond: ((value: Parameters<Route["fulfill"]>[0]) => void) | undefined;
@@ -3110,7 +3147,7 @@ test("a deploy's details keep their queued height when its first claim starts", 
     { width: 1440, height: 900 },
     "Claimed",
   );
-  let record = { status: "queued" };
+  let record: DeploymentResponseOptions = { status: "queued" };
   await page.route(recordUrl, (route) => route.fulfill(deploymentStatusResponse(pending, record)));
   await open("Queued");
   const now = await page.evaluate(() => Date.now());

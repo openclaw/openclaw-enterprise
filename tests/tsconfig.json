@@ -57,7 +57,8 @@
     "fixtures/repository-credentials/module-guard.ts",
     "fixtures/repository-credentials/installation-module-guard.ts",
     "fixtures/repository-credentials/planning.ts",
-    "helpers/protected-static-secret-read.ts"
+    "helpers/protected-static-secret-read.ts",
+    "../scripts/observe-worker-terminations.ts"
   ],
   "references": [
     {

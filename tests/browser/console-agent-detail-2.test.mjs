@@ -17,11 +17,11 @@ import {
   pathRequests,
   waitForCondition,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import {
   deploymentRecordUrl,
   expectDeploymentOutcome,
-} from "./console-deployment-activity-helpers.mjs";
+} from "./console-deployment-activity-helpers.ts";
 
 import {
   expectNativeAdminHidden,
@@ -29,7 +29,7 @@ import {
   assertRevisionUrl,
   nativeAdminComputeDriver,
   nativeAdminValues,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
 import { STOP_REQUESTED, VERSION_READ_DENIED_HEADING } from "../helpers/refusal-text.mjs";
 import { restrict } from "../helpers/iam-grants.mjs";
 import {

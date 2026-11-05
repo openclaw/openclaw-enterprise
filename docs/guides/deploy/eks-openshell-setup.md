@@ -1,10 +1,15 @@
 ---
 tags: [human_verified, nolimit]
+# Backfilled from the verification tag recorded in a66a9cdfd.
+last_verified: "2026-11-02"
 ---
 
 # Set up OCE on Amazon EKS
 
 Install OpenClaw Enterprise (OCE), configure browser access, on Amazon Elastic Kubernetes Service (EKS). Start in the matching OCE checkout on the operator’s laptop. Use Bash, AWS CLI, version-compatible kubectl, Helm, OpenSSL, jq, Node.js 24.22.1 or newer, Python 3, yq v4, PostgreSQL client tools and the [OCC CLI](../cli.md). Image selection needs Git and Docker; builds also need Buildx. Select compatible source, chart and image revisions.
+
+This OpenShell workflow supports development and evaluation.
+[OpenShell production qualification remains incomplete](../../reference/drivers/openshell-sandbox.md#remaining-qualification-work).
 
 After installation, [deploy your first Agent](deploy-first-agent.md). Git and plugins are optional.
 
@@ -146,6 +151,22 @@ kubectl --context "$CONTEXT" get gatewayclass eg -o json |
   jq -e '.spec.controllerName=="gateway.envoyproxy.io/gatewayclass-controller"'
 kubectl --context "$CONTEXT" wait gatewayclass/eg --for=condition=Accepted --timeout=3m
 ```
+
+### Check the prepared resources
+
+Run [prerequisite diagnosis](prerequisite-diagnosis.md) after preparing the target
+namespace and controllers. Save its plan as `$RUN_DIR/prerequisites.json`, using
+`$KUBECONFIG`, `$CONTEXT`, `$PLATFORM_NS`, the installed controller names, and the
+reviewed API/webhook CIDRs above. Set `peakAdditional` from the candidate chart
+and put the intended cluster ARN in `eks.clusterArn`.
+
+```bash
+node scripts/diagnose-kubernetes-prerequisites.mjs --config "$RUN_DIR/prerequisites.json"
+```
+
+Resolve failed and unknown checks before installing. Matching address inventory
+does not prove that deployed NetworkPolicies or admission webhooks work; retain
+the network and certificate checks above.
 
 <a id="configure-the-protected-copies-and-install"></a>
 
