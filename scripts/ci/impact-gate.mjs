@@ -15,6 +15,7 @@ const matrixLanes = [
   "images-runtime-startup-3",
   "k3d-fixture-configuration",
   "k3d-fixture-state",
+  "k3d-fixture-network",
   "k3d-fixture-plugins",
   "k3d-observability",
   "logging-collector",

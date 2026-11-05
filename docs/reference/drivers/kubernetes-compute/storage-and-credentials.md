@@ -108,9 +108,10 @@ State on this claim outlives those upgrades. Before OpenClaw starts, the Gateway
 wrapper runs `openclaw doctor --fix --non-interactive` once, with the
 configuration read-only, when the shared state database or an agent database
 uses an older schema than the pinned OpenClaw; Doctor keeps a
-`.pre-startup-migration-<id>.bak` copy beside each. A database still older
-afterwards holds the Gateway unready with check `state-migration`
-(`RUNTIME_STARTUP_FAILED`).
+`.pre-startup-migration-<id>.bak` copy beside each. Outdated schemas or refused
+maintenance hold the Gateway unready with check `state-migration`
+(`RUNTIME_STARTUP_FAILED`). A marker beside the retained shared database requires retry after Pod replacement,
+even if schemas already advanced.
 
 ## Harness storage
 
@@ -131,7 +132,9 @@ recreates ownership and moves entries back; conflicting names remain in
 
 Node identity survives replacement. Before setup or connection,
 the Harness runs [Gateway](#gateway-storage) Doctor with the node environment
-for older databases; a still-old database holds at `state-migration`.
+for older databases; incomplete maintenance holds at `state-migration`.
+Doctor and the node stage SQLite under private `/tmp` children, avoiding
+group-writable persistent ancestors without changing state permissions.
 
 Setup expires after ten minutes. `--pair-or-reconnect` tries fresh setup;
 only `AUTH_BOOTSTRAP_TOKEN_INVALID` permits saved-token retry. Expired codes
@@ -264,12 +267,10 @@ Stop and retirement wait for the workload to stop, then delete its projection
 and ConfigMaps for that Agent revision by UID. Canonical sources survive retirement; Agent deletion removes transport/password.
 Account and OCC Secret lifecycles remain independent.
 
-Source updates do not restart processes. To update model keys, update
-the OCC Secret, redeploy each consuming Agent through OCE,
-wait for the new version to be ready and selected, and verify a model request with the
-new credential. Preparation delivers current source values to the new Agent revision's
-runtime Secret. Merely recreating a Harness Pod or restarting its Deployment
-reads the existing projection and does not refresh it from the canonical source. See
+Source updates do not restart processes. Update the OCC Secret, redeploy each
+consumer through OCE, wait for readiness and selection, then verify a model
+request. Preparation refreshes the runtime Secret; Pod or Deployment restarts
+only reread the existing projection. See
 [update and redeploy](../kubernetes-secret.md#update-and-redeploy).
 Deleting a source or runtime Secret does not revoke bytes a process loaded or a
 provider accepted.

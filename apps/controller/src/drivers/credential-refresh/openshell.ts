@@ -18,7 +18,11 @@ import {
   openShellWorkspaceName,
   type OpenShellGateway,
 } from "../../backends/openshell.ts";
-import { openShellRefreshSourceType } from "../credential-gateway/openshell.ts";
+import {
+  CODEX_OAUTH_TYPE,
+  CODEX_ACCESS_TOKEN_ENV,
+  openShellRefreshSourceType,
+} from "../../backends/openshell-refresh-sources.ts";
 import {
   OpenShellProviderAlreadyExistsError,
   type OpenShellProviderProfile,
@@ -27,10 +31,8 @@ import {
 } from "../sandbox/openshell-gateway-client.ts";
 
 import {
-  CODEX_OAUTH_TYPE,
   CODEX_OAUTH_CLIENT_ID,
   CODEX_ACCOUNT_CONFIG,
-  CODEX_ACCESS_TOKEN_ENV,
   codexAccountMetadata,
   codexDeviceAuthorizationState,
   startCodexDeviceAuthorization,

@@ -18,7 +18,7 @@ import {
   selectSecret,
   settledView,
 } from "./console-agents-browser-helpers.ts";
-import { createRepositoryLaunchFixture } from "./console-agents-test-support.mjs";
+import { createRepositoryLaunchFixture } from "./console-agents-test-support.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 
 // Every test opens its own context in one Chromium per file.

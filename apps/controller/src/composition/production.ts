@@ -301,6 +301,9 @@ export async function composeProduction(
         ...installationControllerOptions(config.drivers.installation),
         state,
         ...(config.drivers.tokenService && { preparedTokens: config.drivers.tokenService }),
+        ...(config.drivers.pluginSourceReader === undefined
+          ? {}
+          : { pluginSourceReader: config.drivers.pluginSourceReader }),
         recordOperations: true,
         backends: installation.backend,
         defaultPresets: config.drivers.defaultPresets ?? [],

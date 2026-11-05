@@ -1402,6 +1402,7 @@ export class ControllerWorker {
       state: this.state,
       queueOptions: this.queueOptions,
       driver: this.repositoryPolicy,
+      repositoryAdmission: this.repositoryAdmission,
       nativeSender: this.nativeRepositorySender,
       verifyExecution: (claim, revision) =>
         this.withClaimHeartbeat(

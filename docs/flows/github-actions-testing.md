@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
-updated: 2026-11-03
-last_updated_session: authoring-run/c1bf6b1d-bea1-4de7-b3af-4a2ea197ba06
+updated: 2026-11-04
+last_updated_session: authoring-run/14bcb9d6-2d4c-449d-8bbc-b64e3ef7e632
 ---
 
 # GitHub Actions testing flow
@@ -14,7 +14,7 @@ The [ordinary CI lanes](../testing/ci/required-checks.md) reject missing or skip
 
 - `.github/workflows/ci.yml:jobs`: PR, main push, merge-group and manual checks on ephemeral runners.
 - `.github/workflows/qa-advisory.yml:jobs`: 6-hourly QA on `main`, and post-merge QA when `QA_ADVISORY_ON_PUSH` is `true`; trusted pull requests select [full or focused advisory QA](../testing/ci/qa-advisory.md).
-- `.github/workflows/full-integration.yml:jobs`: manual integrations from main or approved Kubernetes model/OpenShell branches, pinned to the dispatched commit.
+- `.github/workflows/full-integration.yml:jobs`: automatic main pushes and approved manual main integrations, pinned to `github.sha`.
 
 ## Flow
 
@@ -36,7 +36,7 @@ graph TD
   G -->|full or tests| L["Aggregate same-source lane results"]
   G -->|docs| M["Documentation coverage result"]
   L --> R["Full CI coverage result"]
-  C["Manual integration dispatch"] --> P["Source and environment preflight"]
+  C["Integration dispatch or exact cutover push"] --> P["Source and environment preflight"]
   P -->|eligible source and environment| E["Protected test jobs"]
   P -->|all or dev-up-k3d| U["Credential-free installation job"]
   U --> T
@@ -89,18 +89,19 @@ A PR can change the workflow loaded from its merge checkout despite base-loaded
 policy. Separately trusted enforcement is a deployment decision, not an
 established source property.
 
-Full Integration checks out immutable `github.sha`. `all` selects every dispatch
-lane and CI suite; preflight includes `integration-qa`. QA waits for Slack to finish, regardless of success.
-Aggregation requires QA and `dev-up-k3d` results. Cancellation stops QA.
-`all` requires `main`. Only `k3d-model`/`openshell` admit exact environment-granted
-branches; administrators remove temporary grants after verification.
-`skipper-prepared-git-installed` also accepts branches without a protected environment;
-it uses synthetic model and Git credentials. Credential-free `dev-up-k3d` accepts
-branches and prepares Go, CLI, Chromium
-and k3d on Ubuntu 22.04, with 150/180-minute file/job deadlines.
-Dispatches serialize without cancellation: standalone `dev-up-k3d` per branch,
-others in `full-integration`. Preflight rejects required reviewers and retains
-branch restrictions. Dispatchers inspect commits; no approval is needed.
+Full Integration checks out `github.sha`. Main pushes select `all`. Manual main
+dispatches require secret-free `integration-main-approval`. Preflight checks
+the team rule, dispatcher ID, triggering login and environment policy.
+
+Main pushes share a queue. Each dispatch waits separately for approval.
+Slack Live serializes access to its channel and app. Local Kubernetes Installation
+and installed Skipper Git each serialize per branch across pushes and dispatches.
+All three queues retain waiting jobs. Test jobs verify repository, main branch
+and event. Push retries use the original commit. Manual retries require a fresh
+approved dispatch. See [approval setup](../testing/ci/configuration.md#environments).
+
+`all` selects every suite. QA waits for Slack even after failure. Cancellation
+stops QA. Aggregation requires the selected results.
 
 PostgreSQL migration and application suites own separate servers; each Kubernetes fixture lane owns a separate cluster and PostgreSQL server. Before creating k3d nodes that share the runner kernel, the shared action enables bridge netfilter; missing filtering fails setup rather than leaving Pod network policies unenforced. The repository credential platform lane uses Blacksmith for full-image HTTP, PostgreSQL, Unix-control and credential-material proof; NetworkPolicy enforcement remains the fixture lanes' responsibility. State and cleanup stay on each runner; within a lane, `scripts/ci/run-tests.mjs:runLane` runs files sequentially except audited `parallelFiles`.
 
@@ -109,8 +110,6 @@ The application lane gives the native IAM barrier test its own migrated PostgreS
 The [run-ci-lane action](../../.github/actions/run-ci-lane/action.yml) prepares, runs, and cleans up lanes and uploads sanitized results. Callers set the commit, environment, credentials, and timeout. Tests stop five minutes early.
 
 PR dependency caches stay within GitHub's PR merge-ref scope; main caches stay main-scoped. Results and credential-bearing state are not caches; protected jobs do not promote PR artifacts.
-
-The provider job uses `blacksmith-8vcpu-ubuntu-2404` for image-build and k3d-import disk space. Standard Ubuntu hit `DiskPressure` and evicted the seccomp probe. Preparation uses `ctr image import` on each owned node and verifies its manifest and CRI records. The k3d `tools-node` can report success despite per-node failures.
 
 ### 2. Prepare resources under the job owner
 
@@ -160,7 +159,7 @@ both commits.
 
 `scripts/ci/run-tests.mjs:main`, `scripts/ci/reporter.mjs:jsonLinesReporter` and `scripts/ci/failure-redaction.mjs:redactFailure`
 
-The runner discovers active test files and verifies one lane assignment per file. Different prerequisites require separate files. It invokes whole files with invocation-scoped environment inputs. A custom Node reporter publishes case names, locations and outcomes, excluding arbitrary output. The runner also keeps each failure's error message (at most 600 characters) and top stack frame (240), with the repository path stripped, every nonpublic environment value of eight or more characters (from the job and from the test process) replaced by `[env:NAME]`, and common token, key, URL-password and `password=`-style values replaced by `[redacted]`; the runner prints the same line per failed case to the job log. Values a test generates at run time are redacted only when they match those shapes. Failed provider-test HTTP assertions also retain numeric actual and expected status codes, an allowlisted OCC error code, and the upstream ChatGPT operation and status when available. Denied-traffic failures retain only an allowlisted traffic category, without target addresses or response data. Plugin-status fixture failures retain an allowlisted readiness or rollout stage. Rollout diagnostics include allowed Pod phases, readiness and scheduling flags, container restart counts and exit codes, and allowlisted reasons. These structured diagnostics exclude response bodies, credentials, and identities.
+The runner discovers active test files and verifies one lane assignment per file. Different prerequisites require separate files. It invokes whole files with invocation-scoped environment inputs. A custom Node reporter publishes case names, locations and outcomes, excluding arbitrary output. The runner also keeps each failure's error message (at most 600 characters) and top stack frame (240), with the repository path stripped, every nonpublic environment value of eight or more characters (from the job and from the test process) replaced by `[env:NAME]`, and common token, key, URL-password and `password=`-style values replaced by `[redacted]`; the runner prints the same line per failed case to the job log. Values a test generates at run time are redacted only when they match those shapes. Controller HTTP assertion diagnostics can also retain numeric actual and expected status codes, an allowlisted OCC error code, and the upstream ChatGPT operation and status when available. Denied-traffic failures retain only an allowlisted traffic category, without target addresses or response data. Plugin-status fixture failures retain an allowlisted readiness or rollout stage. Rollout diagnostics include allowed Pod phases, readiness and scheduling flags, container restart counts and exit codes, and allowlisted reasons. These structured diagnostics exclude response bodies, credentials, and identities.
 
 Required cases must pass; every skip or TODO fails the lane. There are no counterpart-skip lists or CI name filters. Synthetic file-wrapper success, missing output, zero cases, or interruption without final reporter output cannot establish coverage. Lane results retain failure, timeout and cleanup outcomes.
 
@@ -261,6 +260,10 @@ External reconciliation awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 12:10: Isolate the Codex Git proof queue without Slack. (authoring-run/14bcb9d6-2d4c-449d-8bbc-b64e3ef7e632 - aa60a72115e342ec020d1083fb5e30c139202c84)
+
+- 2026-11-04 10:07: Consolidate Full Integration policy and bound the cutover proof routes. (authoring-run/79147f32-199a-48ad-9b7e-fbdf94bf9d60 - 2628dba73edd44e4980711129e48fb7842828019)
 
 - 2026-11-03 01:07: Bind staging tests to release source. (authoring-run/c1bf6b1d-bea1-4de7-b3af-4a2ea197ba06 - d2fc28e1d6d70292e462956cedef0dae9281c48c)
 

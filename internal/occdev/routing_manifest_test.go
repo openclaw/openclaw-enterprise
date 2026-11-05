@@ -14,6 +14,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -28,8 +30,8 @@ func routingManifestTestDigest() string {
 	return hex.EncodeToString(digest[:])
 }
 
-func quickRoutingManifestRetry() routingManifestRetry {
-	return routingManifestRetry{
+func quickRoutingManifestRetry() manifestRetry {
+	return manifestRetry{
 		attempts:       8,
 		firstDelay:     time.Millisecond,
 		maxDelay:       5 * time.Millisecond,
@@ -94,7 +96,7 @@ func TestDevelopmentRoutingManifestRetriesTransientFailures(t *testing.T) {
 	policy := quickRoutingManifestRetry()
 	policy.attemptTimeout = 2 * time.Second
 	var log bytes.Buffer
-	data, err := downloadDevelopmentRoutingManifest(t.Context(), &log, "test", server.URL, routingManifestTestDigest(), policy)
+	data, err := downloadDevelopmentManifest(t.Context(), &log, "test", server.URL, routingManifestTestDigest(), policy)
 	if err != nil {
 		t.Fatalf("download failed: %v\n%s", err, log.String())
 	}
@@ -107,7 +109,7 @@ func TestDevelopmentRoutingManifestRetriesTransientFailures(t *testing.T) {
 	if got := strings.Count(log.String(), "retrying in"); got != 5 {
 		t.Fatalf("retry lines = %d, want 5:\n%s", got, log.String())
 	}
-	for _, want := range []string{"test: download routing controller manifest: HTTP 503", "HTTP 429", "unexpected EOF", "deadline exceeded", "attempt 6/8"} {
+	for _, want := range []string{"test: download pinned manifest: HTTP 503", "HTTP 429", "unexpected EOF", "deadline exceeded", "attempt 6/8"} {
 		if !strings.Contains(log.String(), want) {
 			t.Fatalf("log lacks %q:\n%s", want, log.String())
 		}
@@ -119,7 +121,7 @@ func TestDevelopmentRoutingManifestStopsAfterItsAttempts(t *testing.T) {
 	policy := quickRoutingManifestRetry()
 	policy.attempts = 3
 	var log bytes.Buffer
-	_, err := downloadDevelopmentRoutingManifest(t.Context(), &log, "test", server.URL, routingManifestTestDigest(), policy)
+	_, err := downloadDevelopmentManifest(t.Context(), &log, "test", server.URL, routingManifestTestDigest(), policy)
 	if err == nil || !strings.Contains(err.Error(), "HTTP 502 (after 3 attempt(s))") {
 		t.Fatalf("err = %v", err)
 	}
@@ -142,7 +144,7 @@ func TestDevelopmentRoutingManifestDoesNotRetryPermanentFailures(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			server, hits := routingManifestServer(t, tc.step)
 			var log bytes.Buffer
-			_, err := downloadDevelopmentRoutingManifest(t.Context(), &log, "test", server.URL, tc.expected, quickRoutingManifestRetry())
+			_, err := downloadDevelopmentManifest(t.Context(), &log, "test", server.URL, tc.expected, quickRoutingManifestRetry())
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want %q", err, tc.want)
 			}
@@ -165,7 +167,7 @@ func TestDevelopmentRoutingManifestStopsRetryingAtItsBudget(t *testing.T) {
 	policy.budget = 200 * time.Millisecond
 	var log bytes.Buffer
 	started := time.Now()
-	_, err := downloadDevelopmentRoutingManifest(t.Context(), &log, "test", server.URL, routingManifestTestDigest(), policy)
+	_, err := downloadDevelopmentManifest(t.Context(), &log, "test", server.URL, routingManifestTestDigest(), policy)
 	elapsed := time.Since(started)
 	if err == nil || !strings.Contains(err.Error(), "HTTP 503") {
 		t.Fatalf("err = %v", err)
@@ -190,7 +192,7 @@ func TestDevelopmentRoutingManifestHonoursTheCallerDeadline(t *testing.T) {
 		defer cancel()
 		var log bytes.Buffer
 		started := time.Now()
-		_, err := downloadDevelopmentRoutingManifest(ctx, &log, "test", server.URL, routingManifestTestDigest(), policy)
+		_, err := downloadDevelopmentManifest(ctx, &log, "test", server.URL, routingManifestTestDigest(), policy)
 		if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "HTTP 503") {
 			t.Fatalf("err = %v", err)
 		}
@@ -208,7 +210,7 @@ func TestDevelopmentRoutingManifestHonoursTheCallerDeadline(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 		defer cancel()
 		var log bytes.Buffer
-		_, err := downloadDevelopmentRoutingManifest(ctx, &log, "test", server.URL, routingManifestTestDigest(), policy)
+		_, err := downloadDevelopmentManifest(ctx, &log, "test", server.URL, routingManifestTestDigest(), policy)
 		if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "(after 1 attempt(s))") {
 			t.Fatalf("err = %v", err)
 		}
@@ -223,10 +225,10 @@ func TestDevelopmentRoutingManifestHonoursTheCallerDeadline(t *testing.T) {
 
 func TestDevelopmentRoutingManifestRejectsOversizedBodies(t *testing.T) {
 	server, hits := routingManifestServer(t, func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write(bytes.Repeat([]byte("a"), developmentRoutingManifestLimit+1))
+		_, _ = w.Write(bytes.Repeat([]byte("a"), developmentManifestLimit+1))
 	})
 	var log bytes.Buffer
-	_, err := downloadDevelopmentRoutingManifest(t.Context(), &log, "test", server.URL, routingManifestTestDigest(), quickRoutingManifestRetry())
+	_, err := downloadDevelopmentManifest(t.Context(), &log, "test", server.URL, routingManifestTestDigest(), quickRoutingManifestRetry())
 	if err == nil || !strings.Contains(err.Error(), "exceeds its size limit") {
 		t.Fatalf("err = %v", err)
 	}
@@ -244,7 +246,7 @@ func TestDevelopmentRoutingManifestDoesNotRetryARefusedCertificate(t *testing.T)
 	server.Config.ErrorLog = stdlog.New(io.Discard, "", 0)
 	t.Cleanup(server.Close)
 	var log bytes.Buffer
-	_, err := downloadDevelopmentRoutingManifest(t.Context(), &log, "test", server.URL, routingManifestTestDigest(), quickRoutingManifestRetry())
+	_, err := downloadDevelopmentManifest(t.Context(), &log, "test", server.URL, routingManifestTestDigest(), quickRoutingManifestRetry())
 	if err == nil || !strings.Contains(err.Error(), "(after 1 attempt(s))") {
 		t.Fatalf("err = %v", err)
 	}
@@ -273,8 +275,89 @@ func TestTransientRoutingManifestErrors(t *testing.T) {
 		{"unknown authority", t.Context(), &url.Error{Op: "Get", URL: "https://example.test", Err: &tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}}, false},
 		{"hostname mismatch", t.Context(), &url.Error{Op: "Get", URL: "https://example.test", Err: x509.HostnameError{Host: "example.test"}}, false},
 	} {
-		if got := transientRoutingManifestError(tc.ctx, tc.err); got != tc.want {
+		if got := transientManifestError(tc.ctx, tc.err); got != tc.want {
 			t.Errorf("%s: transient = %v, want %v", tc.name, got, tc.want)
 		}
 	}
+}
+
+func TestVerifiedManifestRetriesBeforeWritingExclusiveFile(t *testing.T) {
+	// A failed release response must not leave a file that prevents the retry
+	// from installing the verified manifest.
+	server, hits := routingManifestServer(t,
+		serveRoutingManifestStatus(http.StatusServiceUnavailable),
+		serveRoutingManifest,
+	)
+	destination := filepath.Join(t.TempDir(), "agent-sandbox.yaml")
+	var log bytes.Buffer
+	if err := downloadVerifiedManifest(t.Context(), &log, server.URL, destination, routingManifestTestDigest()); err != nil {
+		t.Fatalf("download failed: %v\n%s", err, log.String())
+	}
+	data, err := os.ReadFile(destination)
+	if err != nil || !bytes.Equal(data, routingManifestTestBody) {
+		t.Fatalf("installed data = %q, err = %v", data, err)
+	}
+	info, err := os.Stat(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("manifest permissions = %v, want 0600", info.Mode().Perm())
+	}
+	if hits.Load() != 2 {
+		t.Fatalf("requests = %d, want 2", hits.Load())
+	}
+	// An existing destination belongs to the caller and must not be replaced.
+	if err := downloadVerifiedManifest(t.Context(), &log, server.URL, destination, routingManifestTestDigest()); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("existing destination: %v", err)
+	}
+	data, err = os.ReadFile(destination)
+	if err != nil || !bytes.Equal(data, routingManifestTestBody) {
+		t.Fatalf("existing manifest changed: data = %q, err = %v", data, err)
+	}
+}
+
+func TestVerifiedManifestRejectsWrongDigestWithoutWriting(t *testing.T) {
+	server, hits := routingManifestServer(t, serveRoutingManifest)
+	destination := filepath.Join(t.TempDir(), "agent-sandbox.yaml")
+	var log bytes.Buffer
+	err := downloadVerifiedManifest(t.Context(), &log, server.URL, destination, strings.Repeat("0", 64))
+	if err == nil || !strings.Contains(err.Error(), "checksum") {
+		t.Fatalf("wrong digest: %v", err)
+	}
+	if hits.Load() != 1 || log.Len() != 0 {
+		t.Fatalf("wrong digest was retried: requests = %d, log = %s", hits.Load(), log.String())
+	}
+	if _, err := os.Stat(destination); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unverified manifest was written: %v", err)
+	}
+}
+
+func TestVerifiedManifestHonoursCancellationDuringBackoff(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	server, hits := routingManifestServer(t, serveRoutingManifestStatus(http.StatusServiceUnavailable))
+	destination := filepath.Join(t.TempDir(), "agent-sandbox.yaml")
+	// Cancel only after the real HTTP failure reaches the retry log, so this
+	// exercises cancellation while waiting rather than a pre-cancelled request.
+	log := &cancelManifestRetryLog{cancel: cancel}
+	err := downloadVerifiedManifest(ctx, log, server.URL, destination, routingManifestTestDigest())
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled download: %v", err)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("requests after cancellation = %d, want 1", hits.Load())
+	}
+	if _, err := os.Stat(destination); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("cancelled manifest was written: %v", err)
+	}
+}
+
+type cancelManifestRetryLog struct {
+	cancel context.CancelFunc
+}
+
+func (log *cancelManifestRetryLog) Write(data []byte) (int, error) {
+	log.cancel()
+	return len(data), nil
 }

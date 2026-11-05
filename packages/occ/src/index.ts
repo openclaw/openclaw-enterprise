@@ -783,6 +783,11 @@ export interface RuntimeLogReadGrant {
 export type RuntimeLogReadAdmission = <T>(read: () => Promise<T>) => Promise<T>;
 
 export interface ControllerOptions {
+  /** Code-only composition binding for the bundled retained-source plugin reader. */
+  readonly pluginSourceReader?: {
+    readonly gateway: CredentialGatewayDriver;
+    readonly withSourceToken: NonNullable<CredentialGatewayDriver["withSourceToken"]>;
+  };
   readonly preparedTokens?: PreparedTokenService | undefined;
   readonly driverConfigurations?: readonly DriverConfigurationRegistration[];
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
@@ -2112,6 +2117,7 @@ export class OpenClawController {
   private readonly nativeWorkers: NativeWorkerSupportSource | undefined;
   private readonly credentialProxyCapacity: CredentialProxyCapacity;
   private readonly registry = new Map<string, RegisteredDriver>();
+  private readonly pluginSourceReader: ControllerOptions["pluginSourceReader"];
   private readonly preparedTokens: PreparedTokenService | undefined;
   private readonly selections = new Map<DriverCapability, RegisteredDriver>();
   private pluginRegistrations: readonly RegisteredDriver[] = [];
@@ -2153,6 +2159,7 @@ export class OpenClawController {
     }
     this.authorization = options.authorize;
     this.preparedTokens = options.preparedTokens;
+    this.pluginSourceReader = options.pluginSourceReader;
     this.clock = options.now ?? (() => new Date());
     this.identifier = options.createId;
     this.state = options.state ?? new InMemoryPlatformState();
@@ -9177,7 +9184,9 @@ export class OpenClawController {
         namespaceId,
         credentialSource.id,
       );
-      if (!gateway.withSourceToken) {
+      const reader = this.pluginSourceReader;
+      const selectedReader = reader?.gateway === gateway ? reader.withSourceToken : undefined;
+      if (!selectedReader && !gateway.withSourceToken) {
         throw new NotImplementedError(
           "agent_plugins.discovery",
           "The Credential Gateway does not support plugin discovery.",
@@ -9192,6 +9201,10 @@ export class OpenClawController {
         (invoke) =>
           this.credentialGatewayOperation(() => {
             context.signal.throwIfAborted();
+            if (selectedReader) {
+              return selectedReader(context, invoke);
+            }
+            // Preserve external callback invocation and its late/disconnect controls.
             return gateway.withSourceToken!(context, invoke);
           }),
         async () => {
@@ -10142,7 +10155,7 @@ export class OpenClawController {
   ): SandboxPolicySnapshot {
     if (driver?.admitProtectedCodexArtifactPolicy === undefined) {
       throw new ResourceStateConflictError(
-        "The selected Sandbox Driver cannot qualify protected Codex artifact policy.",
+        "Deploy requires a Sandbox Driver that supports protected Codex artifact admission. Ask your Installation administrator to check drivers.sandbox and the selected Driver version.",
       );
     }
     return this.checkedSandboxPolicySnapshot(driver, [], version, undefined, undefined, () => {
@@ -10784,6 +10797,7 @@ export class OpenClawController {
         namespaceId,
         agent.repositoryBindings,
         "saved",
+        this.selectedStandingRepositoryAdmission(),
       );
       return (resolved?.resolution.bindings ?? []).flatMap((binding) => {
         const scope = eligibleRepositoryApprovalScope(resolved!.driver, { namespaceId, binding });
@@ -11105,7 +11119,13 @@ export class OpenClawController {
           );
           // The request's own selections resolved above, so only saved ones can fail here.
           const resolved =
-            selected && this.resolveRepositoryBindings(namespace.id, [selected], "saved");
+            selected &&
+            this.resolveRepositoryBindings(
+              namespace.id,
+              [selected],
+              "saved",
+              this.selectedStandingRepositoryAdmission(),
+            );
           const binding = resolved?.resolution.bindings[0];
           const scope =
             binding &&
@@ -11860,12 +11880,11 @@ export class OpenClawController {
           binding.repositoryRef,
         );
         if (approval) {
-          const admission = this.installationRepositoryAdmission;
           const resolved = this.resolveRepositoryBindings(
             namespace.id,
             [{ repositoryRef: binding.repositoryRef, profile: binding.profile }],
             "saved",
-            admission?.policy === this.selections.get("repo")?.driver ? admission : undefined,
+            this.selectedStandingRepositoryAdmission(),
           )!;
           const scope = eligibleRepositoryApprovalScope(resolved.driver, {
             namespaceId: namespace.id,
@@ -16268,6 +16287,11 @@ export class OpenClawController {
       repositoryBindings,
       repositoryAccess: normalizedRepositoryAccess(input.repositoryAccess, repositoryBindings)!,
     };
+  }
+
+  private selectedStandingRepositoryAdmission(): InstallationRepositoryAdmission | undefined {
+    const admission = this.installationRepositoryAdmission;
+    return admission?.policy === this.selections.get("repo")?.driver ? admission : undefined;
   }
 
   /**
