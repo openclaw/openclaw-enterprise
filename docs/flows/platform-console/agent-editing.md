@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
 updated: 2026-11-05
-last_updated_session: authoring-run/68de7101-f5b0-459f-8861-9ec3e614dcb2
+last_updated_session: authoring-run/19e029b0-7ee3-4034-8e3b-e403265ff746
 ---
 
 # Console Agent editing and runtime requests
@@ -107,18 +107,20 @@ Secret the caller may not `operate`, or counts one the caller may neither `read`
 nor `operate`; that reason names no Secret (finding D756). After deployment, versions omitted from the newest page appear unreadable without
 an audited read (finding D758).
 
-**Edit Configuration** rereads the Agent and Configuration, then PATCHes only
-`{ values, expectedGeneration }`, preserving `secretBindings`. A changed ID or stale
-generation (also a racing save's `409`) requires **Reload draft**.
-A response not confirming the same Configuration and Namespace, a newer generation, and the
-sent values and bindings is an unknown outcome; reload before saving again.
-A focused, disabled **Save Configuration** moves focus to **Checking Configuration…**.
-Success focuses **Edit Configuration** unless the reader moved focus.
+**Edit Configuration** rereads Agent and Configuration, then PATCHes
+`{ values, expectedGeneration }`, preserving `secretBindings`. Changed IDs or stale
+generations (including `409`) require **Reload draft**.
+Responses must confirm Configuration/Namespace identity, newer generation, and sent
+values/bindings; otherwise the outcome is unknown: reload before retrying.
+Disabled **Save Configuration** transfers its focus to **Checking Configuration…**;
+success focuses **Edit Configuration** unless focus moved.
 
 **Enable gateway password access** and **Collaboration and safety**
-(`agents/gateway-safety.mts`) stage edits here; **Cancel** discards them. Password access writes an env SecretRef to the Compute-supplied `OPENCLAW_GATEWAY_PASSWORD` on the default env alias. **Deploy** holds with the refusal when deploy's stored-row rules (`stored-configuration-rules.ts`, same order) or `agents/validate` (Kubernetes-only rules) refuse saved settings. A hint replaces the button when save would refuse its reference.
+(`agents/gateway-safety.mts`) stage edits; **Cancel** discards them. Password access writes an env SecretRef to Compute's `OPENCLAW_GATEWAY_PASSWORD` on the default env alias. **Deploy** blocks with saved-setting refusals from `stored-configuration-rules.ts` (same order) or `agents/validate` (Kubernetes-only). A hint replaces the password button if save would refuse its reference.
 
-Saves preserve scroll, focus and admitted snapshots. Rejected edits stay. Unsaved edits block deployment; pending saves block tab and version changes.
+Saves retain scroll, focus and admitted snapshots; rejected edits stay. Unsaved edits block deployment; pending saves block tab/version changes.
+`apps/controller/src/console/navigation.mts:traverse` restores the pending editor's
+address after refused Back/Forward without reloading if the history step cannot be used.
 A refused write lists required grants without guessing which; a refused preflight read names read
 access, a Workspace file save Agent `operate`. Without Agent `update`, Configuration `read` or
 bound-source grants (`operate`, and `read` on a Harness ServiceAccount; the note names both),
@@ -344,6 +346,7 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
+- 2026-11-05 01:51: Guard pending-save history. (authoring-run/19e029b0-7ee3-4034-8e3b-e403265ff746 - 516ee6d87dea5326df70e647b17e2a141392cd0c)
 - 2026-11-05 01:03: Document read failures. (authoring-run/68de7101-f5b0-459f-8861-9ec3e614dcb2 - 8ee2e630)
 - 2026-10-31 21:30: Hide the password button when save would refuse it. (fix-3064)
 

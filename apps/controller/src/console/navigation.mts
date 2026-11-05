@@ -165,7 +165,11 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
   }
 
   function entryPosition() {
-    const index: unknown = history.state?.consolePosition;
+    const state: unknown = history.state;
+    if (typeof state !== "object" || state === null || !("consolePosition" in state)) {
+      return null;
+    }
+    const index = state.consolePosition;
     return typeof index === "number" && Number.isSafeInteger(index) ? index : null;
   }
 
@@ -215,13 +219,21 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
     void loadPage({
       fromNavigation,
       restoreHistory(url) {
-        if (position === null || previous === null || position === previous) {
-          // An older or untracked entry has no reliable direction. Keep it available to Back
-          // without risking history.go(0), which would reload the page during its write.
+        const delta = position === null || previous === null ? null : previous - position;
+        if (
+          delta === null ||
+          delta === 0 ||
+          Math.abs(delta) >= history.length ||
+          delta < -2147483648 ||
+          delta > 2147483647
+        ) {
+          // History.go converts to a signed 32-bit Web IDL long; overflow can become zero
+          // and reload during the write. Impossible steps do nothing. Keep the editor's URL
+          // with an available Back entry when the step is untracked, zero or unrestorable.
           pushUrl(url);
         } else {
           restoring = previous;
-          history.go(previous - position);
+          history.go(delta);
         }
       },
     });

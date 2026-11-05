@@ -744,7 +744,7 @@ test("a pending plugin save blocks navigation to the deletion controls", async (
   await page.getByRole("button", { name: "Delete Agent", exact: true }).waitFor();
 });
 
-test("Back during a Configuration save preserves the previous Agent tab", async (t) => {
+async function backDuringConfigurationSave(t: TestContext, syntheticOffset?: number) {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = resource(await fixture.createNamespace("Save and Back", { ready: true }));
@@ -756,27 +756,64 @@ test("Back during a Configuration save preserves the previous Agent tab", async 
   await page.getByRole("tab", { name: "Channels" }).click();
   await page.getByRole("tab", { name: "Channels", selected: true }).waitFor();
   const channelsUrl = page.url();
+  if (syntheticOffset !== undefined) {
+    // Controlled corruption, not a product-created marker: the next normal position minus
+    // this destination is -offset. 2**32 wraps to zero; 100 cannot fit this history stack.
+    await page.evaluate((offset) => {
+      const state: unknown = history.state;
+      if (
+        typeof state !== "object" ||
+        state === null ||
+        !("consolePosition" in state) ||
+        typeof state.consolePosition !== "number" ||
+        !Number.isSafeInteger(state.consolePosition)
+      ) {
+        throw new Error("Expected a marked Channels entry");
+      }
+      history.replaceState({ ...state, consolePosition: state.consolePosition + 1 + offset }, "");
+    }, syntheticOffset);
+  }
   await page.getByRole("tab", { name: "Configuration" }).click();
   await page.getByRole("button", { name: "Edit Configuration" }).click();
   const configurationUrl = page.url();
 
   const editor = page.getByLabel("Configuration JSON", { exact: true });
+  const originalEditor = await editor.elementHandle();
+  assert.ok(originalEditor);
   const values = nativeValues("after");
   await editor.fill(JSON.stringify(values, null, 2));
   const path = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
   const requests = apiRequests(page, fixture.origin);
   // The controller applies the edit once. Back arrives while this editor still awaits its answer.
   const held = await holdRequests(t, page, `**${path}`, { method: "PATCH", afterServer: true });
+  const documentRequested = Promise.withResolvers<"document-request">();
+  const documentRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.isNavigationRequest() && request.resourceType() === "document") {
+      documentRequests.push(request.url());
+      documentRequested.resolve("document-request");
+    }
+  });
   await page.getByRole("button", { name: "Save Configuration" }).click();
   await held.requested;
   try {
+    if (syntheticOffset !== undefined) {
+      assert.ok(await page.evaluate(() => history.length < 100));
+    }
+    // Listen before Back: a reload request must fail the test directly, not as a later
+    // timeout waiting for the editor. The no-op case must also restore the address.
+    const restored = (async () => {
+      await page
+        .getByText("Wait for Configuration save to finish before leaving the editor.", {
+          exact: true,
+        })
+        .waitFor();
+      await page.waitForURL(configurationUrl);
+      return "restored";
+    })();
     await page.goBack();
-    await page
-      .getByText("Wait for Configuration save to finish before leaving the editor.", {
-        exact: true,
-      })
-      .waitFor();
-    await page.waitForURL(configurationUrl);
+    assert.equal(await Promise.race([documentRequested.promise, restored]), "restored");
+    assert.equal(await originalEditor.evaluate((node) => node.isConnected), true);
     assert.equal(
       await editor.evaluate((node) => {
         if (!(node instanceof HTMLTextAreaElement)) {
@@ -800,7 +837,20 @@ test("Back during a Configuration save preserves the previous Agent tab", async 
   await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
   assert.equal(page.url(), configurationUrl);
   await settlePageRequests(page);
+  assert.deepEqual(documentRequests, []);
   assert.equal(pathRequests(requests, "PATCH", path).length, 1);
+}
+
+test("Back during a Configuration save preserves the previous Agent tab", async (t) => {
+  await backDuringConfigurationSave(t);
+});
+
+test("Back during a Configuration save survives a synthetic marker that wraps to zero", async (t) => {
+  await backDuringConfigurationSave(t, 2 ** 32);
+});
+
+test("Back during a Configuration save survives a synthetic marker outside the history stack", async (t) => {
+  await backDuringConfigurationSave(t, 100);
 });
 
 test("Back refused by unsaved repository changes preserves the previous Agent tab", async (t) => {
