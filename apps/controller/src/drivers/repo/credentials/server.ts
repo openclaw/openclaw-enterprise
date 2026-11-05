@@ -70,7 +70,6 @@ export async function startListeners(options: StartListenersOptions): Promise<Bo
     service,
     config,
     clock,
-    options.factory.resolveBound !== undefined,
     "createPrepared" in options.factory,
   );
   const stopObserving = service.observeDisposal(admissions.observe);
