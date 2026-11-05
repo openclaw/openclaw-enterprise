@@ -2262,7 +2262,7 @@ for (let index = 0; index < Number(times); index += 1) {
     );
     const profileData = await readFile(seccomp.dockerProfilePath, "utf8");
     assert.deepEqual(JSON.parse(profileData), installedProfile);
-    assert.equal((await stat(seccomp.dockerProfilePath)).mode & 0o777, 0o644);
+    assert.equal((await stat(seccomp.dockerProfilePath)).mode & 0o777, 0o600);
   });
 
   test("prepareLane fails closed instead of overwriting an existing CI state file", async (t) => {
