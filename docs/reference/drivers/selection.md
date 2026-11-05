@@ -103,6 +103,10 @@ recipient before release.
 | v6        | Bundled OpenShell preview: observe the request hook per start; this does not prove the hook cannot later be disabled.                                                                                                                         |
 | v7        | Exact dispatch plus verified policy reduction v2; can retain independently admitted routes and the same recipient when Git is removed.                                                                                                        |
 
+Observed OpenShell Git routes keep the original launch acknowledgment during credential
+rotation. They reopen only after the model provider observation matches the new
+shared provider environment; stale or incomplete observations leave the route pending.
+
 A lost authorization reply records possible use. Do not retry the exchange.
 Stock OpenShell lacks v7 qualification. For isolation and release requirements,
 see the [Driver contract](credential-proxy.md#delivery-profiles) and
