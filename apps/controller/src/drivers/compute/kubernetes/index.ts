@@ -4578,6 +4578,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
     secretBindings?: SecretBindings | null,
     credentialSourceType?: CredentialSourceType,
   ): void {
+    if (
+      harness.mode === "dedicated" &&
+      this.sandboxDriver?.implementation === "openshell" &&
+      this.options.servicePrincipalCredentials.mode === "projectedServiceAccountToken"
+    ) {
+      throw new ConfigurationHarnessError(
+        "OpenShell cannot preserve an Agent ServiceAccount and projected identity token. Ask an operator to set Kubernetes Compute servicePrincipalCredentials.mode to disabled, or select a Sandbox Driver that supports the projection.",
+      );
+    }
     this.validateAdmittedHarnessAuth(
       "admission",
       harness,
@@ -14244,10 +14253,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     // OCC applies the same rule at Agent save, provisioning and deployment, without the broker
     // host, which only the prepared material names. This check stays as the backstop for a deny
     // of that host and for revisions admitted before OCC checked.
-    if (
-      repositoryConsumer === undefined ||
-      !codexProxiesRepositoryBroker(revision.harness, revision.plugins?.driver.implementation)
-    ) {
+    if (repositoryConsumer === undefined || !codexProxiesRepositoryBroker(revision.harness)) {
       return undefined;
     }
     if (this.options.network.repositoryCredentials === undefined) {

@@ -1,3 +1,5 @@
+/// <reference lib="es2024.string" />
+
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -89,11 +91,14 @@ test("the console refuses exactly the Secret values the API refuses", () => {
   // Every Create Secret form (the Secrets page and the inline dialogs) shares this check
   // (finding 2339). The API caps the value at 65,536 characters by schema and 65,536 UTF-8 bytes
   // in the Secret Driver; the console checks the bytes, which also bound the characters.
+  assert.ok("maxLength" in SecretValue && typeof SecretValue.maxLength === "number");
+  assert.ok("pattern" in SecretValue && typeof SecretValue.pattern === "string");
   assert.equal(SecretValue.maxLength, SECRET_VALUE_MAX_BYTES);
+  const maxLength = SecretValue.maxLength;
   const pattern = new RegExp(SecretValue.pattern, "u");
-  const apiAccepts = (value) =>
+  const apiAccepts = (value: string) =>
     value.length >= 1 &&
-    value.length <= SecretValue.maxLength &&
+    value.length <= maxLength &&
     pattern.test(value) &&
     value.isWellFormed() &&
     Buffer.byteLength(value, "utf8") <= SECRET_VALUE_MAX_BYTES;

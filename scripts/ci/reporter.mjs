@@ -51,15 +51,57 @@ const postTestAsyncActivityPrefix =
   "Error: A resource generated asynchronous activity after the test ended.";
 
 // Tests publish timings with t.diagnostic(`${measurementPrefix}${JSON}`). Only the
-// allowlisted shape below survives; anything else is dropped like other diagnostics.
+// allowlisted shape below is retained in ordinary results.
 const measurementPrefix = "openclaw-ci-measurement ";
+const openShellSandboxMeasurementKind = "openshell-sandbox-phase";
+const openShellSandboxStages = new Set([
+  "installation",
+  "exposure-auth",
+  "gateway-turns",
+  "filesystem-egress",
+  "network-policy",
+  "credential-route",
+  "pod-replacement",
+  "untrusted-model-upstream",
+  "tool-upstream-outage",
+  "model-provider-outage",
+  "gateway-outage",
+  "oauth-refresh",
+  "non-model-source",
+  "credential-audit",
+  "source-withdrawal",
+  "embedded-fail-closed",
+  "native-policy-scopes",
+]);
 
-function safeMeasurement(message) {
-  let value;
+function parseMeasurement(message) {
+  if (!message.startsWith(measurementPrefix)) {
+    return undefined;
+  }
   try {
-    value = JSON.parse(message.slice(measurementPrefix.length));
+    return JSON.parse(message.slice(measurementPrefix.length));
   } catch {
     return undefined;
+  }
+}
+
+function safeMeasurement(value) {
+  if (isRecord(value) && value.kind === openShellSandboxMeasurementKind) {
+    if (
+      !openShellSandboxStages.has(value.stage) ||
+      !["passed", "failed"].includes(value.outcome) ||
+      !Number.isInteger(value.elapsedMs) ||
+      value.elapsedMs < 0 ||
+      value.elapsedMs > 2_400_000
+    ) {
+      return undefined;
+    }
+    return {
+      kind: value.kind,
+      stage: value.stage,
+      outcome: value.outcome,
+      elapsedMs: value.elapsedMs,
+    };
   }
   if (isRecord(value) && value.kind === "local-first-agent-setup-point") {
     if (
@@ -750,6 +792,55 @@ function failureDiagnostic(error) {
   if (!isRecord(diagnostic)) {
     return undefined;
   }
+  if (diagnostic.kind === "openshell-startup-process") {
+    const keys = Reflect.ownKeys(diagnostic);
+    if (!keys.includes("kind") || !keys.includes("outcome")) {
+      return undefined;
+    }
+    const { kind, outcome, exitCode, signal, code } = diagnostic;
+    if (outcome === "output-limit" && keys.length === 2) {
+      return { kind, outcome };
+    }
+    if (keys.length !== 3) {
+      return undefined;
+    }
+    if (
+      outcome === "exit" &&
+      keys.includes("exitCode") &&
+      Number.isInteger(exitCode) &&
+      exitCode > 0 &&
+      exitCode <= 255
+    ) {
+      return { kind, outcome, exitCode };
+    }
+    if (
+      outcome === "signal" &&
+      keys.includes("signal") &&
+      typeof signal === "string" &&
+      Object.hasOwn(process.getBuiltinModule("node:os").constants.signals, signal)
+    ) {
+      return { kind, outcome, signal };
+    }
+    if (
+      outcome === "launch-error" &&
+      keys.includes("code") &&
+      [
+        "E2BIG",
+        "EACCES",
+        "EAGAIN",
+        "EMFILE",
+        "ENFILE",
+        "ENOENT",
+        "ENOEXEC",
+        "ENOMEM",
+        "ENOTDIR",
+        "EPERM",
+      ].includes(code)
+    ) {
+      return { kind, outcome, code };
+    }
+    return undefined;
+  }
   if (diagnostic.kind === "native-first-agent-proof") {
     return nativeFirstAgentProofDiagnostic(diagnostic.failureStage, diagnostic.worker);
   }
@@ -1202,21 +1293,21 @@ export default async function* jsonLinesReporter(source) {
       failed = true;
     }
     if (event.type === "test:diagnostic") {
+      const message = event.data?.message;
+      if (typeof message !== "string") {
+        continue;
+      }
+      const value = parseMeasurement(message);
       // Per-test diagnostics name their file; the run summary counts do not.
-      if (typeof event.data?.message === "string" && typeof event.data.file === "string") {
-        output.diagnostic(event.data.message);
+      // OpenShell phase timings belong only in the projected measurement, even on failure.
+      if (typeof event.data.file === "string" && value?.kind !== openShellSandboxMeasurementKind) {
+        output.diagnostic(message);
       }
       // Node diagnostics can quote thrown errors; retain only this fixed failure category.
-      if (
-        typeof event.data?.message === "string" &&
-        event.data.message.startsWith(postTestAsyncActivityPrefix)
-      ) {
+      if (message.startsWith(postTestAsyncActivityPrefix)) {
         yield '{"type":"test:diagnostic","data":{"kind":"post-test-async-activity"}}\n';
-      } else if (
-        typeof event.data?.message === "string" &&
-        event.data.message.startsWith(measurementPrefix)
-      ) {
-        const measurement = safeMeasurement(event.data.message);
+      } else if (value !== undefined) {
+        const measurement = safeMeasurement(value);
         if (measurement) {
           yield `${JSON.stringify({
             type: "test:diagnostic",

@@ -61,7 +61,7 @@ export interface PluginFieldsOptions {
   input: HTMLTextAreaElement;
   catalog?: PluginFieldCatalog | null;
   capabilities?:
-    | (NonNullable<InstallationCapabilities["pluginPolicies"]> & {
+    | (NonNullable<InstallationCapabilities["pluginCatalogs"]>[number]["pluginPolicies"] & {
         credentialSlots?: readonly AgentPluginCredentialSlot[];
       })
     | null;
@@ -1068,50 +1068,68 @@ export function createPluginFields({
             }),
           );
         }
-        const driverFields = [];
+        const driverFields: HTMLElement[] = [];
+        const properties = capabilities?.driverPolicySchema.properties;
         for (const [key, schema] of Object.entries(
-          enablementOnly ? {} : (capabilities?.driverPolicySchema.properties ?? {}),
+          !enablementOnly && isObject(properties) ? properties : {},
         )) {
           if (!isObject(schema)) {
             continue;
           }
-          let options: Choice[];
+          let values: readonly (boolean | string)[];
           if (schema.type === "boolean") {
-            options = [
-              ["true", "Enabled"],
-              ["false", "Disabled"],
-            ];
+            values = [true, false];
           } else if (
             schema.type === "string" &&
             Array.isArray(schema.enum) &&
-            schema.enum.every((value) => typeof value === "string")
+            schema.enum.every((value: unknown): value is string => typeof value === "string")
           ) {
-            options = schema.enum.map((value) => [value, value.replaceAll("_", " ")]);
+            values = schema.enum;
           } else {
             continue;
           }
+          // JSON tokens preserve value types and keep an empty string distinct from inheritance.
+          const options: Choice[] = values.map((value) => {
+            let label: string;
+            if (typeof value === "boolean") {
+              label = value ? "Enabled" : "Disabled";
+            } else {
+              label = value === "" ? "Empty string" : value.replaceAll("_", " ");
+            }
+            return [JSON.stringify(value), label];
+          });
           const current = selected.driverPolicy?.[key];
-          driverFields.push(
-            select(
-              `${entry.name} ${schema.title ?? key}`,
-              current === undefined ? "" : String(current),
-              [["", "Inherit default policy"], ...options],
-              (value) =>
-                updateSelection(entry.id, (selection) => {
-                  const driverPolicy = { ...selection.driverPolicy };
-                  if (value === "") {
-                    delete driverPolicy[key];
-                  } else {
-                    driverPolicy[key] = schema.type === "boolean" ? value === "true" : value;
+          const field = select(
+            `${entry.name} ${typeof schema.title === "string" ? schema.title : key}`,
+            current === undefined ? "" : JSON.stringify(current),
+            [["", "Inherit default policy"], ...options],
+            (token) => {
+              updateSelection(entry.id, (selection) => {
+                const driverPolicy = { ...selection.driverPolicy };
+                if (token === "") {
+                  delete driverPolicy[key];
+                } else {
+                  const value = values.find((value) => JSON.stringify(value) === token);
+                  if (value === undefined) {
+                    return;
                   }
-                  if (Object.keys(driverPolicy).length) {
-                    selection.driverPolicy = driverPolicy;
-                  } else {
-                    delete selection.driverPolicy;
-                  }
-                }),
-            ),
+                  driverPolicy[key] = value;
+                }
+                if (Object.keys(driverPolicy).length) {
+                  selection.driverPolicy = driverPolicy;
+                } else {
+                  delete selection.driverPolicy;
+                }
+              });
+            },
           );
+          if (typeof schema.description === "string" && schema.description) {
+            const description = element("span", { className: "hint" }, schema.description);
+            description.id = `${input.id}-driver-policy-${driverFields.length}`;
+            field.querySelector("select")?.setAttribute("aria-describedby", description.id);
+            field.append(description);
+          }
+          driverFields.push(field);
         }
         if (enablementOnly || driverFields.length) {
           details.append(

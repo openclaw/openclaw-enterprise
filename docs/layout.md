@@ -25,6 +25,7 @@ of truth for HTTP behavior.
 
 The console Storybook in `scripts/console-storybook/` is also an isolated tool
 with its own manifest and lockfile. See [Console Storybook](contributing/console-storybook.md).
+Use the standalone [interface sketch renderer](../scripts/interface-sketches/README.md) to describe architecture in TypeScript and generate shareable diagrams.
 
 Within `internal/occcli/`, `cli.go` assembles the command tree and resource
 commands. `iam.go` owns IAM policy, ServicePrincipal, and service-key commands.
