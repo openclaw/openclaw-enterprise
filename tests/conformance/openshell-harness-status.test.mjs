@@ -588,11 +588,15 @@ test("an OpenShell probe gives a peer that delays TCP closure its full cleanup d
     }),
   );
   const started = performance.now();
-  assert.equal(await client.serviceWebSocketHandshake(serviceUrl, TOKEN, deadline), true);
-  // Readiness must be visible while the peer still holds TCP open, not after cleanup.
-  assert.equal(endedAt, undefined);
-  assert.ok(performance.now() - started < 750, "readiness waited for connection cleanup");
-  await ended;
+  const handshake = client
+    .serviceWebSocketHandshake(serviceUrl, TOKEN, deadline)
+    .then((accepted) => {
+      assert.equal(accepted, true);
+      // Readiness must be visible while the peer still holds TCP open, not after cleanup.
+      assert.equal(endedAt, undefined);
+      assert.ok(performance.now() - started < 750, "readiness waited for connection cleanup");
+    });
+  await Promise.all([handshake, ended]);
   assert.equal(closeCode, 1000);
   const cleanupElapsed = endedAt - closeReceivedAt;
   // Allow scheduling tolerance, but detect both early FIN and a doubled cleanup deadline.
