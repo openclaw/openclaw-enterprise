@@ -7596,7 +7596,7 @@
 +      };
 +      const lookup = { deviceId: paired.identity.deviceId, role: "node", env };
 +      const observer = await openTrackedWs(getStarted().port);
-+      await connectOk(observer, { scopes: ["operator.admin"] });
++      await connectOk(observer, { token: "secret", scopes: ["operator.admin"] });
 +      const describe = async () => {
 +        const response = await rpcReq(observer, "node.describe", { nodeId: paired.identity.deviceId });
 +        expect(response.ok).toBe(true);
@@ -7748,7 +7748,7 @@
 +    const lookup = { deviceId: nodeId, role: "node", env };
 +    await storeDeviceAuthToken({ ...lookup, token: token!, scopes: [] });
 +    const observer = await openTrackedWs(getStarted().port);
-+    await connectOk(observer, { scopes: ["operator.admin"] });
++    await connectOk(observer, { token: "secret", scopes: ["operator.admin"] });
 +    const describe = async () => {
 +      const response = await rpcReq(observer, "node.describe", { nodeId });
 +      expect(response.ok).toBe(true);
@@ -7891,7 +7891,7 @@
 +    expect(connected.sessionToken).toEqual(expect.any(String));
 +    const headers = { authorization: `Bearer ${String(connected.sessionToken)}` };
 +    const observer = await openTrackedWs(getStarted().port);
-+    await connectOk(observer, { scopes: ["operator.admin"] });
++    await connectOk(observer, { token: "secret", scopes: ["operator.admin"] });
 +    const describe = async () => {
 +      const response = await rpcReq(observer, "node.describe", { nodeId });
 +      expect(response.ok).toBe(true);
