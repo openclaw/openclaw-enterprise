@@ -195,9 +195,13 @@ export function googleRequestPolicy(accounts: Record<string, GoogleRequestScope>
       })),
     },
   };
+  const reviewedAccounts = googleAccountScopes(config.fields.request_scope.stringValue);
+  if (!reviewedAccounts) {
+    unsupported("The managed Google account requires its admitted destination and OAuth scopes.");
+  }
   return {
     hosts,
-    accounts: googleAccountScopes(config.fields.request_scope.stringValue)!,
+    accounts: reviewedAccounts,
     middlewares,
     networks,
   };

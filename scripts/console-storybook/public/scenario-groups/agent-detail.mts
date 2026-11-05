@@ -1148,7 +1148,7 @@ export function createAgentDetailScenarios({
               pluginId: slackPluginId,
               releaseSha256: "a".repeat(64),
               id: "account",
-              label: "Slack user accounts",
+              label: "Slack user account",
               toolDiscovery: true,
               sources: [
                 { id: slackSourceId, name: "Design workspace" },

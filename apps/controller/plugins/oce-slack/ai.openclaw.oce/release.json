@@ -9,7 +9,7 @@
   "mcpServersSha256": "603e373ddecced71e6aa345b198ed1eed7750f2f26a68c63b666269a1d2cfe71",
   "credentials": {
     "account": {
-      "label": "Slack user accounts",
+      "label": "Slack user account",
       "issuer": "https://mcp.slack.com",
       "delivery": { "role": "harness", "env": "SLACK_MCP_TOKEN", "presentation": "bearer" },
       "mcp": {

@@ -1453,6 +1453,23 @@ test("selected Google accounts retain independent providers and share the reques
   assert.equal(created.spec.environment.OPENCLAW_MANAGED_CREDENTIAL_ENV, undefined);
   assert.equal(created.spec.policy.network_middlewares?.[registration], undefined);
   assert.equal(created.spec.policy.network_policies["oce-google-requests"], undefined);
+
+  // An enabled Google package with no slot can coexist with a separately attached
+  // OAuth source. Its generic client keeps the declared variable; the plugin has no guard.
+  created = undefined;
+  revision.plugins.plugins[managedGoogleInstall.id] = { enabled: true };
+  requirements.credentialAttachments = await gateway.driver.attachForRevision({
+    ...context,
+    revision,
+    sources: [secondGoogle, slackSource],
+  });
+  await provision();
+  const independentMarker = "openshell:resolve:env:s" + "b".repeat(64) + "_" + remainingKey;
+  assert.equal(
+    readGoogleEnvironment(created.spec.command, { [remainingKey]: independentMarker }),
+    independentMarker,
+  );
+  assert.equal(created.spec.policy.network_middlewares?.[registration], undefined);
 });
 
 test("a standalone Codex tool receives the declared Google variable from its attached OAuth source", async () => {
@@ -1474,10 +1491,6 @@ test("a standalone Codex tool receives the declared Google variable from its att
     sourceId,
     ref: openShellProviderName(sourceId),
   }));
-  revision.plugins = {
-    driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
-    plugins: { [managedGoogleInstall.id]: { enabled: true } },
-  };
   requirements.command = googleEnvironmentProbe;
   requirements.workspaceMounts = requirements.workspaceMounts.slice(0, 1);
   let command;
