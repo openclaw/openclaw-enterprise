@@ -119,23 +119,35 @@ cannot apply its own copy: Helm fails with a field conflict with
 refuses. A cluster administrator installs it as follows (chart v1.6.7):
 
 ```sh
+OC="oc --kubeconfig $KUBECONFIG_FILE --context $CONTEXT"
 helm template eg-crds oci://docker.io/envoyproxy/gateway-crds-helm --version v1.6.7 \
   --set crds.gatewayAPI.enabled=false --set crds.envoyGateway.enabled=true \
-  | oc apply --server-side -f -
-oc create namespace envoy-gateway-system
+  | $OC apply --server-side -f -
+$OC create namespace envoy-gateway-system
 for sa in envoy-gateway eg-gateway-helm-certgen; do
-  oc adm policy add-scc-to-user nonroot-v2 -z "$sa" -n envoy-gateway-system
+  $OC adm policy add-scc-to-user nonroot-v2 -z "$sa" -n envoy-gateway-system
 done
 helm install eg oci://docker.io/envoyproxy/gateway-helm --version v1.6.7 \
+  --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CONTEXT" \
   -n envoy-gateway-system --skip-crds
 ```
 
-Envoy Gateway also creates a ServiceAccount for the proxy of the OCE Gateway,
-named `envoy-<Gateway namespace>-<Gateway name>-<hash>`. After the chart
-creates the Gateway, grant `nonroot-v2` to that account the same way. Without
-the grant, the proxy Pods are refused, the Gateway stays `Programmed=False`, and
-an Agent revision waits at `AGENT_GATEWAY_UNAVAILABLE`. Each grant lets that
-account run as any non-root UID. Do not grant it to other accounts.
+Envoy Gateway also creates a ServiceAccount for the proxy of the OCE Gateway.
+Its name is truncated for long Gateway names, so read it from the proxy
+Deployment. After the chart creates the Gateway, set `GATEWAY_NAMESPACE` and
+`GATEWAY_NAME` to its values and grant `nonroot-v2` to that account:
+
+```sh
+PROXY_SA=$($OC get deployment -n envoy-gateway-system \
+  -l "gateway.envoyproxy.io/owning-gateway-namespace=$GATEWAY_NAMESPACE,gateway.envoyproxy.io/owning-gateway-name=$GATEWAY_NAME" \
+  -o jsonpath='{.items[0].spec.template.spec.serviceAccountName}')
+$OC adm policy add-scc-to-user nonroot-v2 -z "$PROXY_SA" -n envoy-gateway-system
+```
+
+Without the grant, the proxy Pods are refused, the Gateway stays
+`Programmed=False`, and an Agent revision waits at `AGENT_GATEWAY_UNAVAILABLE`.
+Each grant lets that account run as any non-root UID. Do not grant it to other
+accounts.
 
 ## Configure the protected copies and install
 
