@@ -48,7 +48,7 @@ const appliedPatches = [
   },
   {
     file: "openclaw-node-mcp-accounts.patch",
-    sha256: "e41483f724432df4d0ce14bd0ff71e20a0f38077c7ff7f95f0f8bd114e0a1fa5",
+    sha256: "896035216022193195c475a7141bfc72462a1d0d2daf80f0db8f68dfdf6130ea",
   },
   {
     file: "openclaw-node-setup-renewal.patch",

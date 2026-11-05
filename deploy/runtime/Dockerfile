@@ -214,7 +214,7 @@ RUN echo 'b8c08aaf58b0e4a0dfb1df98c881d3d88b9ae7c51d1f50c2fda847135ff1d1db  /tmp
 
 # TODO: Drop this bridge when the pinned node host can present one tool for several accounts.
 COPY deploy/runtime/openclaw-node-mcp-accounts.patch /tmp/openclaw-node-mcp-accounts.patch
-RUN echo 'e41483f724432df4d0ce14bd0ff71e20a0f38077c7ff7f95f0f8bd114e0a1fa5  /tmp/openclaw-node-mcp-accounts.patch' | sha256sum --check --strict \
+RUN echo '896035216022193195c475a7141bfc72462a1d0d2daf80f0db8f68dfdf6130ea  /tmp/openclaw-node-mcp-accounts.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-node-mcp-accounts.patch
 
 # TODO: Remove this bridge after selecting native setup renewal with bounded saved-device fallback.

@@ -59,6 +59,7 @@ import { exactDnsName, validateOpenAiSourceBaseUrl } from "../credential-source-
 import { normalizeOpenAiBaseUrl } from "../openai-endpoint.ts";
 
 import {
+  openShellCredentialSourceLabel,
   openShellProviderName,
   revisionProviderSourceId,
   openShellWorkspaceName,
@@ -926,7 +927,7 @@ function findSourceType(types: readonly OpenShellSourceType[], type: string): Op
 function ownedBy(provider: OpenShellProviderResponse, sourceId: string): boolean {
   return (
     provider.labels[MANAGED_BY_LABEL] === MANAGED_BY &&
-    provider.labels[SOURCE_ID_LABEL] === sourceId &&
+    provider.labels[SOURCE_ID_LABEL] === openShellCredentialSourceLabel(sourceId) &&
     provider.type === openShellProviderName(sourceId)
   );
 }
@@ -1142,7 +1143,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
           type: name,
           labels: {
             [MANAGED_BY_LABEL]: MANAGED_BY,
-            [SOURCE_ID_LABEL]: context.source.id,
+            [SOURCE_ID_LABEL]: openShellCredentialSourceLabel(context.source.id),
             [NAMESPACE_ID_LABEL]: context.namespace.id,
           },
           credentials,
@@ -1331,7 +1332,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       type: name,
       labels: {
         [MANAGED_BY_LABEL]: MANAGED_BY,
-        [SOURCE_ID_LABEL]: source.id,
+        [SOURCE_ID_LABEL]: openShellCredentialSourceLabel(source.id),
         [NAMESPACE_ID_LABEL]: context.namespace.id,
       },
       credentials: token ? Object.fromEntries(names.map((name) => [name, token.accessToken])) : {},

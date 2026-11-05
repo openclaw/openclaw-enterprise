@@ -1,3 +1,15 @@
+diff --git a/packages/gateway-protocol/src/schema/worker-gateway-tool.ts b/packages/gateway-protocol/src/schema/worker-gateway-tool.ts
+index 0b29e05..1822464 100644
+--- a/packages/gateway-protocol/src/schema/worker-gateway-tool.ts
++++ b/packages/gateway-protocol/src/schema/worker-gateway-tool.ts
+@@ -90,6 +90,7 @@ export const WorkerToolSurfaceSchema = closedObject({
+                 closedObject({
+                   id: WorkerIdentifierSchema,
+                   displayName: Type.Optional(Type.String()),
++                  policyName: Type.Optional(WorkerIdentifierSchema),
+                 }),
+               ),
+             }),
 diff --git a/src/agents/gateway-tool-policy.ts b/src/agents/gateway-tool-policy.ts
 index 69f6a52..882d19d 100644
 --- a/src/agents/gateway-tool-policy.ts
@@ -638,10 +650,10 @@ index 12cfdc5..91b694a 100644
              options,
 diff --git a/src/node-host/node-worker-mcp-accounts.integration.test.ts b/src/node-host/node-worker-mcp-accounts.integration.test.ts
 new file mode 100644
-index 0000000..959cd44
+index 0000000..9922baf
 --- /dev/null
 +++ b/src/node-host/node-worker-mcp-accounts.integration.test.ts
-@@ -0,0 +1,252 @@
+@@ -0,0 +1,288 @@
 +import assert from "node:assert/strict";
 +import { randomUUID } from "node:crypto";
 +import { mkdtemp, rm } from "node:fs/promises";
@@ -660,13 +672,17 @@ index 0000000..959cd44
 +} from "../agents/gateway-tool-policy.js";
 +import { resolveOpenClawPluginToolsForOptionsAsync } from "../agents/openclaw-plugin-tools.js";
 +import { filterToolsByPolicy } from "../agents/tool-policy-match.js";
++import { createToolSurfacePresentationForTest } from "../agents/tool-surface-plan.test-support.js";
 +import { NodeHostMcpServerSchema } from "../config/zod-schema.mcp-server.js";
 +import {
 +  publishNodeSessionPluginTools,
 +  removeConnectedNodePluginTools,
 +} from "../gateway/node-plugin-tool-snapshot.js";
 +import { makeNodeSession } from "../gateway/node-registry.test-helpers.js";
++import { createWorkerConnectionIdentity } from "../gateway/worker-environments/connection-identity.test-support.js";
++import { createWorkerGatewayToolRuntime } from "../gateway/worker-environments/worker-gateway-tool-runtime.js";
 +import { NODE_WORKER_SUPERVISOR_LAUNCH_COMMAND } from "../infra/node-commands.js";
++import { createWorkerGatewayToolProxies } from "../worker/worker-gateway-tools.js";
 +import { startNodeHostMcpManager } from "./mcp.js";
 +import { createNodeWorkerMcpTurn, NodeWorkerMcpPolicy } from "./node-worker-mcp.js";
 +import {
@@ -824,6 +840,38 @@ index 0000000..959cd44
 +    // The ordinary native and Gateway policies both apply one upstream grant to
 +    // every variant, including on same-node worker admission and execution.
 +    const variants = [westTool, eastTool];
++    const workerCatalog = createWorkerGatewayToolRuntime({
++      assertCurrent() {},
++      signal: new AbortController().signal,
++      prepare: async () => ({
++        tools: variants,
++        presentation: createToolSurfacePresentationForTest(),
++        policy: {
++          workspaceOnly: true,
++          readOnly: false,
++          applyPatchEnabled: true,
++          applyPatchWorkspaceOnly: true,
++          imageSanitization: {},
++        },
++      }),
++    });
++    onTestFinished(() => workerCatalog.close());
++    const identity = createWorkerConnectionIdentity();
++    const surface = await workerCatalog.getSurface(identity);
++    const projection = await workerCatalog.getPromptProjection(identity);
++    expect(projection.tools).toEqual(
++      variants.map(({ name, description, parameters }) => ({ name, description, parameters })),
++    );
++    // The serialized worker tools must retain the same upstream policy grant.
++    const unused = async () => {
++      throw new Error("This check only reads proxy definitions");
++    };
++    const workerTools = createWorkerGatewayToolProxies(surface, {
++      invokeGatewayTool: unused,
++      cancelGatewayTool: unused,
++    });
++    expect(workerTools.map(({ name }) => name)).toEqual(variants.map(({ name }) => name));
++    expect(applyGatewayToolPolicy(workerTools, config)).toEqual(workerTools);
 +    expect(filterToolsByPolicy(variants, { allow: ["fixture_probe"] })).toEqual(variants);
 +    expect(filterToolsByPolicy(variants, { deny: ["fixture_probe"] })).toEqual([]);
 +    expect(applyGatewayToolPolicy(variants, config)).toEqual(variants);

@@ -230,6 +230,12 @@ export function revisionProviderSourceId(revision: AgentRevision, sourceId: stri
   );
 }
 
+/** Preserve the entire account delivery digest within OpenShell's 63-character ownership label. */
+export function openShellCredentialSourceLabel(sourceId: string): string {
+  const delivery = /^account-([a-f0-9]{64})$/.exec(sourceId);
+  return delivery ? `acct-${Buffer.from(delivery[1]!, "hex").toString("base64url")}-id` : sourceId;
+}
+
 export function openShellProviderName(sourceId: string): string {
   return `oce-cs-${sha256Hex(sourceId, 24)}`;
 }
