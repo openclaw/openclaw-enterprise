@@ -151,6 +151,12 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 65 && completedCount > 65) {
     return "preAgentDeployIntent";
   }
+  if (count === 66 && completedCount > 66) {
+    return "preAgentCredentialSourceLimit";
+  }
+  if (count === 67 && completedCount > 67) {
+    return "preAgentPluginDriver";
+  }
   if (count === completedCount) {
     return "completed";
   }
@@ -261,9 +267,6 @@ function catalogAtMigrationCount(count, completedCount) {
   }
   if (count === 63) {
     return "preGatewayManagedMode";
-  }
-  if (count === 66) {
-    return "preAgentPluginDriver";
   }
   refuse("an incomplete or unsupported development history is installed");
 }

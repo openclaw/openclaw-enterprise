@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
-updated: "2026-11-04"
-last_updated_session: authoring-run/e75a374f-d42f-4f95-bbfc-4e708fcaa195
+updated: "2026-11-05"
+last_updated_session: authoring-run/f65a98dd-79e1-45e2-a740-b7e73c1d9dd3
 ---
 
 # Agent repository credential flow
@@ -274,14 +274,13 @@ without changing shared selection.
 
 See [draft creation from a prepared Git session](../reference/repository-credentials/protected-openshell-git.md#use-the-admitted-repository).
 
-`apps/controller/src/drivers/repo/github/credentials/profiles.ts` defines Reader,
-Contributor and Collaborator permissions. REST uses profile-selected operations;
-GraphQL uses token permissions. Every GraphQL POST can write; Reader's token
-enforces read-only access.
 OpenShell's
 `apps/controller/src/drivers/egress-proxy/openshell-online-git-authority.ts:requestHead`
 validates [CLI metadata](../reference/repository-credentials/protected-openshell-git.md#use-the-admitted-repository).
-Route, JSON and current-authority checks remain. See
+`apps/controller/src/drivers/egress-proxy/openshell-online-git-authority.ts:validBinding`
+uses `normalizePushRefAllowlist` for Git-only policies, including terminal `/*`
+patterns. Draft-pull heads remain concrete refs. Receive-pack rejects any disallowed
+destination before durable approval. See
 [access levels](../reference/repository-credentials/access-levels.md).
 
 The [service exchange flow](repository-credentials.md#4-reserve-acquire-and-dispatch)
@@ -394,6 +393,8 @@ denied before reaching the provider, and chat continues.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 01:05: Trace Git-only branch-pattern authorization. (authoring-run/f65a98dd-79e1-45e2-a740-b7e73c1d9dd3 - dde29ac47a)
 
 - 2026-11-04 07:04: Trace symlink-safe native Git hook launchers. (authoring-run/e75a374f-d42f-4f95-bbfc-4e708fcaa195 - e122eaced28cdaff6cbf9d78e0fab4d038f9c380)
 

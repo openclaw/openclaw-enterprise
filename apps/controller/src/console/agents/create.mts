@@ -1783,7 +1783,7 @@ function renderAgentForm(
     isPending: () => pending,
     requestBody: (body) => ({
       ...discoveryCredential(),
-      ...(!installationCapabilities?.pluginPolicies ? { harnessId: harness.value } : {}),
+      harnessId: harness.value,
       ...body,
     }),
     unavailableMessage: () => {
@@ -1812,12 +1812,11 @@ function renderAgentForm(
   const pluginFields = pluginDiscovery.fields;
   function applyPluginCapabilities() {
     const capabilities = installationCapabilities;
-    const catalogs = capabilities?.pluginCatalogs;
-    const catalog = catalogs?.find((candidate) => candidate.harnessId === harness.value);
-    const policies =
-      catalogs === undefined ? capabilities?.pluginPolicies : catalog?.pluginPolicies;
-    const discovery =
-      catalogs === undefined ? capabilities?.pluginDiscovery : catalog?.pluginDiscovery;
+    const catalog = capabilities?.pluginCatalogs?.find(
+      (candidate) => candidate.harnessId === harness.value,
+    );
+    const policies = catalog?.pluginPolicies;
+    const discovery = catalog?.pluginDiscovery;
     savedOpenClawCatalog = policies?.driver.implementation === "occ/openclaw-plugin";
     catalogUnavailable = capabilities !== undefined && discovery === undefined;
     pluginDiscoveryCredential = discovery?.credential ?? (catalogUnavailable ? null : "required");
@@ -1825,6 +1824,9 @@ function renderAgentForm(
     defaultApprovers.hidden = policies?.approvers?.agent !== true;
     if (!defaultApprovers.hidden) {
       defaultApprovers.refreshNames();
+    } else if (capabilities && pluginApprovers !== undefined) {
+      pluginApprovers = undefined;
+      defaultApprovers.refreshValue();
     }
   }
   function resetPluginDiscovery() {

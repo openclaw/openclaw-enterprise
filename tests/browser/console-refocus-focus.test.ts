@@ -21,11 +21,10 @@ import {
   secretOptionLabel,
   selectSecret,
   settledView,
-  trackSettledFetches,
   waitForEnabled,
-  waitForIdleFetches,
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
+import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
 import { confirmAgentAction, responseTo } from "./console-action-helpers.ts";
 import {
   focusedLabel,
@@ -36,7 +35,7 @@ import {
   tagView,
   viewTag,
   waitForFocusedLabel,
-} from "./console-refocus-helpers.mjs";
+} from "./console-refocus-helpers.ts";
 import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";

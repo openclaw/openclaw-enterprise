@@ -104,7 +104,7 @@ OPENCLAW_CONFIG_PATH="$OPENCLAW_NODE_STATE_DIR/openclaw.json" openclaw config ge
   Installation. The examples also use Node.js and a protected service-key file.
 - Choose an Agent configured for embedded OpenClaw on Kubernetes and an
   Installation that explicitly selects the bundled OpenClaw Plugin Driver
-  (`drivers.plugin.id: occ-plugin`); no Plugin Driver is selected by default.
+  (an `occ-plugin` entry under `drivers.plugin`); no Plugin Driver is selected by default.
   See [Driver selection](../../reference/drivers/plugin-bundled.md#selection-and-catalogs).
   SSH Compute rejects Agents with plugin selections or an Agent default plugin
   approver policy.

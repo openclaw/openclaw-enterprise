@@ -202,18 +202,20 @@ for profile-specific allowed/denied requests and the required model-source choic
 
 ## Use the admitted repository
 
+The Sandbox sets process-scoped `safe.directory` for its exact approved mount,
+allowing root-owned workspaces without trusting nested repositories or changing
+persistent Git configuration.
+
 With `github-repository`, use selected HTTPS Git URLs. API operations
 use token permissions. Both API scopes refuse runner-token and deploy-key
 creation. For selected repositories, the sender accepts the CLI’s
 `Time-Zone: Etc/UTC` and, on GraphQL POSTs, `Graphql-Features: merge_queue`.
 Duplicate headers are refused. Each request requires current authorization.
 
-For an explicit `git-write` grant, clone, fetch and push exactly
-`https://github.com/$OCE_OPENSHELL_GIT_REPOSITORY.git`: the lowercase name OCE
-gives the Sandbox, with `.git`. Git and OpenShell match the credential path
-case-sensitively, so GitHub's mixed-case spelling, such as
-`https://github.com/Acme/Widgets.git`, or the URL without `.git` gets no
-credential, and Git fails, for example with `could not read Username` or
+With `git-write`, use exactly
+`https://github.com/$OCE_OPENSHELL_GIT_REPOSITORY.git` for clone, fetch and push.
+Credential paths are case-sensitive: mixed-case URLs or those missing `.git`
+receive no credential. Git reports `could not read Username` or
 `The requested URL returned error: 403`.
 
 [OCC access rules](../../flows/agent-repository-credentials.md) own grant lifetime

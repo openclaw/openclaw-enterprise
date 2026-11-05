@@ -9,11 +9,10 @@ for the Agent's Harness. OCC checks policy before saving and performs
 
 ## Current support
 
-On dedicated OpenClaw with Kubernetes, enable one managed package with `plugins[id].enabled`.
+Dedicated OpenClaw on Kubernetes supports both packages together (`plugins[id].enabled`).
 [Google Workspace](../../apps/controller/plugins/oce-google-workspace/plugin.json) installs a Gateway skill and worker CLI.
-MCP releases pin endpoints and credential slots. `tools/list` discovers tools.
-Agent selections govern worker, Gateway and OpenShell access.
-[Slack](../guides/topics/plugins-configure.md#configure-slack-search)
+[Slack](../guides/topics/plugins-configure.md#configure-slack-search) discovers tools through `tools/list`.
+Agent selections govern worker, Gateway and OpenShell access. Workers advertise 128 MCP tools at most.
 
 Embedded OpenClaw supports the bundled Diffs plugin and its `diffs` tool, with
 plugin/tool enablement and `provider_default` or `none` approval. Both use the
@@ -165,8 +164,7 @@ Approval cannot re-enable a disabled tool.
 
 Read `data.capabilities.pluginCatalogs` from an authorized `GET /installation`.
 Each entry identifies the `harnessId` and gives its `pluginPolicies` and available
-`pluginDiscovery` settings. With one enabled catalog, the same fields are also
-available directly under `data.capabilities`. Each policy object includes:
+`pluginDiscovery` settings. Each policy object includes:
 
 - `driver`: the selected `id` and `implementation`.
 - `toolDefaults` and `tools`: each has an `enabled` support Boolean, an `approval`

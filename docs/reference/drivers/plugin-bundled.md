@@ -9,7 +9,7 @@ owns the API and policy vocabulary. The
 
 ## Selection and catalogs
 
-List both Drivers in trusted Installation YAML, or use one object for a single catalog. OCC routes by Harness.
+List the Plugin Drivers in trusted Installation YAML. Include one entry for each Harness whose catalog you want to offer.
 
 ```yaml
 drivers:
@@ -45,11 +45,11 @@ separate Codex profile:
 ```yaml
 drivers:
   plugin:
-    id: codex-plugin
-    configuration:
-      codexExecutable: /opt/codex/bin/codex
-      codexHome: /var/lib/occ/codex-catalog
-      requestTimeoutMs: 10000
+    - id: codex-plugin
+      configuration:
+        codexExecutable: /opt/codex/bin/codex
+        codexHome: /var/lib/occ/codex-catalog
+        requestTimeoutMs: 10000
 ```
 
 Supply `codexExecutable` and `codexHome` together. Provision that home with Codex

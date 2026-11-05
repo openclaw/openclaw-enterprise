@@ -916,10 +916,13 @@ export async function loadInstallationConfiguration(options: {
   const iamSelection = object(drivers.iam, "drivers.iam");
   const computeSelection = object(drivers.compute, "drivers.compute");
   const secretSelection = object(drivers.secret, "drivers.secret");
-  const pluginEntries = drivers.plugin === undefined ? [] : [drivers.plugin].flat();
+  const pluginEntries = drivers.plugin === undefined ? [] : drivers.plugin;
+  if (!Array.isArray(pluginEntries)) {
+    throw new Error("drivers.plugin must be an array of Plugin Driver registrations.");
+  }
   const pluginIds = new Set<string>();
   const plugins = pluginEntries.map((entry, index) => {
-    const path = Array.isArray(drivers.plugin) ? `drivers.plugin[${index}]` : "drivers.plugin";
+    const path = `drivers.plugin[${index}]`;
     const selection = object(entry, path);
     closed(selection, ["id", "configuration"], path);
     if (selection.id !== "occ-plugin" && selection.id !== "codex-plugin") {

@@ -12472,104 +12472,6 @@
                                 "type": "object"
                               },
                               "type": "array"
-                            },
-                            "pluginDiscovery": {
-                              "additionalProperties": false,
-                              "properties": {
-                                "credential": {
-                                  "anyOf": [
-                                    { "const": "required", "type": "string" },
-                                    { "const": "none", "type": "string" }
-                                  ]
-                                }
-                              },
-                              "required": ["credential"],
-                              "type": "object"
-                            },
-                            "pluginPolicies": {
-                              "additionalProperties": false,
-                              "properties": {
-                                "approvers": {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "agent": { "type": "boolean" },
-                                    "plugin": { "type": "boolean" },
-                                    "tools": { "type": "boolean" }
-                                  },
-                                  "required": ["agent", "plugin", "tools"],
-                                  "type": "object"
-                                },
-                                "driver": { "$ref": "#/components/schemas/def-1" },
-                                "driverPolicySchema": {
-                                  "additionalProperties": {},
-                                  "type": "object"
-                                },
-                                "policyScopeByPlugin": {
-                                  "additionalProperties": {
-                                    "const": "enablement_only",
-                                    "type": "string"
-                                  },
-                                  "type": "object"
-                                },
-                                "toolDefaults": {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "approval": {
-                                      "items": {
-                                        "anyOf": [
-                                          { "const": "provider_default", "type": "string" },
-                                          { "const": "all_actions", "type": "string" },
-                                          { "const": "write_actions", "type": "string" },
-                                          { "const": "none", "type": "string" }
-                                        ]
-                                      },
-                                      "type": "array"
-                                    },
-                                    "enabled": { "type": "boolean" },
-                                    "reviewer": {
-                                      "items": {
-                                        "anyOf": [
-                                          { "const": "human", "type": "string" },
-                                          { "const": "auto", "type": "string" }
-                                        ]
-                                      },
-                                      "type": "array"
-                                    }
-                                  },
-                                  "required": ["enabled", "approval", "reviewer"],
-                                  "type": "object"
-                                },
-                                "tools": {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "approval": {
-                                      "items": {
-                                        "anyOf": [
-                                          { "const": "provider_default", "type": "string" },
-                                          { "const": "all_actions", "type": "string" },
-                                          { "const": "write_actions", "type": "string" },
-                                          { "const": "none", "type": "string" }
-                                        ]
-                                      },
-                                      "type": "array"
-                                    },
-                                    "enabled": { "type": "boolean" },
-                                    "reviewer": {
-                                      "items": {
-                                        "anyOf": [
-                                          { "const": "human", "type": "string" },
-                                          { "const": "auto", "type": "string" }
-                                        ]
-                                      },
-                                      "type": "array"
-                                    }
-                                  },
-                                  "required": ["enabled", "approval", "reviewer"],
-                                  "type": "object"
-                                }
-                              },
-                              "required": ["driver", "toolDefaults", "tools", "driverPolicySchema"],
-                              "type": "object"
                             }
                           },
                           "type": "object"
@@ -12994,104 +12896,6 @@
                                 "type": "object"
                               },
                               "type": "array"
-                            },
-                            "pluginDiscovery": {
-                              "additionalProperties": false,
-                              "properties": {
-                                "credential": {
-                                  "anyOf": [
-                                    { "const": "required", "type": "string" },
-                                    { "const": "none", "type": "string" }
-                                  ]
-                                }
-                              },
-                              "required": ["credential"],
-                              "type": "object"
-                            },
-                            "pluginPolicies": {
-                              "additionalProperties": false,
-                              "properties": {
-                                "approvers": {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "agent": { "type": "boolean" },
-                                    "plugin": { "type": "boolean" },
-                                    "tools": { "type": "boolean" }
-                                  },
-                                  "required": ["agent", "plugin", "tools"],
-                                  "type": "object"
-                                },
-                                "driver": { "$ref": "#/components/schemas/def-1" },
-                                "driverPolicySchema": {
-                                  "additionalProperties": {},
-                                  "type": "object"
-                                },
-                                "policyScopeByPlugin": {
-                                  "additionalProperties": {
-                                    "const": "enablement_only",
-                                    "type": "string"
-                                  },
-                                  "type": "object"
-                                },
-                                "toolDefaults": {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "approval": {
-                                      "items": {
-                                        "anyOf": [
-                                          { "const": "provider_default", "type": "string" },
-                                          { "const": "all_actions", "type": "string" },
-                                          { "const": "write_actions", "type": "string" },
-                                          { "const": "none", "type": "string" }
-                                        ]
-                                      },
-                                      "type": "array"
-                                    },
-                                    "enabled": { "type": "boolean" },
-                                    "reviewer": {
-                                      "items": {
-                                        "anyOf": [
-                                          { "const": "human", "type": "string" },
-                                          { "const": "auto", "type": "string" }
-                                        ]
-                                      },
-                                      "type": "array"
-                                    }
-                                  },
-                                  "required": ["enabled", "approval", "reviewer"],
-                                  "type": "object"
-                                },
-                                "tools": {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "approval": {
-                                      "items": {
-                                        "anyOf": [
-                                          { "const": "provider_default", "type": "string" },
-                                          { "const": "all_actions", "type": "string" },
-                                          { "const": "write_actions", "type": "string" },
-                                          { "const": "none", "type": "string" }
-                                        ]
-                                      },
-                                      "type": "array"
-                                    },
-                                    "enabled": { "type": "boolean" },
-                                    "reviewer": {
-                                      "items": {
-                                        "anyOf": [
-                                          { "const": "human", "type": "string" },
-                                          { "const": "auto", "type": "string" }
-                                        ]
-                                      },
-                                      "type": "array"
-                                    }
-                                  },
-                                  "required": ["enabled", "approval", "reviewer"],
-                                  "type": "object"
-                                }
-                              },
-                              "required": ["driver", "toolDefaults", "tools", "driverPolicySchema"],
-                              "type": "object"
                             }
                           },
                           "type": "object"
@@ -14455,7 +14259,7 @@
                                   "required": ["sourceId"],
                                   "type": "object"
                                 },
-                                "maxItems": 8,
+                                "maxItems": 64,
                                 "type": "array",
                                 "uniqueItems": true
                               },
@@ -14957,7 +14761,7 @@
                       "required": ["sourceId"],
                       "type": "object"
                     },
-                    "maxItems": 8,
+                    "maxItems": 64,
                     "type": "array",
                     "uniqueItems": true
                   },
@@ -15248,7 +15052,7 @@
                             "required": ["sourceId"],
                             "type": "object"
                           },
-                          "maxItems": 8,
+                          "maxItems": 64,
                           "type": "array",
                           "uniqueItems": true
                         },
@@ -16536,7 +16340,7 @@
                       },
                       "q": { "maxLength": 1024, "type": "string" }
                     },
-                    "required": ["credentialSource"],
+                    "required": ["harnessId", "credentialSource"],
                     "type": "object"
                   },
                   {
@@ -16551,6 +16355,7 @@
                       },
                       "q": { "maxLength": 1024, "type": "string" }
                     },
+                    "required": ["harnessId"],
                     "type": "object"
                   },
                   {
@@ -16572,7 +16377,7 @@
                       },
                       "q": { "maxLength": 1024, "type": "string" }
                     },
-                    "required": ["accessToken"],
+                    "required": ["harnessId", "accessToken"],
                     "type": "object"
                   },
                   {
@@ -16604,7 +16409,7 @@
                         "type": "object"
                       }
                     },
-                    "required": ["secretRef"],
+                    "required": ["harnessId", "secretRef"],
                     "type": "object"
                   }
                 ]
@@ -16925,7 +16730,7 @@
                       },
                       "pluginId": { "maxLength": 256, "minLength": 1, "type": "string" }
                     },
-                    "required": ["pluginId", "credentialSource"],
+                    "required": ["harnessId", "pluginId", "credentialSource"],
                     "type": "object"
                   },
                   {
@@ -16939,7 +16744,7 @@
                       },
                       "pluginId": { "maxLength": 256, "minLength": 1, "type": "string" }
                     },
-                    "required": ["pluginId"],
+                    "required": ["harnessId", "pluginId"],
                     "type": "object"
                   },
                   {
@@ -16960,7 +16765,7 @@
                       },
                       "pluginId": { "maxLength": 256, "minLength": 1, "type": "string" }
                     },
-                    "required": ["pluginId", "accessToken"],
+                    "required": ["harnessId", "pluginId", "accessToken"],
                     "type": "object"
                   },
                   {
@@ -16991,7 +16796,7 @@
                         "type": "object"
                       }
                     },
-                    "required": ["pluginId", "secretRef"],
+                    "required": ["harnessId", "pluginId", "secretRef"],
                     "type": "object"
                   }
                 ]
@@ -19134,7 +18939,7 @@
                             "required": ["sourceId"],
                             "type": "object"
                           },
-                          "maxItems": 8,
+                          "maxItems": 64,
                           "type": "array",
                           "uniqueItems": true
                         },
@@ -19567,7 +19372,7 @@
                                 "required": ["sourceId"],
                                 "type": "object"
                               },
-                              "maxItems": 8,
+                              "maxItems": 64,
                               "type": "array",
                               "uniqueItems": true
                             },
@@ -20084,7 +19889,7 @@
                       "required": ["sourceId"],
                       "type": "object"
                     },
-                    "maxItems": 8,
+                    "maxItems": 64,
                     "type": "array",
                     "uniqueItems": true
                   },
@@ -20400,7 +20205,7 @@
                             "required": ["sourceId"],
                             "type": "object"
                           },
-                          "maxItems": 8,
+                          "maxItems": 64,
                           "type": "array",
                           "uniqueItems": true
                         },
@@ -21399,7 +21204,7 @@
                             "required": ["sourceId"],
                             "type": "object"
                           },
-                          "maxItems": 8,
+                          "maxItems": 64,
                           "type": "array",
                           "uniqueItems": true
                         },
@@ -28115,7 +27920,7 @@
                                 "required": ["sourceId"],
                                 "type": "object"
                               },
-                              "maxItems": 8,
+                              "maxItems": 64,
                               "type": "array",
                               "uniqueItems": true
                             },
@@ -30735,7 +30540,7 @@
                             "required": ["sourceId"],
                             "type": "object"
                           },
-                          "maxItems": 8,
+                          "maxItems": 64,
                           "type": "array",
                           "uniqueItems": true
                         },
@@ -31452,7 +31257,7 @@
                             "required": ["sourceId"],
                             "type": "object"
                           },
-                          "maxItems": 8,
+                          "maxItems": 64,
                           "type": "array",
                           "uniqueItems": true
                         },

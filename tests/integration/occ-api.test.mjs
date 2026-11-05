@@ -3098,7 +3098,7 @@ test("credential source registration names the missing Credential Gateway", asyn
   );
 });
 
-test("Agent reads return the bound credentialSources; revision reads return only source IDs", async () => {
+test("Agent drafts and revisions support up to 64 distinct credential sources and expose only their IDs", async () => {
   const fixture = await createInjectedFixture({
     computeDriver: createReadyComputeDriver("compute-credential-sources", {
       validateHarnessAuth() {},
@@ -3165,14 +3165,23 @@ test("Agent reads return the bound credentialSources; revision reads return only
     fixture.controller.registerDriver(driver);
     fixture.controller.selectDriver(driver.capability, driver.id);
   }
-  const source = await controller.request(
-    "POST",
-    `/namespaces/${namespace.id}/credential-sources`,
-    {
-      body: { name: "registry", type: "registry", config: { host: "registry.example.com" } },
-    },
-  );
-  assert.equal(source.status, 201, JSON.stringify(source.body));
+  const sources = [];
+  for (let i = 0; i < 65; i++) {
+    const registered = await controller.request(
+      "POST",
+      `/namespaces/${namespace.id}/credential-sources`,
+      {
+        body: {
+          name: `registry-${i}`,
+          type: "registry",
+          config: { host: `registry-${i}.example.com` },
+        },
+      },
+    );
+    assert.equal(registered.status, 201, JSON.stringify(registered.body));
+    sources.push({ sourceId: registered.data.id });
+  }
+  const credentialSources = sources.slice(0, 64);
   const configuration = await createConfiguration(controller, namespace.id, {
     agents: {
       defaults: {
@@ -3187,11 +3196,11 @@ test("Agent reads return the bound credentialSources; revision reads return only
       configurationId: configuration.id,
       executionMode: "dedicated",
       harnessAuth: { method: "runtime" },
-      credentialSources: [{ sourceId: source.data.id }],
+      credentialSources,
     },
   });
   assert.equal(created.status, 201, JSON.stringify(created.body));
-  assert.deepEqual(created.data.credentialSources, [{ sourceId: source.data.id }]);
+  assert.deepEqual(created.data.credentialSources, credentialSources);
   // An object array declared uniqueItems: listing one source twice names the rule.
   const repeated = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
     body: {
@@ -3199,7 +3208,7 @@ test("Agent reads return the bound credentialSources; revision reads return only
       configurationId: configuration.id,
       executionMode: "dedicated",
       harnessAuth: { method: "runtime" },
-      credentialSources: [{ sourceId: source.data.id }, { sourceId: source.data.id }],
+      credentialSources: [sources[0], sources[0]],
     },
   });
   assert.equal(repeated.status, 400, JSON.stringify(repeated.body));
@@ -3211,9 +3220,15 @@ test("Agent reads return the bound credentialSources; revision reads return only
     { path: "/credentialSources", code: "INVALID_VALUE" },
   ]);
   const agentPath = `/namespaces/${namespace.id}/agents/${created.data.id}`;
-  assert.deepEqual((await controller.request("GET", agentPath)).data.credentialSources, [
-    { sourceId: source.data.id },
-  ]);
+  const overflow = await controller.request("PATCH", agentPath, {
+    body: { configurationId: configuration.id, credentialSources: sources },
+  });
+  assertApiError(overflow, 400, "INVALID_REQUEST");
+  assert.match(overflow.body.error.message, /credentialSources.*at most 64 items/);
+  assert.deepEqual(
+    (await controller.request("GET", agentPath)).data.credentialSources,
+    credentialSources,
+  );
 
   const roleId = `credential-source-operate-${created.data.id}`;
   fixture.state.roles.push({
@@ -3221,15 +3236,17 @@ test("Agent reads return the bound credentialSources; revision reads return only
     namespaceId: namespace.id,
     permissions: [{ action: "operate", resourceKind: "credential_source" }],
   });
-  fixture.state.bindings.push({
-    id: roleId,
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: created.data.servicePrincipalId,
-    roleId,
-    resourceKind: "credential_source",
-    resourceId: source.data.id,
-  });
+  for (const { sourceId } of credentialSources) {
+    fixture.state.bindings.push({
+      id: `${roleId}-${sourceId}`,
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: created.data.servicePrincipalId,
+      roleId,
+      resourceKind: "credential_source",
+      resourceId: sourceId,
+    });
+  }
   fixture.state.identities.push({
     kind: "service_principal",
     id: created.data.servicePrincipalId,
@@ -3239,10 +3256,10 @@ test("Agent reads return the bound credentialSources; revision reads return only
   const deployed = await controller.request("POST", `${agentPath}/deploy`);
   assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
   // The gateway and type frozen at admission are private admission metadata.
-  assert.deepEqual(deployed.data.credentialSources, [{ sourceId: source.data.id }]);
+  assert.deepEqual(deployed.data.credentialSources, credentialSources);
   const revision = await controller.request("GET", `${agentPath}/revisions/${deployed.data.id}`);
   assert.equal(revision.status, 200, JSON.stringify(revision.body));
-  assert.deepEqual(revision.data.credentialSources, [{ sourceId: source.data.id }]);
+  assert.deepEqual(revision.data.credentialSources, credentialSources);
 });
 
 test("refresh source PATCH and rotate refuse a stale refresh token and audit a failed gateway effect", async () => {
@@ -5498,7 +5515,7 @@ test("Agent create and update replace policy-only plugin maps and revisions free
   controller.fixture.controller.selectDriver("plugin", pluginDriver.id);
   const installation = await controller.request("GET", "/installation");
   assert.equal(installation.status, 200);
-  const capabilities = installation.data.capabilities.pluginPolicies;
+  const capabilities = installation.data.capabilities.pluginCatalogs[0].pluginPolicies;
   assert.deepEqual(capabilities.driver, {
     id: "occ-plugin",
     implementation: "occ/openclaw-plugin",
@@ -5689,7 +5706,7 @@ test("Agent plugin reviewer selection preserves omission and rejects unsupported
   controller.fixture.controller.selectDriver("plugin", pluginDriver.id);
   const installation = await controller.request("GET", "/installation");
   assert.equal(installation.status, 200);
-  const capabilities = installation.data.capabilities.pluginPolicies;
+  const capabilities = installation.data.capabilities.pluginCatalogs[0].pluginPolicies;
   assert.equal(capabilities.driver.id, "codex-plugin");
   assert.deepEqual(capabilities.toolDefaults.reviewer, ["human", "auto"]);
   assert.deepEqual(capabilities.tools.reviewer, []);
@@ -5972,37 +5989,13 @@ test("Agent save and deployment refuse plugins the Plugin Driver cannot run in t
     namespace.id,
     "ready",
   );
-  await bindHarnessKey(controller.fixture, namespace.id, created.data);
-  // An Agent stored before this check: deployment refuses it before admitting a revision.
-  await controller.fixture.controller.transact((unit) =>
-    unit.agents.updateConfiguration(
-      namespace.id,
-      created.data.id,
-      codex.id,
-      undefined,
-      undefined,
-      undefined,
-      plugins,
-    ),
-  );
-  assertRefused(await controller.request("POST", `${agentPath}/deploy`), "deploy");
-  assert.deepEqual((await controller.request("GET", `${agentPath}/revisions`)).data, []);
-  // Even a compatible Harness cannot confer ownership on existing IDs saved without an owner.
-  const unowned = await controller.request("PATCH", agentPath, {
-    body: { configurationId: openclaw.id, plugins },
-  });
-  assertApiError(unowned, 400, "INVALID_REQUEST");
-  assert.match(unowned.body.error.message, /Clear the Agent's existing plugin selections/);
-  // The refusal's advice works: clearing the plugins saves.
-  const cleared = await controller.request("PATCH", agentPath, {
-    body: { configurationId: codex.id, plugins: {} },
-  });
-  assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
-
-  const reselected = await controller.request("PATCH", agentPath, {
-    body: { configurationId: openclaw.id, executionMode: "embedded", plugins },
-  });
-  assert.equal(reselected.status, 200, JSON.stringify(reselected.body));
+  await bindHarnessKey(controller.fixture, namespace.id, embedded.data);
+  // Removing an installed catalog prevents another deployment of an Agent that already selected it.
+  const openclawPath = `${agents}/${embedded.data.id}`;
+  controller.fixture.controller.installPluginDrivers([]);
+  const missing = await controller.request("POST", `${openclawPath}/deploy`);
+  assertApiError(missing, 501, "NOT_IMPLEMENTED");
+  assert.deepEqual((await controller.request("GET", `${openclawPath}/revisions`)).data, []);
 
   // An Installation offering only Codex plugins refuses both OpenClaw modes at save.
   const codexDriver = new CodexPluginDriver();
@@ -6446,7 +6439,7 @@ test("Codex Agents refuse plugin and tool approver overrides and keep Agent-wide
   // The Console reads this capability to hide plugin and tool approver fields for Codex.
   const installation = await controller.request("GET", "/installation");
   assert.equal(installation.status, 200);
-  assert.deepEqual(installation.data.capabilities.pluginPolicies.approvers, {
+  assert.deepEqual(installation.data.capabilities.pluginCatalogs[0].pluginPolicies.approvers, {
     agent: true,
     plugin: false,
     tools: false,
@@ -11287,7 +11280,7 @@ test("managed MCP discovery refuses private DNS answers and redirects", async ()
   );
 });
 
-test("deploying Slack freezes the Agent's discovered tool selection and keeps its credential attachment independent", async (t) => {
+test("deploying Google Workspace and Slack together freezes both selections and preserves independent credentials", async (t) => {
   const sourceConfig = {
     protocol: "mcp",
     host: "mcp.slack.com",
@@ -11657,42 +11650,42 @@ test("deploying Slack freezes the Agent's discovered tool selection and keeps it
   const slot = capabilities.data.credentialSlots.find((entry) => entry.pluginId === pluginId);
   assert.deepEqual(slot.sources, [{ id: source.data.id, name: "Slack account" }]);
   assert.equal(slot.toolDiscovery, true);
-  const save = (toolNames) =>
-    controller.request("PATCH", agentPath, {
-      body: {
-        configurationId: configuration.id,
-        plugins: {
-          [pluginId]: {
-            enabled: true,
-            driverPolicy: {
-              releaseSha256: slot.releaseSha256,
-              credentials: { account: source.data.id },
-              toolNames,
-            },
-          },
-        },
+  const google = { "occ-plugin:google@1.0.0": { enabled: true } };
+  const pluginsFor = (toolNames) => ({
+    ...google,
+    [pluginId]: {
+      enabled: true,
+      driverPolicy: {
+        releaseSha256: slot.releaseSha256,
+        credentials: { account: source.data.id },
+        toolNames,
       },
+    },
+  });
+  const save = (plugins) =>
+    controller.request("PATCH", agentPath, {
+      body: { configurationId: configuration.id, plugins },
     });
-  const refused = await save(["slack_*"]);
+  const refused = await save(pluginsFor(["slack_*"]));
   assertApiError(refused, 400, "INVALID_REQUEST");
   assert.match(refused.body.error.message, /Select distinct literal Slack tool names/);
   // Discovery offers both tools. The operator selects one, and deployment freezes that subset.
-  const saved = await save(["slack_send_message"]);
+  const approved = pluginsFor(["slack_send_message"]);
+  const saved = await save(approved);
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   assert.deepEqual(saved.data.plugins[pluginId].driverPolicy.toolNames, ["slack_send_message"]);
   const deployed = await controller.request("POST", `${agentPath}/deploy`);
   assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
-  assert.deepEqual(deployed.data.plugins.plugins, saved.data.plugins);
+  assert.deepEqual(deployed.data.plugins.plugins, approved);
   assert.deepEqual(deployed.data.credentialSources, credentialSources);
 
-  const cleared = await controller.request("PATCH", agentPath, {
-    body: { configurationId: configuration.id, plugins: {} },
-  });
+  const cleared = await save(google);
   assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
+  assert.deepEqual(cleared.data.plugins, google);
   assert.deepEqual(cleared.data.credentialSources, credentialSources);
   const revision = await controller.request("GET", `${agentPath}/revisions/${deployed.data.id}`);
   assert.equal(revision.status, 200, JSON.stringify(revision.body));
-  assert.deepEqual(revision.data.plugins.plugins, saved.data.plugins);
+  assert.deepEqual(revision.data.plugins.plugins, approved);
 });
 
 test("saved-Agent discovery offers managed packages only where Agent save admits them", async () => {

@@ -70,9 +70,9 @@ graph TD
 ### Credential-scoped discovery
 
 [Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) requires
-Agent `create` and caller `operate` on stored sources. OCC rechecks both before
-Driver use. With multiple catalogs, specify the Harness. Wrong Namespace returns `400`, missing Secret `404`, unavailable
-explicit CredentialSource `409`. Unsupported discovery reads no credential.
+the target Harness, Agent `create` and caller `operate` on stored sources.
+A wrong Namespace returns `400`, a missing Secret `404`, and an unavailable
+explicit CredentialSource `409`.
 
 Saved discovery requires a dedicated Agent with caller `read` and `update`.
 OCC offers admissible plugins. It rechecks attachment and both caller and Agent
@@ -80,7 +80,7 @@ OCC offers admissible plugins. It rechecks attachment and both caller and Agent
 Missing or unready bound sources return `404`. Hosted catalogs use the saved
 bearer; curated catalogs need none.
 
-CredentialSource reads honor timeout and cancellation. Before provider access, OCC rechecks grants and catalog. Disconnect discards late tokens.
+Before provider access, OCC rechecks grants and catalog. Cancellation discards late credentials.
 
 `packages/occ/src/index.ts:OpenClawController.discoverManagedMcpTools`
 
@@ -88,8 +88,7 @@ For managed MCP, the Plugin Driver matches the release slot. OCC reads the beare
 through the Secret Driver and rechecks grants and attachment before `tools/list`.
 `driverPolicy.toolNames` pins upstream names for worker, Gateway and OpenShell.
 
-Console cancels reads on picker or view close and clears results on account
-change. Harness changes clear selections. Hosted reads reject redirects and credential echoes, limit size and
+Closing the picker cancels discovery. Changing accounts clears results. Changing Harness clears selections and approvers. Hosted reads reject redirects and credential echoes, limit size and
 time, and return safe metadata with `Cache-Control: no-store`.
 See [catalog browsing](../reference/drivers/plugin-bundled.md#selection-and-catalogs).
 
@@ -117,13 +116,13 @@ Installation uses `GET /installation`; Agent editors use
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-OCC snapshots the Configuration, Driver, and selections in the revision. Before cutover, the worker checks the pinned Driver against the catalog. Compute projects a package descriptor. Startup verifies its release and assets.
+OCC snapshots the Configuration, Driver and selections. Before cutover the worker checks the pinned Driver against the Harness. Gateway and worker each verify their assets from Compute’s package descriptors.
 
-- **CLI packages.** The Gateway loads skill instructions. The Harness runs its image’s pinned executable. The shared guard checks operation and credential restrictions before injection.
-- **Hosted MCP packages.** With an account and selected tools, the worker advertises those tools from Compute’s pinned descriptor. Per-turn Gateway grants allow same-node execution. For other nodes or Gateway hooks, the Gateway returns structured results or policy denials to Code Mode. The credential driver attaches the source. Sandbox delivers its placeholder and scopes worker and script requests to the selection. OpenShell enforces exact MCP names and rejects overlapping routes.
-- **Native runtime plugins.** Startup installs packages and verifies native tool policy.
+- **CLI packages.** The Gateway loads skills. The Harness runs the pinned executable. The guard checks operation and credential restrictions before injection.
+- **Hosted MCP packages.** An account lets the worker advertise selected tools. The Gateway grants same-node execution per turn. Calls requiring Gateway hooks or another node return structured results or policy denials through the Gateway to Code Mode. The credential driver attaches the source. Sandbox supplies its placeholder and scopes worker and script requests. OpenShell enforces exact tool names and rejects overlapping routes.
+- **Native runtime plugins.** Startup installs packages and verifies tool policy.
 
-Credential withdrawal removes injection. Recovery preserves other attachments.
+Withdrawal removes credential injection. Recovery preserves other attachments.
 
 ### 3. Deliver requested state through Compute preparation
 
@@ -353,6 +352,8 @@ establish starvation.
 ## Changelog
 
 - 2026-11-05 01:02: Select the Harness catalog and recheck its identity before cutover. (01a169f0-a851-7b81-8e83-ff597893aa21 - 0e9575278)
+
+- 2026-11-03 01:40: Trace startup of multiple managed packages on one dedicated Agent. (authoring-run/e29308a5-ef76-4952-b439-23483c4dbd99 - 54b2a30498f690e2a16a3198e84a6363f69d91ae)
 
 - 2026-11-03 01:10: Describe hosted MCP packages and Driver-owned request policy. (authoring-run/1bd8c7a3-997a-45b2-93a4-e24d114c9ca8 - 4178b555ac5dc711c818055bd7fe34c3e4d4943b)
 

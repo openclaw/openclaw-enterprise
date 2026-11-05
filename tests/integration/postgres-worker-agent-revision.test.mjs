@@ -3441,9 +3441,11 @@ function withBothPluginDrivers(drivers) {
 }
 
 revisionTest(
-  "a worker rejects a historical embedded Codex pin before stopping the active predecessor",
+  "a worker with a missing pinned Plugin Driver keeps the previous revision active",
   async (fixture) => {
-    const { owner, candidate: previous } = await fixture.admitInitialRevision("plugin-cutover");
+    const { owner, candidate: previous } = await fixture.admitInitialRevision("plugin-cutover", {
+      agent: { executionMode: "dedicated" },
+    });
     await fixture.start(
       {
         ...fixture.compute,
@@ -3458,12 +3460,12 @@ revisionTest(
           return fixture.compute.stopRevision(revision);
         },
       },
-      { transformDrivers: withBothPluginDrivers },
+      { transformDrivers: (drivers) => ({ ...drivers, pluginDrivers: [new OCCPluginDriver()] }) },
     );
     await fixture.work(previous, "succeeded");
-    // Historical broker-only revisions pinned Codex even with no selected plugin IDs.
+    // The admitted revision pins Codex, but this worker no longer has that Driver.
     const next = await fixture.revision(owner, 2, {
-      plugins: { driver: { id: "codex-plugin", implementation: "occ/codex-plugin" }, plugins: {} },
+      plugins: codexPluginRevisionState("codex-plugin:linear@openai-curated-remote"),
     });
     await fixture.work(next, "failed_permanent");
     assert.equal((await fixture.workResult(next)).rows[0].reason_code, "PLUGIN_DRIVER_MISMATCH");

@@ -331,8 +331,8 @@ export const agents = occSchema.table(
     ),
     check(
       "agents_plugin_driver_selection",
-      sql`${table.pluginDriver} IS NULL OR (
-      ${table.plugins} IS NOT NULL AND ${table.plugins} <> '{}'::jsonb
+      sql`CASE WHEN coalesce(${table.plugins}, '{}'::jsonb) = '{}'::jsonb THEN ${table.pluginDriver} IS NULL
+    ELSE ${table.pluginDriver} IS NOT NULL
       AND jsonb_typeof(${table.pluginDriver}) = 'object'
       AND ${table.pluginDriver} ?& ARRAY['id', 'implementation']
       AND (${table.pluginDriver} - 'id' - 'implementation') = '{}'::jsonb
@@ -340,7 +340,7 @@ export const agents = occSchema.table(
       AND jsonb_typeof(${table.pluginDriver}->'implementation') = 'string'
       AND (${table.pluginDriver}->>'id') ~ '[^[:space:]]'
       AND (${table.pluginDriver}->>'implementation') ~ '[^[:space:]]'
-    )`,
+    END`,
     ),
     check(
       "agents_repository_access_valid",

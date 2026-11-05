@@ -118,7 +118,7 @@ test("Kubernetes dev-up authenticates the Installation and cleanup uses its save
   // contract while trusting only Pod loopback, never an assumed cluster CIDR.
   const installation = loadYaml(config);
   assert.equal(installation.presets.includeDefaults, true);
-  assert.equal(installation.drivers.plugin.id, "codex-plugin");
+  assert.equal(installation.drivers.plugin[0].id, "codex-plugin");
   const compute = installation.drivers.compute.configuration;
   requireConfiguration(KubernetesComputeDriver, compute);
   assert.deepEqual(compute.network.gatewayTrustedProxyCidrs, ["127.0.0.1/32"]);

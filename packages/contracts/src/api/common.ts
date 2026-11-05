@@ -360,10 +360,12 @@ export const HarnessAuthBindingSchema = Type.Union([
   ),
 ]);
 
+export const MAX_AGENT_CREDENTIAL_SOURCES = 64;
+
 export const AgentCredentialSourcesSchema = Type.Array(
   Type.Object({ sourceId: CredentialSourceId }, { additionalProperties: false }),
   {
-    maxItems: 8,
+    maxItems: MAX_AGENT_CREDENTIAL_SOURCES,
     uniqueItems: true,
     description:
       "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
@@ -509,16 +511,13 @@ const PluginDiscoveryAccessToken = Type.String({
 
 export const PluginCatalogHarnessId = Type.Union([Type.Literal("openclaw"), Type.Literal("codex")]);
 
-const PluginCatalogTarget = {
-  harnessId: Type.Optional(PluginCatalogHarnessId),
-};
 const PluginCatalogPageFields = {
-  ...PluginCatalogTarget,
+  harnessId: PluginCatalogHarnessId,
   cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 8192 })),
   q: Type.Optional(Type.String({ maxLength: 1024 })),
 };
 const PluginCatalogDetailsFields = {
-  ...PluginCatalogTarget,
+  harnessId: PluginCatalogHarnessId,
   pluginId: Type.String({ minLength: 1, maxLength: 256 }),
 };
 

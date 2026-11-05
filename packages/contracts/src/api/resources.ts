@@ -347,8 +347,6 @@ const InstallationCapabilitiesSchema = Type.Object(
         ),
       ),
     ),
-    pluginDiscovery: Type.Optional(InstallationPluginDiscoverySchema),
-    pluginPolicies: Type.Optional(PluginPolicyCapabilitiesSchema),
     nativeWorkers: Type.Optional(
       Type.Object(
         { support: Type.Union([Type.Literal("pinned-runtime"), Type.Literal("custom-image")]) },

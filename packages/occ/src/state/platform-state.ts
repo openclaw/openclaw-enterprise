@@ -1,5 +1,8 @@
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
-import { assertExecutionAdmission } from "@openclaw-enterprise/contracts";
+import {
+  assertExecutionAdmission,
+  MAX_AGENT_CREDENTIAL_SOURCES,
+} from "@openclaw-enterprise/contracts";
 import { memoryEgressSendReceipts } from "./egress-send-receipts.ts";
 import type { EgressSendReceiptRepository, StoredSendReceipt } from "../egress-send-receipts.ts";
 import { isDeepStrictEqual } from "node:util";
@@ -625,11 +628,9 @@ function assertPluginDriverSelection(
   driver: PluginDriverIdentity | undefined,
   plugins: PluginDesiredState | undefined,
 ): void {
-  if (
-    driver !== undefined &&
-    (!validPluginDriverIdentity(driver) || Object.keys(plugins ?? {}).length === 0)
-  ) {
-    throw new ScopeViolationError("A saved Plugin Driver must own a nonempty selection.");
+  const hasPlugins = Object.keys(plugins ?? {}).length > 0;
+  if (hasPlugins ? !validPluginDriverIdentity(driver) : driver !== undefined) {
+    throw new ScopeViolationError("Only a nonempty plugin selection has a Plugin Driver owner.");
   }
 }
 
@@ -887,7 +888,7 @@ export function validCredentialSourceSnapshots(value: unknown): boolean {
   if (value === undefined) {
     return true;
   }
-  if (!Array.isArray(value) || value.length === 0 || value.length > 8) {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_AGENT_CREDENTIAL_SOURCES) {
     return false;
   }
   const seen = new Set<string>();

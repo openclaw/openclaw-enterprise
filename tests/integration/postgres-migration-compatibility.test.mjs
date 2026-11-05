@@ -1997,7 +1997,8 @@ test(
       [63, "preGatewayManagedMode"],
       [64, "preSelectedRepositorySet"],
       [65, "preAgentDeployIntent"],
-      [66, "preAgentPluginDriver"],
+      [66, "preAgentCredentialSourceLimit"],
+      [67, "preAgentPluginDriver"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2007,12 +2008,6 @@ test(
           // 0060 requires an execution admission on every revision written after it.
           executionAdmission: prefix >= 62,
         });
-        const legacyPlugins = { "occ-plugin:diffs": { enabled: true } };
-        if (history === "preAgentPluginDriver") {
-          await db.app.query("UPDATE occ.agents SET plugins = $1::jsonb", [
-            JSON.stringify(legacyPlugins),
-          ]);
-        }
         const assertSourceOwners =
           prefix === 59
             ? await retainGatewaySourcesAcrossProxyAdmission(db.app, db.migrator, namespaceId)
@@ -2035,10 +2030,6 @@ test(
         assert.ok(existingBindings.rows.length > 0);
         assert.ok(existingBindings.rows.every((row) => row.first_deployment_digest === null));
         await assertUpgradedAuthentication(db);
-        if (history === "preAgentPluginDriver") {
-          const saved = await db.app.query("SELECT plugins, plugin_driver FROM occ.agents");
-          assert.deepEqual(saved.rows, [{ plugins: legacyPlugins, plugin_driver: null }]);
-        }
         if (history === "preGatewayManagedMode") {
           await db.app.query(
             `INSERT INTO occ.agent_revisions

@@ -3,6 +3,17 @@
 Use the desktop Console first, then a 390-pixel phone frame. These stories use
 simulated API state; they do not prove persistence or live runtime behavior.
 
+At desktop and 390-pixel widths, open **Pages / Agent detail / Gateway password
+save in progress** (`gatewayPasswordSaving`). Confirm editing and deployment stay
+unavailable while the save is pending. Storybook simulates the pending save and
+does not stage malformed History state. For real Back during a held save, and
+Back and Forward after it completes, use these tests in `tests/browser/console-drafts-kept.test.ts`:
+
+- `Back during a Configuration save preserves the previous Agent tab`
+- `Back during a Configuration save survives a synthetic marker that wraps to zero`
+- `Back during a Configuration save survives a synthetic marker outside the history stack`
+- `Back during a Configuration save leaves an overflowing synthetic marker untracked`
+
 At both widths, open **Pages / Agent detail / Agent unavailable** (`agentMissing`).
 Confirm the heading is **Agent details** and the panel says **Resource unavailable**,
 without an Agent name. Choose **← Agents** (Back to Agents) and confirm the
@@ -14,6 +25,19 @@ the Agents list. Confirm **Agent details** and **Request unavailable** appear
 without an Agent name. Use Tab to reach **Retry** and press Enter. The next read
 uses the normal fixture response: confirm the H1 becomes **Research assistant**
 and receives keyboard focus. This story simulates one failed GET with status 503.
+
+At desktop and 390-pixel widths, open **Pages / Agent detail / Revision history
+rejects with null** (`revisionRejected`, Storybook ID
+`pages-agent-detail--revision-rejected`). The fixture rejects only the Agent's
+revision-history GET with raw JavaScript `null`, with no HTTP status. The draft
+Configuration GET uses its normal fixture response. Confirm **Version history
+unavailable.** is visible, with no **No readable versions** message or **Load
+older versions** control. Read the draft, open **Edit Configuration**, then
+**Cancel**. Confirm **Deploy new version** stays unavailable and says version
+history is required before deploying. The separate **Revision history
+unavailable** (`revisionError`) preview still simulates HTTP 403. This null
+rejection is simulated UI proof, not a normal browser network failure or proof of
+backend persistence or deployment.
 
 1. Separately, open **Pages / Agent detail / New version activated**
    (`deploymentSucceeded`, Storybook ID `pages-agent-detail--deployment-succeeded`).

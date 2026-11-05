@@ -35,7 +35,9 @@ type PluginAgent = Pick<
   Agent,
   "id" | "configurationId" | "executionMode" | "harnessAuth" | "plugins" | "pluginApprovers"
 >;
-type PluginCapabilities = NonNullable<InstallationCapabilities["pluginPolicies"]> & {
+type PluginCapabilities = NonNullable<
+  InstallationCapabilities["pluginCatalogs"]
+>[number]["pluginPolicies"] & {
   discoveryCredential: NonNullable<PluginDriver["discoveryCredential"]>;
 };
 

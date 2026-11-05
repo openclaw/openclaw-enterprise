@@ -104,6 +104,10 @@ pinned slim bases. `Dockerfile` checks its dependency and runtime stages, and
 within the 24 series. Older explicit overrides fail. Both bases apply available
 Debian updates; image digests do not freeze Debian repositories.
 
+Publication builds use the default package registries. Operators building from
+source can [configure a package registry mirror](../guides/deploy/production-installation.md#build-through-a-package-registry-mirror)
+for both the pinned pnpm download and dependency installation.
+
 `deploy/runtime/Dockerfile:curl-packages` builds the Bookworm curl backport
 from checksum-pinned Debian source and runs its proxy authentication and TLS
 tests without external networking. `deploy/runtime/curl/build.sh` inserts the

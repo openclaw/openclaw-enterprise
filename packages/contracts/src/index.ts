@@ -305,14 +305,12 @@ export interface InstallationCapabilities {
   readonly agentProvisioning?: ComputeAgentProvisioningCapabilities;
   /** A selected Credential Gateway requires source-backed model authentication. */
   readonly credentialSources?: { readonly types: readonly CredentialSourceType[] };
-  /** Catalogs available to each Harness. Singular fields describe a single selected driver. */
+  /** Plugin catalogs by Harness. */
   readonly pluginCatalogs?: readonly {
     readonly harnessId: "openclaw" | "codex";
     readonly pluginPolicies: PluginPolicyCapabilities & { readonly driver: PluginDriverIdentity };
     readonly pluginDiscovery?: { readonly credential: "required" | "none" };
   }[];
-  readonly pluginPolicies?: PluginPolicyCapabilities & { readonly driver: PluginDriverIdentity };
-  readonly pluginDiscovery?: { readonly credential: "required" | "none" };
   /** Present only when dedicated native OpenClaw can be admitted. */
   readonly nativeWorkers?: { readonly support: "pinned-runtime" | "custom-image" };
   /**
@@ -1008,7 +1006,7 @@ export interface Agent extends Scope {
   readonly executionMode: HarnessExecutionMode;
   /** Desired Gateway administration mode; each deployment snapshots the selected value. */
   readonly gatewayManagedMode: boolean;
-  /** Driver that admitted the saved selections. Older selections may have no recorded owner. */
+  /** Driver that admitted the nonempty plugin selection. */
   readonly pluginDriver?: PluginDriverIdentity;
   readonly plugins?: PluginDesiredState;
   readonly pluginApprovers?: PluginApprovers;

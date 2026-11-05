@@ -182,18 +182,18 @@ function trackSecretValueReads(secretDriver) {
 test("Plugin discovery uses the selected Driver through authenticated HTTP without creating resources", async (t) => {
   const fixture = await createFixture(t);
   const catalog = await fixture.request("POST", fixture.path, {
-    body: { accessToken, q: "knowledge" },
+    body: { harnessId: "codex", accessToken, q: "knowledge" },
   });
   assert.equal(catalog.status, 200);
   assert.equal(catalog.headers.get("cache-control"), "no-store");
   assert.deepEqual(catalog.data, { plugins: [catalogEntry], nextCursor: "second-page" });
   const next = await fixture.request("POST", fixture.path, {
-    body: { accessToken, q: "knowledge", cursor: catalog.data.nextCursor },
+    body: { harnessId: "codex", accessToken, q: "knowledge", cursor: catalog.data.nextCursor },
   });
   assert.equal(next.status, 200);
   assert.deepEqual(next.data, { plugins: [], nextCursor: null });
   const details = await fixture.request("POST", `${fixture.path}/details`, {
-    body: { accessToken, pluginId: remoteId },
+    body: { harnessId: "codex", accessToken, pluginId: remoteId },
   });
   assert.equal(details.status, 200);
   assert.equal(details.headers.get("cache-control"), "no-store");
@@ -233,7 +233,10 @@ test("Plugin discovery requires exact Namespace Agent-create permission before D
     ["", { accessToken }],
     ["/details", { accessToken, pluginId: remoteId }],
   ]) {
-    const denied = await fixture.request("POST", `${fixture.path}${suffix}`, { session, body });
+    const denied = await fixture.request("POST", `${fixture.path}${suffix}`, {
+      session,
+      body: { harnessId: "codex", ...body },
+    });
     assertApiError(denied, 403, "FORBIDDEN");
   }
   assert.deepEqual(fixture.calls, []);
@@ -247,11 +250,14 @@ test("Plugin discovery requires exact Namespace Agent-create permission before D
   assert.equal(JSON.stringify(denial).includes(accessToken), false);
 
   fixture.policy.roles.at(-1).permissions.push({ action: "create", resourceKind: "agent" });
-  const granted = await fixture.request("POST", fixture.path, { session, body: { accessToken } });
+  const granted = await fixture.request("POST", fixture.path, {
+    session,
+    body: { harnessId: "codex", accessToken },
+  });
   assert.equal(granted.status, 200);
   fixture.calls.length = 0;
   const absent = await fixture.request("POST", `/namespaces/ns_${randomUUID()}/agents/plugins`, {
-    body: { accessToken },
+    body: { harnessId: "codex", accessToken },
   });
   assert.equal(absent.status, 404);
   assert.deepEqual(fixture.calls, []);
@@ -311,7 +317,7 @@ test(
     });
 
     for (const [scope, base, credential] of [
-      ["create", fixture.path, { accessToken }],
+      ["create", fixture.path, { harnessId: "codex", accessToken }],
       ["saved", saved.path, {}],
     ]) {
       for (const [operation, path, body, providerPath] of [
@@ -416,7 +422,9 @@ test("Plugin discovery validates bounded credential and identity input before Dr
       [{ path: "/pluginId", code: "TOO_LONG" }],
     ],
   ]) {
-    const invalid = await fixture.request("POST", `${fixture.path}${suffix}`, { body });
+    const invalid = await fixture.request("POST", `${fixture.path}${suffix}`, {
+      body: { harnessId: "codex", ...body },
+    });
     const label = `${suffix || "list"} ${JSON.stringify(Object.keys(body))}: ${JSON.stringify(invalid.body)}`;
     assert.equal(invalid.status, 400, label);
     if (details !== undefined) {
@@ -447,7 +455,9 @@ test("Plugin discovery preserves safe failure reasons and suppresses upstream er
       ["", { accessToken }],
       ["/details", { accessToken, pluginId: remoteId }],
     ]) {
-      const failed = await fixture.request("POST", `${fixture.path}${suffix}`, { body });
+      const failed = await fixture.request("POST", `${fixture.path}${suffix}`, {
+        body: { harnessId: "codex", ...body },
+      });
       assert.equal(failed.status, status);
       assert.equal(failed.body.error.code, code);
       assert.doesNotMatch(JSON.stringify(failed.body), /private upstream|at-plugin-discovery/);
@@ -461,7 +471,9 @@ test("Plugin discovery reports unsupported selected Drivers without attempting r
     ["", { accessToken }],
     ["/details", { accessToken, pluginId: remoteId }],
   ]) {
-    const unsupported = await fixture.request("POST", `${fixture.path}${suffix}`, { body });
+    const unsupported = await fixture.request("POST", `${fixture.path}${suffix}`, {
+      body: { harnessId: "codex", ...body },
+    });
     assert.equal(unsupported.status, 501);
     assert.equal(unsupported.body.error.code, "NOT_IMPLEMENTED");
   }
@@ -1253,7 +1265,7 @@ test("Unsupported discovery still authorizes the exact selected Secret before ca
   ]) {
     const denied = await fixture.request("POST", `${fixture.path}${suffix}`, {
       session,
-      body: { secretRef: secret.ref, ...extra },
+      body: { harnessId: "codex", secretRef: secret.ref, ...extra },
     });
     assert.equal(denied.status, 403);
     assert.deepEqual(fixture.auditSink.events.at(-1).authorization, {
@@ -1276,7 +1288,7 @@ test("Unsupported discovery still authorizes the exact selected Secret before ca
   ]) {
     const unsupported = await fixture.request("POST", `${fixture.path}${suffix}`, {
       session,
-      body: { secretRef: secret.ref, ...extra },
+      body: { harnessId: "codex", secretRef: secret.ref, ...extra },
     });
     assert.equal(unsupported.status, 501);
     assert.equal(unsupported.body.error.code, "NOT_IMPLEMENTED");
@@ -1324,7 +1336,7 @@ test("Selected Secret discovery rechecks Secret authority after the backend read
   ]) {
     const denied = await fixture.request("POST", `${fixture.path}${suffix}`, {
       session,
-      body: { secretRef: secret.ref, ...extra },
+      body: { harnessId: "codex", secretRef: secret.ref, ...extra },
     });
     // The first request reads the value and is then refused; the second is refused before it.
     assertApiError(denied, 403, "FORBIDDEN");
@@ -1345,7 +1357,7 @@ test("Plugin discovery uses an authorized same-Namespace Secret for catalog and 
     ["/details", { pluginId: remoteId }, pluginDetails],
   ]) {
     const response = await fixture.request("POST", `${fixture.path}${suffix}`, {
-      body: { secretRef: stored.data.ref, ...extra },
+      body: { harnessId: "codex", secretRef: stored.data.ref, ...extra },
     });
     assert.equal(response.status, 200);
     assert.deepEqual(response.data, expected);
@@ -1449,14 +1461,14 @@ test("Selected Secret discovery reaches the hosted provider with the current cre
   });
 
   const list = await fixture.request("POST", fixture.path, {
-    body: { secretRef: secret.ref, q: "fixture" },
+    body: { harnessId: "codex", secretRef: secret.ref, q: "fixture" },
   });
   assert.equal(list.status, 200);
   assert.equal(list.data.plugins[0].remoteId, "remote-fixture");
   assert.equal(list.data.plugins[0].available, true);
   assert.deepEqual(catalogRequests, [{ path: "/backend-api/ps/plugins/search", q: "fixture" }]);
   const details = await fixture.request("POST", `${fixture.path}/details`, {
-    body: { secretRef: secret.ref, pluginId: "remote-fixture" },
+    body: { harnessId: "codex", secretRef: secret.ref, pluginId: "remote-fixture" },
   });
   assert.equal(details.status, 200);
   assert.equal(details.data.available, true);
@@ -1524,7 +1536,7 @@ test("Selected Secret discovery reaches the hosted provider with the current cre
   // Skill-only plugins are available with a known empty tool inventory.
   plugin.release.app_ids = [];
   const skillsOnly = await fixture.request("POST", `${fixture.path}/details`, {
-    body: { secretRef: secret.ref, pluginId: "remote-fixture" },
+    body: { harnessId: "codex", secretRef: secret.ref, pluginId: "remote-fixture" },
   });
   assert.equal(skillsOnly.status, 200);
   assert.equal(skillsOnly.data.available, true);
@@ -1538,7 +1550,11 @@ test("Selected Secret discovery reaches the hosted provider with the current cre
   );
   credentials.length = 0;
   assert.equal(
-    (await fixture.request("POST", fixture.path, { body: { secretRef: secret.ref } })).status,
+    (
+      await fixture.request("POST", fixture.path, {
+        body: { harnessId: "codex", secretRef: secret.ref },
+      })
+    ).status,
     200,
   );
   assert.ok(credentials.length > 0 && credentials.every((value) => value === rotated));
@@ -1549,7 +1565,7 @@ test("Selected Secret discovery reaches the hosted provider with the current cre
     ["/details", { pluginId: "remote-fixture" }],
   ]) {
     const response = await fixture.request("POST", `${fixture.path}${suffix}`, {
-      body: { secretRef: secret.ref, ...extra },
+      body: { harnessId: "codex", secretRef: secret.ref, ...extra },
     });
     assert.equal(response.body.error.code, "PLUGIN_DISCOVERY_INVALID_RESPONSE");
     assert.equal(JSON.stringify(response.body).includes(rotated), false);
@@ -1561,7 +1577,7 @@ test("Selected Secret discovery reaches the hosted provider with the current cre
   ]) {
     assert.equal((await fixture.request("PATCH", updatePath, { body: { value } })).status, 200);
     const response = await fixture.request("POST", fixture.path, {
-      body: { secretRef: secret.ref },
+      body: { harnessId: "codex", secretRef: secret.ref },
     });
     assert.equal(response.body.error.code, code);
     assert.equal(JSON.stringify(response.body).includes(value), false);
@@ -1577,7 +1593,9 @@ test("Selected Secret discovery reaches the hosted provider with the current cre
     headers: authenticatedHeaders(await fixture.signIn()),
   });
   assert.equal(deletion.response.status, 204);
-  const deleted = await fixture.request("POST", fixture.path, { body: { secretRef: secret.ref } });
+  const deleted = await fixture.request("POST", fixture.path, {
+    body: { harnessId: "codex", secretRef: secret.ref },
+  });
   assert.equal(deleted.status, 404);
   assert.doesNotMatch(
     JSON.stringify([list.body, details.body, deleted.body, fixture.auditSink.events, logs]),
@@ -1614,7 +1632,7 @@ test("Selected Secret discovery requires exact Secret operate permission and sam
   ]) {
     const denied = await fixture.request("POST", `${fixture.path}${suffix}`, {
       session,
-      body: { secretRef: secret.ref, ...extra },
+      body: { harnessId: "codex", secretRef: secret.ref, ...extra },
     });
     assert.equal(denied.status, 403);
     const evidence = fixture.auditSink.events.at(-1);
@@ -1634,13 +1652,21 @@ test("Selected Secret discovery requires exact Secret operate permission and sam
     resource: { kind: "secret", id: secret.id },
   });
   assert.equal(
-    (await fixture.request("POST", fixture.path, { session, body: { secretRef: secret.ref } }))
-      .status,
+    (
+      await fixture.request("POST", fixture.path, {
+        session,
+        body: { harnessId: "codex", secretRef: secret.ref },
+      })
+    ).status,
     200,
   );
   assert.equal(
-    (await fixture.request("POST", fixture.path, { session, body: { secretRef: another.ref } }))
-      .status,
+    (
+      await fixture.request("POST", fixture.path, {
+        session,
+        body: { harnessId: "codex", secretRef: another.ref },
+      })
+    ).status,
     403,
   );
   fixture.calls.length = 0;
@@ -1667,7 +1693,7 @@ test("Selected Secret discovery requires exact Secret operate permission and sam
       ],
     ]) {
       const response = await fixture.request("POST", `${fixture.path}${suffix}`, {
-        body: { secretRef: ref, ...extra },
+        body: { harnessId: "codex", secretRef: ref, ...extra },
       });
       const label = `${suffix || "list"} secretRef, ${description}: ${JSON.stringify(response.body)}`;
       assert.equal(response.status, status, label);
@@ -1683,7 +1709,11 @@ test("Selected Secret discovery requires exact Secret operate permission and sam
     { oauthLogin: secret.ref },
     { secretRef: secret.ref, accountId: "untrusted" },
   ]) {
-    assert.equal((await fixture.request("POST", fixture.path, { body })).status, 400);
+    assert.equal(
+      (await fixture.request("POST", fixture.path, { body: { harnessId: "codex", ...body } }))
+        .status,
+      400,
+    );
   }
   assert.equal(JSON.stringify(fixture.auditSink.events).includes(accessToken), false);
 });
@@ -1700,7 +1730,7 @@ test("Selected Secret backend failures suppress sensitive error details", async 
     ["/details", { pluginId: remoteId }],
   ]) {
     const response = await fixture.request("POST", `${fixture.path}${suffix}`, {
-      body: { secretRef: secret.ref, ...extra },
+      body: { harnessId: "codex", secretRef: secret.ref, ...extra },
     });
     assert.equal(response.status, 503);
     assert.equal(response.body.error.code, "DEPENDENCY_UNAVAILABLE");
@@ -1709,11 +1739,12 @@ test("Selected Secret backend failures suppress sensitive error details", async 
   assert.deepEqual(fixture.calls, []);
   delete secretDriver.withValue;
   const unsupported = await fixture.request("POST", fixture.path, {
-    body: { secretRef: secret.ref },
+    body: { harnessId: "codex", secretRef: secret.ref },
   });
   assert.equal(unsupported.status, 503);
   assert.equal(
-    (await fixture.request("POST", fixture.path, { body: { accessToken } })).status,
+    (await fixture.request("POST", fixture.path, { body: { harnessId: "codex", accessToken } }))
+      .status,
     200,
   );
 });
@@ -1732,7 +1763,6 @@ test("Mixed Installation targets each Harness catalog before reading a discovery
   ]);
   const installation = await fixture.request("GET", "/installation");
   const capabilities = installation.data.capabilities;
-  assert.equal(capabilities.pluginPolicies, undefined);
   assert.deepEqual(
     Object.fromEntries(
       capabilities.pluginCatalogs.map(({ harnessId, pluginPolicies, pluginDiscovery }) => [
@@ -1789,8 +1819,10 @@ test("Curated discovery admits plugins with skills without provider I/O and save
     return fetch(url, options);
   });
   const installation = await fixture.request("GET", "/installation");
-  assert.deepEqual(installation.data.capabilities.pluginDiscovery, { credential: "none" });
-  const page = await fixture.request("POST", path, { body: {} });
+  assert.deepEqual(installation.data.capabilities.pluginCatalogs[0].pluginDiscovery, {
+    credential: "none",
+  });
+  const page = await fixture.request("POST", path, { body: { harnessId: "codex" } });
   assert.equal(page.status, 200);
   assert.equal(page.headers.get("cache-control"), "no-store");
   assert.equal(page.data.nextCursor, null);
@@ -1801,12 +1833,14 @@ test("Curated discovery admits plugins with skills without provider I/O and save
   assert.equal(linear.remoteId, "plugin_asdk_app_69a089a326dc8191b32a3f2553f5be2c");
   assert.equal(linear.tools, null);
   assert.equal(linear.selectableWithoutTools, true);
-  const search = await fixture.request("POST", path, { body: { q: "  LiNeAr  " } });
+  const search = await fixture.request("POST", path, {
+    body: { harnessId: "codex", q: "  LiNeAr  " },
+  });
   assert.equal(search.status, 200);
   assert.deepEqual(search.data.plugins, [linear]);
   assert.equal(search.data.nextCursor, null);
   const details = await fixture.request("POST", `${path}/details`, {
-    body: { pluginId: linear.remoteId },
+    body: { harnessId: "codex", pluginId: linear.remoteId },
   });
   assert.equal(details.status, 200);
   assert.deepEqual(details.data, linear);
@@ -1815,7 +1849,7 @@ test("Curated discovery admits plugins with skills without provider I/O and save
   );
   assert.ok(slack);
   const slackDetails = await fixture.request("POST", `${path}/details`, {
-    body: { pluginId: slack.remoteId },
+    body: { harnessId: "codex", pluginId: slack.remoteId },
   });
   assert.equal(slackDetails.status, 200);
   assert.deepEqual(slackDetails.data, slack);
@@ -1828,12 +1862,16 @@ test("Curated discovery admits plugins with skills without provider I/O and save
   // An unknown ID is the caller's error, named in the refusal (finding 2790); a cursor
   // on the single-page catalog is still an invalid catalog response.
   const unknown = await fixture.request("POST", `${path}/details`, {
-    body: { pluginId: "unknown" },
+    body: { harnessId: "codex", pluginId: "unknown" },
   });
   assert.equal(unknown.status, 400);
   assert.equal(unknown.body.error.code, "INVALID_REQUEST");
   assert.match(unknown.body.error.message, /\(codex-plugin\) does not offer: unknown\./);
-  assert.equal((await fixture.request("POST", path, { body: { cursor: "unknown" } })).status, 503);
+  assert.equal(
+    (await fixture.request("POST", path, { body: { harnessId: "codex", cursor: "unknown" } }))
+      .status,
+    503,
+  );
 
   // The exact selected ID and policy enter the real Agent and immutable revision path.
   const agent = await fixture.createAgent(
@@ -1867,7 +1905,9 @@ test("Hosted discovery requires a credential, and curated discovery still requir
     ["", {}],
     ["/details", { pluginId: remoteId }],
   ]) {
-    const missing = await fixture.request("POST", `${fixture.path}${suffix}`, { body });
+    const missing = await fixture.request("POST", `${fixture.path}${suffix}`, {
+      body: { harnessId: "codex", ...body },
+    });
     assertApiError(missing, 400, "PLUGIN_DISCOVERY_CREDENTIALS_REJECTED");
   }
   assert.deepEqual(fixture.calls, []);
@@ -1888,7 +1928,10 @@ test("Hosted discovery requires a credential, and curated discovery still requir
     ["", {}],
     ["/details", { pluginId: "plugin_asdk_app_69a089a326dc8191b32a3f2553f5be2c" }],
   ]) {
-    const denied = await fixture.request("POST", `${fixture.path}${suffix}`, { session, body });
+    const denied = await fixture.request("POST", `${fixture.path}${suffix}`, {
+      session,
+      body: { harnessId: "codex", ...body },
+    });
     assert.equal(denied.status, 403);
   }
 });

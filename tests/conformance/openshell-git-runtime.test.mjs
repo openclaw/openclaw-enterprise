@@ -1496,6 +1496,7 @@ test("the Git route refuses overlapping policies at startup and again at deploy"
         f.sandbox.workspace,
         f.sandbox.name,
         AbortSignal.timeout(2_000),
+        "/sandbox/enterprise",
         ["openai"],
         ["api.openai.com", host],
       ),
@@ -2690,6 +2691,7 @@ async function observedGitRoute(
         f.sandbox.workspace,
         f.sandbox.name,
         signal,
+        "/sandbox/enterprise",
         f.entry.otherProviders,
       );
     if (changedDelivery) {
@@ -2751,9 +2753,15 @@ async function observedGitRoute(
   replacement.owner = f.owner;
   replacement.routes = f.store;
   await assert.rejects(
-    replacement.prepare(revision, f.client, f.sandbox.workspace, f.sandbox.name, signal, [
-      "openai",
-    ]),
+    replacement.prepare(
+      revision,
+      f.client,
+      f.sandbox.workspace,
+      f.sandbox.name,
+      signal,
+      "/sandbox/enterprise",
+      ["openai"],
+    ),
     { reason: coldReason },
   );
   assert.equal(f.store.rows.get(revision.id).blocked, coldReason);
@@ -2783,5 +2791,25 @@ test("the running OpenShell recipient refuses a changed Repo ref or foreign supp
     "foreign-repository-id",
   ]) {
     await observedGitRoute(2, { narrowRepository });
+  }
+});
+
+test("Git preparation refuses broad or noncanonical workspace trust before provider writes", async () => {
+  for (const path of [
+    "*",
+    "/",
+    "/sandbox",
+    "/sandbox/",
+    "/sandbox/enterprise/",
+    "/sandbox/*",
+    "/sandbox/enterprise/*",
+    "/sandbox/../etc",
+    "/sandbox/enterprise/../other",
+    "/sandbox//enterprise",
+    "/sandbox/enterprise\0",
+  ]) {
+    const f = bootstrapping();
+    await assert.rejects(f.prepare(path), /exact Sandbox workspace path/);
+    assert.equal(f.calls.providerWrites, 0);
   }
 });

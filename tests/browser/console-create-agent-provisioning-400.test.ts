@@ -55,9 +55,9 @@ import {
   revokeAdministratorGrant,
   selectSecret,
   setSlackSelection,
-  trackSettledFetches,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
+import { trackSettledFetches } from "./console-fetch-accounting.ts";
 import {
   agentPostRequests,
   agentProvisionPostRequests,

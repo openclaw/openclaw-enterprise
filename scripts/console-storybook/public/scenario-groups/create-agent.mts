@@ -442,7 +442,7 @@ export const createAgentFormScenarios = {
       "Selecting the Secret starts catalog discovery before the picker opens, without entering a separate token.",
     steps: [
       "Choose Calendar to load its details, then click Done and select another Secret to clear the catalog.",
-      "Without a selected Secret, the optional token field remains available for a preview.",
+      "Set a default plugin approver, then change Harness to OpenClaw. This Installation serves only the Codex catalog. Switch back to Codex to verify the approver was cleared.",
     ],
     gap: "The Secret and OCC discovery responses are simulated. This preview does not verify live provider access or Secret storage.",
   },

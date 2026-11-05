@@ -271,7 +271,7 @@ function installationConfiguration({
   configuration.drivers.secret.configuration.authentication = authentication;
   configuration.drivers.configuration.id = "configuration-kubernetes-plugin-real";
   configuration.drivers.compute.id = "compute-kubernetes-plugin-real";
-  configuration.drivers.plugin = { id: pluginDriverId, configuration: pluginDriverConfiguration };
+  configuration.drivers.plugin = [{ id: pluginDriverId, configuration: pluginDriverConfiguration }];
   if (workspaceGateway !== undefined) {
     configuration.drivers.compute.configuration.gatewayRouting = workspaceGateway.routing;
     configuration.drivers.compute.configuration.network.gatewayTrustedProxyCidrs =

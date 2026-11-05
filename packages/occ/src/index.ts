@@ -28,6 +28,7 @@ export {
 } from "./state/prepared-github-state.ts";
 export type { PreparedGitHubMetadataAdmission } from "./state/prepared-github-state.ts";
 import {
+  MAX_AGENT_CREDENTIAL_SOURCES,
   assertExecutionAdmission,
   assertExecutionReleaseAllowed,
   credentialFreeMetadataGrant,
@@ -1164,7 +1165,6 @@ const BUNDLED_KUBERNETES_COMPUTE: ReadonlySet<string> = new Set([
 const CREDENTIAL_GATEWAY_TIMEOUT_MS = 30_000;
 const CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES =
   "Credential source Secrets cannot cross Namespaces.";
-const MAX_AGENT_CREDENTIAL_SOURCES = 8;
 /** Overall deadline for one runtime status or log request, Driver calls included. */
 const RUNTIME_LOG_REQUEST_TIMEOUT_MS = 10_000;
 // Bounds the Sandbox Driver's Harness record read that runs beside Compute diagnostics.
@@ -2162,7 +2162,7 @@ export class OpenClawController {
     return driver;
   }
 
-  /** Install one trusted catalog per Harness family. An omitted target can only address a singleton. */
+  /** Install one trusted catalog per Harness family. */
   installPluginDrivers(drivers: readonly PluginDriver[]): void {
     const registrations = drivers.map((driver) => this.driverRegistrationEntry(driver));
     if (
@@ -2314,8 +2314,6 @@ export class OpenClawController {
       nativeWorkers: _unchecked,
       openclaw: _derived,
       pluginCatalogs: _catalogs,
-      pluginPolicies: _policies,
-      pluginDiscovery: _discovery,
       ...declared
     } = this.installation.capabilities ?? {};
     const openclaw = this.openClawExecutionModes();
@@ -2350,18 +2348,11 @@ export class OpenClawController {
         ? { pluginDiscovery: { credential: driver.discoveryCredential ?? "required" } }
         : {}),
     }));
-    const singleton = catalogs.length === 1 ? catalogs[0] : undefined;
     return immutableCopy({
       ...this.installation,
       capabilities: {
         ...capabilities,
         ...(catalogs.length > 0 ? { pluginCatalogs: catalogs } : {}),
-        ...(singleton
-          ? {
-              pluginPolicies: singleton.pluginPolicies,
-              ...(singleton.pluginDiscovery ? { pluginDiscovery: singleton.pluginDiscovery } : {}),
-            }
-          : {}),
       },
     });
   }
@@ -3457,7 +3448,7 @@ export class OpenClawController {
           ...(backendId === undefined ? {} : { backendId }),
           ...(plugins === undefined ? {} : { plugins }),
           ...(driver && plugins && Object.keys(plugins).length
-            ? { pluginDriver: this.pluginOwner(driver, undefined) }
+            ? { pluginDriver: this.pluginOwner(driver) }
             : {}),
           ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
           ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
@@ -8332,7 +8323,7 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
     input: PluginDiscoveryCredential & {
-      readonly harnessId?: string;
+      readonly harnessId: string;
       readonly cursor?: string;
       readonly q?: string;
     },
@@ -8549,7 +8540,7 @@ export class OpenClawController {
   async discoverAgentPluginDetails(
     principalId: string,
     namespaceId: string,
-    input: PluginDiscoveryCredential & { readonly harnessId?: string; readonly pluginId: string },
+    input: PluginDiscoveryCredential & { readonly harnessId: string; readonly pluginId: string },
     signal?: AbortSignal,
   ): Promise<PluginCatalogEntry> {
     return this.withNamespacePluginCredential(principalId, namespaceId, input, signal, (driver) => {
@@ -8571,7 +8562,7 @@ export class OpenClawController {
   private async withNamespacePluginCredential<T>(
     principalId: string,
     namespaceId: string,
-    input: PluginDiscoveryCredential & { readonly harnessId?: string },
+    input: PluginDiscoveryCredential & { readonly harnessId: string },
     signal: AbortSignal | undefined,
     prepareDiscovery: (
       driver: PluginDriver,
@@ -10075,7 +10066,7 @@ export class OpenClawController {
         gatewayManagedMode,
         ...(plugins === undefined ? {} : { plugins }),
         ...(driver && plugins && Object.keys(plugins).length
-          ? { pluginDriver: this.pluginOwner(driver, undefined) }
+          ? { pluginDriver: this.pluginOwner(driver) }
           : {}),
         ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
         ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
@@ -15656,13 +15647,9 @@ export class OpenClawController {
     });
   }
 
-  private pluginDriver(harnessId?: string, selection = false): PluginDriver {
+  private pluginDriver(harnessId: string, selection = false): PluginDriver {
     const drivers = this.enabledPluginDrivers();
-    if (harnessId === undefined && drivers.length > 1) {
-      throw new ConfigurationHarnessError("Select a Harness to browse its plugin catalog.");
-    }
-    const driver =
-      harnessId === undefined ? drivers[0] : drivers.find((item) => item.harnessId === harnessId);
+    const driver = drivers.find((item) => item.harnessId === harnessId);
     if (!driver) {
       if (selection && drivers.length > 0) {
         throw new ConfigurationHarnessError(
@@ -15680,9 +15667,10 @@ export class OpenClawController {
   /** Only a cleared Agent can start a selection owned by a different driver. */
   private pluginOwner(
     driver: PluginDriver,
-    previous:
-      | { readonly plugins?: PluginDesiredState; readonly pluginDriver?: PluginDriverIdentity }
-      | undefined,
+    previous?: {
+      readonly plugins?: PluginDesiredState;
+      readonly pluginDriver?: PluginDriverIdentity;
+    },
   ): PluginDriverIdentity {
     const identity = { id: driver.id, implementation: driver.implementation };
     if (
@@ -15691,7 +15679,7 @@ export class OpenClawController {
       !isDeepStrictEqual(previous.pluginDriver, identity)
     ) {
       throw new ConfigurationHarnessError(
-        "Clear the Agent's existing plugin selections before selecting plugins for this Harness. Their original driver is unavailable or cannot be verified.",
+        "Clear the Agent's existing plugin selections before switching Plugin Drivers.",
       );
     }
     return identity;

@@ -21,12 +21,12 @@ type InstallationScenario = {
   sandboxDriverUnavailable?: boolean;
   credentialSourceTypes?: NonNullable<InstallationCapabilities["credentialSources"]>["types"];
   pluginCatalogs?: InstallationCapabilities["pluginCatalogs"];
-  pluginCapabilities?: InstallationCapabilities["pluginPolicies"] & {
+  pluginCapabilities?: NonNullable<
+    InstallationCapabilities["pluginCatalogs"]
+  >[number]["pluginPolicies"] & {
     credentialSlots?: readonly AgentPluginCredentialSlot[];
   };
-  pluginDiscoveryCredential?: NonNullable<
-    InstallationCapabilities["pluginDiscovery"]
-  >["credential"];
+  pluginDiscoveryCredential?: "required" | "none";
 };
 
 export function installationDriverConfigurations(scenario: DriverConfigurationsScenario): {
@@ -231,13 +231,20 @@ export function installationFixture(
       ...(scenario.credentialSourceTypes !== undefined
         ? { credentialSources: { types: scenario.credentialSourceTypes } }
         : {}),
-      ...(scenario.pluginCatalogs ? { pluginCatalogs: scenario.pluginCatalogs } : {}),
-      ...(scenario.pluginCapabilities
-        ? { pluginPolicies: installationPluginPolicies(scenario.pluginCapabilities) }
-        : {}),
-      ...(scenario.pluginDiscoveryCredential
-        ? { pluginDiscovery: { credential: scenario.pluginDiscoveryCredential } }
-        : {}),
+      pluginCatalogs:
+        scenario.pluginCatalogs ??
+        (scenario.pluginCapabilities
+          ? [
+              {
+                harnessId:
+                  scenario.pluginCapabilities.driver.implementation === "occ/openclaw-plugin"
+                    ? "openclaw"
+                    : "codex",
+                pluginPolicies: installationPluginPolicies(scenario.pluginCapabilities),
+                pluginDiscovery: { credential: scenario.pluginDiscoveryCredential ?? "required" },
+              },
+            ]
+          : []),
     },
   };
 }

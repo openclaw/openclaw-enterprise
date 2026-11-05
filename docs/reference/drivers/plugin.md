@@ -93,8 +93,7 @@ cursor?, q?}, signal?)` returns `{plugins, nextCursor, setup?}`, and
 `getCatalogPlugin({accessToken?, pluginId}, signal?)` returns plugin details. Here
 `pluginId` is the opaque `remoteId` from a discovery entry; the entry's `id` is
 the stable selection key. The HTTP routes are `POST /namespaces/:namespaceId/agents/plugins`
-and its `/details` child. When both catalogs are enabled, include `harnessId` in
-each request. Existing requests can omit it when only one Driver is enabled.
+and its `/details` child. Include the target `harnessId` in each request.
 OCC resolves the catalog before it reads a credential. The selected Driver reports `pluginDiscovery.credential`
 in Installation capabilities as `required` or `none`. When required, supply
 exactly one of `accessToken`, `secretRef`, or `credentialSource`. Stored references
