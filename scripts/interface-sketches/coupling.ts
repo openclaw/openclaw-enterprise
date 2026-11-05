@@ -233,6 +233,27 @@ export function analyzeCoupling(
       // A library call can return a project-owned receiver. Classify its method first.
       return declarations.every((declaration) => !ownSource(declaration.getSourceFile()));
     }
+    if (ts.isElementAccessExpression(expression)) {
+      const keyType = checker.getTypeAtLocation(expression.argumentExpression);
+      const keys = keyType.isUnion() ? keyType.types : [keyType];
+      const receiver = checker.getNonNullableType(checker.getTypeAtLocation(expression.expression));
+      // A dynamic key is external only when every possible member has an external declaration.
+      if (
+        keys.every((key) => {
+          if (!key.isStringLiteral() && !key.isNumberLiteral()) {
+            return false;
+          }
+          const candidates = checker.getPropertyOfType(receiver, String(key.value))?.declarations;
+          return (
+            candidates !== undefined &&
+            candidates.length > 0 &&
+            candidates.every((declaration) => !ownSource(declaration.getSourceFile()))
+          );
+        })
+      ) {
+        return true;
+      }
+    }
     if (ts.isPropertyAccessExpression(expression) || ts.isElementAccessExpression(expression)) {
       // An unknown method on a project receiver stays unresolved, even if a library returned it.
       return (
