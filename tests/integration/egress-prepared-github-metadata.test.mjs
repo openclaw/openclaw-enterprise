@@ -82,11 +82,11 @@ test("consented protected repository read uses only exact, already prepared meta
           minimumValidityMs: 10000,
         });
       },
-      async readWarm(source, { signal, deadlineAt }) {
+      async resolve(reference, { signal, deadlineAt }) {
         signal.throwIfAborted();
         assert.ok(Date.parse(deadlineAt) > clock.wallNow());
         reads++;
-        assert.equal(source.origin, gh.origin);
+        assert.equal(reference.source.id, admission.familyId);
         const result = await reader.readWarm(admission);
         if (result.kind !== "warm") {
           return undefined;
@@ -100,7 +100,7 @@ test("consented protected repository read uses only exact, already prepared meta
             providerExpiresAt: new Date(providerExpiresAt).toISOString(),
             usableUntil: new Date(usableUntil).toISOString(),
             materialId: admission.familyId,
-            family: source.key.source,
+            family: reference.source,
             preparationAttemptId: attemptId,
             ownerEpoch: 1,
             inputVersion: admission.inputVersion,

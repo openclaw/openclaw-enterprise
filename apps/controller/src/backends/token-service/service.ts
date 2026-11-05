@@ -3,8 +3,12 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type {
   EgressRef,
+  EgressSourceKey,
+  PreparedTokenSource,
+  Secret,
+  TokenResolveOptions,
   PreparedTokenIssuer,
-  PreparedTokenService,
+  TokenService as TokenServiceContract,
 } from "@openclaw-enterprise/contracts";
 import type { TokenIssue } from "./preparation.ts";
 
@@ -17,11 +21,20 @@ type Preparation = {
   ): Promise<"ready" | "committed" | "blocked" | "fenced" | "quarantined">;
 };
 
+/** The same issuance budget applies to scheduled and request-triggered work. */
+export function runPreparation(owner: Preparation, outer: AbortSignal) {
+  const budget = 25_000;
+  return owner.run(randomUUID(), {
+    signal: AbortSignal.any([outer, AbortSignal.timeout(budget)]),
+    deadlineMonoMs: performance.now() + budget,
+  });
+}
+
 /**
  * Installation-owned lifecycle service. Each admission owner supplies only its eligible families,
- * input authority and custody. Capture, readiness and use never wake a maintenance pass.
+ * input authority and custody. A request can prepare only its authorized registration.
  */
-export class TokenService implements PreparedTokenService {
+export class TokenService implements TokenServiceContract {
   private readonly issuers = new Map<string, PreparedTokenIssuer>();
 
   private readonly proofs = new Map<string, PostgresProof>();
@@ -36,7 +49,7 @@ export class TokenService implements PreparedTokenService {
     },
   });
 
-  register(issuer: PreparedTokenIssuer, postgresProof?: PostgresProof): void {
+  registerIssuer(issuer: PreparedTokenIssuer, postgresProof?: PostgresProof): void {
     const { id } = issuer.provider;
     if (this.issuers.has(id)) {
       throw new Error("A prepared provider must have exactly one lifecycle owner.");
@@ -50,6 +63,31 @@ export class TokenService implements PreparedTokenService {
   issuer(provider: EgressRef): PreparedTokenIssuer | undefined {
     const issuer = this.issuers.get(provider.id);
     return issuer && isDeepStrictEqual(issuer.provider, provider) ? issuer : undefined;
+  }
+
+  async register(
+    { source, secret }: { readonly source: PreparedTokenSource; readonly secret: Readonly<Secret> },
+    signal: AbortSignal,
+  ): Promise<EgressSourceKey> {
+    const issuer = this.issuer(source.key.provider);
+    if (!issuer) {
+      throw new Error("The token issuer for this registration is unavailable.");
+    }
+    await issuer.configure(source, secret, signal);
+    return source.key;
+  }
+
+  async resolve(reference: EgressSourceKey, options: TokenResolveOptions) {
+    const { signal, deadlineAt, minimumValidityMs } = options;
+    if (
+      signal.aborted ||
+      !(Date.parse(deadlineAt) > Date.now()) ||
+      !Number.isFinite(minimumValidityMs) ||
+      minimumValidityMs < 0
+    ) {
+      return undefined;
+    }
+    return this.issuer(reference.provider)?.resolve(reference, options);
   }
 
   /** One serialized discovery, retirement and preparation loop for an independently owned set. */
@@ -74,11 +112,7 @@ export class TokenService implements PreparedTokenService {
       await families.discover?.(outer);
       const retirement = await families.retire(outer);
       outer.throwIfAborted();
-      const result = await families.prepare(outer, (owner) => {
-        const budget = 25_000;
-        const signal = AbortSignal.any([outer, AbortSignal.timeout(budget)]);
-        return owner.run(randomUUID(), { signal, deadlineMonoMs: performance.now() + budget });
-      });
+      const result = await families.prepare(outer, (owner) => runPreparation(owner, outer));
       return result ?? (typeof retirement === "string" ? retirement : undefined);
     }
     function maintain(signal = stop.signal) {

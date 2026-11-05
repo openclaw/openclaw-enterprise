@@ -195,12 +195,11 @@ Keep the App key there and retain the existing approval scope. The development
 
 ## Token Service lifecycle
 
-The worker signs an App JSON Web Token (JWT), requests approved repository IDs
+The Token Service signs an App JSON Web Token (JWT), requests approved repository IDs
 and permissions, verifies scope and expiry, and saves the encrypted token in
 PostgreSQL. It owns renewal and retirement; renewal cannot extend the session.
 See [token preparation and withdrawal](../flows/credential-source-refresh.md#6-issue-and-renew-a-github-installation-token).
-Protected metadata reads use `metadata: read`; OCC separately authorizes the
-sender's exact GET.
+For Credential Proxy metadata reads, OCC registers the App key reference, installation and approved repository permissions. The registered reference survives token rotation. An authorized request resolves it with a deadline and minimum remaining validity. The Token Service returns a usable token immediately and starts renewal when due. If the token is missing or has too little time left, the request can join issuance for its grant until its deadline. OCC rechecks the grant and token version before releasing the credential to the sender and again before permitting its GET. Native Git sessions continue to use worker-prepared tokens.
 
 `PREPARED_GITHUB_RECOVERY_REQUIRED` (`quarantined` or `blocked`) stops automatic
 minting. [Recover on the issuing owner](../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key),

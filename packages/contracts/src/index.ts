@@ -64,7 +64,8 @@ export type {
   PreparedTokenEvidence,
   PreparedTokenCurrentProof,
   PreparedTokenIssuer,
-  PreparedTokenService,
+  TokenResolveOptions,
+  TokenService,
 } from "./prepared-token.ts";
 export {
   preparedGitHubType,

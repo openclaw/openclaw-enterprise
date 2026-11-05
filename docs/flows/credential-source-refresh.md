@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
-updated: 2026-10-31
-last_updated_session: authoring-run/0e8d85fa-aa72-48b7-bc35-06b23a663182
+updated: 2026-11-05
+last_updated_session: codex/01a19e60-87d0-71d0-8c9a-e3e3b33b1676
 ---
 
 # Credential source refresh Flow
@@ -15,7 +15,7 @@ In [Codex device flow](#device-authorization-and-configuration), OpenShell keeps
 the refresh grant; the Harness gets a placeholder and account metadata.
 Authorized discovery can retrieve an access token. These [OAuth checks](../testing/openshell-oauth.md) do not qualify protected egress.
 
-The worker owns [GitHub issuance](#6-issue-and-renew-a-github-installation-token).
+The Token Service owns [GitHub issuance](#6-issue-and-renew-a-github-installation-token).
 [Git and draft pull requests](../reference/repository-credentials/prepared-native-git.md)
 use committed tokens and cannot trigger issuance.
 
@@ -232,7 +232,7 @@ the record `deleting` for retry.
 
 `apps/controller/src/drivers/repo/github/credentials/prepared-owner.ts:createGitHubPreparationOwner`
 
-The worker records `issuing`, signs a five-minute JWT with the App key and rechecks
+The Token Service records `issuing`, signs a five-minute JWT with the App key and rechecks
 ownership before `POST /app/installations/{installation_id}/access_tokens`.
 The Installation selects the HTTPS issuer and trust roots.
 
@@ -242,7 +242,7 @@ not delivery. Reporting cannot change custody or retries.
 
 ```mermaid
 graph TD
-  W["<b>Worker</b><br/>Holds App key"] -->|Signed JWT| G["<b>GitHub</b><br/>Issues token"]
+  W["<b>Token Service</b><br/>Reads registered App key"] -->|Signed JWT| G["<b>GitHub</b><br/>Issues token"]
   G -->|Installation token| W
   W -->|Verify and commit| P[("<b>PostgreSQL</b><br/>Encrypted token")]
   P -->|Eligible token| R["<b>OCC and resolver</b>"]
@@ -257,10 +257,10 @@ graph TD
 ```
 
 PostgreSQL custody requires a
-persistent 32-byte encryption key. Cold or expired reads return `not_ready`.
+persistent 32-byte encryption key. For Credential Proxy metadata reads, OCC calls `TokenService.register` with the admitted source and App key reference. On an authorized request, the proxy calls `TokenService.resolve` with that registered reference and its original deadline. Scheduled and request-triggered work claim the same PostgreSQL family. When a token can cover the request, the proxy can use it while renewal runs. Otherwise it waits for that family until the deadline. Cancellation releases no token to the caller.
 Native Git uses a [private broker request](../reference/repository-credentials.md#native-git-from-the-agent-to-github).
 
-For `acme/widgets`, the worker requests repository ID `12345` and
+For `acme/widgets`, the Token Service requests repository ID `12345` and
 `metadata: read`. It checks the returned ID, name, permissions and expiry.
 The approved `github-installation` profile sends `{}` and inherits installation scope.
 
@@ -337,6 +337,8 @@ detached reads. Clearing bytes cannot revoke a token.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 23:21: Trace registered GitHub token preparation for a protected metadata request. (codex/01a19e60-87d0-71d0-8c9a-e3e3b33b1676 - 614169814)
 
 - 2026-10-31 21:13: Reconcile diagnostics. (authoring-run/0e8d85fa-aa72-48b7-bc35-06b23a663182 - 9c45357338431ec9334642aca5eac91de862ae95)
 
