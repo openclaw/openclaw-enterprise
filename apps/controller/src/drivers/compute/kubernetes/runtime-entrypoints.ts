@@ -4703,6 +4703,9 @@ const harnessPath = [
 ].filter(Boolean).join(":");
 const nodeEnv = {
   HOME: process.env.HOME,
+  // Persistent mount ancestors can be root-owned and group-writable. Keep
+  // SQLite staging beneath the container's sticky /tmp; OpenClaw owns its private children.
+  XDG_CACHE_HOME: "/tmp",
   PATH: harnessPath,
   OPENCLAW_STATE_DIR: state,
   OPENCLAW_CONFIG_PATH: configPath,
@@ -5278,6 +5281,7 @@ delete process.env.OPENCLAW_NATIVE_INFERENCE_CONFIG;
 delete process.env.OPENCLAW_HARNESS_PROBE_CONFIG;
 const nodeEnv = {
   ...process.env,
+  XDG_CACHE_HOME: "/tmp",
   ...(pluginBins.length > 0 && { PATH: [...pluginBins, process.env.PATH].filter(Boolean).join(require("node:path").delimiter) }),
   OPENCLAW_STATE_DIR: state,
   OPENCLAW_CONFIG_PATH: workerConfigPath,
@@ -5302,6 +5306,7 @@ if (gatewayCa) {
 // restarting into another Doctor backup.
 const doctorEnv = {
   HOME: process.env.HOME,
+  XDG_CACHE_HOME: nodeEnv.XDG_CACHE_HOME,
   PATH: process.env.PATH,
   TMPDIR: temporary,
   OPENCLAW_STATE_DIR: state,
