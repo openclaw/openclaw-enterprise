@@ -236,8 +236,8 @@ See [Credential Proxy uncertainty](../drivers/credential-proxy.md#cancellation-r
 
 ## Diagnose a refused request
 
-Git does not print the body of a JSON error response. When OpenShell refuses the
-first request of a clone, fetch, `ls-remote` or push, Git shows only
+Git does not print the body of a JSON error response. When an admitted OpenShell endpoint refuses the
+first HTTP request of a clone, fetch, `ls-remote` or push, Git shows only
 `The requested URL returned error: 403` (exit 128). When it refuses only the
 push's upload, usually `request_not_allowed` for another branch or tag, Git
 shows `error: RPC failed; HTTP 403`, then

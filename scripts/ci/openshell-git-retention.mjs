@@ -194,6 +194,37 @@ for (const name of [
   expiryDiagnostics[name] = [name, count];
 }
 const events = {
+  "git-policy-denied": {
+    stage: ["stage", choice("after-expiry", "after-worker-restart")],
+    reason: ["reason", choice("transparent_tcp_policy_denied")],
+    policyReason: ["policyReason", choice("endpoint-not-admitted")],
+    marker: ["marker", choice("policy-dns-ineligible")],
+    host: ["host", choice("github.com")],
+    port: ["port", choice(443)],
+    executable: [
+      "executable",
+      choice(
+        "/usr/lib/git-core/git-remote-https",
+        "/usr/lib/git-core/git-remote-http",
+        "/usr/libexec/git-core/git-remote-https",
+        "/usr/libexec/git-core/git-remote-http",
+      ),
+    ],
+    count: [
+      "count",
+      (value) => (Number.isSafeInteger(value) && value > 0 && value <= 2000 ? value : undefined),
+    ],
+    startedAt: ["startedAt", count],
+    endedAt: ["endedAt", count],
+  },
+  "retained-execution-failed": {
+    stage: ["stage", choice("after-expiry", "after-worker-restart")],
+    connectionsBefore: ["connectionsBefore", count],
+    connectionsAfter: ["connectionsAfter", count],
+    requestsBefore: ["requestsBefore", count],
+    requestsAfter: ["requestsAfter", count],
+    originUnchanged: ["originUnchanged", boolean],
+  },
   "git-expiry-unconfirmed": expiryDiagnostics,
   "supervisor-trust": {
     parentDigest: ["parent", imageDigest],
@@ -274,7 +305,7 @@ for (const stage of ["after-expiry", "after-worker-restart"]) {
   events[stage] = {
     ...runtime,
     nonGit: ["nonGit", choice("succeeded")],
-    freshGit: ["freshGit", choice("http-403")],
+    freshGit: ["freshGit", choice("transparent-policy-denied")],
     connections: ["connections", count],
     requests: ["requests", count],
   };
