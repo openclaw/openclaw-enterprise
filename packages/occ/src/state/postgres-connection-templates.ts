@@ -1,3 +1,4 @@
+import { isGoogleApisRecipient } from "@openclaw-enterprise/contracts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
 import type {
   OAuthClient,
@@ -110,7 +111,7 @@ async function insertVersion(
   client: PostgresQueryClient,
   version: OAuthConnectionTemplateVersion,
 ): Promise<void> {
-  const endpoint = "host" in version.recipient ? version.recipient : undefined;
+  const endpoint = isGoogleApisRecipient(version.recipient) ? undefined : version.recipient;
   await client.query(
     `INSERT INTO occ.oauth_connection_template_versions
      (template_id, version, oauth_client_id, issuer, mode, authorization_url, token_url, revocation_url, scopes,

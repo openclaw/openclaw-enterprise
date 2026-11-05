@@ -158,6 +158,7 @@ export {
   isOAuthScopeToken,
   isGoogleApisRecipient,
   validateConnectionTemplateAuthorization,
+  validateConnectionTemplateRecipient,
 } from "./connection-templates.ts";
 export type { ComputePreparationFailureEvidence } from "./compute-preparation.ts";
 export { isComputePreparationFailureEvidence } from "./compute-preparation.ts";

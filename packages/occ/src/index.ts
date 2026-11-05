@@ -29,6 +29,7 @@ export {
 export type { PreparedGitHubMetadataAdmission } from "./state/prepared-github-state.ts";
 import {
   connectionValuesChanged,
+  validateConnectionTemplateRecipient,
   isGoogleApisRecipient,
   validateConnectionTemplateAuthorization,
   ConnectionTemplateValidationError,
@@ -1041,24 +1042,12 @@ type TemplateInput = ApprovedTemplateSettings &
     | { readonly mode: "mcp_discovery"; readonly serverUrl: string; readonly issuer: string }
   );
 function manualConnectionRecipient(
-  input: Extract<TemplateInput, { mode: "manual" }>,
+  recipient: Extract<TemplateInput, { mode: "manual" }>["recipient"],
 ): ConnectionRecipient {
-  if (isGoogleApisRecipient(input.recipient)) {
-    if (
-      input.issuer !== "https://accounts.google.com" ||
-      input.authorizationUrl !== "https://accounts.google.com/o/oauth2/v2/auth" ||
-      input.tokenUrl !== "https://oauth2.googleapis.com/token" ||
-      (input.revocationUrl !== undefined &&
-        input.revocationUrl !== "https://oauth2.googleapis.com/revoke")
-    ) {
-      throw new ConnectionTemplateValidationError(
-        "recipient",
-        "Google APIs requires Google's published OAuth endpoints.",
-      );
-    }
+  if (isGoogleApisRecipient(recipient)) {
     return { kind: "google_apis" };
   }
-  const { host, port = 443, path = "/**" } = input.recipient;
+  const { host, port = 443, path = "/**" } = recipient;
   if (
     !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(host) ||
     !/^\/[!-~]*$/.test(path) ||
@@ -4534,7 +4523,7 @@ export class OpenClawController {
         authorizationUrl: input.authorizationUrl,
         tokenUrl: input.tokenUrl,
         ...(input.revocationUrl && { revocationUrl: input.revocationUrl }),
-        recipient: manualConnectionRecipient(input),
+        recipient: manualConnectionRecipient(input.recipient),
       };
     } else {
       const observed = await discover(input.serverUrl, input.issuer);
@@ -4580,6 +4569,7 @@ export class OpenClawController {
       };
     }
     validateConnectionTemplateAuthorization(values);
+    validateConnectionTemplateRecipient(values);
     return values;
   }
 

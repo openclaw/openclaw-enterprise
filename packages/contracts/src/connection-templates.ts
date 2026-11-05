@@ -147,6 +147,24 @@ export function validateConnectionTemplateAuthorization(
   }
 }
 
+/** A provider-wide recipient must use the OAuth endpoints for that provider. */
+export function validateConnectionTemplateRecipient(values: ConnectionTemplateValues): void {
+  if (
+    isGoogleApisRecipient(values.recipient) &&
+    (values.mode !== "manual" ||
+      values.issuer !== "https://accounts.google.com" ||
+      values.authorizationUrl !== "https://accounts.google.com/o/oauth2/v2/auth" ||
+      values.tokenUrl !== "https://oauth2.googleapis.com/token" ||
+      (values.revocationUrl !== undefined &&
+        values.revocationUrl !== "https://oauth2.googleapis.com/revoke"))
+  ) {
+    throw new ConnectionTemplateValidationError(
+      "recipient",
+      "Use Google’s published OAuth endpoints with the Google APIs destination.",
+    );
+  }
+}
+
 /** True when `next` changes a value a person approved, so it needs a new version. */
 export function connectionValuesChanged(
   current: Readonly<ConnectionTemplateValues>,

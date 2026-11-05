@@ -161,7 +161,9 @@ export function renderConnectionTemplates(
       option("endpoint", "Specific endpoint"),
     );
     recipient.value =
-      preset || (version && "kind" in version.recipient) ? "google_apis" : "endpoint";
+      preset || (version && "kind" in version.recipient && version.recipient.kind === "google_apis")
+        ? "google_apis"
+        : "endpoint";
     const recipientChoice = field({ label: "API destination", control: recipient });
     const host = element("input", { required: true, value: exactRecipient?.host ?? "" });
     const port = element("input", {
