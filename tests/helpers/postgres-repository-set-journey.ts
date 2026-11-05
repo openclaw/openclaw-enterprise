@@ -35,7 +35,7 @@ import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/g
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { preparedStandingGitPeer } from "./prepared-standing-git-peer.ts";
 import { standingGitConversation } from "./standing-git-conversation.ts";
-import { waitForRevisionPass } from "./postgres-worker-revision-support.mjs";
+import { expireStoppedClaims, waitForRevisionPass } from "./postgres-worker-revision-support.mjs";
 import {
   pluginRuntimeEnvironment,
   pluginRuntimeSpecForRevision,
@@ -180,7 +180,7 @@ async function repositoryGitJourney(
     revisionId: "",
     deadline: Date.now() + 600_000,
     platformProfile: policy.platformProfile ?? false,
-    trackGitExpiry: policy.sessionDurationSeconds !== undefined,
+    trackGitExpiry: standing || policy.sessionDurationSeconds !== undefined,
     gatewayVersion: "0.1.6",
     gatewayTls: { ...tls, tokenPath },
     ...{ supervisor: state },
@@ -915,10 +915,40 @@ async function repositoryGitJourney(
       assert.equal(((await request()) as { status: number }).status, 200);
       assert.deepEqual(peer.gh.issuesOfTokens[0].repositoryIds, [73]);
       await f.stop();
+      const originalProviders = await Promise.all(
+        [entry.binding.provider, "openai"].map(async (provider) => {
+          const status = await client.getSandboxProviderStatus(
+            workspace,
+            state.sandbox,
+            provider,
+            t.signal,
+          );
+          assert.equal(status.state, "PROVIDER_READINESS_STATE_READY");
+          assert.ok(status.receipt?.desired);
+          assert.ok(status.observed);
+          return [provider, status] as const;
+        }),
+      );
       // Cross the original admitted session deadline in real time. Keep the exact
       // running Sandbox and provider; only the worker is restarted.
       await delay(Math.max(0, credentials.deadlineWallMs + 100 - Date.now()));
       assert.equal((await evaluate(probe)).decision, 2, "expired session fails closed");
+      // Stock withholds the whole environment when Git expires. Renewal must recover
+      // this original generation, not rely on a still-READY predecessor witness.
+      for (const [provider, original] of originalProviders) {
+        const expired = await client.getSandboxProviderStatus(
+          workspace,
+          state.sandbox,
+          provider,
+          t.signal,
+        );
+        assert.equal(expired.state, "PROVIDER_READINESS_STATE_WITHHELD");
+        assert.equal(expired.reason, "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED");
+        assert.equal(expired.observed?.credentialsInstalled, false);
+        assert.equal(expired.observed?.launchEnvironmentInstalled, false);
+        assert.deepEqual(expired.receipt?.desired, original.receipt?.desired);
+        assert.equal(expired.observed?.providerEnvRevision, original.observed?.providerEnvRevision);
+      }
       // A changed middleware recipient cannot inherit the expired session's authority.
       const registration = state.middleware[0]!;
       const audience = registration.audience;
@@ -1392,6 +1422,9 @@ async function repositoryGitJourney(
       30_000,
     );
     await f.stop();
+    // Detach can be observed before its worker releases the claim. Only after shutdown,
+    // expire this revision's lease so the replacement worker can recover the interrupted pass.
+    await expireStoppedClaims(f, revision);
     const reduction = async () => {
       const { rows } = await f.observerPool.query<{
         request_id: string;
