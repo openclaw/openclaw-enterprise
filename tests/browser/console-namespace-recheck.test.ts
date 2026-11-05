@@ -23,7 +23,7 @@ import {
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { NAMESPACE_UNAVAILABLE } from "../helpers/refusal-text.mjs";
 import { routeInstallationProvisioning } from "./console-agents-test-support.mjs";
-import { refocus } from "./console-refocus-helpers.mjs";
+import { refocus } from "./console-refocus-helpers.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 
 // Create Agent open on a provisioning Namespace rechecks it every 10 s while a Dedicated plan

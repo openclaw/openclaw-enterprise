@@ -39,7 +39,7 @@ import {
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
 import { responseTo } from "./console-action-helpers.ts";
-import { refocus } from "./console-refocus-helpers.mjs";
+import { refocus } from "./console-refocus-helpers.ts";
 import {
   ADMINISTRATOR_ACCESS_DENIED,
   AGENT_CREATE_DENIED,
