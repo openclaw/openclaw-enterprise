@@ -204,6 +204,7 @@ kube -n "$PLATFORM_NS" get service openshell-gateway -o json |
 kube create -f "$RUN_DIR/management-policy.json"
 cp "$RUN_DIR/installation-with-peers.json" "$INSTALLATION_FILE"
 cp "$RUN_DIR/worker.json" "$VALUES_FILE"
+save_session
 upgrade_installation
 ```
 

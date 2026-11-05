@@ -129,6 +129,7 @@ repository_network() { :; }
 SH
 source "$RUN_DIR/operator-session.sh"
 source "$RUN_DIR/platform.sh"
+save_session
 upgrade_installation
 namespace=$(request GET /namespaces | jq -er '[.data[]|select(.name=="default" and .status=="ready")]|select(length==1)|first.id')
 base="/namespaces/$namespace"
