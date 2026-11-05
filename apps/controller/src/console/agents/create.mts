@@ -25,7 +25,7 @@ import {
   element,
   field as formField,
   fieldError,
-  jsonObjectProblem,
+  jsonObjectDiagnostic,
   setFieldError,
   setStatusTone,
   setText,
@@ -1116,12 +1116,12 @@ function renderAgentForm(
     ...modelChoices().map((id) => element("option", { value: id }, id)),
   );
   const toggleModel = button("Enter model ID manually", () => {
+    const values = readModelConfiguration();
     if (manualModel) {
-      if (!resetModelChoices(false, model.value)) {
+      if (!resetModelChoices(false, model.value, values)) {
         return;
       }
     } else {
-      const values = readModelConfiguration();
       if (values === "invalid-allow" || !canMergeModelCatalog(values, model.value)) {
         return;
       }
@@ -1130,7 +1130,7 @@ function renderAgentForm(
       updateModelConfiguration(false, values);
       updateControls();
     }
-    if (jsonObjectProblem(configuration.value) !== undefined) {
+    if (values === "number-range") {
       focusConfiguration();
     } else {
       (manualModel ? model : modelChoice).focus();
@@ -1378,11 +1378,12 @@ function renderAgentForm(
   });
   function readModelConfiguration(
     targetHarness = harness.value,
-  ): LaunchValues | "invalid-json" | "invalid-allow" {
-    const values = parseObject(configuration, true);
+  ): LaunchValues | "invalid-json" | "number-range" | "invalid-allow" {
+    const diagnostic = jsonObjectDiagnostic(configuration.value);
+    const values = parseObject(configuration, diagnostic.kind === "number-range", diagnostic);
     // Keep the existing control transitions for invalid JSON; only the merge is skipped.
     if (values === undefined) {
-      return "invalid-json";
+      return diagnostic.kind === "number-range" ? "number-range" : "invalid-json";
     }
     // Only the Codex template merges this field. Do not validate unrelated draft settings.
     if (targetHarness !== "codex" || !Object.hasOwn(values.plugins ?? {}, "allow")) {
@@ -2508,13 +2509,13 @@ function renderAgentForm(
   function parseObject<T extends Record<string, unknown> = LaunchValues>(
     input: HTMLTextAreaElement,
     reportInvalid = false,
+    diagnostic = jsonObjectDiagnostic(input.value),
   ): T | undefined {
-    const problem = jsonObjectProblem(input.value);
-    if (problem === undefined) {
+    if (diagnostic.kind === "valid") {
       return JSON.parse(input.value);
     }
     if (reportInvalid && input === configuration) {
-      configurationError.show(problem);
+      configurationError.show(diagnostic.message);
       focusConfiguration();
     } else if (reportInvalid) {
       const details = input.closest("details");
