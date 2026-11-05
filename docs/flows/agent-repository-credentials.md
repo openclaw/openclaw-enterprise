@@ -8,7 +8,7 @@ last_updated_session: authoring-run/97c319f2-8bb0-4db4-9cfb-50478db52fdb
 
 ## Overview
 
-Compute-owned dedicated Codex uses prepared native sessions without a Sandbox Driver;
+Dedicated Codex uses prepared sessions without a Sandbox Driver;
 [OpenShell sandboxes](../reference/repository-credentials/protected-openshell-git.md) receive placeholders.
 Workers deliver credentials to providers, checking signed requests against live grants.
 See [enrollment and mandatory hooks](../guides/repository-credentials/openshell-enrollment.md),
@@ -21,8 +21,6 @@ See [enrollment and mandatory hooks](../guides/repository-credentials/openshell-
   renders discovery and inherited or custom access.
 - `apps/controller/src/worker.ts:ControllerWorker.prepareRevision` prepares
   repository sessions before invoking Compute.
-
-See [standing approval across session expiry](../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent).
 
 ## Flow
 
@@ -297,9 +295,11 @@ bare Sandboxes have no Git.
 External `reconcile` runs serially with a 25-second timeout and one-second interval.
 Close aborts and joins. Readback settles delivery without reinstalling or restoring withdrawn access.
 
-Activation and maintenance commit together with the same actor. Maintenance uses 30 seconds,
+Activation and maintenance commit with the same actor. Maintenance uses 30 seconds,
 the sender interval or a shorter Compute interval. Restart invalidates missing sessions without
 reminting; cleanup permits deployment.
+[Prepared custody](../../apps/controller/src/drivers/repo/github/credentials/prepared-postgres.ts)
+erases standing tokens after verified expiry plus skew; uncertain revocations remain unresolved.
 
 [Preview, save and deploy](../../packages/occ/src/index.ts) require standing permission and current scope.
 The [worker](../../apps/controller/src/worker/repository-credentials.ts) uses Installation policy,
@@ -373,8 +373,8 @@ and Pod generation without printing credentials.
 The [test guide](../testing/repository-credentials.md) distinguishes lifecycle, installed-runtime
 and live-provider proof. [Docker mount](../testing/docker.md#repository-runtime-volume-test-environment)
 and rendered Helm checks do not prove CNI enforcement; console fixtures do not prove model,
-Slack or GitHub execution. The registered Driver test pushes two commits to one local draft PR
-and checks Codex turns before and after withdrawal on the same revision. On a team installation,
+Slack or GitHub execution. The Driver test checks local draft-PR pushes and Codex turns
+before and after withdrawal on one revision. On a team installation,
 verify Agent-authored PR updates, withdrawal denial before provider contact, and continued chat.
 
 ## Related docs

@@ -724,7 +724,29 @@ async function repositoryGitJourney(
       );
       assert.equal(peer.originCalls(), before);
       assert.equal(wire.world.id, initialSandbox);
+      // Only the stored, verified provider timestamps move here. Known expiry plus
+      // clock skew settles custody locally; GitHub may reject an expired bearer.
+      const familyId = "repository-git:" + successor.admissionId;
+      await f.observerPool.query(
+        `UPDATE occ.prepared_github_attempts
+         SET usable_until=statement_timestamp()-interval '150 seconds',
+             provider_expires_at=statement_timestamp()-interval '90 seconds'
+         WHERE source_id=$1`,
+        [familyId],
+      );
+      peer.gh.setRevokeStatus(401);
+      const deletes = peer.gh.trace.filter((request) => request.method === "DELETE").length;
       await peer.prepared.maintain();
+      assert.deepEqual(
+        (
+          await f.observerPool.query(
+            "SELECT custody,sealed IS NULL AS erased FROM occ.prepared_github_attempts WHERE source_id=$1",
+            [familyId],
+          )
+        ).rows,
+        [{ custody: "expired", erased: true }],
+      );
+      assert.equal(peer.gh.trace.filter((request) => request.method === "DELETE").length, deletes);
       return;
     }
     if (narrow) {

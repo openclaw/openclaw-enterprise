@@ -96,6 +96,8 @@ deadline, changed-recipient refusal, successor issuance, and withdrawal. A separ
 issuer with standing permission removed must refuse issuance. It uses the real PostgreSQL worker
 and credential owner with controlled OpenShell and GitHub protocol peers.
 These checks do not prove a running Kubernetes Pod or model turn.
+The final custody check moves only stored provider timestamps past verified expiry
+and clock skew; it asserts material erasure without a revocation request.
 
 ## Qualify emitted artifacts
 
