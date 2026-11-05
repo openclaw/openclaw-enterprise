@@ -1525,12 +1525,16 @@ test("provider Harness protected execution is released only on current signed in
             const child = /\n\s+name: "Codex",\n\s+args: (.+),\n/.exec(outer);
             assert.equal(child !== null, node);
             const codex = node ? program(JSON.parse(child[1]).slice(1)) : outer;
-            assert.equal(
-              codex,
-              withoutLineComments(
-                disabled ? PROTECTED_CODEX_RUNTIME_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT,
-              ),
-            );
+            // Standalone commands retain their full source. The nested child
+            // omits unused native helpers; both must preserve the admission below.
+            if (!node) {
+              assert.equal(
+                codex,
+                withoutLineComments(
+                  disabled ? PROTECTED_CODEX_RUNTIME_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT,
+                ),
+              );
+            }
             // Only the two model-calling invocations: the authentication probe and app-server.
             assert.equal(
               codex.match(/unbounded_connection_retries/g)?.length ?? 0,

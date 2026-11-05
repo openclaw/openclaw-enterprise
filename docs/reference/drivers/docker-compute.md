@@ -124,9 +124,11 @@ State on that volume outlives runtime image upgrades. Before OpenClaw starts,
 the gateway runs the same state migration as a
 [Kubernetes Gateway](kubernetes-compute/storage-and-credentials.md#gateway-storage):
 `openclaw doctor --fix --non-interactive` once, with the configuration
-read-only, when its shared state or an agent database uses an older schema. If a database is still
-older afterwards, the container logs `Gateway state migration failed` and exits
+read-only, when its shared state or an agent database uses an older schema. If schemas remain
+outdated or maintenance is refused, the container logs `Gateway state migration failed` and exits
 without starting OpenClaw, and the deployment fails as an unready container.
+A private pending marker keeps refused or interrupted maintenance eligible for retry
+after restart, even if schemas advanced.
 The Driver then removes the container, so Doctor's output survives only
 through the Docker logging address. A slow migration can also outlast the
 Driver's 120-second readiness budget; deploying again retries it.
