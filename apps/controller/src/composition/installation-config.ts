@@ -2,6 +2,7 @@ import type { ModelProviderConfiguration } from "../drivers/compute/model-provid
 import {
   openShellProxyConfiguration,
   openShellRepositoryConfiguration,
+  openShellGitChartListener,
   validateOpenShellRepositoryTransport,
 } from "../drivers/egress-proxy/openshell-configuration.ts";
 import { githubRepositoryConfiguration } from "../drivers/repo/github/installation.ts";
@@ -897,7 +898,7 @@ export async function loadInstallationConfiguration(options: {
   requireChartListener(
     repositoryTransportConfiguration?.authority,
     environment,
-    chartListeners.openshellGit,
+    openShellGitChartListener,
   );
 
   const backends = backendConfiguration(

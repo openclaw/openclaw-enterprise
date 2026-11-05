@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { carryDocument } from "../../apps/controller/src/console/carry.mts";
 
-const ref = (id) => ({ source: "env", provider: "default", id });
+const ref = (id: string) => ({ source: "env", provider: "default", id });
 
 test("a carried object whose keys each browser changed separately is named for review", () => {
   // The reader switched auth to a password; another browser added a token to the token mode.
@@ -165,6 +165,10 @@ test("changing an existing Secret reference beside an auth mode change names the
     [rotated, switched],
   ]) {
     const { value, conflicts, mixed } = carryDocument(base, mine, current);
+    assert.ok(typeof value === "object" && value !== null && "gateway" in value);
+    assert.ok(
+      typeof value.gateway === "object" && value.gateway !== null && "auth" in value.gateway,
+    );
     assert.deepEqual(value.gateway.auth, expected);
     assert.deepEqual(conflicts, []);
     assert.deepEqual(mixed, ["/gateway/auth"]);
