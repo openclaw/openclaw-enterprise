@@ -236,10 +236,12 @@ For dedicated Codex, OpenShell's `configureAgent` hook removes
 }
 ```
 
-OpenShell isolates every login mode. The bridge
-requests `:danger-full-access` with `user` review, subject to native account policy.
-The Gateway refuses constrained threads before turns. Restricted profiles,
-including the proxy's, require nested bubblewrap namespaces, which OpenShell blocks.
+<a id="codex-permission-profile"></a>
+
+Dedicated Codex requires account policy permitting `:danger-full-access` with `user` review.
+OpenShell isolates every login mode; restricted profiles, including the proxy's,
+require nested bubblewrap namespaces, which OpenShell blocks. The Gateway refuses
+constrained threads before turns; see [permission-profile troubleshooting](../../guides/topics/agent-troubleshoot.md#codex-refuses-the-required-permission-profile).
 Native OpenClaw already disables inner isolation. Its hook sets
 `agents.defaults.workspace` and any
 `agents.entries.main.workspace` to the approved `sandboxDataMount.mountPath`,

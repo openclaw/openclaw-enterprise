@@ -41,7 +41,7 @@ graph TD
 `agents/plugin-fields.mjs:createPluginFields` edits Agent `plugins` separately
 from Configuration. Invalid JSON and untouched fields survive; clearing overrides
 restores inheritance. Submission, uncertain outcomes, or invalid JSON lock editing.
-`capabilities.pluginPolicies` gates policy edits; unsupported reviewers remain clearable.
+The selected Harness's entry in `capabilities.pluginCatalogs` defines the policy controls.
 A credential/access reminder sits beside the expandable
 **Access and credential setup** disclosure. Instructions, list, and details
 scroll within the dialog; search and pagination remain reachable.

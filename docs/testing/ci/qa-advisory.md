@@ -1,6 +1,8 @@
 ---
 kind: reference/ci
 tags: [human_verified]
+# Backfilled from the verification tag recorded in 17ff921c5.
+last_verified: "2026-11-04"
 ---
 
 # QA Matrix Advisory
@@ -53,7 +55,7 @@ manual advisory run.
 ## Scenarios
 
 The matrix creates disposable Compose and Kubernetes control planes, both with
-Kubernetes compute, and separate OpenClaw/Codex Agents for each scenario. It does
+Kubernetes compute, and separate OpenClaw/Codex Agents for each scenario. Before the first preset, the matrix enables both Plugin Drivers and checks that OpenClaw offers Google Workspace and Codex offers Linear. The catalogs stay enabled across presets. The matrix does
 not use existing clusters or change the default kubeconfig. The exact test list
 is in the [QA manifest](../../../scripts/ci/test-suites/qa-matrix.json).
 

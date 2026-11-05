@@ -1,3 +1,8 @@
+import {
+  enterManualModel,
+  openAdvancedSettings,
+  submitCreateAgent,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -12,7 +17,7 @@ import {
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import {
   apiRequests,
@@ -29,13 +34,8 @@ import {
   settledView,
   statusTone,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
-import {
-  enterManualModel,
-  openAdvancedSettings,
-  submitCreateAgent,
-} from "./console-agents-test-support.mjs";
 import {
   callerDenied,
   refusedNamed,
@@ -507,14 +507,17 @@ test("Create Agent searches approvers with a search-only Slack Secret", async (t
 });
 
 test("Create Agent keeps the search Secret out of plugin approver lookups", async (t) => {
-  const preset = record(
-    JSON.parse(
-      await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
-    ),
-  );
   const pluginId = "occ-plugin:diffs";
-  record(record(preset.template).agent).plugins = {
-    [pluginId]: { enabled: true, approvers: [{ channel: "slack", id: "UOTHER123" }] },
+  const preset = {
+    name: "OpenClaw approvers",
+    template: {
+      configuration: { values: nativeValues("approver-privacy") },
+      agent: {
+        plugins: {
+          [pluginId]: { enabled: true, approvers: [{ channel: "slack", id: "UOTHER123" }] },
+        },
+      },
+    },
   };
   const fixture = await createConsoleAppFixture(t, { defaultPresets: [preset] });
   await fixture.bootstrap();
@@ -553,7 +556,8 @@ test("Create Agent keeps the search Secret out of plugin approver lookups", asyn
     },
   );
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start with default Preset" }).click();
+  await page.getByLabel("Preset template").selectOption({ label: preset.name });
+  await page.getByRole("button", { name: "Use Preset", exact: true }).click();
   await openAdvancedSettings(page);
   await page.getByLabel("Default plugin approvers mode").selectOption("chosen");
   // The people search's Secret picker follows the answer: its inline Create Secret is disabled
@@ -930,7 +934,7 @@ test("Unsaved default plugin approvers block deployment after leaving Plugins", 
   const { fixture, namespace: namespaceValue }: { fixture: Fixture; namespace: unknown } =
     await createRuntimeAuthFixture(t, "Unsaved plugin approvers");
   const namespace = entity(namespaceValue);
-  const pluginDriver = new CodexPluginDriver();
+  const pluginDriver = new OCCPluginDriver();
   controller(fixture).registerDriver(pluginDriver);
   controller(fixture).selectDriver("plugin", pluginDriver.id);
   const agent = agentEntity(
@@ -972,7 +976,7 @@ test("A reader sees the version draft's default plugin approvers", async (t) => 
   const { fixture, namespace: namespaceValue }: { fixture: Fixture; namespace: unknown } =
     await createRuntimeAuthFixture(t, "Reader plugin approvers");
   const namespace = entity(namespaceValue);
-  const pluginDriver = new CodexPluginDriver();
+  const pluginDriver = new OCCPluginDriver();
   controller(fixture).registerDriver(pluginDriver);
   controller(fixture).selectDriver("plugin", pluginDriver.id);
   const agent = agentEntity(
@@ -1017,9 +1021,45 @@ test("A reader sees the version draft's default plugin approvers", async (t) => 
   assert.deepEqual(pathRequests(requests, "GET", `${path}/plugins/capabilities`), []);
 });
 
+test("A saved Agent can clear its selections and default approvers after its catalog is removed", async (t) => {
+  const { fixture, namespace: namespaceValue }: { fixture: Fixture; namespace: unknown } =
+    await createReadyConsoleNamespace(t, "Removed plugin catalog");
+  const namespace = entity(namespaceValue);
+  controller(fixture).installPluginDrivers([new CodexPluginDriver(), new OCCPluginDriver()]);
+  const agent = agentEntity(
+    await fixture.createAgent(
+      namespace.id,
+      "Disconnected catalog",
+      nativeValues("removed-catalog", { harnessId: "codex" }),
+      { executionMode: "dedicated", harnessAuth: null },
+    ),
+  );
+  await fixture.updateAgent(namespace.id, agent.id, {
+    configurationId: agent.configurationId,
+    plugins: { "codex-plugin:calendar@openai-curated-remote": { enabled: true } },
+    pluginApprovers: [{ channel: "slack", id: "team:TTEST123:user:UTEST123" }],
+  });
+  controller(fixture).selectDriver("plugin", "occ-plugin");
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+  await page.getByLabel("Default plugin approvers mode").selectOption("inherit");
+  await page.locator("summary").filter({ hasText: "Plugin selections JSON" }).click();
+  await page.getByLabel("Plugin selections JSON", { exact: true }).fill("{}");
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const saved = page.waitForResponse(
+    (response) => response.url().endsWith(path) && response.request().method() === "PATCH",
+  );
+  await page.getByRole("button", { name: "Save plugin selections", exact: true }).click();
+  assert.equal((await saved).status(), 200);
+  const fresh = responseData(await fixture.request("GET", path));
+  assert.deepEqual(fresh.plugins, {});
+  assert.equal(fresh.pluginApprovers, undefined);
+  assert.equal(fresh.pluginDriver, undefined);
+});
+
 test("Codex Agents offer only default plugin approvers", async (t) => {
   const { fixture, namespace: namespaceValue }: { fixture: Fixture; namespace: unknown } =
-    await createRuntimeAuthFixture(t, "Codex plugin approvers");
+    await createReadyConsoleNamespace(t, "Codex plugin approvers");
   const namespace = entity(namespaceValue);
   const pluginDriver = new CodexPluginDriver();
   controller(fixture).registerDriver(pluginDriver);
@@ -1028,8 +1068,8 @@ test("Codex Agents offer only default plugin approvers", async (t) => {
     await fixture.createAgent(
       namespace.id,
       "Codex Approver Agent",
-      nativeValues("codex-approvers"),
-      { executionMode: "embedded", harnessAuth: { method: "runtime" } },
+      nativeValues("codex-approvers", { harnessId: "codex" }),
+      { executionMode: "dedicated", harnessAuth: null },
     ),
   );
   const pluginId = "codex-plugin:calendar@openai-curated-remote";

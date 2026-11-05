@@ -212,6 +212,9 @@ export function createControlAdmission(
     }
     const recoverOnly = input.recoverOnly === true;
     const snapshot = snapshotSessionInput(input);
+    if (recoverOnly && !isBoundInput(snapshot)) {
+      throw new Error("INVALID_ADMISSION");
+    }
     const admittedInput = isBoundInput(snapshot)
       ? snapshot
       : Object.freeze({
@@ -352,25 +355,6 @@ export function createControlAdmission(
       throw new Error("ADMISSION_MISSING");
     }
     const forgetAt = clock.monotonicNow() + Math.max(0, admissionWindowMs - age);
-    if (recoverOnly) {
-      const record: AdmissionRecord = {
-        input: admittedInput,
-        sessionId: undefined,
-        forgetAt,
-        durable: false,
-        ready: Promise.resolve(),
-        terminal: undefined,
-        unbound: false,
-        saved: false,
-        writing: undefined,
-        cancel: () => {},
-      };
-      records.set(id, record);
-      record.cancel = clock.schedule(Math.max(0, admissionWindowMs - age), () =>
-        records.delete(id),
-      );
-      throw new Error("ADMISSION_MISSING");
-    }
     opened ??= service.open(admittedInput);
     const record: AdmissionRecord = {
       input: admittedInput,

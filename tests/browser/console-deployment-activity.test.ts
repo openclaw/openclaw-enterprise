@@ -6,7 +6,7 @@ import type {
   PlatformReadView,
   PlatformStateStore,
 } from "../../packages/occ/src/state/platform-state.ts";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { callerDenied } from "../helpers/refusal-text.mjs";
 import {
   AGENT_READ,
@@ -19,9 +19,8 @@ import {
   nativeValues,
   newPage,
   waitForCondition,
-  waitForIdleFetches,
-  trackSettledFetches,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+import { waitForIdleFetches, trackSettledFetches } from "./console-fetch-accounting.ts";
 import { responseTo } from "./console-action-helpers.ts";
 
 // The real controller admits and authorizes the deployment. The fixture has no

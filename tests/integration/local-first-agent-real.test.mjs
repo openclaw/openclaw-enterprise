@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -58,6 +59,7 @@ const maxOutputLength = 32_768;
 const commandTimeout = 30 * 60_000;
 const refusalTimeout = 2 * 60_000;
 const stackLifecycleTimeout = 25 * 60_000;
+const nativeSetupExpiryTimeout = 11 * 60_000;
 const credentialVariable =
   selectedSandboxDriver === "openshell" ? "CODEX_ACCESS_TOKEN" : "OPENAI_API_KEY";
 const sensitiveValues = new Set(
@@ -252,8 +254,7 @@ async function readKubernetes({ stateDirectory, cluster, env }, args, label, out
         "--context",
         `k3d-${cluster}`,
         ...args,
-        "--output",
-        output,
+        ...(output === undefined ? [] : ["--output", output]),
       ],
       { env: environment, timeout: 20_000, signal, maxBuffer: 1024 * 1024 },
     );
@@ -1145,6 +1146,7 @@ test(
       refusalTimeout +
       stackLifecycleTimeout +
       2 * nativeFirstAgentProofTimeout +
+      nativeSetupExpiryTimeout +
       17 * 60_000,
   },
   async (context) => {
@@ -1466,7 +1468,7 @@ test(
           subPath: mount.subPath,
         };
         // Match RPC node observations to this revision's configured workspace node.
-        // Kubernetes supplies the public identity; do not read node enrollment Secrets.
+        // Kubernetes supplies the public identity independently of the setup Secret.
         const gatewayPods = await readKubernetesJson(
           kube,
           [
@@ -1492,13 +1494,96 @@ test(
         );
         recordFirstAgentPodTiming(nativeContext, stage, "harness", pod, requestedAt);
         recordFirstAgentPodTiming(nativeContext, stage, "gateway", gateways[0], requestedAt);
-        return { pod, sandbox, workspaceStorage, expectedNodeId: nodeIds[0] };
+        return {
+          pod,
+          sandbox,
+          workspaceStorage,
+          expectedNodeId: nodeIds[0],
+          gatewayPod: gateways[0],
+        };
       };
       const initialProvider = await readProviderRevision(
         provisioned.revisionId,
         "native-initial",
         nativeRequestedAt,
       );
+      const setupSecrets = await readKubernetesJson(
+        kube,
+        [
+          "get",
+          "secrets",
+          "--namespace",
+          initialProvider.pod.metadata.namespace,
+          "--selector",
+          `openclaw.dev/agent=${nativeAgent.id},openclaw.dev/namespace=${nativeNamespace.id}`,
+        ],
+        "the native Agent's setup Secret",
+      );
+      const setups = setupSecrets.items.filter(
+        (secret) => secret.data?.setupId !== undefined && secret.data?.setupCode !== undefined,
+      );
+      assert.equal(setups.length, 1, "the native Agent must own exactly one setup Secret");
+      const setupName = setups[0].metadata.name;
+      const readSetup = async () => {
+        const secret = await readKubernetesJson(
+          kube,
+          ["get", "secret", setupName, "--namespace", initialProvider.pod.metadata.namespace],
+          "the retained native setup Secret",
+        );
+        assert.equal(secret.metadata.labels?.["openclaw.dev/namespace"], nativeNamespace.id);
+        assert.equal(secret.metadata.labels?.["openclaw.dev/agent"], nativeAgent.id);
+        const decode = (key) => Buffer.from(secret.data?.[key] ?? "", "base64").toString();
+        assert.ok(decode("setupCode").length > 0);
+        // Failed comparisons may print this snapshot: include a digest, never the bearer.
+        return {
+          uid: secret.metadata.uid,
+          setupId: decode("setupId"),
+          setupCodeDigest: createHash("sha256").update(decode("setupCode")).digest("hex"),
+          expiresAtMs: Number(decode("expiresAtMs")),
+          deviceId: decode("deviceId"),
+          enrolledRevisionId: decode("enrolledRevisionId"),
+        };
+      };
+      const readCompletion = async (provider, setupId) =>
+        JSON.parse(
+          await readKubernetes(
+            kube,
+            [
+              "exec",
+              provider.gatewayPod.metadata.name,
+              "--namespace",
+              provider.gatewayPod.metadata.namespace,
+              "--container",
+              "gateway",
+              "--",
+              "node",
+              "/app/openclaw.mjs",
+              "gateway",
+              "call",
+              "device.pair.setupStatus",
+              "--params",
+              JSON.stringify({ setupId }),
+              "--json",
+              "--timeout",
+              "10000",
+            ],
+            "the native setup completion",
+            undefined,
+            nativeContext.signal,
+          ),
+        );
+      const initialSetup = await readSetup();
+      assert.ok(initialSetup.uid && initialSetup.setupId);
+      assert.equal(initialSetup.deviceId, initialProvider.expectedNodeId);
+      assert.equal(initialSetup.enrolledRevisionId, provisioned.revisionId);
+      assert.ok(Number.isSafeInteger(initialSetup.expiresAtMs) && initialSetup.expiresAtMs > 0);
+      const completion = await readCompletion(initialProvider, initialSetup.setupId);
+      assert.equal(completion.completion?.deviceId, initialProvider.expectedNodeId);
+      assert.equal(completion.deliveryUncertain, undefined);
+      assert.ok(Number.isSafeInteger(completion.completion.ts) && completion.completion.ts > 0);
+      // Native setup status retains its delivery receipt for 20 minutes. The
+      // durable Agent-owned Secret and device remain authoritative afterward.
+      const completionRetainedUntil = completion.completion.ts + 20 * 60_000;
       const firstNativeProof = await measureFirstAgentStage(nativeContext, "native-model", () =>
         assertNativeWorkerProofInController(nativeContext, {
           ...proofOptions,
@@ -1511,8 +1596,13 @@ test(
         "The initial native model turn and exec must run in the first revision's Harness Pod",
       );
 
-      // A new revision replaces the provider-owned workload while retaining
-      // Agent storage.
+      // Keep the genuine Gateway expiry. The successor must reuse the saved device
+      // credential even though the original one-shot setup can no longer enroll it.
+      const remaining = Math.max(0, initialSetup.expiresAtMs - Date.now());
+      assert.ok(remaining <= nativeSetupExpiryTimeout, "native setup expiry must be bounded");
+      await delay(remaining + 1, undefined, { signal: nativeContext.signal });
+      assert.ok(Date.now() >= initialSetup.expiresAtMs);
+      assert.deepEqual(await readSetup(), initialSetup);
       const replacementRequestedAt = Date.now();
       const replacement = await measureFirstAgentStage(
         nativeContext,
@@ -1540,6 +1630,22 @@ test(
         "native-replacement",
         replacementRequestedAt,
       );
+      assert.equal(replacementProvider.expectedNodeId, initialProvider.expectedNodeId);
+      const { enrolledRevisionId, ...retainedSetup } = await readSetup();
+      assert.equal(enrolledRevisionId, replacement.id);
+      assert.deepEqual(retainedSetup, {
+        uid: initialSetup.uid,
+        setupId: initialSetup.setupId,
+        setupCodeDigest: initialSetup.setupCodeDigest,
+        expiresAtMs: initialSetup.expiresAtMs,
+        deviceId: initialSetup.deviceId,
+      });
+      const replacementCompletion = await readCompletion(replacementProvider, initialSetup.setupId);
+      if (Date.now() < completionRetainedUntil || Object.keys(replacementCompletion).length > 0) {
+        assert.deepEqual(replacementCompletion, completion);
+      }
+      // An aged-out receipt may be empty; the exact Secret, setup digest,
+      // device, revision, retained files and real model/exec proofs still apply.
       assert.notEqual(replacementProvider.pod.metadata.uid, initialProvider.pod.metadata.uid);
       assert.notEqual(
         replacementProvider.sandbox.metadata.uid,
@@ -1588,7 +1694,8 @@ test(
         ? context.test(
             "guided native OpenClaw redeployment resumes the same session with retained files and required-worker execution",
             {
-              timeout: 16 * 60_000 + 2 * nativeFirstAgentProofTimeout + 30_000,
+              timeout:
+                16 * 60_000 + 2 * nativeFirstAgentProofTimeout + nativeSetupExpiryTimeout + 30_000,
               signal: context.signal,
             },
             (nativeContext) => {

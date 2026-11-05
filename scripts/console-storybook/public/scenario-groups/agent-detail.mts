@@ -2698,7 +2698,35 @@ export function createAgentDetailScenarios({
             status: 404,
           },
         ],
-        description: "A deleted or inaccessible Agent link returns a resource-unavailable panel.",
+        description:
+          "A simulated 404 shows Agent details and Resource unavailable without an Agent name.",
+        actions: [{ text: "Agent details" }],
+        steps: [
+          "Confirm the page heading is Agent details and the panel says Resource unavailable, without an Agent name.",
+          "Choose ← Agents and confirm the collection heading is Agents.",
+        ],
+      },
+      agentReadInterrupted: {
+        group: "Pages/Agent detail",
+        name: "Retry a direct Agent link",
+        path: draft,
+        rules: [
+          {
+            method: "GET",
+            path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+            once: true,
+            status: 503,
+            code: "DEPENDENCY_UNAVAILABLE",
+          },
+        ],
+        description:
+          "A simulated interruption shows Agent details and Request unavailable. Retry reads the fixture's Research assistant.",
+        actions: [{ text: "Agent details" }, { text: "Request unavailable" }],
+        steps: [
+          "Open the preview directly in its own tab, without navigating from the Agents list.",
+          "Confirm the heading is Agent details and the panel says Request unavailable, without an Agent name.",
+          "Use Tab to reach Retry and press Enter. Confirm the H1 becomes Research assistant and receives keyboard focus.",
+        ],
       },
       configurationError: {
         group: "Pages/Agent detail",
@@ -2794,6 +2822,26 @@ export function createAgentDetailScenarios({
           },
         ],
         description: "Deployment stays disabled when revision history cannot be read.",
+      },
+      revisionRejected: {
+        group: "Pages/Agent detail",
+        name: "Revision history rejects with null",
+        path: `${draft}&tab=configuration`,
+        rules: [
+          {
+            method: "GET",
+            path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/revisions",
+            rejectWithNull: true,
+          },
+        ],
+        description:
+          "The revision-history fetch rejects with raw JavaScript null and no HTTP status. The draft Configuration GET uses its normal fixture response. The separate Revision history unavailable preview retains HTTP 403.",
+        steps: [
+          "At desktop and 390-pixel widths, confirm Version history unavailable appears without No readable versions or Load older versions.",
+          "Read the draft Configuration, open Edit Configuration, then Cancel. The history warning remains local to version history.",
+          "Confirm Deploy new version stays unavailable and explains that version history is required before deploying.",
+        ],
+        gap: "Simulated JavaScript rejection through the production Console; this does not prove a normal browser network failure, backend persistence, or deployment.",
       },
       deployDenied: {
         group: "Pages/Agent detail",

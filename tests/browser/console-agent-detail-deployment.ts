@@ -1,3 +1,4 @@
+import { openAdvancedSettings, waitForLiveControls } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
@@ -17,9 +18,9 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.m
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
+  deploymentStatusResponse,
   authorizationDenials,
   apiRequests,
-  deploymentStatusResponse,
   detailUrl,
   draftActions,
   expectDeployHeld,
@@ -40,13 +41,13 @@ import {
   saveConfigurationUntilReady,
   settledView,
   storeRefusedConfiguration,
-  trackSettledFetches,
   versionChooser,
   versionOption,
   waitForChosenVersion,
   waitForEnabled,
-  waitForIdleFetches,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+
+import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import {
   deploymentRecordUrl,
@@ -55,12 +56,10 @@ import {
   openFailureDetails,
 } from "./console-deployment-activity-helpers.ts";
 import {
-  openAdvancedSettings,
   assertRevisionUrl,
   replyWithDifferentAgentId,
   configurationPatchRequests,
   nativeAdminValues,
-  waitForLiveControls,
 } from "./console-agents-test-support.mjs";
 import {
   AGENT_SAVE_DENIED,
@@ -2671,7 +2670,7 @@ test("Agent detail saves plugin changes for the next revision without changing a
 // since page load takes the same path; this case covers Stop.
 test("Plugin save keeps a Stop requested on the same page", async (t) => {
   const { fixture, namespace } = await createRuntimeAuthFixture(t, "Plugin save after stop");
-  const pluginDriver = new CodexPluginDriver();
+  const pluginDriver = new OCCPluginDriver();
   assert.ok(fixture.controller instanceof OpenClawController);
   fixture.controller.registerDriver(pluginDriver);
   fixture.controller.selectDriver("plugin", pluginDriver.id);
@@ -2701,7 +2700,7 @@ test("Plugin save keeps a Stop requested on the same page", async (t) => {
   await repeat.waitFor();
 
   await page.getByRole("tab", { name: "Plugins", exact: true }).click();
-  const plugins = { "codex-plugin:linear@openai-curated-remote": { enabled: false } };
+  const plugins = { "occ-plugin:diffs": { enabled: false } };
   await page.locator("summary").filter({ hasText: "Plugin selections JSON" }).click();
   await page.getByLabel("Plugin selections JSON", { exact: true }).fill(JSON.stringify(plugins));
   await page.getByRole("button", { name: "Save plugin selections", exact: true }).click();
@@ -3062,7 +3061,7 @@ test("Dedicated OpenClaw credentials and plugins do not offer Codex-only control
       `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/plugins/capabilities`,
   );
   await page.getByRole("tab", { name: "Plugins", exact: true }).click();
-  assert.equal((await capabilities).status(), 200);
+  assert.equal((await capabilities).status(), 501);
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
   assert.equal(await dialog.getByRole("button", { name: "Load plugins" }).isDisabled(), true);

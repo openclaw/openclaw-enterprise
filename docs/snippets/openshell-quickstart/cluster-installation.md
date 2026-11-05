@@ -6,6 +6,10 @@ published: false
 
 The templates use release `oce`, OpenShell release `openshell-gateway`, namespace `oce-system`, GatewayClass `eg`, and Envoy namespace `envoy-gateway-system`. Keep these names; they match the staged policies.
 
+Exclude other install, upgrade and Job writers. Use a local chart and the matching CLI. Keep the new
+`$RUN_DIR/install-receipt` directory for [read-only handoff](production-handoff.md#resume-an-installation-in-progress).
+After an interrupted install, reconcile that receipt before any further writes.
+
 For CoreDNS, read the Kubernetes DNS zone below. For other DNS servers, get `CLUSTER_DOMAIN` from your cluster administrator. Confirm this DNS suffix before continuing.
 
 ```bash
@@ -141,7 +145,10 @@ jq -n --arg ns "$PLATFORM_NS" --arg ip "$dns_ip" '{
   kubectl --context "$CONTEXT" create -f -
 kubectl -n "$PLATFORM_NS" create secret generic occ-installation-startup \
   --from-file="installation.yaml=$RUN_DIR/installation.json"
-helm install oce "${OCE_CHART:?}" -n "$PLATFORM_NS" -f "$RUN_DIR/values.json" --wait --timeout 5m
+occ installation install --release oce --chart "${OCE_CHART:?}" \
+  --kubeconfig "${KUBECONFIG:?}" --context "$CONTEXT" \
+  --kube-namespace "$PLATFORM_NS" --values "$RUN_DIR/values.json" \
+  --receipt "$RUN_DIR/install-receipt" --wait-timeout 5m
 kubectl -n "$PLATFORM_NS" rollout status deploy/openclaw-enterprise-api
 # Pin the Envoy data plane through its supported resource field.
 kubectl -n "$PLATFORM_NS" patch envoyproxy oce-agent-gateways --type=merge \
