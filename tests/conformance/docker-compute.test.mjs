@@ -680,6 +680,10 @@ test("Docker prepares configuration before starting a managed Gateway", async ()
         if (specifier === "node:fs") {
           return {
             chmodSync() {},
+            // A fresh Gateway has no pending maintenance marker.
+            lstatSync() {
+              throw Object.assign(new Error("File not found"), { code: "ENOENT" });
+            },
             mkdirSync() {},
             readdirSync: () => [],
             readFileSync(path) {

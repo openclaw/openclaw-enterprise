@@ -63,7 +63,7 @@ function installation(artifactRules: readonly OpenShellNetworkPolicyRule[]) {
           policy: { ...sandbox.configuration.policy, networkPolicies },
         },
       },
-      plugin: { id: "codex-plugin", configuration: { catalogSource: "openai-curated" } },
+      plugin: [{ id: "codex-plugin", configuration: { catalogSource: "openai-curated" } }],
     },
   };
 }

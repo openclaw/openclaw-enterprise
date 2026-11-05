@@ -89,8 +89,15 @@ For durable session and recovery checks, prepare a migrated disposable database
 with an application role as described in [PostgreSQL testing](postgresql.md).
 Run `postgres-repository-sessions.test.mjs`,
 `postgres-repository-broker-receipts.test.mjs`, and the relevant restart and
-worker version tests with `OCC_TEST_DATABASE_URL` set. These checks do not prove
-a running Kubernetes Pod or model turn.
+worker version tests with `OCC_TEST_DATABASE_URL` set. The
+`postgres-openshell-standing-selected-repository.test.ts` case follows one
+`github-repository` binding through approval, deployment, its original session
+deadline, changed-recipient refusal, successor issuance, and withdrawal. A separate
+issuer with standing permission removed must refuse issuance. It uses the real PostgreSQL worker
+and credential owner with controlled OpenShell and GitHub protocol peers.
+These checks do not prove a running Kubernetes Pod or model turn.
+The final custody check moves only stored provider timestamps past verified expiry
+and clock skew; it asserts material erasure without a revocation request.
 
 ## Qualify emitted artifacts
 
@@ -231,15 +238,21 @@ required authorization or inputs fails.
 
 ## Qualify an installed Agent against GitHub
 
-The dedicated installed qualification is **disabled**. Its old automatic cleanup
-could race with changes to a branch or pull request. Preparation and selected
-tests fail before creating resources. Do not use that lane for qualification.
+The former direct `repository-credentials-installed` lane has been removed.
 
-Use the [QA matrix](ci/qa-advisory.md) for an installed Agent's real Git journey. It
-requires an authorized disposable repository and independent provider readback;
-check the commit, the refused push outside the granted branch, credential disposal,
-and cleanup results. Its `git-only` grant opens no pull request. A direct
-container command or ready Pod does not prove an Agent model turn.
+Use the maintained [QA matrix](ci/qa-advisory.md) for an authorized installed
+Agent's real Git exact-ref journey. It requires an authorized disposable repository
+and independent provider readback. Verify that the granted branch points to the
+expected commit, that the push outside the granted branch was refused, and that
+credential disposal and cleanup succeeded. Its
+`git-only` grant opens no pull request. A direct container command or ready Pod
+does not prove an Agent model turn.
+
+Separately, use the [installed prepared Git qualification](#verify-prepared-native-git)
+for the real installation with controlled Git and model peers, bound to the selected
+source and image digests. That qualification does not prove live GitHub access;
+QA evidence does not replace its release qualification. Removing the old lane adds
+no new live proof.
 
 ## Record each evidence boundary
 

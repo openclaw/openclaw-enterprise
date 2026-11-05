@@ -34,6 +34,8 @@ export interface PluginDiscoveryAuthentication {
 
 export interface PluginDriver extends Driver {
   readonly capability: "plugin";
+  /** Harness family authorized to use this catalog. */
+  readonly harnessId: "openclaw" | "codex";
   readonly policyCapabilities: PluginPolicyCapabilities;
   /** Inspects untrusted package bytes without installing code, resolving credentials or fetching a source. */
   inspectPackage?(archive: Uint8Array, marketplaceEntry?: string): Promise<InspectedPluginPackage>;

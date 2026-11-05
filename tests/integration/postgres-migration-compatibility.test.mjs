@@ -1854,6 +1854,7 @@ async function canonicalData(db) {
       "repository_access",
       "harness_auth_credential_source_id",
       "plugin_approvers",
+      "plugin_driver",
       "credential_sources",
       "sandbox_policy_editing",
       "gateway_managed_mode",
@@ -1926,7 +1927,7 @@ test(
   requiresHistoryPostgres,
   async (context) => {
     const db = await historyDatabase(context, await migrationHistoryFixture(), "publish", {
-      prefix: 67,
+      prefix: 68,
     });
     // Freeze the 0067 built-in Role. Reordering its grants was valid, as was editing its permissions.
     const previous = [
@@ -2048,6 +2049,8 @@ test(
       [64, "preSelectedRepositorySet"],
       [65, "preAgentDeployIntent"],
       [66, "preAgentCredentialSourceLimit"],
+      [67, "preAgentPluginDriver"],
+      [68, "preNamespacePluginReleases"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });

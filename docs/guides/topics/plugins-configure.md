@@ -6,9 +6,14 @@ bundled Diffs plugin on an embedded OpenClaw Agent running on Kubernetes. Dedica
 Codex Agents use a different catalog and approval policy; see
 [plugin support](../../reference/agent-plugins.md#current-support).
 
+If an existing selection belongs to a different or unknown Driver, save an empty
+plugin map first. Then select the plugins offered for the Agent's Harness and
+deploy a new version. This also lets you correct an older embedded OpenClaw Agent
+whose selections belonged to the Codex Driver.
+
 ## Import a plugin for a dedicated OpenClaw Agent
 
-The Installation must select the [OpenClaw Plugin Driver](../../reference/drivers/plugin-bundled.md) (`drivers.plugin.id: occ-plugin`). Open a dedicated OpenClaw Agent on Kubernetes, then **Create new version** → **Plugins** → **Import plugin**. A Namespace administrator with `namespace:publish_plugins` can publish to that Namespace. Installation administrators can publish to any Namespace they administer.
+The Installation must enable the [OpenClaw Plugin Driver](../../reference/drivers/plugin-bundled.md) for the OpenClaw Harness. Open a dedicated OpenClaw Agent on Kubernetes, then **Create new version** → **Plugins** → **Import plugin**. A Namespace administrator with `namespace:publish_plugins` can publish to that Namespace. Installation administrators can publish to any Namespace they administer.
 
 1. Choose a tar or gzip-compressed tar package of up to 16 MiB. For a marketplace archive, also enter the name of the entry it contains.
 2. Select **Preview package**. Review the skills, hosted MCP servers and excluded components. **Publish to Namespace** makes that release available to Agents in the same Namespace.
@@ -108,7 +113,7 @@ OPENCLAW_CONFIG_PATH="$OPENCLAW_NODE_STATE_DIR/openclaw.json" openclaw config ge
   Installation. The examples also use Node.js and a protected service-key file.
 - Choose an Agent configured for embedded OpenClaw on Kubernetes and an
   Installation that explicitly selects the bundled OpenClaw Plugin Driver
-  (`drivers.plugin.id: occ-plugin`); no Plugin Driver is selected by default.
+  (an `occ-plugin` entry under `drivers.plugin`); no Plugin Driver is selected by default.
   See [Driver selection](../../reference/drivers/plugin-bundled.md#selection-and-catalogs).
   SSH Compute rejects Agents with plugin selections or an Agent default plugin
   approver policy.

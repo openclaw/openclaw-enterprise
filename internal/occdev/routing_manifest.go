@@ -13,9 +13,9 @@ import (
 	"time"
 )
 
-// routingManifestRetry bounds the retries of a routing controller manifest
+// manifestRetry bounds the retries of a pinned manifest
 // download from GitHub releases.
-type routingManifestRetry struct {
+type manifestRetry struct {
 	attempts       int
 	firstDelay     time.Duration
 	maxDelay       time.Duration
@@ -25,8 +25,8 @@ type routingManifestRetry struct {
 
 // The same rule as scripts/ci/routing.mjs (fetchPinnedBytes) and
 // scripts/ci/download-pinned.sh: eight attempts, backoff doubling from 2 s to a
-// 20 s cap, and no retry starts more than 120 s after the first attempt.
-var developmentRoutingManifestRetry = routingManifestRetry{
+// 20 s cap. Schedule a retry only when its delay fits the 120 s budget.
+var developmentManifestRetry = manifestRetry{
 	attempts:       8,
 	firstDelay:     2 * time.Second,
 	maxDelay:       20 * time.Second,
@@ -34,27 +34,27 @@ var developmentRoutingManifestRetry = routingManifestRetry{
 	attemptTimeout: 60 * time.Second,
 }
 
-const developmentRoutingManifestLimit = 32 * 1024 * 1024
+const developmentManifestLimit = 32 * 1024 * 1024
 
-// downloadDevelopmentRoutingManifest fetches a pinned manifest and verifies its
+// downloadDevelopmentManifest fetches a pinned manifest and verifies its
 // checksum. Network failures and HTTP 408, 429 and 5xx are retried; any other
 // status, a refused certificate, an oversized body and a checksum mismatch fail
 // at once.
-func downloadDevelopmentRoutingManifest(
+func downloadDevelopmentManifest(
 	ctx context.Context,
 	log io.Writer,
 	name, url, expected string,
-	policy routingManifestRetry,
+	policy manifestRetry,
 ) ([]byte, error) {
 	client := &http.Client{}
 	started := time.Now()
 	delay := min(policy.firstDelay, policy.maxDelay)
 	for attempt := 1; ; attempt++ {
-		data, transient, err := fetchDevelopmentRoutingManifest(ctx, client, url, policy.attemptTimeout)
+		data, transient, err := fetchDevelopmentManifest(ctx, client, url, policy.attemptTimeout)
 		if err == nil {
 			digest := sha256.Sum256(data)
 			if hex.EncodeToString(digest[:]) != expected {
-				return nil, fmt.Errorf("routing controller manifest checksum does not match the pinned version")
+				return nil, fmt.Errorf("pinned manifest checksum does not match the pinned version")
 			}
 			return data, nil
 		}
@@ -66,14 +66,14 @@ func downloadDevelopmentRoutingManifest(
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return nil, fmt.Errorf("download routing controller manifest: %w (after %d attempt(s), last error: %v)", context.Cause(ctx), attempt, err)
+			return nil, fmt.Errorf("download pinned manifest: %w (after %d attempt(s), last error: %v)", context.Cause(ctx), attempt, err)
 		case <-timer.C:
 		}
 		delay = min(delay*2, policy.maxDelay)
 	}
 }
 
-func fetchDevelopmentRoutingManifest(
+func fetchDevelopmentManifest(
 	ctx context.Context,
 	client *http.Client,
 	url string,
@@ -87,20 +87,20 @@ func fetchDevelopmentRoutingManifest(
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return nil, transientRoutingManifestError(ctx, err), fmt.Errorf("download routing controller manifest: %w", err)
+		return nil, transientManifestError(ctx, err), fmt.Errorf("download pinned manifest: %w", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		status := response.StatusCode
 		transient := status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || status >= 500 && status <= 599
-		return nil, transient, fmt.Errorf("download routing controller manifest: HTTP %d", status)
+		return nil, transient, fmt.Errorf("download pinned manifest: HTTP %d", status)
 	}
-	data, err = io.ReadAll(io.LimitReader(response.Body, developmentRoutingManifestLimit+1))
+	data, err = io.ReadAll(io.LimitReader(response.Body, developmentManifestLimit+1))
 	if err != nil {
-		return nil, transientRoutingManifestError(ctx, err), fmt.Errorf("read routing controller manifest: %w", err)
+		return nil, transientManifestError(ctx, err), fmt.Errorf("read pinned manifest: %w", err)
 	}
-	if len(data) > developmentRoutingManifestLimit {
-		return nil, false, fmt.Errorf("routing controller manifest exceeds its size limit")
+	if len(data) > developmentManifestLimit {
+		return nil, false, fmt.Errorf("pinned manifest exceeds its size limit")
 	}
 	return data, false, nil
 }
@@ -110,7 +110,7 @@ func fetchDevelopmentRoutingManifest(
 // GOAWAY, a transfer cut short. So everything is retried except the caller's
 // cancellation or deadline and a certificate the client refuses, which another
 // attempt would only repeat. The attempt and time budget bound the rest.
-func transientRoutingManifestError(ctx context.Context, err error) bool {
+func transientManifestError(ctx context.Context, err error) bool {
 	if ctx.Err() != nil {
 		return false
 	}

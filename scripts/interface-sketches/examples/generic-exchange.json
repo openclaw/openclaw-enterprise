@@ -1,0 +1,334 @@
+{
+  "title": "02 Who sends a protected request?",
+  "width": 1180,
+  "height": 640,
+  "items": [
+    {
+      "kind": "text",
+      "text": "02 Who sends a protected request?",
+      "x": 20,
+      "y": 33,
+      "size": 28,
+      "role": "title"
+    },
+    {
+      "kind": "text",
+      "text": "Generic exchange · OpenClaw Control Plane authorizes · the runtime sender connects to the provider",
+      "x": 20,
+      "y": 55,
+      "size": 16,
+      "role": "subtitle"
+    },
+    { "kind": "box", "id": "api", "x": 20, "y": 80, "w": 475, "h": 460, "role": "control" },
+    {
+      "kind": "text",
+      "text": "Controller API process",
+      "x": 32,
+      "y": 98,
+      "size": 16,
+      "role": "group"
+    },
+    { "kind": "box", "id": "runtime", "x": 815, "y": 80, "w": 345, "h": 348, "role": "runtime" },
+    { "kind": "text", "text": "Selected runtime", "x": 827, "y": 98, "size": 16, "role": "group" },
+    { "kind": "box", "id": "sender", "x": 830, "y": 230, "w": 315, "h": 183, "role": "runtime" },
+    { "kind": "text", "text": "Trusted sender", "x": 842, "y": 248, "size": 16, "role": "group" },
+    { "kind": "box", "id": "origin", "x": 815, "y": 458, "w": 345, "h": 82, "role": "external" },
+    { "kind": "text", "text": "Provider", "x": 827, "y": 476, "size": 16, "role": "group" },
+    {
+      "kind": "node",
+      "id": "static",
+      "x": 40,
+      "y": 125,
+      "w": 205,
+      "h": 56,
+      "lines": ["SecretDriver", "Reads a versioned secret"],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "control"
+    },
+    {
+      "kind": "node",
+      "id": "warm",
+      "x": 270,
+      "y": 125,
+      "w": 205,
+      "h": 56,
+      "lines": ["PreparedTokenIssuer", "Eligible prepared token"],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "control"
+    },
+    {
+      "kind": "node",
+      "id": "exchange",
+      "x": 70,
+      "y": 250,
+      "w": 375,
+      "h": 60,
+      "lines": ["OCC exchange authority", "Resolves material, permits sends, protects replies"],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "control"
+    },
+    {
+      "kind": "node",
+      "id": "listener",
+      "x": 70,
+      "y": 377,
+      "w": 375,
+      "h": 60,
+      "lines": ["OpenShell exchange listener", "Authenticates the exchange stream"],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "control"
+    },
+    {
+      "kind": "node",
+      "id": "agent",
+      "x": 850,
+      "y": 120,
+      "w": 275,
+      "h": 42,
+      "lines": ["Agent in sandbox"],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "runtime"
+    },
+    {
+      "kind": "node",
+      "id": "capture",
+      "x": 850,
+      "y": 265,
+      "w": 275,
+      "h": 55,
+      "lines": ["Capture the request", "Record the original caller"],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "runtime"
+    },
+    {
+      "kind": "node",
+      "id": "dispatch",
+      "x": 850,
+      "y": 342,
+      "w": 275,
+      "h": 55,
+      "lines": ["Send and hold the reply", "Owns upstream TLS and reply delivery"],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "runtime"
+    },
+    {
+      "kind": "node",
+      "id": "provider",
+      "x": 850,
+      "y": 488,
+      "w": 275,
+      "h": 40,
+      "lines": ["External API"],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "external"
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "exchange", "side": "top" },
+        [257.5, 222],
+        [142.5, 222],
+        { "node": "static", "side": "bottom" }
+      ],
+      "dashed": true,
+      "arrow": true
+    },
+    {
+      "kind": "text",
+      "text": "readCredentialInput",
+      "x": 46,
+      "y": 208,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "exchange", "side": "top" },
+        [257.5, 222],
+        [372.5, 222],
+        { "node": "warm", "side": "bottom" }
+      ],
+      "dashed": true,
+      "arrow": true
+    },
+    {
+      "kind": "text",
+      "text": "readWarm",
+      "x": 382,
+      "y": 208,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "listener", "side": "top" },
+        { "node": "exchange", "side": "bottom" }
+      ],
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "text",
+      "text": "Calls five exchange methods",
+      "x": 267,
+      "y": 348,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "agent", "side": "bottom" },
+        { "node": "capture", "side": "top" }
+      ],
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "text",
+      "text": "Provider request",
+      "x": 998,
+      "y": 199,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "capture", "side": "left" },
+        [640, 292.5],
+        [640, 407],
+        { "node": "listener", "side": "right" }
+      ],
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "text",
+      "text": "Resolve and authorize\nthe captured request",
+      "x": 520,
+      "y": 309,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "capture", "side": "bottom" },
+        { "node": "dispatch", "side": "top" }
+      ],
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "text",
+      "text": "Wait for permit",
+      "x": 998,
+      "y": 334,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "dispatch", "side": "left" },
+        [690, 369.5],
+        [690, 407],
+        { "node": "listener", "side": "right" }
+      ],
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "text",
+      "text": "Check the held reply",
+      "x": 523,
+      "y": 369,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "listener", "side": "bottom" },
+        [257.5, 493],
+        [785, 493],
+        [785, 418],
+        [1142, 418],
+        [1142, 369.5],
+        { "node": "dispatch", "side": "right" }
+      ],
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "text",
+      "text": "Headers if needed, then send permit\nReturns only the approved reply",
+      "x": 507,
+      "y": 456,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "dispatch", "side": "bottom" },
+        { "node": "provider", "side": "top" }
+      ],
+      "dashed": true,
+      "arrow": true
+    },
+    {
+      "kind": "text",
+      "text": "Authorized HTTPS request",
+      "x": 995,
+      "y": 445,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "text",
+      "text": "At API startup, the selected Driver can bind the exchange to OCC. A route that uses no credential skips both material readers.",
+      "x": 20,
+      "y": 562,
+      "size": 14,
+      "role": "note"
+    },
+    {
+      "kind": "text",
+      "text": "The sender releases the approved reply to the original caller. Stock OpenShell lacks this sender guarantee. Git uses the separate worker path in 01.",
+      "x": 20,
+      "y": 584,
+      "size": 14,
+      "role": "note"
+    }
+  ]
+}
