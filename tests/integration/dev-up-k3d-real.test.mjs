@@ -93,12 +93,9 @@ test(
   },
 );
 
-// The refusal comes after dev-up builds and imports the runtime image, verifies the Codex sandbox
-// (that refusal deliberately precedes controller work), installs the routing controllers, builds
-// the controller image the network probe runs and polls the policy for up to 90 s. As the file's
-// first dev-up it pays both cold image builds: p50 947 s and max 994 s over 35 passes, one slow
-// runner past 1,100 s (finding 1709). 1,400 s is about 48% over p50 and 41% over that max.
-const refusalDevUpTimeoutMs = 1_400_000;
+// This first dev-up builds and imports both cold images. Two hosted runners reached
+// the previous 1,400 s launcher limit before the 90 s NetworkPolicy probe started.
+const refusalDevUpTimeoutMs = 30 * 60_000;
 
 test(
   "dev-up refuses gateway trust when Kubernetes does not enforce NetworkPolicy",
@@ -172,6 +169,7 @@ process.exit(result.status ?? 1);
 
     // The launcher must reject a functioning cluster with ineffective policy
     // before configuring proxy trust or bootstrapping any Agent credentials.
+    const launchStarted = performance.now();
     await assert.rejects(
       execute(join(repository, "scripts", "dev-up"), [], {
         cwd: repository,
@@ -202,7 +200,15 @@ process.exit(result.status ?? 1);
         ) {
           signal = error.signal;
         }
-        const diagnostic = `dev-up exit ${exit}, signal ${signal}, build-error ${buildError}.`;
+        const elapsedSeconds = Math.round((performance.now() - launchStarted) / 1_000);
+        const stages = [
+          ["cluster creation", "Creating Kubernetes-only k3d cluster"],
+          ["image import", "Importing the controller and PostgreSQL images"],
+          ["network isolation check", "Verifying Kubernetes network isolation"],
+        ];
+        const stage =
+          stages.findLast(([, marker]) => error.stdout?.includes(marker))?.[0] ?? "unknown";
+        const diagnostic = `dev-up exit ${exit}, signal ${signal}, build-error ${buildError}, stage ${stage}, elapsed ${elapsedSeconds}s.`;
         assert.ok(
           /Verifying Kubernetes network isolation before configuring gateway trust/.test(
             error.stdout,
