@@ -17,8 +17,8 @@ import {
   repositoryCheckbox,
   selectSecret,
   settledView,
-} from "./console-agents-browser-helpers.mjs";
-import { createRepositoryLaunchFixture } from "./console-agents-test-support.mjs";
+} from "./console-agents-browser-helpers.ts";
+import { createRepositoryLaunchFixture } from "./console-agents-test-support.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 
 // Every test opens its own context in one Chromium per file.

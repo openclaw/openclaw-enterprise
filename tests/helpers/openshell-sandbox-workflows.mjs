@@ -2099,10 +2099,12 @@ async function prepareProductionInstallation(
     cluster: "k3d-openshell-sandboxdriver",
   });
   if (pluginInstallOnly) {
-    configuration.drivers.plugin = {
-      id: "codex-plugin",
-      configuration: { catalogSource: "openai-curated" },
-    };
+    configuration.drivers.plugin = [
+      {
+        id: "codex-plugin",
+        configuration: { catalogSource: "openai-curated" },
+      },
+    ];
     // These are observed native package origins, admitted through ordinary operator
     // configuration. Keep artifact access credential-free; new origins need review.
     configuration.drivers.sandbox.configuration.policy.networkPolicies.push({
@@ -6145,6 +6147,10 @@ async function setModelProviderDns(topology, address) {
   modelDnsOverride = address;
 }
 
+function modelEndpointSupportsDnsProofs() {
+  return isIP(modelEndpoint.hostname) === 0;
+}
+
 /**
  * Serves the model host from an upstream signed by a CA nothing trusts. The model profile allows
  * the provider's exact host even at a cluster address, so OpenShell connects, and must refuse
@@ -6153,7 +6159,7 @@ async function setModelProviderDns(topology, address) {
  */
 async function assertModelRouteRefusesUntrustedUpstream(topology) {
   // Cluster DNS cannot redirect an endpoint selected by address; report the gap instead.
-  if (isIP(modelEndpoint.hostname) !== 0) {
+  if (!modelEndpointSupportsDnsProofs()) {
     process.stderr.write(
       "OpenShell integration: untrusted model upstream not tested; the model endpoint is an address.\n",
     );
@@ -6373,7 +6379,7 @@ async function replacementActivationDiagnostic(topology, revision, worker) {
  * the key, and the same running Harness must complete a turn once the provider is back.
  */
 async function assertModelProviderOutageFailsClosed(topology) {
-  if (isIP(modelEndpoint.hostname) !== 0) {
+  if (!modelEndpointSupportsDnsProofs()) {
     process.stderr.write(
       "OpenShell integration: model provider outage not tested; the model endpoint is an address.\n",
     );
@@ -7310,6 +7316,19 @@ if (demoStatePath !== undefined) {
   assert.equal(selectedHarness, "openclaw", "the OpenShell browser demo requires openclaw.");
 }
 
+const sandboxPhaseByStage = {
+  "initial-model": "gateway-turns",
+  "filesystem-network": "filesystem-egress",
+  replacement: "pod-replacement",
+  "untrusted-upstream": "untrusted-model-upstream",
+  "tool-outage": "tool-upstream-outage",
+  "model-outage": "model-provider-outage",
+  "credential-absence": "credential-audit",
+  "credential-withdrawal": "source-withdrawal",
+  "embedded-refusal": "embedded-fail-closed",
+  "native-policy": "native-policy-scopes",
+};
+
 // Exercise the regular dedicated Agent path with live inference and a real
 // administrator-origin chat. Direct tools.invoke probes are recorded separately:
 // an unavailable tool in a model response is not an invocation-denial proof.
@@ -7321,14 +7340,26 @@ async function measureOpenShellStage(context, stage, operation) {
     outcome = "passed";
     return result;
   } finally {
-    context.diagnostic(
-      `openclaw-ci-measurement ${JSON.stringify({
-        kind: "openshell-stage",
-        stage,
-        outcome,
-        elapsedMs: Math.round(performance.now() - started),
-      })}`,
-    );
+    const elapsedMs = Math.round(performance.now() - started);
+    if (stage !== "exposure-auth") {
+      context.diagnostic(
+        `openclaw-ci-measurement ${JSON.stringify({ kind: "openshell-stage", stage, outcome, elapsedMs })}`,
+      );
+    }
+    if (
+      selectedScenario === "full" &&
+      selectedHarness === "codex" &&
+      (!["untrusted-upstream", "model-outage"].includes(stage) || modelEndpointSupportsDnsProofs())
+    ) {
+      context.diagnostic(
+        `openclaw-ci-measurement ${JSON.stringify({
+          kind: "openshell-sandbox-phase",
+          stage: sandboxPhaseByStage[stage] ?? stage,
+          outcome,
+          elapsedMs,
+        })}`,
+      );
+    }
   }
 }
 
@@ -8351,40 +8382,42 @@ export function registerProviderLifecycleTest(workflow) {
         process.stderr.write(
           "OpenShell integration: checking create-time service exposure authentication boundary.\n",
         );
-        assert.match(topology.harnessServiceUrl, /^https?:\/\//);
-        // OpenShell must preserve the Gateway's bearer header while Codex remains the authenticator.
-        let lastServiceObservation = "no response";
-        try {
-          await waitFor("OpenShell create-time Harness service exposure", async () => {
-            try {
-              const status = await observeExposedCodexAuthenticationBoundary(
-                topology.harnessServiceUrl,
-                topology.appServerToken,
-              );
-              lastServiceObservation = `HTTP ${status}`;
-              return status === 101 ? true : undefined;
-            } catch (error) {
-              lastServiceObservation = error instanceof Error ? error.message : String(error);
-              return undefined;
-            }
-          });
-        } catch (error) {
-          throw new Error(`${error.message} Last observation: ${lastServiceObservation}.`, {
-            cause: error,
-          });
-        }
-        for (const token of [undefined, `wrong-${randomUUID()}`]) {
-          const status = await observeExposedCodexAuthenticationBoundary(
-            topology.harnessServiceUrl,
-            token,
-          );
-          assert.ok(
-            [401, 403].includes(status),
-            `Codex must reject ${token === undefined ? "missing" : "incorrect"} bearer authentication.`,
-          );
-        }
-        // Retry only endpoint availability above. Preserve the first protocol failure on this route.
-        await assertExposedCodexInitializes(topology.harnessServiceUrl, topology.appServerToken);
+        await measureOpenShellStage(testContext, "exposure-auth", async () => {
+          assert.match(topology.harnessServiceUrl, /^https?:\/\//);
+          // OpenShell must preserve the Gateway's bearer header while Codex remains the authenticator.
+          let lastServiceObservation = "no response";
+          try {
+            await waitFor("OpenShell create-time Harness service exposure", async () => {
+              try {
+                const status = await observeExposedCodexAuthenticationBoundary(
+                  topology.harnessServiceUrl,
+                  topology.appServerToken,
+                );
+                lastServiceObservation = `HTTP ${status}`;
+                return status === 101 ? true : undefined;
+              } catch (error) {
+                lastServiceObservation = error instanceof Error ? error.message : String(error);
+                return undefined;
+              }
+            });
+          } catch (error) {
+            throw new Error(`${error.message} Last observation: ${lastServiceObservation}.`, {
+              cause: error,
+            });
+          }
+          for (const token of [undefined, `wrong-${randomUUID()}`]) {
+            const status = await observeExposedCodexAuthenticationBoundary(
+              topology.harnessServiceUrl,
+              token,
+            );
+            assert.ok(
+              [401, 403].includes(status),
+              `Codex must reject ${token === undefined ? "missing" : "incorrect"} bearer authentication.`,
+            );
+          }
+          // Retry only endpoint availability above. Preserve the first protocol failure on this route.
+          await assertExposedCodexInitializes(topology.harnessServiceUrl, topology.appServerToken);
+        });
         if (pluginInstallOnly) {
           await assertInstalledCodexPlugin(topology);
           return;

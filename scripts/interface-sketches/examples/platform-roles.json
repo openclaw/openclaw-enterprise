@@ -1,0 +1,180 @@
+{
+  "title": "00 From a user’s task to a protected request",
+  "width": 1180,
+  "height": 450,
+  "items": [
+    {
+      "kind": "text",
+      "text": "00 From a user’s task to a protected request",
+      "x": 20,
+      "y": 33,
+      "size": 28,
+      "role": "title"
+    },
+    {
+      "kind": "text",
+      "text": "OpenClaw Enterprise (OCE) runs the Agent and controls how it can use credentials.",
+      "x": 20,
+      "y": 55,
+      "size": 16,
+      "role": "subtitle"
+    },
+    { "kind": "box", "id": "oce", "x": 240, "y": 82, "w": 658, "h": 310, "role": "control" },
+    {
+      "kind": "text",
+      "text": "OpenClaw Enterprise",
+      "x": 252,
+      "y": 100,
+      "size": 16,
+      "role": "group"
+    },
+    { "kind": "box", "id": "sandbox", "x": 266, "y": 134, "w": 196, "h": 116, "role": "boundary" },
+    { "kind": "text", "text": "Sandbox", "x": 278, "y": 152, "size": 16, "role": "group" },
+    { "kind": "box", "id": "provider", "x": 945, "y": 134, "w": 215, "h": 116, "role": "external" },
+    { "kind": "text", "text": "External service", "x": 957, "y": 152, "size": 16, "role": "group" },
+    {
+      "kind": "node",
+      "id": "user",
+      "x": 20,
+      "y": 164,
+      "w": 175,
+      "h": 76,
+      "lines": ["1 User", "“Implement a feature", "and push a branch.”"],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "runtime"
+    },
+    {
+      "kind": "node",
+      "id": "agent",
+      "x": 280,
+      "y": 170,
+      "w": 168,
+      "h": 64,
+      "lines": ["2 Agent", "Runs git push"],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "boundary"
+    },
+    {
+      "kind": "node",
+      "id": "proxy",
+      "x": 585,
+      "y": 170,
+      "w": 255,
+      "h": 64,
+      "lines": ["3 Credential Proxy", "Holds the request"],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "control"
+    },
+    {
+      "kind": "node",
+      "id": "authority",
+      "x": 585,
+      "y": 307,
+      "w": 255,
+      "h": 64,
+      "lines": ["OCE control plane", "Checks this Agent’s grant"],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "control"
+    },
+    {
+      "kind": "node",
+      "id": "github",
+      "x": 957,
+      "y": 170,
+      "w": 191,
+      "h": 64,
+      "lines": ["4 GitHub", "Applies repository rules"],
+      "titleLineCount": 1,
+      "density": "compact",
+      "role": "external"
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "user", "side": "right" },
+        { "node": "agent", "side": "left" }
+      ],
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "text",
+      "text": "Task",
+      "x": 211,
+      "y": 191,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "agent", "side": "right" },
+        { "node": "proxy", "side": "left" }
+      ],
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "text",
+      "text": "Git request",
+      "x": 478,
+      "y": 191,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "proxy", "side": "bottom" },
+        { "node": "authority", "side": "top" }
+      ],
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "text",
+      "text": "May this Agent push?",
+      "x": 724,
+      "y": 273,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "proxy", "side": "right" },
+        { "node": "github", "side": "left" }
+      ],
+      "dashed": true,
+      "arrow": true
+    },
+    {
+      "kind": "text",
+      "text": "Send with token\nonly on allow",
+      "x": 850,
+      "y": 175,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "text",
+      "text": "The credential stays outside the Agent’s sandbox. A denied request stops at the proxy.",
+      "x": 20,
+      "y": 414,
+      "size": 14,
+      "role": "note"
+    }
+  ]
+}

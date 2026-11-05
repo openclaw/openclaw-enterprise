@@ -52,7 +52,7 @@ import {
   waitForEnabled,
   waitForInputValue,
   statusTone,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import {
   trackSettledFetches,
   waitForIdleFetches,
@@ -66,7 +66,7 @@ import {
   agentDeleteRequests,
   agentStopRequests,
   replyWithDifferentAgentId,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
 import {
   callerDenied,
   DEPENDENCY_UNAVAILABLE,

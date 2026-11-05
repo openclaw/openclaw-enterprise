@@ -16,6 +16,8 @@ import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
 import {
+  persistedDeploymentError,
+  routeFailedDeployment,
   apiRequests,
   authorizationDenials,
   denyRevisionRead,
@@ -27,16 +29,15 @@ import {
   newPage,
   nextFrames,
   pathRequests,
-  persistedDeploymentError,
-  routeFailedDeployment,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+
 import {
   deploymentDetailsOpen,
   deploymentRecordUrl,
   showDeploymentTab,
 } from "./console-deployment-activity-helpers.ts";
 import { responseTo } from "./console-action-helpers.ts";
-import { replyWithDifferentAgentId } from "./console-agents-test-support.mjs";
+import { replyWithDifferentAgentId } from "./console-agents-test-support.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   GENERIC_DENIAL,

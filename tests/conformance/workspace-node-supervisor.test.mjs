@@ -40,6 +40,49 @@ async function jsonLines(path) {
     .map((line) => JSON.parse(line));
 }
 
+// Observe the actual projection bytes without changing read results or errors.
+// Support both whole-file and bounded descriptor reads for baseline comparisons.
+function observeSetupReads(setupPath, setupReadsPath) {
+  return [
+    'const fs = require("node:fs");',
+    "const realRead = fs.readFileSync, realOpen = fs.openSync, realReadSync = fs.readSync, realClose = fs.closeSync;",
+    "const observedSetupReads = new Map(); let directSetupRead = false;",
+    `const setupRead = (content) => fs.appendFileSync(${JSON.stringify(setupReadsPath)}, JSON.stringify({ content }) + "\\n");`,
+    "fs.readFileSync = (path, ...rest) => {",
+    `  if (path !== ${JSON.stringify(setupPath)}) return realRead(path, ...rest);`,
+    "  let content = null; directSetupRead = true;",
+    "  try { content = realRead(path, ...rest); return content; }",
+    "  finally { directSetupRead = false; setupRead(content); }",
+    "};",
+    "fs.openSync = (path, ...rest) => {",
+    `  const observe = path === ${JSON.stringify(setupPath)} && !directSetupRead;`,
+    "  try { const fd = realOpen(path, ...rest); if (observe) observedSetupReads.set(fd, []); return fd; }",
+    "  catch (error) { if (observe) setupRead(null); throw error; }",
+    "};",
+    "fs.readSync = (fd, buffer, offset, length, position) => {",
+    "  const read = realReadSync(fd, buffer, offset, length, position);",
+    "  observedSetupReads.get(fd)?.push(Buffer.from(buffer.subarray(offset, offset + read)));",
+    "  return read;",
+    "};",
+    "fs.closeSync = (fd) => {",
+    "  try { return realClose(fd); } finally {",
+    "    const chunks = observedSetupReads.get(fd); observedSetupReads.delete(fd);",
+    '    if (chunks) setupRead(Buffer.concat(chunks).toString("utf8"));',
+    "  }",
+    "};",
+  ];
+}
+
+// Both delivery paths must fit the native connect target-file limit (64 KiB).
+function maximumSetupEnvelope() {
+  const payload = nativeSetup("");
+  const maximumDecodedBytes = (65_536 / 4) * 3;
+  payload.bootstrapToken = "x".repeat(
+    maximumDecodedBytes - Buffer.byteLength(JSON.stringify(payload)),
+  );
+  return payload;
+}
+
 // True once `pid` no longer exists. A dying or zombie process still answers kill(pid, 0).
 function pidGone(pid) {
   try {
@@ -312,9 +355,8 @@ test(
       expiresAtMs: Date.now() + 60_000,
     };
     await writeFile(setupEnvelopePath, JSON.stringify(renewedSetup));
-    process.kill(node.pid, "SIGKILL");
     const afterNode = await waitFor(
-      "node restarted with renewed provider setup",
+      "connected node restarted after its provider setup changed",
       (rows) => rows.filter(({ kind }) => kind === "node").length === 2,
     );
     assert.equal(afterNode.filter(({ kind }) => kind === "codex").length, 2);
@@ -362,6 +404,171 @@ test(
     // moment later, and until then kill(pid, 0) still finds it.
     for (const { pid } of recorded.filter(({ kind }) => kind === "grandchild")) {
       await processGone(`Codex grandchild ${pid} still running 5 s after stop`, pid);
+    }
+  },
+);
+
+test(
+  "provider read failures preserve a running saved-identity node",
+  {
+    timeout: 20_000,
+    skip: process.platform !== "linux" && "Run the container entrypoint test on Linux.",
+  },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "oce-provider-setup-cache-"));
+    const setupPath = join(directory, "node-setup.json");
+    const readsPath = join(directory, "setup-reads.jsonl");
+    const identityPath = join(directory, "identity.json");
+    const initialSetup = nativeSetup("initial-bootstrap");
+    await writeFile(setupPath, JSON.stringify(initialSetup));
+    await writeFile(identityPath, JSON.stringify({ deviceId: "a".repeat(64) }));
+    const { events, waitFor } = await startSupervisor(t, directory, {
+      child: [
+        "const [events, kind, args] = process.argv.slice(2);",
+        'require("node:fs").appendFileSync(events, JSON.stringify({ kind, pid: process.pid, args: JSON.parse(args) }) + "\\n");',
+        "setInterval(() => {}, 1_000);",
+      ],
+      stubs: [
+        "cp.execFile = (file, args, options, callback) => {",
+        `  callback(null, require("node:fs").readFileSync(${JSON.stringify(identityPath)}, "utf8"));`,
+        "};",
+        ...observeSetupReads(setupPath, readsPath),
+      ],
+      env: { OPENCLAW_NODE_SETUP_ENVELOPE: setupPath },
+    });
+    const nodes = (rows) => rows.filter(({ kind }) => kind === "node");
+    const evaluated = async (content) => {
+      const offset = (await jsonLines(readsPath)).length;
+      await waitFor(
+        "provider projection read and evaluated",
+        (rows) => rows.slice(offset).filter((row) => row.content === content).length >= 2,
+        () => jsonLines(readsPath),
+      );
+    };
+    const [initial] = nodes(
+      await waitFor("initial setup node", (rows) => nodes(rows).length === 1),
+    );
+    assert.equal(initial.args[4], Buffer.from(JSON.stringify(initialSetup)).toString("base64url"));
+    // An incomplete envelope falls back to the already saved native identity
+    // after an ordinary child failure, without treating the cache as fresh input.
+    await writeFile(setupPath, "{}");
+    await evaluated("{}");
+    process.kill(initial.pid, "SIGKILL");
+    const resumed = nodes(
+      await waitFor("saved identity node", (rows) => nodes(rows).length === 2),
+    )[1];
+    assert.deepEqual(resumed.args, [
+      "/app/openclaw.mjs",
+      "node",
+      "run",
+      "--commands",
+      "file.fetch,file.stat,file.write,file.create,dir.list,workspace.memory,workspace.skills",
+    ]);
+
+    // Missing and unparsable projections must not replay the earlier setup into
+    // this connected child. Observe real file reads before checking its lifetime.
+    await rm(setupPath);
+    await evaluated(null);
+    assert.equal(nodes(await events()).length, 2);
+    process.kill(resumed.pid, 0);
+    await writeFile(setupPath, "{");
+    await evaluated("{");
+    assert.equal(nodes(await events()).length, 2);
+    process.kill(resumed.pid, 0);
+
+    const renewed = nativeSetup("renewed-bootstrap");
+    await writeFile(setupPath, JSON.stringify(renewed));
+    const replacement = nodes(
+      await waitFor("fresh setup replaces node", (rows) => nodes(rows).length === 3),
+    )[2];
+    assert.equal(replacement.args[4], Buffer.from(JSON.stringify(renewed)).toString("base64url"));
+    await processGone("saved identity node survived renewal", resumed.pid);
+    assert.equal((await events()).filter(({ kind }) => kind === "codex").length, 1);
+  },
+);
+
+test(
+  "setup renewal preserves a rolled-back file projection while retiring its node group",
+  {
+    timeout: 20_000,
+    skip: process.platform !== "linux" && "Run the container entrypoint test on Linux.",
+  },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "oce-node-renewal-"));
+    const setupPath = join(directory, "setup-code");
+    const setupReadsPath = join(directory, "setup-reads.jsonl");
+    const setup = (bootstrapToken) => ({
+      url: "wss://gateway.example.test/node",
+      bootstrapToken,
+      expiresAtMs: 4_000_000_000_000,
+    });
+    const initialCode = Buffer.from(JSON.stringify(setup("initial-bootstrap"))).toString(
+      "base64url",
+    );
+    await writeFile(setupPath, initialCode);
+    const { events, waitFor, output } = await startSupervisor(t, directory, {
+      child: [
+        'const { appendFileSync } = require("node:fs");',
+        'const { spawn } = require("node:child_process");',
+        "const [events, kind, args] = process.argv.slice(2);",
+        'const row = (event) => appendFileSync(events, JSON.stringify({ kind, event, pid: process.pid, args: JSON.parse(args ?? "[]") }) + "\\n");',
+        'row("started");',
+        // Both the node and its descendant resist graceful termination. The
+        // supervisor must retire the entire group before starting another node.
+        'if (kind !== "codex") process.on("SIGTERM", () => row("terminating"));',
+        'if (kind === "node") spawn(process.execPath, [__filename, events, "descendant"], { stdio: "inherit" });',
+        "setInterval(() => {}, 1_000);",
+      ],
+      stubs: [...pendingIdentityProbe, ...observeSetupReads(setupPath, setupReadsPath)],
+      env: { OPENCLAW_NODE_SETUP_PATH: setupPath },
+    });
+    const starts = (rows, kind) =>
+      rows.filter((row) => row.kind === kind && row.event === "started");
+    const initial = await waitFor(
+      "node, descendant and Codex started",
+      (rows) => starts(rows, "descendant").length === 1 && starts(rows, "codex").length === 1,
+    );
+    const node = starts(initial, "node")[0];
+    const descendant = starts(initial, "descendant")[0];
+    const codex = starts(initial, "codex")[0];
+    await writeFile(
+      setupPath,
+      Buffer.from(JSON.stringify(setup("superseded-bootstrap"))).toString("base64url"),
+    );
+    await waitFor("renewal requested graceful retirement", (rows) =>
+      rows.some((row) => row.pid === node.pid && row.event === "terminating"),
+    );
+    const readOffset = (await jsonLines(setupReadsPath)).length;
+    await writeFile(setupPath, initialCode);
+    await waitFor(
+      "the retiring node observed the rollback to its initial setup",
+      (reads) => reads.slice(readOffset).some((read) => read.content === initialCode),
+      () => jsonLines(setupReadsPath),
+    );
+    // Withdraw after the actual rollback read. The old child still ignores TERM;
+    // its replacement must use A, not the B that first triggered retirement.
+    await rm(setupPath);
+    assert.equal(starts(await events(), "node").length, 1);
+    process.kill(node.pid, 0);
+    // The production grace period is five seconds. After it expires the normal
+    // one-second restart delay must produce one replacement with the newest code.
+    await delay(5_000);
+    const replaced = await waitFor(
+      "stuck node group replaced",
+      (rows) => starts(rows, "node").length === 2,
+    );
+    const replacement = starts(replaced, "node")[1];
+    assert.equal(replacement.args[4], initialCode);
+    assert.equal(
+      replaced.filter((row) => row.pid === node.pid && row.event === "terminating").length,
+      1,
+    );
+    await processGone("old node remained after replacement", node.pid);
+    await processGone("old node descendant remained after replacement", descendant.pid);
+    assert.equal(starts(replaced, "codex").length, 1);
+    process.kill(codex.pid, 0);
+    for (const secret of ["initial-bootstrap", "superseded-bootstrap"]) {
+      assert.equal(output().includes(secret), false);
     }
   },
 );
@@ -657,13 +864,223 @@ for (const topology of ["Compute-owned", "provider-owned"]) {
   );
 }
 
+// The production wrapper supervises real processes here. Only the external model
+// probe and native child implementation are substituted; this is not pairing proof.
+async function startNativeProviderWorker(t, directory, child) {
+  return startSupervisor(t, directory, {
+    entrypoint: NATIVE_WORKER_ENTRYPOINT,
+    child,
+    stubs: [
+      'cp.spawnSync = () => ({ status: 0, stdout: JSON.stringify({ auth: { probes: { results: [{ provider: "openai", model: "openai/native-refresh", source: "env", status: "ok" }] } } }) });',
+      ...observeSetupReads(
+        join(directory, "node-setup.json"),
+        join(directory, "setup-reads.jsonl"),
+      ),
+    ],
+    env: {
+      OPENCLAW_NATIVE_INFERENCE_CONFIG: "{}",
+      OPENCLAW_NATIVE_WORKER_CAPACITY: "1",
+      OPENCLAW_NODE_SETUP_ENVELOPE: join(directory, "node-setup.json"),
+      OPENCLAW_HARNESS_MODEL: "openai/native-refresh",
+      OPENCLAW_HARNESS_PROVIDER: "openai",
+      OPENCLAW_HARNESS_CREDENTIAL_ENV: "OPENAI_API_KEY",
+      OPENCLAW_HARNESS_PROBE_CONFIG: JSON.stringify({
+        agents: { defaults: { model: "openai/native-refresh" } },
+      }),
+      OPENAI_API_KEY: "synthetic-model-key",
+      TMPDIR: join(directory, "tmp"),
+    },
+  });
+}
+
+const nativeRefreshChild = [
+  'const { appendFileSync, readFileSync } = require("node:fs");',
+  'const { spawn } = require("node:child_process");',
+  "const [events, kind, args] = process.argv.slice(2);",
+  'const argv = JSON.parse(args ?? "[]");',
+  'const target = kind === "node" ? readFileSync(argv[argv.indexOf("--target-file") + 1], "utf8") : undefined;',
+  'const row = (event) => appendFileSync(events, JSON.stringify({ kind, event, pid: process.pid, target }) + "\\n");',
+  'row("started");',
+  'if (kind === "node") spawn(process.execPath, [__filename, events, "descendant"], { stdio: "inherit" });',
+  'process.on("SIGTERM", () => { row("terminating"); if (!target || JSON.parse(Buffer.from(target, "base64url")).bootstrapToken !== "initial-bootstrap") process.exit(0); });',
+  "setInterval(() => {}, 1_000);",
+];
+
+function nativeSetup(bootstrapToken) {
+  return { url: "wss://gateway.example.test/node", bootstrapToken, expiresAtMs: 4_000_000_000_000 };
+}
+
+const nativeStarts = (rows) => rows.filter((row) => row.kind === "node" && row.event === "started");
+
+test(
+  "native provider renewal preserves a rolled-back envelope while retiring its node group",
+  { timeout: 25_000, skip: process.platform !== "linux" && "Linux process groups are required." },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "oce-native-provider-refresh-"));
+    const setupPath = join(directory, "node-setup.json");
+    const identityPath = join(directory, "node-state", "retained-device");
+    await mkdir(join(directory, "node-state"));
+    await writeFile(identityPath, "retained-private-identity");
+    const { exited, events, waitFor, output } = await startNativeProviderWorker(
+      t,
+      directory,
+      nativeRefreshChild,
+    );
+    // A provider may expose the virtual file after wrapper startup. No incomplete
+    // or absent projection is passed to the native connection.
+    await delay(1_100);
+    assert.equal(nativeStarts(await events()).length, 0);
+    await writeFile(setupPath, "{");
+    await delay(1_100);
+    assert.equal(nativeStarts(await events()).length, 0);
+    await writeFile(setupPath, JSON.stringify(nativeSetup("initial-bootstrap")));
+    const started = await waitFor("native worker and descendant started", (rows) =>
+      rows.some((row) => row.kind === "descendant" && row.event === "started"),
+    );
+    const initial = nativeStarts(started)[0];
+    const descendant = started.find((row) => row.kind === "descendant");
+    const payload = nativeSetup("initial-bootstrap");
+    const unchanged = [
+      JSON.stringify(
+        {
+          expiresAtMs: payload.expiresAtMs,
+          bootstrapToken: payload.bootstrapToken,
+          url: payload.url,
+        },
+        null,
+        2,
+      ),
+      "{",
+      JSON.stringify({ ...payload, bootstrapToken: "" }),
+      JSON.stringify({ ...payload, url: "https://gateway.example.test/node" }),
+      // Native rejects a TLS pin over plaintext; do not retire its healthy child first.
+      JSON.stringify({
+        ...payload,
+        url: "ws://gateway.example.test/node",
+        tlsFingerprint: "ab".repeat(32),
+      }),
+      JSON.stringify({
+        ...payload,
+        url: "wss:gateway.example.test/node",
+        bootstrapToken: "malformed-url-bootstrap",
+      }),
+      JSON.stringify({ ...payload, bootstrapToken: "x".repeat(140_000) }),
+      JSON.stringify({ ...payload, bootstrapToken: "x".repeat(50_000) }),
+      JSON.stringify({
+        ...payload,
+        bootstrapToken: "\u2003".repeat(30_000) + "different-bootstrap",
+      }),
+    ];
+    for (const projection of unchanged) {
+      await writeFile(setupPath, projection);
+      await delay(1_100);
+      const observed = await events();
+      assert.equal(nativeStarts(observed).length, 1);
+      assert.equal(
+        observed.some((row) => row.pid === initial.pid && row.event === "terminating"),
+        false,
+        "an invalid projection retired the healthy native worker",
+      );
+      process.kill(initial.pid, 0);
+    }
+    await rm(setupPath);
+    await delay(1_100);
+    assert.equal(nativeStarts(await events()).length, 1);
+
+    await writeFile(setupPath, JSON.stringify(nativeSetup("superseded-bootstrap")));
+    await waitFor("old worker received graceful retirement", (rows) =>
+      rows.some((row) => row.pid === initial.pid && row.event === "terminating"),
+    );
+    const latest = nativeSetup("initial-bootstrap");
+    const setupReadsPath = join(directory, "setup-reads.jsonl");
+    const readOffset = (await jsonLines(setupReadsPath)).length;
+    await writeFile(setupPath, JSON.stringify(latest));
+    await waitFor(
+      "the retiring native worker observed the rollback",
+      (reads) => reads.slice(readOffset).some((read) => read.content === JSON.stringify(latest)),
+      () => jsonLines(setupReadsPath),
+    );
+    // The initial setup is the latest complete value. Its equality with the old
+    // child's setup must not preserve the superseded value across this withdrawal.
+    await rm(setupPath);
+    assert.equal(nativeStarts(await events()).length, 1);
+    process.kill(initial.pid, 0);
+    await delay(4_100);
+    const replaced = await waitFor(
+      "native worker restarted with refreshed setup",
+      (rows) => nativeStarts(rows).length === 2,
+    );
+    const replacement = nativeStarts(replaced)[1];
+    assert.deepEqual(JSON.parse(Buffer.from(replacement.target, "base64url")), latest);
+    assert.equal(
+      replaced.filter((row) => row.pid === initial.pid && row.event === "terminating").length,
+      1,
+    );
+    await processGone("old native worker survived replacement", initial.pid);
+    await processGone("old native descendant survived replacement", descendant.pid);
+    assert.equal(await readFile(identityPath, "utf8"), "retained-private-identity");
+    assert.equal((await stat(join(directory, "node-state", "connect-target"))).mode & 0o777, 0o600);
+    // Both incarnations intentionally resist TERM, so finish this race fixture
+    // through the normal child-exit path after verifying the replacement.
+    process.kill(replacement.pid, "SIGKILL");
+    assert.deepEqual(await exited, [1, null], output());
+    for (const secret of ["initial-bootstrap", "superseded-bootstrap"]) {
+      assert.equal(output().includes(secret), false);
+    }
+  },
+);
+
+test(
+  "operator stop cancels a pending native provider renewal",
+  { timeout: 18_000, skip: process.platform !== "linux" && "Linux process groups are required." },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "oce-native-provider-stop-"));
+    const setupPath = join(directory, "node-setup.json");
+    await writeFile(setupPath, JSON.stringify(nativeSetup("initial-bootstrap")));
+    const { supervisor, exited, events, waitFor } = await startNativeProviderWorker(
+      t,
+      directory,
+      nativeRefreshChild,
+    );
+    const initial = nativeStarts(
+      await waitFor("native worker started", (rows) =>
+        rows.some((row) => row.kind === "descendant"),
+      ),
+    )[0];
+    await writeFile(setupPath, JSON.stringify(nativeSetup("renewed-bootstrap")));
+    await waitFor("native worker began retirement", (rows) =>
+      rows.some((row) => row.pid === initial.pid && row.event === "terminating"),
+    );
+    supervisor.kill("SIGTERM");
+    assert.deepEqual(await exited, [1, null]);
+    assert.equal(nativeStarts(await events()).length, 1);
+    await processGone("stopped native worker remained alive", initial.pid);
+  },
+);
+
+test(
+  "native provider wrapper preserves a natural child exit code",
+  { timeout: 10_000 },
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "oce-native-provider-exit-"));
+    await writeFile(join(directory, "node-setup.json"), JSON.stringify(maximumSetupEnvelope()));
+    const { exited } = await startNativeProviderWorker(t, directory, [
+      "const args = JSON.parse(process.argv[4]);",
+      'const target = require("node:fs").readFileSync(args[args.indexOf("--target-file") + 1]);',
+      'require("node:assert/strict").equal(target.length, 65_536);',
+      "process.exit(7);",
+    ]);
+    assert.deepEqual(await exited, [7, null]);
+  },
+);
+
 // A Deployment-backed Codex Harness starts before its node setup Secret exists
 // and receives the code through an optional volume. Real child processes prove
 // the start order; native pairing and the kubelet volume refresh are not run here.
 test(
   "Codex starts before the node setup file and the node reconnects after the code is removed",
   {
-    timeout: 20_000,
+    timeout: 40_000,
     skip: process.platform !== "linux" && "Run the container entrypoint test on Linux.",
   },
   async (t) => {
@@ -688,14 +1105,7 @@ test(
         `  try { callback(null, require("node:fs").readFileSync(${JSON.stringify(identityPath)}, "utf8")); }`,
         '  catch (error) { callback(error, ""); }',
         "};",
-        // Record each setup poll and what it read, so the test waits for polls.
-        'const fs = require("node:fs"); const realRead = fs.readFileSync;',
-        "fs.readFileSync = (path, ...rest) => {",
-        `  if (path !== ${JSON.stringify(setupPath)}) return realRead(path, ...rest);`,
-        "  let content = null;",
-        "  try { content = realRead(path, ...rest); return content; }",
-        `  finally { fs.appendFileSync(${JSON.stringify(setupReadsPath)}, JSON.stringify({ content }) + "\\n"); }`,
-        "};",
+        ...observeSetupReads(setupPath, setupReadsPath),
       ],
       env: {
         OPENCLAW_NODE_SETUP_PATH: setupPath,
@@ -705,15 +1115,22 @@ test(
     const nodes = (rows) => rows.filter(({ kind }) => kind === "node");
     // The supervisor polls the setup file until it starts a node. A poll that read
     // `content` followed by another poll proves that content started no node.
-    const evaluated = (content) =>
-      waitFor(
-        `a setup poll after reading ${JSON.stringify(content)}`,
+    const evaluated = async (content) => {
+      const offset = (await jsonLines(setupReadsPath)).length;
+      return waitFor(
+        "a setup poll after the selected projection was read",
         (reads) => {
-          const index = reads.findIndex((read) => read.content === content);
+          const expectedRead =
+            content === null ? null : Buffer.from(content).subarray(0, 65_537).toString("utf8");
+          const index = reads.findIndex(
+            (read, row) =>
+              row >= offset && (read.content === expectedRead || read.content === content),
+          );
           return index !== -1 && index < reads.length - 1;
         },
         () => jsonLines(setupReadsPath),
       );
+    };
 
     const [codex] = await waitFor("Codex started without the setup", (rows) =>
       rows.some(({ kind }) => kind === "codex"),
@@ -726,9 +1143,9 @@ test(
     // The kubelet swaps Secret files atomically; an empty, truncated or
     // line-wrapped code (which native pairing rejects, though Buffer decodes it)
     // is still treated as absent rather than handed to native pairing.
-    const code = Buffer.from(
-      JSON.stringify({ url: "wss://gateway.example.test", bootstrapToken: "bootstrap" }),
-    ).toString("base64url");
+    const payload = maximumSetupEnvelope();
+    const code = Buffer.from(JSON.stringify(payload)).toString("base64url");
+    assert.equal(Buffer.byteLength(code), 65_536);
     await mkdir(setupDirectory);
     for (const incomplete of [
       "",
@@ -741,7 +1158,7 @@ test(
       assert.deepEqual(nodes(await events()), [], JSON.stringify(incomplete));
     }
 
-    await writeFile(setupPath, `${code}\n`);
+    await writeFile(setupPath, code);
     const [paired] = nodes(
       await waitFor("node started with the setup", (rows) => nodes(rows).length === 1),
     );
@@ -749,23 +1166,98 @@ test(
       "/app/openclaw.mjs",
       "node",
       "run",
-      "--pair-if-needed",
+      "--pair-or-reconnect",
       code,
     ]);
     // Every start names the node after the Agent, not the first Pod's host name.
     const displayName = (args) => args[args.indexOf("--display-name") + 1];
     assert.equal(displayName(paired.args), "agent-0123456789ab-workspace");
 
-    // After pairing the controller removes the code and the kubelet removes the
-    // file. A node restart then reconnects with its saved device identity.
-    await rm(setupPath);
-    await writeFile(identityPath, JSON.stringify({ deviceId: "a".repeat(64) }));
-    process.kill(paired.pid, "SIGKILL");
-    const restarted = nodes(
-      await waitFor("node reconnected without a code", (rows) => nodes(rows).length === 2),
+    // Incomplete replacement projections leave the connected node alone. Renewal
+    // must not turn a transient file swap into a node or Codex outage.
+    // The outer base64url is valid ASCII, but decoding must not silently repair
+    // an invalid token byte into a different setup that replaces a healthy node.
+    const invalidUtf8 = Buffer.from(
+      JSON.stringify({ ...payload, bootstrapToken: "invalid-utf8-bootstrap" }),
+    );
+    invalidUtf8[invalidUtf8.indexOf("invalid-utf8-bootstrap")] = 0xff;
+    for (const incomplete of [
+      "",
+      code.slice(0, 17),
+      invalidUtf8.toString("base64url"),
+      ...[
+        {},
+        { bootstrapToken: "bootstrap" },
+        { ...payload, expiresAtMs: "invalid" },
+        { ...payload, expiresAtMs: undefined },
+        // A valid pin still requires TLS before the replacement can retire this node.
+        {
+          ...nativeSetup("plaintext-pinned-bootstrap"),
+          url: "ws://gateway.example.test/node",
+          tlsFingerprint: "ab".repeat(32),
+        },
+        {
+          ...payload,
+          url: "wss:gateway.example.test/node",
+          bootstrapToken: "malformed-url-bootstrap",
+        },
+        { ...payload, bootstrapToken: "x".repeat(140_000) },
+      ].map((value) => Buffer.from(JSON.stringify(value)).toString("base64url")),
+      Buffer.from(JSON.stringify({ ...payload, bootstrapToken: "over-limit-delivery" })).toString(
+        "base64url",
+      ) + " ".repeat(65_536),
+    ]) {
+      await writeFile(setupPath, incomplete);
+      await evaluated(incomplete);
+      assert.equal(nodes(await events()).length, 1);
+      process.kill(paired.pid, 0);
+    }
+    // Projection serialization is not setup identity: no restart for reordered
+    // JSON, whitespace, or the optional URL prefix around the same payload.
+    const equivalent = Buffer.from(
+      JSON.stringify({
+        expiresAtMs: payload.expiresAtMs,
+        bootstrapToken: payload.bootstrapToken,
+        url: payload.url,
+      }),
+    ).toString("base64url");
+    await writeFile(setupPath, equivalent);
+    await evaluated(equivalent);
+    assert.equal(nodes(await events()).length, 1);
+    const renewed = Buffer.from(
+      JSON.stringify({ ...payload, bootstrapToken: "renewed-bootstrap" }),
+    ).toString("base64url");
+    await writeFile(setupPath, renewed);
+    const refreshed = nodes(
+      await waitFor("connected node received renewed setup", (rows) => nodes(rows).length === 2),
     )[1];
+    assert.equal(refreshed.args[4], renewed);
+    await processGone("previous node survived setup renewal", paired.pid);
+    await evaluated(renewed);
+    assert.equal(nodes(await events()).length, 2, "unchanged setup must not restart the node");
+    const prefixed = "oc-pair://" + renewed + "\n";
+    await writeFile(setupPath, prefixed);
+    await evaluated(prefixed);
+    assert.equal(
+      nodes(await events()).length,
+      2,
+      "a setup presentation change must not restart the node",
+    );
+
+    // After pairing the controller removes the code and the kubelet removes the
+    // file. Removal leaves the running node alone; a later process failure
+    // reconnects with its saved device identity.
+    await rm(setupPath);
+    await evaluated(null);
+    assert.equal(nodes(await events()).length, 2);
+    process.kill(refreshed.pid, 0);
+    await writeFile(identityPath, JSON.stringify({ deviceId: "a".repeat(64) }));
+    process.kill(refreshed.pid, "SIGKILL");
+    const restarted = nodes(
+      await waitFor("node reconnected without a code", (rows) => nodes(rows).length === 3),
+    )[2];
     assert.deepEqual(restarted.args.slice(0, 3), ["/app/openclaw.mjs", "node", "run"]);
-    assert.equal(restarted.args.includes("--pair-if-needed"), false);
+    assert.equal(restarted.args.includes("--pair-or-reconnect"), false);
     assert.equal(restarted.args.includes(code), false);
     assert.equal(displayName(restarted.args), "agent-0123456789ab-workspace");
     assert.equal((await events()).filter(({ kind }) => kind === "codex").length, 1);
@@ -818,7 +1310,7 @@ test(
     assert.equal(probes.length, 2, "one failed probe, one retry");
     const node = rows.find(({ kind }) => kind === "node");
     assert.deepEqual(node.args.slice(0, 3), ["/app/openclaw.mjs", "node", "run"]);
-    assert.equal(node.args.includes("--pair-if-needed"), false);
+    assert.equal(node.args.includes("--pair-or-reconnect"), false);
     assert.equal(rows.filter(({ kind }) => kind === "codex").length, 1);
 
     supervisor.kill("SIGTERM");

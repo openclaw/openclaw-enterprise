@@ -47,7 +47,7 @@ Use the named roles in `:root`: `--color-link` for links, `--color-accent` for
 the primary action, and `--focus-ring` for keyboard focus. Inherit the body
 font, pair type sizes with their line heights (for example, `--text-md` with
 `--text-md--line-height`), and use the spacing and radius scales.
-The [token checks](../../tests/conformance/console-design-tokens.test.mjs)
+The [token checks](../../tests/conformance/console-design-tokens.test.ts)
 cover these scales and the supported breakpoints.
 
 Navigation pairs the wordmark with a

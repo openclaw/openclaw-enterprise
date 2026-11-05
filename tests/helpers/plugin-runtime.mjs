@@ -152,6 +152,12 @@ export function runOpenClawRuntimeHelper(runtime, responses, options = {}) {
           existsSync(path) {
             return files.has(path);
           },
+          lstatSync(path) {
+            if (!files.has(path)) {
+              throw Object.assign(new Error("File not found"), { code: "ENOENT" });
+            }
+            return { isFile: () => true, mode: 0o600 };
+          },
           mkdirSync() {},
           chmodSync() {},
           mkdtempSync(prefix) {

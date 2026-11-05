@@ -961,8 +961,9 @@ function runNativeWorkerEntrypoint({ env = {}, upfrontStatus = 3, upfrontStdout,
         // under the fixture directory.
         return {
           ...realFs,
-          existsSync: () => true,
-          lstatSync: () => ({ isDirectory: () => true }),
+          existsSync: (path) => String(path).startsWith("/app/") || realFs.existsSync(path),
+          lstatSync: (path) =>
+            String(path).startsWith("/app/") ? { isDirectory: () => true } : realFs.lstatSync(path),
           readdirSync: (path) => (String(path).startsWith("/app/") ? ["asset"] : []),
           cpSync() {},
           chmodSync() {},

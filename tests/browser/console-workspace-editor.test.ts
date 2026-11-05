@@ -16,9 +16,9 @@ import { WORKSPACE_DEFAULTS } from "../../packages/contracts/src/workspace-defau
 import { proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
+  deploymentStatusResponse,
   apiRequests,
   detailUrl,
-  deploymentStatusResponse,
   expectNoText,
   holdRequests,
   login,
@@ -30,7 +30,8 @@ import {
   waitForCondition,
   waitForEnabled,
   waitForInputValue,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+
 import {
   trackSettledFetches,
   waitForIdleFetches,

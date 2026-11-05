@@ -1241,17 +1241,15 @@ test("CI Required always reports and fails at once when a dependency was cancell
 });
 
 test("full-integration lanes read NODE_BASE_IMAGE from a variable their environment has", () => {
-  // Only the integration-model and integration-otel environments define NODE_BASE_IMAGE; every
-  // other lane reads the repository variable, or it can never start (finding 662).
+  // The shared integration-main environment defines NODE_BASE_IMAGE. Jobs without it
+  // must read the repository variable, or they can never start (finding 662).
   const path = ".github/workflows/full-integration.yml";
   const lanes = Object.entries(loadYaml(path).jobs).filter(([, job]) => job.env?.NODE_BASE_IMAGE);
   const repository = "${{ vars.CONTAINER_NODE_BASE_IMAGE }}";
   const environment = "${{ vars.NODE_BASE_IMAGE }}";
   for (const [lane, job] of lanes) {
     const name = job.environment?.name ?? job.environment;
-    const allowed = ["integration-model", "integration-otel"].includes(name)
-      ? [repository, environment]
-      : [repository];
+    const allowed = name === "integration-main" ? [repository, environment] : [repository];
     assert.ok(allowed.includes(job.env.NODE_BASE_IMAGE), lane);
   }
   // No workflow- or step-level read escapes the job check.
@@ -1350,7 +1348,10 @@ test("every formatting check provisions pinned Bun and scans without a formatter
     assert.deepEqual(setup.with, { "bun-version-file": ".bun-version" });
     const check = steps.find((step) => step.run === "pnpm format:check");
     assert.ok(steps.indexOf(setup) < steps.indexOf(check));
-    assert.equal(setup.if, check.if);
+    if (steps === staticSteps) {
+      assert.equal(setup.if, undefined);
+      assert.equal(check.if, undefined);
+    }
     assert.equal(setup["continue-on-error"], undefined);
     assert.equal(check["continue-on-error"], undefined);
     assert.equal(
@@ -1363,10 +1364,15 @@ test("every formatting check provisions pinned Bun and scans without a formatter
     );
   }
   const setup = laneSteps.find((step) => step.name === "Set up formatter");
+  const check = laneSteps.find((step) => step.run === "pnpm format:check");
   for (const { lane } of laneTable()) {
     for (const staticChecks of ["true", "false"]) {
       assert.equal(
-        runInNewContext(setup.if.replace("inputs.static-checks", "inputs.staticChecks"), {
+        runInNewContext(setup.if, { inputs: { lane, staticChecks } }),
+        lane === "checks-baseline-1",
+      );
+      assert.equal(
+        runInNewContext(check.if.replace("inputs.static-checks", "inputs.staticChecks"), {
           inputs: { lane, staticChecks },
         }),
         lane === "checks-baseline-1" && staticChecks !== "false",

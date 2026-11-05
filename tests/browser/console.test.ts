@@ -14,7 +14,7 @@ import { apiErrorResponse } from "../helpers/api-error.mjs";
 import {
   describePendingBrowserRequests,
   noteBrowserEvent,
-} from "../helpers/browser-failure-diagnostics.mjs";
+} from "../helpers/browser-failure-diagnostics.ts";
 import {
   createConsoleAppFixture as createBaseConsoleAppFixture,
   fileConsoleApp,
@@ -35,7 +35,7 @@ import {
   settlePageRequests,
   waitForEnabled,
   writeRequests,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import {
   settledFetches,
   trackSettledFetches,

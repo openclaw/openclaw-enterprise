@@ -29,7 +29,7 @@ import {
   newPage,
   shippedPreset,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.ts";
 import { restrict } from "../helpers/iam-grants.mjs";
 

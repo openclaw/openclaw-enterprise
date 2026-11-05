@@ -19,7 +19,7 @@ import {
   nativeValues,
   newPage,
   waitForCondition,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import { waitForIdleFetches, trackSettledFetches } from "./console-fetch-accounting.ts";
 import { responseTo } from "./console-action-helpers.ts";
 

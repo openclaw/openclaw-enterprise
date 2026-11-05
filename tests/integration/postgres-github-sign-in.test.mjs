@@ -25,7 +25,7 @@ import {
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { reservePort } from "../helpers/available-port.mjs";
-import { consoleStorage } from "../helpers/console-storage.mjs";
+import { consoleStorage } from "../helpers/console-storage.ts";
 
 const email = "github-recovery@example.test";
 const password = "github-local-recovery-password";

@@ -35,14 +35,17 @@ discovery and check whether the Namespace exists after a missing Job. Neither
 Namespace access nor permission to list Jobs or Pods is required. If the CLI
 release is unavailable, run `go run ./cmd/occ` from the matching checkout.
 
+Run `plan` for the Job result and recovery steps, or use `doctor` to inspect the Job.
+The example uses the release name and Kubernetes namespace from the custom Helm
+guide. Substitute the values recorded for your installation.
+
 ```bash
 target=(--kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT"
-        --kube-namespace "$NAMESPACE" --release "$RELEASE")
+        --kube-namespace openclaw-system --release oce)
 # For an installation started by occ, use its original receipt directory.
 target+=(--receipt "$INSTALL_RECEIPT_DIRECTORY")
 # For an older installation without a receipt, instead use
 # --expect-job-uid "$RECORDED_JOB_UID" only if captured during that attempt.
-occ installation doctor "${target[@]}"
 occ installation plan "${target[@]}"
 ```
 

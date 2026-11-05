@@ -69,7 +69,7 @@ import {
   waitForInputValue,
   statusTone,
   isMaskedSecretValue,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import { trackSettledFetches } from "./console-fetch-accounting.ts";
 import {
   STARTER_CONTROL_UI,
@@ -80,7 +80,7 @@ import {
   nativeSandboxDriver,
   agentPostRequests,
   createRepositoryLaunchFixture,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
 import {
   expectDeploymentOutcome,
   openFailureDetails,

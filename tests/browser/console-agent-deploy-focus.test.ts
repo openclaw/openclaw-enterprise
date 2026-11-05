@@ -9,7 +9,7 @@ import {
   newPage,
   recordFocusTrail,
   stopFocusTrail,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 
 // After an admitted deployment the held draft page's heading keeps focus, and the loading page's

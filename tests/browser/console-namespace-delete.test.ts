@@ -18,7 +18,7 @@ import {
   newPage,
   pathRequests,
   settledView,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import {
   settledFetches,
   trackSettledFetches,

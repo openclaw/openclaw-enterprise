@@ -36,8 +36,9 @@ import {
   createRuntimeLogComputeDriver,
 } from "../helpers/runtime-logs.mjs";
 import {
-  apiRequests,
   deploymentStatusResponse,
+  routeFailedDeployment,
+  apiRequests,
   detailUrl,
   expectReachableReason,
   fileBrowser,
@@ -45,19 +46,19 @@ import {
   login,
   nativeValues,
   newPage,
-  routeFailedDeployment,
   settlePageRequests,
   settledView,
   waitForCondition,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+
 import {
   settledFetches,
   trackSettledFetches,
   waitForIdleFetches,
   waitForSettledFetches,
 } from "./console-fetch-accounting.ts";
-import { withholdPermissionSummary } from "./console-agents-test-support.mjs";
+import { withholdPermissionSummary } from "./console-agents-test-support.ts";
 import { refocus } from "./console-refocus-helpers.ts";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;

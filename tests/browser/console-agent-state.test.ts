@@ -15,6 +15,7 @@ import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/dep
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture, memberRole } from "../helpers/console-app.mjs";
 import {
+  persistedDeploymentError,
   AGENT_READ,
   accessibleDescription,
   apiRequests,
@@ -32,7 +33,6 @@ import {
   nativeValues,
   newPage,
   nonAuthWriteRequests,
-  persistedDeploymentError,
   recordLayoutShifts,
   selectSecret,
   shortId,
@@ -40,7 +40,8 @@ import {
   takeLayoutShifts,
   waitForChosenVersion,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+
 import {
   settledFetches,
   trackSettledFetches,
@@ -54,7 +55,7 @@ import {
   openFailureDetails,
   showDeploymentTab,
 } from "./console-deployment-activity-helpers.ts";
-import { agentDeleteRequests, agentStopRequests } from "./console-agents-test-support.mjs";
+import { agentDeleteRequests, agentStopRequests } from "./console-agents-test-support.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   ACCESS_TAB_UNAVAILABLE,

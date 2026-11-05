@@ -1,3 +1,4 @@
+import { verifyOpenShellPushNegotiation } from "../helpers/openshell-git-push-negotiation.mjs";
 import { runDocker, image, imageTestOptions } from "../helpers/runtime-image-startup.mjs";
 import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
@@ -6,6 +7,7 @@ import { openShellWorkspaceChartResources } from "../fixtures/openshell-workspac
 import { ConfigurationValidationError as SharedConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { inflateRawSync } from "node:zlib";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
@@ -31,10 +33,14 @@ import {
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
+  PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   NATIVE_WORKER_ENTRYPOINT,
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
+import {
+  nodeProgramArguments,
+  withoutLineComments,
+} from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import {
   assertNoManagedMcpRouteOverlap,
@@ -529,7 +535,7 @@ function runtimeSandboxFixture(
     url: nodeSetupUrl(revision, context),
     bootstrapToken: "one-shot-node-setup",
     expiresAtMs: Date.now() + 600_000,
-    tlsFingerprint: "sha256:test",
+    tlsFingerprint: "ab".repeat(32),
   };
   const setupCode = Buffer.from(JSON.stringify(nodeSetup)).toString("base64url");
   const kubernetes = Object.create(KubernetesObjectApi.prototype);
@@ -2228,6 +2234,8 @@ test("OpenShell exposes a native OpenClaw worker's held-failure port when Comput
     driver.provisionHarness({ ...context, revision, requirements: exposed }),
     /exists without its exact bearer-passthrough Harness service/,
   );
+  assert.equal(requests.length, 1);
+  assert.equal(deletions.length, 2);
   // A Sandbox created again after enrollment (the stale one was removed) carries the
   // exposure its immutable request names and loses it in the same pass.
   storedSandbox = undefined;
@@ -2958,7 +2966,7 @@ test("OpenShell Harness endpoints expose only the Backend public CA", async (t) 
   await assert.rejects(endpoint(join(tls.directory, "missing-root.pem")), /readable public PEM CA/);
 });
 
-test("OpenShell provisions dedicated Codex with bearer passthrough and provider files", async () => {
+test("OpenShell provisions dedicated Codex with bearer passthrough and provider files", async (t) => {
   const requests = [];
   let getServiceCalls = 0;
   let storedSandbox;
@@ -3072,6 +3080,7 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
       ...account,
     },
   };
+  requirements.command = harnessRuntimeCommand(PROTECTED_CODEX_WITH_NODE_ENTRYPOINT);
   requirements.loginMode = revision.harnessAuth.loginMode;
   requirements.environment.push(
     { name: "CODEX_LOGIN_MODE", value: requirements.loginMode },
@@ -3141,7 +3150,16 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
     mountPaths.some((path) => path.startsWith("/sandbox/.openclaw-runtime/")),
     false,
   );
-  const script = spec.command[RUNTIME_WRAPPER_COMMAND.length];
+  const commandBytes = Buffer.byteLength(JSON.stringify(spec.command));
+  assert.ok(commandBytes <= 65_536, `final OpenShell command is ${commandBytes} bytes`);
+  t.diagnostic(`Final OpenShell account command: ${commandBytes} bytes`);
+  const loader = nodeProgramArguments("")[0];
+  const script =
+    spec.command[RUNTIME_WRAPPER_COMMAND.length].slice(0, -loader.length) +
+    inflateRawSync(
+      Buffer.from(spec.command.slice(RUNTIME_WRAPPER_COMMAND.length + 1).join(""), "base64"),
+    ).toString("utf8");
+  assert.ok(script.endsWith(withoutLineComments(PROTECTED_CODEX_WITH_NODE_ENTRYPOINT)));
   assert.match(script, /\/sandbox\/\.openclaw-runtime\/home\/\.codex\/sessions/);
   assert.match(script, /\/sandbox\/\.openclaw-mounts\/[a-f0-9]{16}/);
   assert.doesNotMatch(
@@ -3445,6 +3463,15 @@ for (const harnessId of ["codex", "openclaw"]) {
     const { context, revision, requirements, prepared } = runtimeSandboxFixture(driver, {
       harnessId,
     });
+    if (harnessId === "codex") {
+      requirements.command = harnessRuntimeCommand(PROTECTED_CODEX_WITH_NODE_ENTRYPOINT);
+      requirements.loginMode = "chatgptAuthTokens";
+      requirements.credentialAttachments[0].externalChatgptAuth = {
+        accessTokenPlaceholder: `openshell:resolve:env:s${"1".repeat(64)}_CODEX_ACCESS_TOKEN`,
+        accountId: "account",
+        planType: "business",
+      };
+    }
     const setup = {
       id: "initial-workspace",
       namespaceId: revision.namespaceId,
@@ -3503,6 +3530,12 @@ for (const harnessId of ["codex", "openclaw"]) {
     const provision = () => driver.provisionHarness({ ...context, revision, requirements });
 
     await provision();
+    const commandBytes = Buffer.byteLength(JSON.stringify(sandbox.spec.command));
+    assert.ok(
+      commandBytes <= 65_536,
+      `final OpenShell command with workspace setup is ${commandBytes} bytes`,
+    );
+    t.diagnostic(`Final ${harnessId} command with workspace setup: ${commandBytes} bytes`);
     assert.equal(executions.length, 0, "private initialization waits for supervisor readiness");
     assert.equal(prepared.length, harnessId === "openclaw" ? 1 : 0);
     sandbox.phase = "SANDBOX_PHASE_READY";
@@ -3765,23 +3798,37 @@ for (const harnessId of ["codex", "openclaw"]) {
       ...initialSetup,
       bootstrapToken: "renewed-node-setup",
       expiresAtMs: Date.now() + 600_000,
+      tlsFingerprint: `  SHA256:${Array(32).fill("AB").join(":")}  `,
     };
-    const renewedCode = Buffer.from(JSON.stringify(renewedSetup)).toString("base64url");
-    context.kubernetes.read = async ({ metadata }) => ({
-      apiVersion: "v1",
-      kind: "Secret",
-      metadata: {
-        ...metadata,
-        labels: {
-          "openclaw.dev/namespace": context.namespace.id,
-          "openclaw.dev/agent": revision.agentId,
+    let desiredSetup = renewedSetup;
+    context.kubernetes.read = async ({ metadata }) => {
+      const renewedCode = Buffer.from(JSON.stringify(desiredSetup)).toString("base64url");
+      return {
+        apiVersion: "v1",
+        kind: "Secret",
+        metadata: {
+          ...metadata,
+          labels: {
+            "openclaw.dev/namespace": context.namespace.id,
+            "openclaw.dev/agent": revision.agentId,
+          },
         },
-      },
-      data: { setupCode: Buffer.from(renewedCode).toString("base64") },
-    });
+        data: { setupCode: Buffer.from(renewedCode).toString("base64") },
+      };
+    };
+
+    // Changing or removing the trust anchor is not renewal authority, even for
+    // an expired setup. JSON serialization omits the undefined fingerprint.
+    for (const tlsFingerprint of ["cd".repeat(32), undefined]) {
+      desiredSetup = { ...renewedSetup, tlsFingerprint };
+      await assert.rejects(provision(), /without exact AgentRevision ownership and content/);
+      assert.equal(callCount(gatewayClient, "updateProviderConfig"), 0);
+    }
+    desiredSetup = renewedSetup;
 
     // A retry must update the revision-owned provider rather than strand the
-    // revision after Compute replaces its expired setup Secret.
+    // revision after Compute replaces its expired setup Secret. Prefix, case,
+    // and colon formatting do not change the SHA-256 trust anchor.
     await provision();
     const updates = gatewayClient.calls.filter(
       ([operation]) => operation === "updateProviderConfig",
@@ -3851,38 +3898,186 @@ test("OpenShell rejects unexpected annotations on an existing Sandbox", async ()
 });
 
 for (const harnessId of ["codex", "openclaw"]) {
-  test(`OpenShell rejects malformed or expired ${harnessId} node setup before gateway mutation`, async (t) => {
-    for (const [name, setupCode, expected] of [
-      ["malformed", "not-a-setup-code", /malformed setup envelope/],
-      [
-        "expired",
-        Buffer.from(
-          JSON.stringify({
-            url: "wss://gateway.example.test/node",
-            bootstrapToken: "expired-token",
-            expiresAtMs: Date.now() - 1,
-          }),
-        ).toString("base64url"),
-        /expired or has no bounded expiry/,
-      ],
+  test(`OpenShell preserves expired ${harnessId} setup for a recorded workspace node`, async () => {
+    const gatewayClient = workspaceGatewayClient();
+    let sandboxName;
+    const serviceUrl = "http://codex.example.test:8080/";
+    gatewayClient.createSandbox = async (request) => {
+      sandboxName = request.name;
+      const sandbox = storedSandbox(request, {
+        serviceUrls: harnessId === "codex" ? { "": serviceUrl } : {},
+      });
+      gatewayClient.sandboxes.set(request.name, sandbox);
+      return sandbox;
+    };
+    gatewayClient.getService = async () => harnessService(sandboxName, "", serviceUrl);
+    const driver = openShellDriver(gatewayClient);
+    const { context, revision, requirements, nodeSetup } = runtimeSandboxFixture(driver, {
+      harnessId,
+    });
+    const expiredSetup = { ...nodeSetup, expiresAtMs: Date.now() - 1 };
+    const setupCode = Buffer.from(JSON.stringify(expiredSetup)).toString("base64url");
+    const originalRead = context.kubernetes.read;
+    context.kubernetes.read = async (request) => {
+      const resource = await originalRead(request);
+      if (request.kind !== "Secret") {
+        return resource;
+      }
+      return {
+        ...resource,
+        data: {
+          setupCode: Buffer.from(setupCode).toString("base64"),
+          deviceId: Buffer.from("recorded-node:1").toString("base64"),
+        },
+      };
+    };
+
+    // A replacement Harness must receive the retained envelope so native can
+    // verify its saved identity and device token. This is provider planning,
+    // not proof that the native runtime accepts those credentials.
+    const provision = () => driver.provisionHarness({ ...context, revision, requirements });
+    await provision();
+    const [provider] = [...gatewayClient.providers.values()];
+    assert.deepEqual(JSON.parse(provider.config.node_setup_json), expiredSetup);
+    assert.equal(callCount(gatewayClient, "createProvider"), 1);
+
+    // Reconciliation of that exact expired envelope must not rotate a provider
+    // or rewrite its setup merely because the original bootstrap has expired.
+    await provision();
+    assert.equal(callCount(gatewayClient, "createProvider"), 1);
+    assert.equal(callCount(gatewayClient, "updateProviderConfig"), 0);
+    assert.equal(callCount(gatewayClient, "updateProviderCredentials"), 0);
+  });
+}
+
+for (const harnessId of ["codex", "openclaw"]) {
+  test(`OpenShell rejects malformed or unpaired expired ${harnessId} setup before gateway mutation`, async (t) => {
+    const encode = (value) => Buffer.from(value).toString("base64");
+    const recordedDevice = encode("recorded-node:1");
+    const expiredSetup = {
+      url: "wss://gateway.example.test/node",
+      bootstrapToken: "expired-token",
+      expiresAtMs: Date.now() - 1,
+    };
+    for (const {
+      name,
+      setup = expiredSetup,
+      deviceId,
+      foreignOwner,
+      malformed,
+      invalidUtf8,
+      expected,
+    } of [
+      {
+        name: "malformed envelope",
+        malformed: true,
+        deviceId: recordedDevice,
+        expected: /malformed setup envelope/,
+      },
+      { name: "expired without a recorded device", expected: /expired or has no bounded expiry/ },
+      {
+        name: "expired with an empty device",
+        deviceId: "",
+        expected: /workspace node device ID is invalid/,
+      },
+      {
+        name: "expired with malformed device encoding",
+        deviceId: `${recordedDevice}!`,
+        expected: /workspace node device ID is invalid/,
+      },
+      {
+        name: "expired with invalid device content",
+        deviceId: encode("bad/id"),
+        expected: /workspace node device ID is invalid/,
+      },
+      {
+        name: "invalid UTF-8 inside encoded envelope",
+        invalidUtf8: true,
+        deviceId: recordedDevice,
+        expected: /malformed setup envelope/,
+      },
+      ...[
+        "wss:gateway.example.test/node",
+        "wss://gateway.example.test/no\tde",
+        "wss://gateway.example.test/\\node",
+      ].map((url) => ({
+        name: `malformed URL ${JSON.stringify(url)}`,
+        setup: { ...expiredSetup, url },
+        deviceId: recordedDevice,
+        expected: /workspace node setup URL is invalid/,
+      })),
+      ...["sha256:test", `sha256: ${"ab".repeat(32)}`, `${"ab".repeat(32)}!`, "ab:".repeat(32)].map(
+        (tlsFingerprint) => ({
+          name: `malformed fingerprint ${JSON.stringify(tlsFingerprint)}`,
+          setup: { ...expiredSetup, tlsFingerprint },
+          deviceId: recordedDevice,
+          expected: /workspace node setup TLS fingerprint is invalid/,
+        }),
+      ),
+      ...[false, true].map((recorded) => ({
+        name: `plaintext URL with a TLS pin ${recorded ? "with" : "without"} a recorded device`,
+        setup: {
+          ...expiredSetup,
+          url: "ws://gateway.example.test/node",
+          tlsFingerprint: "ab".repeat(32),
+          expiresAtMs: recorded ? expiredSetup.expiresAtMs : Date.now() + 600_000,
+        },
+        deviceId: recorded ? recordedDevice : undefined,
+        expected: /workspace node setup TLS fingerprint requires a wss endpoint/,
+      })),
+      {
+        name: "unbounded expiry with a recorded device",
+        setup: { ...expiredSetup, expiresAtMs: null },
+        deviceId: recordedDevice,
+        expected: /expired or has no bounded expiry/,
+      },
+      {
+        name: "nonpositive expiry with a recorded device",
+        setup: { ...expiredSetup, expiresAtMs: 0 },
+        deviceId: recordedDevice,
+        expected: /expired or has no bounded expiry/,
+      },
+      {
+        name: "unsupported envelope field with a recorded device",
+        setup: { ...expiredSetup, unsupported: true },
+        deviceId: recordedDevice,
+        expected: /unsupported fields/,
+      },
+      {
+        name: "foreign Secret with a recorded device",
+        deviceId: recordedDevice,
+        foreignOwner: true,
+        expected: /without exact Agent ownership/,
+      },
     ]) {
       await t.test(name, async () => {
         const gatewayClient = workspaceGatewayClient();
-        const driver = new OpenShellSandboxDriver(
-          sandboxInstallation().drivers.sandbox.configuration,
-          {
-            id: "openshell-sandbox",
-            implementation: "openshell",
-            backend: backendFor(gatewayClient),
-          },
-        );
+        const driver = openShellDriver(gatewayClient);
         const { context, revision, requirements } = runtimeSandboxFixture(driver, { harnessId });
+        const envelope = Buffer.from(JSON.stringify(setup));
+        if (invalidUtf8) {
+          // Invalid inner bytes must not become replacement characters in a new credential.
+          envelope[envelope.indexOf(setup.bootstrapToken)] = 0xff;
+        }
+        const setupCode = malformed ? "not-a-setup-code" : envelope.toString("base64url");
         const originalRead = context.kubernetes.read;
         context.kubernetes.read = async (request) => {
           const secret = await originalRead(request);
-          return { ...secret, data: { setupCode: Buffer.from(setupCode).toString("base64") } };
+          return {
+            ...secret,
+            metadata: {
+              ...secret.metadata,
+              labels: {
+                ...secret.metadata.labels,
+                ...(foreignOwner ? { "openclaw.dev/agent": "other-agent" } : {}),
+              },
+            },
+            data: { setupCode: encode(setupCode), ...(deviceId === undefined ? {} : { deviceId }) },
+          };
         };
 
+        // A recorded identifier permits only the expired-envelope handoff; it
+        // cannot excuse malformed setup or another Agent's Secret ownership.
         await assert.rejects(
           driver.provisionHarness({ ...context, revision, requirements }),
           expected,
@@ -7824,6 +8019,9 @@ test(
           });
           assert.equal(trust.status, 0, trust.stderr);
           assert.equal(trust.stdout.trim(), sandbox.options.kubernetes.sandboxDataMount.mountPath);
+          await subtest.test("Git negotiates shared history before pushing", async (gitTest) => {
+            await verifyOpenShellPushNegotiation(gitTest, gitEnvironment);
+          });
           await subtest.test(
             "Git trusts only the selected root-owned workspace",
             imageTestOptions,

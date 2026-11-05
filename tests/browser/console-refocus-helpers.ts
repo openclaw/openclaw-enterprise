@@ -1,6 +1,6 @@
 import type { TestContext } from "node:test";
 import type { Page, Route } from "playwright";
-import { holdRequests, settledView } from "./console-agents-browser-helpers.mjs";
+import { holdRequests, settledView } from "./console-agents-browser-helpers.ts";
 
 // Coming back to the window rechecks the session and Namespace access and holds the shown view,
 // inert, until the recheck finishes. These helpers drive that recheck and tell whether it

@@ -19,6 +19,17 @@ export async function allMessages(method, token, params) {
   return messages;
 }
 
+export function assertSlackBotAuthor(message, identity) {
+  assert.match(identity.bot_id ?? "", /^B[A-Z0-9]+$/, "auth.test must identify the expected bot");
+  assert.match(message.bot_id ?? "", /^B[A-Z0-9]+$/, "the Slack message must identify its bot");
+  assert.equal(message.bot_id, identity.bot_id, "the expected bot must author the Slack message");
+  // Slack bot_message payloads can omit user. auth.test binds the exact bot_id
+  // to our bot user; any supplied user must still agree with that identity.
+  if (message.user !== undefined) {
+    assert.equal(message.user, identity.user_id, "the Slack message user must match its bot");
+  }
+}
+
 // Only the reads are polled. A lost ingress event is a failure, never a reason
 // to resend the mutation and accidentally prove a different conversation.
 export async function verifySingleSlackDelivery({
@@ -29,6 +40,11 @@ export async function verifySingleSlackDelivery({
   replyMode = "thread",
   observationMs = 60_000,
 }) {
+  assert.match(
+    gatewayIdentity.bot_id ?? "",
+    /^B[A-Z0-9]+$/,
+    "auth.test must identify the expected bot",
+  );
   assert.notEqual(gatewayIdentity.user_id, senderIdentity.user_id);
   assert.equal(gatewayIdentity.team_id, senderIdentity.team_id);
   assert.ok(observationMs >= 60_000 && observationMs <= 300_000);
@@ -64,8 +80,7 @@ export async function verifySingleSlackDelivery({
     );
     const intended = matches[0];
     if (intended) {
-      assert.equal(intended.user, gatewayIdentity.user_id);
-      assert.equal(intended.bot_id, gatewayIdentity.bot_id);
+      assertSlackBotAuthor(intended, gatewayIdentity);
       assert.equal(intended.text.trim(), nonce);
       if (replyMode === "thread") {
         assert.equal(
@@ -80,7 +95,11 @@ export async function verifySingleSlackDelivery({
         );
       }
       assert.equal(
-        thread.filter((m) => m.ts !== sent.ts && m.user === gatewayIdentity.user_id).length,
+        thread.filter(
+          (m) =>
+            m.ts !== sent.ts &&
+            (m.bot_id === gatewayIdentity.bot_id || m.user === gatewayIdentity.user_id),
+        ).length,
         replyMode === "thread" ? 1 : 0,
         "no extra bot progress or duplicate replies in the original thread",
       );
