@@ -6806,16 +6806,31 @@ async function assertOpenShellGatewayOutage(topology) {
   };
   if (activated) {
     const nonce = `OCC-OPENSHELL-GATEWAY-BACK-${randomUUID()}`;
-    await waitForProviderHarnessPod(placement, {
+    const harnessPod = await waitForProviderHarnessPod(placement, {
       id: redeployed.data.id,
       agentId: topology.agent.id,
     });
-    const turn = await requestCodexTurnFromGatewayPod({
-      namespace: topology.gatewayPlacement,
-      gatewayPod: await currentGatewayPod(topology),
-      providerModel,
-      prompt: `Reply with exactly ${nonce}.`,
-    });
+    const gatewayPod = await currentGatewayPod(topology);
+    let turn;
+    try {
+      turn = await requestCodexTurnFromGatewayPod({
+        namespace: topology.gatewayPlacement,
+        gatewayPod,
+        providerModel,
+        prompt: `Reply with exactly ${nonce}.`,
+      });
+    } catch (error) {
+      // Capture the replacement's actual processes before teardown; a timeout alone
+      // cannot distinguish model capacity from failed credential delivery or networking.
+      const detail = await withinDiagnosticDeadline(async () =>
+        gatewayTurnFailureDiagnostic(
+          { ...topology, harnessPod, gatewayPod: { metadata: { name: gatewayPod } } },
+          await diagnosticGatewayPassword(topology),
+        ),
+      ).catch(() => "Gateway recovery diagnostics unavailable.");
+      process.stderr.write(`OpenShell gateway recovery turn failed.${detail}\n`);
+      throw error;
+    }
     assert.equal(JSON.stringify(turn).includes(modelCredential), false);
     observed.recovery.turn = new RegExp(nonce).test(turn.assistant);
   }
@@ -8232,7 +8247,7 @@ export function registerGatewayToolPolicyTest() {
 }
 
 export function registerProviderLifecycleTest(workflow) {
-  assert.ok(["policy", "credentials", "upstream", "refresh"].includes(workflow));
+  assert.ok(["policy", "credentials", "withdrawal", "upstream", "refresh"].includes(workflow));
   if (selected && workflow !== "policy") {
     assert.equal(selectedHarness, "codex", "This security workflow requires the Codex Harness.");
   }
@@ -8242,7 +8257,8 @@ export function registerProviderLifecycleTest(workflow) {
       "network-policy": "OpenShell Agent network policy lifecycle",
       full: {
         policy: "OpenShell enforces provider delivery and authenticated Codex exposure",
-        credentials: "OpenShell credential replacement and withdrawal preserve isolation",
+        credentials: "OpenShell credential replacement preserves isolation",
+        withdrawal: "OpenShell credential withdrawal revokes live model access",
         upstream: "OpenShell model and tool upstream outages fail closed",
         refresh: "OpenShell gateway recovery preserves OAuth refresh and revocation",
       }[workflow],
@@ -8469,8 +8485,13 @@ export function registerProviderLifecycleTest(workflow) {
           await measureOpenShellStage(testContext, "credential-absence", () =>
             assertAgentVisibleMaterialExcludesCredentials(topology),
           );
+        }
+        if (workflow === "withdrawal") {
           process.stderr.write(
-            "OpenShell integration: credential absence verified; testing credential source update and live withdrawal.\n",
+            "OpenShell integration: testing credential source update and live withdrawal.\n",
+          );
+          await measureOpenShellStage(testContext, "credential-absence", () =>
+            assertAgentVisibleMaterialExcludesCredentials(topology),
           );
           await measureOpenShellStage(testContext, "credential-withdrawal", () =>
             assertCredentialSourceUpdateAndLiveWithdrawal(topology),

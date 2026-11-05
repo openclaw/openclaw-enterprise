@@ -8,8 +8,8 @@ For triggers and invocation, start with that workflow page.
 
 Full advisory OpenShell runs use one Ubuntu 24.04 runner per file from the
 [OpenShell manifest](../../../scripts/ci/test-suites/openshell.json). The files run in
-parallel across separate VMs, with at most six OpenShell jobs active.
-Gateway policy, network policy, credential lifecycle, upstream outages, and
+parallel across separate VMs, with at most ten OpenShell jobs active.
+Gateway policy, network policy, credential replacement, live withdrawal, upstream outages, and
 Gateway/OAuth recovery use separate installations and databases. Each workflow
 keeps its dependent operations serial, including recovery before later assertions.
 OAuth expiry and model failure bounds are unchanged. The shared
@@ -35,7 +35,9 @@ keeps unselected controller/runtime source builds serial. See the [development f
 The installer file also owns its stack, so hosted preparation does not create an
 unused cluster or database for it. Instead, it primes its job-owned BuildKit builder
 from the read-only cache. The real installer still builds from the checkout, with
-the same builder and automatic engine loading. Local installation jobs use the
+the same builder and automatic engine loading. Hosted installer children also
+use preparation's fixed `SOURCE_DATE_EPOCH=0`; otherwise [BuildKit invalidates
+WORKDIR and subsequent cache entries](https://docs.docker.com/build/cache/invalidation/#workdir-and-source_date_epoch). Local installation and QA-matrix jobs use the
 same approach. Cache credentials are not passed to tests. Other OpenShell files
 prepare their required cluster, database server, routing, and images; their image
 builds now read the same cache. The runner enforces both lane-wide and per-file `requiredEnv`

@@ -45,8 +45,25 @@
       ]
     },
     {
+      "path": "tests/integration/openshell-withdrawal-real.test.ts",
+      "expectedTests": ["OpenShell credential withdrawal revokes live model access"],
+      "requiredEnv": [
+        "OCC_TEST_KUBERNETES_KUBECONFIG",
+        "OCC_TEST_KUBERNETES_CONTEXT",
+        "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+        "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+        "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
+        "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
+        "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
+        "OCC_TEST_OPENSHELL_HELM",
+        "OCC_TEST_OPENSHELL_HELM_CHART",
+        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
+        "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
+      ]
+    },
+    {
       "path": "tests/integration/openshell-credentials-real.test.ts",
-      "expectedTests": ["OpenShell credential replacement and withdrawal preserve isolation"],
+      "expectedTests": ["OpenShell credential replacement preserves isolation"],
       "requiredEnv": [
         "OCC_TEST_KUBERNETES_KUBECONFIG",
         "OCC_TEST_KUBERNETES_CONTEXT",

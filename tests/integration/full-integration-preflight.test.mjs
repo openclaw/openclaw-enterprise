@@ -672,6 +672,8 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
   assert.equal(selection.status, 0, selection.stderr);
   const firstAgent = /^first-agent=(true|false)$/m.exec(await readFile(output, "utf8"))?.[1];
   assert.ok(firstAgent, "the shipped image selection must publish its mode");
+  const sourceBuild = /^source-build=(true|false)$/m.exec(await readFile(output, "utf8"))?.[1];
+  assert.ok(sourceBuild);
   const evaluate = (expression) =>
     runInNewContext(
       expression
@@ -680,10 +682,16 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
         .replaceAll(
           "steps.image-mode.outputs.first-agent",
           'steps["image-mode"].outputs["first-agent"]',
+        )
+        .replaceAll(
+          "steps.image-mode.outputs.source-build",
+          'steps["image-mode"].outputs["source-build"]',
         ),
       {
         inputs,
-        steps: { "image-mode": { outputs: { "first-agent": firstAgent } } },
+        steps: {
+          "image-mode": { outputs: { "first-agent": firstAgent, "source-build": sourceBuild } },
+        },
         startsWith: (value, prefix) => value.startsWith(prefix),
       },
     );

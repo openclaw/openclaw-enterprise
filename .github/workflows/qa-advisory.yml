@@ -125,6 +125,7 @@ jobs:
         installation: [compose, kubernetes]
     env:
       CI: "1"
+      NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
       # The Compose launcher otherwise resolves the +v1.35 K3s channel online (update.k3s.io).
       # Keep in step with defaultK3sImage in scripts/ci/prepare.mjs.
       OCC_DEVELOPMENT_K3S_IMAGE: docker.io/rancher/k3s:v1.35.9-k3s1@sha256:ec9868c6a38d4e8c1869832fb5fd1eb8473c39794a0b44d2b952e7ba911951bc
@@ -149,6 +150,7 @@ jobs:
       - uses: ./.github/actions/run-ci-lane
         with:
           lane: qa-matrix
+          test-file: tests/integration/qa-matrix-real.test.mjs
           profile: full
           node-version: "24.22.1"
           artifact-prefix: qa-advisory-${{ matrix.installation }}
@@ -179,7 +181,7 @@ jobs:
     strategy:
       fail-fast: false
       # Bound provider concurrency while independent security workflows use separate clusters.
-      max-parallel: 6
+      max-parallel: 10
       matrix: ${{ fromJSON(needs.eligibility.outputs.openshell-matrix) }}
     env:
       # The packaged browser has Ubuntu's AppArmor user-namespace permission.

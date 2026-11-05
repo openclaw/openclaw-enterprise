@@ -1391,13 +1391,16 @@ test("lane lists outside the lane table name every lane they must", async (t) =>
   const root = temporaryDirectorySync(t, "cache-lane-selection-");
   const output = join(root, "outputs");
   const openshell = JSON.parse(read("scripts/ci/test-suites/openshell.json"));
-  const firstAgentFiles = new Set([
-    "tests/integration/local-first-agent-openshell-real.test.mjs",
-    "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
-  ]);
+  const installation = JSON.parse(read("scripts/ci/test-suites/dev-up-k3d.json"));
+  const qaMatrix = JSON.parse(read("scripts/ci/test-suites/qa-matrix.json"));
   const observed = new Set();
   for (const lane of Object.keys(suiteIndex.lanes)) {
-    const files = lane === "openshell" ? ["", ...openshell.files.map(({ path }) => path)] : [""];
+    const files = [
+      "",
+      ...({ openshell, "dev-up-k3d": installation, "qa-matrix": qaMatrix }[lane]?.files ?? []).map(
+        ({ path }) => path,
+      ),
+    ];
     for (const file of files) {
       writeFileSync(output, "");
       const selection = spawnSync("bash", ["-c", mode.run], {
@@ -1413,6 +1416,8 @@ test("lane lists outside the lane table name every lane they must", async (t) =>
       assert.equal(selection.status, 0, selection.stderr);
       const firstAgent = /^first-agent=(true|false)$/m.exec(readFileSync(output, "utf8"))?.[1];
       assert.ok(firstAgent);
+      const sourceBuild = /^source-build=(true|false)$/m.exec(readFileSync(output, "utf8"))?.[1];
+      assert.ok(sourceBuild);
       const evaluate = (expression) =>
         runInNewContext(
           expression
@@ -1420,13 +1425,23 @@ test("lane lists outside the lane table name every lane they must", async (t) =>
             .replaceAll(
               "steps.image-mode.outputs.first-agent",
               'steps["image-mode"].outputs["first-agent"]',
+            )
+            .replaceAll(
+              "steps.image-mode.outputs.source-build",
+              'steps["image-mode"].outputs["source-build"]',
             ),
           {
             inputs: { lane },
-            steps: { "image-mode": { outputs: { "first-agent": firstAgent } } },
+            steps: {
+              "image-mode": { outputs: { "first-agent": firstAgent, "source-build": sourceBuild } },
+            },
           },
         );
-      const expected = lane === "openshell" ? firstAgentFiles.has(file) : cached.includes(lane);
+      const expected = ["dev-up-k3d", "qa-matrix"].includes(lane)
+        ? { "dev-up-k3d": installation, "qa-matrix": qaMatrix }[
+            lane
+          ].prepare.sourceBuildFiles.includes(file)
+        : cached.includes(lane);
       assert.equal(evaluate(exposeStep.if), expected, `${lane}: ${file}: cache credentials`);
       assert.equal(
         evaluate(prepareStep.env.OCC_CI_IMAGE_CACHE),

@@ -829,6 +829,7 @@ async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
     "tests/integration/openshell-refresh-real.test.ts",
     "tests/integration/openshell-upstream-real.test.ts",
     "tests/integration/openshell-credentials-real.test.ts",
+    "tests/integration/openshell-withdrawal-real.test.ts",
   ].includes(file);
   const openShellApiKey =
     name === "openshell" &&
@@ -959,6 +960,7 @@ async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
 const imageCacheLanes = new Map([
   ["openshell", { localStore: false }],
   ["dev-up-k3d", { localStore: false }],
+  ["qa-matrix", { localStore: false }],
   ["images-packaging", { localStore: false }],
   ["images-runtime-startup", { localStore: false }],
   ["images-runtime-startup-2", { localStore: false }],
@@ -2927,8 +2929,7 @@ async function prepareLane({ lane, statePath, file }) {
 
   if (
     process.env.OCC_CI_IMAGE_CACHE === "1" &&
-    (lanePrepare(name).sourceBuildFiles?.includes(relativeFile) ||
-      (name === "dev-up-k3d" && relativeFile === undefined))
+    lanePrepare(name).sourceBuildFiles?.includes(relativeFile)
   ) {
     // Prime the selected builder, but keep the installer's actual source-build path.
     // Cache credentials remain in preparation; tests inherit only the builder name.
@@ -2944,6 +2945,9 @@ async function prepareLane({ lane, statePath, file }) {
       }),
     );
     env.BUILDX_BUILDER = builder;
+    // WORKDIR cache keys include this value; match the preparation build so the
+    // installer reuses its layers instead of rebuilding with an unset epoch.
+    env.SOURCE_DATE_EPOCH = "0";
   }
 
   switch (name) {
@@ -3597,6 +3601,7 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
         "tests/integration/openshell-refresh-real.test.ts",
         "tests/integration/openshell-upstream-real.test.ts",
         "tests/integration/openshell-credentials-real.test.ts",
+        "tests/integration/openshell-withdrawal-real.test.ts",
       ].includes(relativeFile)
     ) {
       env.OCC_TEST_OPENSHELL_POLICY_MIGRATION_DATABASE_URL = database.migrationUrl;
