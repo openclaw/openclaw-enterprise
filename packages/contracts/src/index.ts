@@ -1623,6 +1623,7 @@ export type {
 export {
   builtInCodexConnection,
   codexDeviceAuthorization,
+  codexPublicRegistration,
   CODEX_HARNESS_TEMPLATE_ID,
   CODEX_HARNESS_OAUTH_CLIENT_ID,
   CODEX_PUBLIC_CLIENT_ID,

@@ -1,6 +1,7 @@
 import {
   CODEX_PUBLIC_CLIENT_ID,
   codexDeviceAuthorization,
+  codexPublicRegistration,
 } from "../../packages/contracts/src/index.ts";
 import { refreshPinnedOAuthGrant } from "../../apps/controller/src/drivers/credential-refresh/oauth-token-endpoint.ts";
 import assert from "node:assert/strict";
@@ -277,6 +278,29 @@ function fixture(t, { invalidIdToken = false, failRotation = false, pollResponse
     },
   };
 }
+
+test("native device consent rejects a different client or exchange host before sending a request", async (t) => {
+  const f = fixture(t);
+  const owner = await f.register("source-owner");
+  const device = f.refresh.deviceConnection;
+  await assert.rejects(
+    device.start(owner, { ...codexPublicRegistration, clientId: "other-client" }),
+    /does not select the Codex public client/,
+  );
+  assert.deepEqual(f.http, []);
+  const started = await device.start(owner, codexPublicRegistration);
+  // A replaced registration must never receive the approved device code.
+  await assert.rejects(
+    device.poll(
+      owner,
+      started.privateState,
+      { ...codexPublicRegistration, tokenUrl: "https://other.example/token" },
+      () => assert.fail("no grant expected"),
+    ),
+    /does not select the Codex public client/,
+  );
+  assert.deepEqual(f.http, [codexDeviceAuthorization.userCodeUrl]);
+});
 
 test("Codex device flow transfers trusted account claims and never reseeds a completed connection", async (t) => {
   const f = fixture(t);

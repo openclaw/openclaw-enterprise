@@ -6,9 +6,8 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import {
   CODEX_HARNESS_TEMPLATE_ID,
-  CODEX_HARNESS_OAUTH_CLIENT_ID,
-  CODEX_PUBLIC_CLIENT_ID,
   codexDeviceAuthorization,
+  codexPublicRegistration,
   isOAuthScopeToken,
 } from "@openclaw-enterprise/contracts";
 import { randomUUID } from "node:crypto";
@@ -16,8 +15,8 @@ import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { DeviceAuthorizationStartError } from "@openclaw-enterprise/occ";
 
 export const CODEX_OAUTH_TYPE = "codex-oauth";
-export const CODEX_OAUTH_CLIENT_ID = CODEX_PUBLIC_CLIENT_ID;
-export const CODEX_OAUTH_TOKEN_URL = codexDeviceAuthorization.tokenUrl;
+export const CODEX_OAUTH_CLIENT_ID = codexPublicRegistration.clientId;
+export const CODEX_OAUTH_TOKEN_URL = codexPublicRegistration.tokenUrl;
 export const CODEX_ACCESS_TOKEN_ENV = "CODEX_ACCESS_TOKEN";
 // Login-time metadata is separate from rotating credentials. The PoC does not
 // update this snapshot on refresh; account/plan changes require reconnecting.
@@ -91,14 +90,16 @@ function unreachable(error: unknown): DeviceAuthorizationStartError {
 export async function startCodexDeviceAuthorization(
   sourceId: string,
   signal: AbortSignal,
+  registration: OAuthConnectionRegistration = codexPublicRegistration,
 ): Promise<CredentialSourceDeviceAuthorization> {
+  requireCodexRegistration(registration);
   let reply: Response;
   try {
     reply = await fetch(codexDeviceAuthorization.userCodeUrl, {
       method: "POST",
       redirect: "error",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ client_id: CODEX_OAUTH_CLIENT_ID }),
+      body: JSON.stringify({ client_id: registration.clientId }),
       signal,
     });
   } catch (error) {
@@ -147,7 +148,9 @@ export function codexDeviceAuthorizationState(sourceId: string, privateState: st
 export async function pollCodexDeviceAuthorization(
   state: ReturnType<typeof codexDeviceAuthorizationState>,
   signal: AbortSignal,
+  registration: OAuthConnectionRegistration = codexPublicRegistration,
 ): Promise<DeviceTokens | undefined> {
+  requireCodexRegistration(registration);
   const body = JSON.stringify({
     device_auth_id: required(state.deviceAuthId),
     user_code: required(state.userCode),
@@ -183,13 +186,13 @@ export async function pollCodexDeviceAuthorization(
   const authorization = await responseRecord(response);
   // From code acquisition onward, errors remain uncertain: never retry a consumed grant.
   const token = await responseRecord(
-    await fetch(CODEX_OAUTH_TOKEN_URL, {
+    await fetch(registration.tokenUrl, {
       method: "POST",
       redirect: "error",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
         grant_type: "authorization_code",
-        client_id: CODEX_OAUTH_CLIENT_ID,
+        client_id: registration.clientId,
         code: required(authorization.authorization_code),
         code_verifier: required(authorization.code_verifier),
         redirect_uri: codexDeviceAuthorization.redirectUri,
@@ -262,11 +265,11 @@ export function codexAccountMetadata(config: Readonly<Record<string, string>>): 
 
 function requireCodexRegistration(registration: OAuthConnectionRegistration): void {
   if (
-    registration.issuer !== codexDeviceAuthorization.issuer ||
+    registration.issuer !== codexPublicRegistration.issuer ||
     registration.tokenUrl !== CODEX_OAUTH_TOKEN_URL ||
-    registration.oauthClientId !== CODEX_HARNESS_OAUTH_CLIENT_ID ||
-    registration.clientId !== CODEX_PUBLIC_CLIENT_ID ||
-    registration.tokenEndpointAuthMethod !== "none" ||
+    registration.oauthClientId !== codexPublicRegistration.oauthClientId ||
+    registration.clientId !== codexPublicRegistration.clientId ||
+    registration.tokenEndpointAuthMethod !== codexPublicRegistration.tokenEndpointAuthMethod ||
     registration.resource !== undefined
   ) {
     throw new Error("The connection template does not select the Codex public client.");
@@ -278,14 +281,13 @@ export const codexDeviceConnection: NonNullable<CredentialRefreshDriver["deviceC
   sourceType: CODEX_OAUTH_TYPE,
   templateId: CODEX_HARNESS_TEMPLATE_ID,
   async start(context, registration) {
-    requireCodexRegistration(registration);
-    return startCodexDeviceAuthorization(context.source.id, context.signal);
+    return startCodexDeviceAuthorization(context.source.id, context.signal, registration);
   },
   async poll(context, privateState, registration, acceptGrant) {
-    requireCodexRegistration(registration);
     const tokens = await pollCodexDeviceAuthorization(
       codexDeviceAuthorizationState(context.source.id, privateState),
       context.signal,
+      registration,
     );
     if (!tokens) {
       return { status: "pending" };

@@ -14,17 +14,23 @@ export const codexDeviceAuthorization = {
   tokenUrl: "https://auth.openai.com/oauth/token",
 } as const;
 
+export const codexPublicRegistration = {
+  issuer: codexDeviceAuthorization.issuer,
+  tokenUrl: codexDeviceAuthorization.tokenUrl,
+  oauthClientId: CODEX_HARNESS_OAUTH_CLIENT_ID,
+  clientId: CODEX_PUBLIC_CLIENT_ID,
+  tokenEndpointAuthMethod: "none",
+} as const;
+
 export function builtInCodexConnection(createdAt: string): {
   client: OAuthClient;
   template: ConnectionTemplate;
 } {
+  const { oauthClientId: id, ...registration } = codexPublicRegistration;
   const client: OAuthClient = {
-    id: CODEX_HARNESS_OAUTH_CLIENT_ID,
+    ...registration,
+    id,
     displayName: "Codex native client",
-    issuer: codexDeviceAuthorization.issuer,
-    tokenUrl: codexDeviceAuthorization.tokenUrl,
-    clientId: CODEX_PUBLIC_CLIENT_ID,
-    tokenEndpointAuthMethod: "none",
     createdAt,
   };
   return {
