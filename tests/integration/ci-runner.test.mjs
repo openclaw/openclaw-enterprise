@@ -4417,14 +4417,13 @@ test("run keeps bounded Agent namespace activity from passing k3d files, alone a
   // Optional diagnostics must not strand a file when an alive watch never synchronizes.
   // This file must not depend on the optional watch that this case makes unavailable.
   const stalledMarker = join(root, "stalled-file-ran");
-  const independentFile = (marker) =>
-    [
-      'import test from "node:test";',
-      'import { writeFile } from "node:fs/promises";',
-      `test("agent file passes", () => writeFile(${JSON.stringify(marker)}, "ran"));`,
-      "",
-    ].join("\n");
-  await writeFile(agentFile, independentFile(stalledMarker));
+  const independentFile = [
+    'import test from "node:test";',
+    'import { writeFile } from "node:fs/promises";',
+    'test("agent file passes", () => writeFile(process.env.CI_RUNNER_TEST_EXECUTION_MARKER, "ran"));',
+    "",
+  ].join("\n");
+  await writeFile(agentFile, independentFile);
   await writeFile(kubectl, `#!${process.execPath}\nsetTimeout(() => {}, 60_000);\n`);
   const stalledState = join(root, "state/k3d-stalled.json");
   await writeJson(stalledState, JSON.parse(await readFile(statePath, "utf8")));
@@ -4442,7 +4441,7 @@ test("run keeps bounded Agent namespace activity from passing k3d files, alone a
       "--results",
       join(root, "results/k3d-stalled.json"),
     ],
-    { OCC_KUBECTL_BIN: kubectl },
+    { OCC_KUBECTL_BIN: kubectl, CI_RUNNER_TEST_EXECUTION_MARKER: stalledMarker },
   );
   assert.equal(stalled.status, 0, stalled.stderr);
   assert.match(stalled.stderr, /Agent namespace activity unavailable/);
@@ -4528,7 +4527,7 @@ test("run keeps bounded Agent namespace activity from passing k3d files, alone a
   // watches started. The file still runs, and those watches are stopped: left running,
   // their child processes would hold the runner until the watch timeout.
   const brokenMarker = join(root, "broken-capture-file-ran");
-  await writeFile(agentFile, independentFile(brokenMarker));
+  await writeFile(agentFile, independentFile);
   const brokenStatePath = join(root, "state/k3d-broken.json");
   await writeJson(brokenStatePath, {
     lane: "k3d-lane",
@@ -4567,6 +4566,7 @@ test("run keeps bounded Agent namespace activity from passing k3d files, alone a
         ...fixtureGitEnv,
         GITHUB_SHA: currentSha(),
         OCC_KUBECTL_BIN: kubectl,
+        CI_RUNNER_TEST_EXECUTION_MARKER: brokenMarker,
       },
       timeout: 30_000,
     },
