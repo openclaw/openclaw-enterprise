@@ -1,6 +1,5 @@
 import type {
   PreparedRepositoryBackend,
-  PreparedRepositoryBackendFactory,
   BoundPreparedRepositoryBackendFactory,
   RepositoryBackend,
   ResolvedGrant,
@@ -31,7 +30,7 @@ export type SessionConstructor = (
 ) => ConstructedSession;
 
 export function preparedSessionConstructor(
-  factory: PreparedRepositoryBackendFactory | BoundPreparedRepositoryBackendFactory,
+  factory: BoundPreparedRepositoryBackendFactory,
 ): SessionConstructor {
   return (admission, resolved) => {
     const prepared = factory.createPrepared(admission.authority, resolved);
