@@ -546,6 +546,7 @@ test("an OpenShell probe gives a peer that delays TCP closure its full cleanup d
   const gateway = createServer();
   const sockets = new Set();
   let closeCode;
+  let closeReceivedAt;
   gateway.on("upgrade", (request, socket, head) => {
     sockets.add(socket);
     const accept = createHash("sha1")
@@ -559,6 +560,7 @@ test("an OpenShell probe gives a peer that delays TCP closure its full cleanup d
     const sender = new Sender(socket);
     receiver.once("conclude", (code, reason) => {
       closeCode = code;
+      closeReceivedAt = performance.now();
       sender.close(code, reason, false, () => {});
     });
     if (head.length > 0) {
@@ -579,17 +581,23 @@ test("an OpenShell probe gives a peer that delays TCP closure its full cleanup d
   });
   t.after(() => client.close());
   const deadline = AbortSignal.timeout(5_000);
+  let endedAt;
   const ended = once(gateway, "upgrade", { signal: deadline }).then(([, socket]) =>
-    once(socket, "end", { signal: deadline }),
+    once(socket, "end", { signal: deadline }).then(() => {
+      endedAt = performance.now();
+    }),
   );
   const started = performance.now();
-  const handshake = client
-    .serviceWebSocketHandshake(serviceUrl, TOKEN, deadline)
-    .then((accepted) => assert.equal(accepted, true));
-  await Promise.all([handshake, ended]);
+  assert.equal(await client.serviceWebSocketHandshake(serviceUrl, TOKEN, deadline), true);
+  // Readiness must be visible while the peer still holds TCP open, not after cleanup.
+  assert.equal(endedAt, undefined);
+  assert.ok(performance.now() - started < 750, "readiness waited for connection cleanup");
+  await ended;
   assert.equal(closeCode, 1000);
-  // An early client FIN bypasses the peer's opportunity to finish closing.
-  assert.ok(performance.now() - started >= 950, "client ended TCP before the cleanup deadline");
+  const cleanupElapsed = endedAt - closeReceivedAt;
+  // Allow scheduling tolerance, but detect both early FIN and a doubled cleanup deadline.
+  assert.ok(cleanupElapsed >= 950, "client ended TCP before the cleanup deadline");
+  assert.ok(cleanupElapsed < 1_500, "client exceeded the configured cleanup deadline");
 });
 
 test("a refused OpenShell WebSocket handshake releases an unfinished HTTP response", async () => {
