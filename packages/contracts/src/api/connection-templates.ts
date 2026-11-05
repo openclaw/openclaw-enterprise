@@ -22,6 +22,18 @@ const ConnectionEndpointSchema = Type.Object(
   { additionalProperties: false },
 );
 
+const googleApisRecipient = Type.Object(
+  { kind: Type.Literal("google_apis") },
+  { additionalProperties: false },
+);
+export const ConnectionRecipientSchema = Type.Union([
+  Type.Object(
+    { host: Type.String(), port: Type.Integer(), path: Type.String() },
+    { additionalProperties: false },
+  ),
+  googleApisRecipient,
+]);
+
 const Meta = Type.Object(
   { requestId: RequestId, redirectUri: Type.Optional(Type.String()) },
   { additionalProperties: false },
@@ -57,7 +69,7 @@ const manual = {
   authorizationUrl: HttpsUrl,
   tokenUrl: HttpsUrl,
   revocationUrl: Type.Optional(HttpsUrl),
-  recipient: ConnectionEndpointSchema,
+  recipient: Type.Union([ConnectionEndpointSchema, googleApisRecipient]),
 };
 const mcp = { mode: Type.Literal("mcp_discovery"), serverUrl: HttpsUrl, issuer: HttpsUrl };
 const strict = { additionalProperties: false };
@@ -77,16 +89,18 @@ export const ConnectionTemplateParams = Type.Object(
   strict,
 );
 export const OAuthClientParams = Type.Object({ oauthClientId: OAuthClientId }, strict);
-const client = {
-  ...create,
-  issuer: HttpsUrl,
-  tokenUrl: HttpsUrl,
-  revocationUrl: Type.Optional(HttpsUrl),
+const registration = {
+  displayName: DisplayName,
   clientId: Type.String({ minLength: 1, maxLength: 256 }),
   tokenEndpointAuthMethod: AuthMethod,
 };
 export const CreateOAuthClientBody = Type.Object(
-  { ...client, clientSecret: Type.Optional(ClientSecret) },
+  {
+    ...registration,
+    connectionTemplateId: ConnectionTemplateId,
+    connectionTemplateVersion: Type.Integer({ minimum: 1 }),
+    clientSecret: Type.Optional(ClientSecret),
+  },
   strict,
 );
 export const RotateOAuthClientSecretBody = Type.Object({ clientSecret: ClientSecret }, strict);
@@ -112,7 +126,15 @@ const Observed = Type.Object(
   strict,
 );
 const publicClient = Type.Object(
-  { ...client, id: OAuthClientId, createdAt: Type.String() },
+  {
+    ...registration,
+    namespaceId: Type.Optional(NamespaceId),
+    issuer: HttpsUrl,
+    tokenUrl: HttpsUrl,
+    revocationUrl: Type.Optional(HttpsUrl),
+    id: OAuthClientId,
+    createdAt: Type.String(),
+  },
   strict,
 );
 export const OAuthConnectionTemplateVersionSchema = Type.Object(
@@ -125,10 +147,7 @@ export const OAuthConnectionTemplateVersionSchema = Type.Object(
     authorizationUrl: HttpsUrl,
     tokenUrl: HttpsUrl,
     revocationUrl: Type.Optional(HttpsUrl),
-    recipient: Type.Object(
-      { host: Type.String(), port: Type.Integer(), path: Type.String() },
-      strict,
-    ),
+    recipient: ConnectionRecipientSchema,
     scopes: Scopes,
     authorizationParameters: Parameters,
     oauthClientId: Type.Optional(OAuthClientId),

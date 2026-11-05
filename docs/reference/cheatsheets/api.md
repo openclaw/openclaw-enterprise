@@ -216,7 +216,7 @@
 - [`completeNamespaceConnection`](../api.md#get-oauthcallback): Complete a browser connection for the signed-in person who started it.
 - [`getConnectionTemplate`](../api.md#get-connectiontemplatesconnectiontemplateid): Get one connection template.
 - [`createConnectionTemplate`](../api.md#post-connectiontemplates): Create an Installation-wide or Namespace-scoped connection template.
-- [`createOAuthClient`](../api.md#post-oauthclients): Register a scoped OAuth client.
+- [`createOAuthClient`](../api.md#post-oauthclients): Register an OAuth client from a connection template.
 - [`updateConnectionTemplate`](../api.md#patch-connectiontemplatesconnectiontemplateid): Rename a connection template, or create a version with new approved values.
 - [`discoverConnectionTemplate`](../api.md#post-connectiontemplatesdiscover): Read public MCP resource and authorization server metadata.
 - [`rotateOAuthClientSecret`](../api.md#post-oauthclientsoauthclientidrotatesecret): Rotate an OAuth client secret.

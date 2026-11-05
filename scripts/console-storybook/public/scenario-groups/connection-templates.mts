@@ -13,7 +13,7 @@ export const connectionTemplateScenarios = {
     group: "Pages/Credentials",
     name: "OAuth connection templates",
     steps: [
-      "Open Secrets, then Connection templates. Create a template. Check its current Namespace under Template availability, or choose Installation-wide to share it across Namespaces. Choose a scope limit. Select an existing OAuth client or enter credentials issued by the provider.",
+      "Open Secrets, then Connection templates. Create a template. Check its current Namespace under Template availability, or choose Installation-wide to share it across Namespaces. Choose a scope limit. Select a compatible client, or use Create template and register OAuth client to register provider-issued credentials.",
     ],
     path: "/console/credentials/connection-templates",
     oauthCatalog: "ready",
@@ -26,9 +26,9 @@ export const connectionTemplateScenarios = {
     path: "/console/credentials/oauth-clients",
     oauthCatalog: "ready",
     description:
-      "Installation administrators can register OAuth clients before creating a connection template.",
+      "Register provider-issued OAuth clients for the availability and endpoints of a saved connection template.",
     steps: [
-      "Open Credentials → OAuth clients. Choose Register OAuth client, confirm its availability, then select a provider and enter the registration it issued.",
+      "Open Credentials → OAuth clients → Register OAuth client. Select a saved connection template, or create one and return to the registration. Enter the client details issued for the displayed redirect URI.",
     ],
   },
   credentialsRegisterOAuthClient: {
@@ -38,7 +38,22 @@ export const connectionTemplateScenarios = {
     oauthCatalog: "ready",
     actions: [click("Register OAuth client")],
     description:
-      "Register a provider-issued OAuth client for one Namespace or the whole Installation. Secrets are write-only.",
+      "Choose a saved template or create one. Its availability and OAuth endpoints determine where OCE can use the registration.",
+  },
+  credentialsRegisterFromMcp: {
+    group: "Pages/Credentials",
+    name: "Register an MCP OAuth client",
+    path: "/console/credentials/oauth-clients",
+    oauthCatalog: "ready",
+    actions: [
+      click("Register OAuth client"),
+      {
+        selector: "#oauth-registration-template",
+        value: "ctp_00000000-0000-4000-8000-000000000004",
+      },
+    ],
+    description:
+      "The template supplies the callback context and limits client authentication to the methods its authorization server advertised.",
   },
   credentialsMemberAccess: {
     group: "Pages/Credentials",
@@ -55,7 +70,7 @@ export const connectionTemplateScenarios = {
     oauthCatalog: "ready",
     actions: [click("Set up Google OAuth")],
     description:
-      "The built-in Google template supplies the provider settings. The administrator chooses the API destination, scopes, and a registered client.",
+      "The built-in Google template selects Google APIs. The administrator chooses the scope limit and their registered Google client.",
   },
   credentialsManualTemplate: {
     group: "Pages/Credentials",

@@ -3796,10 +3796,83 @@ function codexRetryDelay(retry) {
 }
 `;
 
+// Both the resident HTTP handler and the standalone healthcheck use this RPC boundary.
+const CODEX_READINESS_HELPER = String.raw`
+function codexReadinessFailure(url, token) {
+  return new Promise((resolve) => {
+    let socket;
+    let settled = false;
+    let timeout;
+    const settle = (reason) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (socket) {
+        if (reason === undefined) {
+          // A complete response is authoritative; Codex may omit its close reply.
+          // Bound cleanup without making transport closure another health condition.
+          const cleanup = setTimeout(() => socket.terminate(), 250);
+          cleanup.unref();
+          socket.once("close", () => clearTimeout(cleanup));
+          socket.close(1000);
+        } else {
+          socket.terminate();
+        }
+      }
+      resolve(reason);
+    };
+    try {
+      const ReadinessWebSocket = require("ws");
+      socket = new ReadinessWebSocket(url, {
+        headers: { Authorization: "Bearer " + token },
+        perMessageDeflate: false,
+        maxPayload: 65536,
+      });
+    } catch {
+      settle("Codex app-server WebSocket unavailable");
+      return;
+    }
+    timeout = setTimeout(() => settle("Codex app-server initialize request timed out"), 2_000);
+    socket.on("open", () => {
+      // Codex exempts its probe identity from changing the process-wide originator.
+      socket.send(JSON.stringify({
+        id: 1,
+        method: "initialize",
+        params: { clientInfo: { name: "codex_app_server_daemon", version: "1.0.0" } },
+      }));
+    });
+    socket.on("message", (data) => {
+      if (settled) return;
+      let response;
+      try {
+        response = JSON.parse(data.toString("utf8"));
+      } catch {
+        settle("Codex app-server initialize response is invalid");
+        return;
+      }
+      if (response?.id !== 1) return;
+      if (response.error !== undefined) {
+        settle("Codex app-server initialize request failed");
+      } else if (typeof response.result?.userAgent !== "string" || !response.result.userAgent.trim()) {
+        settle("Codex app-server initialize response is invalid");
+      } else {
+        // No later RPC needs an initialized notification (which Codex logs).
+        settle();
+      }
+    });
+    socket.on("close", () => settle("Codex app-server closed before initialization completed"));
+    socket.on("error", () => settle("Codex app-server WebSocket unavailable"));
+  });
+}
+`;
+
 // Preserve the legacy command bytes: running Sandboxes compare their immutable command.
 // Zero provider retry budgets do not disable native connection waiting. Protected
 // launches turn that feature off explicitly in both native CLI invocations.
-function agentRuntimeEntrypoint(disableUnboundedConnectionRetries: boolean): string {
+function agentRuntimeEntrypoint(
+  disableUnboundedConnectionRetries: boolean,
+  computeOwned = false,
+): string {
   return String.raw`
 const { createHash } = require("node:crypto");
 const { mkdirSync, mkdtempSync, rmSync } = require("node:fs");
@@ -3813,7 +3886,7 @@ ${CODEX_STDERR_FILTER_HELPER}
 ${CODEX_PLUGIN_STDIO_HELPER}
 ${HARNESS_EGRESS_ENROLLMENT_HELPER}
 ${startupPhaseHelper("agent")}
-
+${computeOwned ? CODEX_READINESS_HELPER + "\n" : ""}
 // codex is the npm launcher: a timeout's SIGKILL ended only it and left its native child
 // running (finding 2274). Login and the model check run that native binary instead.
 function codexExecutable() {
@@ -3837,13 +3910,17 @@ function agentRuntimeReady() {
   if (pluginRuntimeStatusPort() !== undefined && pluginStatusReport.phase !== "ready") {
     return false;
   }
-  let ReadinessWebSocket;
+${
+  computeOwned
+    ? ""
+    : String.raw`  let ReadinessWebSocket;
   try {
     ReadinessWebSocket = require("ws");
   } catch {
     return false;
   }
-  let token = pluginBaseAppServerToken;
+`
+}  let token = pluginBaseAppServerToken;
   try {
     if (pluginRuntimeStatusPort() !== undefined) {
       token = derivePluginAppServerToken(pluginStatusReport.startupId);
@@ -3851,7 +3928,10 @@ function agentRuntimeReady() {
   } catch {
     return false;
   }
-  return new Promise((resolve) => {
+${
+  computeOwned
+    ? "  return codexReadinessFailure(codexAppServerUrl(), token).then((reason) => reason === undefined);"
+    : String.raw`  return new Promise((resolve) => {
     let settled = false;
     let timeout;
     const socket = new ReadinessWebSocket(codexAppServerUrl(), {
@@ -3874,7 +3954,8 @@ function agentRuntimeReady() {
     timeout = setTimeout(() => settle(false), 2_000);
     onSocket("open", () => settle(true));
     onSocket("error", () => settle(false));
-  });
+  });`
+}
 }
 
 startPluginRuntimeStatusServer(agentRuntimeReady);
@@ -4479,6 +4560,10 @@ if (!protectedStartup) {
 
 export const AGENT_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(false);
 export const PROTECTED_CODEX_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(true);
+// Compute owns these mutable Pod/process launches. Provider-owned immutable
+// Sandbox commands keep their existing bytes and provider readiness contract.
+export const COMPUTE_AGENT_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(false, true);
+export const COMPUTE_PROTECTED_CODEX_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(true, true);
 
 // Kubernetes Codex implementation: this file-only node is not an OpenClaw
 // execution worker; its explicit command allowlist disables worker hosting.
@@ -4914,6 +4999,13 @@ export const PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
   PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
 );
 
+export const COMPUTE_AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
+  COMPUTE_AGENT_RUNTIME_ENTRYPOINT,
+);
+export const COMPUTE_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
+  COMPUTE_PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
+);
+
 export const NATIVE_WORKER_ENTRYPOINT = String.raw`
 const { join } = require("node:path");
 const { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
@@ -5265,10 +5357,6 @@ const timeout = setTimeout(
 const { existsSync } = require("node:fs");
 const { createHmac } = require("node:crypto");
 ${PLUGIN_APP_SERVER_TOKEN_DERIVATION_HELPER}
-let ReadinessWebSocket;
-try {
-  ReadinessWebSocket = require("ws");
-} catch {}
 function derivedToken(startupId) {
   try {
     return derivePluginAppServerTokenFromBase(
@@ -5280,31 +5368,24 @@ function derivedToken(startupId) {
     readinessExit("Codex app-server token inputs are invalid");
   }
 }
+${CODEX_READINESS_HELPER}
 function checkWebSocket(token) {
-  readinessWaitingFor = "the Codex app-server WebSocket";
-  const socket = new ReadinessWebSocket("ws://127.0.0.1:" + process.env.APP_SERVER_PORT, {
-    headers: { Authorization: "Bearer " + token },
-  });
-  const onSocket = (event, listener) => {
-    if (typeof socket.addEventListener === "function") socket.addEventListener(event, listener);
-    else socket.on(event, listener);
-  };
-  onSocket("open", () => {
+  readinessWaitingFor = "the Codex app-server initialize response";
+  codexReadinessFailure("ws://127.0.0.1:" + process.env.APP_SERVER_PORT, token).then((reason) => {
+    if (reason !== undefined) {
+      readinessFail(reason);
+      return;
+    }
     clearTimeout(timeout);
-    socket.close();
     process.exit(0);
   });
-  onSocket("error", (error) =>
-    readinessFail("Codex app-server WebSocket unavailable: " + readinessErrorCode(error)),
-  );
 }
+
 if (
   process.env.OPENCLAW_PLUGIN_READY_MARKER !== undefined &&
   !existsSync(process.env.OPENCLAW_PLUGIN_READY_MARKER)
 ) {
   readinessFail("plugin ready marker is missing");
-} else if (ReadinessWebSocket === undefined) {
-  readinessExit("WebSocket client module is unavailable");
 } else if (process.env.OPENCLAW_PLUGIN_STATUS_PORT === undefined) {
   checkWebSocket(process.env.APP_SERVER_TOKEN);
 } else {

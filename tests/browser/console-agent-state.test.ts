@@ -53,7 +53,7 @@ import {
   showDeploymentTab,
 } from "./console-deployment-activity-helpers.ts";
 import { agentDeleteRequests, agentStopRequests } from "./console-agents-test-support.mjs";
-import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   ACCESS_TAB_UNAVAILABLE,
   AGENT_CREATE_RESTRICTED,

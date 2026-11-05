@@ -35,6 +35,8 @@
     "ci/**/*.ts",
     "lib/**/*.ts",
     "docs-site/compute-matrix.ts",
+    "docs-site/serve.ts",
+    "docs-site/preview-build.ts",
     "module-boundaries/*.ts",
     "console-storybook/prepare-assets.ts",
     "console-storybook/plugin-fields.storybook-wrapper.mts",

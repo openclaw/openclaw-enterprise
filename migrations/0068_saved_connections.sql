@@ -14,8 +14,10 @@ CREATE TABLE occ.saved_connections (
   client_id text NOT NULL,
   issuer text NOT NULL,
   recipient jsonb NOT NULL CONSTRAINT saved_connections_recipient_object CHECK (
-    jsonb_typeof(recipient) = 'object' AND recipient ?& ARRAY['host','port','path']
-    AND recipient - ARRAY['host','port','path'] = '{}'::jsonb
+    recipient = '{"kind":"google_apis"}'::jsonb OR (
+      jsonb_typeof(recipient) = 'object' AND recipient ?& ARRAY['host','port','path']
+      AND recipient - ARRAY['host','port','path'] = '{}'::jsonb
+    )
   ),
   token_url text NOT NULL,
   mcp_server_url text,
@@ -86,9 +88,23 @@ GRANT SELECT, INSERT, DELETE ON occ.connection_sessions TO occ_app;
 CREATE INDEX saved_connections_revoking_idx ON occ.saved_connections (credential_source_id)
 WHERE revocation_requested_by IS NOT NULL;
 --> statement-breakpoint
-CREATE FUNCTION occ.guard_saved_connection_update() RETURNS trigger
+CREATE FUNCTION occ.guard_saved_connection() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 BEGIN
+  IF TG_OP = 'INSERT' THEN
+    -- A receipt can represent Google APIs only when that provider-wide destination was approved.
+    IF NEW.recipient = '{"kind":"google_apis"}'::jsonb AND
+       (NEW.resource IS NOT NULL OR NOT EXISTS (
+         SELECT 1 FROM occ.oauth_connection_template_versions v
+           JOIN occ.oauth_clients c ON c.id = v.oauth_client_id
+          WHERE v.template_id = NEW.connection_template_id AND v.version = NEW.connection_template_version
+            AND v.recipient_kind = 'google_apis' AND v.issuer = NEW.issuer AND v.token_url = NEW.token_url
+            AND c.id = NEW.oauth_client_id AND c.client_id = NEW.client_id
+       )) THEN
+      RAISE EXCEPTION 'The saved Google APIs recipient must match its approved template and client' USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+  END IF;
   IF NOT (NEW.granted_scopes <@ OLD.granted_scopes) OR (to_jsonb(NEW) - ARRAY['revocation_requested_by','revoked_at','granted_scopes']) IS DISTINCT FROM
      (to_jsonb(OLD) - ARRAY['revocation_requested_by','revoked_at','granted_scopes'])
      OR (OLD.revocation_requested_by IS NOT NULL AND NEW.revocation_requested_by IS DISTINCT FROM OLD.revocation_requested_by)
@@ -100,10 +116,10 @@ BEGIN
 END;
 $$;
 --> statement-breakpoint
-CREATE TRIGGER saved_connection_update_is_guarded BEFORE UPDATE ON occ.saved_connections
-FOR EACH ROW EXECUTE FUNCTION occ.guard_saved_connection_update();
+CREATE TRIGGER saved_connection_is_guarded BEFORE INSERT OR UPDATE ON occ.saved_connections
+FOR EACH ROW EXECUTE FUNCTION occ.guard_saved_connection();
 --> statement-breakpoint
-REVOKE ALL ON FUNCTION occ.guard_saved_connection_update() FROM PUBLIC;
+REVOKE ALL ON FUNCTION occ.guard_saved_connection() FROM PUBLIC;
 --> statement-breakpoint
 GRANT UPDATE (revocation_requested_by, revoked_at, granted_scopes) ON occ.saved_connections TO occ_app;
 --> statement-breakpoint

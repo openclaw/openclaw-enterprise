@@ -407,7 +407,7 @@ export class RepositoryBindingSelectionError extends ScopeViolationError {
     "Send repositoryAccess or repositoryBindings, not both. In repositoryAccess, list each repository once, at most 16, with a defaultProfile other than github-installation.";
   // The Driver refuses a whole selection without saying which entry; this text lists its rules.
   static readonly notApproved =
-    "These repository selections are not approved for this Namespace: each repository must be approved here for its profile and listed once, at most 16. Choose from the repository options, or ask an Installation administrator to approve it.";
+    "Choose up to 16 distinct repositories approved for this Namespace and profile. For github-repository, all selections must have the same configured permissions. Ask an Installation administrator to check the available options.";
 
   constructor(message: string = RepositoryBindingSelectionError.installationAccessAlone) {
     super(message);

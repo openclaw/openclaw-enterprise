@@ -6,6 +6,8 @@ import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 import { selectTemplateDrivers } from "../helpers/connection-template-drivers.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
+import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
+import { signedInHeaders } from "../helpers/production-sign-in.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
@@ -15,10 +17,10 @@ const options = {
 };
 const issuer = "https://accounts.example.test";
 const tokenUrl = issuer + "/token";
-const clientInput = () => ({
+const clientInput = (connectionTemplateId: string, connectionTemplateVersion = 1) => ({
+  connectionTemplateId,
+  connectionTemplateVersion,
   displayName: "Example OAuth application",
-  issuer,
-  tokenUrl,
   clientId: randomUUID(),
   tokenEndpointAuthMethod: "client_secret_basic",
   clientSecret: randomUUID(),
@@ -29,23 +31,80 @@ const manual = {
   issuer,
   authorizationUrl: issuer + "/authorize",
   tokenUrl,
+  revocationUrl: issuer + "/revoke",
   scopes: ["mail.read"],
   recipient: { host: "mail.example.test", path: "/v1/**" },
 };
 
+async function createManualDraft(
+  inject: Awaited<ReturnType<typeof createPostgresAgentApp>>["inject"],
+  namespaceId?: string,
+): Promise<string> {
+  const draft = await inject("POST", "/connection-templates", {
+    ...manual,
+    namespaceId,
+  });
+  assert.equal(draft.statusCode, 201, draft.body);
+  assert.equal(draft.json().data.current.oauthClientId, undefined);
+  return draft.json().data.id;
+}
+
 test(
-  "independent scoped OAuth clients can be attached to an immutable template version",
+  "a Google API recipient pins the provider and can be narrowed in a new template version",
   requiresPostgres,
   async (t) => {
-    const { controller, inject } = await createPostgresAgentApp(t, options);
-    const { providers } = selectTemplateDrivers(controller);
+    const { inject, state } = await createPostgresAgentApp(t, options);
+    const google = {
+      ...manual,
+      issuer: "https://accounts.google.com",
+      authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+      tokenUrl: "https://oauth2.googleapis.com/token",
+      revocationUrl: "https://oauth2.googleapis.com/revoke",
+      recipient: { kind: "google_apis" },
+    };
+    const created = await inject("POST", "/connection-templates", google);
+    assert.equal(created.statusCode, 201, created.body);
+    const template = created.json().data;
+    assert.deepEqual(template.current.recipient, { kind: "google_apis" });
+    assert.equal(template.current.oauthClientId, undefined);
+    // The family is reserved for Google's OAuth flow, even when creating a draft without a client.
+    for (const field of ["issuer", "authorizationUrl", "tokenUrl", "revocationUrl"]) {
+      const mismatch = await inject("PATCH", "/connection-templates/" + template.id, {
+        ...google,
+        [field]: issuer,
+      });
+      assert.equal(mismatch.statusCode, 400, mismatch.body);
+    }
+    const endpoint = { host: "gmail.googleapis.com", port: 443, path: "/gmail/v1/**" };
+    const narrowed = await inject("PATCH", "/connection-templates/" + template.id, {
+      ...google,
+      recipient: endpoint,
+    });
+    assert.equal(narrowed.statusCode, 200, narrowed.body);
+    assert.equal(narrowed.json().data.current.version, 2);
+    assert.deepEqual(narrowed.json().data.current.recipient, endpoint);
+    const pinned = await state.read((tx) =>
+      tx.connectionTemplates.findOAuthConnectionTemplateVersion(template.id, 1),
+    );
+    assert.deepEqual(pinned?.recipient, { kind: "google_apis" });
+  },
+);
+
+test(
+  "an administrator registers OAuth clients against a pinned template and its availability",
+  requiresPostgres,
+  async (t) => {
+    const { app, controller, inject, pool, state } = await createPostgresAgentApp(t, options);
+    const { providers, createdProviders } = selectTemplateDrivers(controller);
     // A resource hidden in a configured URL must not bypass the version's effective audience.
     const override = await inject("POST", "/connection-templates", {
       ...manual,
       authorizationUrl: issuer + "/authorize?resource=unapproved",
     });
     assert.equal(override.statusCode, 400, override.body);
-    const ns = await inject("POST", "/namespaces", { name: `Template scope ${randomUUID()}` });
+    const ns = await inject("POST", "/namespaces", {
+      name: `Template scope ${randomUUID()}`,
+    });
     assert.equal(ns.statusCode, 201, ns.body);
     const namespaceId = ns.json().data.id;
     for (const invalid of [
@@ -53,30 +112,83 @@ test(
       { authorizationParameters: { state: "custom" } },
     ]) {
       assert.equal(
-        (await inject("POST", "/connection-templates", { ...manual, ...invalid })).statusCode,
+        (
+          await inject("POST", "/connection-templates", {
+            ...manual,
+            ...invalid,
+          })
+        ).statusCode,
         400,
       );
     }
-    const draft = await inject("POST", "/connection-templates", manual);
-    assert.equal(draft.statusCode, 201, draft.body);
-    const template = draft.json().data;
-    assert.equal(template.current.oauthClientId, undefined);
-    const client = clientInput();
-    const unsigned = await inject("POST", "/oauth-clients", {
-      ...client,
-      tokenEndpointAuthMethod: "private_key_jwt",
+    const templateId = await createManualDraft(inject);
+    const client = clientInput(templateId);
+    // Only template admins can use the pinned provider registration, even for a known template ID.
+    const member = {
+      email: `reader-${randomUUID()}@example.test`,
+      password: randomUUID(),
+    };
+    const auth = await createPostgresControllerAuth({
+      mode: "development",
+      installationId: controller.installation.id,
+      baseURL: "http://127.0.0.1",
+      secret: options.authSecret,
+      pool,
     });
-    assert.equal(unsigned.statusCode, 400, unsigned.body);
+    const reader = await auth.createAccount({ ...member, name: "Template reader" });
+    await state.appendNativeIAMPrincipal(auth.principalSeed(reader, { grant: "none" }));
+    const session = await signedInHeaders(app, "http://127.0.0.1", member);
+    const denied = await app.inject({
+      method: "POST",
+      url: "/oauth-clients",
+      headers: session,
+      payload: client,
+    });
+    assert.equal(denied.statusCode, 403, denied.body);
+    for (const fields of [
+      { tokenEndpointAuthMethod: "private_key_jwt" },
+      { issuer: issuer + "/other" },
+      { tokenUrl: issuer + "/other" },
+      { revocationUrl: issuer + "/other" },
+      { namespaceId },
+    ]) {
+      const refused = await inject("POST", "/oauth-clients", {
+        ...client,
+        ...fields,
+      });
+      assert.equal(refused.statusCode, 400, refused.body);
+    }
+    assert.equal(createdProviders.length, 0);
     const created = await inject("POST", "/oauth-clients", client);
     assert.equal(created.statusCode, 201, created.body);
     assert.equal(created.body.includes(client.clientSecret), false);
-    const globalId = created.json().data.id;
-    const scoped = await inject("POST", "/oauth-clients", { ...client, namespaceId });
+    const registration = created.json().data;
+    const globalId = registration.id;
+    assert.equal(registration.issuer, issuer);
+    assert.equal(registration.tokenUrl, tokenUrl);
+    assert.equal(registration.revocationUrl, manual.revocationUrl);
+    assert.equal(registration.namespaceId, undefined);
+    const read = () => inject("GET", `/connection-templates/${templateId}`);
+    const selected = (await read()).json().data.current;
+    assert.equal(selected.version, 2);
+    assert.equal(selected.oauthClientId, globalId);
+    const stale = await inject("POST", "/oauth-clients", {
+      ...client,
+      clientId: randomUUID(),
+    });
+    assert.equal(stale.statusCode, 409, stale.body);
+    assert.equal(createdProviders.length, 1, "a stale version must not stage private material");
+    const scopedDraft = await createManualDraft(inject, namespaceId);
+    const scoped = await inject("POST", "/oauth-clients", {
+      ...client,
+      connectionTemplateId: scopedDraft,
+    });
     assert.equal(scoped.statusCode, 201, scoped.body);
+    assert.equal(scoped.json().data.namespaceId, namespaceId);
     assert.equal((await inject("DELETE", `/namespaces/${namespaceId}`, undefined)).statusCode, 409);
     assert.equal(
       (
-        await inject("PATCH", `/connection-templates/${template.id}`, {
+        await inject("PATCH", `/connection-templates/${templateId}`, {
           ...manual,
           oauthClientId: scoped.json().data.id,
         })
@@ -86,7 +198,7 @@ test(
     // Even an Installation client does not permit sending its secret to another destination.
     assert.equal(
       (
-        await inject("PATCH", `/connection-templates/${template.id}`, {
+        await inject("PATCH", `/connection-templates/${templateId}`, {
           ...manual,
           tokenUrl: issuer + "/different",
           oauthClientId: globalId,
@@ -94,13 +206,28 @@ test(
       ).statusCode,
       409,
     );
-    const associated = await inject("PATCH", `/connection-templates/${template.id}`, {
-      ...manual,
-      oauthClientId: globalId,
+    const pub = await inject("POST", "/oauth-clients", {
+      connectionTemplateId: templateId,
+      connectionTemplateVersion: selected.version,
+      displayName: "Public client",
+      clientId: randomUUID(),
+      tokenEndpointAuthMethod: "none",
     });
-    assert.equal(associated.statusCode, 200, associated.body);
-    assert.equal(associated.json().data.current.version, 2);
-    const renamed = await inject("PATCH", `/connection-templates/${template.id}`, {
+    assert.equal(pub.statusCode, 201, pub.body);
+    assert.deepEqual(
+      (await read()).json().data.current,
+      selected,
+      "registering another client preserves the template's selection and version",
+    );
+    assert.equal(
+      (
+        await inject("POST", `/oauth-clients/${pub.json().data.id}/rotate-secret`, {
+          clientSecret: randomUUID(),
+        })
+      ).statusCode,
+      409,
+    );
+    const renamed = await inject("PATCH", `/connection-templates/${templateId}`, {
       displayName: "Mail",
     });
     assert.equal(renamed.json().data.current.version, 2);
@@ -114,7 +241,7 @@ test(
     });
     assert.equal(local.statusCode, 201, local.body);
     assert.deepEqual(local.json().data.current.scopes, manyScopes);
-    await inject("DELETE", `/connection-templates/${template.id}`, undefined);
+    await inject("DELETE", `/connection-templates/${templateId}`, undefined);
     await inject("DELETE", `/connection-templates/${local.json().data.id}`, undefined);
     const clients = (await inject("GET", "/oauth-clients", undefined)).json().data;
     assert.deepEqual(
@@ -123,22 +250,6 @@ test(
         .map((item: { id: string }) => item.id)
         .sort(),
       [globalId, scoped.json().data.id].sort(),
-    );
-    const pub = await inject("POST", "/oauth-clients", {
-      displayName: "Public client",
-      issuer,
-      tokenUrl,
-      clientId: randomUUID(),
-      tokenEndpointAuthMethod: "none",
-    });
-    assert.equal(pub.statusCode, 201, pub.body);
-    assert.equal(
-      (
-        await inject("POST", `/oauth-clients/${pub.json().data.id}/rotate-secret`, {
-          clientSecret: randomUUID(),
-        })
-      ).statusCode,
-      409,
     );
     assert.equal(providers.size, 2);
   },
@@ -156,7 +267,8 @@ test(
       transportDatabaseUrl: proxy.url,
     });
     const { refresh, providers } = selectTemplateDrivers(controller);
-    const input = clientInput();
+    const templateId = await createManualDraft(inject);
+    const input = clientInput(templateId);
     const original = await inject("POST", "/oauth-clients", input);
     assert.equal(original.statusCode, 201, original.body);
     const client = original.json().data;
@@ -194,6 +306,10 @@ test(
     assert.equal(providers.size, 1);
     assert.ok(JSON.stringify([...providers.values()]).includes(next));
     assert.ok(!JSON.stringify([...providers.values()]).includes(input.clientSecret));
+    assert.equal(
+      (await inject("DELETE", `/connection-templates/${templateId}`, undefined)).statusCode,
+      204,
+    );
     assert.equal(
       (await inject("DELETE", `/oauth-clients/${client.id}`, undefined)).statusCode,
       204,
@@ -242,7 +358,8 @@ test(
     const { refresh, providers } = selectTemplateDrivers(controller);
     recovered.registerDriver(refresh);
     recovered.selectDriver("credential_refresh", refresh.id);
-    const input = clientInput();
+    const templateId = await createManualDraft(inject);
+    const input = clientInput(templateId);
     const original = await inject("POST", "/oauth-clients", input);
     assert.equal(original.statusCode, 201, original.body);
     const stage = refresh.registerClient.bind(refresh);
@@ -259,6 +376,7 @@ test(
     );
     const response = inject("POST", "/oauth-clients", {
       ...input,
+      connectionTemplateVersion: 2,
       clientId: randomUUID(),
       clientSecret: randomUUID(),
     });
@@ -377,7 +495,11 @@ test(
     const { controller, inject, pool } = await createPostgresAgentApp(t, options);
     const { app: peer } = await createPostgresAgentApp(t, options);
     const { createdProviders } = selectTemplateDrivers(controller);
-    const client = await inject("POST", "/oauth-clients", clientInput());
+    const client = await inject(
+      "POST",
+      "/oauth-clients",
+      clientInput(await createManualDraft(inject)),
+    );
     assert.equal(client.statusCode, 201, client.body);
     assert.equal(createdProviders.length, 1);
     const id = client.json().data.id;

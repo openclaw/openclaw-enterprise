@@ -11,6 +11,17 @@ export interface ConnectionEndpoint {
   readonly path: string;
 }
 
+/** Google API destinations supported by the consuming Driver. Each request still needs an approved operation. */
+export interface GoogleApisRecipient {
+  readonly kind: "google_apis";
+}
+
+export type ConnectionRecipient = ConnectionEndpoint | GoogleApisRecipient;
+
+export function isGoogleApisRecipient(recipient: object): recipient is GoogleApisRecipient {
+  return "kind" in recipient && recipient.kind === "google_apis";
+}
+
 export type OAuthClientAuthMethod = "none" | "client_secret_basic" | "client_secret_post";
 
 /** A client may send its credentials only to its explicitly approved provider endpoints. */
@@ -54,7 +65,7 @@ export interface ConnectionTemplateValues {
   /** An empty list leaves scope selection to the account owner and provider. */
   readonly scopes: readonly string[];
   readonly authorizationParameters: Readonly<Record<string, string>>;
-  readonly recipient: Readonly<ConnectionEndpoint>;
+  readonly recipient: Readonly<ConnectionRecipient>;
   readonly mcp?: { readonly serverUrl: string; readonly resource: string };
   readonly observed?: McpAuthorizationMetadata;
 }
@@ -136,6 +147,24 @@ export function validateConnectionTemplateAuthorization(
   }
 }
 
+/** A provider-wide recipient must use the OAuth endpoints for that provider. */
+export function validateConnectionTemplateRecipient(values: ConnectionTemplateValues): void {
+  if (
+    isGoogleApisRecipient(values.recipient) &&
+    (values.mode !== "manual" ||
+      values.issuer !== "https://accounts.google.com" ||
+      values.authorizationUrl !== "https://accounts.google.com/o/oauth2/v2/auth" ||
+      values.tokenUrl !== "https://oauth2.googleapis.com/token" ||
+      (values.revocationUrl !== undefined &&
+        values.revocationUrl !== "https://oauth2.googleapis.com/revoke"))
+  ) {
+    throw new ConnectionTemplateValidationError(
+      "recipient",
+      "Use Google’s published OAuth endpoints with the Google APIs destination.",
+    );
+  }
+}
+
 /** True when `next` changes a value a person approved, so it needs a new version. */
 export function connectionValuesChanged(
   current: Readonly<ConnectionTemplateValues>,
@@ -150,12 +179,22 @@ export function connectionValuesChanged(
     current.authorizationUrl !== next.authorizationUrl ||
     current.tokenUrl !== next.tokenUrl ||
     current.revocationUrl !== next.revocationUrl ||
-    current.recipient.host !== next.recipient.host ||
-    current.recipient.port !== next.recipient.port ||
-    current.recipient.path !== next.recipient.path ||
+    !sameRecipient(current.recipient, next.recipient) ||
     current.scopes.length !== next.scopes.length ||
     current.scopes.some((scope, index) => scope !== next.scopes[index]) ||
     !sameParameters(current.authorizationParameters, next.authorizationParameters)
+  );
+}
+
+function sameRecipient(left: ConnectionRecipient, right: ConnectionRecipient): boolean {
+  if (isGoogleApisRecipient(left)) {
+    return isGoogleApisRecipient(right);
+  }
+  return (
+    !isGoogleApisRecipient(right) &&
+    left.host === right.host &&
+    left.port === right.port &&
+    left.path === right.path
   );
 }
 

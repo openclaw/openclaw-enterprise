@@ -42,7 +42,7 @@ import {
   waitForIdleFetches,
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
-import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
+import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import {
   agentPrincipalDenied,
   CHANNEL_BINDING_CREDENTIALS_REMEDY,

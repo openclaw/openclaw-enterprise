@@ -3,9 +3,24 @@
 Use the desktop Console first, then a 390-pixel phone frame. These stories use
 simulated API state; they do not prove persistence or live runtime behavior.
 
-1. Open **Pages / Agent detail / New version activated**. Check the compact
-   summary separates Selected for service, Latest visible deployment, and Live
-   serving. Choose another **Viewing version**; the service target stays the same.
+At both widths, open **Pages / Agent detail / Agent unavailable** (`agentMissing`).
+Confirm the heading is **Agent details** and the panel says **Resource unavailable**,
+without an Agent name. Choose **← Agents** (Back to Agents) and confirm the
+collection heading is **Agents**.
+
+At both widths, open **Pages / Agent detail / Retry a direct Agent link**
+(`agentReadInterrupted`) directly in its own preview tab, without navigating from
+the Agents list. Confirm **Agent details** and **Request unavailable** appear
+without an Agent name. Use Tab to reach **Retry** and press Enter. The next read
+uses the normal fixture response: confirm the H1 becomes **Research assistant**
+and receives keyboard focus. This story simulates one failed GET with status 503.
+
+1. Separately, open **Pages / Agent detail / New version activated**
+   (`deploymentSucceeded`, Storybook ID `pages-agent-detail--deployment-succeeded`).
+   At both widths, confirm its H1 shows a readable Agent name as an independent
+   success case. Check the compact summary separates Selected for service,
+   Latest visible deployment, and Live serving. Choose another **Viewing version**;
+   the service target stays the same.
    Choose **Open draft**. Check the new-version notice has an even, neutral border
    without a blue stripe. Open **Edit Configuration**; the notice stays visible.
    Repeat this check at phone width.

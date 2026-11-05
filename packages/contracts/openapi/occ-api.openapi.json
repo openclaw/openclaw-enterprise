@@ -917,14 +917,24 @@
             "type": "object"
           },
           "recipient": {
-            "additionalProperties": false,
-            "properties": {
-              "host": { "type": "string" },
-              "path": { "type": "string" },
-              "port": { "type": "integer" }
-            },
-            "required": ["host", "port", "path"],
-            "type": "object"
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "host": { "type": "string" },
+                  "path": { "type": "string" },
+                  "port": { "type": "integer" }
+                },
+                "required": ["host", "port", "path"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": { "kind": { "const": "google_apis", "type": "string" } },
+                "required": ["kind"],
+                "type": "object"
+              }
+            ]
           },
           "revocationUrl": { "maxLength": 2048, "pattern": "^https://[^\\s/]", "type": "string" },
           "scopes": {
@@ -12521,19 +12531,29 @@
                         "type": "string"
                       },
                       "recipient": {
-                        "additionalProperties": false,
-                        "properties": {
-                          "host": { "maxLength": 253, "minLength": 1, "type": "string" },
-                          "path": {
-                            "maxLength": 512,
-                            "minLength": 1,
-                            "pattern": "^/",
-                            "type": "string"
+                        "anyOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "host": { "maxLength": 253, "minLength": 1, "type": "string" },
+                              "path": {
+                                "maxLength": 512,
+                                "minLength": 1,
+                                "pattern": "^/",
+                                "type": "string"
+                              },
+                              "port": { "maximum": 65535, "minimum": 1, "type": "integer" }
+                            },
+                            "required": ["host"],
+                            "type": "object"
                           },
-                          "port": { "maximum": 65535, "minimum": 1, "type": "integer" }
-                        },
-                        "required": ["host"],
-                        "type": "object"
+                          {
+                            "additionalProperties": false,
+                            "properties": { "kind": { "const": "google_apis", "type": "string" } },
+                            "required": ["kind"],
+                            "type": "object"
+                          }
+                        ]
                       },
                       "revocationUrl": {
                         "maxLength": 2048,
@@ -13320,19 +13340,29 @@
                         "type": "string"
                       },
                       "recipient": {
-                        "additionalProperties": false,
-                        "properties": {
-                          "host": { "maxLength": 253, "minLength": 1, "type": "string" },
-                          "path": {
-                            "maxLength": 512,
-                            "minLength": 1,
-                            "pattern": "^/",
-                            "type": "string"
+                        "anyOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "host": { "maxLength": 253, "minLength": 1, "type": "string" },
+                              "path": {
+                                "maxLength": 512,
+                                "minLength": 1,
+                                "pattern": "^/",
+                                "type": "string"
+                              },
+                              "port": { "maximum": 65535, "minimum": 1, "type": "integer" }
+                            },
+                            "required": ["host"],
+                            "type": "object"
                           },
-                          "port": { "maximum": 65535, "minimum": 1, "type": "integer" }
-                        },
-                        "required": ["host"],
-                        "type": "object"
+                          {
+                            "additionalProperties": false,
+                            "properties": { "kind": { "const": "google_apis", "type": "string" } },
+                            "required": ["kind"],
+                            "type": "object"
+                          }
+                        ]
                       },
                       "revocationUrl": {
                         "maxLength": 2048,
@@ -35103,14 +35133,26 @@
                           "oauthClientId": { "type": "string" },
                           "ownerPrincipalId": { "type": "string" },
                           "recipient": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "host": { "type": "string" },
-                              "path": { "type": "string" },
-                              "port": { "maximum": 65535, "minimum": 1, "type": "integer" }
-                            },
-                            "required": ["host", "port", "path"],
-                            "type": "object"
+                            "anyOf": [
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "host": { "type": "string" },
+                                  "path": { "type": "string" },
+                                  "port": { "type": "integer" }
+                                },
+                                "required": ["host", "port", "path"],
+                                "type": "object"
+                              },
+                              {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "kind": { "const": "google_apis", "type": "string" }
+                                },
+                                "required": ["kind"],
+                                "type": "object"
+                              }
+                            ]
                           },
                           "requestedScopes": { "items": { "type": "string" }, "type": "array" },
                           "resource": { "type": "string" },
@@ -43035,10 +43077,10 @@
                         },
                         "required": [
                           "displayName",
-                          "issuer",
-                          "tokenUrl",
                           "clientId",
                           "tokenEndpointAuthMethod",
+                          "issuer",
+                          "tokenUrl",
                           "id",
                           "createdAt"
                         ],
@@ -43141,10 +43183,10 @@
                   "value": {
                     "clientId": "example-client",
                     "clientSecret": "example-client-secret",
+                    "connectionTemplateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
+                    "connectionTemplateVersion": 1,
                     "displayName": "Example provider client",
-                    "issuer": "https://accounts.example.com",
-                    "tokenEndpointAuthMethod": "client_secret_basic",
-                    "tokenUrl": "https://accounts.example.com/token"
+                    "tokenEndpointAuthMethod": "client_secret_basic"
                   }
                 }
               },
@@ -43158,32 +43200,26 @@
                     "type": "string",
                     "writeOnly": true
                   },
+                  "connectionTemplateId": {
+                    "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
+                  },
+                  "connectionTemplateVersion": { "minimum": 1, "type": "integer" },
                   "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
-                  "issuer": { "maxLength": 2048, "pattern": "^https://[^\\s/]", "type": "string" },
-                  "namespaceId": {
-                    "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                    "type": "string"
-                  },
-                  "revocationUrl": {
-                    "maxLength": 2048,
-                    "pattern": "^https://[^\\s/]",
-                    "type": "string"
-                  },
                   "tokenEndpointAuthMethod": {
                     "anyOf": [
                       { "const": "none", "type": "string" },
                       { "const": "client_secret_basic", "type": "string" },
                       { "const": "client_secret_post", "type": "string" }
                     ]
-                  },
-                  "tokenUrl": { "maxLength": 2048, "pattern": "^https://[^\\s/]", "type": "string" }
+                  }
                 },
                 "required": [
                   "displayName",
-                  "issuer",
-                  "tokenUrl",
                   "clientId",
-                  "tokenEndpointAuthMethod"
+                  "tokenEndpointAuthMethod",
+                  "connectionTemplateId",
+                  "connectionTemplateVersion"
                 ],
                 "type": "object"
               }
@@ -43254,10 +43290,10 @@
                       },
                       "required": [
                         "displayName",
-                        "issuer",
-                        "tokenUrl",
                         "clientId",
                         "tokenEndpointAuthMethod",
+                        "issuer",
+                        "tokenUrl",
                         "id",
                         "createdAt"
                       ],
@@ -43369,7 +43405,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "Register a scoped OAuth client",
+        "summary": "Register an OAuth client from a connection template",
         "tags": ["Connections"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" }
@@ -43582,10 +43618,10 @@
                       },
                       "required": [
                         "displayName",
-                        "issuer",
-                        "tokenUrl",
                         "clientId",
                         "tokenEndpointAuthMethod",
+                        "issuer",
+                        "tokenUrl",
                         "id",
                         "createdAt"
                       ],

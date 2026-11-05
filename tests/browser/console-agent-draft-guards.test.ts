@@ -1,3 +1,4 @@
+import { focusedDescription, focusedText, LIVE_BUTTON } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
@@ -50,14 +51,11 @@ import {
   writeRequests,
 } from "./console-agents-browser-helpers.mjs";
 import {
-  LIVE_BUTTON,
   createRepositoryLaunchFixture,
-  focusedDescription,
-  focusedText,
   withholdPermissionSummary,
 } from "./console-agents-test-support.mjs";
 import { responseTo } from "./console-action-helpers.ts";
-import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
+import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import { createPolicyConsole } from "./console-sandbox-policy-fixture.ts";
 import {
   AGENT_SAVE_DENIED,

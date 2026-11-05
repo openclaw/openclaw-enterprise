@@ -11,6 +11,7 @@ import { validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.t
 import { PostgresHumanAuthentication } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
 import { keycloakRealmAdmin, rotateKeycloakClientSecret } from "../helpers/ci-keycloak-realm.mjs";
+import { connectFixtureGoogleAccount } from "../helpers/google-api-saved-account.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import { selectTemplateDrivers } from "../helpers/connection-template-drivers.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
@@ -104,7 +105,7 @@ test(
     });
 
     // The real Token Service and OpenShell Drivers run against recording Secret/OpenShell stores.
-    // Only Keycloak issues and validates access tokens.
+    // Keycloak issues real tokens for this issuer. A separate Google case controls only the token endpoint.
     const secretDriver = { ...createTestSecretDriver(), capability: "secret" as const };
     const preparedTokens = new TokenService(
       new OAuthConnectionTokens(secretDriver, refreshPinnedOAuthGrant),
@@ -173,18 +174,6 @@ test(
     const base = `/namespaces/${namespaceId}`;
     const connections = `${base}/connections`;
     const recipient = { host: "api.connections.test", port: 443, path: "/mcp" };
-    const registered = await inject("POST", "/oauth-clients", {
-      displayName: "Saved accounts",
-      namespaceId,
-      issuer,
-      tokenUrl,
-      clientId,
-      clientSecret,
-      revocationUrl: `${issuer}/protocol/openid-connect/revoke`,
-      tokenEndpointAuthMethod: "client_secret_basic",
-    });
-    assert.equal(registered.statusCode, 201, registered.body);
-    const oauthClientId = registered.json().data.id;
     const manualConfig = {
       mode: "manual",
       displayName: "Keycloak",
@@ -192,14 +181,26 @@ test(
       issuer,
       authorizationUrl: `${issuer}/protocol/openid-connect/auth`,
       tokenUrl,
-      oauthClientId,
-      scopes: ["openid"],
       recipient,
+      scopes: ["openid"],
     };
-    const template = await inject("POST", "/connection-templates", manualConfig);
+    const template = await inject("POST", "/connection-templates", {
+      ...manualConfig,
+      revocationUrl: `${issuer}/protocol/openid-connect/revoke`,
+    });
     assert.equal(template.statusCode, 201, template.body);
+    const registered = await inject("POST", "/oauth-clients", {
+      connectionTemplateId: template.json().data.id,
+      connectionTemplateVersion: template.json().data.current.version,
+      displayName: "Saved accounts",
+      clientId,
+      clientSecret,
+      tokenEndpointAuthMethod: "client_secret_basic",
+    });
+    assert.equal(registered.statusCode, 201, registered.body);
+    const oauthClientId = registered.json().data.id;
     const manual = { connectionTemplateId: template.json().data.id };
-    // The client also permits revocation, but this version uses only its token endpoint.
+    // Registering the first client makes the current template ready for consent.
     const manualStart = await inject("POST", connections, manual);
     assert.equal(manualStart.statusCode, 201, manualStart.body);
     const mcpConfig = {
@@ -280,6 +281,7 @@ test(
     // as a provider grant while preserving that the person did not request an explicit scope.
     const unrestrictedManual = await inject("POST", "/connection-templates", {
       ...manualConfig,
+      oauthClientId,
       scopes: [],
       displayName: "Provider defaults",
     });
@@ -384,6 +386,32 @@ test(
     const privateRef = custody.rows[0].secret_ref;
     assert.ok(secretDriver.has(privateRef));
     const account = accounts.json().data[0];
+    // Google is the controlled exchange in this case. A receipt for an exact Google
+    // template with the same client cannot claim the wider provider recipient.
+    const google = await connectFixtureGoogleAccount(t, owner, namespaceId, [
+      "https://www.googleapis.com/auth/gmail.readonly",
+    ]);
+    const exact = await owner("POST", "/connection-templates", {
+      ...google.templateInput,
+      displayName: "Gmail only",
+      recipient: { host: "gmail.googleapis.com", port: 443, path: "/**" },
+    });
+    assert.equal(exact.statusCode, 201, exact.body);
+    await assert.rejects(
+      pool.query(
+        `INSERT INTO occ.saved_connections
+         SELECT (jsonb_populate_record(NULL::occ.saved_connections,
+           to_jsonb(s) || jsonb_build_object('connection_template_id',$2::text))).*
+         FROM occ.saved_connections s WHERE credential_source_id=$1`,
+        [google.credentialSourceId, exact.json().data.id],
+      ),
+      { code: "23514" },
+    );
+    assert.equal(
+      (await owner("DELETE", connections + "/" + google.credentialSourceId)).statusCode,
+      204,
+    );
+
     assert.deepEqual(
       [
         account.oauthClientId,
