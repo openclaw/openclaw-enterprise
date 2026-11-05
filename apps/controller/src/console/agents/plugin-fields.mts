@@ -1030,26 +1030,14 @@ export function createPluginFields({
                 }),
             ),
           );
-          const needsConsent = slot.sources.some((source) => source.authorization === "required");
           if (slotConnection && !stale) {
-            if (slot.connectAccount) {
-              details.append(
-                pluginConnectionControl(
-                  slot,
-                  slotConnection,
-                  typeof current === "string" ? current : undefined,
-                ),
-              );
-            } else if (needsConsent) {
-              const reason = slotConnection.unavailable(slot);
-              details.append(
-                element(
-                  "p",
-                  { className: "hint" },
-                  reason ??
-                    "This slot needs a connection template and permission to start consent for this server.",
-                ),
-              );
+            const control = pluginConnectionControl(
+              slot,
+              slotConnection,
+              typeof current === "string" ? current : undefined,
+            );
+            if (control) {
+              details.append(control);
             }
           }
           if (slot.sources.some((source) => !source.authorization)) {

@@ -93,14 +93,24 @@ export function pluginConnectionControl(
   connections: SlotConnection,
   currentSourceId?: string,
 ) {
-  const notice = element("p", { className: "hint", role: "status" });
-  const panel = element("div");
-  let busy = false;
   const currentSource = slot.sources.find((source) => source.id === currentSourceId);
   const currentName = currentSourceId ? (currentSource?.name ?? "the current account") : undefined;
   const needsConsent = currentSourceId
     ? currentSource?.authorization === "required"
     : slot.sources.some((source) => source.authorization === "required");
+  if (!slot.connectAccount) {
+    return needsConsent
+      ? element(
+          "p",
+          { className: "hint" },
+          connections.unavailable(slot) ??
+            "This slot needs a connection template and permission to start consent for this server.",
+        )
+      : null;
+  }
+  const notice = element("p", { className: "hint", role: "status" });
+  const panel = element("div");
+  let busy = false;
   const open = button(
     needsConsent
       ? "Authorize for this server"

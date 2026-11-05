@@ -1196,7 +1196,13 @@ test("plugin account replacement and new OAuth consent follow the selected sourc
 
   // Exercise the served plugin editor with a saved account approved for this server and
   // another account that still needs consent. The provider redirect is covered in integration.
-  await page.evaluate(async (capabilities) => {
+  async function mountPicker({
+    capabilities,
+    canConnect,
+  }: {
+    capabilities: OCCPluginDriver["policyCapabilities"];
+    canConnect: boolean;
+  }) {
     const path = "/console/agents/plugin-fields.mjs";
     const { createPluginFields } = (await import(
       path
@@ -1224,7 +1230,7 @@ test("plugin account replacement and new OAuth consent follow the selected sourc
             pluginId,
             releaseSha256,
             label: "Support account",
-            connectAccount: true,
+            ...(canConnect ? { connectAccount: true } : {}),
             toolDiscovery: true,
             sources: [
               source,
@@ -1283,10 +1289,30 @@ test("plugin account replacement and new OAuth consent follow the selected sourc
       },
     });
     document.body.replaceChildren(picker.section, output);
-  }, new OCCPluginDriver().policyCapabilities);
-  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  }
   const editor = page.getByRole("dialog", { name: "Configure plugins" });
-  await editor.getByRole("button", { name: "Support", exact: true }).click();
+  async function openEditor(canConnect: boolean) {
+    await page.evaluate(mountPicker, {
+      capabilities: new OCCPluginDriver().policyCapabilities,
+      canConnect,
+    });
+    await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+    await editor.getByRole("button", { name: "Support", exact: true }).click();
+  }
+
+  // A member who can use the saved account only needs help with consent after clearing it.
+  await openEditor(false);
+  const supportAccount = editor.getByLabel("Support account", { exact: true });
+  const permissionHint = editor.getByText(
+    "This slot needs a connection template and permission to start consent for this server.",
+    { exact: true },
+  );
+  assert.equal(await supportAccount.locator("option:checked").textContent(), "Service desk");
+  assert.equal(await permissionHint.count(), 0);
+  await supportAccount.selectOption("");
+  await permissionHint.waitFor();
+
+  await openEditor(true);
   await editor.getByRole("checkbox", { name: "ticket_get", exact: true }).waitFor();
   assert.equal(
     await editor.getByText("No tools listed for this plugin.", { exact: true }).count(),
