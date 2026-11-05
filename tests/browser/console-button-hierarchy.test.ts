@@ -20,6 +20,7 @@ import type {
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
 import {
+  routeFailedDeployment,
   assertControlEdge,
   consoleViewports,
   detailUrl,
@@ -28,9 +29,9 @@ import {
   login,
   nativeValues,
   newPage,
-  routeFailedDeployment,
   settledView,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+
 import {
   createRepositoryLaunchFixture,
   routeInstallationWithoutProvisioning,

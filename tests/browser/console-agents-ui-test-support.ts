@@ -4,7 +4,7 @@ import { Check } from "typebox/value";
 import { AgentResponse, SecretResponse } from "../../packages/contracts/src/api/resources.ts";
 import type { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createFixtureResponse } from "../helpers/console-fixture-response.ts";
-import { settledFetches, waitForIdleFetches } from "./console-agents-browser-helpers.mjs";
+import { settledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 

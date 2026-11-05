@@ -3165,6 +3165,16 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
   const root = await fixture(t);
   const resultsPath = join(root, "results/details.json");
   const statePath = join(root, "state/details.json");
+  const failedPhase = {
+    kind: "openshell-sandbox-phase",
+    stage: "network-policy",
+    outcome: "failed",
+    elapsedMs: 1_234,
+  };
+  const phaseDiagnostic = `openclaw-ci-measurement ${JSON.stringify({
+    ...failedPhase,
+    detail: "fixture-opaque-phase-detail",
+  })}`;
   await writeFile(
     join(root, "tests/integration/details.test.mjs"),
     [
@@ -3176,6 +3186,7 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
       "  console.error(`credential ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);",
       '  console.log("Authorization: Bearer abcdefghijklmnop0123");',
       '  t.diagnostic("phase timings 1234 ms");',
+      `  t.diagnostic(${JSON.stringify(phaseDiagnostic)});`,
       '  assert.fail(`password="fixture,\\nprivate-tail" phase=after ${"stage line\\n".repeat(80)}decisive line ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);',
       "});",
       "",
@@ -3213,6 +3224,8 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
 
   assert.equal(result.status, 1);
   const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  assert.equal(summary.files[0].status, "failed");
+  assert.deepEqual(summary.files[0].measurements, [failedPhase]);
   const failed = summary.files[0].tests.find(({ name }) => name === "long failure");
   // Results and the job log keep the short message only.
   assert.match(failed.error.message, /\.\.\. \[truncated\]$/);
@@ -3225,6 +3238,7 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
   );
   const text = await readFile(`${statePath}.diagnostics.json`, "utf8");
   assert.doesNotMatch(text, /secretauthvalue|abcdefghijklmnop0123|private-tail|passing output/);
+  assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${text}`, /fixture-opaque-phase-detail/);
   const report = JSON.parse(text);
   assert.equal(report.lane, "details");
   assert.equal(report.failures.length, 1);
@@ -3232,9 +3246,9 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
   assert.equal(record.file, "tests/integration/details.test.mjs");
   assert.equal(record.omittedTests, 0);
   const detail = record.tests.find(({ name }) => name === "long failure");
-  assert.equal(detail.line, 9);
+  assert.equal(detail.line, 10);
   assert.match(detail.message, /decisive line \[env:CI_RUNNER_FIXTURE_CREDENTIAL\]$/);
-  assert.match(detail.stack, /tests\/integration\/details\.test\.mjs:9:\d+/);
+  assert.match(detail.stack, /tests\/integration\/details\.test\.mjs:10:\d+/);
   // stdout and stderr arrive on separate pipes, so only the set of lines is fixed.
   assert.deepEqual([...record.output.lines].sort(), [
     "[redacted credential-bearing line]",
@@ -5213,6 +5227,12 @@ test("run records only allowlisted measurements from test diagnostics", async (t
   const root = await fixture(t);
   const resultsPath = join(root, "results/measurements.json");
   const measurement = (value) => `openclaw-ci-measurement ${JSON.stringify(value)}`;
+  const openshellPhase = {
+    kind: "openshell-sandbox-phase",
+    stage: "exposure-auth",
+    outcome: "passed",
+    elapsedMs: 39_000,
+  };
   await writeFile(
     join(root, "tests/integration/measurements.test.mjs"),
     [
@@ -5389,6 +5409,11 @@ test("run records only allowlisted measurements from test diagnostics", async (t
           elapsedMs: 1.5,
           budgetMs: 15_000,
         }),
+        measurement({ ...openshellPhase, detail: "secretauthvalue-phase-detail" }),
+        measurement({ ...openshellPhase, stage: "secretauthvalue-phase-stage" }),
+        measurement({ ...openshellPhase, outcome: "secretauthvalue-phase-outcome" }),
+        measurement({ ...openshellPhase, elapsedMs: 2_400_001 }),
+        measurement({ ...openshellPhase, elapsedMs: 0.5 }),
         "openclaw-ci-measurement secretauthvalue-not-json",
         "secretauthvalue-plain-diagnostic",
       ].map((message) => `  t.diagnostic(${JSON.stringify(message)});`),
@@ -5487,6 +5512,7 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       elapsedMs: 4_321,
       budgetMs: 15_000,
     },
+    openshellPhase,
   ]);
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${artifact}`, /secretauthvalue/);
 });

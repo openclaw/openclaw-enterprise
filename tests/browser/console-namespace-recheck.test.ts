@@ -11,13 +11,15 @@ import {
   fileBrowser,
   login,
   newPage,
-  settledFetches,
   settledView,
-  trackSettledFetches,
   waitForEnabled,
+} from "./console-agents-browser-helpers.ts";
+import {
+  settledFetches,
+  trackSettledFetches,
   waitForIdleFetches,
   waitForSettledFetches,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-fetch-accounting.ts";
 import { fulfillPatchedJson } from "./console-patched-response.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { NAMESPACE_UNAVAILABLE } from "../helpers/refusal-text.mjs";

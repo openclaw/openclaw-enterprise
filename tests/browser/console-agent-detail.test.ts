@@ -26,6 +26,7 @@ import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
+  persistedDeploymentError,
   accessBindingPostRequests,
   accessibleDescription,
   AGENT_READ,
@@ -48,24 +49,26 @@ import {
   nonAuthWriteRequests,
   operateDeniedSecretOption,
   pathRequests,
-  persistedDeploymentError,
   recordLayoutShifts,
   revealNativeConfiguration,
   revokeMemberGrant,
   secretOptionLabel,
   secretPostRequests,
   selectSecret,
-  settledFetches,
   settlePageRequests,
   statusTone,
   takeLayoutShifts,
-  trackSettledFetches,
   versionChooser,
   waitForChosenVersion,
   waitForEnabled,
   waitForInputValue,
+} from "./console-agents-browser-helpers.ts";
+
+import {
+  settledFetches,
+  trackSettledFetches,
   waitForSettledFetches,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-fetch-accounting.ts";
 import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import {

@@ -53,7 +53,7 @@ const FAILURE_CODE = /^[A-Z0-9_]{1,64}$/u;
 
 /** Public pending explanations never include arbitrary Driver or provider text. */
 export function deploymentProgressForWork(
-  work: Readonly<ControllerWork>,
+  work: Readonly<Pick<ControllerWork, "state" | "availableAt">>,
   attempt: ControllerWorkAttempt | undefined,
 ): DeploymentStatusResult["progress"] {
   if (work.state === "succeeded" || work.state === "failed_permanent") {
@@ -585,7 +585,7 @@ export function validateSuccessResultData(data: unknown): SuccessResultData | un
 }
 
 export function deploymentErrorForWork(
-  work: Readonly<ControllerWork>,
+  work: Readonly<Pick<ControllerWork, "state" | "reasonCode" | "resultData">>,
 ): DeploymentStatusError | null {
   if (work.state !== "failed_permanent" && !completedWithoutActivation(work)) {
     return null;
@@ -689,7 +689,9 @@ export function controllerWorkLeaseActive(
   );
 }
 
-function completedWithoutActivation(work: Readonly<ControllerWork>): boolean {
+function completedWithoutActivation(
+  work: Readonly<Pick<ControllerWork, "state" | "reasonCode">>,
+): boolean {
   return (
     work.state === "succeeded" &&
     work.reasonCode !== "REVISION_ACTIVATED" &&
@@ -812,6 +814,8 @@ function deploymentErrorMessage(code: string): string {
       return "The protected egress provider this revision's Harness source was admitted with is no longer selected or available. Ask an Installation administrator to reselect it, or bind a source admitted under the selected provider, then deploy again.";
     case "CREDENTIAL_SOURCE_UNAVAILABLE":
       return "A credential source this revision lists is missing, being deleted, or changed since admission. Bind available sources, then deploy again.";
+    case "PLUGIN_DRIVER_MISMATCH":
+      return "This revision's Plugin Driver is unavailable for its Harness. Enable the matching Driver or update the Agent's selections, then deploy again.";
     case "SECRET_DRIVER_MISMATCH":
       return "The Installation no longer selects the Secret Driver this revision was admitted with. Bind Secrets created through the selected Secret Driver, or remove the old Secret bindings, then deploy again.";
     case "COMPUTE_DRIVER_MISMATCH":

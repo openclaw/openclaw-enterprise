@@ -3,6 +3,17 @@
 Use the desktop Console first, then a 390-pixel phone frame. These stories use
 simulated API state; they do not prove persistence or live runtime behavior.
 
+At desktop and 390-pixel widths, open **Pages / Agent detail / Gateway password
+save in progress** (`gatewayPasswordSaving`). Confirm editing and deployment stay
+unavailable while the save is pending. Storybook simulates the pending save and
+does not stage malformed History state. For real Back during a held save, and
+Back and Forward after it completes, use these tests in `tests/browser/console-drafts-kept.test.ts`:
+
+- `Back during a Configuration save preserves the previous Agent tab`
+- `Back during a Configuration save survives a synthetic marker that wraps to zero`
+- `Back during a Configuration save survives a synthetic marker outside the history stack`
+- `Back during a Configuration save leaves an overflowing synthetic marker untracked`
+
 At both widths, open **Pages / Agent detail / Agent unavailable** (`agentMissing`).
 Confirm the heading is **Agent details** and the panel says **Resource unavailable**,
 without an Agent name. Choose **← Agents** (Back to Agents) and confirm the

@@ -36,8 +36,9 @@ import {
   createRuntimeLogComputeDriver,
 } from "../helpers/runtime-logs.mjs";
 import {
-  apiRequests,
   deploymentStatusResponse,
+  routeFailedDeployment,
+  apiRequests,
   detailUrl,
   expectReachableReason,
   fileBrowser,
@@ -45,16 +46,18 @@ import {
   login,
   nativeValues,
   newPage,
-  routeFailedDeployment,
-  settledFetches,
   settlePageRequests,
   settledView,
-  trackSettledFetches,
   waitForCondition,
   waitForEnabled,
+} from "./console-agents-browser-helpers.ts";
+
+import {
+  settledFetches,
+  trackSettledFetches,
   waitForIdleFetches,
   waitForSettledFetches,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-fetch-accounting.ts";
 import { withholdPermissionSummary } from "./console-agents-test-support.mjs";
 import { refocus } from "./console-refocus-helpers.ts";
 

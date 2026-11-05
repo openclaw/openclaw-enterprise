@@ -5,11 +5,9 @@ Secrets for the [Kubernetes Compute Driver](../kubernetes-compute.md).
 
 ## Shared contracts and the Codex implementation
 
-The public `ComputeDriver` and `HarnessWorkloadRequirements` contracts describe
-platform operations and workload requirements; OpenClaw's `AgentWorkspaceAccess`
-provides workspace capabilities without the Codex app-server protocol. The layout
-below describes dedicated Codex. Its launcher and filesystem layout
-do not extend the public Compute contract or apply to every Harness.
+`ComputeDriver` and `HarnessWorkloadRequirements` are shared contracts.
+OpenClaw's `AgentWorkspaceAccess` is independent of Codex's protocol.
+The layout and launcher below describe dedicated Codex only.
 
 | Boundary         | Shared behavior                                                                           | Current dedicated Codex implementation                                                                                      |
 | ---------------- | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
@@ -17,8 +15,7 @@ do not extend the public Compute contract or apply to every Harness.
 | Execution        | The selected Harness owns execution and its workspace lifecycle.                          | Codex app-server executes turns; a separate node serves file, Memory and Skills operations.                                 |
 | Startup          | Compute delivers the selected workload and observes readiness.                            | The launcher supervises Codex and the file node separately, separates their credentials, and sets Codex shell/PATH options. |
 
-The file node's explicit command allowlist disables OpenClaw worker hosting;
-this launcher is not an OpenClaw remote worker launcher.
+The file node's command allowlist disables OpenClaw worker hosting.
 
 [Dedicated native OpenClaw](../../harness-execution.md#native-worker-support)
 has an experimental worker path with Sandbox-owned Harness provisioning.
@@ -127,46 +124,75 @@ from the default StorageClass, mounted only by its Harness:
 | `codex-sessions`                             | `/home/node/.codex/sessions`         |
 | `workspace-node-<agent-hash>-<harness-hash>` | `/home/node/.openclaw-node`          |
 
-The nonroot init container creates each subpath as uid 1000 with mode `0700`
-before the kubelet mounts it. Claims from the first release hold root-owned
-`workspace` and `generated-images` directories the kubelet created; the init
-renames such a directory aside, recreates it and moves its entries back. A name
-the new directory already has stays in `.<subpath>.kubelet-created`.
+The nonroot initializer creates each subpath as uid 1000 with mode `0700`.
+For existing root-owned `workspace` and `generated-images` directories, it
+recreates ownership and moves entries back; conflicting names remain in
+`.<subpath>.kubelet-created`.
 
-This directory keeps node identity across Pod and version replacement.
-Before native setup, or before a native worker connects, the Harness or worker runs the
-[Gateway](#gateway-storage) Doctor pass on this state, with only the node's environment, when its database is
-older. A database still older holds it unready with check `state-migration`.
-The node Secret's setup code expires ten minutes after preparation mints it. A
-node with a saved device token for the same Gateway reconnects with that token;
-one without saved credentials rejects an expired code.
+Node identity survives replacement. Before setup or connection,
+the Harness runs [Gateway](#gateway-storage) Doctor with the node environment
+for older databases; a still-old database holds at `state-migration`.
 
-A Deployment-backed Codex Harness renders this wiring from its first start,
-mounting the node Secret as an optional volume at `/run/openclaw-node-setup`
-that projects only `setupCode`, so the Harness starts before the Secret exists.
-Codex starts at once; the node starts when the file holds a complete code.
-After writing the Secret, preparation annotates the running Harness Pod so the
-kubelet refreshes the volume within about two seconds instead of its roughly
-one-minute periodic resync; enrollment restarts neither the Harness nor its
-Gateway. The worker needs `patch` on Pods in tenant
-namespaces; without it the pass fails.
+Setup expires after ten minutes. `--pair-or-reconnect` tries fresh setup;
+only `AUTH_BOOTSTRAP_TOKEN_INVALID` permits saved-token retry. Expired codes
+require credentials bound to the same device, Gateway scope and TLS pin.
+Renewal preserves the enrolled endpoint.
 
-The file mode is `0440`. Secret volume files are root-owned and the kubelet
-grants the Pod `fsGroup` read access, so `0400` would behave the same. Codex
-runs as the same user and group and can read the code, as it can already read
-the node's command line. Once readiness records the device ID, the controller
-removes `setupCode` from the Secret and annotates the Pod again, so the kubelet
-removes the file within seconds; the node then reconnects with its saved device
-token, and preparation mints no new code for it. If the Gateway loses that
-pairing, delete the Agent's node Secret: the next pass mints a code, which the
-node uses when it restarts. Native workers and SandboxDriver Harnesses receive the code in
-their environment, keep it for restarts, and are replaced to attach the node.
-Installations that enrolled one node for each Agent revision enroll a new Agent device once,
-at the first replacement; retiring each earlier Agent revision deletes its node Secret.
-Gateway conversation history stays on its private claim. Resuming the original Codex thread
-also requires the Harness claim’s `codex-sessions`.
+OCC records receipts as `setupReceiptDeviceId`. The node saves, reads back, and
+reconnects with its credential. `node.describe` must confirm
+current-session token authentication before setting `deviceId`. Disconnect or
+pairing replacement clears proof; live approval requires reauthentication.
+Grants stay unchanged. Readiness records the revision.
+
+After OCC retains the receipt, missing status cannot trigger fresh credentials.
+If its first reconciliation follows Gateway's 20-minute receipt retention,
+preparation can renew expired setup without recovering the prior receipt; this
+remains a limitation. Unconfirmed possession after expiry requires recovery below.
+
+Endpoint changes require successful credential retirement and preserve identity.
+Exact-device resume uses saved endpoint and Cloudflare Access settings without
+ambient overrides or configuration writes. Saved Access requires matching
+WebSocket scope and TLS pin.
+
+Each local profile permits one node runner; [lock recovery](../../../guides/topics/agent-troubleshoot.md#deployment-is-blocked-or-has-no-selected-version)
+never relies on age.
+
+Deployment-backed Codex mounts only `setupCode` at `/run/openclaw-node-setup`.
+Codex starts before enrollment; the node awaits complete setup. Preparation annotates the Pod after Secret writes to refresh kubelet's
+projection in about two seconds instead of one minute; tenant Pod `patch`
+permission is required.
+
+The projection is `0440`; kubelet grants `fsGroup` read access even with `0400`.
+Codex shares the node's user/group and can read code and arguments. Recording
+the device removes `setupCode` and annotates the Pod, removing the file within
+seconds. Later starts use the saved token.
+
+Supervisors poll Codex files and native-worker provider envelopes every second.
+Files and encoded setup are capped at 65,536 bytes each; Gateway URLs require
+`ws://`/`wss://` authority. A TLS fingerprint requires `wss://`.
+Changed complete setup replaces only the node or `connect` process group: TERM,
+then KILL after five seconds, awaiting child exit. Equivalent, missing, unreadable
+or malformed projections do not trigger restarts. Initial incomplete envelopes
+wait; pending replacements retain the latest complete setup if the file disappears.
+Operator stop cancels replacement. Environment-delivered setup is a startup
+snapshot.
+
+OpenShell accepts
+expired setup only from the same owned Secret with a recorded device; native
+code validates token, identity, scope and pin. Unpaired expired setup waits
+for Gateway before provider provisioning.
+
+For pairing loss or unconfirmed credential possession after setup expiry,
+[stop the Agent](../../agents/deployment.md#stop-and-resume) and wait for shutdown.
+Delete only the Agent-owned node Secret named in the failure, then deploy a new
+revision. Preserve node identity and the Harness PVC. Missing diagnostic exposure
+alone does not justify deleting credentials.
+Older per-revision installations enroll an Agent device at first replacement;
+retiring earlier revisions deletes their node Secrets.
+Gateway history stays on its private claim; resuming the original Codex thread
+requires the Harness claim’s `codex-sessions`.
 Selected generated-image bytes use the Codex remote-media reader; no image mount
-is shared. Each image initializes its bundled/plugin assets without shared Skill-tree mounts.
+is shared. Images initialize bundled/plugin assets without shared Skill-tree mounts.
 Embedded Agents use the private claim without creating this Harness claim.
 
 Default node writes include workspace `skills/**`, `.clawhub/lock.json`,
@@ -174,13 +200,12 @@ Default node writes include workspace `skills/**`, `.clawhub/lock.json`,
 unchanged. Skill lifecycle operations require a compatible runtime. See the
 [workspace flow](../../../flows/workspace-files.md) for authorization boundaries.
 
-The worker stops all earlier workloads and waits for their Pods to terminate
-before preparing a dedicated replacement, including failed candidates and
-Sandbox-owned workloads. Replacement has a downtime window; it does not need
-simultaneous cross-node mounts. If preparation fails, retry the candidate or
-deploy the intended configuration as a new version; OCC does not restart an earlier
-version automatically or roll back filesystem writes made by a failed candidate.
-The last selected version does not prove its Pod still runs during replacement.
+Before preparing a dedicated replacement, the worker stops all earlier workloads
+and awaits Pod termination, including failed candidates and Sandbox-owned
+workloads. Replacement requires downtime, without simultaneous cross-node mounts.
+If preparation fails, retry the candidate or deploy the intended configuration as
+a new version. OCC neither restarts earlier versions nor reverses failed candidates'
+filesystem writes. The last selected version does not prove its Pod still runs.
 After OCC accepts a newer version that requires earlier workloads to stop, the
 worker stops their reconciliation and maintenance;
 see the [Compute replacement contract](../compute.md#production-revision-stages).
@@ -194,12 +219,11 @@ required; the Driver never force detaches a disk. A local-path PV keeps its node
 affinity and cannot move its data to another node. Cross-node rescheduling needs
 an appropriate portable StorageClass, not RWX.
 
-Both claims keep the same Namespace and Agent owners across version
-changes and gateway Pod replacement. Reconciliation rejects foreign,
-terminating, or incompatible claims without changes. The Driver creates
-claims before consumers and relies on gateway workload readiness;
-waiting for `Bound` before creating a Pod would deadlock
-`WaitForFirstConsumer` storage classes. Stopping or retiring an Agent revision retains
+Both claims retain Namespace and Agent owners across version and Gateway Pod
+changes. Reconciliation rejects foreign, terminating, or incompatible claims
+without mutation. Claims precede consumers; readiness uses the Gateway workload.
+Waiting for `Bound` before creating Pods would deadlock `WaitForFirstConsumer`
+storage classes. Stopping or retiring an Agent revision retains
 both claims, including when the gateway has already stopped. Agent deletion
 retires every Agent revision before its final cleanup hook deletes the owned claims
 using their exact Kubernetes UIDs. A cleanup failure keeps deletion pending

@@ -29,6 +29,8 @@ export interface PluginDiscoveryAuthentication {
 
 export interface PluginDriver extends Driver {
   readonly capability: "plugin";
+  /** Harness family authorized to use this catalog. */
+  readonly harnessId: "openclaw" | "codex";
   readonly policyCapabilities: PluginPolicyCapabilities;
   /** Matches only source metadata authorized by OCC. The Driver never receives credential values. */
   readonly credentials?: {
