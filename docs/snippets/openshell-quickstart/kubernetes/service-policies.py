@@ -54,7 +54,7 @@ def api_edges():
     slices = resource("default", "endpointslices", "-l", "kubernetes.io/service-name=kubernetes")
     backends = []
     for endpoint_slice in slices["items"]:
-        ready = [endpoint for endpoint in endpoint_slice["endpoints"]
+        ready = [endpoint for endpoint in (endpoint_slice.get("endpoints") or [])
                  if endpoint.get("conditions", {}).get("ready") is not False]
         if not ready:
             continue
