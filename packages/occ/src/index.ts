@@ -2156,6 +2156,11 @@ type InstallationRepositoryAdmission = Readonly<{
   backendId: string;
 }>;
 
+type RevisionAccountPreparation = {
+  readonly state: "prepared" | "withdrawn";
+  readonly source: CredentialSource;
+};
+
 export class OpenClawController {
   private installationRepositoryAdmission?: InstallationRepositoryAdmission;
 
@@ -4674,7 +4679,7 @@ export class OpenClawController {
     agentId: string,
     revisionId: string,
     sourceId: string,
-  ): Promise<CredentialSource | undefined> {
+  ): Promise<RevisionAccountPreparation | undefined> {
     return this.reconcileRevisionAccount(namespaceId, agentId, revisionId, sourceId);
   }
 
@@ -4694,7 +4699,7 @@ export class OpenClawController {
       expected,
       signal,
     );
-    if (!source) {
+    if (source?.state !== "prepared") {
       throw new ResourceStateConflictError("The prepared account is no longer authorized.");
     }
   }
@@ -4706,7 +4711,7 @@ export class OpenClawController {
     sourceId: string,
     expected?: Readonly<CredentialSource>,
     releaseSignal?: AbortSignal,
-  ): Promise<CredentialSource | undefined> {
+  ): Promise<RevisionAccountPreparation | undefined> {
     return this.mutate(async (state) => {
       const namespace = await this.lockNamespace(state, namespaceId);
       const revision = await state.revisions.findRevision(namespaceId, agentId, revisionId);
@@ -4770,17 +4775,19 @@ export class OpenClawController {
       const uses = this.pluginAccountBindings(revision.plugins?.plugins).filter(
         (binding) => binding.sourceId === source.id,
       );
-      const runtime =
-        token &&
+      const compatible =
         uses.length > 0 &&
         uses.every(
           ({ slot }) => slot.issuers.includes(account.issuer) && slot.acceptsRecipient(target),
-        )
+        );
+      const runtime =
+        token && compatible
           ? await this.runtimeAccountSource(
               state,
               source,
               { ...account, grantedScopes: token.grantedScopes },
               revision.plugins?.plugins,
+              { target, bindings: uses },
             )
           : undefined;
       if (!token || !runtime) {
@@ -4788,6 +4795,17 @@ export class OpenClawController {
           throw new ResourceStateConflictError("The sender cannot withdraw this connection token.");
         }
         await this.credentialGatewayOperation(() => gateway.withdrawConnectionToken!(context));
+        if (!expected && token && uses.length > 0 && agent.activeRevisionId === revision.id) {
+          if (!gateway.prepareConnectionSource) {
+            throw new ResourceStateConflictError(
+              "The sender cannot preserve the withdrawn account attachment.",
+            );
+          }
+          // A running Sandbox keeps its admitted provider membership. Restore that exact
+          // profile only after confirmed withdrawal, and never release this account's bearer.
+          await this.credentialGatewayOperation(() => gateway.prepareConnectionSource!(context));
+          return { state: "withdrawn", source: admitted };
+        }
         return undefined;
       }
       if (runtime.type !== admitted.type || runtime.driverId !== admitted.driverId) {
@@ -4813,7 +4831,7 @@ export class OpenClawController {
         }
         await this.credentialGatewayOperation(() => gateway.prepareConnectionSource!(prepared));
       }
-      return runtime;
+      return { state: "prepared", source: runtime };
     });
   }
 
@@ -11070,24 +11088,28 @@ export class OpenClawController {
           );
           const account = await state.savedConnections.findSavedConnection(namespace.id, source.id);
           const custody = await state.savedConnections.findTokenCustody(namespace.id, source.id);
+          const target = account ? await this.accountTarget(state, account) : undefined;
           if (
             namespace.status !== "ready" ||
             source.state !== "ready" ||
             !slot ||
             !account ||
+            !target ||
             account.revocationRequestedBy ||
             !custody ||
             !slot.issuers.includes(account.issuer) ||
-            !slot.acceptsRecipient(await this.accountTarget(state, account))
+            !slot.acceptsRecipient(target)
           ) {
             throw new ResourceStateConflictError(
               "Authorize the account for this MCP server first.",
             );
           }
-          const delivery = slot.delivery(
-            await this.accountTarget(state, account),
-            account.grantedScopes,
-          );
+          const delivery = slot.delivery(target, account.grantedScopes);
+          if (!delivery) {
+            throw new ResourceStateConflictError(
+              "The account grants no operations for this receiver.",
+            );
+          }
           const reviewed = driver.credentials?.mcpToolDiscovery?.(pluginId, connection.slot, {
             ...source,
             ...delivery,
@@ -15187,11 +15209,15 @@ export class OpenClawController {
     source: CredentialSource,
     account: SavedConnection,
     plugins: PluginDesiredState | undefined,
+    resolved?: {
+      readonly target: PluginAccountTarget;
+      readonly bindings: ReturnType<OpenClawController["pluginAccountBindings"]>;
+    },
   ): Promise<CredentialSource | undefined> {
-    const target = await this.accountTarget(state, account);
-    const uses = this.pluginAccountBindings(plugins).filter(
-      (binding) => binding.sourceId === source.id,
-    );
+    const target = resolved?.target ?? (await this.accountTarget(state, account));
+    const uses =
+      resolved?.bindings ??
+      this.pluginAccountBindings(plugins).filter((binding) => binding.sourceId === source.id);
     if (uses.length === 0) {
       return undefined; // A grant alone creates no workload credential.
     }
@@ -15203,6 +15229,9 @@ export class OpenClawController {
       }
       return slot.delivery(target, account.grantedScopes);
     });
+    if (deliveries.some((delivery) => delivery === undefined)) {
+      return undefined;
+    }
     const [delivery] = deliveries;
     if (!delivery || deliveries.some((item) => !isDeepStrictEqual(item, delivery))) {
       throw new ResourceStateConflictError(

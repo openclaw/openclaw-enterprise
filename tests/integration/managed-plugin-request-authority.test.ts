@@ -90,7 +90,9 @@ test("the signed OpenShell request guard intersects the source envelope with the
     destinations: [recipient],
   };
   const largeGrant = Array.from({ length: 1200 }, (_, i) => "unrelated.scope." + i);
-  const { config: projected } = slot.delivery(targetAccount, [...largeGrant, gmail, gmail]);
+  const delivery = slot.delivery(targetAccount, [...largeGrant, gmail, gmail]);
+  assert.ok(delivery);
+  const { config: projected } = delivery;
   assert.equal(projected.scope, gmail);
   const config = scopeConfig(recipient.host, recipient.path, projected.scope!);
   const target = {

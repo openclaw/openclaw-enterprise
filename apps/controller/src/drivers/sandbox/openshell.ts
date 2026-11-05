@@ -3023,8 +3023,8 @@ function liveSandboxPolicy(
     );
   const comparable = {
     ...current,
-    ...(initialPlugin && { network_middlewares: baseline.network_middlewares }),
-    network_policies: { ...fixedRules(network), ...(initialPlugin && initialPlugin.networks) },
+    network_middlewares: baseline.network_middlewares,
+    network_policies: { ...fixedRules(network), ...initialPlugin.networks },
   };
   if (
     !sameOpenShellPolicy(comparable, { ...baseline, network_policies: fixedRules(originalNetwork) })

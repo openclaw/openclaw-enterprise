@@ -375,7 +375,7 @@ test("a Google account slot binds by issuer and approved recipient and can be re
     }),
     false,
   );
-  assert.equal(slot.delivery(target, []).config.scope, undefined);
+  assert.equal(slot.delivery(target, []), undefined);
   const allGoogle = {
     ...target,
     destinations: [

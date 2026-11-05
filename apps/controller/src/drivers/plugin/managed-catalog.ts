@@ -485,9 +485,10 @@ export function managedPluginAccountSlot(
         const destinations = target.destinations.filter(isGoogleWorkspaceRecipient);
         config.destinations = JSON.stringify(destinations);
         const scopes = googleWorkspaceDeliveryScopes(destinations, grantedScopes);
-        if (scopes.length) {
-          config.scope = scopes.join(" ");
+        if (scopes.length === 0) {
+          return undefined;
         }
+        config.scope = scopes.join(" ");
       }
       return {
         type: install.kind === "mcp" ? "bearer-token" : "oauth2-refresh-token",

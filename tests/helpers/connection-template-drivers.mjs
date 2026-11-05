@@ -88,7 +88,10 @@ export function selectTemplateDrivers(controller, { selectGateway = true } = {})
     { gatewayClient: openShell.client },
   );
   const gateway = new OpenShellCredentialGatewayDriver(
-    { binaries: ["/app/bin/codex"], toolBinaries: [managedGoogleInstall.binaryPath] },
+    {
+      binaries: ["/app/bin/codex"],
+      toolBinaries: [managedGoogleInstall.binaryPath, "/usr/local/bin/node"],
+    },
     { id: "openshell-credentials", backend },
   );
   const refresh = new OpenShellCredentialRefreshDriver(

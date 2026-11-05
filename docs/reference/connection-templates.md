@@ -82,4 +82,6 @@ updated policy loads, a newly started worker can use the same account at its
 current destinations. A process that kept the old reference needs to restart.
 The account owner can keep the original OAuth grant.
 
+For example, if an admin changes a Gmail template to allow only Calendar, a Gmail-only account stays attached but receives no token for Calendar. Other accounts on the Agent remain usable. Restoring a permitted Gmail destination lets OCE deliver the credential again.
+
 For Google Workspace, include the packaged Google CLI in the Installation’s OpenShell `toolBinaries`. One saved account can serve multiple Google APIs. For example, to read Gmail and Calendar, the current template must allow both destinations, the account must have the necessary provider scopes, and the Agent policy must allow each operation. Public API discovery stays separate from credentialed requests. Every approved executable uses the same guarded Google routes. A metadata-only Gmail grant can read message metadata from the CLI or an approved script. Reading a full message requires the corresponding grant.

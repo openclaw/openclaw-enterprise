@@ -5782,7 +5782,7 @@ export class ControllerWorker {
     const { namespaceId, id: revisionId } = revision;
     const { sourceId } = snapshot;
     if (snapshot.accountDelivery) {
-      const source = await this.provisioningController?.prepareRevisionAccount(
+      const prepared = await this.provisioningController?.prepareRevisionAccount(
         namespaceId,
         revision.agentId,
         revisionId,
@@ -5791,7 +5791,11 @@ export class ControllerWorker {
       const withdrawal = await this.state.read((view) =>
         view.credentialSources.findCredentialWithdrawal(namespaceId, revisionId, sourceId),
       );
-      return { source: withdrawal ? undefined : source, withdrawal };
+      return {
+        source: withdrawal ? undefined : prepared?.source,
+        withdrawal,
+        accountWithdrawn: prepared?.state === "withdrawn",
+      };
     }
     return this.state.read(async (view) => {
       const source = await view.credentialSources.findCredentialSource(namespaceId, sourceId);
@@ -5808,6 +5812,7 @@ export class ControllerWorker {
             ? source
             : undefined,
         withdrawal,
+        accountWithdrawn: false,
       };
     });
   }
@@ -5977,7 +5982,10 @@ export class ControllerWorker {
           result: { outcome: "permanent", code: "CREDENTIAL_GATEWAY_MISMATCH" },
         };
       }
-      const { source, withdrawal } = await this.resolveRevisionCredentialSource(revision, snapshot);
+      const { source, withdrawal, accountWithdrawn } = await this.resolveRevisionCredentialSource(
+        revision,
+        snapshot,
+      );
       // A withdrawn non-model source stays detached; the revision keeps running without it.
       if (withdrawal !== undefined) {
         continue;
@@ -5991,7 +5999,7 @@ export class ControllerWorker {
         };
       }
       credentialSources.push(source);
-      if (snapshot.accountDelivery) {
+      if (snapshot.accountDelivery && !accountWithdrawn) {
         preparedAccounts.push(source);
       }
     }
