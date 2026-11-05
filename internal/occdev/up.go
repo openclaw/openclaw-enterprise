@@ -144,6 +144,9 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if err := r.validateOpenShellImageRevisions(ctx, openShellImages); err != nil {
 		return err
 	}
+	if err := r.selectComposeDevelopmentImageRegistry(ctx); err != nil {
+		return err
+	}
 	if err := r.checkLegacyNATTable(ctx); err != nil {
 		return err
 	}
@@ -270,75 +273,139 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if err := exclusiveWrite(filepath.Join(directory, "compose.yaml"), snapshot, 0600); err != nil {
 		return err
 	}
-	fmt.Fprintln(r.opts.Out, "Starting the Compose database, migration, and bootstrap services...")
-	started = true
-	if err := r.compose(ctx, state, "up", "--build", "-d", "postgres", "migrate", "bootstrap"); err != nil {
-		return err
-	}
-	for _, service := range []string{"migrate", "bootstrap"} {
-		if err := r.waitCompleted(ctx, state, service, time.Duration(timeout)*time.Second); err != nil {
-			return err
-		}
-	}
-	fmt.Fprintf(r.opts.Out, "Creating k3d cluster %s...\n", state.Cluster)
-	clusterAttempted = true
-	clusterImage := r.setting("OCC_DEVELOPMENT_K3S_IMAGE", defaultK3sChannel)
-	clusterArgs := []string{"cluster", "create", state.Cluster, "--timeout", (time.Duration(timeout) * time.Second).String(), "--env", "IPTABLES_MODE=legacy@server:0"}
-	resolverArgs, err := r.prepareDevelopmentResolver(state)
-	if err != nil {
-		return err
-	}
-	clusterArgs = append(clusterArgs, resolverArgs...)
-	if sandboxDriver == "openshell" {
-		clusterImage = openShellK3sImage
-		admissionPath, err := prepareOpenShellAdmission(directory)
-		if err != nil {
-			return err
-		}
-		clusterArgs = append(clusterArgs, "--volume", admissionPath+":"+openShellAdmissionContainerPath+":ro@server:0", "--k3s-arg", "--kube-apiserver-arg=admission-control-config-file="+openShellAdmissionContainerPath+"@server:0")
-	}
-	clusterArgs = append(clusterArgs, "--image", clusterImage, "--servers", "1", "--agents", "0", "--network", state.ComposeProject+"_development", "--api-port", fmt.Sprintf("127.0.0.1:%d", port), "--k3s-arg", "--tls-san=k3d-"+state.Cluster+"-serverlb@server:*", "--k3s-arg", fmt.Sprintf("--kubelet-arg=eviction-hard=memory.available<100Mi,nodefs.available<%d%%,nodefs.inodesFree<5%%,imagefs.available<%d%%,imagefs.inodesFree<5%%@server:*", threshold, threshold), "--kubeconfig-update-default=false", "--kubeconfig-switch-context=false")
-	if err := r.createK3dCluster(ctx, clusterArgs...); err != nil {
-		clusterCreationFailed = true
-		return err
-	}
-	if err := r.checkDevelopmentNodeDNS(ctx, state); err != nil {
-		return err
-	}
-	if err := r.writeKubeconfigs(ctx, state); err != nil {
-		return err
-	}
-	reference, err := r.importRuntime(ctx, state)
-	if err != nil {
-		return err
-	}
+	var reference, codexSeccompProfile, routingPodCIDR string
 	var openShellAssets *openShellDevelopmentAssets
-	if sandboxDriver == "openshell" {
-		// Import the large runtime first so image garbage collection cannot evict
-		// idle OpenShell images before their workloads are installed.
-		fmt.Fprintln(r.opts.Out, "Preparing pinned OpenShell development assets...")
-		openShellAssets, err = r.prepareOpenShell(ctx, state, time.Duration(timeout)*time.Second)
+	var routing *composeDevelopmentRouting
+	defer func() {
+		if err := r.detachDevelopmentImageRegistry(ctx); err != nil {
+			result = errors.Join(result, err)
+		}
+	}()
+	startDatabase := func(ctx context.Context, r *runner) error {
+		fmt.Fprintln(r.opts.Out, "Starting the Compose database, migration, and bootstrap services...")
+		if err := r.compose(ctx, state, "up", "--build", "-d", "postgres", "migrate", "bootstrap"); err != nil {
+			return err
+		}
+		for _, service := range []string{"migrate", "bootstrap"} {
+			if err := r.waitCompleted(ctx, state, service, time.Duration(timeout)*time.Second); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	prepareCluster := func(ctx context.Context, r *runner) error {
+		var err error
+		fmt.Fprintf(r.opts.Out, "Creating k3d cluster %s...\n", state.Cluster)
+		clusterAttempted = true
+		clusterImage := r.setting("OCC_DEVELOPMENT_K3S_IMAGE", defaultK3sChannel)
+		clusterArgs := []string{"cluster", "create", state.Cluster, "--timeout", (time.Duration(timeout) * time.Second).String(), "--env", "IPTABLES_MODE=legacy@server:0"}
+		resolverArgs, err := r.prepareDevelopmentResolver(state)
 		if err != nil {
 			return err
 		}
+		clusterArgs = append(clusterArgs, resolverArgs...)
+		if sandboxDriver == "openshell" {
+			clusterImage = openShellK3sImage
+			admissionPath, err := prepareOpenShellAdmission(directory)
+			if err != nil {
+				return err
+			}
+			clusterArgs = append(clusterArgs, "--volume", admissionPath+":"+openShellAdmissionContainerPath+":ro@server:0", "--k3s-arg", "--kube-apiserver-arg=admission-control-config-file="+openShellAdmissionContainerPath+"@server:0")
+		}
+		clusterArgs = append(clusterArgs, "--image", clusterImage, "--servers", "1", "--agents", "0", "--network", state.ComposeProject+"_development", "--api-port", fmt.Sprintf("127.0.0.1:%d", port), "--k3s-arg", "--tls-san=k3d-"+state.Cluster+"-serverlb@server:*", "--k3s-arg", fmt.Sprintf("--kubelet-arg=eviction-hard=memory.available<100Mi,nodefs.available<%d%%,nodefs.inodesFree<5%%,imagefs.available<%d%%,imagefs.inodesFree<5%%@server:*", threshold, threshold), "--kubeconfig-update-default=false", "--kubeconfig-switch-context=false")
+		if err := r.createK3dCluster(ctx, clusterArgs...); err != nil {
+			clusterCreationFailed = true
+			return err
+		}
+		if err := r.checkDevelopmentNodeDNS(ctx, state); err != nil {
+			return err
+		}
+		if err := r.writeKubeconfigs(ctx, state); err != nil {
+			return err
+		}
+		if err := r.attachDevelopmentImageRegistry(ctx, state); err != nil {
+			return errors.Join(err, r.detachDevelopmentImageRegistry(ctx))
+		}
+		prepareRuntime := func(ctx context.Context, r *runner) error {
+			var err error
+			reference, err = r.importRuntime(ctx, state)
+			if err != nil {
+				return err
+			}
+			if err := r.detachDevelopmentImageRegistry(ctx); err != nil {
+				return err
+			}
+			if sandboxDriver == "openshell" {
+				// Import the large runtime first so image garbage collection cannot evict
+				// idle OpenShell images before their workloads are installed.
+				fmt.Fprintln(r.opts.Out, "Preparing pinned OpenShell development assets...")
+				openShellAssets, err = r.prepareOpenShell(ctx, state, time.Duration(timeout)*time.Second)
+				if err != nil {
+					return err
+				}
+			}
+			if sandboxDriver == "openshell" {
+				fmt.Fprintf(r.opts.Out, "Installing the deployment OpenShell gateway in Namespace %s...\n", openShellGatewayNamespace)
+				if err := r.installOpenShellGateway(ctx, state, openShellAssets, openShellGatewayNamespace, time.Duration(timeout)*time.Second); err != nil {
+					return err
+				}
+			}
+			if sandboxDriver == "none" {
+				codexSeccompProfile, err = r.prepareDevelopmentCodexSandbox(ctx, state, reference, timeout)
+				if err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		prepareRouting := func(ctx context.Context, r *runner) error {
+			if sandboxDriver != "openshell" {
+				return nil
+			}
+			fmt.Fprintln(r.opts.Out, "Installing pinned private routing controllers...")
+			var err error
+			routingPodCIDR, err = r.installDevelopmentRoutingControllers(ctx, state, time.Duration(timeout)*time.Second)
+			return err
+		}
+		// Controllers need only the cluster. Their rollouts can wait while selected
+		// images import and OpenShell starts; database-dependent routing waits below.
+		if sandboxDriver == "openshell" && r.engine == "docker" && r.env["OCC_KUBERNETES_RUNTIME_IMAGE"] != "" {
+			return r.concurrently(ctx, prepareRuntime, prepareRouting)
+		}
+		if err := prepareRuntime(ctx, r); err != nil {
+			return err
+		}
+		if err := prepareRouting(ctx, r); err != nil {
+			return err
+		}
+		return nil
 	}
-	if sandboxDriver == "openshell" {
-		fmt.Fprintf(r.opts.Out, "Installing the deployment OpenShell gateway in Namespace %s...\n", openShellGatewayNamespace)
-		if err := r.installOpenShellGateway(ctx, state, openShellAssets, openShellGatewayNamespace, time.Duration(timeout)*time.Second); err != nil {
+	started = true
+	if r.engine == "docker" && r.env["OCC_KUBERNETES_RUNTIME_IMAGE"] != "" {
+		// Compose creates its owned network before k3d joins it. A selected runtime
+		// is validated/imported, never built, so it can overlap the controller build
+		// and database bootstrap. Join both branches before starting the controller;
+		// concurrently drains canceled commands before rollback touches resources.
+		if err := r.compose(ctx, state, "up", "--no-start", "postgres"); err != nil {
+			return err
+		}
+		if err := r.concurrently(ctx, startDatabase, prepareCluster); err != nil {
+			return err
+		}
+	} else {
+		// Keep cold controller/runtime builds serial and retain Podman's provider path.
+		if err := startDatabase(ctx, r); err != nil {
+			return err
+		}
+		if err := prepareCluster(ctx, r); err != nil {
 			return err
 		}
 	}
-	var routing *composeDevelopmentRouting
+	// Routing resolves the running PostgreSQL container's address, so wait for
+	// database/bootstrap as well as the cluster before configuring its allowlist.
 	if sandboxDriver == "openshell" {
 		fmt.Fprintln(r.opts.Out, "Installing pinned private routing for the Compose control plane...")
-		routing, err = r.prepareComposeDevelopmentRouting(ctx, state, reference, time.Duration(timeout)*time.Second)
-		if err != nil {
-			return err
-		}
-	}
-	var codexSeccompProfile string
-	if sandboxDriver == "none" {
-		codexSeccompProfile, err = r.prepareDevelopmentCodexSandbox(ctx, state, reference, timeout)
+		routing, err = r.prepareComposeDevelopmentRouting(ctx, state, reference, routingPodCIDR, time.Duration(timeout)*time.Second)
 		if err != nil {
 			return err
 		}

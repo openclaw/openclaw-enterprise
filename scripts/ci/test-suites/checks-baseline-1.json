@@ -96,7 +96,7 @@
     "tests/conformance/audit.test.mjs",
     "tests/conformance/compute-lifecycle-hooks.test.mjs",
     "tests/conformance/utils.test.mjs",
-    "tests/conformance/console-api-client.test.mjs",
+    "tests/conformance/console-api-client.test.ts",
     "tests/conformance/console-carry.test.mjs",
     "tests/conformance/console-namespace-name.test.mjs",
     "tests/conformance/console-agent-name-runs.test.mjs",
@@ -152,7 +152,7 @@
       "path": "tests/conformance/console-agent-name-runs.test.mjs"
     },
     {
-      "path": "tests/conformance/console-api-client.test.mjs"
+      "path": "tests/conformance/console-api-client.test.ts"
     },
     {
       "path": "tests/conformance/console-carry.test.mjs"
@@ -584,7 +584,8 @@
         "the Git route tombstone stays for a replaced execution, an unknown write and withdrawal",
         "the Git route reports bootstrap, material and binding states for Compute readiness",
         "an observed Git route (2) rotates only after its challenge in the original worker",
-        "an observed Git route (3) rotates only after its challenge in the original worker"
+        "an observed Git route (3) rotates only after its challenge in the original worker",
+        "the running OpenShell recipient refuses a changed Repo ref or foreign supplier identity without restoring access"
       ]
     },
     {
@@ -623,7 +624,6 @@
       "expectedTests": [
         "one installed Driver owns both protected capabilities, lifecycle and verified release",
         "OpenShell registration pairs its capabilities using only a Repo delivery resolver",
-        "the running OpenShell recipient refuses a changed Repo ref or foreign supplier identity without restoring access",
         "repository scope changes invalidate the external Driver identity while a reload preserves it"
       ]
     },

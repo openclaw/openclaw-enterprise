@@ -1,8 +1,10 @@
 package occdev
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
@@ -242,15 +244,45 @@ func (r *runner) importRuntime(ctx context.Context, s *developmentState) (string
 			err != nil || len(source.BuildTimestamp) != 20 || timestamp.Format(time.RFC3339) != source.BuildTimestamp {
 			return "", fmt.Errorf("invalid %s: require a lowercase 40-character commit, 64-character archive SHA-256, and UTC build timestamp YYYY-MM-DDTHH:mm:ssZ", sourcePath)
 		}
-		if err := r.run(ctx, r.engine, "build", "-f", "deploy/runtime/Dockerfile",
-			"--build-arg", "OPENCLAW_COMMIT="+source.Commit,
-			"--build-arg", "OPENCLAW_SOURCE_SHA256="+source.SourceArchiveSHA256,
-			"--build-arg", "OPENCLAW_BUILD_TIMESTAMP="+source.BuildTimestamp,
-			"--tag", image, "."); err != nil {
+		args := []string{"build", "-f", "deploy/runtime/Dockerfile",
+			"--build-arg", "OPENCLAW_COMMIT=" + source.Commit,
+			"--build-arg", "OPENCLAW_SOURCE_SHA256=" + source.SourceArchiveSHA256,
+			"--build-arg", "OPENCLAW_BUILD_TIMESTAMP=" + source.BuildTimestamp}
+		if path := r.env["OCC_DEVELOPMENT_BUILD_CA_FILE"]; path != "" {
+			if err := validateBuildCAFile(path); err != nil {
+				return "", fmt.Errorf("OCC_DEVELOPMENT_BUILD_CA_FILE: %w", err)
+			}
+			args = append(args, "--secret", "id=build-ca,src="+path)
+		}
+		args = append(args, "--tag", image, ".")
+		if err := r.run(ctx, r.engine, args...); err != nil {
 			return "", err
 		}
 	}
 	return r.importDevelopmentImage(ctx, s, image)
+}
+
+// The engine parses --secret as comma-separated fields. Allow distribution CA
+// symlinks and spaces, but reject paths that could change the secret specification.
+func validateBuildCAFile(path string) error {
+	if !filepath.IsAbs(path) || strings.ContainsAny(path, ",\"\r\n") {
+		return fmt.Errorf("use an absolute path without commas, quotes, or line breaks")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("expected a regular file")
+	}
+	bundle, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if bytes.Contains(bundle, []byte("PRIVATE KEY-----")) || !x509.NewCertPool().AppendCertsFromPEM(bundle) {
+		return fmt.Errorf("expected a public PEM certificate bundle without a private key")
+	}
+	return nil
 }
 
 func (r *runner) importDevelopmentImage(ctx context.Context, s *developmentState, image string) (result string, resultErr error) {
@@ -513,8 +545,6 @@ func openShellInstallationConfiguration(s *developmentState, workspaceResources 
 	return map[string]any{
 		"id": openShellSandboxID,
 		"configuration": map[string]any{
-			// Keep the existing delay before the first Gateway uses the route.
-			"startupDelayMs": 30000,
 			"gateway": map[string]any{
 				"workspaceMode": "operator",
 				"operatorNamespaceLabels": map[string]string{

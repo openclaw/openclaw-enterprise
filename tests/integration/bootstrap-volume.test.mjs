@@ -46,6 +46,11 @@ async function writeFakeKubectl(t, directory, options = {}) {
       await appendFile(statePath, JSON.stringify({ args }) + "\n");
       if (args.includes("create")) {
         await writeFile(manifestPath, await io.readInput());
+        if (options.createReplyLost) {
+          io.stderr("Unable to connect to the server: EOF\n");
+          io.exit(17);
+          return;
+        }
         io.stdout("pod/created\n");
       } else if (args.includes("get") && args.includes("persistentvolumeclaim")) {
         io.stdout(`persistentvolumeclaim/${options.claimName ?? "occ-bootstrap-admin-password"}\n`);
@@ -377,6 +382,47 @@ test("prepare-bootstrap-volume omits nodeSelector unless requested", async (t) =
 
   const manifest = loadYaml(await readFile(manifestPath, "utf8"));
   assert.equal(manifest.spec.nodeSelector, undefined);
+});
+
+test("prepare-bootstrap-volume identifies the attempted Pod when the create reply is lost", async (t) => {
+  const { directory, kubeconfig, statePath, manifestPath } = await fixture(t, {
+    createReplyLost: true,
+  });
+  const cluster = [
+    "--kubeconfig",
+    kubeconfig,
+    "--context",
+    "production",
+    "--namespace",
+    "openclaw-system",
+  ];
+  const run = execute(helper, [...cluster, "--claim", "claim", "--image", image], {
+    cwd: repository,
+    env: { ...compileCacheEnvironment, PATH: commandPath(directory) },
+  });
+  await assert.rejects(run, { code: 17, stdout: "" });
+  const { stderr } = await run.catch((error) => error);
+  const pod = loadYaml(await readFile(manifestPath, "utf8")).metadata.name;
+  assert.match(stderr, /^Unable to connect to the server: EOF$/m);
+  assert.ok(
+    stderr.includes(`could not confirm creation of preparation Pod openclaw-system/${pod}`),
+  );
+  assert.ok(stderr.includes(`--request-timeout 10s describe pod ${pod}`));
+  assert.match(stderr, /Resolve the create outcome before rerunning this helper/);
+  assert.doesNotMatch(stderr, /retained for diagnosis/);
+  assert.deepEqual(await invocations(statePath), [
+    [
+      ...cluster,
+      "--request-timeout",
+      "10s",
+      "get",
+      "persistentvolumeclaim",
+      "claim",
+      "--output",
+      "name",
+    ],
+    [...cluster, "--request-timeout", "10s", "create", "--filename", "-"],
+  ]);
 });
 
 test("prepare-bootstrap-volume retains the preparation Pod when Kubernetes reports failure", async (t) => {

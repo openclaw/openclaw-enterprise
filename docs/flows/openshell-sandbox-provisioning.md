@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-11-04
-last_updated_session: authoring-run/d89beadd-3258-4f64-873f-0033585df097
+last_updated_session: authoring-run/73695cc1-a0da-41a6-9cb1-c3fbde5f5a71
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -195,19 +195,16 @@ selects a named provider and HTTPS Responses transport.
 
 `apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness`
 
-Use pinned, dedicated Codex or OpenClaw.
-Kubernetes, filesystem, process and [binary-scoped network policy](agent-sandbox-policy.md) use `v0.1.6`.
-Path relocation preserves opaque `OCE_CODEX_CHATGPT_ACCOUNT` JSON.
-Landlock is required. Unsupported enums, inherited keys, `passthrough` TLS,
-missing executable paths and invalid readiness `timeoutMs` prevent Kubernetes
-calls; the timeout must be a positive safe integer. Duplicate names and
-`workspace-node-enrollment` prevent construction. The Gateway rejects template
-Pod labels absent from `allowed_pod_labels`; that refusal
-(`SANDBOX_POD_LABELS_NOT_PERMITTED`) fails the deployment at once.
+Dedicated Codex/OpenClaw requires Landlock. Kubernetes, filesystem, process and
+[binary-scoped network policy](agent-sandbox-policy.md) use pinned `v0.1.6`.
+Relocation preserves opaque `OCE_CODEX_CHATGPT_ACCOUNT` JSON.
+Unsupported enums, inherited keys, `passthrough` TLS, missing executables or
+non-positive/unsafe-integer readiness `timeoutMs` prevent Kubernetes calls.
+Duplicate names and `workspace-node-enrollment` prevent construction.
+Template Pod labels outside `allowed_pod_labels` fail deployment immediately
+with `SANDBOX_POD_LABELS_NOT_PERMITTED`.
 
-`provisionHarness` creates or adopts the provider. Renewal checks its version
-and updates only `node_setup_json` through `UpdateProvider`. Codex exposure follows the delay, at most 120 seconds. Compute rolls the Gateway
-before checking enrollment.
+`provisionHarness` creates or adopts the provider. Renewal checks its version and updates only `node_setup_json` through `UpdateProvider`. Optional `startupDelayMs` is at most 120 seconds; development omits it. `harnessStatus` reports starting until an authenticated WebSocket handshake succeeds. Harness failures block readiness. Compute rolls the Gateway before enrollment.
 
 Dedicated Codex requires one lowercase `APP_TOKEN_SHA` and two runtime files,
 each at most 65,536 bytes. `APP_SERVER_TOKEN` is forbidden. A second model proxy,
@@ -384,6 +381,6 @@ Workspace wire test checks request IDs and deletion outcomes. Live provider remo
 
 ## Changelog
 
-- 2026-11-04 07:14: Preserve Namespace cleanup while retiring local middleware provisioning. (authoring-run/d89beadd-3258-4f64-873f-0033585df097 - dc5792f75970f2ac79ba462f6067019bdaa6c360)
+- 2026-11-04 19:20: Preserve cleanup ownership and observed Harness readiness. (authoring-run/73695cc1-a0da-41a6-9cb1-c3fbde5f5a71 - 3f3150ce8a8b024e902ecf493a5e41ff5b72c934)
 
 [OpenShell Sandbox provisioning documentation history](openshell-sandbox-provisioning/history.md) preserves the older dated entries.

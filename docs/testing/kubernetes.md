@@ -1,3 +1,7 @@
+---
+tags: [human_verified]
+---
+
 # Kubernetes tests
 
 ## Overview
@@ -51,18 +55,13 @@ OCC_TEST_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/opencla
     tests/integration/kubernetes-compute-driver-real.test.mjs
 ```
 
-All fixture cases must pass without skips. Missing selectors skip; partial
-selectors fail. A missing database skips its cases. Run files sequentially
-because they share a database. The suite checks API, worker, Driver, RBAC,
-storage, lifecycle and network isolation, not live OAuth/models, cloud volume
-detach or node fencing.
+Run all cases sequentially against the shared database and require zero skips.
+Absent selectors or database skip their cases. Partial selectors fail. Coverage
+includes API, worker, Driver, RBAC, storage, lifecycle and network isolation.
+Cloud volume detach and node fencing require separate proof.
 
-External OAuth credentials use OpenShell, not Kubernetes bootstrap Jobs or a
-native OAuth store. A green fixture result does not prove live OAuth refresh: the
-[OpenShell OAuth proof](openshell-oauth.md) and the credentialed
-[OpenShell runtime lane](openshell.md) cover it, outside ordinary CI.
-
-When finished, delete only the cluster you created:
+For live OAuth, use the [OpenShell OAuth](openshell-oauth.md) and
+[credentialed runtime](openshell.md) suites. Delete only your disposable cluster:
 
 ```sh
 k3d cluster delete oce
@@ -78,9 +77,11 @@ OCC_TEST_KUBERNETES_CONTEXT=k3d-oce \
   node --test tests/integration/installation-handoff-k3d-real.test.ts
 ```
 
-This builds `occ` and checks rendered Jobs, named-read RBAC, and replacement UIDs.
-Suspended Jobs need no database/model credentials; migration/bootstrap and runtime
-remain unproved.
+Checks named-Job access, replacement, interrupted Helm dispatch, CRDs/controllers,
+quota headroom, address drift and denials. EKS connectivity and Envoy acceptance
+remain unproved. The [production observability lane](local.md#kubernetes-observability-acceptance)
+runs `installation-receipt-k3d-real.test.ts` with PostgreSQL to check bootstrap
+after interruption before and after UID capture.
 
 ### Production workload network access
 

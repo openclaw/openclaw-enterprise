@@ -7262,6 +7262,61 @@ async function orphanedNativePreparation() {
   return { driver, gateway, api, resource, deployment, context, requirements };
 }
 
+test("OpenShell native preparation exits cleanly on SIGTERM after readiness", async (t) => {
+  // Capture the production manifest through the existing transport fixture, then
+  // execute its preparation process. Live Pod deletion is proved separately.
+  const { deployment } = await orphanedNativePreparation();
+  const container = deployment.spec.template.spec.containers[0];
+  const directory = await temporaryDirectory(t, "openshell-preparation-stop-");
+  for (const mount of container.volumeMounts) {
+    await mkdir(join(directory, mount.mountPath), { recursive: true });
+  }
+  // Only relocate mount paths; keep the generated preparation and signal code.
+  const program = container.command[2]
+    .replaceAll("/workspace-preparation", join(directory, "workspace-preparation"))
+    .replaceAll("/preparation-status", join(directory, "preparation-status"));
+  const child = spawn(process.execPath, ["-e", program], {
+    cwd: directory,
+    env: { PATH: dirname(process.execPath) },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let errors = "";
+  child.stderr.on("data", (chunk) => {
+    errors += chunk;
+  });
+  const exited = new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code, signal) => resolve({ code, signal }));
+  });
+  const stopDeadline = setTimeout(() => child.kill("SIGKILL"), 5_000);
+  t.after(async () => {
+    clearTimeout(stopDeadline);
+    child.kill("SIGKILL");
+    await exited;
+  });
+  const marker = join(directory, "preparation-status", "ready");
+  for (;;) {
+    assert.equal(child.exitCode, null, errors);
+    assert.equal(child.signalCode, null, errors);
+    const ready = await readFile(marker, "utf8").catch((error) => {
+      if (error.code !== "ENOENT") {
+        throw error;
+      }
+      return undefined;
+    });
+    if (ready !== undefined) {
+      assert.equal(ready, "ready");
+      break;
+    }
+    await delay(20);
+  }
+  // A preparer must acknowledge termination, rather than wait for Kubernetes to
+  // force-kill it. The completion marker survives its successful shutdown.
+  child.kill("SIGTERM");
+  assert.deepEqual(await exited, { code: 0, signal: null });
+  assert.equal(await readFile(marker, "utf8"), "ready");
+});
+
 test("OpenShell resumes an SDK-decoded preparer after losing its create response", async () => {
   const { driver, gateway, api, resource, context, requirements } =
     await orphanedNativePreparation();

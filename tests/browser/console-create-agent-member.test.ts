@@ -1,3 +1,8 @@
+import {
+  expectCreateAccess,
+  expectCreateRefused,
+  waitForCreateFormReads,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import type { Page, Route } from "playwright";
@@ -34,11 +39,6 @@ import {
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
 import { responseTo } from "./console-action-helpers.ts";
-import {
-  expectCreateAccess,
-  expectCreateRefused,
-  waitForCreateFormReads,
-} from "./console-agents-test-support.mjs";
 import { refocus } from "./console-refocus-helpers.mjs";
 import {
   ADMINISTRATOR_ACCESS_DENIED,

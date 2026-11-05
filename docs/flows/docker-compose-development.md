@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
 updated: 2026-11-04
-last_updated_session: authoring-run/d89beadd-3258-4f64-873f-0033585df097
+last_updated_session: authoring-run/73695cc1-a0da-41a6-9cb1-c3fbde5f5a71
 ---
 
 # Compose development flow
@@ -165,8 +165,7 @@ Meanwhile, `internal/occdev/concurrent.go:concurrently` imports the controller
 image, then checks network isolation while importing PostgreSQL and, when
 configured, repository images. The first independent failure cancels the others
 and is reported. A sandbox refusal or failed check rolls back the owned cluster
-before Installation setup or credential delivery. OpenShell retains its
-routing-controller installation, then runtime-import order. Both paths install
+before Installation setup or credential delivery. Both paths install
 the platform only after the check, then gate on authenticated readiness.
 
 `internal/occdev/kubernetes.go:importDevelopmentImage` exports each selected
@@ -177,7 +176,16 @@ resolves the imported digest from containerd, rejects missing or ambiguous
 results, and removes the archive. Tagged builds share this path.
 `internal/occdev/registry_k3d.go:pullDevelopmentImage` pulls digest-pinned
 `OCC_DEVELOPMENT_IMAGE_REGISTRY_CONTAINER` images instead; `state.json` records
-the registry attachment for `occ dev down` to detach.
+the registry attachment for `occ dev down` to detach. Kubernetes-only uses its
+owned k3d network; Compose uses its exact recorded Compose network and selects
+only a runtime image with the current checkout label. Both detach after imports
+and on rollback, including recovery after interrupted startup.
+For Kubernetes-only OpenShell, runtime import follows PostgreSQL/repository imports
+in their existing concurrent branch. OpenShell asset preparation follows those
+imports while network probes finish. This installs the Agent Sandbox controller
+and CRDs and imports images; platform installation and credential delivery still
+wait for every branch, including successful network verification. Image builds
+remain serial, and the large runtime import precedes smaller OpenShell assets.
 
 ### 5. Prepare the optional OpenShell development profile
 
@@ -311,6 +319,6 @@ describes accepted selectors.
 
 ## Changelog
 
-- 2026-11-04 07:14: Preserve durable cleanup and authenticated defaults while retiring local middleware provisioning. (authoring-run/d89beadd-3258-4f64-873f-0033585df097 - dc5792f75970f2ac79ba462f6067019bdaa6c360)
+- 2026-11-04 19:20: Preserve durable cleanup and joined readiness while overlapping image preparation. (authoring-run/73695cc1-a0da-41a6-9cb1-c3fbde5f5a71 - 3f3150ce8a8b024e902ecf493a5e41ff5b72c934)
 
 [Compose development documentation history](docker-compose-development/history.md) preserves the older dated entries.

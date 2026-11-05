@@ -11,7 +11,14 @@ import type {
   TabNavigation,
 } from "./page-context.mjs";
 import { renderInstallationConfigurations } from "./driver-configurations.mjs";
-import { element, button, requestIdDisclosure, statusBlock, trackVisualViewport } from "./dom.mjs";
+import {
+  element,
+  button,
+  requestIdDisclosure,
+  setUnavailable,
+  statusBlock,
+  trackVisualViewport,
+} from "./dom.mjs";
 import {
   agentPageReadRefusal,
   clearResolvedSecretNames,
@@ -117,6 +124,7 @@ interface RetainedView {
 }
 
 const app = document.querySelector<HTMLElement>("#app")!;
+app.querySelector(":scope > .startup-recovery")?.remove();
 const lifetime = createViewLifetime();
 let session: Session | null = null;
 let namespaces: Namespace[] = [];
@@ -898,9 +906,28 @@ let resumePending: Promise<void> | null = null;
 // itself the access check, so refocusing the window waits for it (findings 1460, 1516).
 let openingAgentLoad: number | null = null;
 
-// The authentication route returns its projected account and session binding, or null.
-function readSession() {
-  return request("/api/auth/session") as Promise<Session | null>;
+// Only null confirms a signed-out session. A malformed reply cannot admit private reads.
+async function readSession(): Promise<Session | null> {
+  const result = await request("/api/auth/session");
+  if (result === null) {
+    return null;
+  }
+  const { authenticated, sessionKey, user } = responseFields(result);
+  const { id, email, name } = responseFields(user);
+  if (
+    authenticated !== true ||
+    !isNonEmptyString(sessionKey) ||
+    !isNonEmptyString(id) ||
+    !isNonEmptyString(email) ||
+    !isNonEmptyString(name)
+  ) {
+    throw new Error("Invalid session response");
+  }
+  return { sessionKey, user: { id, email, name } };
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 function sessionOwnerKey(value: Session | null) {
@@ -1367,7 +1394,7 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
         return;
       }
       pending = true;
-      setDisabled(true);
+      setButtonsUnavailable(true);
       feedback.textContent = "";
       try {
         const result = await request(`/api/auth/providers/${provider}/start`, { method: "POST" });
@@ -1396,7 +1423,7 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
         }
         feedback.textContent = providerStartFailure(error, label, recoveryOnly);
         pending = false;
-        setDisabled(false);
+        setButtonsUnavailable(false);
       }
     });
     const icon = providerIcon(provider);
@@ -1421,12 +1448,12 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
     },
     { tone: "link", className: "auth-recovery", hidden: true },
   );
-  function setDisabled(disabled: boolean) {
-    submit.disabled = disabled;
-    github.disabled = disabled;
-    google.disabled = disabled;
+  function setButtonsUnavailable(unavailable: boolean) {
+    setUnavailable(submit, unavailable, null);
+    setUnavailable(github, unavailable, null);
+    setUnavailable(google, unavailable, null);
     if (oidc !== null) {
-      oidc.disabled = disabled;
+      setUnavailable(oidc, unavailable, null);
     }
   }
   const providers = element("div", { className: "auth-providers" });
@@ -1437,7 +1464,7 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
       return;
     }
     pending = true;
-    setDisabled(true);
+    setButtonsUnavailable(true);
     feedback.textContent = "";
     takeExternalAttempt();
     const active = lifetime.capture();
@@ -1462,7 +1489,7 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
     } finally {
       if (lifetime.isCurrent(active)) {
         pending = false;
-        setDisabled(false);
+        setButtonsUnavailable(false);
       }
     }
   });
@@ -1492,7 +1519,7 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
         }
         if (available?.oidc === true && configureOidc(available.oidcSignIn)) {
           oidc = providerButton("oidc");
-          oidc.disabled = pending;
+          setUnavailable(oidc, pending, null);
           providers.append(oidc);
         }
         // Only an explicit false hides the form: failed or older discovery keeps it.
@@ -1506,7 +1533,12 @@ function showLogin(message: LoginMessage = "", destination: Intent | null = null
           }
           usernameHint.textContent = "Use the recovery account's email.";
           // Never pull the form away from someone already using it.
-          if (!pending && username.value === "" && password.value === "") {
+          if (
+            !pending &&
+            username.value === "" &&
+            password.value === "" &&
+            !form.contains(document.activeElement)
+          ) {
             form.hidden = true;
             usernameHint.hidden = true;
             providers.after(feedback);

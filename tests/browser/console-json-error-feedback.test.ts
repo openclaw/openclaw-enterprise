@@ -1,3 +1,8 @@
+import {
+  enterManualModel,
+  openAdvancedSettings,
+  waitForLiveControls,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Page } from "playwright";
@@ -16,11 +21,6 @@ import {
   newPage,
   shippedPreset,
 } from "./console-agents-browser-helpers.mjs";
-import {
-  enterManualModel,
-  openAdvancedSettings,
-  waitForLiveControls,
-} from "./console-agents-test-support.mjs";
 import { SAVED_CONFIGURATION_CHANGED } from "../helpers/refusal-text.mjs";
 
 const defaultCodexPreset = await shippedPreset("default-codex");

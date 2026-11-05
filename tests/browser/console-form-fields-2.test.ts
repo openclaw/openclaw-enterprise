@@ -1,3 +1,8 @@
+import {
+  openAdvancedSettings,
+  openCreateSecretDialog,
+  waitForCreateFormReads,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import type { BrowserContextOptions, Locator, Page } from "playwright";
@@ -21,12 +26,7 @@ import {
   selectSecret,
   shippedPreset,
 } from "./console-agents-browser-helpers.mjs";
-import {
-  openAdvancedSettings,
-  openCreateSecretDialog,
-  routeInstallationWithoutProvisioning,
-  waitForCreateFormReads,
-} from "./console-agents-test-support.mjs";
+import { routeInstallationWithoutProvisioning } from "./console-agents-test-support.mjs";
 
 // The forms #2907 left on the browser's check (finding 1979): Plugin selections, the
 // authentication source form and the workspace file editor. Each now checks its fields itself

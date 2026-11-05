@@ -8,6 +8,8 @@ This record preserves the dated changes to the Compose development flow. See the
 
 ## Changelog
 
+- 2026-11-04 07:14: Preserve durable cleanup and authenticated defaults while retiring local middleware provisioning. (authoring-run/d89beadd-3258-4f64-873f-0033585df097 - dc5792f75970f2ac79ba462f6067019bdaa6c360)
+
 - 2026-11-02 18:38: Preserve authenticated Gateway defaults and durable cleanup while merging main. (authoring-run/c9f16ccb-c34a-4d8b-a04c-5b0ccc4b01c1 - 94f7cd4a4cacd9ab8031ceb35fcd40d3522b3647)
 
 - 2026-11-04 08:53: Remove retired local authority provisioning and retain authenticated Gateway readiness and recorded-state cleanup. (authoring-run/a8b6b1f4-19b7-48f0-bb5b-f86a5dcf62a9 - d0421ca03868db643faa8ba2d13e784fc637cc2e)
@@ -83,3 +85,5 @@ This record preserves the dated changes to the Compose development flow. See the
 - 2026-08-24 22:43: Added API-only filesystem Configuration Driver volume boundaries and removed stale Docker subnet knobs. (01a03630-cd9f-7352-9e64-1d30de98c7dd - 63890cf94cfc15f848f62f8f957eb766d2101f55)
 
 - 2026-08-24 21:40: Documented Docker Compose development startup and Docker Compute Driver runtime flow. (01a03630-cd9f-7352-9e64-1d30de98c7dd - 63890cf94cfc15f848f62f8f957eb766d2101f55)
+
+- 2026-11-04 20:46: Overlap selected-image setup while retaining joined readiness and rollback gates. (authoring-run/4dc828f0-0acc-4001-b6e2-3f57824db925 - 7951de4edf7abadc02725484771bcd6207ed9b9d)

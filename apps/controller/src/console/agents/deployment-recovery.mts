@@ -3,6 +3,7 @@ import type {
   AgentDeploymentStatusWire,
   AgentRead,
   AgentRevisionSummaryWire,
+  RuntimeFailureEvidence,
 } from "@openclaw-enterprise/contracts";
 import type { Static } from "typebox";
 import { requestFailure } from "../api-client.mjs";
@@ -27,6 +28,7 @@ type RecoveryContext = Parameters<typeof logTextDenied>[0] & {
 interface FailureToShow {
   latest: Pick<AgentRevisionSummaryWire, "id" | "revision">;
   record: AgentDeploymentStatusWire | null;
+  failedModel: string | undefined;
   agent: AgentRead;
   permissions: Static<typeof AgentCallerPermissionsResponse>["data"] | null;
   currentLabel: string;
@@ -86,6 +88,30 @@ export function secretBackedCredential(
   harnessAuth: { method: string; source?: { kind: string } } | null | undefined,
 ) {
   return harnessAuth?.source?.kind === "secret";
+}
+
+export function modelUnavailable(error: AgentDeploymentStatusWire["error"] | undefined) {
+  const data = error?.data;
+  const failure: RuntimeFailureEvidence | undefined =
+    data && "runtimeFailure" in data ? data.runtimeFailure : undefined;
+  const cause = failure?.cause;
+  return (
+    error?.code === "RUNTIME_MODEL_PROBE_FAILED" &&
+    cause?.kind === "PROBE_STATUS" &&
+    (cause.detail === "model_not_found" || cause.detail === "model_not_found-attempt2")
+  );
+}
+
+function modelRecoveryStep(canEdit: boolean, canDeploy: boolean) {
+  if (canEdit) {
+    return canDeploy
+      ? "Choose a model this account can use in Configuration, then redeploy this Agent."
+      : "Choose a model this account can use in Configuration. Ask someone with deploy access to redeploy this Agent.";
+  }
+  const ask = "Ask a Configuration editor to choose a model this account can use.";
+  return canDeploy
+    ? `${ask} After they save it, redeploy this Agent.`
+    : `${ask} Someone with deploy access must then redeploy this Agent.`;
 }
 
 const DEPLOYMENT_FAILURE_LINK_LABELS = {
@@ -226,22 +252,7 @@ export function createDeploymentRecovery(
       : "Ask someone with log access to check the failed version’s logs before deploying a new version.";
     const harnessAuth = "harnessAuth" in agent ? agent.harnessAuth : undefined;
     const credentialFixAsk = credentialRejectedAsk(code, harnessAuth, permissions);
-    const failureText = credentialFixAsk ?? errorMessage;
-    let impact = failureText || generic;
-    if (servingImpact === "replacement-failed") {
-      impact = `${currentLabel} is still selected, but its runtime was probably stopped for this deployment.${failureText ? ` ${failureText}` : ""}`;
-    } else if (servingImpact === "selected-failed") {
-      impact = `${currentLabel} is still selected, but its runtime replaced the previous version before deployment finished.${failureText ? ` ${failureText}` : ""}`;
-    }
-    if ((servingImpact || (errorMessage && step === "logs")) && !logsAllowed) {
-      // Without the Logs link this is the reader's only way to the logs (finding 1484).
-      impact += " Ask someone with log access to check the failed version’s logs.";
-    }
-    // The code ends the first sentence, so the reader can match it to Logs and to occ.
-    setText(recoveryLead, code ? `${lead} (` : `${lead}.`);
-    setText(recoveryCode, code ?? "");
-    setHidden(recoveryCode, !code);
-    setText(recoveryRest, code ? `). ${impact}` : ` ${impact}`);
+    const unavailable = modelUnavailable(record?.error);
     // Deploying again is the whole next step only where OCC's table says so. The draft
     // it opens builds Deploy new version only from a readable Configuration, so the link waits
     // for a successful read of it (finding 1931).
@@ -276,6 +287,27 @@ export function createDeploymentRecovery(
       guidance === "configuration" &&
       configurationAvailable &&
       (configurationEditable || (openDraftAllowed && readableConfigurationId === configurationId));
+    const modelLabel = failure.failedModel
+      ? `Model ${failure.failedModel}`
+      : "The configured model";
+    const failureText = unavailable
+      ? `${modelLabel} is unavailable with this credential (model_not_found). ${modelRecoveryStep(canOpenConfiguration && configurationEditable, canOpenConfiguration && permissions?.deploy === true)}`
+      : (credentialFixAsk ?? errorMessage);
+    let impact = failureText || generic;
+    if (servingImpact === "replacement-failed") {
+      impact = `${currentLabel} is still selected, but its runtime was probably stopped for this deployment.${failureText ? ` ${failureText}` : ""}`;
+    } else if (servingImpact === "selected-failed") {
+      impact = `${currentLabel} is still selected, but its runtime replaced the previous version before deployment finished.${failureText ? ` ${failureText}` : ""}`;
+    }
+    if ((servingImpact || (errorMessage && step === "logs")) && !logsAllowed) {
+      // Without the Logs link this is the reader's only way to the logs (finding 1484).
+      impact += " Ask someone with log access to check the failed version’s logs.";
+    }
+    // The code ends the first sentence, so the reader can match it to Logs and to occ.
+    setText(recoveryLead, code ? `${lead} (` : `${lead}.`);
+    setText(recoveryCode, code ?? "");
+    setHidden(recoveryCode, !code);
+    setText(recoveryRest, code ? `). ${impact}` : ` ${impact}`);
     const canOpenCredentials =
       guidance === "credentials" &&
       agentEditable &&
@@ -286,7 +318,7 @@ export function createDeploymentRecovery(
       (canOpenConfiguration && !configurationEditable
         ? "Open draft"
         : DEPLOYMENT_FAILURE_LINK_LABELS[tab]);
-    const actionsFor = `${latest.id}/${tab}/${nextLabel}/${logsAllowed}/${deployAgain}`;
+    const actionsFor = `${latest.id}/${tab}/${nextLabel}/${logsAllowed}/${deployAgain}/${unavailable}`;
     if (recoveryTarget !== actionsFor) {
       recoveryTarget = actionsFor;
       const again = deployAgain
@@ -294,9 +326,10 @@ export function createDeploymentRecovery(
         : null;
       const logs = logsAllowed ? versionLink(`Open ${version} Logs`, latest.id, "logs") : null;
       const next = tab && nextLabel ? versionLink(nextLabel, "draft", tab) : null;
-      // The first action is the one primary on the page: Deploy again where redeploying can
-      // help, else the failed version's Logs. The others are secondary buttons.
-      const actions = [again, logs, next].filter((action) => action !== null);
+      // Put the fix first when the viewer can edit the unavailable model.
+      const actions = (
+        unavailable && configurationEditable ? [next, logs] : [again, logs, next]
+      ).filter((action) => action !== null);
       actions.forEach((action, index) => {
         action.className = index === 0 ? "button button--primary" : "button";
       });
