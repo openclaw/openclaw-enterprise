@@ -13,7 +13,7 @@ import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/driv
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { OpenShellProviderAlreadyExistsError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createConsoleAppFixture, denialsDuring } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
@@ -1358,4 +1358,59 @@ test("a published MCP template admits only its exact Namespace destination and t
   });
   assert.equal(forged.status, 400, JSON.stringify(forged.body));
   assert.equal(f.providers.size, 1);
+
+  await t.test(
+    "discovery checks the saved source's Namespace even when the caller names a bundled plugin",
+    async () => {
+      const agent = await f.createAgent(
+        f.namespace.id,
+        "Reports Agent",
+        createHarnessConfiguration("openclaw", "gpt-5"),
+        {
+          executionMode: "dedicated",
+          harnessAuth: null,
+          credentialSources: [{ sourceId: exact.id }],
+        },
+      );
+      const role = await f.request("POST", ns + "/iam/roles", {
+        body: { permissions: [{ action: "operate", resourceKind: "credential_source" }] },
+      });
+      assert.equal(role.status, 201, JSON.stringify(role.body));
+      const grant = await f.request("POST", ns + "/iam/access-bindings", {
+        body: {
+          subjectKind: "identity",
+          subjectId: agent.servicePrincipalId,
+          roleId: role.data.id,
+          resourceKind: "credential_source",
+          resourceId: exact.id,
+        },
+      });
+      assert.equal(grant.status, 201, JSON.stringify(grant.body));
+      const editor = await f.createNamespaceMember("reports-editor", f.namespace.id, [
+        ["read", "agent"],
+        ["update", "agent"],
+        ["operate", "credential_source"],
+      ]);
+      const session = await f.signIn(editor.credentials);
+      const details = (session) =>
+        f.request("POST", ns + "/agents/" + agent.id + "/plugins/details", {
+          session,
+          body: {
+            pluginId: "occ-plugin:slack@1.0.0",
+            managedConnection: { slot: "account", sourceId: exact.id },
+          },
+        });
+      // A Namespace reader can reach slot validation; the editor must be denied before it.
+      const mismatch = await details();
+      assert.equal(mismatch.status, 409, JSON.stringify(mismatch.body));
+      assert.match(mismatch.body.error.message, /compatible credential source/);
+      const before = f.secretDriver.calls.length;
+      const { response, denials } = await denialsDuring(f.auditSink, () => details(session));
+      assert.equal(response.status, 403, JSON.stringify(response.body));
+      assert.deepEqual(denials, [{ action: "read", kind: "namespace", id: f.namespace.id }]);
+      assert.ok(
+        !f.secretDriver.calls.slice(before).some(({ operation }) => operation === "withValue"),
+      );
+    },
+  );
 });

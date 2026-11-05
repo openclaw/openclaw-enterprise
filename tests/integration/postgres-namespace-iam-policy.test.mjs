@@ -1021,7 +1021,7 @@ test(
 );
 
 test(
-  "PostgreSQL native IAM grants Namespace Roles only Namespace read",
+  "PostgreSQL native IAM refuses Namespace lifecycle permissions in new and existing Roles",
   requiresPostgres,
   async (context) => {
     const { Pool } = await import("pg");
@@ -1043,14 +1043,21 @@ test(
           { id: roleId, namespaceId: namespace.id, permissions },
         ),
       ),
-      /managed Namespace Role permissions support only read/,
+      {
+        name: "TypeError",
+        message:
+          "Invalid native IAM state: managed Namespace Roles can read the Namespace or publish plugins",
+      },
     );
     // The State writer refuses the Role even when a caller bypasses the IAM Driver.
     await assert.rejects(
       state.transact((unit) =>
         unit.iamPolicy.createRole({ id: roleId, namespaceId: namespace.id, permissions }),
       ),
-      { name: "ScopeViolationError", message: /support only Namespace read/ },
+      {
+        name: "ScopeViolationError",
+        message: "Namespace IAM Roles can read the Namespace or publish plugins in it.",
+      },
     );
     assert.equal(
       await state.transact((unit) => unit.iamPolicy.getRole(namespace.id, roleId)),
@@ -1080,7 +1087,10 @@ test(
           },
         ),
       ),
-      { name: "IAMPolicyValidationError", message: /support only Namespace read/ },
+      {
+        name: "IAMPolicyValidationError",
+        message: "Namespace IAM Roles can read the Namespace or publish plugins in it.",
+      },
     );
     assert.deepEqual(
       await state.transact((unit) => unit.iamPolicy.listAccessBindings(namespace.id)),

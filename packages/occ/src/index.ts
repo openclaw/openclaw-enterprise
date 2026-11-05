@@ -9078,15 +9078,16 @@ export class OpenClawController {
           namespace.id,
           sourceRef.id,
         );
-        const digest = importedPluginDigest(pluginId);
-        if (digest) {
+        const template = source?.importedPluginTemplate;
+        let release: InspectedPluginPackage | undefined;
+        if (template) {
           await this.authorize(principalId, "read", {
             kind: "namespace",
             id: namespaceId,
             namespaceId,
           });
+          release = await state.pluginReleases.find(namespaceId, template.releaseSha256);
         }
-        const release = digest ? await state.pluginReleases.find(namespaceId, digest) : undefined;
         const target =
           namespace.status === "ready" &&
           source?.state === "ready" &&

@@ -1164,6 +1164,8 @@ export const occApiRoutes = [
       body: InspectPluginPackageBody,
       response: {
         200: PluginPackagePreviewResponse,
+        413: ErrorResponseRef,
+        415: ErrorResponseRef,
         422: ErrorResponseRef,
         501: ErrorResponseRef,
         ...readErrors,

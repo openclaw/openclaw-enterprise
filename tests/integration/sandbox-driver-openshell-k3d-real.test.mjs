@@ -7653,19 +7653,19 @@ async function assertImportedNativeMcp(context, topology, provider) {
       "Use the exec tool to run exactly this command and return its output:\n/usr/local/bin/node --use-env-proxy " +
         path,
       (call) => call.name === "exec" && String(call.arguments?.command ?? "").includes(path),
-      (text) =>
-        [200, 401].some((status) =>
-          text.includes(nonce + "_MCP_CONTROL_" + status + "_EXCLUDED_403"),
-        ),
+      (text) => text.includes(nonce + "_MCP_CONTROL_200_EXCLUDED_403"),
     );
     const receipts = (await provider.receipts()).slice(before);
     assert.ok(
-      receipts.some((entry) => entry.name === "get_allowed" && entry.id === nonce + "-control"),
-      "the same shell must reach the receiver for its positive control",
+      receipts.some(
+        (entry) =>
+          entry.name === "get_allowed" && entry.id === nonce + "-control" && entry.authenticated,
+      ),
+      "the same shell must reach the receiver with the selected account for its positive control",
     );
     assert.ok(
       !receipts.some((entry) => entry.name === "get_denied"),
-      "the receiver must never receive the excluded tool, even without a credential",
+      "the receiver must never receive the excluded tool, even when the shell presents the same account",
     );
   } finally {
     await kubectl(

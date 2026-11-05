@@ -348,7 +348,7 @@ test("managed memory policy resolves identities enrolled after construction with
   }
 });
 
-test("managed Namespace Roles grant only Namespace read so a Namespace binding cannot delete it", async () => {
+test("managed Namespace Roles can read and publish plugins in the bound Namespace and cannot delete it", async () => {
   const platform = new InMemoryPlatformState({ iamIdentities: identities });
   const native = managedNamespaceDriver(platform, () => identities);
   await platform.transact((unit) => createInstallationNamespaces(unit));
@@ -374,14 +374,21 @@ test("managed Namespace Roles grant only Namespace read so a Namespace binding c
           role(`namespace-${action}`, permissions),
         ),
       ),
-      /managed Namespace Role permissions support only read/,
+      {
+        name: "TypeError",
+        message:
+          "Invalid native IAM state: managed Namespace Roles can read the Namespace or publish plugins",
+      },
     );
     // The State writer independently refuses to persist the Role.
     await assert.rejects(
       platform.transact((unit) =>
         unit.iamPolicy.createRole(role(`namespace-${action}-state`, permissions)),
       ),
-      { name: "ScopeViolationError", message: /support only Namespace read/ },
+      {
+        name: "ScopeViolationError",
+        message: "Namespace IAM Roles can read the Namespace or publish plugins in it.",
+      },
     );
   }
   assert.deepEqual(await platform.read((unit) => unit.iamPolicy.listRoles("namespace-a")), []);
@@ -389,8 +396,9 @@ test("managed Namespace Roles grant only Namespace read so a Namespace binding c
   await platform.transact((unit) =>
     native.createNamespaceRole(
       { policy: unit.iamPolicy },
-      role("namespace-reader-agent-deleter", [
+      role("namespace-publisher-agent-deleter", [
         { action: "read", resourceKind: "namespace" },
+        { action: "publish_plugins", resourceKind: "namespace" },
         { action: "delete", resourceKind: "agent" },
       ]),
     ),
@@ -403,7 +411,7 @@ test("managed Namespace Roles grant only Namespace read so a Namespace binding c
         namespaceId: "namespace-a",
         subjectKind: "identity",
         subjectId: "principal-unbound",
-        roleId: "namespace-reader-agent-deleter",
+        roleId: "namespace-publisher-agent-deleter",
         resourceKind: "namespace",
         resourceId: "namespace-a",
       },
@@ -418,6 +426,7 @@ test("managed Namespace Roles grant only Namespace read so a Namespace binding c
       })
     ).allowed;
   assert.equal(await decide("read"), true);
+  assert.equal(await decide("publish_plugins"), true);
   assert.equal(await decide("delete"), false);
 });
 

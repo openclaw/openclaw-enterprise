@@ -2680,6 +2680,8 @@ Example request
 | `401` | The caller did not provide valid credentials. |
 | `403` | The caller is not allowed to perform this operation. |
 | `404` | The requested platform resource was not found. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
 | `422` | The uploaded plugin package cannot be inspected. |
 | `500` | The platform request could not be completed. |
 | `501` | The selected Driver does not support this operation. |

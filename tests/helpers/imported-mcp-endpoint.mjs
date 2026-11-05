@@ -172,13 +172,25 @@ export async function startImportedMcpEndpoint(context, kubectl, image) {
   };
 }
 
-// Executed by the normal Agent exec tool, within the OpenShell network boundary. When the
-// shell does not inherit an issued marker, the positive transport control reaches the receiver
-// anonymously. Either way the excluded call must be denied before reaching that receiver.
+// A normal Agent exec uses the same issued placeholder as the native transport for both
+// requests. Read only the selected endpoint's header if the exec environment omits its slot.
 async function probe(url, environment, nonce) {
-  const marker = process.env[environment];
-  if (marker && !marker.startsWith("openshell:resolve:env:")) {
-    throw new Error("The shell credential value was not an issued placeholder.");
+  let marker = process.env[environment];
+  if (!marker) {
+    const { readFile } = await import("node:fs/promises");
+    const state = process.env.OPENCLAW_NODE_STATE_DIR ?? "/home/node/.openclaw-node";
+    const path = process.env.OPENCLAW_CONFIG_PATH ?? state + "/openclaw.json";
+    const config = JSON.parse(await readFile(path, "utf8"));
+    const endpoint = Object.values(config.nodeHost?.mcp?.servers ?? {}).find(
+      (server) => server.enabled && server.url === url,
+    );
+    const header = endpoint?.headers?.Authorization;
+    if (typeof header === "string" && header.startsWith("Bearer ")) {
+      marker = header.slice("Bearer ".length);
+    }
+  }
+  if (!marker?.startsWith("openshell:resolve:env:") || !marker.endsWith("_" + environment)) {
+    throw new Error("The selected native MCP account has no issued placeholder in the worker.");
   }
   async function call(name, id) {
     const response = await fetch(url, {
@@ -187,7 +199,7 @@ async function probe(url, environment, nonce) {
         "content-type": "application/json",
         accept: "application/json, text/event-stream",
         "mcp-protocol-version": "2025-06-18",
-        ...(marker ? { Authorization: "Bearer " + marker } : {}),
+        Authorization: "Bearer " + marker,
       },
       body: JSON.stringify({
         jsonrpc: "2.0",
@@ -209,7 +221,7 @@ async function probe(url, environment, nonce) {
   }
   const allowed = await call("get_allowed", nonce + "-control");
   const denied = await call("get_denied", nonce + "-excluded");
-  if (allowed !== (marker ? 200 : 401) || denied !== 403) {
+  if (allowed !== 200 || denied !== 403) {
     throw new Error(
       "Unexpected inspected MCP responses: control=" + allowed + " excluded=" + denied,
     );

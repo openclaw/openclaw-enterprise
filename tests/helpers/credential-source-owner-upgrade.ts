@@ -35,10 +35,10 @@ export async function retainGatewaySourcesAcrossProxyAdmission(
       );
     }
   }
-  async function sources(omitAnnotations: boolean) {
+  async function sources() {
     return (
       await app.query(
-        `SELECT to_jsonb(s) ${omitAnnotations ? "- 'owner_capability' - 'egress'" : ""} AS source
+        `SELECT to_jsonb(s) AS source
          FROM occ.credential_sources s WHERE id=ANY($1) ORDER BY id`,
         [ids],
       )
@@ -52,16 +52,21 @@ export async function retainGatewaySourcesAcrossProxyAdmission(
       )
     ).rows;
   }
-  const before = await sources(false);
+  const before = await sources();
   const secretsBefore = await relationships();
   return async function assertOwnershipAfterUpgrade() {
-    assert.deepEqual(await sources(true), before, "main source fields survive unchanged");
-    assert.deepEqual(await relationships(), secretsBefore, "Secret ownership remains exact");
     assert.deepEqual(
-      (await sources(false)).map(({ owner_capability, egress }) => ({ owner_capability, egress })),
-      ids.map(() => ({ owner_capability: "credential_gateway", egress: null })),
-      "main sources retain Gateway ownership without acquiring proxy authority",
+      await sources(),
+      before.map((source) => ({
+        ...source,
+        owner_capability: "credential_gateway",
+        egress: null,
+        plugin_release_digest: null,
+        plugin_server_name: null,
+      })),
+      "existing sources keep their metadata and Gateway ownership without proxy or plugin template authority",
     );
+    assert.deepEqual(await relationships(), secretsBefore, "Secret ownership remains exact");
     const relabel =
       "UPDATE occ.credential_sources SET owner_capability='credential_proxy' WHERE id=$1";
     await assert.rejects(app.query(relabel, [ids[0]]), { code: "42501" });
