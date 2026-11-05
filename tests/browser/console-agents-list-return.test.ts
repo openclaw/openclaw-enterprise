@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import type { Page, Request, Route } from "playwright";
+
+import type { DeploymentStatus } from "../../packages/occ/src/state/controller-work.ts";
 
 import {
   fileBrowser,
@@ -16,9 +19,35 @@ import {
   waitForIdleFetches,
 } from "./console-agents-browser-helpers.mjs";
 import { refocus, tagView, viewTag } from "./console-refocus-helpers.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
+
+type ReadyNamespace = Awaited<ReturnType<typeof createReadyConsoleNamespace>>;
+type Namespace = ReadyNamespace["namespace"];
+type Agent = Awaited<ReturnType<ReadyNamespace["fixture"]["createAgent"]>>;
+type Revealed = { deployments: number; agents: Set<string> };
+type ReadingVisibility = { labels: number; firstFrame: number; at249: number; at250: number };
+declare global {
+  var __revealed: Revealed | undefined;
+  var __revealedObserver: MutationObserver | undefined;
+  var __readingVisibility: ReadingVisibility | undefined;
+  var __readingShown: number | undefined;
+}
+
+function required<T>(value: T | undefined): T {
+  assert.ok(value !== undefined, "Expected an existing fixture entry");
+  return value;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function record(value: unknown): Record<string, unknown> {
+  assert.ok(isRecord(value), "Expected a JSON object in the fixture response");
+  return value;
+}
 
 // One Chromium for the file; each test still gets its own context.
 const browser = fileBrowser();
@@ -30,13 +59,18 @@ const browser = fileBrowser();
 const AGENTS = 12;
 const READING = "Reading deployment…";
 const activeView = '.content [aria-live="polite"]:not([inert])';
-const revisionsRead = (namespace) => `**/namespaces/${namespace.id}/agents/*/revisions`;
-const deploymentsRead = (namespace) => `**/namespaces/${namespace.id}/agents/*/deployments/*`;
+const revisionsRead = (namespace: Namespace) => `**/namespaces/${namespace.id}/agents/*/revisions`;
+const deploymentsRead = (namespace: Namespace) =>
+  `**/namespaces/${namespace.id}/agents/*/deployments/*`;
 
 // A deployment record read; the list shows its status and, for a failure, its error. As the API's
 // does, the record names its Agent and version: the Agent page uses only a record of the version
 // it asked about, and one without them left that page on its 2 s fallback before it showed.
-function deploymentRecord(namespace, status, { agentId, deploymentId }) {
+function deploymentRecord(
+  namespace: Namespace,
+  status: DeploymentStatus,
+  { agentId, deploymentId }: { agentId: string; deploymentId: string },
+) {
   return {
     json: {
       data: {
@@ -54,11 +88,14 @@ function deploymentRecord(namespace, status, { agentId, deploymentId }) {
 }
 
 // Answers each deployment read with the record of the Agent and version in its path.
-function answerDeployments(namespace, status) {
-  return (route) => {
-    const [, agentId, deploymentId] = new URL(route.request().url()).pathname.match(
+function answerDeployments(namespace: Namespace, status: DeploymentStatus) {
+  return (route: Route) => {
+    const match = new URL(route.request().url()).pathname.match(
       /\/agents\/([^/]+)\/deployments\/([^/]+)$/,
     );
+    assert.ok(match);
+    const [, agentId, deploymentId] = match;
+    assert.ok(agentId && deploymentId);
     return route.fulfill(
       deploymentRecord(namespace, status, {
         agentId: decodeURIComponent(agentId),
@@ -70,7 +107,11 @@ function answerDeployments(namespace, status) {
 
 // `newer` names the Agents (by index) with a second version deployed after the active one, so their
 // Latest deployment link differs from their Current version link.
-async function openTeamList(t, name, { newer = [] } = {}) {
+async function openTeamList(
+  t: TestContext,
+  name: string,
+  { newer = [] }: { newer?: number[] } = {},
+) {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, name);
   const agents = [];
   for (let index = 1; index <= AGENTS; index += 1) {
@@ -87,31 +128,36 @@ async function openTeamList(t, name, { newer = [] } = {}) {
   // deployment succeeded.
   await page.route(deploymentsRead(namespace), answerDeployments(namespace, "succeeded"));
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
-  await page.locator(settledView).getByRole("link", { name: agents[0].name }).waitFor();
+  await page
+    .locator(settledView)
+    .getByRole("link", { name: required(agents[0]).name })
+    .waitFor();
   // Every row's deployment has landed, so the list is reusable when the reader leaves.
   await page.getByText(READING).first().waitFor({ state: "detached" });
   return { fixture, namespace, agents, page };
 }
 
 // The text of each row's Latest deployment cell, by Agent name.
-const deploymentCells = (page) =>
-  page
-    .locator(activeView)
-    .evaluate((view) =>
-      Object.fromEntries(
-        [...view.querySelectorAll(".agent-table tbody tr")].map((row) => [
-          row.querySelector("td a").textContent,
-          row.querySelector(".agent-deployment").textContent,
-        ]),
-      ),
-    );
+const deploymentCells = (page: Page) =>
+  page.locator(activeView).evaluate((view) =>
+    Object.fromEntries(
+      [...view.querySelectorAll(".agent-table tbody tr")].map((row) => {
+        const name = row.querySelector("td a");
+        const deployment = row.querySelector(".agent-deployment");
+        if (!name || !deployment) {
+          throw new Error("Agent row is missing its name or deployment cell");
+        }
+        return [name.textContent, deployment.textContent];
+      }),
+    ),
+  );
 
 // Records, after every DOM change, how many rows of the active (revealed) view show a deployment
 // other than "Reading deployment…", and every Agent it shows, so a stale value painted for even
 // one frame before a row's fresh read is caught.
-function recordRevealed(reading) {
+function recordRevealed(reading: string) {
   const document = globalThis.document;
-  const seen = { deployments: 0, agents: new Set() };
+  const seen: Revealed = { deployments: 0, agents: new Set() };
   globalThis.__revealed = seen;
   const record = () => {
     const view = document.querySelector('.content [aria-live="polite"]:not([inert])');
@@ -138,14 +184,17 @@ function recordRevealed(reading) {
     attributes: true,
   });
 }
-const startRecording = (page) => page.evaluate(recordRevealed, READING);
-const revealed = (page) =>
-  page.evaluate(() => ({
-    deployments: globalThis.__revealed.deployments,
-    agents: [...globalThis.__revealed.agents].sort(),
-  }));
+const startRecording = (page: Page) => page.evaluate(recordRevealed, READING);
+const revealed = (page: Page) =>
+  page.evaluate(() => {
+    const seen = globalThis.__revealed;
+    if (!seen) {
+      throw new Error("Revealed-view recording has not started");
+    }
+    return { deployments: seen.deployments, agents: [...seen.agents].sort() };
+  });
 
-async function openAgent(page, agent) {
+async function openAgent(page: Page, agent: Agent) {
   await page.locator(settledView).getByRole("link", { name: agent.name, exact: true }).click();
   await page
     .locator(settledView)
@@ -153,7 +202,7 @@ async function openAgent(page, agent) {
     .waitFor();
 }
 
-async function goBackToList(page, how) {
+async function goBackToList(page: Page, how: "Browser Back" | "Agents navigation") {
   if (how === "Browser Back") {
     await page.goBack();
   } else {
@@ -164,12 +213,9 @@ async function goBackToList(page, how) {
 // Holds every row's deployment reads; only the Agents list's own reads may decide the reveal.
 // Released, each deployment read gets its own Agent's record, so an Agent page opened while the
 // hold is in place reads the record of the version it asked about.
-async function holdRowReads(t, page, namespace) {
+async function holdRowReads(t: TestContext, page: Page, namespace: Namespace) {
   const revisions = await holdRequests(t, page, revisionsRead(namespace));
-  let releaseDeployments;
-  const deployments = new Promise((resolve) => {
-    releaseDeployments = resolve;
-  });
+  const { promise: deployments, resolve: releaseDeployments } = Promise.withResolvers<void>();
   const answer = answerDeployments(namespace, "succeeded");
   await page.route(deploymentsRead(namespace), async (route) => {
     await deployments;
@@ -185,8 +231,8 @@ async function holdRowReads(t, page, namespace) {
   };
 }
 
-for (const how of ["Browser Back", "Agents navigation"]) {
-  test(`${how} to a list of ${AGENTS} Agents reveals without waiting on row reads, then fills each row`, async (t) => {
+for (const how of ["Browser Back", "Agents navigation"] as const) {
+  void test(`${how} to a list of ${AGENTS} Agents reveals without waiting on row reads, then fills each row`, async (t) => {
     const { namespace, agents, page } = await openTeamList(t, `Team return ${how}`);
     const before = await deploymentCells(page);
     assert.equal(Object.keys(before).length, AGENTS);
@@ -195,6 +241,7 @@ for (const how of ["Browser Back", "Agents navigation"]) {
     }
     await tagView(page);
     const [opened, changed] = agents;
+    assert.ok(opened && changed);
     await openAgent(page, opened);
 
     // Every row read is held, and one Agent's deployment failed while the reader was away.
@@ -233,7 +280,9 @@ for (const how of ["Browser Back", "Agents navigation"]) {
     failed.release();
     await page.getByText(READING).first().waitFor({ state: "detached" });
     const after = await deploymentCells(page);
-    assert.match(after[changed.name], /^v1 · Failed/);
+    const changedCell = after[changed.name];
+    assert.ok(changedCell !== undefined);
+    assert.match(changedCell, /^v1 · Failed/);
     assert.deepEqual(
       Object.fromEntries(Object.entries(after).filter(([name]) => name !== changed.name)),
       Object.fromEntries(Object.entries(before).filter(([name]) => name !== changed.name)),
@@ -242,10 +291,11 @@ for (const how of ["Browser Back", "Agents navigation"]) {
   });
 }
 
-test("A return whose list read dropped an Agent never reveals that Agent, with row reads held", async (t) => {
+void test("A return whose list read dropped an Agent never reveals that Agent, with row reads held", async (t) => {
   const { namespace, agents, page } = await openTeamList(t, "Team return removed");
   await tagView(page);
   const [opened, removed] = agents;
+  assert.ok(opened && removed);
   await openAgent(page, opened);
 
   const rows = await holdRowReads(t, page, namespace);
@@ -255,10 +305,18 @@ test("A return whose list read dropped an Agent never reveals that Agent, with r
       await route.fallback();
       return;
     }
-    await fulfillPatchedJson(route, (body) => ({
-      ...body,
-      data: body.data.filter((item) => item.id !== removed.id),
-    }));
+    await fulfillPatchedJson(route, (value: unknown) => {
+      const body = record(value);
+      assert.ok(Array.isArray(body.data));
+      return {
+        ...body,
+        data: body.data.filter((value: unknown) => {
+          const item = record(value);
+          assert.equal(typeof item.id, "string");
+          return item.id !== removed.id;
+        }),
+      };
+    });
   });
   await startRecording(page);
   await page.goBack();
@@ -274,9 +332,10 @@ test("A return whose list read dropped an Agent never reveals that Agent, with r
   await page.getByText(READING).first().waitFor({ state: "detached" });
 });
 
-test("A return rereads only the rows the search shows", async (t) => {
+void test("A return rereads only the rows the search shows", async (t) => {
   const { namespace, agents, page } = await openTeamList(t, "Team return search");
   const [, , target] = agents;
+  assert.ok(target);
   await page.getByRole("searchbox", { name: "Search Agents" }).fill(target.name);
   await page.locator(settledView).getByRole("row").nth(1).waitFor();
   assert.equal(await page.locator(activeView).locator(".agent-table tbody tr").count(), 1);
@@ -284,7 +343,7 @@ test("A return rereads only the rows the search shows", async (t) => {
   await tagView(page);
   await openAgent(page, target);
 
-  const revisions = [];
+  const revisions: string[] = [];
   page.on("request", (request) => {
     if (/\/agents\/[^/]+\/revisions(\?|$)/.test(new URL(request.url()).pathname)) {
       revisions.push(new URL(request.url()).pathname);
@@ -302,7 +361,7 @@ test("A return rereads only the rows the search shows", async (t) => {
 });
 
 // A row read in the page, by kind and Agent; null for any other request.
-function rowReadOf(request) {
+function rowReadOf(request: Request) {
   const match = new URL(request.url()).pathname.match(
     /\/agents\/([^/]+)\/(permissions|revisions|deployments)(?:\/|$)/,
   );
@@ -311,18 +370,19 @@ function rowReadOf(request) {
 
 // A long list queues most of its row reads in the browser. A search that hides a row must retire
 // its unfinished reads, not send them after the matching row's, and a row shown again reads once.
-test("A search retires the unfinished reads of the rows it hides, and clearing it reads each once", async (t) => {
+void test("A search retires the unfinished reads of the rows it hides, and clearing it reads each once", async (t) => {
   const { namespace, agents, page } = await openTeamList(t, "Team search retire");
   const [, , target] = agents;
+  assert.ok(target);
   const rows = await holdRowReads(t, page, namespace);
   const permissions = await holdRequests(
     t,
     page,
     `**/namespaces/${namespace.id}/agents/*/permissions`,
   );
-  const issued = new Set();
-  const cancelled = new Set();
-  const finished = [];
+  const issued = new Set<string>();
+  const cancelled = new Set<string>();
+  const finished: string[] = [];
   page.on("request", (request) => {
     if (rowReadOf(request)) {
       issued.add(request.url());
@@ -339,7 +399,7 @@ test("A search retires the unfinished reads of the rows it hides, and clearing i
       finished.push(`${read.kind} ${read.agent}`);
     }
   });
-  const reads = (selected) =>
+  const reads = (selected: Agent[]) =>
     selected
       .flatMap((agent) =>
         ["deployments", "permissions", "revisions"].map((k) => `${k} ${agent.id}`),
@@ -349,7 +409,10 @@ test("A search retires the unfinished reads of the rows it hides, and clearing i
 
   // A reload reads every row again, and the holds keep those reads unfinished.
   await page.reload();
-  await page.locator(settledView).getByRole("link", { name: agents[0].name }).waitFor();
+  await page
+    .locator(settledView)
+    .getByRole("link", { name: required(agents[0]).name })
+    .waitFor();
   await waitForCondition(
     () => issued.size === AGENTS * 2,
     "every row's permissions and revisions reads were issued",
@@ -385,11 +448,12 @@ test("A search retires the unfinished reads of the rows it hides, and clearing i
 // Back from a deployment link restores focus in that cell, not a link to the old revision.
 // Enter does nothing until the reread supplies a link; a refusal returns focus to the Agent.
 for (const outcome of ["fills", "is refused"]) {
-  test(`Back from a row's deployment link keeps focus on that row while its reread ${outcome}`, async (t) => {
+  void test(`Back from a row's deployment link keeps focus on that row while its reread ${outcome}`, async (t) => {
     const { namespace, agents, page } = await openTeamList(t, `Team return focus ${outcome}`, {
       newer: [1],
     });
     const [, target] = agents;
+    assert.ok(target);
     await tagView(page);
     const row = page.locator(activeView).getByRole("row").filter({ hasText: target.name });
     const deploymentLink = row.locator(".agent-deployment a");
@@ -445,7 +509,9 @@ for (const outcome of ["fills", "is refused"]) {
         "focus moved to the row's Agent link",
       );
     } else {
-      assert.match(await deploymentLink.textContent(), /^v2 · Completed/);
+      const text = await deploymentLink.textContent();
+      assert.ok(text !== null);
+      assert.match(text, /^v2 · Completed/);
       assert.equal(await hasFocus(deploymentLink), true, "the fresh link kept focus");
     }
     assert.equal(await viewTag(page), "kept");
@@ -454,7 +520,7 @@ for (const outcome of ["fills", "is refused"]) {
 
 // Sample the first frame, then seek the actual CSS animations. A busy browser may deliver
 // its first animation frame late; elapsed time between two callbacks is not the loading delay.
-function measureReadingDelay(reading) {
+function measureReadingDelay(reading: string) {
   const sample = () => {
     const table = globalThis.document.querySelector(
       '.content [aria-live="polite"]:not([inert]) .agent-table',
@@ -473,7 +539,7 @@ function measureReadingDelay(reading) {
       }).length;
     const firstFrame = visible();
     const animations = labels.flatMap((label) => label.getAnimations());
-    const visibleAt = (ms) => {
+    const visibleAt = (ms: number) => {
       for (const animation of animations) {
         animation.pause();
         animation.currentTime = ms;
@@ -495,7 +561,7 @@ function measureReadingDelay(reading) {
 // 250 ms rule: blank at first, shown only if the read is still pending, and the old value is
 // never shown either way. A first visit's rows follow the same rule.
 for (const visit of ["a first visit", "a return"]) {
-  test(`Rows read on ${visit} paint no "Reading deployment…" until the read is slow`, async (t) => {
+  void test(`Rows read on ${visit} paint no "Reading deployment…" until the read is slow`, async (t) => {
     const { fixture, namespace } = await createReadyConsoleNamespace(t, `Quiet rows ${visit}`);
     const agents = [];
     for (const label of ["Quiet Agent 1", "Quiet Agent 2", "Quiet Agent 3"]) {
@@ -509,14 +575,14 @@ for (const visit of ["a first visit", "a return"]) {
     if (!first) {
       // A row whose read failed has no link to keep: its reread on return is delayed too.
       await page.route(
-        `**/namespaces/${namespace.id}/agents/${agents[2].id}/deployments/*`,
+        `**/namespaces/${namespace.id}/agents/${required(agents[2]).id}/deployments/*`,
         (route) => route.fulfill(apiErrorResponse(500, "INTERNAL_ERROR", "Unavailable.")),
         { times: 1 },
       );
     }
     let rows = first ? await holdRowReads(t, page, namespace) : null;
     if (first) {
-      await page.addInitScript(`(${measureReadingDelay})(${JSON.stringify(READING)})`);
+      await page.addInitScript(measureReadingDelay, READING);
     }
     await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
     await page.locator(settledView).getByRole("table", { name: "Agents" }).waitFor();
@@ -524,13 +590,14 @@ for (const visit of ["a first visit", "a return"]) {
       await page.getByText(READING).first().waitFor({ state: "detached" });
       await page.getByText("Deployment unavailable").waitFor();
       await tagView(page);
-      await openAgent(page, agents[0]);
+      await openAgent(page, required(agents[0]));
       rows = await holdRowReads(t, page, namespace);
       await page.evaluate(measureReadingDelay, READING);
       await page.goBack();
       await page.locator(settledView).getByRole("table", { name: "Agents" }).waitFor();
       assert.equal(await viewTag(page), "kept", "the retained list was reused");
     }
+    assert.ok(rows);
     await rows.revisions.requested;
     const observation = await page.waitForFunction(() => globalThis.__readingVisibility);
     assert.deepEqual(await observation.jsonValue(), {
@@ -550,7 +617,7 @@ for (const visit of ["a first visit", "a return"]) {
 // Opens a list of three Agents, leaves it for an Agent, and goes Back with every row's reread
 // held, the page clock paused and the rows' 250 ms delay animations paused, so the test decides
 // when the rereads land and when "Reading deployment…" shows.
-async function returnWithHeldRows(t, name) {
+async function returnWithHeldRows(t: TestContext, name: string) {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, name);
   const agents = [];
   for (const label of ["Steady Agent 1", "Steady Agent 2", "Steady Agent 3"]) {
@@ -565,7 +632,7 @@ async function returnWithHeldRows(t, name) {
   await page.locator(settledView).getByRole("table", { name: "Agents" }).waitFor();
   await page.getByText(READING).first().waitFor({ state: "detached" });
   await tagView(page);
-  await openAgent(page, agents[0]);
+  await openAgent(page, required(agents[0]));
   const rows = await holdRowReads(t, page, namespace);
   let landed = 0;
   page.on("response", (response) => {
@@ -598,13 +665,19 @@ async function returnWithHeldRows(t, name) {
     readingCells,
     // Ends every row's delay animation `ms` after the last step, so "Reading deployment…" shows,
     // and waits until the page has handled the animations' end.
-    async reveal(ms) {
+    async reveal(this: void, ms: number) {
       await page.clock.runFor(ms);
       const ended = await page.evaluate(() => {
         const document = globalThis.document;
         globalThis.__readingShown = 0;
         document.addEventListener("animationend", (event) => {
+          if (!(event.target instanceof Element)) {
+            throw new Error("Animation target is not an element");
+          }
           if (event.target.closest(".agent-deployment")) {
+            if (globalThis.__readingShown === undefined) {
+              throw new Error("Reading-animation recording has not started");
+            }
             globalThis.__readingShown += 1;
           }
         });
@@ -619,13 +692,20 @@ async function returnWithHeldRows(t, name) {
         return animations.length;
       });
       assert.equal(ended, agents.length);
-      await page.waitForFunction((count) => globalThis.__readingShown >= count, ended, {
-        timeout: 5_000,
-      });
+      await page.waitForFunction(
+        (count) => {
+          const shown = globalThis.__readingShown;
+          return shown !== undefined && shown >= count;
+        },
+        ended,
+        {
+          timeout: 5_000,
+        },
+      );
     },
     // Lets the held rereads land `ms` after the last step and waits until the page has handled
     // them.
-    async land(ms) {
+    async land(this: void, ms: number) {
       await page.clock.runFor(ms);
       const before = landed;
       rows.release();
@@ -651,8 +731,8 @@ for (const [shownAt, landsAt, fillsAt] of [
   [250, 450, 450],
   [230, 240, 380],
   [280, 300, 430],
-]) {
-  test(`Rows shown at ${shownAt ?? "no"} ms whose reread lands at ${landsAt} ms fill at ${fillsAt} ms`, async (t) => {
+] as const) {
+  void test(`Rows shown at ${shownAt ?? "no"} ms whose reread lands at ${landsAt} ms fill at ${fillsAt} ms`, async (t) => {
     const { page, readingCells, reveal, land } = await returnWithHeldRows(
       t,
       `Steady rows ${shownAt ?? "hidden"} ${landsAt}`,
@@ -678,7 +758,7 @@ for (const [shownAt, landsAt, fillsAt] of [
 
 // A refocus that resumes the list while a landed reread waits out those 150 ms starts the rows
 // reading again; the earlier answer never fills a row that reads again.
-test("A list resumed while its rows wait to fill shows only the new rereads", async (t) => {
+void test("A list resumed while its rows wait to fill shows only the new rereads", async (t) => {
   const { namespace, page, readingCells, reveal, land } = await returnWithHeldRows(
     t,
     "Steady resume",
@@ -700,7 +780,7 @@ test("A list resumed while its rows wait to fill shows only the new rereads", as
 // Until the resume's list read revalidates, the refocus holds the same list on screen, inert,
 // with its rows' text still connected but the view no longer current: a landed reread waiting
 // out those 150 ms must not fill a row of the held page either (finding 1877).
-test("A list held by a refocus while its rows wait to fill paints no earlier answer", async (t) => {
+void test("A list held by a refocus while its rows wait to fill paints no earlier answer", async (t) => {
   const { namespace, page, reveal, land } = await returnWithHeldRows(t, "Steady held resume");
   await reveal(250);
   await land(50);
@@ -715,6 +795,9 @@ test("A list held by a refocus while its rows wait to fill paints no earlier ans
   // The held view is inert, so read it directly: deploymentCells reads only the active view.
   const held = await page.evaluate((reading) => {
     const view = globalThis.document.querySelector('.content [aria-live="polite"]');
+    if (!(view instanceof HTMLElement)) {
+      throw new Error("Held view is missing");
+    }
     const cells = [...view.querySelectorAll(".agent-deployment")];
     return {
       inert: view.inert,
@@ -733,7 +816,7 @@ test("A list held by a refocus while its rows wait to fill paints no earlier ans
 // A retained view keeps the reader's place: from a list scrolled down, Back from the Agent it
 // opened lands where it was, not at the top. The last Agent is in view at full scroll, so opening
 // it scrolls nothing and the retained position is exactly the one measured.
-test("Back to a scrolled Agents list restores its scroll position", async (t) => {
+void test("Back to a scrolled Agents list restores its scroll position", async (t) => {
   const { agents, page } = await openTeamList(t, "Team scroll return");
   await page.setViewportSize({ width: 1280, height: 480 });
   await tagView(page);
@@ -742,7 +825,7 @@ test("Back to a scrolled Agents list restores its scroll position", async (t) =>
   );
   const scrolled = await page.evaluate(() => globalThis.scrollY);
   assert.ok(scrolled > 0, "the list scrolls at this height");
-  await openAgent(page, agents.at(-1));
+  await openAgent(page, required(agents.at(-1)));
   await page.goBack();
   await page.locator(settledView).getByRole("table", { name: "Agents" }).waitFor();
   assert.equal(await viewTag(page), "kept", "the retained list was reused");
@@ -752,9 +835,10 @@ test("Back to a scrolled Agents list restores its scroll position", async (t) =>
 // A list left again before its rows' rereads land is reused on the next return too: rows read
 // again whenever the list resumes, so unfinished ones don't count against it (finding 1663).
 // No row shows the answer it had, or an aborted read's failure, as current.
-test("A list left again during its rows' rereads is reused on the next return and rereads them", async (t) => {
+void test("A list left again during its rows' rereads is reused on the next return and rereads them", async (t) => {
   const { namespace, agents, page } = await openTeamList(t, "Team return again");
   const [opened] = agents;
+  assert.ok(opened);
   await tagView(page);
   await openAgent(page, opened);
 
@@ -797,7 +881,7 @@ test("A list left again during its rows' rereads is reused on the next return an
 // spaces): each wraps inside its row at every width, and above 760 px within its ID's 310 px, so
 // it does not widen the table. The other names wrap as before, only between words (findings 1955,
 // 1956).
-test("On a phone the Agents list stacks each row, fits the screen and still opens the Agent", async (t) => {
+void test("On a phone the Agents list stacks each row, fits the screen and still opens the Agent", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Phone Agents list");
   const agents = [];
   for (let index = 1; index <= AGENTS; index += 1) {
@@ -834,7 +918,7 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
     }
     agents.push({ ...agent, name });
   }
-  assert.equal(agents[0].name.length, 60);
+  assert.equal(required(agents[0]).name.length, 60);
   const columns = [
     "Agent",
     "Execution mode",
@@ -853,7 +937,7 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
     const rows = await holdRowReads(t, page, namespace);
     await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
     const table = page.locator(settledView).getByRole("table", { name: "Agents" });
-    await table.getByRole("link", { name: agents[0].name }).waitFor();
+    await table.getByRole("link", { name: required(agents[0]).name }).waitFor();
     await rows.revisions.requested;
     const heights = () =>
       table.evaluate((node) =>
@@ -868,32 +952,56 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
     assert.equal(await table.getByRole("row").count(), AGENTS + 1, `${width}: rows`);
     assert.equal(await table.getByRole("columnheader").count(), columns.length, `${width}`);
     const layout = await table.evaluate((node) => {
+      if (!(node instanceof HTMLTableElement)) {
+        throw new Error("Expected the Agents table");
+      }
       const document = globalThis.document;
       const view = document.documentElement;
       const scroll = node.closest(".table-scroll");
+      if (!scroll) {
+        throw new Error("Table scroll container is missing");
+      }
       const tableBox = node.getBoundingClientRect();
       // Where each line of a text starts: the character before it ends the previous line.
-      const lineBreaks = (text) => {
-        const breaks = [];
-        let top = null;
+      const lineBreaks = (text: ChildNode | null) => {
+        if (!(text instanceof Text)) {
+          throw new Error("Expected a text node for line measurement");
+        }
+        const breaks: string[] = [];
+        let top: number | null = null;
         for (let index = 0; index < text.length; index += 1) {
           const range = document.createRange();
           range.setStart(text, index);
           range.setEnd(text, index + 1);
           const rect = range.getBoundingClientRect();
           if (top !== null && rect.top > top + 1) {
-            breaks.push(text.data[index - 1]);
+            breaks.push(text.data.charAt(index - 1));
           }
           top = rect.top;
         }
         return breaks;
       };
       const rows = [...node.querySelectorAll("tbody tr")].map((row) => {
+        if (!(row instanceof HTMLTableRowElement)) {
+          throw new Error("Expected an Agent table row");
+        }
         const cells = [...row.cells];
-        const breaks = lineBreaks(cells[0].querySelector(".resource-id").firstChild);
-        const link = cells[0].querySelector("a");
+        const firstCell = cells[0];
+        const revisionCell = cells[2];
+        if (!firstCell || !revisionCell) {
+          throw new Error("Agent row cells are missing");
+        }
+        const id = firstCell.querySelector(".resource-id");
+        if (!id) {
+          throw new Error("Agent ID is missing");
+        }
+        const breaks = lineBreaks(id.firstChild);
+        const link = firstCell.querySelector("a");
+        if (!link) {
+          throw new Error("Agent link is missing");
+        }
         const name = link.getBoundingClientRect();
-        const first = cells[0].getBoundingClientRect();
+        const first = firstCell.getBoundingClientRect();
         return {
           // A name with no line-breaking space (a no-break space does not count).
           unbroken: !/[ ]/.test(link.textContent),
@@ -929,15 +1037,25 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
           breaks,
           display: globalThis.getComputedStyle(row).display,
           revision: {
-            text: cells[2].querySelector("a")?.textContent,
+            text: revisionCell.querySelector("a")?.textContent,
             ...(({ fontFamily, color }) => ({ fontFamily, color }))(
-              globalThis.getComputedStyle(cells[2].querySelector("a") ?? cells[2]),
+              globalThis.getComputedStyle(revisionCell.querySelector("a") ?? revisionCell),
             ),
           },
         };
       });
       // The table's width without the unbroken names' rows, which must not widen it.
-      const unbroken = [...node.tBodies[0].rows].filter((_, index) => rows[index].unbroken);
+      const body = node.tBodies[0];
+      if (!body) {
+        throw new Error("Agents table body is missing");
+      }
+      const unbroken = [...body.rows].filter((_, index) => {
+        const row = rows[index];
+        if (!row) {
+          throw new Error("Measured Agent row is missing");
+        }
+        return row.unbroken;
+      });
       const width = scroll.scrollWidth;
       unbroken.forEach((row) => row.style.setProperty("display", "none"));
       const ordinaryWidth = scroll.scrollWidth;
@@ -945,28 +1063,37 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
       // An ID drawn on one line in a row's ID style: "ff" must take two characters' width. A
       // monospace font with ligatures (Nimbus Mono PS) drew it as one glyph, so an ID with two
       // "ff" pairs was 14.4 px narrower and fit one line at 360 px (finding 2114).
-      const idWidth = (text) => {
+      const idWidth = (text: string) => {
         const probe = document.createElement("span");
         probe.className = "resource-id";
         probe.style.setProperty("display", "inline");
         probe.style.setProperty("white-space", "nowrap");
         probe.textContent = text;
-        node.tBodies[0].rows[0].cells[0].append(probe);
+        const cell = body.rows[0]?.cells[0];
+        if (!cell) {
+          throw new Error("First Agent cell is missing");
+        }
+        cell.append(probe);
         const box = probe.getBoundingClientRect();
         probe.remove();
         return box.width;
       };
+      const head = node.tHead;
+      const firstLink = node.querySelector("tbody a");
+      if (!head || !firstLink) {
+        throw new Error("Agents table header or link is missing");
+      }
       return {
         width,
         ordinaryWidth,
         idWidths: [
           idWidth("agt_ffffffff-ffff-4fff-bfff-ffffffffffff"),
           idWidth("agt_00000000-0000-4000-8000-000000000000"),
-        ],
+        ] as const,
         pageFits: view.scrollWidth <= view.clientWidth,
         tableFits: scroll.scrollWidth <= scroll.clientWidth,
-        headerShown: node.tHead.getBoundingClientRect().height > 1,
-        linkColor: globalThis.getComputedStyle(node.querySelector("tbody a")).color,
+        headerShown: head.getBoundingClientRect().height > 1,
+        linkColor: globalThis.getComputedStyle(firstLink).color,
         rows,
       };
     });
@@ -1046,7 +1173,7 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
     }
     assert.equal(layout.headerShown, desktop, `${width}: header row`);
     // The row's name still opens its Agent.
-    const target = agents[1];
+    const target = required(agents[1]);
     await table.getByRole("link", { name: target.name, exact: true }).click();
     await page.waitForURL(`**/console/agents/${target.id}**`);
     await page
@@ -1063,7 +1190,7 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
 // a break ("1000-1001"); a hyphen, dash, soft hyphen or wide space before closing punctuation is
 // not, nor is a hyphen-minus before most other digits or a dash that starts a word. A run of em dashes breaks only at its
 // ends (finding 1971).
-const groups = (part, separator, count = 6) =>
+const groups = (part: string, separator: string, count = 6) =>
   Array.from({ length: count }, () => part).join(separator);
 const unbrokenNameCases = [
   {
@@ -1207,7 +1334,7 @@ const unbrokenNameCases = [
   { name: groups("qrstuvwx", "\ufeff"), unbroken: true },
 ];
 
-test("Agents list marks names with no break opportunity, hyphen and dash runs included", async (t) => {
+void test("Agents list marks names with no break opportunity, hyphen and dash runs included", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Unbroken Agent names");
   const cases = unbrokenNameCases;
   for (const [index, entry] of cases.entries()) {
@@ -1224,7 +1351,9 @@ test("Agents list marks names with no break opportunity, hyphen and dash runs in
     });
     await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
     const table = page.locator(settledView).getByRole("table", { name: "Agents" });
-    await table.getByRole("link", { name: cases.at(-1).name, exact: true }).waitFor();
+    const lastCase = cases.at(-1);
+    assert.ok(lastCase);
+    await table.getByRole("link", { name: lastCase.name, exact: true }).waitFor();
     // Every listed name, measured in one pass: whether it is marked, its width, and the longest
     // run the browser keeps on one line, set in the link's font in a box too narrow for any word.
     // Combining marks share their letter's place, and a space hangs at the end of its line, so
@@ -1235,15 +1364,23 @@ test("Agents list marks names with no break opportunity, hyphen and dash runs in
         const style = globalThis.getComputedStyle(link);
         box.style.cssText = `position:absolute;width:1px;font:${style.font}`;
         box.textContent = link.textContent;
-        link.closest("table").after(box);
+        const table = link.closest("table");
+        if (!table) {
+          throw new Error("Agent link has no table");
+        }
+        table.after(box);
         const range = globalThis.document.createRange();
         let longest = 0;
         let run = 0;
-        let top = null;
+        let top: number | null = null;
         let offset = 0;
         for (const character of Array.from(link.textContent)) {
-          range.setStart(box.firstChild, offset);
-          range.setEnd(box.firstChild, offset + character.length);
+          const text = box.firstChild;
+          if (!text) {
+            throw new Error("Agent name text is missing");
+          }
+          range.setStart(text, offset);
+          range.setEnd(text, offset + character.length);
           offset += character.length;
           const rect = range.getClientRects()[0];
           if (!rect || /[\p{M} ]/u.test(character)) {
@@ -1267,6 +1404,7 @@ test("Agents list marks names with no break opportunity, hyphen and dash runs in
       const matches = measured.filter((link) => link.name === entry.name);
       assert.equal(matches.length, 1, `${label} is listed once as a link`);
       const [shown] = matches;
+      assert.ok(shown);
       assert.equal(shown.marked, entry.unbroken, `${label} marked`);
       assert.equal(shown.longest >= 21, entry.unbroken, `${label} longest run ${shown.longest}`);
       if (entry.unbroken) {
@@ -1276,6 +1414,9 @@ test("Agents list marks names with no break opportunity, hyphen and dash runs in
     if (width === 1440) {
       const fits = await table.evaluate((node) => {
         const scroll = node.closest(".table-scroll");
+        if (!scroll) {
+          throw new Error("Table scroll container is missing");
+        }
         return scroll.scrollWidth <= scroll.clientWidth;
       });
       assert.equal(fits, true, `${width}: the table scrolls sideways`);
@@ -1288,7 +1429,7 @@ test("Agents list marks names with no break opportunity, hyphen and dash runs in
 // kept such an Agent listed (finding 1999). Each name here is several runs of 20 that just fail
 // to be marked, the worst case. A keystroke re-renders the rows it keeps synchronously, so the
 // page times that work itself.
-test("Agents list search stays responsive with joiner-run names", async (t) => {
+void test("Agents list search stays responsive with joiner-run names", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Joiner Agent names");
   const names = [
     `Joiners ${`${"\u2060".repeat(20)} `.repeat(9)}`.trimEnd(),
@@ -1306,10 +1447,15 @@ test("Agents list search stays responsive with joiner-run names", async (t) => {
   });
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   const table = page.locator(settledView).getByRole("table", { name: "Agents" });
-  await table.getByRole("link", { name: names[1], exact: true }).waitFor();
+  const secondName = names[1];
+  assert.ok(secondName !== undefined);
+  await table.getByRole("link", { name: secondName, exact: true }).waitFor();
   const search = page.getByRole("searchbox", { name: "Search Agents" });
   for (const text of ["J", "Jo", "Joi", "Joiners"]) {
     const elapsed = await search.evaluate((node, value) => {
+      if (!(node instanceof HTMLInputElement)) {
+        throw new Error("Expected the Agent search input");
+      }
       const started = globalThis.performance.now();
       node.value = value;
       node.dispatchEvent(new globalThis.Event("input", { bubbles: true }));
@@ -1331,46 +1477,75 @@ test("Agents list search stays responsive with joiner-run names", async (t) => {
 // the Agent page called the same outcome "Completed" (finding 2093). The list now names the
 // current version by number, read with the row's versions, and shares the page's outcome words.
 // One the reader cannot read is named in words (finding D789).
-test("Agents list names the current version by number in the page's outcome words", async (t) => {
+void test("Agents list names the current version by number in the page's outcome words", async (t) => {
   const { fixture, namespace, agents, page } = await openTeamList(t, "Version numbers", {
     newer: [0],
   });
-  const row = (agent) => page.locator(activeView).getByRole("row").filter({ hasText: agent.name });
-  const cells = (agent) =>
-    row(agent).evaluate((node) => ({
-      current: node.querySelector('[data-label="Current version"]').textContent,
-      href: new URL(node.querySelector('[data-label="Current version"] a').href).searchParams.get(
-        "revision",
-      ),
-      deployment: node.querySelector(".agent-deployment a").textContent,
-    }));
-  const active = (agent) =>
-    fixture
-      .request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`)
-      .then((body) => body.data);
-  const [newer, plain] = [agents[0], agents[1]];
+  const row = (agent: Agent) =>
+    page.locator(activeView).getByRole("row").filter({ hasText: agent.name });
+  const cells = (agent: Agent) =>
+    row(agent).evaluate((node) => {
+      const current = node.querySelector('[data-label="Current version"]');
+      const link = node.querySelector('[data-label="Current version"] a');
+      const deployment = node.querySelector(".agent-deployment a");
+      if (!current || !(link instanceof HTMLAnchorElement) || !deployment) {
+        throw new Error("Current version or deployment link is missing");
+      }
+      return {
+        current: current.textContent,
+        href: new URL(link.href).searchParams.get("revision"),
+        deployment: deployment.textContent,
+      };
+    });
+  const active = (agent: Agent) =>
+    fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`).then((result) => {
+      assert.equal(result.status, 200, "Reading the Agent must succeed");
+      const rawData: unknown = result.data;
+      const data = record(rawData);
+      assert.ok(
+        typeof data.activeRevisionId === "string",
+        "The Agent must have an active revision ID",
+      );
+      return data.activeRevisionId;
+    });
+  const [newer, plain] = [required(agents[0]), required(agents[1])];
   // A second version deployed after the current one: v1 is current, v2 is the latest.
   assert.deepEqual(await cells(newer), {
     current: "v1",
-    href: (await active(newer)).activeRevisionId,
+    href: await active(newer),
     deployment: "v2 · Completed",
   });
   assert.deepEqual(await cells(plain), {
     current: "v1",
-    href: (await active(plain)).activeRevisionId,
+    href: await active(plain),
     deployment: "v1 · Completed",
   });
   assert.equal(await page.locator(".agent-table").getByText(/rev_/).count(), 0);
 
   // The reader's first page of versions leaves out v1, the current version: one she cannot read,
   // or, when an older page follows, one that may be on it. `status` is v2's deployment outcome.
-  const activeId = (await active(newer)).activeRevisionId;
-  const openWithout = async ({ olderPage, status, current }) => {
+  const activeId = await active(newer);
+  const openWithout = async ({
+    olderPage,
+    status,
+    current,
+  }: {
+    olderPage: boolean;
+    status: DeploymentStatus;
+    current: boolean;
+  }) => {
     const { page: opened } = await newPage(t, fixture, { browser });
     await opened.route(`**/namespaces/${namespace.id}/agents/${newer.id}/revisions`, (route) =>
-      fulfillPatchedJson(route, (body) => {
-        body.data = body.data.filter((revision) => revision.revision !== 1);
-        body.meta.nextCursor = olderPage ? "older-page" : null;
+      fulfillPatchedJson(route, (value: unknown) => {
+        const body = record(value);
+        assert.ok(Array.isArray(body.data));
+        body.data = body.data.filter((value: unknown) => {
+          const revision = record(value);
+          assert.equal(typeof revision.revision, "number");
+          return revision.revision !== 1;
+        });
+        const meta = record(body.meta);
+        meta.nextCursor = olderPage ? "older-page" : null;
         return body;
       }),
     );

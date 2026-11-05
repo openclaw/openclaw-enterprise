@@ -2,6 +2,8 @@
 
 The administrator selects manual configuration or supplies an MCP server URL. OCC checks Installation administration before discovery. For MCP, the controller reads protected resource metadata over TLS, resolves each metadata host to public addresses and pins those addresses for the request. It contacts only the selected advertised authorization server. OCC stores the metadata it observed with the approved version.
 
+For a Google APIs recipient, OCC verifies Google’s issuer, authorization and token URLs and any supplied revocation URL before it saves the version. The consuming Driver selects the supported Google API destinations when the account is used.
+
 OCC checks scope and the client's allowed destinations before it references an OAuth client. PostgreSQL commits the template version and its audit together. A template can exist without a client. The Agent plugin release determines the local credential placeholder when the account is used.
 
 OCC reserves a hidden OAuth client row before the Refresh Driver writes a confidential client’s secret. The Driver uses the client ID as its private storage reference. OCC publishes the client and records its creation in one transaction. If creation stops before publication, the worker removes the private material and the hidden row.
@@ -28,7 +30,7 @@ its registered authentication method. For an MCP connection it sends the
 approved resource at authorization, exchange, and refresh. The Token Service
 keeps the access token and refresh grant in a private Secret. OCC records the
 credential source ID, account owner, approved recipient, requested scopes, and
-granted scopes. When the person requests provider defaults, the Driver omits the scope parameter. It records the scopes the provider reports, or an empty list if the provider omits them. Renewal can narrow the recorded grant. It cannot add scopes to an unreported grant. A shared callback verifies the issuer when multiple issuers are
+granted scopes. A Google APIs template keeps its provider-wide recipient on the account. An exact Google API template keeps its approved host, port, and path. When the person requests provider defaults, the Driver omits the scope parameter. It records the scopes the provider reports, or an empty list if the provider omits them. Renewal can narrow the recorded grant. It cannot add scopes to an unreported grant. A shared callback verifies the issuer when multiple issuers are
 configured. A provider timeout consumes the attempt.
 
 The worker renews the saved account through the Token Service. For each refresh, it checks the saved grant against the approved registration
@@ -45,4 +47,4 @@ Saving a selection checks the exact slot, account and Agent permissions together
 
 Admission records the source grant and the Driver's approved delivery profile for the revision. The worker prepares an expiring access token through the Token Service and sends it to that profile. Detaching queues withdrawal for the affected Agent. Other Agents can keep their grants.
 
-For a saved Google account, the Credential Gateway passes the Installation’s tool executables and granted scopes to the Sandbox Driver. The Sandbox Driver checks that the sender and the guarded Google routes allow the same executables. The request guard applies the same operation checks to each executable.
+For a saved Google account, the Credential Gateway passes the Installation’s tool executables and granted scopes to the Sandbox Driver. For a Google APIs recipient, the Gateway configures one provider with the exact service hosts and paths that have a reviewed operation for the granted scopes. The Sandbox Driver checks that the provider serves exactly those destinations and that its guarded routes allow the same executables. The request guard applies the same operation checks to each executable.

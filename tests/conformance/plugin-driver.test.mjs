@@ -287,30 +287,67 @@ test("a Google account slot binds by issuer and approved recipient and can be re
   assert.deepEqual(slot.issuers, [target.issuer]);
   assert.equal(slot.acceptsRecipient(target), true);
   assert.equal(
-    slot.acceptsRecipient({ ...target, tokenUrl: "https://other.example/token" }),
+    slot.acceptsRecipient({
+      ...target,
+      tokenUrl: "https://other.example/token",
+    }),
     false,
   );
   assert.equal(
-    slot.acceptsRecipient({ ...target, recipient: { ...target.recipient, host: "other.example" } }),
+    slot.acceptsRecipient({
+      ...target,
+      recipient: { ...target.recipient, host: "other.example" },
+    }),
     false,
   );
   assert.equal(slot.delivery(target, []).config.scope, undefined);
+  const allGoogle = { ...target, recipient: { kind: "google_apis" } };
+  assert.equal(slot.acceptsRecipient(allGoogle), true);
+  assert.equal(slot.acceptsRecipient({ ...allGoogle, issuer: "https://other.example" }), false);
+  assert.equal(
+    slot.acceptsRecipient({
+      ...allGoogle,
+      tokenUrl: "https://other.example/token",
+    }),
+    false,
+  );
+  const googleScopes = ["gmail.readonly", "calendar.readonly"].map(
+    (name) => "https://www.googleapis.com/auth/" + name,
+  );
+  const wide = slot.delivery(allGoogle, [...googleScopes, "unrelated"]).config;
+  assert.equal(wide.recipient_kind, "google_apis");
+  assert.deepEqual([wide.host, wide.port, wide.path], [undefined, undefined, undefined]);
+  assert.deepEqual(wide.scope.split(" ").sort(), googleScopes.sort());
   const mcp = managedMcpInstalls[0];
   const server = driver.credentials.connectionSlot(
     { [mcp.id]: { enabled: true } },
     mcp.id,
     mcp.slotId,
   );
-  const recipient = { host: mcp.endpoint.host, port: mcp.endpoint.port, path: mcp.endpoint.path };
+  const recipient = {
+    host: mcp.endpoint.host,
+    port: mcp.endpoint.port,
+    path: mcp.endpoint.path,
+  };
   const mcpTarget = {
     issuer: mcp.credentials[mcp.slotId].issuer,
-    mcp: { serverUrl: mcp.url, resource: mcp.credentials[mcp.slotId].mcp.resource },
+    mcp: {
+      serverUrl: mcp.url,
+      resource: mcp.credentials[mcp.slotId].mcp.resource,
+    },
     recipient,
   };
   assert.equal(server.acceptsRecipient(mcpTarget), true);
+  const wideMcp = { ...mcpTarget, recipient: allGoogle.recipient };
+  assert.equal(server.acceptsRecipient(wideMcp), false);
+  assert.equal(slot.acceptsRecipient({ ...allGoogle, mcp: mcpTarget.mcp }), false);
+  assert.throws(() => server.delivery(wideMcp, []), /reviewed Google account slot/);
   assert.equal(server.delivery(mcpTarget, []).config.access, "full");
   assert.equal(
-    server.acceptsRecipient({ ...mcpTarget, recipient: { ...recipient, path: "/other" } }),
+    server.acceptsRecipient({
+      ...mcpTarget,
+      recipient: { ...recipient, path: "/other" },
+    }),
     false,
   );
   assert.equal(

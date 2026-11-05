@@ -1,3 +1,4 @@
+import { openAdvancedSettings } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
@@ -17,7 +18,6 @@ import {
   newPage,
   writeRequests,
 } from "./console-agents-browser-helpers.mjs";
-import { openAdvancedSettings } from "./console-agents-test-support.mjs";
 import { CODEX_PLACEMENT_REFUSAL } from "../helpers/refusal-text.mjs";
 import { liftRestriction } from "../helpers/iam-grants.mjs";
 

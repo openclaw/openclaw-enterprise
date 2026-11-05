@@ -12,6 +12,7 @@ import {
   managedPluginMiddlewareImplementation,
 } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { googleRequestPolicy } from "../../apps/controller/src/drivers/sandbox/openshell-plugin-policy.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import { bindReservedPortInProcess, reservePort } from "../helpers/available-port.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
@@ -235,6 +236,37 @@ test("the signed OpenShell request guard intersects the source envelope with the
       query: "",
     },
   };
+  // Send the Sandbox Driver's actual protobuf config through the signed RPC, including the
+  // executable policy recorded for saved accounts. One receipt can serve two exact API origins.
+  const googleApisBinding = (scopes: readonly string[]) =>
+    googleRequestPolicy({ kind: "google_apis", scopes }, [google.binaryPath, "/usr/bin/curl"])
+      .middlewares[managedPluginMiddleware].config;
+  const binding = googleApisBinding([gmail, calendarRead]);
+  assert.equal(
+    (await invoke(client, "ValidateConfig", { ...request, config: binding }, gateway)).valid,
+    true,
+  );
+  const wide = (target: typeof request.target, config = binding) =>
+    evaluate({ ...request, config, target });
+  assert.equal(await wide(target), 1);
+  assert.equal(await wide(calendar.target), 1);
+  assert.equal(await wide({ ...calendar.target, host: "gmail.googleapis.com" }), 2);
+  assert.equal(await wide({ ...calendar.target, host: "www.googleapis.com.example.test" }), 2);
+  assert.equal(await wide({ ...calendar.target, path: "/drive/v3/files" }), 2);
+  assert.equal(await wide({ ...calendar.target, path: "/calendar/v3/unreviewed" }), 2);
+  assert.equal(await wide({ ...calendar.target, method: "DELETE" }), 2);
+  const narrowed = googleApisBinding([gmail]);
+  assert.equal(await wide(target, narrowed), 1);
+  assert.equal(await wide(calendar.target, narrowed), 2);
+  assert.equal(
+    await evaluate({
+      ...request,
+      config: {
+        fields: { ...binding.fields, extra: { stringValue: "unrecognized" } },
+      },
+    }),
+    2,
+  );
   for (const calendarId of ["primary", "reader%40example.test"]) {
     assert.equal(
       await evaluate({

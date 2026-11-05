@@ -71,7 +71,7 @@ export const credentialSourceFieldRequired = (type, field) =>
     : `Credential source type ${type} requires ${field}: add it.`;
 // Agent save, provisioning and deploy (packages/occ/src/errors.ts RepositoryBindingSelectionError).
 export const REPOSITORY_SELECTION_NOT_APPROVED =
-  "These repository selections are not approved for this Namespace: each repository must be approved here for its profile and listed once, at most 16. Choose from the repository options, or ask an Installation administrator to approve it.";
+  "Choose up to 16 distinct repositories approved for this Namespace and profile. For github-repository, all selections must have the same configured permissions. Ask an Installation administrator to check the available options.";
 export const REPOSITORY_ACCESS_OR_BINDINGS =
   "Send repositoryAccess or repositoryBindings, not both. In repositoryAccess, list each repository once, at most 16, with a defaultProfile other than github-installation.";
 export const COMPUTE_REPOSITORY_UNSUPPORTED =

@@ -1,3 +1,4 @@
+import { openAdvancedSettings, waitForLiveControls } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
@@ -47,7 +48,7 @@ import {
   waitForEnabled,
   waitForIdleFetches,
 } from "./console-agents-browser-helpers.mjs";
-import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
+import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import {
   deploymentRecordUrl,
   expectDeploymentOutcome,
@@ -55,12 +56,10 @@ import {
   openFailureDetails,
 } from "./console-deployment-activity-helpers.ts";
 import {
-  openAdvancedSettings,
   assertRevisionUrl,
   replyWithDifferentAgentId,
   configurationPatchRequests,
   nativeAdminValues,
-  waitForLiveControls,
 } from "./console-agents-test-support.mjs";
 import {
   AGENT_SAVE_DENIED,

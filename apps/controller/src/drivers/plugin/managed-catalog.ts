@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
+  isGoogleApisRecipient,
   type CredentialSource,
   type PluginAccountTarget,
   type PluginCatalogEntry,
@@ -396,38 +397,59 @@ export function managedPluginAccountSlot(
   const bindings = asRecord(policy?.credentials);
   const current = bindings?.[slotId];
   const slot = install.credentials[slotId]!;
+  function acceptsRecipient(target: PluginAccountTarget) {
+    const { recipient, mcp } = target;
+    if (isGoogleApisRecipient(recipient)) {
+      return (
+        install.kind === "cli" &&
+        googleWorkspaceCredentialPolicy.supportsGoogleApis(install, install.credentials[slotId]!) &&
+        !mcp &&
+        target.issuer === slot.issuer &&
+        target.tokenUrl === install.credentials[slotId]!.tokenEndpoint
+      );
+    }
+    if (install.kind === "mcp") {
+      return (
+        mcp?.serverUrl === install.url &&
+        mcp.resource === install.credentials[slotId]!.mcp.resource &&
+        recipient.host === install.endpoint.host &&
+        recipient.port === install.endpoint.port &&
+        recipient.path === install.endpoint.path
+      );
+    }
+    return (
+      !mcp &&
+      target.tokenUrl === install.credentials[slotId]!.tokenEndpoint &&
+      isGoogleWorkspaceRecipient(recipient.host, recipient.port, recipient.path)
+    );
+  }
   return {
     releaseSha256: install.releaseSha256,
     credentialSourceId: typeof current === "string" ? current : null,
     issuers: [slot.issuer],
-    acceptsRecipient(target: PluginAccountTarget) {
-      const { recipient, mcp } = target;
-      if (install.kind === "mcp") {
-        return (
-          mcp?.serverUrl === install.url &&
-          mcp.resource === install.credentials[slotId]!.mcp.resource &&
-          recipient.host === install.endpoint.host &&
-          recipient.port === install.endpoint.port &&
-          recipient.path === install.endpoint.path
+    acceptsRecipient,
+    delivery(target: PluginAccountTarget, grantedScopes: readonly string[]) {
+      const { recipient } = target;
+      if (isGoogleApisRecipient(recipient) && !acceptsRecipient(target)) {
+        throw new ConfigurationHarnessError(
+          "Google APIs delivery requires the reviewed Google account slot.",
         );
       }
-      return (
-        !mcp &&
-        target.tokenUrl === install.credentials[slotId]!.tokenEndpoint &&
-        isGoogleWorkspaceRecipient(recipient.host, recipient.port, recipient.path)
-      );
-    },
-    delivery(target: PluginAccountTarget, grantedScopes: readonly string[]) {
-      const { host, port, path } = target.recipient;
       const config: Record<string, string> = {
-        host,
-        port: String(port),
-        path,
+        ...(isGoogleApisRecipient(recipient)
+          ? { recipient_kind: recipient.kind }
+          : {
+              host: recipient.host,
+              port: String(recipient.port),
+              path: recipient.path,
+            }),
         // Both reviewed senders use POST for protected requests. Each operation or tool
         // remains subject to its plugin's request policy.
         access: "full",
         env_var: slot.delivery.env,
-        ...(slot.delivery.envAliases && { env_var_aliases: slot.delivery.envAliases.join(",") }),
+        ...(slot.delivery.envAliases && {
+          env_var_aliases: slot.delivery.envAliases.join(","),
+        }),
         token_url: target.tokenUrl,
         oauth_owner: "token_service",
       };
@@ -439,7 +461,10 @@ export function managedPluginAccountSlot(
           config.scope = scopes.join(" ");
         }
       }
-      return { type: install.kind === "mcp" ? "bearer-token" : "oauth2-refresh-token", config };
+      return {
+        type: install.kind === "mcp" ? "bearer-token" : "oauth2-refresh-token",
+        config,
+      };
     },
     bind(sourceId: string) {
       return {

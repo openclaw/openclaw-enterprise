@@ -1,12 +1,9 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { asRecord } from "@openclaw-enterprise/utils";
-import type { CredentialSourceAttachment } from "@openclaw-enterprise/contracts";
+import type { ConnectionEndpoint, ConnectionRecipient } from "@openclaw-enterprise/contracts";
 
-export type GoogleRequestScope = Omit<
-  NonNullable<CredentialSourceAttachment["requestScope"]>,
-  "binaries"
->;
+export type GoogleRequestScope = ConnectionRecipient & { readonly scopes: readonly string[] };
 
 export interface GoogleParameter {
   type?: string;
@@ -141,12 +138,12 @@ export function googleSourcePathMatches(pattern: string, path: string) {
 
 /** The approved Google destination must contain a reviewed operation, independently of consented scopes. */
 export function isGoogleWorkspaceRecipient(host: string, port: number, path: string): boolean {
-  return port === 443 && googleOperationsAt({ host, path }).length > 0;
+  return port === 443 && googleOperationsAt({ host, port, path }).length > 0;
 }
 
 /** Only reviewed operations at this destination need to enter the runtime request policy. */
 export function googleWorkspaceDeliveryScopes(
-  recipient: Pick<GoogleRequestScope, "host" | "path">,
+  recipient: ConnectionRecipient,
   grantedScopes: readonly string[],
 ): string[] {
   const granted = new Set(grantedScopes);
@@ -162,7 +159,32 @@ export function eligibleGoogleOperations(scope: GoogleRequestScope) {
   );
 }
 
-function googleOperationsAt(scope: Pick<GoogleRequestScope, "host" | "path">) {
+/** One bearer profile serves only the pinned service roots with a currently granted operation.
+ * Keep public discovery outside these routes, including on the shared Calendar and Drive host. */
+export function googleCredentialEndpoints(
+  scope: GoogleRequestScope,
+  entries?: ReturnType<typeof eligibleGoogleOperations>,
+): readonly ConnectionEndpoint[] {
+  if (!("kind" in scope)) {
+    return [{ host: scope.host, port: scope.port, path: scope.path }];
+  }
+  const endpoints = new Map<string, ConnectionEndpoint>();
+  for (const [, op] of entries ?? eligibleGoogleOperations(scope)) {
+    const host = new URL(op.origin).hostname;
+    const root = op.path.split("/")[1];
+    if (!root || !/^[a-zA-Z0-9_-]+$/.test(root)) {
+      throw new Error("Google operation lacks a literal service path.");
+    }
+    const path = "/" + root + "/**";
+    endpoints.set(host + path, { host, port: 443, path });
+  }
+  return [...endpoints.values()];
+}
+
+function googleOperationsAt(scope: ConnectionRecipient) {
+  if ("kind" in scope) {
+    return Object.entries(googleCatalog.operations);
+  }
   const origin = "https://" + scope.host;
   return Object.entries(googleCatalog.operations).filter(([id, op]) => {
     if (op.origin !== origin) {
@@ -198,15 +220,22 @@ export function googleRequestScope(input: unknown): GoogleRequestScope | undefin
   const value = asRecord(input);
   if (
     !value ||
+    !Array.isArray(value.scopes) ||
+    !value.scopes.length ||
+    !value.scopes.every((s) => typeof s === "string" && /^[\x21-\x7e]+$/.test(s))
+  ) {
+    return undefined;
+  }
+  if (value.kind === "google_apis" && Object.keys(value).length === 2) {
+    return { kind: "google_apis", scopes: value.scopes };
+  }
+  if (
     Object.keys(value).length !== 4 ||
     value.port !== 443 ||
     typeof value.host !== "string" ||
     !/^[a-z0-9.-]+$/.test(value.host) ||
     typeof value.path !== "string" ||
-    (!/^\/[A-Za-z0-9/._~-]*(?:\/\*\*)?$/.test(value.path) && value.path !== "/**") ||
-    !Array.isArray(value.scopes) ||
-    !value.scopes.length ||
-    !value.scopes.every((s) => typeof s === "string" && /^[\x21-\x7e]+$/.test(s))
+    (!/^\/[A-Za-z0-9/._~-]*(?:\/\*\*)?$/.test(value.path) && value.path !== "/**")
   ) {
     return undefined;
   }
@@ -236,7 +265,9 @@ export function googleDiscoveryRequests(
       { host: service + ".googleapis.com", path: "/$discovery/rest", query: "version=" + version },
     );
   }
+  const credentialed = googleCredentialEndpoints(scope, entries);
   return publicRequests.filter(
-    ({ host, path }) => host !== scope.host || !googleSourcePathMatches(scope.path, path),
+    ({ host, path }) =>
+      !credentialed.some((ep) => host === ep.host && googleSourcePathMatches(ep.path, path)),
   );
 }

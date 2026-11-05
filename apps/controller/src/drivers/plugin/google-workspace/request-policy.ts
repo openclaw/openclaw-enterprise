@@ -215,7 +215,7 @@ function validGoogleRequest(
       )
     );
   }
-  if (host !== scope.host || !googleSourcePathMatches(scope.path, path)) {
+  if (!("kind" in scope) && (host !== scope.host || !googleSourcePathMatches(scope.path, path))) {
     return false;
   }
   if (

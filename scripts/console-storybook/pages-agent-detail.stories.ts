@@ -161,6 +161,10 @@ export const RuntimeLogsReaderDownload = story("runtimeLogsReaderDownload");
 export const RuntimeLogsReaderNoPodDownload = story("runtimeLogsReaderNoPodDownload");
 export const RuntimeLogsClusterRbac = story("runtimeLogsClusterRbac");
 export const AgentMissing = { ...story("agentMissing"), name: "Agent unavailable" };
+export const AgentReadInterrupted = {
+  ...story("agentReadInterrupted", { openInNewTab: true }),
+  name: "Retry a direct Agent link",
+};
 export const ConfigurationError = {
   ...story("configurationError"),
   name: "Configuration unavailable",

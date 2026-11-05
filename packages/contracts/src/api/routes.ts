@@ -562,7 +562,7 @@ export const occApiRoutes = [
     iamAction: "administer",
     resourceKind: "installation",
     authorizationTarget: "installation",
-    summary: "Register a scoped OAuth client",
+    summary: "Register an OAuth client from a connection template",
     tags: ["Connections"],
     schema: {
       querystring: EmptyQuery,

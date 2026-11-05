@@ -9,6 +9,7 @@ import {
 } from "./openshell-gateway-client.ts";
 import {
   eligibleGoogleOperations,
+  googleCredentialEndpoints,
   googleDiscoveryRequests,
   googleScopeFromString,
   type GoogleRequestScope,
@@ -101,8 +102,7 @@ export function openShellPluginPolicy(
       "This Google account requires its selected OpenShell provider, the dedicated OpenClaw worker and the registered OCE plugin request guard.",
     );
   }
-  // The ready source authorizes a single host and path. Verify the Gateway actually composed
-  // that provider without extra destinations or binaries, even on adoption.
+  // Verify the effective provider routes and executables, including when adopting a Sandbox.
   const request = selected.requestScope;
   if (!request) {
     unsupported("The managed Google account requires its admitted endpoint and OAuth scopes.");
@@ -123,17 +123,10 @@ export function openShellPluginPolicy(
   const providerRule = {
     name: provider,
     binaries: (binaries ?? googleCli).map((path) => ({ path })),
-    endpoints: [
-      {
-        ...openShellProfileEndpoint({
-          host: scope.host,
-          port: scope.port,
-          path: scope.path,
-          protocol: "rest",
-        }),
-        provider_credentialed: true,
-      },
-    ],
+    endpoints: googleCredentialEndpoints(scope).map((target) => ({
+      ...openShellProfileEndpoint({ ...target, protocol: "rest" }),
+      provider_credentialed: true,
+    })),
   };
   return { ...googleRequestPolicy(scope, binaries), endpoint, providerRule };
 }
@@ -146,7 +139,12 @@ export function googleRequestPolicy(scope: GoogleRequestScope, binaries?: readon
     unsupported("The Google account has no admitted plugin operations.");
   }
   const discovery = googleDiscoveryRequests(scope, entries);
-  const hosts = [...new Set([scope.host, ...discovery.map((r) => r.host)])];
+  const hosts = [
+    ...new Set([
+      ...entries.map(([, op]) => new URL(op.origin).hostname),
+      ...discovery.map((r) => r.host),
+    ]),
+  ];
   const middlewares = {
     [managedPluginMiddleware]: {
       name: managedPluginMiddleware,
@@ -176,10 +174,11 @@ export function googleRequestPolicy(scope: GoogleRequestScope, binaries?: readon
   for (const [, op] of entries) {
     const literal = op.path.split("{")[0]!;
     const inside =
+      "kind" in scope ||
       scope.path === "/**" ||
       (scope.path.endsWith("/**") && literal.startsWith(scope.path.slice(0, -2)));
     const path = inside ? op.path.replace(/\{\+?\w+\}/g, "*") : scope.path;
-    permit(scope.host, op.method, path);
+    permit(new URL(op.origin).hostname, op.method, path);
   }
   for (const { host, path } of discovery) {
     permit(host, "GET", path);
@@ -323,12 +322,15 @@ export function verifyPluginRequestGuard(
   // OpenShell stamps every effective endpoint whose host, port and top-level path
   // are covered by a credential. Our operation paths live under rules; their
   // enclosing endpoint has path /**. Only a host-wide source covers that endpoint.
-  const credential = expected.providerRule.endpoints[0]!;
+  const credentials = expected.providerRule.endpoints;
   const rule = expected.networks[googleRequestRuleName];
   const endpoints = rule.endpoints.map((endpoint) =>
-    credential.path === "/**" &&
-    endpoint.host === credential.host &&
-    endpoint.ports.includes(credential.port)
+    credentials.some(
+      (credential) =>
+        credential.path === "/**" &&
+        endpoint.host === credential.host &&
+        endpoint.ports.includes(credential.port),
+    )
       ? { ...endpoint, provider_credentialed: true }
       : endpoint,
   );

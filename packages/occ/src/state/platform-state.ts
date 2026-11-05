@@ -1,6 +1,10 @@
 import { accountDeliveryProfileId } from "../account-delivery.ts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
-import { assertExecutionAdmission } from "@openclaw-enterprise/contracts";
+import {
+  assertExecutionAdmission,
+  validateConnectionTemplateRecipient,
+  isGoogleApisRecipient,
+} from "@openclaw-enterprise/contracts";
 import { memoryEgressSendReceipts } from "./egress-send-receipts.ts";
 import type { EgressSendReceiptRepository, StoredSendReceipt } from "../egress-send-receipts.ts";
 import { isDeepStrictEqual } from "node:util";
@@ -2064,10 +2068,11 @@ function repositories(
     const template = snapshot.connectionTemplates.get(templateId);
     return template === undefined ? undefined : immutableCopy(template);
   };
-  const assertRegistrationScope = (
+  const assertTemplateVersion = (
     template: ConnectionTemplate,
     version: OAuthConnectionTemplateVersion,
   ) => {
+    validateConnectionTemplateRecipient(version);
     if (!version.oauthClientId) {
       return;
     }
@@ -2195,7 +2200,7 @@ function repositories(
           "The server generated an existing connection template identity.",
         );
       }
-      assertRegistrationScope(template, template.current);
+      assertTemplateVersion(template, template.current);
       const saved = immutableCopy(template);
       snapshot.connectionTemplates.set(saved.id, saved);
       snapshot.oauthConnectionTemplateVersions.set(
@@ -2210,7 +2215,7 @@ function repositories(
         return undefined;
       }
       if (changes.version !== undefined) {
-        assertRegistrationScope(current, changes.version);
+        assertTemplateVersion(current, changes.version);
         // Mirrors the database: versions advance by one and never change.
         if (changes.version.version !== current.current.version + 1) {
           throw new ResourceStateConflictError("Connection template versions advance by one.");
@@ -2411,6 +2416,26 @@ function repositories(
     createSavedConnection: async (connection) => {
       assertInitialized(snapshot);
       assertConnectionScope(connection);
+      if (isGoogleApisRecipient(connection.recipient)) {
+        const version = snapshot.oauthConnectionTemplateVersions.get(
+          versionKey(connection.connectionTemplateId, connection.connectionTemplateVersion),
+        );
+        const client = snapshot.clientRegistrations.get(connection.oauthClientId);
+        if (
+          !version ||
+          !isGoogleApisRecipient(version.recipient) ||
+          connection.mcpServerUrl ||
+          connection.resource ||
+          version.issuer !== connection.issuer ||
+          version.tokenUrl !== connection.tokenUrl ||
+          version.oauthClientId !== connection.oauthClientId ||
+          client?.clientId !== connection.clientId
+        ) {
+          throw new ResourceStateConflictError(
+            "The saved Google APIs recipient must match its approved template and client.",
+          );
+        }
+      }
       const key = agentKey(connection.namespaceId, connection.credentialSourceId);
       if (snapshot.savedConnections.has(key)) {
         throw new ResourceConflictError("The credential source is already connected.");

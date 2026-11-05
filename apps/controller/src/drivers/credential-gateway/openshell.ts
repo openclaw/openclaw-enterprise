@@ -3,11 +3,16 @@ import {
   credentialEnvironmentsOverlap,
   validPluginCredentialNames,
 } from "../plugin/credential-environment.ts";
-import { googleWorkspaceCredentialPolicy } from "../plugin/google-workspace/credential-policy.ts";
+import { googleCredentialEndpoints } from "../plugin/google-workspace/operations.ts";
+import {
+  googleSourceRequestScope,
+  googleWorkspaceCredentialPolicy,
+} from "../plugin/google-workspace/credential-policy.ts";
 import { ConfigurationValidationError, type ErrorDetail } from "@openclaw-enterprise/contracts";
 import { requireConfiguration } from "@openclaw-enterprise/contracts";
 import type {
   Backend,
+  ConnectionEndpoint,
   CredentialAttachmentStatus,
   CredentialGatewayContext,
   CredentialGatewayDriver,
@@ -374,7 +379,7 @@ function checkStoredHost(config: Readonly<Record<string, string>>): void {
   }
 }
 
-/** A per-source profile that injects one bearer token at the protected endpoint. */
+/** A per-source profile that injects one bearer token at its protected destinations. */
 function bearerProfile(
   sourceId: string,
   config: Readonly<Record<string, string>>,
@@ -386,6 +391,7 @@ function bearerProfile(
   > & {
     readonly required?: boolean;
   },
+  endpoints: readonly ConnectionEndpoint[] = [bearerTokenEndpoint(config)],
 ): Omit<OpenShellProviderProfile, "annotations"> {
   return {
     id: openShellProviderName(sourceId),
@@ -400,7 +406,7 @@ function bearerProfile(
         headerName: "authorization",
       },
     ],
-    endpoints: [{ ...bearerTokenEndpoint(config), protocol: "rest" }],
+    endpoints: endpoints.map((endpoint) => ({ ...endpoint, protocol: "rest" })),
     binaries: requiredToolBinaries(options, config.binary),
     inferenceCapable: false,
   };
@@ -428,7 +434,28 @@ function oauth2SourceType(
     credentials: (config) => Object.freeze({ access_token: config.env_var ?? "" }),
     // The token endpoint lives only in the profile: OpenShell refuses it as refresh material.
     profile: (sourceId, config, options, gateway) => {
-      checkStoredHost(config);
+      let endpoints: readonly ConnectionEndpoint[] | undefined;
+      if (config.recipient_kind === undefined) {
+        checkStoredHost(config);
+      } else {
+        const slot = managedGoogleInstall.credentials.account!;
+        const scope = googleSourceRequestScope(config);
+        if (
+          type !== "oauth2-refresh-token" ||
+          config.oauth_owner !== "token_service" ||
+          config.issuer !== slot.issuer ||
+          config.token_url !== slot.tokenEndpoint ||
+          config.env_var !== slot.delivery.env ||
+          !scope ||
+          !("kind" in scope)
+        ) {
+          throw new StoredCredentialSourceConfigError("recipient_kind");
+        }
+        endpoints = googleCredentialEndpoints(scope);
+        if (!endpoints.length) {
+          throw new StoredCredentialSourceConfigError("scope");
+        }
+      }
       // A source stored before the token_url host rules fails here until it is replaced.
       if (
         !tokenUrlHostAllowed(config.token_url ?? "") ||
@@ -439,11 +466,18 @@ function oauth2SourceType(
       }
       if (type === "oauth2-refresh-token" && config.oauth_owner === "token_service") {
         // OpenShell can withdraw an optional key from a still-attached provider after a terminal refresh failure.
-        return bearerProfile(sourceId, config, options, "Connected OAuth account", {
-          name: "access_token",
-          required: false,
-          stablePlaceholder: true,
-        });
+        return bearerProfile(
+          sourceId,
+          config,
+          options,
+          "Connected OAuth account",
+          {
+            name: "access_token",
+            required: false,
+            stablePlaceholder: true,
+          },
+          endpoints,
+        );
       }
       return bearerProfile(sourceId, config, options, `OAuth2 ${type} (OpenClaw Enterprise)`, {
         name: "access_token",
@@ -1351,6 +1385,17 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         (snapshot) =>
           snapshot.sourceId === binding.sourceId && snapshot.accountDelivery !== undefined,
       );
+    if (
+      context.sources.some(
+        (source) =>
+          source.config.recipient_kind === "google_apis" &&
+          (!savedGoogleAccount || source.id !== binding?.sourceId),
+      )
+    ) {
+      throw new ScopeViolationError(
+        "A Google APIs account requires its managed Google request guard.",
+      );
+    }
     if (binding && selected) {
       if (
         !googleWorkspaceCredentialPolicy.accepts(managedGoogleInstall, binding.credential, selected)
@@ -1437,7 +1482,9 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
           ref: name,
           ...((source.id === binding?.sourceId || source.config.protocol === "mcp") && {
             requestScope: {
-              ...bearerTokenEndpoint(source.config),
+              ...(source.config.recipient_kind === "google_apis"
+                ? { kind: "google_apis" as const }
+                : bearerTokenEndpoint(source.config)),
               scopes: (source.config.scope ?? "").split(/\s+/).filter(Boolean),
               ...(savedGoogleAccount &&
                 source.id === binding?.sourceId && {

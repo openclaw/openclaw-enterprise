@@ -21,6 +21,7 @@ import { PostgresHumanAuthentication } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
 import { keycloakRealmAdmin, rotateKeycloakClientSecret } from "../helpers/ci-keycloak-realm.mjs";
 import { selectTemplateDrivers } from "../helpers/connection-template-drivers.mjs";
+import { connectFixtureGoogleAccount } from "../helpers/google-api-saved-account.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import { createProviderSandboxDriver } from "../helpers/runtime-logs.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
@@ -152,7 +153,7 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
   });
 
   // The real Token Service and OpenShell Drivers run against recording Secret/OpenShell stores.
-  // Only Keycloak issues and validates access tokens.
+  // Keycloak issues real tokens for this issuer. A separate Google case controls only the token endpoint.
   const secretDriver = { ...createTestSecretDriver(), capability: "secret" as const };
   const preparedTokens = new TokenService(
     new OAuthConnectionTokens(secretDriver, refreshPinnedOAuthGrant),
@@ -175,7 +176,7 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
       appOptions: {
         publicOrigin,
         // Only the fixture MCP metadata is supplied locally. OCC creates the template and
-        // Keycloak serves authorization, token exchange, and all user logins in this suite.
+        // Keycloak serves authorization, token exchange, and user logins for this issuer.
         async discoverMcpAuthorization(serverUrl: string, selectedIssuer?: string) {
           assert.equal(serverUrl, pluginWorkflow ? reportsUrl : "https://api.connections.test/mcp");
           assert.equal(selectedIssuer, issuer);
@@ -238,18 +239,6 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
     port: 443,
     path: "/**",
   };
-  const registered = await inject("POST", "/oauth-clients", {
-    displayName: "Saved accounts",
-    namespaceId,
-    issuer,
-    tokenUrl,
-    revocationUrl: tokenUrl.replace(/token$/, "revoke"),
-    clientId,
-    clientSecret,
-    tokenEndpointAuthMethod: "client_secret_basic",
-  });
-  assert.equal(registered.statusCode, 201, registered.body);
-  const oauthClientId = registered.json().data.id;
   const manualConfig = {
     mode: "manual",
     displayName: "Keycloak",
@@ -257,18 +246,30 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
     issuer,
     authorizationUrl: `${issuer}/protocol/openid-connect/auth`,
     tokenUrl,
-    oauthClientId,
-    scopes,
     recipient,
+    scopes,
   };
-  const template = await inject("POST", "/connection-templates", manualConfig);
+  const template = await inject("POST", "/connection-templates", {
+    ...manualConfig,
+    revocationUrl: `${issuer}/protocol/openid-connect/revoke`,
+  });
   assert.equal(template.statusCode, 201, template.body);
+  const registered = await inject("POST", "/oauth-clients", {
+    connectionTemplateId: template.json().data.id,
+    connectionTemplateVersion: template.json().data.current.version,
+    displayName: "Saved accounts",
+    clientId,
+    clientSecret,
+    tokenEndpointAuthMethod: "client_secret_basic",
+  });
+  assert.equal(registered.statusCode, 201, registered.body);
+  const oauthClientId = registered.json().data.id;
   const manual = { connectionTemplateId: template.json().data.id };
   const input: { connectionTemplateId: string; selectedScopes?: string[] } = { ...manual };
   const ownerId = principal.id;
   const owner = await accountSession(app, adminAccount.email, adminAccount.password);
   if (!pluginWorkflow) {
-    // The selected client may support revocation even though this manual version omits the endpoint.
+    // Registering the first client makes the current template ready for consent.
     const manualStart = await inject("POST", connections, manual);
     assert.equal(manualStart.statusCode, 201, manualStart.body);
     const mcpConfig = {
@@ -317,6 +318,7 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
     // as a provider grant while preserving that the person did not request an explicit scope.
     const unrestrictedManual = await inject("POST", "/connection-templates", {
       ...manualConfig,
+      oauthClientId,
       scopes: [],
       displayName: "Provider defaults",
     });
@@ -554,6 +556,32 @@ test(
     const privateRef = custody.rows[0].secret_ref;
     assert.ok(secretDriver.has(privateRef));
     const account = accounts.json().data[0];
+    // Google is the controlled exchange in this case. A receipt for an exact Google
+    // template with the same client cannot claim the wider provider recipient.
+    const google = await connectFixtureGoogleAccount(t, owner, namespaceId, [
+      "https://www.googleapis.com/auth/gmail.readonly",
+    ]);
+    const exact = await owner("POST", "/connection-templates", {
+      ...google.templateInput,
+      displayName: "Gmail only",
+      recipient: { host: "gmail.googleapis.com", port: 443, path: "/**" },
+    });
+    assert.equal(exact.statusCode, 201, exact.body);
+    await assert.rejects(
+      pool.query(
+        `INSERT INTO occ.saved_connections
+         SELECT (jsonb_populate_record(NULL::occ.saved_connections,
+           to_jsonb(s) || jsonb_build_object('connection_template_id',$2::text))).*
+         FROM occ.saved_connections s WHERE credential_source_id=$1`,
+        [google.credentialSourceId, exact.json().data.id],
+      ),
+      { code: "23514" },
+    );
+    assert.equal(
+      (await owner("DELETE", connections + "/" + google.credentialSourceId)).statusCode,
+      204,
+    );
+
     assert.deepEqual(
       [
         account.oauthClientId,
@@ -846,7 +874,7 @@ test(
     const pluginConsent = (expected: string | null) =>
       begin(`${path(a)}/connections`, {
         ...input,
-        connectionTemplateVersion: 1,
+        connectionTemplateVersion: 2,
         pluginId,
         slotId,
         releaseSha256,
@@ -1150,5 +1178,91 @@ test(
     const withdrawn = provider(primarySender);
     assert.deepEqual(Object.keys(withdrawn.credentials), []);
     assert.deepEqual(Object.keys(withdrawn.credentialExpirationTimes), []);
+
+    // The fixture Compute does not place Kubernetes plugins. Keep its placement Driver
+    // and delegate every slot and source decision to the bundled Google credential policy.
+    controller.registerDriver({
+      ...plugin,
+      id: "google-slot-fixture",
+      credentials: new OCCPluginDriver().credentials,
+    });
+    controller.selectDriver("plugin", "google-slot-fixture");
+    const google = await connectFixtureGoogleAccount(t, owner, namespaceId, [
+      gmailRead,
+      "https://www.googleapis.com/auth/calendar.readonly",
+    ]);
+    const created = await owner("POST", agents, {
+      name: "Google APIs",
+      executionMode: "dedicated",
+      configurationId: config.json().data.id,
+      plugins: { [cli.id]: { enabled: true } },
+    });
+    assert.equal(created.statusCode, 201, created.body);
+    const googleAgent = created.json().data.id;
+    const granted = await owner(
+      "POST",
+      path(googleAgent) + "/connections/" + google.credentialSourceId,
+    );
+    assert.equal(granted.statusCode, 204, granted.body);
+    const modelGrant = await owner("POST", base + "/iam/access-bindings", {
+      subjectKind: "identity",
+      subjectId: created.json().data.servicePrincipalId,
+      roleId: modelRole.json().data.id,
+      resourceKind: "credential_source",
+      resourceId: modelSourceId,
+    });
+    assert.equal(modelGrant.statusCode, 201, modelGrant.body);
+    const bound = await owner("PATCH", path(googleAgent), {
+      configurationId: config.json().data.id,
+      harnessAuth: { method: "credential_source", sourceId: modelSourceId },
+      credentialSources: [{ sourceId: google.credentialSourceId }, { sourceId: modelSourceId }],
+      plugins: {
+        [cli.id]: {
+          enabled: true,
+          driverPolicy: {
+            releaseSha256: cli.releaseSha256,
+            credentials: { account: google.credentialSourceId },
+          },
+        },
+      },
+    });
+    assert.equal(bound.statusCode, 200, bound.body);
+    const deployed = await owner("POST", path(googleAgent) + "/deploy");
+    assert.equal(deployed.statusCode, 202, deployed.body);
+    const revisionId = deployed.json().data.id;
+    assert.ok(
+      await controller.prepareRevisionAccount(
+        namespaceId,
+        googleAgent,
+        revisionId,
+        google.credentialSourceId,
+      ),
+    );
+    const revision = await state.read((v) =>
+      v.revisions.findRevision(namespaceId, googleAgent, revisionId),
+    );
+    const delivered = revision?.credentialSources?.find(
+      (source) => source.sourceId === google.credentialSourceId,
+    )?.accountDelivery;
+    assert.ok(delivered);
+    const sender = provider(openShellProviderName(delivered.profileId));
+    const googleProfile = await transport.getProviderProfile(sender.workspace, sender.type);
+    assert.deepEqual(
+      googleProfile.endpoints
+        .map(({ host, port, path }: { host: string; port: number; path: string }) => [
+          host,
+          port,
+          path,
+        ])
+        .sort(),
+      [
+        ["gmail.googleapis.com", 443, "/gmail/**"],
+        ["www.googleapis.com", 443, "/calendar/**"],
+      ],
+    );
+    assert.ok(
+      sender.credentials[cliAccount.delivery.env] === google.accessToken,
+      "only the prepared Google access token reaches the selected revision",
+    );
   },
 );

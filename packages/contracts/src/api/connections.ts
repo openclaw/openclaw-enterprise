@@ -1,6 +1,10 @@
 import { Type } from "typebox";
 import { AgentId, CredentialSourceId, Meta, NamespaceId } from "./common.ts";
-import { ConnectionTemplateId, OAuthScope } from "./connection-templates.ts";
+import {
+  ConnectionRecipientSchema,
+  ConnectionTemplateId,
+  OAuthScope,
+} from "./connection-templates.ts";
 
 export const StartNamespaceConnectionBody = Type.Object(
   {
@@ -35,14 +39,7 @@ const SavedConnectionSchema = Type.Object(
     oauthClientId: Type.String(),
     clientId: Type.String(),
     issuer: Type.String(),
-    recipient: Type.Object(
-      {
-        host: Type.String(),
-        port: Type.Integer({ minimum: 1, maximum: 65535 }),
-        path: Type.String(),
-      },
-      { additionalProperties: false },
-    ),
+    recipient: ConnectionRecipientSchema,
     resource: Type.Optional(Type.String()),
     requestedScopes: Type.Array(Type.String()),
     grantedScopes: Type.Array(Type.String()),

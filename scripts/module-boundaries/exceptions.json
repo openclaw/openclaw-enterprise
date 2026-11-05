@@ -23,7 +23,7 @@
       "typeOnly": false,
       "bindings": [
         "value:AGENT_READINESS_ENTRYPOINT",
-        "value:AGENT_RUNTIME_ENTRYPOINT",
+        "value:COMPUTE_AGENT_RUNTIME_ENTRYPOINT",
         "value:PLUGIN_RUNTIME_HELPERS"
       ],
       "owner": "Compute runtime helpers",

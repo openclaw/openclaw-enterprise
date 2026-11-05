@@ -46,6 +46,7 @@ const CONSOLE_ASSETS = new Map([
       "configuration-fields.mts",
       "connection-templates.mts",
       "oauth-clients.mts",
+      "oauth-client-registration.mts",
       "oauth-providers.mts",
       "driver-configurations.mts",
       "view-lifetime.mts",

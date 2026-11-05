@@ -7,6 +7,7 @@ import {
   managedMcpCredentialBinding,
   managedMcpInstalls,
 } from "../plugin/managed-catalog.ts";
+import { googleCredentialEndpoints } from "../plugin/google-workspace/operations.ts";
 import { openShellProfileEndpoint } from "./openshell-gateway-client.ts";
 import { sameOpenShellPolicy } from "./openshell-policy.ts";
 
@@ -62,7 +63,9 @@ function openShellManagedMcpPolicy(
   const { host, port, path } = install.endpoint;
   const attached = requirements.credentialAttachments.filter(
     ({ sourceId, requestScope }) =>
-      sourceId === binding?.sourceId || (requestScope?.host === host && requestScope.port === port),
+      sourceId === binding?.sourceId ||
+      (requestScope &&
+        googleCredentialEndpoints(requestScope).some((ep) => ep.host === host && ep.port === port)),
   );
   const selected = attached[0];
   // Compute drops withdrawn sources from the dispatch even when the immutable revision names one.
@@ -76,7 +79,9 @@ function openShellManagedMcpPolicy(
     attached.length !== 1 ||
     !selected ||
     selected.ref !== openShellProviderName(revisionProviderSourceId(revision, selected.sourceId)) ||
-    selected.requestScope?.host !== host ||
+    !selected.requestScope ||
+    "kind" in selected.requestScope ||
+    selected.requestScope.host !== host ||
     selected.requestScope.port !== port ||
     selected.requestScope.path !== path ||
     requirements.proxyWiring ||

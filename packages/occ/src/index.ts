@@ -31,6 +31,8 @@ import {
   PENDING_OAUTH_CONNECTION,
   connectionValuesChanged,
   isOAuthScopeToken,
+  validateConnectionTemplateRecipient,
+  isGoogleApisRecipient,
   validateConnectionTemplateAuthorization,
   ConnectionTemplateValidationError,
   assertExecutionAdmission,
@@ -169,6 +171,8 @@ import type {
   McpAuthorizationMetadata,
   ConnectionTemplate,
   ConnectionTemplateValues,
+  GoogleApisRecipient,
+  ConnectionRecipient,
   CredentialRefreshDriver,
   CredentialRefreshStatus,
   CredentialSource,
@@ -1041,11 +1045,13 @@ type TemplateInput = ApprovedTemplateSettings &
         readonly authorizationUrl: string;
         readonly tokenUrl: string;
         readonly revocationUrl?: string;
-        readonly recipient: {
-          readonly host: string;
-          readonly port?: number;
-          readonly path?: string;
-        };
+        readonly recipient:
+          | GoogleApisRecipient
+          | {
+              readonly host: string;
+              readonly port?: number;
+              readonly path?: string;
+            };
       }
     | {
         readonly mode: "mcp_discovery";
@@ -1053,16 +1059,49 @@ type TemplateInput = ApprovedTemplateSettings &
         readonly issuer: string;
       }
   );
+function manualConnectionRecipient(
+  recipient: Extract<TemplateInput, { mode: "manual" }>["recipient"],
+): ConnectionRecipient {
+  if (isGoogleApisRecipient(recipient)) {
+    return { kind: "google_apis" };
+  }
+  const { host, port = 443, path = "/**" } = recipient;
+  if (
+    !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(host) ||
+    !/^\/[!-~]*$/.test(path) ||
+    /[?#\\]/.test(path)
+  ) {
+    throw new ConnectionTemplateValidationError(
+      "recipient",
+      "Choose a DNS host and HTTPS request path for this account.",
+    );
+  }
+  return { host, port, path };
+}
+
+function templateAcceptsAuthMethod(
+  observed: McpAuthorizationMetadata | undefined,
+  method: OAuthClient["tokenEndpointAuthMethod"],
+): boolean {
+  return (
+    !observed || (observed.tokenEndpointAuthMethods ?? ["client_secret_basic"]).includes(method)
+  );
+}
+
 export type CreateConnectionTemplateInput = TemplateInput & {
   readonly namespaceId?: string;
   readonly displayName: string;
 };
 export type UpdateConnectionTemplateInput =
   { readonly displayName: string } | (TemplateInput & { readonly displayName?: string });
-export type CreateOAuthClientInput = Omit<
+export type CreateOAuthClientInput = Pick<
   OAuthClient,
-  "id" | "createdAt" | "credentialRefreshDriverId"
-> & { readonly clientSecret?: string };
+  "displayName" | "clientId" | "tokenEndpointAuthMethod"
+> & {
+  readonly connectionTemplateId: string;
+  readonly connectionTemplateVersion: number;
+  readonly clientSecret?: string;
+};
 type DiscoverMcp = (serverUrl: string, issuer?: string) => Promise<McpAuthorizationMetadata>;
 export interface CreateCredentialSourceInput {
   readonly namespaceId: string;
@@ -5765,19 +5804,6 @@ export class OpenClawController {
     };
     let values: ConnectionTemplateValues;
     if (input.mode === "manual") {
-      const { host, port = 443, path = "/**" } = input.recipient;
-      if (
-        !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(
-          host,
-        ) ||
-        !/^\/[!-~]*$/.test(path) ||
-        /[?#\\]/.test(path)
-      ) {
-        throw new ConnectionTemplateValidationError(
-          "recipient",
-          "Choose a DNS host and HTTPS request path for this account.",
-        );
-      }
       values = {
         ...settings,
         mode: input.mode,
@@ -5785,7 +5811,7 @@ export class OpenClawController {
         authorizationUrl: input.authorizationUrl,
         tokenUrl: input.tokenUrl,
         ...(input.revocationUrl && { revocationUrl: input.revocationUrl }),
-        recipient: { host, port, path },
+        recipient: manualConnectionRecipient(input.recipient),
       };
     } else {
       const observed = await discover(input.serverUrl, input.issuer);
@@ -5833,6 +5859,7 @@ export class OpenClawController {
       };
     }
     validateConnectionTemplateAuthorization(values);
+    validateConnectionTemplateRecipient(values);
     return values;
   }
 
@@ -5851,10 +5878,7 @@ export class OpenClawController {
       client.issuer !== values.issuer ||
       client.tokenUrl !== values.tokenUrl ||
       (values.revocationUrl !== undefined && client.revocationUrl !== values.revocationUrl) ||
-      (values.observed &&
-        !(values.observed.tokenEndpointAuthMethods ?? ["client_secret_basic"]).includes(
-          client.tokenEndpointAuthMethod,
-        ))
+      !templateAcceptsAuthMethod(values.observed, client.tokenEndpointAuthMethod)
     ) {
       throw new ResourceStateConflictError(
         "Choose a client approved for this scope, issuer and provider endpoints.",
@@ -5977,15 +6001,18 @@ export class OpenClawController {
     audit?: (id: string) => AuditEvent,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ) {
-    await this.authorizeTemplateAdministration(principalId);
-    const { clientSecret, ...registration } = input;
-    validateConnectionTemplateAuthorization({
-      ...input,
-      authorizationUrl: input.issuer,
-      authorizationParameters: {},
-    });
+    const template = await this.getConnectionTemplate(principalId, input.connectionTemplateId);
+    const assertSelectedVersion = (version: number | undefined) => {
+      if (version !== input.connectionTemplateVersion) {
+        throw new ResourceStateConflictError(
+          "The template changed. Choose its current version and register again.",
+        );
+      }
+    };
+    assertSelectedVersion(template.current.version);
+    const { clientSecret, tokenEndpointAuthMethod } = input;
     if (
-      input.tokenEndpointAuthMethod === "none"
+      tokenEndpointAuthMethod === "none"
         ? clientSecret !== undefined
         : !isNonEmptyString(clientSecret)
     ) {
@@ -5994,29 +6021,77 @@ export class OpenClawController {
         "Provide a secret only for a confidential OAuth client.",
       );
     }
+    const { issuer, tokenUrl, revocationUrl, observed } = template.current;
+    if (!templateAcceptsAuthMethod(observed, tokenEndpointAuthMethod)) {
+      throw new ConnectionTemplateValidationError(
+        "tokenEndpointAuthMethod",
+        "Choose an authentication method supported by this template.",
+      );
+    }
     const client: OAuthClient = {
-      ...registration,
       id: `ccr_${crypto.randomUUID()}`,
+      displayName: input.displayName,
+      clientId: input.clientId,
+      tokenEndpointAuthMethod,
+      issuer,
+      tokenUrl,
+      ...(revocationUrl !== undefined && { revocationUrl }),
+      ...(template.namespaceId !== undefined && { namespaceId: template.namespaceId }),
       createdAt: this.timestamp(),
       credentialRefreshDriverId: clientSecret
         ? this.connectionRegistrationDriver().id
         : this.credentialRefreshDriver().id,
     };
-    await this.mutate(async (state) => {
-      await this.lockTemplateScope(state, client.namespaceId);
+    const lockSelectedVersion = async (state: PlatformUnitOfWork) => {
       await this.authorizeTemplateAdministration(principalId);
       await holdSession?.(state);
-      // Reserve the client before private I/O. A crashed creator leaves this hidden row for cleanup.
+      await this.lockTemplateScope(state, template.namespaceId);
+      const current = await state.connectionTemplates.lockConnectionTemplate(template.id);
+      assertSelectedVersion(current?.current.version);
+    };
+    const publish = async (state: PlatformUnitOfWork) => {
+      const selected = !template.current.oauthClientId;
+      if (selected) {
+        // Select the first registration. Another registration never replaces a chosen client.
+        const updated = await state.connectionTemplates.updateConnectionTemplate(template.id, {
+          version: {
+            ...template.current,
+            version: template.current.version + 1,
+            oauthClientId: client.id,
+            createdAt: this.timestamp(),
+          },
+        });
+        if (!updated) {
+          throw new ResourceStateConflictError("The template changed during client registration.");
+        }
+      }
+      if (audit) {
+        const event = audit(client.id);
+        await state.audit.append({
+          ...event,
+          details: {
+            ...event.details,
+            connectionTemplateId: template.id,
+            connectionTemplateVersion: template.current.version,
+            selected,
+          },
+        });
+      }
+    };
+    await this.mutate(async (state) => {
+      await lockSelectedVersion(state);
+      // The cleanup worker can reclaim a hidden reservation if the private write fails.
       const cleanupAfter = clientSecret
         ? new Date(this.clock().getTime() + 5 * 60_000).toISOString()
         : undefined;
       await state.connectionTemplates.createOAuthClient(client, cleanupAfter);
-      if (!clientSecret && audit) {
-        await state.audit.append(audit(client.id));
+      if (!clientSecret) {
+        await publish(state);
       }
     });
     if (clientSecret) {
       await this.mutate(async (state) => {
+        await lockSelectedVersion(state);
         const reserved = await state.connectionTemplates.lockOAuthClientForCleanup(
           client.id,
           false,
@@ -6026,16 +6101,12 @@ export class OpenClawController {
             "The OAuth client reservation expired. Create the client again.",
           );
         }
-        await this.authorizeTemplateAdministration(principalId);
-        await holdSession?.(state);
         const driver = this.connectionRegistrationDriver(client.credentialRefreshDriverId);
         await this.credentialGatewayOperation(() =>
           driver.registerClient!(this.oauthClientContext(client), clientSecret),
         );
         await state.connectionTemplates.setOAuthClientCleanup(client.id, null);
-        if (audit) {
-          await state.audit.append(audit(client.id));
-        }
+        await publish(state);
       });
     }
     return client;
@@ -9828,11 +9899,7 @@ export class OpenClawController {
     agentId?: string,
   ): Promise<void> {
     if (agentId === undefined) {
-      await this.authorize(principalId, "create", {
-        kind: "agent",
-        id: namespaceId,
-        namespaceId,
-      });
+      await this.authorize(principalId, "create", { kind: "agent", id: namespaceId, namespaceId });
     } else {
       const resource = { kind: "agent" as const, id: agentId, namespaceId };
       await this.authorize(principalId, "read", resource);
@@ -11106,13 +11173,7 @@ export class OpenClawController {
       namespaceId,
       "backendRef" in first
         ? { secretRef: { kind: "secret", id: first.id, namespaceId } }
-        : {
-            credentialSource: {
-              kind: "credential_source",
-              id: first.id,
-              namespaceId,
-            },
-          },
+        : { credentialSource: { kind: "credential_source", id: first.id, namespaceId } },
       prepareDiscovery,
       async () => {
         // The backend read crosses an async boundary. Recheck the Agent binding
@@ -11159,11 +11220,7 @@ export class OpenClawController {
       }
       const binding = this.harnessAuthBinding(agent.harnessAuth);
       if (agent.executionMode === "dedicated" && binding?.method === "credential_source") {
-        const reference = {
-          kind: "credential_source" as const,
-          namespaceId,
-          id: binding.sourceId,
-        };
+        const reference = { kind: "credential_source" as const, namespaceId, id: binding.sourceId };
         await this.authorize(principalId, "operate", reference);
         await this.authorize(agent.servicePrincipalId, "operate", reference);
         const source = await state.credentialSources.findCredentialSource(

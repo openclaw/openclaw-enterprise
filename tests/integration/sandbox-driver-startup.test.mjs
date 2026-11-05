@@ -1,5 +1,6 @@
 import {
   openShellPluginPolicy,
+  verifyPluginRequestGuard,
   assertPluginRequestPolicy,
   googleRequestPolicyFromSandbox,
 } from "../../apps/controller/src/drivers/sandbox/openshell-plugin-policy.ts";
@@ -1302,7 +1303,7 @@ test("a selected Google account uses its exact provider and a signed, fail-close
   assert.equal(created.spec.policy.network_policies["oce-google-requests"], undefined);
 });
 
-test("a saved Google account sends each permitted executable through the same request guard", async () => {
+test("one saved Google account serves its granted APIs through the same request guard for each executable", async () => {
   const client = workspaceGatewayClient();
   client.getGatewayInfo = async () => ({ extensions: [negotiatedGoogleGuard()] });
   const senderBinaries = [managedGoogleInstall.binaryPath, "/usr/bin/curl"];
@@ -1328,22 +1329,20 @@ test("a saved Google account sends each permitted executable through the same re
   const target = {
     issuer: managedGoogleInstall.credentials.account.issuer,
     tokenUrl: managedGoogleInstall.credentials.account.tokenEndpoint,
-    recipient: {
-      host: "gmail.googleapis.com",
-      port: 443,
-      path: "/gmail/v1/users/me/**",
-      access: "full",
-    },
+    recipient: { kind: "google_apis" },
   };
   assert.equal(slot.acceptsRecipient(target), true);
   assert.equal(
     slot.acceptsRecipient({
       ...target,
-      recipient: { ...target.recipient, path: "/unreviewed/path" },
+      recipient: { host: "gmail.googleapis.com", port: 443, path: "/unreviewed/path" },
     }),
     false,
   );
-  const delivery = slot.delivery(target, ["https://www.googleapis.com/auth/gmail.metadata"]);
+  const delivery = slot.delivery(target, [
+    "https://www.googleapis.com/auth/gmail.metadata",
+    "https://www.googleapis.com/auth/calendar.readonly",
+  ]);
   const config = { ...delivery.config, issuer: target.issuer, client_id: "test-google" };
   const source = {
     id: sourceId,
@@ -1373,9 +1372,23 @@ test("a saved Google account sends each permitted executable through the same re
     { ...context, source: { ...source, id: profileId } },
     { accessToken: "synthetic-access", expiresAt: new Date(Date.now() + 60_000).toISOString() },
   );
+  await assert.rejects(
+    gateway.attachForRevision({
+      ...context,
+      revision: { ...revision, plugins: undefined },
+      sources: [source],
+    }),
+    /requires its managed Google request guard/,
+  );
   const attachments = await gateway.attachForRevision({ ...context, revision, sources: [source] });
   const profile = client.profiles.get(attachments[0].ref).profile;
   assert.deepEqual(profile.binaries, senderBinaries);
+  assert.equal(profile.credentials.length, 1);
+  assert.deepEqual(profile.credentials[0].envVars, ["GOG_ACCESS_TOKEN"]);
+  assert.deepEqual(profile.endpoints.map(({ host, port, path }) => [host, port, path]).sort(), [
+    ["gmail.googleapis.com", 443, "/gmail/**"],
+    ["www.googleapis.com", 443, "/calendar/**"],
+  ]);
   const guard = openShellPluginPolicy(
     revision,
     { ...requirements, credentialAttachments: attachments },
@@ -1392,6 +1405,53 @@ test("a saved Google account sends each permitted executable through the same re
     network_policies: { ...guard.networks, [guard.providerRule.name]: guard.providerRule },
   };
   assert.deepEqual(googleRequestPolicyFromSandbox(effective).binaries, senderBinaries);
+  const credentialed = guard.providerRule.endpoints;
+  assert.equal(credentialed.length, 2);
+  // An extra unconsented API under the same exact authority still invalidates native adoption.
+  const observed = {
+    workspace: "default",
+    policy_source: 1,
+    configuration_admitted: true,
+    policy_validation_failure_mode: "fail_closed",
+    extension_authentication_enabled: true,
+    supervisor_middleware_services: [
+      {
+        name: "oce-plugin-requests",
+        grpc_endpoint: guard.endpoint,
+        audience: "urn:openshell:extension:middleware:oce-plugin-requests",
+      },
+    ],
+    policy: effective,
+  };
+  verifyPluginRequestGuard(observed, guard, "default");
+  const broadened = {
+    ...guard.providerRule,
+    endpoints: [
+      ...credentialed,
+      {
+        ...credentialed.find((ep) => ep.host === "www.googleapis.com"),
+        path: "/drive/**",
+      },
+    ],
+  };
+  assert.throws(
+    () =>
+      verifyPluginRequestGuard(
+        {
+          ...observed,
+          policy: {
+            ...effective,
+            network_policies: {
+              ...effective.network_policies,
+              [guard.providerRule.name]: broadened,
+            },
+          },
+        },
+        guard,
+        "default",
+      ),
+    /exact Google provider route/,
+  );
   // A provider rule altered for just the script must fail adoption before any credential is used.
   assert.throws(
     () =>
@@ -6476,6 +6536,61 @@ async function orphanedNativePreparation() {
   const context = { ...fixture.context, revision };
   return { driver, gateway, api, resource, deployment, context, requirements };
 }
+
+test("OpenShell native preparation exits cleanly on SIGTERM after readiness", async (t) => {
+  // Capture the production manifest through the existing transport fixture, then
+  // execute its preparation process. Live Pod deletion is proved separately.
+  const { deployment } = await orphanedNativePreparation();
+  const container = deployment.spec.template.spec.containers[0];
+  const directory = await temporaryDirectory(t, "openshell-preparation-stop-");
+  for (const mount of container.volumeMounts) {
+    await mkdir(join(directory, mount.mountPath), { recursive: true });
+  }
+  // Only relocate mount paths; keep the generated preparation and signal code.
+  const program = container.command[2]
+    .replaceAll("/workspace-preparation", join(directory, "workspace-preparation"))
+    .replaceAll("/preparation-status", join(directory, "preparation-status"));
+  const child = spawn(process.execPath, ["-e", program], {
+    cwd: directory,
+    env: { PATH: dirname(process.execPath) },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let errors = "";
+  child.stderr.on("data", (chunk) => {
+    errors += chunk;
+  });
+  const exited = new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code, signal) => resolve({ code, signal }));
+  });
+  const stopDeadline = setTimeout(() => child.kill("SIGKILL"), 5_000);
+  t.after(async () => {
+    clearTimeout(stopDeadline);
+    child.kill("SIGKILL");
+    await exited;
+  });
+  const marker = join(directory, "preparation-status", "ready");
+  for (;;) {
+    assert.equal(child.exitCode, null, errors);
+    assert.equal(child.signalCode, null, errors);
+    const ready = await readFile(marker, "utf8").catch((error) => {
+      if (error.code !== "ENOENT") {
+        throw error;
+      }
+      return undefined;
+    });
+    if (ready !== undefined) {
+      assert.equal(ready, "ready");
+      break;
+    }
+    await delay(20);
+  }
+  // A preparer must acknowledge termination, rather than wait for Kubernetes to
+  // force-kill it. The completion marker survives its successful shutdown.
+  child.kill("SIGTERM");
+  assert.deepEqual(await exited, { code: 0, signal: null });
+  assert.equal(await readFile(marker, "utf8"), "ready");
+});
 
 test("OpenShell resumes an SDK-decoded preparer after losing its create response", async () => {
   const { driver, gateway, api, resource, context, requirements } =
