@@ -1,3 +1,4 @@
+import { createConnectionTemplateFixture } from "./connection-template-fixture.mts";
 import { createNetworkPolicyFixture } from "./network-policy-fixture.mts";
 import { createPresetFixtures } from "./preset-fixture.mts";
 import type {
@@ -37,6 +38,7 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     "pluginCapabilities" | "pluginDiscoveryCredential"
   > &
   Parameters<typeof installationDriverConfigurations>[0] & {
+    oauthCatalog?: string;
     namespaceRechecks?: readonly (string | number)[];
     namespaceName?: string;
     namespaceStatus?: string;
@@ -46,6 +48,7 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     slackGrantMissing?: string;
     auth?: null | string;
     namespaceDeleteOutcome?: string;
+    namespaceDeleteRetryStatusFailure?: true;
     observabilityUrl?: string;
     repositoryOptions?: readonly RepositoryOption[];
     credentialRegistrationOutcome?: string;
@@ -244,6 +247,7 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
           },
         ];
   const namespaceDeletionReads = new Map<string, number>();
+  let namespaceDeleteRetryStatusFailed = false;
   const backends = scenario.emptyBackends
     ? []
     : [{ id: "chatgpt-demo", name: "ChatGPT", type: "chatgpt" }];
@@ -384,6 +388,12 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
     credentials,
     deploymentError: (checkedAt) => candidateDeploymentError(scenario, checkedAt),
   });
+  const templates = createConnectionTemplateFixture(
+    scenario.oauthCatalog,
+    createdAt,
+    namespaceId,
+    nextId,
+  );
   const presets = createPresetFixtures(scenario, namespaceId, auth);
   const networkPolicy = createNetworkPolicyFixture(scenario, {
     namespaceId,
@@ -426,6 +436,10 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
     if (path === "/api/auth/sign-out" && method === "POST") {
       signedIn = false;
       return response({});
+    }
+    const templateResponse = templates(path, method, body);
+    if (templateResponse) {
+      return templateResponse;
     }
     if (path === "/installation/driver-configurations" && method === "GET") {
       return response(installationDriverConfigurations(scenario));
@@ -520,6 +534,18 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
         return response(item, 202);
       }
       if (method === "GET") {
+        // Consume this preview failure only while the ordinary retry prompt is open.
+        // Earlier polls and later Refresh status reads keep their normal responses.
+        if (
+          scenario.namespaceDeleteRetryStatusFailure &&
+          item.id === namespaceId &&
+          !namespaceDeleteRetryStatusFailed &&
+          document.querySelector(".namespace-delete-dialog[open] #namespace-delete-title")
+            ?.textContent === `Retry deletion of ${item.name}?`
+        ) {
+          namespaceDeleteRetryStatusFailed = true;
+          return new Response("Service unavailable", { status: 503 });
+        }
         if (item.status === "deleting" && scenario.namespaceDeleteOutcome === "complete") {
           const reads = (namespaceDeletionReads.get(item.id) ?? 0) + 1;
           namespaceDeletionReads.set(item.id, reads);

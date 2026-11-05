@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
 updated: 2026-11-05
-last_updated_session: authoring-run/d006a89e-c176-48cc-8710-16d38835bbb9
+last_updated_session: authoring-run/17947441-42c1-43df-93a6-339dac4803dc
 ---
 
 # Console Agent editing and runtime requests
@@ -16,7 +16,7 @@ Related flows: [parent](../platform-console.md),
 - `apps/controller/src/console/agents/detail.mts:renderAgentDetail` loads the exact Agent and composes the detail actions.
 - `apps/controller/src/console/agents/credentials.mjs:createChannelSecretsPanel` saves channel Secret bindings.
 - `packages/occ/src/index.ts:OpenClawController.deployAgent` admits a version after first-deployment credential setup.
-- Each action requires permission for its exact resource.
+- Actions require exact-resource permission.
 
 ## Flow
 
@@ -106,22 +106,27 @@ disabled when the permission answer lists a bound Secret the caller cannot
 names no Secret (D756). After deployment, versions outside the newest page
 appear unreadable until an audited read (D758).
 
-`parseEditor(true)` refuses numbers that parse as infinity, including nested
-`1e400`, before saving. The editor keeps the text, shows the error, and takes
-focus. Use a number closer to zero and retry **Save Configuration**.
+Before saving, `parseEditor(true)` rejects numbers parsed as infinity, including
+nested `1e400`. The editor retains text, shows the error, and takes focus. Use a
+number closer to zero and retry.
 
-Saving rereads Agent and Configuration, then PATCHes
-`{ values, expectedGeneration }` and preserves `secretBindings`. Changed IDs or
-stale generations, including a racing `409`, require **Reload draft**.
-The response must confirm Configuration and Namespace identity, a newer generation,
-and sent values and bindings. Otherwise, reload before retrying the unknown outcome.
-Focus moves from disabled **Save Configuration** to **Checking Configuration…**,
-then to **Edit Configuration** on success unless focus moved.
+`detail.mts:saveConfiguration` rereads Agent and Configuration before PATCHing
+`{ values, expectedGeneration }`, preserving `secretBindings`. Changed IDs,
+stale generations, or concurrent-save conflicts require **Reload draft**. Responses must
+confirm Configuration/Namespace identity, newer generation, and submitted
+values/bindings. Reload before retrying unknown outcomes.
+Focus on **Save Configuration** moves to **Checking Configuration…**, then
+**Edit Configuration** on success unless focus moved. Conflicts retain local text. If focus moved,
+preserve focus, selection, and scroll. Otherwise, focus **Reload draft** and reveal
+the refusal.
 
 **Enable gateway password access** and **Collaboration and safety**
-(`agents/gateway-safety.mts`) stage edits; **Cancel** discards them. Password access writes an env SecretRef to Compute's `OPENCLAW_GATEWAY_PASSWORD` on the default env alias. **Deploy** blocks with saved-setting refusals from `stored-configuration-rules.ts` (same order) or `agents/validate` (Kubernetes-only). A hint replaces the password button if save would refuse its reference.
+(`agents/gateway-safety.mts`) stage edits; **Cancel** discards them. Password access
+references Compute's `OPENCLAW_GATEWAY_PASSWORD` through the default env alias.
+Unsavable references replace the button with a hint. **Deploy** shows `stored-configuration-rules.ts`
+refusals in order, or Kubernetes-only `agents/validate` refusals.
 
-Saves retain scroll, focus, and admitted snapshots. Refusals keep edits.
+Saves preserve scroll and admitted snapshots. Refusals keep edits.
 Unsaved edits block deployment. Pending saves block tab and version changes.
 On blocked Back/Forward, `apps/controller/src/console/navigation.mts:traverse`
 restores the address without reloading for missing or equal markers or impossible steps.
@@ -349,6 +354,7 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
+- 2026-11-05 19:05: Preserve conflict focus and selection. (authoring-run/17947441-42c1-43df-93a6-339dac4803dc - 0ecbe50bfe0df315fda06a90274b9e218b48d96c)
 - 2026-11-05 18:37: Explain the Configuration number range refusal on Save. (authoring-run/d006a89e-c176-48cc-8710-16d38835bbb9 - 5fd3fde4911e1640c354d69bb09f6f3d72445a05)
 - 2026-11-05 01:51: Guard pending-save history. (authoring-run/19e029b0-7ee3-4034-8e3b-e403265ff746 - 516ee6d87dea5326df70e647b17e2a141392cd0c)
 - 2026-11-05 01:03: Document read failures. (authoring-run/68de7101-f5b0-459f-8861-9ec3e614dcb2 - 8ee2e630)

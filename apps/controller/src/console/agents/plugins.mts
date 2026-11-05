@@ -14,6 +14,7 @@ import {
   button,
   element,
   focusSaveOutcome,
+  jsonObjectDiagnostic,
   revealStatus,
   setUnavailable,
   statusBlock,
@@ -403,20 +404,20 @@ export function renderAgentPlugins(
     ) {
       return;
     }
-    let plugins: unknown;
-    try {
-      plugins = JSON.parse(input.value);
-      if (plugins === null || typeof plugins !== "object" || Array.isArray(plugins)) {
-        throw new Error();
-      }
-    } catch {
-      input.setCustomValidity("Enter a valid Plugin selections JSON object.");
+    const diagnostic = jsonObjectDiagnostic(input.value);
+    if (diagnostic.kind !== "valid") {
+      input.setCustomValidity(
+        diagnostic.kind === "number-range"
+          ? diagnostic.message
+          : "Enter a valid Plugin selections JSON object.",
+      );
       // The error goes under the field, opening its section, without the browser's bubble; the
       // status line does not repeat it.
       validateFields([input]);
       feedback.textContent = "";
       return;
     }
+    const plugins = diagnostic.value;
     pending = true;
     saveError.textContent = "";
     feedback.textContent = "Checking saved plugin selections…";

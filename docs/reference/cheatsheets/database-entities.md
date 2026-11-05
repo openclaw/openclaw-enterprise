@@ -140,6 +140,34 @@ Stores Secret metadata and backend references; Secret values are kept by the sel
 - `backend_uid`
 - `created_at`
 
+### `connection_templates`
+
+Stores the scope and current version of each OAuth connection template.
+
+- `id`
+- `namespace_id`
+- `display_name`
+- `current_version`
+- `created_at`
+
+### `oauth_connection_template_versions`
+
+Pins the approved OAuth configuration and the HTTPS destinations that can receive the credential. A discovered version also retains the MCP metadata observed when the administrator saved it.
+
+- `template_id`, `version`, `oauth_client_id`, `mode`
+- `issuer`, `authorization_url`, `token_url`, `revocation_url`
+- `scopes`, `authorization_parameters`, `observed_metadata`
+- `destinations` (exact host, port, and path for each approved HTTPS destination)
+- `created_at`
+
+### `oauth_clients`
+
+Identifies an independently managed OAuth client and its approved credential destinations. OCC uses the registration ID to locate a confidential client’s private value on the owning Secret Driver. A cleanup deadline keeps an unpublished or deleted client hidden until private cleanup completes.
+
+- `id`, `namespace_id`, `display_name`, `issuer`, `client_id`
+- `token_url`, `revocation_url`, `token_endpoint_auth_method`
+- `secret_driver_id`, `cleanup_after`, `created_at`
+
 ### `credential_sources`
 
 Records which Credential Gateway or Credential Proxy admitted each source. The capability and Driver ID are immutable; the table holds no credential values.

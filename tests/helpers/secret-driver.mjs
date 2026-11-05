@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from "node:util";
 export function createTestSecretDriver(options = {}) {
   const entries = new Map();
   const calls = [];
+  const privateEntries = new Map();
   let resolveOverride;
 
   function keyOf(secret) {
@@ -37,7 +38,34 @@ export function createTestSecretDriver(options = {}) {
     return structuredClone(value);
   }
 
+  const privateKey = (ref) => JSON.stringify([ref.installationId, ref.id]);
   const driver = {
+    installationSecrets: {
+      async create(ref, value) {
+        const key = privateKey(ref);
+        if (privateEntries.has(key)) {
+          throw new Error("Installation Secret already exists.");
+        }
+        privateEntries.set(key, value);
+      },
+      async update(ref, value) {
+        const key = privateKey(ref);
+        if (!privateEntries.has(key)) {
+          throw new Error("Installation Secret does not exist.");
+        }
+        privateEntries.set(key, value);
+      },
+      async withValue(ref, use) {
+        const value = privateEntries.get(privateKey(ref));
+        if (value === undefined) {
+          throw new Error("Installation Secret does not exist.");
+        }
+        return use(value);
+      },
+      async delete(ref) {
+        privateEntries.delete(privateKey(ref));
+      },
+    },
     id: options.id ?? "secret-test",
     capability: "secret",
     implementation: "test-passive-secret-storage",

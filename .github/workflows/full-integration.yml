@@ -121,22 +121,6 @@ jobs:
             title: PostgreSQL Platform
             profile: postgres
             timeout: 25
-          - lane: images-packaging
-            title: Images and Packaging
-            profile: full
-            timeout: 45
-          - lane: images-runtime-startup
-            title: Image Runtime Startup
-            profile: full
-            timeout: 30
-          - lane: images-runtime-startup-2
-            title: Image Runtime Startup 2
-            profile: images
-            timeout: 30
-          - lane: images-runtime-startup-3
-            title: Image Runtime Startup 3
-            profile: images
-            timeout: 30
           - lane: k3d-fixture-configuration
             title: k3d Fixture and Configuration
             profile: k3d
@@ -193,6 +177,56 @@ jobs:
           path: ${{ runner.temp }}/state/repository-credentials-images.json
           if-no-files-found: error
           retention-days: 7
+
+  runtime-artifact:
+    name: Shared Runtime Image
+    needs: preflight
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.run_all == 'true') }}
+    uses: ./.github/workflows/ci-runtime-artifact.yml
+
+  image-lanes-same-sha:
+    name: Same-SHA ${{ matrix.title }}
+    runs-on: ${{ matrix.lane == 'images-packaging' && 'blacksmith-16vcpu-ubuntu-2404' || 'blacksmith-32vcpu-ubuntu-2404' }}
+    needs: [preflight, runtime-artifact]
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && needs.runtime-artifact.result == 'success' && (needs.preflight.outputs.run_all == 'true') }}
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: images-packaging
+            title: Images and Packaging
+            profile: full
+            timeout: 45
+          - lane: images-runtime-startup
+            title: Image Runtime Startup
+            profile: full
+            timeout: 30
+          - lane: images-runtime-startup-2
+            title: Image Runtime Startup 2
+            profile: images
+            timeout: 30
+          - lane: images-runtime-startup-3
+            title: Image Runtime Startup 3
+            profile: images
+            timeout: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: ${{ matrix.lane }}
+          profile: ${{ matrix.profile }}
+          node-version: ${{ env.NODE_VERSION }}
+          artifact-prefix: full-results
+          job-timeout-minutes: ${{ matrix.timeout }}
+          runtime-artifact-id: ${{ needs.runtime-artifact.outputs.artifact-id }}
+          runtime-artifact-sha256: ${{ needs.runtime-artifact.outputs.archive-sha256 }}
+          runtime-artifact-source-sha: ${{ needs.runtime-artifact.outputs.source-sha }}
+          runtime-artifact-run-id: ${{ needs.runtime-artifact.outputs.run-id }}
+          runtime-artifact-attempt: ${{ needs.runtime-artifact.outputs.producer-attempt }}
 
   runtime-image-fixture:
     name: Runtime Image Fixture
@@ -585,6 +619,8 @@ jobs:
     needs:
       - preflight
       - pr-safe-same-sha
+      - image-lanes-same-sha
+      - runtime-artifact
       - runtime-image-fixture
       - docker-model
       - k3d-model
@@ -625,9 +661,10 @@ jobs:
           const lane = process.env.SELECTED_LANE || process.env.LANE;
           const out = { preflight: needs.preflight };
           if (lane === "all") {
+            out["runtime-artifact"] = needs["runtime-artifact"] ?? { result: "missing" };
             out["runtime-image-fixture"] = needs["runtime-image-fixture"] ?? { result: "missing" };
             for (const name of ["checks-baseline-1", "checks-baseline-2", "checks-browser", "checks-browser-2", "postgres", "postgres-application", "postgres-auth", "postgres-platform", "images-packaging", "images-runtime-startup", "images-runtime-startup-2", "images-runtime-startup-3", "k3d-fixture-configuration", "k3d-fixture-state", "k3d-fixture-network", "k3d-fixture-plugins", "k3d-observability", "k3d-observability-demo", "logging-collector", "repository-credentials-container", "keycloak-oidc"]) {
-              out[name] = { result: needs["pr-safe-same-sha"]?.result ?? "missing" };
+              out[name] = { result: needs[name.startsWith("images-") ? "image-lanes-same-sha" : "pr-safe-same-sha"]?.result ?? "missing" };
             }
           } else if (lane === "logging-collector") {
             out["logging-collector"] = needs["logging-collector"] ?? { result: "missing" };

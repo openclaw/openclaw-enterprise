@@ -30,6 +30,7 @@ export const DeleteRefused = { ...story("namespaceDeleteRefused") };
 export const DeletePending = { ...story("namespaceDeletePending") };
 export const DeleteUnknown = { ...story("namespaceDeleteUnknown") };
 export const DeleteRetry = { ...story("namespaceDeleteRetry") };
+export const DeleteRetryStatusFailure = { ...story("namespaceDeleteRetryStatusFailure") };
 
 export const NamespacesUnavailable = { ...story("namespacesUnavailable") };
 export const NamespacesUnavailableMobile = { ...story("namespacesUnavailableMobile") };
