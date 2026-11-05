@@ -106,11 +106,10 @@ discovery can propose a new version.
 
 Manual templates list HTTPS destinations. Each row binds a host, port and path.
 The Google starter fills editable rows from the Google Workspace release’s
-reviewed operations. Saving freezes the list on the version. Consent freezes
-that version’s destinations on the account. Adding an endpoint requires new
-consent before an existing account can use it. A Google request must also fit
-the granted scopes, reviewed operation and Agent policy. Public discovery
-requests carry no bearer token. Narrowing a grant withdraws broader access.
+reviewed operations. The administrator controls where existing accounts can send
+access tokens, including newly added hosts. A request must match a current row,
+the selected plugin operation and the Agent’s deployed policy. The provider
+enforces its grant. Public discovery requests carry no bearer token.
 
 An administrator registers an OAuth client against a saved template version.
 OCC takes its availability, issuer and client authentication endpoints from that
@@ -140,24 +139,23 @@ whether or not the source has an address.
 
 ### Versions and consent
 
-An edit never changes what an existing connection does. Changing any field except
-`displayName` creates a new connection template version. The credential source
-records the version and the values its owner approved: issuer and its URLs, client
-registration, this connection's scopes, authorization parameters, endpoint and
-access, and OIDC settings. OCC and both Drivers use only that
-record, so an administrator cannot redirect a user's refresh grant or credential.
-Source configuration is already immutable.
+Changing the configuration creates an immutable template version. Consent pins the
+issuer, OAuth endpoints, client registration, scopes and, for MCP, the protected
+resource and exact server URL. The Token Service refreshes that grant with the
+original issuer and registration.
 
-After a new version, existing connections keep working and Console shows
-**Reconnect to apply changes**. Reconnecting asks for consent again and creates a
-new source. To stop an old version, for example after an endpoint compromise,
-administrators disconnect the affected sources. OCC refuses to delete a connection
-template while any source references one of its versions.
+OCE resolves manual destinations by the saved account’s template ID. An
+administrator can add, narrow, remove or replace rows for that grant without
+another consent flow. OCC reconciles the senders of affected running Agents. A sender can use its
+previous policy until reconciliation completes. Changing the default client
+applies to future connections. Changing the issuer, setup method or MCP target
+requires a new grant for that target. OCC refuses to delete a template while a
+saved account references it.
 
 When an administrator rotates the secret for the same OAuth client, the next
 code exchange or token refresh uses its current secret. An existing account
 can refresh its original grant without another consent flow. Its issuer,
-client identity and approved destinations stay pinned to the registration.
+client identity and token endpoint stay pinned to the registration.
 See [client registrations](contracts.md#client-registrations).
 
 ### Ownership and Agent attachments
@@ -266,10 +264,11 @@ selection before the redirect and uses the
    ID, the version shown for consent, and any selected scopes. OCC
    checks template availability and `credential_source:create` in the Namespace, and validates the
    selection. It then registers an empty source as `registering` and calls
-   `startBrowserAuthorization`. OCC saves `privateState` in a private attempt row bound to the initiating
-   browser and identity and returns the source ID and `authorizationUrl`.
-2. The console shows the destination and scopes the person will approve, then
-   opens the consent URL in a popup. When a browser blocks popups, it redirects
+   `startBrowserAuthorization`. It stores the PKCE verifier in a temporary,
+   control-plane-owned row bound to the initiating browser session and returns
+   the source ID and `authorizationUrl`.
+2. The console shows the connection template and requested scopes, then opens
+   the consent URL in a popup. When a browser blocks popups, it redirects
    the page.
 3. `GET /oauth/callback` requires the session that started the connection. OCC
    finds the session by a hash of `state`, rejects reuse or an age above ten

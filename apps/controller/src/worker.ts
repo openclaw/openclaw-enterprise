@@ -5960,6 +5960,7 @@ export class ControllerWorker {
       harnessAuth = revision.harnessAuth;
     }
     const credentialSources: Readonly<CredentialSource>[] = [];
+    const preparedAccounts: Readonly<CredentialSource>[] = [];
     for (const snapshot of revision.credentialSources ?? []) {
       // The Harness source is listed too; it resolves above through the Harness binding.
       if (snapshot.sourceId === revisionHarnessSourceId(revision)) {
@@ -5990,6 +5991,9 @@ export class ControllerWorker {
         };
       }
       credentialSources.push(source);
+      if (snapshot.accountDelivery) {
+        preparedAccounts.push(source);
+      }
     }
     const workspaceSetup = await this.state.read((view) =>
       view.workspaceSetups.find(revision.namespaceId, revision.agentId),
@@ -6096,6 +6100,21 @@ export class ControllerWorker {
                   }
                   return view.credentialSources.findRevisionEgressInstallation(namespaceId, id);
                 }),
+            }),
+        ...(preparedAccounts.length === 0
+          ? {}
+          : {
+              releaseCredentials: async (signal) => {
+                for (const source of preparedAccounts) {
+                  await this.provisioningController!.releaseRevisionAccount(
+                    revision.namespaceId,
+                    revision.agentId,
+                    revision.id,
+                    source,
+                    signal,
+                  );
+                }
+              },
             }),
         secretEnvironment: Object.freeze(resolved),
         harnessAuth,

@@ -35,6 +35,8 @@ import {
 } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
 import { isAbsolute } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { DependencyUnavailableError } from "@openclaw-enterprise/occ";
 import { verifyManagedPluginRegistration } from "../sandbox/openshell-plugin-policy.ts";
 import { managedMcpProviderEndpoint } from "../sandbox/openshell-managed-mcp-policy.ts";
 import {
@@ -1191,6 +1193,10 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     return { state: "ready" };
   }
 
+  prepareConnectionSource(context: CredentialSourceContext): Promise<void> {
+    return this.writeConnectionToken(context, undefined, true);
+  }
+
   publishConnectionToken(
     context: CredentialSourceContext,
     token: { readonly accessToken: string; readonly expiresAt: string },
@@ -1208,6 +1214,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
   private async writeConnectionToken(
     context: CredentialSourceContext,
     token?: { readonly accessToken: string; readonly expiresAt: string },
+    prepare = false,
   ): Promise<void> {
     const { source, signal } = context;
     if (
@@ -1225,8 +1232,11 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     const workspace = openShellWorkspaceName(context.namespace);
     const name = openShellProviderName(source.id);
     const existing = await client.getProvider(workspace, name, signal);
-    if (!existing && !token) {
+    if (!existing && !token && !prepare) {
       return;
+    }
+    if (!existing && token) {
+      throw new OpenShellCredentialGatewayFailure("The account sender is no longer prepared.");
     }
     if (
       existing &&
@@ -1239,15 +1249,55 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     if (!validPluginCredentialNames(names)) {
       throw new StoredCredentialSourceConfigError("env_var");
     }
-    await this.ensureProfile(
-      client,
-      workspace,
-      type,
-      source.id,
-      source.config,
-      this.placement(context),
-      signal,
-    );
+    if (prepare || token) {
+      let digest: string;
+      try {
+        digest = sha256Hex(
+          JSON.stringify(
+            type.profile(
+              source.id,
+              source.config,
+              this.options,
+              this.placement(context),
+              this.modelProvider,
+            ),
+          ),
+        );
+      } catch (error) {
+        if (prepare && existing) {
+          await this.writeConnectionToken(context);
+        }
+        throw error;
+      }
+      const profile = await client.getProviderProfile(workspace, name, signal);
+      const matches = profile?.annotations[PROFILE_DIGEST_ANNOTATION] === digest;
+      if (prepare) {
+        if (matches && existing) {
+          return;
+        }
+        // Revoke the old bearer before changing routes. A retry sees the prepared profile
+        // and leaves an unchanged sender alone, including across worker restarts.
+        if (existing) {
+          await this.writeConnectionToken(context);
+        }
+        await this.ensureProfile(
+          client,
+          workspace,
+          type,
+          source.id,
+          source.config,
+          this.placement(context),
+          signal,
+        );
+        if (existing) {
+          return;
+        }
+      } else if (!matches) {
+        throw new OpenShellCredentialGatewayFailure(
+          "The account sender policy is no longer prepared.",
+        );
+      }
+    }
     const provider = {
       workspace,
       name,
@@ -1271,12 +1321,100 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         "Prepared access tokens require conditional provider updates.",
       );
     }
-    await client.updateProviderCredentialsConditionally(
+    const updated = await client.updateProviderCredentialsConditionally(
       provider,
       existing.resourceVersion,
       signal,
       token ? undefined : names,
     );
+    await this.observeConnectionMaterial(client, workspace, name, updated, signal);
+  }
+
+  private async observeConnectionMaterial(
+    client: OpenShellGatewayClient,
+    workspace: string,
+    provider: string,
+    updated: OpenShellProviderResponse,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (!updated.targetReceipts || !updated.mutationId) {
+      throw new OpenShellCredentialGatewayFailure(
+        "The sender did not provide credential handoff receipts.",
+      );
+    }
+    for (const target of updated.targetReceipts) {
+      const desired = asRecord(target.desired);
+      const receiptId = target.receipt_id;
+      if (
+        !desired ||
+        typeof receiptId !== "string" ||
+        !receiptId ||
+        target.mutation_id !== updated.mutationId ||
+        target.kind !== "PROVIDER_MUTATION_KIND_UPDATE" ||
+        target.workspace !== workspace ||
+        target.provider !== provider ||
+        typeof desired.sandbox !== "string" ||
+        !desired.sandbox ||
+        desired.provider_id !== updated.id ||
+        desired.provider_resource_version !== updated.resourceVersion
+      ) {
+        throw new OpenShellCredentialGatewayFailure(
+          "The sender returned an invalid credential handoff target.",
+        );
+      }
+      for (;;) {
+        signal.throwIfAborted();
+        const status = await client.getSandboxProviderStatus(
+          workspace,
+          desired.sandbox,
+          provider,
+          signal,
+          receiptId,
+        );
+        const expected = status.receipt?.desired;
+        const observed = status.observed;
+        if (
+          status.completedOperationId === receiptId &&
+          status.receipt?.receiptId === receiptId &&
+          status.receipt.kind === "PROVIDER_MUTATION_KIND_UPDATE" &&
+          status.receipt.workspace === workspace &&
+          status.receipt.provider === provider &&
+          expected &&
+          expected.providerId === updated.id &&
+          expected.providerResourceVersion === updated.resourceVersion &&
+          expected.sandboxId === desired.sandbox_id &&
+          expected.sandbox === desired.sandbox &&
+          expected.attachmentEpoch === desired.attachment_epoch &&
+          expected.providerEnvRevision === desired.provider_env_revision &&
+          expected.configRevision === desired.config_revision &&
+          expected.policyHash === desired.policy_hash &&
+          observed?.sessionId &&
+          observed.processInstanceId &&
+          observed.credentialsInstalled &&
+          observed.launchEnvironmentInstalled &&
+          observed.policyActive &&
+          observed.attachmentEpoch === expected.attachmentEpoch &&
+          observed.providerEnvRevision === expected.providerEnvRevision &&
+          observed.configRevision === expected.configRevision &&
+          observed.policyHash === expected.policyHash &&
+          status.state === "PROVIDER_READINESS_STATE_READY"
+        ) {
+          break;
+        }
+        if (
+          [
+            "PROVIDER_READINESS_STATE_FAILED",
+            "PROVIDER_READINESS_STATE_SUPERSEDED",
+            "PROVIDER_READINESS_STATE_REVOKED",
+          ].includes(status.state)
+        ) {
+          throw new DependencyUnavailableError(
+            "The saved account credential handoff is not installed.",
+          );
+        }
+        await delay(100, undefined, { signal });
+      }
+    }
   }
 
   async withSourceToken<T>(
@@ -1466,15 +1604,38 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       }
       // Each deployment applies the current binary lists to the profiles it attaches. OpenShell
       // composes Sandbox policy from the stored profile, so attached Sandboxes narrow too.
-      await this.ensureProfile(
-        client,
-        workspace,
-        type,
-        profileId,
-        source.config,
-        this.placement(context),
-        context.signal,
+      const account = context.revision.credentialSources?.some(
+        (snapshot) => snapshot.sourceId === source.id && snapshot.accountDelivery,
       );
+      if (account) {
+        const prepared = await client.getProviderProfile(workspace, name, context.signal);
+        const digest = sha256Hex(
+          JSON.stringify(
+            type.profile(
+              profileId,
+              source.config,
+              this.options,
+              this.placement(context),
+              this.modelProvider,
+            ),
+          ),
+        );
+        if (prepared?.annotations[PROFILE_DIGEST_ANNOTATION] !== digest) {
+          throw new OpenShellCredentialGatewayFailure(
+            "The account sender policy is no longer prepared.",
+          );
+        }
+      } else {
+        await this.ensureProfile(
+          client,
+          workspace,
+          type,
+          profileId,
+          source.config,
+          this.placement(context),
+          context.signal,
+        );
+      }
       attachments.push(
         Object.freeze({
           sourceId: source.id,

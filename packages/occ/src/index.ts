@@ -4639,11 +4639,14 @@ export class OpenClawController {
     }
   }
 
-  private accountTarget(account: SavedConnection): PluginAccountTarget {
+  private async accountTarget(
+    state: PlatformReadView,
+    account: Readonly<SavedConnection>,
+  ): Promise<PluginAccountTarget> {
     return {
       issuer: account.issuer,
       tokenUrl: account.tokenUrl,
-      destinations: account.destinations,
+      destinations: await this.effectiveConnectionDestinations(state, account),
       ...(account.mcpServerUrl &&
         account.resource && {
           mcp: { serverUrl: account.mcpServerUrl, resource: account.resource },
@@ -4665,25 +4668,65 @@ export class OpenClawController {
     });
   }
 
-  /** Worker-only handoff. An attached account has no sender until a revision binds a named slot. */
+  /** Worker-only preflight. Token custody stays in Token Service until Compute verifies the receiver. */
   async prepareRevisionAccount(
     namespaceId: string,
     agentId: string,
     revisionId: string,
     sourceId: string,
   ): Promise<CredentialSource | undefined> {
+    return this.reconcileRevisionAccount(namespaceId, agentId, revisionId, sourceId);
+  }
+
+  /** Recheck the exact account and prepared policy immediately before releasing its access token. */
+  async releaseRevisionAccount(
+    namespaceId: string,
+    agentId: string,
+    revisionId: string,
+    expected: Readonly<CredentialSource>,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const source = await this.reconcileRevisionAccount(
+      namespaceId,
+      agentId,
+      revisionId,
+      expected.id,
+      expected,
+      signal,
+    );
+    if (!source) {
+      throw new ResourceStateConflictError("The prepared account is no longer authorized.");
+    }
+  }
+
+  private async reconcileRevisionAccount(
+    namespaceId: string,
+    agentId: string,
+    revisionId: string,
+    sourceId: string,
+    expected?: Readonly<CredentialSource>,
+    releaseSignal?: AbortSignal,
+  ): Promise<CredentialSource | undefined> {
     return this.mutate(async (state) => {
       const namespace = await this.lockNamespace(state, namespaceId);
       const revision = await state.revisions.findRevision(namespaceId, agentId, revisionId);
       const agent = await state.agents.findAgent(namespaceId, agentId);
       const custody = await state.savedConnections.findTokenCustody(namespaceId, sourceId);
-      if (!agent || !revision || !custody) {
+      if (
+        !agent ||
+        !revision ||
+        !custody ||
+        namespace.status !== "ready" ||
+        agent.desiredRuntimeState !== "running"
+      ) {
         return undefined;
       }
+      const newest = (await state.revisions.listRevisionMetadata(namespaceId, agentId)).at(-1);
       const snapshot = revisionCredentialSourceSnapshot(revision, sourceId);
       const delivery = snapshot?.accountDelivery;
       if (
         !delivery ||
+        (agent.activeRevisionId !== revision.id && newest?.id !== revision.id) ||
         !agent.credentialSources?.some((b) => b.sourceId === sourceId) ||
         agent.status !== "active" ||
         (await state.credentialSources.findCredentialWithdrawal(
@@ -4694,11 +4737,7 @@ export class OpenClawController {
       ) {
         return undefined;
       }
-      const ref = {
-        kind: "credential_source" as const,
-        namespaceId: namespace.id,
-        id: sourceId,
-      };
+      const ref = { kind: "credential_source" as const, namespaceId: namespace.id, id: sourceId };
       if (
         !(await this.authorizationDecision(agent.servicePrincipalId, "operate", ref)).decision
           .allowed
@@ -4710,46 +4749,70 @@ export class OpenClawController {
       if (!source || source.state !== "ready" || !account || account.revocationRequestedBy) {
         return undefined;
       }
-      const runtime = revisionCredentialSource(source, snapshot);
-      if (!runtime) {
+      const admitted = revisionCredentialSource(source, snapshot);
+      if (!admitted) {
         throw new ResourceStateConflictError(
           "The saved account no longer matches the admitted plugin receiver.",
         );
       }
-      const gateway = this.ownedCredentialGatewayDriver(runtime);
+      const gateway = this.ownedCredentialGatewayDriver(admitted);
       const placement = await this.credentialNamespace(namespace);
-      const signal = AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS);
+      const timeout = AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS);
+      const signal = releaseSignal ? AbortSignal.any([releaseSignal, timeout]) : timeout;
+      signal.throwIfAborted();
       const context = {
         namespace: placement,
-        source: { ...runtime, id: delivery.profileId },
+        source: { ...admitted, id: delivery.profileId },
         signal,
       };
       const token = await this.connectionTokenService().warm(custody, signal);
-      // A provider can narrow scopes when it renews a grant. The token receipt, rather
-      // than the last SQL status, determines whether the frozen request guard still fits.
-      const approved =
+      const target = await this.accountTarget(state, account);
+      const uses = this.pluginAccountBindings(revision.plugins?.plugins).filter(
+        (binding) => binding.sourceId === source.id,
+      );
+      const runtime =
         token &&
-        this.runtimeAccountSource(
-          source,
-          { ...account, grantedScopes: token.grantedScopes },
-          revision.plugins?.plugins,
-        );
-      if (!token || !approved || !isDeepStrictEqual(runtime.config, approved.config)) {
+        uses.length > 0 &&
+        uses.every(
+          ({ slot }) => slot.issuers.includes(account.issuer) && slot.acceptsRecipient(target),
+        )
+          ? await this.runtimeAccountSource(
+              state,
+              source,
+              { ...account, grantedScopes: token.grantedScopes },
+              revision.plugins?.plugins,
+            )
+          : undefined;
+      if (!token || !runtime) {
         if (!gateway.withdrawConnectionToken) {
           throw new ResourceStateConflictError("The sender cannot withdraw this connection token.");
         }
         await this.credentialGatewayOperation(() => gateway.withdrawConnectionToken!(context));
         return undefined;
       }
-      if (!gateway.publishConnectionToken) {
-        throw new ResourceStateConflictError("The sender cannot deliver expiring access tokens.");
+      if (runtime.type !== admitted.type || runtime.driverId !== admitted.driverId) {
+        throw new ResourceStateConflictError("The account's admitted sender has changed.");
       }
-      await this.credentialGatewayOperation(() =>
-        gateway.publishConnectionToken!(context, {
-          accessToken: token.accessToken,
-          expiresAt: token.expiresAt,
-        }),
-      );
+      const prepared = { ...context, source: { ...runtime, id: delivery.profileId } };
+      if (expected) {
+        signal.throwIfAborted();
+        if (!isDeepStrictEqual(runtime, expected) || !gateway.publishConnectionToken) {
+          throw new ResourceStateConflictError("The prepared account policy has changed.");
+        }
+        await this.credentialGatewayOperation(() =>
+          gateway.publishConnectionToken!(prepared, {
+            accessToken: token.accessToken,
+            expiresAt: token.expiresAt,
+          }),
+        );
+      } else {
+        if (!gateway.prepareConnectionSource) {
+          throw new ResourceStateConflictError(
+            "The sender cannot prepare an account without releasing its token.",
+          );
+        }
+        await this.credentialGatewayOperation(() => gateway.prepareConnectionSource!(prepared));
+      }
       return runtime;
     });
   }
@@ -5271,11 +5334,40 @@ export class OpenClawController {
             id: connection.credentialSourceId,
           })
         ) {
-          visible.push(connection);
+          visible.push({
+            ...connection,
+            destinations: await this.effectiveConnectionDestinations(state, connection),
+          });
         }
       }
       return visible;
     });
+  }
+
+  private async effectiveConnectionDestinations(
+    state: PlatformReadView,
+    account: Readonly<SavedConnection>,
+  ): Promise<SavedConnection["destinations"]> {
+    const template = await state.connectionTemplates.findConnectionTemplate(
+      account.connectionTemplateId,
+    );
+    if (!template || template.current.issuer !== account.issuer) {
+      return [];
+    }
+    if (template.current.mode === "manual") {
+      return account.mcpServerUrl === undefined && account.resource === undefined
+        ? template.current.destinations
+        : [];
+    }
+    if (
+      !account.mcpServerUrl ||
+      !account.resource ||
+      template.current.mcp?.serverUrl !== account.mcpServerUrl ||
+      template.current.mcp?.resource !== account.resource
+    ) {
+      return [];
+    }
+    return account.destinations;
   }
 
   private async grantConnectionOwner(
@@ -5301,12 +5393,7 @@ export class OpenClawController {
       await this.iamPolicyOperation(() =>
         roleDriver.createNamespaceRole!(
           { policy: state.iamPolicy },
-          {
-            id: roleId,
-            namespaceId,
-            name: "Connected account owner",
-            permissions,
-          },
+          { id: roleId, namespaceId, name: "Connected account owner", permissions },
         ),
       );
     } else if (
@@ -5336,7 +5423,6 @@ export class OpenClawController {
     );
   }
 
-  /** Explicitly delegate one completed connection to the target Agent's own principal. */
   async attachAgentConnection(
     principalId: string,
     input: AgentCredentialSourceInput,
@@ -10763,7 +10849,8 @@ export class OpenClawController {
           }
         }
       }
-      const accounts: { account: SavedConnection; name: string }[] = [];
+      const accounts: { account: SavedConnection; target: PluginAccountTarget; name: string }[] =
+        [];
       if (credentials?.connectionSlot) {
         for (const account of await state.savedConnections.listNamespaceConnections(namespaceId)) {
           const ref = {
@@ -10779,7 +10866,11 @@ export class OpenClawController {
           }
           const source = await state.credentialSources.findCredentialSource(namespaceId, ref.id);
           if (source?.state === "ready") {
-            accounts.push({ account, name: source.name });
+            accounts.push({
+              account,
+              target: await this.accountTarget(state, account),
+              name: source.name,
+            });
           }
         }
       }
@@ -10799,10 +10890,10 @@ export class OpenClawController {
         }
         const candidates = accounts
           .filter(({ account }) => slot.issuers.includes(account.issuer))
-          .map(({ account, name }) => ({
+          .map(({ account, target, name }) => ({
             id: account.credentialSourceId,
             name,
-            ...(!slot.acceptsRecipient(this.accountTarget(account)) && {
+            ...(!slot.acceptsRecipient(target) && {
               authorization: "required" as const,
             }),
           }));
@@ -10985,13 +11076,16 @@ export class OpenClawController {
             account.revocationRequestedBy ||
             !custody ||
             !slot.issuers.includes(account.issuer) ||
-            !slot.acceptsRecipient(this.accountTarget(account))
+            !slot.acceptsRecipient(await this.accountTarget(state, account))
           ) {
             throw new ResourceStateConflictError(
               "Authorize the account for this MCP server first.",
             );
           }
-          const delivery = slot.delivery(this.accountTarget(account), account.grantedScopes);
+          const delivery = slot.delivery(
+            await this.accountTarget(state, account),
+            account.grantedScopes,
+          );
           const reviewed = driver.credentials?.mcpToolDiscovery?.(pluginId, connection.slot, {
             ...source,
             ...delivery,
@@ -12535,7 +12629,7 @@ export class OpenClawController {
           if (
             account.revocationRequestedBy ||
             !slot.issuers.includes(account.issuer) ||
-            !slot.acceptsRecipient(this.accountTarget(account))
+            !slot.acceptsRecipient(await this.accountTarget(state, account))
           ) {
             throw new ResourceStateConflictError(
               "Authorize an account for this plugin server before binding it.",
@@ -15086,12 +15180,13 @@ export class OpenClawController {
    * Namespace lock serializes binding, source deletion, and admission. The listing rule is
    * checked after every source authorization and lookup, so it never answers before a 403.
    */
-  private runtimeAccountSource(
+  private async runtimeAccountSource(
+    state: PlatformReadView,
     source: CredentialSource,
     account: SavedConnection,
     plugins: PluginDesiredState | undefined,
-  ): CredentialSource | undefined {
-    const target = this.accountTarget(account);
+  ): Promise<CredentialSource | undefined> {
+    const target = await this.accountTarget(state, account);
     const uses = this.pluginAccountBindings(plugins).filter(
       (binding) => binding.sourceId === source.id,
     );
@@ -15164,7 +15259,7 @@ export class OpenClawController {
             "Attach a ready saved account through an authorized plugin slot.",
           );
         }
-        const runtimeSource = this.runtimeAccountSource(source, account, plugins);
+        const runtimeSource = await this.runtimeAccountSource(state, source, account, plugins);
         if (runtimeSource) {
           sources.push(runtimeSource);
         }
@@ -15257,11 +15352,16 @@ export class OpenClawController {
         if (!account || account.revocationRequestedBy) {
           throw new ResourceStateConflictError("The connected account is unavailable.");
         }
-        const runtime = this.runtimeAccountSource(source, account, agent.plugins);
+        const runtime = await this.runtimeAccountSource(state, source, account, agent.plugins);
         if (runtime) {
           // Each approved presentation has an independent sender profile. Sharing an account
           // cannot change another Agent's protected destination or placeholder.
-          const profileId = accountDeliveryProfileId(sourceId, runtime.driverId, runtime.config);
+          const profileId = accountDeliveryProfileId(
+            sourceId,
+            runtime.driverId,
+            agent.id,
+            runtime.config,
+          );
           await state.savedConnections.registerDeliveryProfile(agent.namespaceId, sourceId, {
             profileId,
             gatewayId: runtime.driverId,
@@ -16535,7 +16635,8 @@ export class OpenClawController {
         );
         if (source?.ownerCapability === "credential_refresh") {
           const account = await state.savedConnections.findSavedConnection(namespaceId, source.id);
-          const delivery = account && this.runtimeAccountSource(source, account, agent.plugins);
+          const delivery =
+            account && (await this.runtimeAccountSource(state, source, account, agent.plugins));
           if (delivery) {
             remainingSources.push(delivery);
           }

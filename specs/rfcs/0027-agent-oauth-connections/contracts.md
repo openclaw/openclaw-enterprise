@@ -56,7 +56,7 @@ user can select individual scopes. OCC enforces any list and required MCP
 challenge scopes. With a fixed manual list, OCC requests those configured
 scopes. Without a limit or requested scopes, it omits `scope` so the provider
 can apply its defaults. Discovery alone requests no optional scopes.
-Changed endpoints require a new version and consent. [MCP authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#client-registration-approaches) · [TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk/blob/v2.3.1/packages/client/src/client/auth.ts)
+Changing the MCP server URL, protected resource or issuer requires new consent. [MCP authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#client-registration-approaches) · [TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk/blob/v2.3.1/packages/client/src/client/auth.ts)
 
 At Agent setup, Console uses `tools/list` to show available tools. An authorized
 caller selects tools by exact name for that Agent and server. By default the
@@ -184,50 +184,56 @@ connection template needs these additions:
 A Driver without these methods cannot grant `use` to anyone except Installation
 administrators, who hold every action through the built-in administrator role.
 
+## Update a running sender
+
+The worker compares the current delivery policy with the policy installed for that
+Agent. If it changes, the Credential Gateway withholds usable token material while
+Compute and the Sandbox Driver update the sender. Compute confirms the effective
+request policy before asking OCC to release a prepared token for that revision
+and policy. OCC rechecks the grant, template and Agent binding before release.
+A failed or superseded update leaves that sender without a usable token until
+reconciliation succeeds. A different Agent can keep using its own sender.
+
 ## Protected egress
 
-Apply [RFC-0023 admission and sender contracts](../0023-egress-proxy-credential-lifecycle/contracts.md)
-within the Installation’s egress ceiling. A protected request must match the
-host, port and path of one approved destination. The Plugin Driver selects
-routes both the saved account and the release allow. Manual destination rows
-constrain credential delivery. MCP discovery supplies the OAuth resource.
+The sender authenticates the deployed execution and checks its authority to
+use the source for the actual request within the Installation’s egress ceiling.
+[RFC-0023 admission and sender contracts](../0023-egress-proxy-credential-lifecycle/contracts.md)
 
-Remote MCP plugins share one credential policy helper. It matches the approved
-server URL and resource to the plugin release. OpenShell binds the bearer to
-the server’s HTTPS host, effective port and literal path. It permits `POST` for
-messages, `GET` for streams and `DELETE` for session closure. Discovery,
-registration and refresh use separate management endpoints.
+For manual OAuth, OCC reads the current rows from the same manual template and
+checks the issuer against the grant. An administrator can replace hosts for
+existing accounts. OCC reconciles affected senders on running revisions and
+retries failed updates. Each request must match a host, port and path, the
+release’s reviewed operations, granted scopes and deployed Agent policy.
+
+For MCP, the approved resource and server must match the release. OpenShell
+binds the bearer to the server’s HTTPS host, port and literal path. It permits
+`POST` for messages, `GET` for streams and `DELETE` for session closure.
+Discovery, registration and refresh use separate management endpoints.
 [MCP Streamable HTTP transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#sending-messages-to-the-server)
 
-The sender authenticates the deployed execution and checks its current authority
-to use the attached source. It evaluates the actual request before presenting the
-credential. A connector policy can restrict the operation and its arguments:
-for a Gmail metadata-only binding, `format=metadata` may pass while
-`format=full` fails on the same message URL. Apply those checks both to `gog` and
-to a direct script. For each MCP `tools/call`, the sender checks the requested
-name against the deployed selection for that Agent and server and enforces any
-argument restrictions before forwarding the call.
-If the selected route cannot enforce a promised restriction, refuse deployment.
-
-For Google, the Credential Gateway prepares one presentation from the intersection
-of the saved destinations, reviewed operations and granted scopes. The sender
-checks each credentialed request against those operations.
+For every `tools/call`, enforce the deployed tool name and argument
+restrictions. For Google, match each request against reviewed operations.
+A Gmail metadata-only policy allows `format=metadata` and rejects
+`format=full` for both `gog` and direct scripts. Refuse deployment if the
+sender cannot enforce the policy.
 
 ## Failure and recovery
 
-| Condition                                                   | Result                                           | Recovery                                       |
-| ----------------------------------------------------------- | ------------------------------------------------ | ---------------------------------------------- |
-| Consent denied, popup closed, or session expired            | Pending source deleted                           | Connect again                                  |
-| `state` mismatch, reuse, or another user's session          | `400`; no exchange                               | The owner connects again                       |
-| Exchange refused or no refresh token returned               | Source deleted; `fix_configuration`              | Administrator corrects the connection template |
-| Timeout after the exchange started                          | Source stays `registering`                       | Delete and reconnect; OCC never replays a code |
-| Issuer revokes the grant                                    | `status.refresh.recoveryAction: reauthorize`     | **Reconnect** and redeploy                     |
-| Driver unavailable before source creation                   | `503`; no source created                         | Retry                                          |
-| OIDC metadata mismatch or unreachable provider              | Version rejected with `400`                      | Administrator corrects `issuer` or URLs        |
-| ID token from a wrong issuer, untrusted key, or wrong nonce | Source deleted; `fix_configuration`              | Administrator checks the provider; reconnect   |
-| Connection template edited after consent                    | Source unchanged; **Reconnect to apply changes** | Owner reconnects; administrator can disconnect |
-| Withdrawal pending or failed after detach or disconnect     | Affected attachments deny further use            | Retry withdrawal, or stop the affected Agent   |
-| Provider rejects the current client secret                  | Client authentication fails                      | Admin corrects secret, then refresh retries    |
+| Condition                                                   | Result                                         | Recovery                                       |
+| ----------------------------------------------------------- | ---------------------------------------------- | ---------------------------------------------- |
+| Consent denied, popup closed, or session expired            | Pending source deleted                         | Connect again                                  |
+| `state` mismatch, reuse, or another user's session          | `400`; no exchange                             | The owner connects again                       |
+| Exchange refused or no refresh token returned               | Source deleted; `fix_configuration`            | Administrator corrects the connection template |
+| Timeout after the exchange started                          | Source stays `registering`                     | Delete and reconnect; OCC never replays a code |
+| Issuer revokes the grant                                    | `status.refresh.recoveryAction: reauthorize`   | **Reconnect** and redeploy                     |
+| Driver unavailable before source creation                   | `503`; no source created                       | Retry                                          |
+| OIDC metadata mismatch or unreachable provider              | Version rejected with `400`                    | Administrator corrects `issuer` or URLs        |
+| ID token from a wrong issuer, untrusted key, or wrong nonce | Source deleted; `fix_configuration`            | Administrator checks the provider; reconnect   |
+| Manual destination rows edited                              | Existing senders reconcile the current rows    | Retry a failed reconciliation                  |
+| OAuth identity or MCP target changed                        | Original grant cannot authorize the new target | Owner reconnects for the new identity          |
+| Withdrawal pending or failed after detach or disconnect     | Affected attachments deny further use          | Retry withdrawal, or stop the affected Agent   |
+| Provider rejects the current client secret                  | Client authentication fails                    | Admin corrects secret, then refresh retries    |
 
 The operator guide documents provider rules. Google requires verification for
 public applications requesting `gmail.readonly`, and External Testing applications
@@ -235,22 +241,21 @@ issue seven-day refresh tokens.
 
 ## Required outcomes
 
-- **HTTP and PostgreSQL integration.** Use a real Keycloak issuer with
-  authorization code, PKCE, and refresh tokens. Prove success, denied consent,
-  state reuse, a cross-session callback, an expired session, and a missing grant.
-  Connect once, attach to Agents A and B, and refuse a third Agent without a
-  grant. Refuse attachment or deployment of a pending source before and during
-  callback. Refuse a caller who can only read the source, a caller who cannot
-  update the Agent, and an attachment across Namespaces. Detach A, including
-  with queued and serving revisions: A loses access, B can still send approved
-  requests, and neither action repeats consent. Disconnect the account and
-  verify B also loses access. Verify no codes or tokens appear in responses,
-  logs, or audit.
-- **Refresh ownership.** For both configured OAuth and MCP, observe the Token
-  Service refresh the access token with the issuer in the background. Send a
-  worker request with the same placeholder and verify that OpenShell presents
-  the new access token. With no eligible prepared token, verify that OpenShell
-  refuses the request without contacting the issuer.
+- **HTTP and PostgreSQL integration.** With Keycloak, PKCE and refresh tokens,
+  verify success, denied consent, state reuse, cross-session callbacks, expired
+  sessions and missing grants. Attach one account to Agents A and B. Deny an
+  ungranted Agent, a pending source before or during callback, a caller without
+  source-use or Agent-update permission, and cross-Namespace attachment.
+  Detach A with queued and serving revisions: A loses access and B retains it
+  without reauthorization. Disconnect the account and verify B loses access.
+  Keep codes and tokens out of responses, logs and audit.
+- **Manual destination changes.** Replace a host for a running Agent. After
+  reconciliation, verify delivery to the new host and no bearer at the old
+  one. Change the default client: refresh still uses the original registration.
+  Change the issuer and verify delivery stops.
+- **Refresh ownership.** For manual OAuth and MCP, observe background issuer
+  refresh. With the same worker placeholder, OpenShell presents the new token.
+  Without an eligible token it refuses the request without contacting the issuer.
 - **MCP.** Verify supplied clients, successful DCR, and the prompt for a supplied
   client when DCR is unavailable or refused. On a dedicated worker, verify a
   Console tool call uses the selected scopes and an unselected scope stays
@@ -277,8 +282,8 @@ issue seven-day refresh tokens.
   Keycloak and prove: a tool reaches its endpoint with no added network policy; a
   write fails under the plugin’s read-only request policy; a tool and a script get the same allow and deny
   decisions from the protected sender on the same requests;
-  rotate, revoke, and reconnect work; an edited `tokenUrl` or endpoint leaves an
-  existing source unchanged. Connect with A, rotate to B, disable A, then refresh
+  rotate, revoke, and reconnect work; a token URL edit preserves the original
+  grant’s refresh endpoint. Connect with A, rotate to B, disable A, then refresh
   the same saved account and use its new access token without another consent flow.
 - **Live Google proof.** Run manually with an authorized account: `gog` reads Gmail
   through a dedicated Codex Agent, and a write method is denied. This proof is

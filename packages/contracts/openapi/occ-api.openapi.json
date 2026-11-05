@@ -35873,6 +35873,7 @@
                             "type": "string"
                           },
                           "destinations": {
+                            "description": "Effective credential delivery destinations; empty when the current template is unavailable or incompatible.",
                             "items": {
                               "additionalProperties": false,
                               "properties": {
@@ -35883,7 +35884,6 @@
                               "required": ["host", "port", "path"],
                               "type": "object"
                             },
-                            "minItems": 1,
                             "type": "array"
                           },
                           "grantedScopes": { "items": { "type": "string" }, "type": "array" },

@@ -131,16 +131,7 @@ function destinationEditor(initial: readonly ConnectionEndpoint[], onEdit: () =>
     ),
     body,
   );
-  panel.append(
-    summary,
-    element(
-      "p",
-      { className: "hint" },
-      "OCE sends credentials only to HTTPS destinations that match a row. Existing connections keep their approved destinations.",
-    ),
-    element("div", { className: "connection-destination-scroll" }, table),
-    add,
-  );
+  panel.append(summary, element("div", { className: "connection-destination-scroll" }, table), add);
   return {
     element: panel,
     replace,
@@ -378,6 +369,13 @@ export function openConnectionTemplateEditor(
     field({ label: "Token URL", control: tokenUrl }),
     field({ label: "Revocation URL (optional)", control: revocationUrl }),
     destinations.element,
+    version?.mode === "manual"
+      ? element(
+          "p",
+          { className: "hint" },
+          "Hosts you add can receive access tokens for existing accounts.",
+        )
+      : null,
   );
   const server = element("input", {
     id: "connection-template-server",

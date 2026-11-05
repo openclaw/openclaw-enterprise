@@ -286,6 +286,13 @@ function workspaceGatewayClient(seed = [], events = []) {
     async updateProviderCredentials(_workspace, name, credentials) {
       calls.push(["updateProviderCredentials", name, structuredClone(credentials)]);
     },
+    async updateProviderCredentialsConditionally(request, resourceVersion, _signal, clearKeys) {
+      const provider = providers.get(request.name);
+      assert.equal(provider.resourceVersion, resourceVersion);
+      calls.push(["updateProviderCredentialsConditionally", structuredClone(request), clearKeys]);
+      provider.resourceVersion = String(Number(provider.resourceVersion) + 1);
+      return { ...provider, mutationId: randomUUID(), targetReceipts: [] };
+    },
     async updateProviderConfig(_workspace, name, config, expectedResourceVersion) {
       calls.push(["updateProviderConfig", name, structuredClone(config), expectedResourceVersion]);
       const provider = providers.get(name);
@@ -1313,7 +1320,10 @@ test("one saved Google account serves its granted APIs through the same request 
     { binaries: ["/opt/openclaw/bin/openclaw"], toolBinaries: senderBinaries },
     { id: backend.drivers.credential_gateway, backend },
   );
-  const { context, revision, requirements } = runtimeSandboxFixture(openShellDriver(client), {
+  const sandboxConfiguration = sandboxInstallation().drivers.sandbox.configuration;
+  sandboxConfiguration.gateway.managedPluginMiddleware = "https://authority.test:443";
+  const sandboxDriver = openShellDriver(client, sandboxConfiguration);
+  const { context, revision, requirements } = runtimeSandboxFixture(sandboxDriver, {
     harnessId: "openclaw",
   });
   const pluginId = managedGoogleInstall.id;
@@ -1373,6 +1383,7 @@ test("one saved Google account serves its granted APIs through the same request 
   ];
 
   // The real Credential Gateway creates the profile and supplies the Sandbox with its sender baseline.
+  await gateway.prepareConnectionSource({ ...context, source: { ...source, id: profileId } });
   await gateway.publishConnectionToken(
     { ...context, source: { ...source, id: profileId } },
     { accessToken: "synthetic-access", expiresAt: new Date(Date.now() + 60_000).toISOString() },
@@ -1386,6 +1397,8 @@ test("one saved Google account serves its granted APIs through the same request 
     /requires its managed Google request guard/,
   );
   const attachments = await gateway.attachForRevision({ ...context, revision, sources: [source] });
+  requirements.credentialAttachments = attachments;
+
   const profile = client.profiles.get(attachments[0].ref).profile;
   assert.deepEqual(profile.binaries, senderBinaries);
   assert.equal(profile.credentials.length, 1);
@@ -1475,6 +1488,186 @@ test("one saved Google account serves its granted APIs through the same request 
       ),
     /bypass the managed plugin HTTP request guard/,
   );
+  // Recorded native RPCs exercise production policy programming and its loaded-state
+  // barrier. They do not establish live supervisor propagation or process usability.
+  let created;
+  let livePolicy;
+  let loaded = true;
+  const updates = [];
+  client.createSandbox = async ({ name, workspace, labels, annotations, spec }) => {
+    created = {
+      name,
+      workspace,
+      labels,
+      annotations,
+      spec: structuredClone(spec),
+      resourceVersion: "1",
+      serviceUrls: {},
+    };
+    livePolicy = structuredClone(spec.policy);
+    return created;
+  };
+  client.getSandbox = async () => created;
+  client.getPolicyStatus = async () => ({
+    policy: livePolicy,
+    version: updates.length + 1,
+    activeVersion: loaded ? updates.length + 1 : 1,
+    state: loaded ? "POLICY_STATUS_LOADED" : "POLICY_STATUS_PENDING",
+  });
+  client.updatePolicy = async (request) => {
+    updates.push(structuredClone(request));
+    livePolicy = structuredClone(request.policy);
+    loaded = false;
+  };
+  client.getSandboxConfig = async (workspace) => {
+    const current = openShellPluginPolicy(revision, requirements, guard.endpoint, []);
+    return {
+      ...observed,
+      workspace,
+      policy: {
+        ...livePolicy,
+        network_policies: {
+          ...livePolicy.network_policies,
+          [current.providerRule.name]: current.providerRule,
+        },
+      },
+    };
+  };
+  await sandboxDriver.ensureNamespace(context);
+  const provision = () => sandboxDriver.provisionHarness({ ...context, revision, requirements });
+  await provision();
+  const launchPolicy = structuredClone(created.spec.policy);
+  const changedConfig = {
+    ...config,
+    destinations: JSON.stringify([
+      { host: "www.googleapis.com", port: 443, path: "/calendar/v3/**" },
+      { host: "docs.googleapis.com", port: 443, path: "/v1/documents/**" },
+    ]),
+    scope:
+      "https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/documents.readonly",
+  };
+  const changedSource = { ...source, config: changedConfig };
+  let observeRequested;
+  const observing = new Promise((resolve) => {
+    observeRequested = resolve;
+  });
+  let confirmInstallation;
+  const installation = new Promise((resolve) => {
+    confirmInstallation = resolve;
+  });
+  const sender = client.providers.get(attachments[0].ref);
+  sender.id = "sender-native-identity";
+  const writeCredentials = client.updateProviderCredentialsConditionally;
+  let lastReceipt;
+  client.updateProviderCredentialsConditionally = async (...args) => {
+    const updated = await writeCredentials(...args);
+    lastReceipt = {
+      receipt_id: randomUUID(),
+      mutation_id: randomUUID(),
+      kind: "PROVIDER_MUTATION_KIND_UPDATE",
+      workspace: context.namespace.name,
+      provider: updated.name,
+      desired: {
+        sandbox_id: "original-sandbox-id",
+        sandbox: created.name,
+        provider_id: updated.id,
+        provider_resource_version: updated.resourceVersion,
+        attachment_epoch: "attachment-epoch",
+        provider_env_revision: "env-" + updated.resourceVersion,
+        config_revision: "config-" + updated.resourceVersion,
+        policy_hash: "policy-hash",
+      },
+    };
+    return { ...updated, mutationId: lastReceipt.mutation_id, targetReceipts: [lastReceipt] };
+  };
+  client.getSandboxProviderStatus = async (workspace, name, provider, _signal, receiptId) => {
+    assert.equal(workspace, lastReceipt.workspace);
+    assert.equal(name, lastReceipt.desired.sandbox);
+    assert.equal(provider, lastReceipt.provider);
+    assert.equal(receiptId, lastReceipt.receipt_id);
+    observeRequested();
+    await installation;
+    const d = lastReceipt.desired;
+    const desired = {
+      sandboxId: d.sandbox_id,
+      sandbox: d.sandbox,
+      providerId: d.provider_id,
+      providerResourceVersion: d.provider_resource_version,
+      attachmentEpoch: d.attachment_epoch,
+      providerEnvRevision: d.provider_env_revision,
+      configRevision: d.config_revision,
+      policyHash: d.policy_hash,
+    };
+    return {
+      state: "PROVIDER_READINESS_STATE_READY",
+      completedOperationId: receiptId,
+      receipt: { receiptId, kind: lastReceipt.kind, workspace, provider, desired },
+      observed: {
+        ...desired,
+        sessionId: "supervisor-session",
+        processInstanceId: "original-process",
+        credentialsInstalled: true,
+        policyActive: true,
+        launchEnvironmentInstalled: true,
+      },
+    };
+  };
+  let installationConfirmed = false;
+  const writeProfile = client.updateProviderProfile;
+  client.updateProviderProfile = async (...args) => {
+    assert.ok(installationConfirmed, "a profile update must follow observed credential withdrawal");
+    return writeProfile(...args);
+  };
+  const beforeReconcile = structuredClone(client.profiles.get(attachments[0].ref).profile);
+  const preparing = gateway.prepareConnectionSource({
+    ...context,
+    source: { ...changedSource, id: profileId },
+  });
+  await observing;
+  assert.deepEqual(
+    client.profiles.get(attachments[0].ref).profile,
+    beforeReconcile,
+    "an RPC acknowledgement cannot expand provider routes before installed withdrawal",
+  );
+  installationConfirmed = true;
+  confirmInstallation();
+  await preparing;
+  requirements.credentialAttachments = await gateway.attachForRevision({
+    ...context,
+    revision,
+    sources: [changedSource],
+  });
+  await assert.rejects(provision, /saved account request policy is not loaded yet/);
+  assert.equal(updates.length, 1);
+  assert.deepEqual(created.spec.policy, launchPolicy, "the immutable launch request is preserved");
+  const currentScope = JSON.parse(
+    updates[0].policy.network_middlewares["oce-plugin-requests"].config.fields.request_scope
+      .stringValue,
+  );
+  assert.deepEqual(currentScope.destinations.map(({ host }) => host).sort(), [
+    "docs.googleapis.com",
+    "www.googleapis.com",
+  ]);
+  loaded = true;
+  await provision();
+  await gateway.publishConnectionToken(
+    { ...context, source: { ...changedSource, id: profileId } },
+    {
+      accessToken: "synthetic-current-access",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    },
+  );
+  assert.equal(
+    updates.length,
+    1,
+    "unchanged maintenance observes the current policy without rewriting it",
+  );
+  livePolicy.network_policies.unrelated = {
+    name: "unrelated",
+    endpoints: [{ host: "other.example", ports: [443] }],
+  };
+  await assert.rejects(provision, /differs outside the saved account request guard/);
+  assert.equal(updates.length, 1, "account maintenance does not overwrite unrelated policy drift");
 });
 
 test("OpenShell builds managed MCP rules for the declared endpoint and upstream tool name", () => {

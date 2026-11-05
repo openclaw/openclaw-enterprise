@@ -733,7 +733,7 @@ function revisionFromRow(
       "Persisted AgentRevision harness authentication is invalid or legacy.",
     );
   }
-  if (!validCredentialSourceSnapshots(admitted.credential_sources)) {
+  if (!validCredentialSourceSnapshots(admitted.credential_sources, metadata.agentId)) {
     throw new SavedConfigurationReadError(
       "credentialSources",
       "Persisted AgentRevision credential sources are invalid.",
@@ -3883,7 +3883,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         if (
           Object.hasOwn(revision, "serviceAccount") ||
           !validHarnessAuthSnapshot(revision.harnessAuth, revision.namespaceId) ||
-          !validCredentialSourceSnapshots(revision.credentialSources)
+          !validCredentialSourceSnapshots(revision.credentialSources, revision.agentId)
         ) {
           throw new ScopeViolationError(
             "The AgentRevision harness authentication is invalid or legacy.",

@@ -86,7 +86,7 @@ export const connectionTemplateScenarios = {
     oauthCatalog: "ready",
     actions: openTemplate,
     description:
-      "Enter the authorization server, add each destination as a host, port and path, then associate a compatible OAuth client or save a draft.",
+      "Enter the authorization server, add each destination as a host, port and path, then associate a compatible OAuth client or save a draft. Reopen a saved manual template to edit the destinations for accounts using that issuer.",
   },
   credentialsTemplateWithoutNamespace: {
     group: "Pages/Credentials",

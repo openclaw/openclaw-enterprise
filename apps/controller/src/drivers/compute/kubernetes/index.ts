@@ -6375,6 +6375,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
     context?: ComputeRevisionContext,
   ): Promise<ComputeReadiness> {
     const execution = this.validateExecutionOrWithdrawPublicGithubRead(revision, context);
+    if (
+      context?.releaseCredentials &&
+      (revision.harness.mode !== "dedicated" || !this.sandboxDriver?.provisionHarness)
+    ) {
+      throw new ConfigurationFailure(
+        "Prepared accounts require a dedicated Sandbox with a verified request policy.",
+      );
+    }
     this.lifecycleStarted = true;
     const result = {
       namespaceId: revision.namespaceId,
@@ -7297,6 +7305,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
         }
         this.verifySandboxResourceRef(sandbox, revision, namespace);
         let heldForRepositoryGitMaterial = false;
+        // The paired Sandbox has verified the effective policy before account material becomes usable.
+        await context?.releaseCredentials?.(this.operationSignal());
         if (egressContext !== undefined) {
           const enrolled = await this.prepareRevisionStage("sandbox_provision", () =>
             this.protectedExecution!.enroll(

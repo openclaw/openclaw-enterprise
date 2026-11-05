@@ -159,6 +159,7 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
     new OAuthConnectionTokens(secretDriver, refreshPinnedOAuthGrant),
   );
   const tokenUrl = `${tokenOrigin}/realms/oce/protocol/openid-connect/token`;
+  let discoveredResource = "https://api.connections.test/mcp";
   let skew = 0;
   const { app, controller, state, principal, computeDriver, inject, pool, adminAccount } =
     await createPostgresAgentApp(t, {
@@ -178,11 +179,13 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
         // Only the fixture MCP metadata is supplied locally. OCC creates the template and
         // Keycloak serves authorization, token exchange, and user logins for this issuer.
         async discoverMcpAuthorization(serverUrl: string, selectedIssuer?: string) {
-          assert.equal(serverUrl, pluginWorkflow ? reportsUrl : "https://api.connections.test/mcp");
+          if (pluginWorkflow) {
+            assert.equal(serverUrl, reportsUrl);
+          }
           assert.equal(selectedIssuer, issuer);
           return {
             serverUrl,
-            resource: pluginWorkflow ? new URL(reportsUrl).origin : serverUrl,
+            resource: pluginWorkflow ? new URL(reportsUrl).origin : discoveredResource,
             issuers: [issuer],
             requestedScopes: ["openid"],
             resourceScopes: ["openid", "profile"],
@@ -270,20 +273,19 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
   const input: { connectionTemplateId: string; selectedScopes?: string[] } = { ...manual };
   const ownerId = principal.id;
   const owner = await accountSession(app, adminAccount.email, adminAccount.password);
+  const mcpConfig = {
+    displayName: "Scope selection",
+    mode: "mcp_discovery",
+    issuer,
+    serverUrl: "https://api.connections.test/mcp",
+    scopes: ["openid", "profile"],
+    oauthClientId,
+  };
   if (!pluginWorkflow) {
     // Registering the first client makes the current template ready for consent.
     const manualStart = await inject("POST", connections, manual);
     assert.equal(manualStart.statusCode, 201, manualStart.body);
-    const mcpConfig = {
-      displayName: "Scope selection",
-      namespaceId,
-      mode: "mcp_discovery",
-      issuer,
-      serverUrl: "https://api.connections.test/mcp",
-      scopes: ["openid", "profile"],
-      oauthClientId,
-    };
-    const mcp = await inject("POST", "/connection-templates", mcpConfig);
+    const mcp = await inject("POST", "/connection-templates", { ...mcpConfig, namespaceId });
     assert.equal(mcp.statusCode, 201, mcp.body);
     input.connectionTemplateId = mcp.json().data.id;
     input.selectedScopes = ["openid"];
@@ -297,6 +299,7 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
     // With no configured scope list, discovery suggests scopes and its challenge still requires openid.
     const unrestrictedMcp = await inject("POST", "/connection-templates", {
       ...mcpConfig,
+      namespaceId,
       scopes: [],
       displayName: "Open MCP scope selection",
     });
@@ -359,7 +362,7 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
     assert.deepEqual(defaultAccount.requestedScopes, []);
     assert.deepEqual(defaultAccount.grantedScopes, ["profile"]);
     assert.deepEqual(defaultAccount.destinations, manualDestinations);
-    // New destinations require new consent. The pinned version also rejects a forged wider receipt.
+    // Administrators change delivery for existing accounts without rewriting the consent receipt.
     const widened = [
       ...manualDestinations,
       { host: "other.connections.test", port: 443, path: "/**" },
@@ -381,7 +384,7 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
     const approved = savedAgain
       .json()
       .data.find((row: { credentialSourceId: string }) => row.credentialSourceId === defaultsId);
-    assert.deepEqual(approved.destinations, manualDestinations);
+    assert.deepEqual(approved.destinations, widened);
     assert.ok(approved.connectionTemplateVersion < updated.json().data.current.version);
     await assert.rejects(
       pool.query(
@@ -393,6 +396,56 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
       ),
       { code: "23514", message: /approved template version/ },
     );
+    // Replacing and removing rows take effect through the same public account response.
+    const changedDestinations = [{ host: recipient.host, port: 8443, path: "/reports/**" }];
+    const templatePath = "/connection-templates/" + defaultAccount.connectionTemplateId;
+    const changed = await inject("PATCH", templatePath, {
+      ...manualConfig,
+      scopes: [],
+      oauthClientId,
+      destinations: changedDestinations,
+    });
+    assert.equal(changed.statusCode, 200, changed.body);
+    const effectiveDefault = async () => {
+      const result = await owner("GET", connections);
+      assert.equal(result.statusCode, 200, result.body);
+      return result
+        .json()
+        .data.find((row: { credentialSourceId: string }) => row.credentialSourceId === defaultsId);
+    };
+    assert.deepEqual((await effectiveDefault()).destinations, changedDestinations);
+    // Delivery stops on an issuer or mode change, while the provider grant remains usable.
+    const incompatible = await inject("PATCH", templatePath, {
+      ...manualConfig,
+      issuer: issuer + "/different",
+      scopes: [],
+    });
+    assert.equal(incompatible.statusCode, 200, incompatible.body);
+    assert.deepEqual((await effectiveDefault()).destinations, []);
+    const modeChanged = await inject("PATCH", templatePath, mcpConfig);
+    assert.equal(modeChanged.statusCode, 200, modeChanged.body);
+    assert.deepEqual((await effectiveDefault()).destinations, []);
+    const originalReceipt = await pool.query(
+      `SELECT destinations, oauth_client_id, client_id, issuer, token_url,
+              connection_template_version, requested_scopes, granted_scopes
+       FROM occ.saved_connections WHERE credential_source_id=$1`,
+      [defaultsId],
+    );
+    assert.deepEqual(originalReceipt.rows[0], {
+      destinations: manualDestinations,
+      oauth_client_id: oauthClientId,
+      client_id: clientId,
+      issuer,
+      token_url: tokenUrl,
+      connection_template_version: defaultAccount.connectionTemplateVersion,
+      requested_scopes: [],
+      granted_scopes: ["profile"],
+    });
+    const refreshIncompatible = await owner(
+      "POST",
+      `${base}/credential-sources/${defaultsId}/rotate`,
+    );
+    assert.equal(refreshIncompatible.statusCode, 200, refreshIncompatible.body);
     await keycloakRealmAdmin(issuer, secrets.admin, "DELETE", defaultPath);
     const disconnected = await owner("DELETE", connections + "/" + defaultsId);
     assert.equal(disconnected.statusCode, 204, disconnected.body);
@@ -464,6 +517,10 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
       });
     },
     preparedTokens,
+    mcpConfig,
+    setDiscoveredResource(resource: string) {
+      discoveredResource = resource;
+    },
     oauthClientId,
     tokenUrl,
     clientId,
@@ -511,6 +568,8 @@ test(
       ownerId,
       begin,
       advanceRegistrationFence,
+      mcpConfig,
+      setDiscoveredResource,
     } = await oauthAccounts(t);
     const otherId = await makeNamespace();
     // Even an Installation administrator cannot use a Namespace-scoped template elsewhere.
@@ -664,6 +723,57 @@ test(
     assert.equal(deferred.rows[0].deferred, true);
     assert.equal((await owner("POST", source + "/rotate")).statusCode, 200);
     assert.equal(await subject(await prepared()), alice);
+    // A new default registration is for future consent, even when its credentials are unusable.
+    const futureRegistration = await inject("POST", "/oauth-clients", {
+      connectionTemplateId: input.connectionTemplateId,
+      connectionTemplateVersion: (
+        await inject("GET", "/connection-templates/" + input.connectionTemplateId)
+      ).json().data.current.version,
+      displayName: "Future consent",
+      clientId: clientId + "-future",
+      clientSecret: randomUUID(),
+      tokenEndpointAuthMethod: "client_secret_basic",
+    });
+    assert.equal(futureRegistration.statusCode, 201, futureRegistration.body);
+    const switchRegistration = await inject(
+      "PATCH",
+      "/connection-templates/" + input.connectionTemplateId,
+      { ...mcpConfig, oauthClientId: futureRegistration.json().data.id },
+    );
+    assert.equal(switchRegistration.statusCode, 200, switchRegistration.body);
+    const currentMcp = async () => {
+      const result = await owner("GET", connections);
+      assert.equal(result.statusCode, 200, result.body);
+      return result
+        .json()
+        .data.find((row: { credentialSourceId: string }) => row.credentialSourceId === id);
+    };
+    assert.deepEqual((await currentMcp()).destinations, [
+      { host: "api.connections.test", port: 443, path: "/mcp" },
+    ]);
+    assert.equal((await currentMcp()).oauthClientId, oauthClientId);
+    const futureConsent = await owner("POST", connections, input);
+    assert.equal(futureConsent.statusCode, 201, futureConsent.body);
+    assert.equal(
+      new URL(futureConsent.json().data.authorizationUrl).searchParams.get("client_id"),
+      clientId + "-future",
+    );
+    // An MCP transport/resource change stops delivery rather than retargeting the saved grant.
+    setDiscoveredResource("https://resource.connections.test");
+    const otherResource = await inject(
+      "PATCH",
+      "/connection-templates/" + input.connectionTemplateId,
+      mcpConfig,
+    );
+    assert.equal(otherResource.statusCode, 200, otherResource.body);
+    assert.deepEqual((await currentMcp()).destinations, []);
+    setDiscoveredResource("https://api.connections.test/mcp");
+    const otherMcp = await inject("PATCH", "/connection-templates/" + input.connectionTemplateId, {
+      ...mcpConfig,
+      serverUrl: "https://other.connections.test/mcp",
+    });
+    assert.equal(otherMcp.statusCode, 200, otherMcp.body);
+    assert.deepEqual((await currentMcp()).destinations, []);
     // The original grant must refresh after the provider and the OCE administrator rotate the client.
     await rotateClientSecret(source);
     const rotated = await inject("POST", `${source}/rotate`, undefined);
@@ -679,6 +789,12 @@ test(
         .data.map((saved: { credentialSourceId: string }) => saved.credentialSourceId),
       [id],
     );
+    const restoreMcp = await inject(
+      "PATCH",
+      "/connection-templates/" + input.connectionTemplateId,
+      mcpConfig,
+    );
+    assert.equal(restoreMcp.statusCode, 200, restoreMcp.body);
     // Advancing OCC's clock clears the credential registration fence without delaying the test.
     advanceRegistrationFence();
     assert.equal((await owner("DELETE", `${connections}/${id}`)).statusCode, 204);
@@ -1111,8 +1227,25 @@ test(
       assert.equal(deployed.statusCode, 202, deployed.body);
       revisions.set(id, deployed.json().data.id);
     }
-    const prepare = (agentId: string) =>
-      controller.prepareRevisionAccount(namespaceId, agentId, revisions.get(agentId)!, shared.id);
+    const prepare = async (agentId: string) => {
+      const source = await controller.prepareRevisionAccount(
+        namespaceId,
+        agentId,
+        revisions.get(agentId)!,
+        shared.id,
+      );
+      if (source) {
+        // This fixture Compute does not run a Sandbox. The controller boundary below
+        // proves prepared policy and fresh release checks; native guard proof is separate.
+        await controller.releaseRevisionAccount(
+          namespaceId,
+          agentId,
+          revisions.get(agentId)!,
+          source,
+        );
+      }
+      return source;
+    };
     // Different placeholders in the same release produce distinct sender profiles.
     const senderFor = async (id: string) => {
       assert.ok(await prepare(id));
@@ -1201,8 +1334,7 @@ test(
     assert.equal(await prepare(c), undefined);
     assert.ok(await prepare(b));
 
-    // Keycloak now removes one formerly granted scope. The old revision's frozen presentation
-    // can no longer be used, even though the account still has an upstream access token.
+    // A renewed provider grant can narrow while the same revision retains its remaining API access.
     await setOptionalScopeVisible(false);
     assert.equal((await rotate()).statusCode, 200);
     const refreshedAccounts = (await owner("GET", connections)).json().data;
@@ -1210,10 +1342,10 @@ test(
       (account: { credentialSourceId: string }) => account.credentialSourceId === shared.id,
     );
     assert.deepEqual([...refreshed.grantedScopes].sort(), [gmailRead, "openid"]);
-    assert.equal(await prepare(b), undefined);
-    const withdrawn = provider(primarySender);
-    assert.deepEqual(Object.keys(withdrawn.credentials), []);
-    assert.deepEqual(Object.keys(withdrawn.credentialExpirationTimes), []);
+    const narrowed = await prepare(b);
+    assert.ok(narrowed?.config.scope);
+    assert.deepEqual(narrowed.config.scope.split(" "), [gmailRead]);
+    assert.ok(provider(primarySender).credentials[primary.credentials.account.delivery.env]);
 
     // The fixture Compute does not place Kubernetes plugins. Keep its placement Driver
     // and delegate every slot and source decision to the bundled Google credential policy.
@@ -1226,7 +1358,26 @@ test(
     const google = await connectFixtureGoogleAccount(t, owner, namespaceId, [
       gmailRead,
       "https://www.googleapis.com/auth/calendar.readonly",
+      "https://www.googleapis.com/auth/drive.readonly",
+      "https://www.googleapis.com/auth/documents.readonly",
     ]);
+    const receipt = (await owner("GET", connections))
+      .json()
+      .data.find(
+        (row: { credentialSourceId: string }) =>
+          row.credentialSourceId === google.credentialSourceId,
+      );
+    const templateId = receipt.connectionTemplateId;
+    const calendar = { host: "www.googleapis.com", port: 443, path: "/calendar/v3/**" };
+    const drive = { host: "www.googleapis.com", port: 443, path: "/drive/v3/files/**" };
+    const docs = { host: "docs.googleapis.com", port: 443, path: "/v1/documents/**" };
+    const templateInput: Record<string, unknown> = { ...google.templateInput };
+    delete templateInput.namespaceId;
+    const initialRoutes = await owner("PATCH", "/connection-templates/" + templateId, {
+      ...templateInput,
+      destinations: [...google.templateInput.destinations, drive],
+    });
+    assert.equal(initialRoutes.statusCode, 200, initialRoutes.body);
     const created = await owner("POST", agents, {
       name: "Google APIs",
       executionMode: "dedicated",
@@ -1266,14 +1417,16 @@ test(
     const deployed = await owner("POST", path(googleAgent) + "/deploy");
     assert.equal(deployed.statusCode, 202, deployed.body);
     const revisionId = deployed.json().data.id;
-    assert.ok(
-      await controller.prepareRevisionAccount(
+    const prepareGoogle = () =>
+      controller.prepareRevisionAccount(
         namespaceId,
         googleAgent,
         revisionId,
         google.credentialSourceId,
-      ),
-    );
+      );
+    const initialSource = await prepareGoogle();
+    assert.ok(initialSource);
+    await controller.releaseRevisionAccount(namespaceId, googleAgent, revisionId, initialSource);
     const revision = await state.read((v) =>
       v.revisions.findRevision(namespaceId, googleAgent, revisionId),
     );
@@ -1294,11 +1447,51 @@ test(
       [
         ["gmail.googleapis.com", 443, "/gmail/v1/users/me/messages"],
         ["www.googleapis.com", 443, "/calendar/v3/**"],
+        ["www.googleapis.com", 443, "/drive/v3/files/**"],
       ],
     );
     assert.ok(
       sender.credentials[cliAccount.delivery.env] === google.accessToken,
       "only the prepared Google access token reaches the selected revision",
+    );
+    const changed = await owner("PATCH", "/connection-templates/" + templateId, {
+      ...templateInput,
+      destinations: [calendar, docs],
+    });
+    assert.equal(changed.statusCode, 200, changed.body);
+    const currentSource = await prepareGoogle();
+    assert.ok(currentSource);
+    assert.deepEqual(
+      Object.keys(sender.credentials),
+      [],
+      "changed routes cannot reuse the prior bearer",
+    );
+    const currentProfile = await transport.getProviderProfile(sender.workspace, sender.type);
+    assert.deepEqual(
+      currentProfile.endpoints
+        .map(({ host, port, path }: { host: string; port: number; path: string }) => [
+          host,
+          port,
+          path,
+        ])
+        .sort(),
+      [
+        [calendar.host, calendar.port, calendar.path],
+        [docs.host, docs.port, docs.path],
+      ].sort(),
+    );
+    await assert.rejects(
+      controller.releaseRevisionAccount(namespaceId, googleAgent, revisionId, initialSource),
+      { name: "ResourceStateConflictError" },
+    );
+    await controller.releaseRevisionAccount(namespaceId, googleAgent, revisionId, currentSource);
+    assert.ok(
+      sender.credentials[cliAccount.delivery.env] === google.accessToken,
+      "current routes use the original consent grant without reconnect",
+    );
+    assert.equal(
+      (await state.read((v) => v.revisions.findRevision(namespaceId, googleAgent, revisionId)))?.id,
+      revisionId,
     );
   },
 );

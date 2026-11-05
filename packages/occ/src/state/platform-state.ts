@@ -1051,7 +1051,7 @@ export async function credentialSourcesMatch(
   return index === frozen.length;
 }
 
-function validAccountDelivery(snapshot: Record<string, unknown>): boolean {
+function validAccountDelivery(snapshot: Record<string, unknown>, agentId: string): boolean {
   const delivery = snapshot.accountDelivery;
   if (
     typeof delivery !== "object" ||
@@ -1075,12 +1075,13 @@ function validAccountDelivery(snapshot: Record<string, unknown>): boolean {
       accountDeliveryProfileId(
         snapshot.sourceId,
         snapshot.credentialGatewayId,
+        agentId,
         config as Record<string, string>,
       )
   );
 }
 
-export function validCredentialSourceSnapshots(value: unknown): boolean {
+export function validCredentialSourceSnapshots(value: unknown, agentId: string): boolean {
   if (value === undefined) {
     return true;
   }
@@ -1100,7 +1101,7 @@ export function validCredentialSourceSnapshots(value: unknown): boolean {
         "credentialProxyId,sourceId,sourceType",
       ].includes(keys.join(",")) ||
         (keys.join(",") === "accountDelivery,credentialGatewayId,sourceId,sourceType" &&
-          validAccountDelivery(snapshot))) &&
+          validAccountDelivery(snapshot, agentId))) &&
       isNonEmptyString(snapshot.sourceId) &&
       isNonEmptyString(snapshot.credentialGatewayId ?? snapshot.credentialProxyId) &&
       isNonEmptyString(snapshot.sourceType) &&
@@ -1150,7 +1151,7 @@ function assertAdmittedAgentRevision(revision: AgentRevision): void {
     (revision.secretDriverId !== undefined && !isNonEmptyString(revision.secretDriverId)) ||
     Object.hasOwn(revision, "serviceAccount") ||
     !validHarnessAuthSnapshot(revision.harnessAuth, revision.namespaceId) ||
-    !validCredentialSourceSnapshots(revision.credentialSources) ||
+    !validCredentialSourceSnapshots(revision.credentialSources, revision.agentId) ||
     !validPluginRevisionState(revision.plugins) ||
     !validPluginApprovers(revision.pluginApprovers) ||
     (revision.repositoryCredentials !== undefined &&

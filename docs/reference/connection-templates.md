@@ -20,7 +20,7 @@ When starting consent for an MCP template, send the nonempty `selectedScopes` th
 
 In **Credentials → Connection templates → Create connection template**, **Template availability** starts with the current readable Namespace. If there is none, choose availability before registering a client or saving the template. Choose **Installation-wide** to share the template across Namespaces. Availability is fixed after creation.
 
-Choose **Set up Google OAuth** to fill in Google’s OAuth URLs and the API destinations from the Google Workspace plugin’s reviewed operations. Expand **API destinations** to review each host, port and path. For example, Calendar and Drive both use `www.googleapis.com:443`, with paths `/calendar/**` and `/drive/**`. Add or remove rows before saving. Choose your scope limit and registered client. Saving freezes the list on this version. Existing connections keep the list they approved. Google connections request offline access for refresh after consent.
+Choose **Set up Google OAuth** to fill in Google’s OAuth URLs and the API destinations from the Google Workspace plugin’s reviewed operations. Expand **API destinations** to review each host, port and path. For example, Calendar and Drive both use `www.googleapis.com:443`, with paths `/calendar/**` and `/drive/**`. Add or remove rows before saving. Choose your scope limit and registered client. Google connections request offline access for refresh after consent.
 
 A new template starts with **No template limit** (`scopes: []`). Select **Limit to approved scopes** to restrict which scopes callers may request. There is no scope-count limit. Required MCP scopes still apply at consent.
 
@@ -30,6 +30,10 @@ Use `POST /connection-templates` with one of these setup methods.
 - With `mode: mcp_discovery`, preview metadata with `POST /connection-templates/discover`. Send the MCP server URL. When the resource advertises several issuers, select one and repeat discovery. The response includes the protected resource, advertised capabilities and scopes. Choose the scopes allowed for this template. OCC repeats discovery when saving and pins the approved issuer, resource and exact MCP server URL. Discovery can report a registration endpoint. Register the client separately.
 
 A template may be saved before a client exists. Associate a compatible `oauthClientId` before using it for consent. Use `PATCH /connection-templates/{connectionTemplateId}` with the full configuration to change its approved values. This creates an immutable version. Changing only `displayName` renames the template. Deleting a template leaves its independently managed client available.
+
+Existing accounts use the current manual destinations for their template and issuer. Adding a host can send existing accounts’ access tokens there for requests their plugin and Agent policy permit. Running Agents apply changes when their senders reconcile. To use a different issuer or switch between manual and MCP setup, connect the account again. An MCP account also retains its exact server and protected resource.
+
+Changing the template’s default OAuth client applies to future connections. Existing grants continue to refresh with their original registration and its current secret.
 
 See the [API reference](api.md#connections) for request and response fields.
 
@@ -46,7 +50,7 @@ See the [API reference](api.md#connections) for request and response fields.
    `GET /namespaces/{namespaceId}/connections`. Other users see it only if
    they have permission to read the source. Keep the credential source ID to
    refer to the account. The response names the selected OAuth client, issuer,
-   destinations, and requested and granted scopes. Refresh preserves the destination list from consent. MCP accounts also record the
+   effective destinations, and requested and granted scopes. An empty destination list means the current template is unavailable or incompatible. MCP accounts also record the
    approved server URL and protected resource. The Token Service keeps the tokens
    and uses the pinned client method and protected resource when it renews them.
 
@@ -72,4 +76,4 @@ Saving the selection requires permission to update the Agent and operate the sav
 
 To withdraw a saved account, clear the bindings that use it and call `DELETE /namespaces/{namespaceId}/agents/{agentId}/connections/{credentialSourceId}`. OCC queues access removal from deployed revisions. Other Agents keep their own grants.
 
-For Google Workspace, include the packaged Google CLI in the Installation’s OpenShell `toolBinaries`. One saved account can serve multiple Google APIs. For example, to read Gmail and Calendar, both destinations must be allowed, the account must have the necessary provider scopes, and the Agent policy must allow each operation. Public API discovery stays separate from credentialed requests. Every approved executable uses the same guarded Google routes. A metadata-only Gmail grant can read message metadata from the CLI or an approved script. Reading a full message requires the corresponding grant.
+For Google Workspace, include the packaged Google CLI in the Installation’s OpenShell `toolBinaries`. One saved account can serve multiple Google APIs. For example, to read Gmail and Calendar, the current template must allow both destinations, the account must have the necessary provider scopes, and the Agent policy must allow each operation. Public API discovery stays separate from credentialed requests. Every approved executable uses the same guarded Google routes. A metadata-only Gmail grant can read message metadata from the CLI or an approved script. Reading a full message requires the corresponding grant.

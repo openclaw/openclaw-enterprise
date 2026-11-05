@@ -41,6 +41,8 @@ import {
   managedMcpInstalls,
   managedInstalls,
 } from "../plugin/managed-catalog.ts";
+import { googleSourceRequestScope } from "../plugin/google-workspace/credential-policy.ts";
+import { googleCredentialEndpoints } from "../plugin/google-workspace/operations.ts";
 import { openShellLogDecisions } from "./openshell-log-decisions.ts";
 import { qualifyOpenShellCodexArtifactRules } from "./openshell-codex-artifacts.ts";
 import { workspaceNodeNetworkPolicy } from "./openshell-workspace-node-policy.ts";
@@ -3329,6 +3331,41 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       this.options.gateway.managedPluginMiddleware,
       this.options.providers ?? [],
     );
+    const accountBinding = managedCredentialBinding(context.revision.plugins?.plugins);
+    const accountDelivery = context.revision.credentialSources?.find(
+      (source) => source.sourceId === accountBinding?.sourceId,
+    )?.accountDelivery;
+    // The launch request remains reproducible. Current template routes belong to the
+    // live policy revision, which is observed before Compute releases any bearer.
+    let launchPlugin = plugin;
+    if (plugin && accountDelivery) {
+      const scope = googleSourceRequestScope(accountDelivery.config);
+      if (!scope) {
+        throw new OpenShellSandboxConfigurationFailure(
+          "The saved account launch policy is invalid.",
+        );
+      }
+      launchPlugin = openShellPluginPolicy(
+        context.revision,
+        {
+          ...context.requirements,
+          credentialAttachments: context.requirements.credentialAttachments.map((attachment) =>
+            attachment.sourceId === accountBinding?.sourceId
+              ? {
+                  ...attachment,
+                  requestScope: {
+                    destinations: googleCredentialEndpoints(scope),
+                    scopes: scope.scopes,
+                    binaries: plugin!.binaries,
+                  },
+                }
+              : attachment,
+          ),
+        },
+        this.options.gateway.managedPluginMiddleware,
+        this.options.providers ?? [],
+      );
+    }
     if (plugin) {
       await verifyManagedPluginRegistration(client, context.signal);
     }
@@ -3373,12 +3410,94 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       );
     }
     const checkEffectivePolicy = async () => {
+      if (plugin && accountDelivery) {
+        if (!client.getPolicyStatus || !client.updatePolicy) {
+          throw new OpenShellSandboxConfigurationFailure(
+            "Saved accounts require live Sandbox policy reconciliation.",
+          );
+        }
+        const desired = {
+          ...create.spec.policy,
+          network_middlewares: plugin.middlewares,
+          network_policies: { ...create.spec.policy.network_policies, ...plugin.networks },
+        };
+        let status = await client.getPolicyStatus(
+          { workspace, sandbox: sandbox.resourceName },
+          context.signal,
+        );
+        const observed = asRecord(canonicalProtobufValues(status.policy));
+        // Only the account guard may change here. Filesystem, process, defaults and
+        // Agent grants retain the exact launch baseline, including during retries.
+        const previous = googleRequestPolicyFromSandbox(observed);
+        if (
+          !previous ||
+          !sameOpenShellPolicy(
+            {
+              ...observed,
+              network_middlewares: launchPlugin!.middlewares,
+              network_policies: {
+                ...asRecord(observed?.network_policies),
+                ...launchPlugin!.networks,
+              },
+            },
+            create.spec.policy,
+          )
+        ) {
+          throw new OpenShellSandboxConfigurationFailure(
+            "The Sandbox policy differs outside the saved account request guard.",
+          );
+        }
+        if (!sameOpenShellPolicy(observed, desired)) {
+          const target = await client.getSandbox(
+            { workspace, name: sandbox.resourceName },
+            context.signal,
+          );
+          if (!target?.resourceVersion) {
+            throw new DependencyUnavailableError(
+              "The account Sandbox policy target is unavailable.",
+            );
+          }
+          verifyExistingSandbox(target, { ...create, requestId: requestIds[0]! });
+          await client.updatePolicy(
+            {
+              workspace,
+              sandbox: sandbox.resourceName,
+              policy: desired,
+              expectedResourceVersion: target.resourceVersion,
+              requestId: `account-policy-${sha256Hex(JSON.stringify([context.revision.id, target.resourceVersion, desired]))}`,
+            },
+            context.signal,
+          );
+          status = await client.getPolicyStatus(
+            { workspace, sandbox: sandbox.resourceName },
+            context.signal,
+          );
+        }
+        if (
+          status.state !== "POLICY_STATUS_LOADED" ||
+          status.activeVersion !== status.version ||
+          !sameOpenShellPolicy(canonicalProtobufValues(status.policy), desired)
+        ) {
+          throw new DependencyUnavailableError(
+            "The saved account request policy is not loaded yet.",
+          );
+        }
+      }
       const config =
         plugin || mcpPolicies.length
           ? await client.getSandboxConfig?.(workspace, sandbox.resourceName, context.signal)
           : undefined;
       if (plugin) {
-        verifyPluginRequestGuard(config, plugin, workspace);
+        try {
+          verifyPluginRequestGuard(config, plugin, workspace);
+        } catch (error) {
+          if (accountDelivery) {
+            throw new DependencyUnavailableError(
+              "The saved account sender and effective request guard have not converged.",
+            );
+          }
+          throw error;
+        }
       }
       for (const policy of mcpPolicies) {
         verifyManagedMcpPolicy(config, policy, workspace);
@@ -3446,7 +3565,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         ]),
         runtimeCredentialMaterial.binding,
         egressPolicy,
-        plugin,
+        launchPlugin,
         mcpPolicies,
       ),
       serviceExposures,

@@ -44,6 +44,8 @@ export interface ComputeRevisionContext {
   readonly verifyRepositorySessionRelease?: (
     binding: RepositoryCredentialMaterialRef & { readonly deadlineWallMs: number },
   ) => Promise<void>;
+  /** Release prepared account tokens only after the paired receiver has verified its effective request policy. */
+  readonly releaseCredentials?: (signal: AbortSignal) => Promise<void>;
   readonly workspaceSetup?: Readonly<WorkspaceSetup>;
   readonly harnessAuth: ResolvedHarnessAuth;
   /** Non-model sources resolved again at dispatch, in admission order. */

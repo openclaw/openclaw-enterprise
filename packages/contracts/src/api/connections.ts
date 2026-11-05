@@ -46,7 +46,10 @@ const SavedConnectionSchema = Type.Object(
     oauthClientId: Type.String(),
     clientId: Type.String(),
     issuer: Type.String(),
-    destinations: ConnectionDestinationsSchema,
+    destinations: Type.Array(ConnectionDestinationsSchema.items, {
+      description:
+        "Effective credential delivery destinations; empty when the current template is unavailable or incompatible.",
+    }),
     resource: Type.Optional(Type.String()),
     requestedScopes: Type.Array(Type.String()),
     grantedScopes: Type.Array(Type.String()),

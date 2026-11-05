@@ -93,6 +93,8 @@ export interface CredentialAttachmentStatus {
 /** Holds credential sources and applies them outside the Agent workload. */
 export interface CredentialGatewayDriver extends Driver {
   readonly capability: "credential_gateway";
+  /** Prepare an empty sender, withdrawing existing material before changing its request policy. Unchanged policy retains its token. */
+  prepareConnectionSource?(context: CredentialSourceContext): Promise<void>;
   /** Deliver only a prepared access token. The sender must stop presenting it at expiry. */
   publishConnectionToken?(
     context: CredentialSourceContext,

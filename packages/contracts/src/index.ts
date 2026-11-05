@@ -628,7 +628,7 @@ export type CredentialSourceSnapshot = {
     }
 );
 
-/** Resolve only the frozen presentation admitted for this account and revision. */
+/** Resolve the admitted owner and initial presentation; running account policy is prepared separately. */
 export function revisionCredentialSource(
   source: CredentialSource,
   snapshot: CredentialSourceSnapshot | undefined,

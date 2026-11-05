@@ -60,7 +60,8 @@ function recordingOpenShell() {
         delete current.credentialExpirationTimes[key];
       }
       current.resourceVersion = String(Number(resourceVersion) + 1);
-      return current;
+      // This recording transport has no Sandbox recipients. Native installation is verified separately.
+      return { ...current, targetReceipts: [], mutationId: randomUUID() };
     },
     async getProviderCredential(workspace, name, credentialKey) {
       return { value: providers.get(key(workspace, name)).credentials[credentialKey] };

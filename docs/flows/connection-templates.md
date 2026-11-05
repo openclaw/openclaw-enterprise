@@ -2,7 +2,7 @@
 
 The administrator selects manual configuration or supplies an MCP server URL. OCC checks Installation administration before discovery. For MCP, the controller reads protected resource metadata over TLS, resolves each metadata host to public addresses and pins those addresses for the request. It contacts only the selected advertised authorization server. OCC stores the metadata it observed with the approved version.
 
-The Console reads the Google starter destinations from the reviewed Google Workspace release and displays them as editable rows. OCC normalizes the saved destinations and records the complete list on the immutable template version. MCP discovery supplies one transport destination and its OAuth resource.
+The Console reads the Google starter destinations from the reviewed Google Workspace release and displays them as editable rows. OCC normalizes the destinations and records them on a new template version. The template ID stays the same across versions. It identifies the current manual delivery policy for accounts connected with that issuer. MCP discovery supplies one transport destination and its OAuth resource.
 
 OCC checks scope and the client's allowed destinations before it references an OAuth client. PostgreSQL commits the template version and its audit together. A template can exist without a client. The Agent plugin release determines the local credential placeholder when the account is used.
 
@@ -33,7 +33,7 @@ credential source ID, account owner, approved recipient, requested scopes, and
 granted scopes. When the person requests provider defaults, the Driver omits the scope parameter. It records the scopes the provider reports, or an empty list if the provider omits them. Renewal can narrow the recorded grant. It cannot add scopes to an unreported grant. A shared callback verifies the issuer when multiple issuers are
 configured. A provider timeout consumes the attempt.
 
-OCC saves all destinations from the version the user approved. A later template edit applies to new connections. Manual HTTP destinations constrain credential delivery. For MCP, the Driver also sends the discovered resource identifier to the provider.
+OCC saves the consent receipt under its original immutable template version. When listing an account, `PlatformController.effectiveConnectionDestinations` reads the current version of that same template. For manual accounts, it returns the current destinations when the issuer and manual mode still match. For MCP accounts, it returns the original destinations only when issuer, discovery mode, exact server URL and protected resource still match. A missing or incompatible template returns an empty list. This projection does not rewrite the saved registration, grant, token endpoint or consent audit. For MCP, the Driver sends the original resource identifier to the provider.
 
 The worker renews the saved account through the Token Service. For each refresh, it checks the saved grant against the approved registration
 and resolves the current client secret from its Driver. A conditional write
@@ -47,6 +47,8 @@ The Plugin Driver identifies the named accounts in the selected release. OCC lis
 
 Saving a selection checks the exact slot, account and Agent permissions together. Starting OAuth from a saved slot also records the release and current binding. When the browser returns, OCC checks both before replacing that slot. The account stays with its owner if the binding changed during consent.
 
-Admission records the source grant and the Driver's approved delivery profile for the revision. The worker prepares an expiring access token through the Token Service and sends it to that profile. Detaching queues withdrawal for the affected Agent. Other Agents can keep their grants.
+Admission records the saved account and its sender for this Agent. The worker resolves the account’s template again when it prepares a revision and during maintenance. For manual OAuth it reads the latest destinations from the same issuer. For MCP it checks the original server and resource. Console tool discovery makes the same check before it sends a credential.
 
-For a saved Google account, the Credential Gateway configures one OpenShell provider. It includes a host, port and path only when the saved destination and a reviewed Google Workspace operation both allow it, and the account has the scope for that operation. The Sandbox Driver checks those routes and the Installation’s approved executables. Each executable uses the same request guard.
+When a sender’s host, port or path changes, the Credential Gateway clears the bearer and waits for OpenShell to acknowledge withdrawal on the receiving Sandbox. The Sandbox Driver applies the updated network policy and checks its effective request guard. Compute then asks OCC to release the access token. OCC rechecks the Agent grant and the expected policy before publishing. An update that fails retries without releasing credentials to the new destination. Detaching queues withdrawal for the affected Agent. Other Agents retain their own sender.
+
+For a saved Google account, the Credential Gateway configures one OpenShell provider. It includes a host, port and path only when the current template and a reviewed Google Workspace operation both allow it, and the account has the scope for that operation. The Sandbox Driver checks those routes and the Installation’s approved executables. Each executable uses the same request guard.
