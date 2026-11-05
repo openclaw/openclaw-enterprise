@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
 updated: "2026-11-05"
-last_updated_session: authoring-run/ee922707-f7d0-41ed-8771-8616413f3488
+last_updated_session: authoring-run/41190ba0-f53f-4124-ba36-e534677757a9
 ---
 
 # Agent repository credential flow
@@ -10,9 +10,9 @@ last_updated_session: authoring-run/ee922707-f7d0-41ed-8771-8616413f3488
 
 Compute-owned dedicated Codex uses prepared native sessions without a Sandbox Driver;
 [OpenShell sandboxes](../reference/repository-credentials/protected-openshell-git.md) receive placeholders.
-Workers deliver credentials to providers, checking signed requests against live grants.
-See [enrollment and mandatory hooks](../guides/repository-credentials/openshell-enrollment.md),
-[service forwarding and retirement](repository-credentials.md) and [runtime qualification](../testing/repository-credentials.md).
+Workers deliver credentials and check signed requests against live grants.
+See [enrollment hooks](../guides/repository-credentials/openshell-enrollment.md),
+[forwarding and retirement](repository-credentials.md) and [runtime qualification](../testing/repository-credentials.md).
 
 ## Entry Points
 
@@ -22,7 +22,7 @@ See [enrollment and mandatory hooks](../guides/repository-credentials/openshell-
 - `apps/controller/src/worker.ts:ControllerWorker.prepareRevision` prepares
   repository sessions before invoking Compute.
 
-See [standing approval across session expiry](../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent).
+See [standing approval](../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent).
 
 ## Flow
 
@@ -226,12 +226,12 @@ Both gate startup; the consumer mount is read-only. Metadata and gateway
 bearers remain separate.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.activateRevision`
-replaces consumers when material changes, even within one version. Readiness requires
+replaces consumers whenever material changes, including within a version. Readiness requires
 role, version, generation and current deadlines. Dedicated replacement preserves enrollment
 and version-private storage.
 `KubernetesComputeDriver.prepareRevision` rechecks material after plugin,
 gateway and node observations; generation changes, lost readiness or expiry return incomplete.
-Activation rechecks deadlines after final observations.
+Activation rechecks deadlines after observation.
 Dedicated gateways lack repository material and repository-gateway egress.
 Both consumers trust CAs through `SSL_CERT_FILE`, `GIT_SSL_CAINFO` and
 `NODE_EXTRA_CA_CERTS`; overrides fail.
@@ -239,20 +239,19 @@ Compute grants consumer egress; Helm admits consumers through
 [credential-sidecar ingress selectors](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking).
 For [prepared native Git](../reference/repository-credentials/prepared-native-git.md),
 `apps/controller/src/drivers/compute/kubernetes/repository-compute-ingress.ts:reconcilePreparedRepositoryIngress`
-admits the revision's ingress peer only when the session's hostname, TLS port and
-worker selector match the Helm-recorded broker Service. A mismatch refuses admission
-without widening policy. Native preparation writes aggregate `gitconfig` without reading
-bearers. System Git includes
-`/run/oce/repository-credentials/gitconfig`, preserving HOME/global configuration.
+requires peer hostname, TLS port and worker selector to match Helm’s broker Service. Native preparation writes `gitconfig` without reading
+bearers. System Git includes `/run/oce/repository-credentials/gitconfig` and
+preserves global settings.
 Embedded `repositoryNativeConfiguration` keeps the `gh` router first in
 `tools.exec.pathPrepend`. `AGENT_RUNTIME_ENTRYPOINT` sets Codex's
 `allow_login_shell=false` and `shell_environment_policy.set.PATH`, and keeps the Pod's
-`NODE_EXTRA_CA_CERTS` for sandboxed commands. Model authentication remains intact.
+`NODE_EXTRA_CA_CERTS` for sandboxed commands. Model authentication persists.
 App keys, JWTs, installation tokens and the control socket never enter consumer material.
 The [networking contract](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking)
 defines Codex plugin and repository-bound filesystem and proxy access, explicit denies,
 and dedicated/embedded eligibility. Unbound policy, broker authorization and TLS
-verification stay in force.
+verification stay in force. Stock Codex selects the named network profile for threads and turns.
+Start, resume and fork verify it.
 
 ### 5. Authenticate native Git and route GitHub CLI commands
 
@@ -320,10 +319,9 @@ pending at the convergence deadline use this path with `REPOSITORY_GIT_TOKEN_PEN
 maintenance accepts only these two failure codes. Otherwise, the worker retires the version
 ([reference](../reference/repository-credentials/prepared-native-git.md#deployment-and-the-first-token)).
 
-Without standing Git evidence, the worker observes the Harness without preparation or activation;
-Git stays closed. Each pass rechecks model authority, withdrawal, stop and replacement,
-then repeats within five seconds. Harness readiness cannot authorize Git
-([test](../../tests/integration/postgres-standing-session-worker.test.ts)).
+Without standing Git evidence, Git stays closed. The worker observes the Harness without preparation
+or activation, rechecking model authority, withdrawal, stop and replacement within five seconds.
+Harness readiness cannot authorize Git ([test](../../tests/integration/postgres-standing-session-worker.test.ts)).
 
 `apps/controller/src/worker.ts:ControllerWorker.processRepositoryCleanup` consumes
 owner-bound Work without admission or material delivery. Terminal-runtime Work fences
@@ -345,8 +343,9 @@ guards subtraction and standing succession: expired predecessors require matchin
 the current ready Sandbox instance and an observation under 15 seconds old.
 `witnessOpenShellGitLaunch` returns unverified identity for matching expired model evidence
 on cold observation; the worker independently supervises and durably defers renewal.
-`subtractExpiredOpenShellGit` confirms revoked Git, ready model and retained profiles between
-reports, including recovery.
+`subtractExpiredOpenShellGit` confirms revoked Git, ready model and
+[retained profiles](../../apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts)
+between reports, including recovery.
 `apps/controller/src/drivers/sandbox/openshell-gateway-client.ts:GrpcOpenShellGatewayClient.getProviderProfile`
 verifies identity and defaults omitted protobuf endpoint/credential lists to empty.
 Files-only profiles pass; missing profiles, GitHub endpoints and `GITHUB_TOKEN` prevent retention.
@@ -369,8 +368,6 @@ Inspect worker events for
 `REPOSITORY_BINDING_CHANGED`, `REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED`,
 `REPOSITORY_SESSION_RECOVERY_UNSAFE`, `REPOSITORY_GIT_TOKEN_QUARANTINED`, `REPOSITORY_GIT_TOKEN_PENDING`, `REPOSITORY_CLEANUP_PENDING` or
 `REPOSITORY_CLEANUP_COMPLETE`. Check registry identity and deadline before retry.
-Pending cleanup logs `worker.repository-cleanup-warning` with its
-`cause` once.
 
 `repository-not-admitted` means an unselected target; `name-one-repository-target`
 or `name-one-repository-ref` requires explicit selection. Inspect metadata and Pod generation without credentials.
@@ -397,6 +394,10 @@ and continued chat.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 16:24: Merge main. (authoring-run/41190ba0-f53f-4124-ba36-e534677757a9 - 70a8ebc24780a6c547c3d8170b5b025c5584eae2)
+
+- 2026-11-05 15:33: Document profile wire defaults. (authoring-run/6cd890b4-603a-482b-85a1-f9f601ae5c3c - 821ce63ee1)
 
 - 2026-11-05 14:59: Verify the live expired predecessor. (authoring-run/ee922707-f7d0-41ed-8771-8616413f3488 - d0f452ea7b2e8040d330e6e6d851dc1f042002c3)
 

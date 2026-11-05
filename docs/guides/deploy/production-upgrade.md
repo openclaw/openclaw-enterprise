@@ -82,6 +82,11 @@ on each running Agent.
 Review saved Agent and Configuration drafts before a runtime upgrade. Each
 deployment takes a new snapshot of the current draft.
 
+For OpenShell, a controller change to the generated Harness command requires a
+fresh Agent revision. Existing Sandboxes require the same launch specification;
+a controller-only upgrade cannot reuse them with a changed command. Plan an
+authorized redeployment from reviewed drafts, even if the runtime image is unchanged.
+
 If a controller-only release changes the rendered Pod specs, the new worker
 restarts affected Agent Pods once on the same image. A broker restart recreates
 dedicated Codex Pods and can leave sessions the worker cannot replace. Plan the

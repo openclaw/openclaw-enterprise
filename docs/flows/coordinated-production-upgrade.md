@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-11-05"
-last_updated_session: "authoring-run/156a9693-7ea1-4555-a5b7-b4c840568cd5"
+last_updated_session: "authoring-run/0f9e4fc6-9649-465a-8ab4-3fc3124417e2"
 ---
 
 # Production image upgrade flow
@@ -209,17 +209,18 @@ replica counts, and changed Installation checksums. Each component needs
 exactly one named container. A broker-enabled worker may instead be a restartable
 init container; non-restartable or ambiguous placement fails. Authenticated OCC
 access is retried and must return the same Installation ID.
-Versions retain their deploying controller's Pod specification until worker preparation. Repository-bound Agents get maintenance every 30 seconds until their session deadline. Other Agents
-are prepared again only when their deployment was still finishing as the new
-worker took over (the helper checks for unfinished deployments only before a
-runtime release).
-Kubernetes Compute applies the Gateway and, for dedicated Harnesses, Harness
-Deployments as the new controller renders them, with the Installation's current
-images, so a changed Pod template rolls those Pods once on the unchanged runtime
-image. Chat remains unavailable until the new Pods are ready.
-Controller fixes to Gateway and Agent Pods, such as
-[diagnostics](agent-deployment-diagnostics.md) mappings, reach an Agent then or
-at its next deployment.
+Worker preparation re-renders launch requirements from the current controller.
+Repository-bound Agents receive maintenance every 30 seconds until their session
+deadline; other Agents are re-prepared if deployment remains unfinished.
+Kubernetes Compute applies current Gateway and Harness Deployments, rolling
+changed Pod templates even when runtime images are unchanged. Chat waits for readiness.
+OpenShell instead requires exact existing Sandbox content
+(`apps/controller/src/drivers/sandbox/openshell.ts:verifyExistingSandbox`).
+Controller changes to its generated command require a fresh Agent revision;
+controller-only reuse cannot adopt the changed command. See the
+[upgrade guide](../guides/deploy/production-upgrade.md#prepare-the-release).
+Controller fixes to Pod configuration and [diagnostics](agent-deployment-diagnostics.md)
+reach other Agents on their next preparation or deployment.
 
 For a repository-enabled release, it also verifies the ready API and worker
 Pods, their owning ReplicaSets, node architecture, and runtime controller and
@@ -240,16 +241,15 @@ A new replacement receipt must name the current failed revision. If an outcome
 is unknown or the journal may be stale, use the
 [recovery guide](../guides/deploy/production-upgrade-recovery.md).
 
-The script polls authorized deployment status, confirms the selected version,
-and waits for its Pods to be `Running` and `Ready` on the candidate digest. Before OpenClaw
-starts, `GATEWAY_RUNTIME_ENTRYPOINT` runs `openclaw doctor --fix
---non-interactive` once when its shared state or an agent database uses an older
-schema, such as a 2026-09-28 release Gateway's; a database still older holds the
-Gateway unready with check `state-migration`. A dedicated Harness runs the same
-step on its workspace node state before native setup, and a native worker before
-it connects (`openClawStateMigrationHelper` in `runtime-startup.ts`). Embedded execution
-requires one runtime container; dedicated execution requires both gateway and
-Agent containers. Each replacement gateway runs read-only
+The script verifies authorized deployment status, version, and ready Pods on the
+candidate digest. Before OpenClaw starts, `openClawStateMigrationHelper` in
+`runtime-startup.ts` runs `openclaw doctor --fix --non-interactive` for older schemas.
+Current schemas and Doctor's settled result gate startup: maintenance or cleanup
+refusal holds `state-migration` unready; ordinary warnings do not. A private pending
+marker forces interrupted or refused maintenance to retry after restart, even with current schemas. The same step
+runs before Harness native setup or native-worker connection. Embedded execution
+requires one runtime container; dedicated execution requires Gateway and Agent containers.
+Each replacement gateway runs read-only
 `openclaw doctor --lint --json --severity-min error`, one at a time, with a heap cap
 (`--doctor-heap-mib`, default 384 MiB). Doctor shares the gateway's memory limit;
 an OOM kill can stop both. The cgroup v2 check (`gateway_free_memory`) requires
@@ -327,6 +327,8 @@ saved mapping, exact-name reuse requires a Namespace without Agents or Secrets.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 13:53: Require settled Doctor maintenance before runtime startup. (authoring-run/0f9e4fc6-9649-465a-8ab4-3fc3124417e2 - 644b3f9328e9125030e958c7b4233ac37c54b139)
 
 - 2026-11-05 11:09: Allow an explicit canonical plugin registration candidate while preserving protected settings. (authoring-run/156a9693-7ea1-4555-a5b7-b4c840568cd5 - 717e8bf2a3ef3fa4d4fa7e53cc6927500533ddbd)
 
