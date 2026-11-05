@@ -319,6 +319,79 @@ async function routeReader(f, address) {
   });
 }
 
+// Retain closed worker categories before the disposable installation is removed.
+// Exception text and arbitrary nested fields must never enter uploaded evidence.
+export async function recordPublicGithubProvisionFailure(f) {
+  try {
+    const output = await f.run(
+      "docker",
+      [
+        "compose",
+        "-p",
+        f.cluster,
+        "-f",
+        join(f.stateDirectory, "compose.yaml"),
+        "logs",
+        "--no-color",
+        "--tail",
+        "200",
+        "worker-kubernetes",
+      ],
+      { timeout: 10_000, maxBuffer: 256 * 1024, privateFailureOutput: true },
+    );
+    const revisions = new Set(
+      f.agents.map((agent) => agent.revision?.id).filter((id) => typeof id === "string"),
+    );
+    const causes = new Set([
+      "OpenShellSandboxConfigurationFailure",
+      "OpenShellRuntimeMaterialFailure",
+      "OpenShellRuntimeProviderMismatch",
+      "OpenShellSandboxOwnershipMismatch",
+      "OpenShellWorkspaceInitializationFailure",
+      "OpenShellGatewayRequestError",
+      "OpenShellGatewayUnavailableError",
+      "KubernetesPreparationFailure",
+    ]);
+    const codes = new Set([
+      "KUBERNETES_PREPARATION_FAILED",
+      "KUBERNETES_CONFIGURATION_INVALID",
+      "DEPENDENCY_UNAVAILABLE",
+      "SANDBOX_HARNESS_UNSUPPORTED",
+    ]);
+    const failures = [];
+    for (const line of output.split("\n")) {
+      const start = line.indexOf("{");
+      if (start < 0) {
+        continue;
+      }
+      let row;
+      try {
+        row = JSON.parse(line.slice(start));
+      } catch {
+        continue;
+      }
+      if (
+        !row ||
+        !revisions.has(row.revisionId) ||
+        !["worker.compute-prepare-failed", "worker.completed"].includes(row.event)
+      ) {
+        continue;
+      }
+      failures.push({
+        event: row.event,
+        cause: causes.has(row.cause ?? row.errorClass) ? (row.cause ?? row.errorClass) : "other",
+        code: codes.has(row.code) ? row.code : "other",
+        ...(row.event === "worker.compute-prepare-failed"
+          ? { step: row.step === "sandbox_provision" ? "sandbox_provision" : "other" }
+          : {}),
+      });
+    }
+    await f.record("public-git-provision-failure", { failures: failures.slice(-20) });
+  } catch {
+    // Diagnostics must not replace the original deployment or Git assertion.
+  }
+}
+
 export async function verifyQaPublicGithubGit(context, artifacts) {
   const f = await createQaInstallation(context, "compose", artifacts, {
     repositoryInputs: false,
@@ -637,6 +710,7 @@ export async function verifyQaPublicGithubGit(context, artifacts) {
         "ordinary OpenShell native public Git clone/fetch and real model turn; protected coexistence remains unqualified",
     };
   } catch (error) {
+    await recordPublicGithubProvisionFailure(f);
     throw redactQaError(error);
   }
 }

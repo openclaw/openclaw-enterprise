@@ -4018,3 +4018,118 @@ test("public Git QA discovers its managed skill beneath native HOME or state dir
     assert.equal(observed.managedSkill, true);
   }
 });
+
+test("public Git provisioning evidence retains only fixed categories for the failed revision", async (t) => {
+  const { recordPublicGithubProvisionFailure } =
+    await import("../helpers/qa-public-github-git.mjs");
+  assert.equal(typeof recordPublicGithubProvisionFailure, "function");
+  const directory = await temporaryDirectory(t, "qa-public-git-failure-");
+  const artifact = join(directory, "failure.json");
+  const secret = `unregistered-private-text-${randomUUID()}`;
+  const row = {
+    event: "worker.completed",
+    revisionId: "revision-one",
+    cause: "OpenShellWorkspaceInitializationFailure",
+    code: "DEPENDENCY_UNAVAILABLE",
+    message: secret,
+    private: { token: secret },
+  };
+  const f = {
+    cluster: "qa-owned",
+    stateDirectory: directory,
+    agents: [{ revision: { id: "revision-one" } }],
+    async run() {
+      return [
+        secret,
+        ...Array.from({ length: 30 }, () => "worker | " + JSON.stringify(row)),
+        JSON.stringify({ ...row, revisionId: "other-revision", cause: secret }),
+        JSON.stringify({ ...row, cause: secret, code: secret }),
+      ].join("\n");
+    },
+    async record(_name, value) {
+      await writeFile(artifact, JSON.stringify(value));
+    },
+  };
+  await recordPublicGithubProvisionFailure(f);
+  const bytes = await readFile(artifact, "utf8");
+  const evidence = JSON.parse(bytes);
+  assert.equal(
+    bytes.includes(secret),
+    false,
+    "unregistered private text must never reach evidence",
+  );
+  assert.equal(evidence.failures.length, 20);
+  assert.deepEqual(evidence.failures.at(-1), {
+    event: "worker.completed",
+    cause: "other",
+    code: "other",
+  });
+  assert.ok(
+    evidence.failures.some(({ cause }) => cause === "OpenShellWorkspaceInitializationFailure"),
+  );
+  f.run = async () => {
+    throw new Error(secret);
+  };
+  await recordPublicGithubProvisionFailure(f);
+});
+
+test("QA model failure evidence preserves the failure and its admitted revision", async () => {
+  const { createNativePluginAssertions } = await import("../helpers/plugin-driver-real.mjs");
+  const secret = `qa-log-secret-${randomUUID()}`;
+  registerQaSecret(secret);
+  const agent = { namespaceId: "namespace", id: "agent", revision: { id: "original" } };
+  const reads = [];
+  const evidence = [];
+  const failure = new Error("original model assertion");
+  const native = createNativePluginAssertions({
+    // These pages stand in for OCC's already-redacted response. This verifies
+    // the QA collector's additional redaction, not the runtime log API.
+    async readRuntimeLogs(target) {
+      reads.push(target);
+      if (target.source === "agent") {
+        throw new Error("log source unavailable");
+      }
+      return {
+        records: [{ type: "line", level: "error", message: `failure ${secret}`, private: secret }],
+      };
+    },
+    async recordRuntimeLogs(record) {
+      evidence.push(record);
+    },
+  });
+  assert.equal(await native.withRuntimeFailureLogs(agent, async () => "passed"), "passed");
+  assert.deepEqual(reads, [], "successful assertions do not collect failure evidence");
+  await assert.rejects(
+    native.withRuntimeFailureLogs(agent, async () => {
+      agent.revision = { id: "replacement" };
+      throw failure;
+    }),
+    (error) => error === failure,
+  );
+  assert.deepEqual(reads, [
+    { namespaceId: "namespace", agentId: "agent", revisionId: "original", source: "gateway" },
+    { namespaceId: "namespace", agentId: "agent", revisionId: "original", source: "agent" },
+  ]);
+  assert.equal(evidence.length, 1);
+  assert.equal(evidence[0].revisionId, "original");
+  assert.match(evidence[0].sources[0].lines[0], /failure/);
+  assert.equal(JSON.stringify(evidence).includes(secret), false);
+  assert.equal(JSON.stringify(evidence).includes("private"), false);
+  assert.deepEqual(evidence[0].sources[1], { source: "agent", unavailable: true });
+
+  // Failure to save diagnostics must not replace the original model assertion.
+  const unavailable = createNativePluginAssertions({
+    async readRuntimeLogs() {
+      throw new Error("logs unavailable");
+    },
+    async recordRuntimeLogs() {
+      throw new Error("artifact write failed");
+    },
+  });
+  await assert.rejects(
+    unavailable.withRuntimeFailureLogs(agent, async () => {
+      throw failure;
+    }),
+    (error) => error === failure,
+  );
+});
