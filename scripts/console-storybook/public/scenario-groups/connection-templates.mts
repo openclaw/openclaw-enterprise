@@ -20,13 +20,42 @@ export const connectionTemplateScenarios = {
     description:
       "Create an OAuth template manually or discover a server’s metadata. The OAuth client and approved scopes are selected separately.",
   },
+  credentialsOAuthClientCatalog: {
+    group: "Pages/Credentials",
+    name: "OAuth client catalog",
+    path: "/console/credentials/oauth-clients",
+    oauthCatalog: "ready",
+    description:
+      "Installation administrators can register OAuth clients before creating a connection template.",
+    steps: [
+      "Open Credentials → OAuth clients. Choose Register OAuth client, confirm its availability, then select a provider and enter the registration it issued.",
+    ],
+  },
+  credentialsRegisterOAuthClient: {
+    group: "Pages/Credentials",
+    name: "Register OAuth client",
+    path: "/console/credentials/oauth-clients",
+    oauthCatalog: "ready",
+    actions: [click("Register OAuth client")],
+    description:
+      "Register a provider-issued OAuth client for one Namespace or the whole Installation. Secrets are write-only.",
+  },
   credentialsMemberAccess: {
     group: "Pages/Credentials",
     name: "Namespace member",
     path: "/console/secrets",
     readOnlyPermissionSummary: true,
     description:
-      "A Namespace member can open Secrets. Only Installation administrators see Connection templates.",
+      "A Namespace member can open Secrets. Only Installation administrators see Connection templates and OAuth clients.",
+  },
+  credentialsGoogleTemplate: {
+    group: "Pages/Credentials",
+    name: "Set up Google OAuth",
+    path: "/console/credentials/connection-templates",
+    oauthCatalog: "ready",
+    actions: [click("Set up Google OAuth")],
+    description:
+      "The built-in Google template supplies the provider settings. The administrator chooses the API destination, scopes, and a registered client.",
   },
   credentialsManualTemplate: {
     group: "Pages/Credentials",
@@ -81,7 +110,10 @@ export const connectionTemplateScenarios = {
   {
     group: "Pages/Credentials";
     name: string;
-    path: "/console/secrets" | "/console/credentials/connection-templates";
+    path:
+      | "/console/secrets"
+      | "/console/credentials/connection-templates"
+      | "/console/credentials/oauth-clients";
     actions?: StoryAction[];
     emptyNamespaces?: true;
     oauthCatalog?: "ready" | "error";

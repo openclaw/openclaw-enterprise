@@ -191,6 +191,75 @@ test("a template needs an explicit availability when the administrator has no Na
   assert.deepEqual((await patch.json()).data.current.scopes, ["tools.read"]);
 });
 
+test("an administrator can register an OAuth client independently of a connection template", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth client owners");
+  selectTemplateDrivers(fixture.controller);
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, secretsUrl(namespace));
+  const sections = page.getByRole("navigation", { name: "Credential sections" });
+  await sections.getByRole("link", { name: "OAuth clients", exact: true }).click();
+  await page.getByRole("button", { name: "Register OAuth client" }).click();
+  const form = dialog(page, "Register OAuth client");
+  assert.equal(await form.getByLabel("Client availability").inputValue(), namespace.id);
+  await form.getByLabel("Provider", { exact: true }).selectOption({ label: "Google" });
+  assert.equal(
+    await form.getByLabel("Issuer URL", { exact: true }).inputValue(),
+    "https://accounts.google.com",
+  );
+  assert.equal(
+    await form.getByLabel("Token URL").inputValue(),
+    "https://oauth2.googleapis.com/token",
+  );
+  assert.equal(
+    await form.getByLabel("Revocation URL (optional)").inputValue(),
+    "https://oauth2.googleapis.com/revoke",
+  );
+  assert.equal(await form.getByLabel("Client authentication").inputValue(), "client_secret_post");
+  await form.getByLabel("OAuth client name").fill("Engineering Google");
+  await form.getByLabel("Provider client ID").fill("google-browser-client");
+  const privateValue = crypto.randomUUID();
+  await form.getByLabel("Client secret", { exact: true }).fill(privateValue);
+  const registered = responseTo(page, "POST", fixture.origin + "/oauth-clients");
+  await form.getByRole("button", { name: "Register OAuth client" }).click();
+  const receipt = await registered;
+  assert.equal(receipt.status(), 201, await receipt.text());
+  const record = (await receipt.json()).data;
+  assert.equal(record.namespaceId, namespace.id);
+  assert.equal(Object.hasOwn(record, "clientSecret"), false);
+  const row = page.getByRole("heading", { name: "Engineering Google" }).locator("..");
+  await row.getByText("https://accounts.google.com", { exact: true }).waitFor();
+  await row
+    .getByText("Namespace · OAuth client owners · Client secret in request body", { exact: true })
+    .waitFor();
+  assert.equal((await page.locator("body").innerText()).includes(privateValue), false);
+  // Losing Installation administration also denies a direct link to the catalog.
+  // Configure Google's built-in provider with the client this admin just registered.
+  await sections.getByRole("link", { name: "Connection templates" }).click();
+  await page.getByRole("button", { name: "Set up Google OAuth" }).click();
+  const editor = dialog(page, "Create connection template");
+  assert.equal(await editor.getByLabel("Template availability").inputValue(), namespace.id);
+  await editor.getByLabel("Destination host").fill("gmail.googleapis.com");
+  await editor.getByLabel("OAuth scope limit").selectOption({ label: "No template limit" });
+  await editor
+    .getByLabel("OAuth client", { exact: true })
+    .selectOption({ label: "Engineering Google" });
+  const created = responseTo(page, "POST", fixture.origin + "/connection-templates");
+  await editor.getByRole("button", { name: "Create template" }).click();
+  const saved = await created;
+  assert.equal(saved.status(), 201, await saved.text());
+  const { current } = (await saved.json()).data;
+  assert.equal(current.oauthClientId, record.id);
+  assert.equal(current.authorizationUrl, "https://accounts.google.com/o/oauth2/v2/auth");
+  assert.deepEqual(current.authorizationParameters, { access_type: "offline", prompt: "consent" });
+  assert.equal(current.recipient.host, "gmail.googleapis.com");
+
+  restrict(fixture.policy, "administer", "installation");
+  await page.goto(fixture.origin + "/console/credentials/oauth-clients?namespace=" + namespace.id);
+  await page.getByRole("heading", { name: "Installation administrator access required" }).waitFor();
+  assert.equal(await sections.getByRole("link", { name: "OAuth clients", exact: true }).count(), 0);
+  assert.equal(await page.getByRole("button", { name: "Register OAuth client" }).count(), 0);
+});
+
 test("console Secret creation, replacement, Agent consumers and cleanup use real API and IAM", async (t) => {
   const audit = new InMemoryAuditSink();
   const storage = createTestSecretDriver();
