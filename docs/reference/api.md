@@ -1824,7 +1824,6 @@ Example response
         "mode": "manual",
         "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
         "recipient": {
-          "access": "read-only",
           "host": "api.example.com",
           "path": "/profile",
           "port": 443
@@ -1879,7 +1878,6 @@ Example request
   "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
   "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
   "recipient": {
-    "access": "read-only",
     "host": "api.example.com",
     "path": "/profile",
     "port": 443
@@ -1964,7 +1962,6 @@ Example response
       "mode": "manual",
       "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
       "recipient": {
-        "access": "read-only",
         "host": "api.example.com",
         "path": "/profile",
         "port": 443
@@ -2205,7 +2202,6 @@ Example response
       "mode": "manual",
       "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
       "recipient": {
-        "access": "read-only",
         "host": "api.example.com",
         "path": "/profile",
         "port": 443
@@ -2335,7 +2331,6 @@ Example response
       "mode": "manual",
       "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
       "recipient": {
-        "access": "read-only",
         "host": "api.example.com",
         "path": "/profile",
         "port": 443
@@ -2458,7 +2453,6 @@ Example response
         "mode": "manual",
         "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
         "recipient": {
-          "access": "read-only",
           "host": "api.example.com",
           "path": "/profile",
           "port": 443
@@ -2568,7 +2562,6 @@ Example response
       "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
       "ownerPrincipalId": "user-docs-admin",
       "recipient": {
-        "access": "read-only",
         "host": "api.example.com",
         "path": "/profile",
         "port": 443
