@@ -6,7 +6,6 @@ import { createServer, isIPv4 } from "node:net";
 import {
   appendFile,
   chmod,
-  lstat,
   mkdir,
   mkdtemp,
   readFile,
@@ -800,15 +799,6 @@ function assertImmutableOptionalEnvImages(names, env = process.env) {
 
 async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
   const name = laneName(lane);
-  // TODO: Remove this refusal once installed repository qualification can remove its
-  // remote branch and pull request only while they still match what the run created.
-  // Refuse before prerequisite checks so operators do not provision inputs for it. When
-  // removing it, restore the input-validation cases this refusal replaced in ci-prepare.test.mjs.
-  if (name === "repository-credentials-installed") {
-    throw new Error(
-      "Installed repository qualification is temporarily unavailable until safe remote cleanup is supported.",
-    );
-  }
   const prepare = lanePrepare(name);
   const effectiveEnv = effectiveLaneEnv(name);
   if (prepare.k3d && name !== "openshell" && effectiveEnv.OPENCLAW_CI_K3S_IMAGE) {
@@ -862,74 +852,6 @@ async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
       }
     } else {
       assertNodeBaseImage(effectiveEnv.NODE_BASE_IMAGE);
-    }
-  }
-  if (name === "repository-credentials-installed") {
-    const imageMode = effectiveEnv.OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE_MODE || "source";
-    if (imageMode === "release") {
-      assertImmutableEnvImages(
-        ["OCC_TEST_PRODUCTION_CONTROLLER_IMAGE", "OCC_TEST_KUBERNETES_RUNTIME_IMAGE"],
-        effectiveEnv,
-      );
-    } else if (imageMode === "source") {
-      assertNodeBaseImage(effectiveEnv.NODE_BASE_IMAGE);
-    } else {
-      throw new Error("OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE_MODE must be source or release.");
-    }
-    if (effectiveEnv.OCC_TEST_REPOSITORY_CREDENTIALS_AUTHORIZED !== "1") {
-      throw new Error(
-        "Installed repository qualification requires explicit write and cleanup authorization.",
-      );
-    }
-    if (
-      !/^[A-Za-z0-9][A-Za-z0-9-]{0,38}\/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(
-        effectiveEnv.OCC_TEST_REPOSITORY_CREDENTIALS_REPOSITORY,
-      )
-    ) {
-      throw new Error(
-        "OCC_TEST_REPOSITORY_CREDENTIALS_REPOSITORY must select one owner/repository.",
-      );
-    }
-    for (const input of ["APP_CONFIG_FILE", "APP_KEY_FILE"]) {
-      const variable = `OCC_TEST_REPOSITORY_CREDENTIALS_${input}`;
-      const path = effectiveEnv[variable];
-      if (!isAbsolute(path)) {
-        throw new Error(`${variable} must be an absolute protected file.`);
-      }
-      const info = await lstat(path);
-      if (
-        !info.isFile() ||
-        info.nlink !== 1 ||
-        (info.uid !== process.getuid() && info.uid !== 0) ||
-        info.size === 0 ||
-        info.size > 262144
-      ) {
-        throw new Error(`${variable} must be a bounded regular private file with a trusted owner.`);
-      }
-      if ((info.mode & 0o777) !== 0o600) {
-        throw new Error(`${variable} must have mode 0600.`);
-      }
-    }
-    const cidrs = effectiveEnv.OCC_TEST_REPOSITORY_CREDENTIALS_UPSTREAM_CIDRS.split(",");
-    if (
-      cidrs.length > 64 ||
-      cidrs.some((cidr) => {
-        const [address, prefix, extra] = cidr.split("/");
-        return (
-          extra !== undefined ||
-          prefix !== "32" ||
-          !isIPv4(address) ||
-          /^(?:0\.|10\.|127\.|169\.254\.|172\.(?:1[6-9]|2[0-9]|3[01])\.|192\.168\.)/.test(address)
-        );
-      })
-    ) {
-      throw new Error(
-        "OCC_TEST_REPOSITORY_CREDENTIALS_UPSTREAM_CIDRS must select approved public IPv4 /32 addresses.",
-      );
-    }
-    const gh = effectiveEnv.OCC_TEST_REPOSITORY_CREDENTIALS_GH_BINARY;
-    if (gh && !isAbsolute(gh)) {
-      throw new Error("OCC_TEST_REPOSITORY_CREDENTIALS_GH_BINARY must be absolute when supplied.");
     }
   }
 }
@@ -3198,52 +3120,6 @@ async function prepareLane({ lane, statePath, file }) {
           1,
         ),
       );
-      break;
-    }
-    case "repository-credentials-installed": {
-      await commandAvailable(process.env.OCC_HELM_BIN ?? "helm", ["version", "--short"]);
-      const cluster = await ensureK3dCluster(resolvedStatePath, state);
-      const routing = await prepareGatewayRouting({ cluster, execFile });
-      Object.assign(env, routing.env);
-      env.OCC_TEST_KUBERNETES_KUBECONFIG = cluster.kubeconfig;
-      env.OCC_TEST_KUBERNETES_CONTEXT = cluster.context;
-      const inputs = effectiveLaneEnv(name, env);
-      const sourceImages =
-        inputs.OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE_MODE === "release"
-          ? {
-              OCC_TEST_PRODUCTION_CONTROLLER_IMAGE: inputs.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE,
-              OCC_TEST_KUBERNETES_RUNTIME_IMAGE: inputs.OCC_TEST_KUBERNETES_RUNTIME_IMAGE,
-            }
-          : undefined;
-      await prepareProductionImages(resolvedStatePath, state, cluster, env, {
-        localStore: true,
-        sourceImages,
-      });
-      env.OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE = (
-        await registerImageInK3d(
-          resolvedStatePath,
-          state,
-          cluster,
-          process.env.OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE,
-          "OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE",
-        )
-      ).reference;
-      progress(name, "Deriving and installing the dedicated Codex seccomp profile.");
-      const seccomp = await prepareCodexSeccompProfile({
-        cluster,
-        image: env.OCC_TEST_KUBERNETES_RUNTIME_IMAGE,
-        execFile,
-        kubectl: cluster.kubectl ?? process.env.OCC_KUBECTL_BIN ?? "kubectl",
-        codexVersion: await kubernetesCodexVersion(env),
-      });
-      env.OCC_TEST_KUBERNETES_CODEX_SECCOMP_PROFILE = seccomp.profileName;
-      cluster.codexSeccompProfile = seccomp.profileName;
-      cluster.codexSeccompProfiles = seccomp.nodes;
-      await writeState(resolvedStatePath, state);
-      if (process.env.OCC_TEST_REPOSITORY_CREDENTIALS_GH_BINARY) {
-        env.OCC_TEST_REPOSITORY_CREDENTIALS_GH_BINARY =
-          process.env.OCC_TEST_REPOSITORY_CREDENTIALS_GH_BINARY;
-      }
       break;
     }
     case "docker-model":
