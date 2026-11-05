@@ -1411,6 +1411,10 @@ async function preparedLifecycleFixture(t, githubOptions = {}, now = undefined) 
         ...opts,
         poolOptions: { max: 1, connectionTimeoutMillis: 2000 },
       });
+      // Production can register saved OAuth accounts and the GitHub issuer on the same Token Service.
+      tokens.configureAccounts(app.state, secretDriver, (ref) =>
+        app.controller.resolveConnectionClient(ref),
+      );
       await lifecycle.connect(app.pool);
       t.after(() => lifecycle.close());
       return app;
