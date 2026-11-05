@@ -33,7 +33,7 @@ import {
   tagView,
   taggedView,
   waitForFocusedLabel,
-} from "./console-refocus-helpers.mjs";
+} from "./console-refocus-helpers.ts";
 import { withholdPermissionSummary } from "./console-agents-test-support.mjs";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import {

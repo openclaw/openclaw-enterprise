@@ -23,7 +23,7 @@ import {
   waitForIdleFetches,
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
-import { focusedLabel, waitForFocusedLabel } from "./console-refocus-helpers.mjs";
+import { focusedLabel, waitForFocusedLabel } from "./console-refocus-helpers.ts";
 
 const browser = fileBrowser();
 
