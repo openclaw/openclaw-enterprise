@@ -1,5 +1,6 @@
 import { chmod, readFile, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
+import { setEnvironment } from "./environment.mjs";
 
 // Stand-ins for external commands (docker, kubectl, helm, k3d, gh, ...) that a test
 // writes into a directory and puts first on PATH. Each scenario keeps its own script
@@ -58,15 +59,7 @@ export function commandPath(...directories) {
 // Puts `directories` first on this process's PATH until the test that owns `t` ends.
 // For code under test that runs commands from the test process itself.
 export function prependPath(t, ...directories) {
-  const original = process.env.PATH;
-  process.env.PATH = commandPath(...directories);
-  t.after(() => {
-    if (original === undefined) {
-      delete process.env.PATH;
-    } else {
-      process.env.PATH = original;
-    }
-  });
+  setEnvironment(t, { PATH: commandPath(...directories) });
 }
 
 // The lines a call log holds, one per call, oldest first; none when no stand-in has

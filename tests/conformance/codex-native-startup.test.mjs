@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
+import { pluginRuntimeEnvironment } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import { CODEX_FAILURE_OUTPUT_CLASS_HELPER } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { CODEX_FAILURE_OUTPUT_CLASSES } from "../../packages/contracts/src/runtime-failure.mjs";
-import { checkCodexStartup, login, probe, timedOut } from "../fixtures/codex-native-startup.mjs";
+import {
+  checkCodexStartup,
+  createCodexStartup,
+  login,
+  probe,
+  timedOut,
+} from "../fixtures/codex-native-startup.mjs";
 
 const ready = {
   phases: [
@@ -35,11 +42,37 @@ const probeAuthenticationFailure = { ...probeFailure(), code: "AUTHENTICATION_FA
 const errorEvent = (message) => ({ type: "error", message });
 const failedTurn = (message) => ({ type: "turn.failed", error: { message } });
 
+test("verifier-only Codex refuses enabled plugins with API-key login before app-server spawn", (t) => {
+  // Login/probe output is scripted here; the generated wrapper owns this refusal.
+  // No fake plugin response is used to establish installation behavior.
+  const runtime = createCodexStartup(t, {
+    transportToken: "verifier",
+    native: [
+      login(),
+      probe([
+        { type: "turn.started" },
+        { type: "item.completed", item: { type: "agent_message", text: "READY" } },
+        { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } },
+      ]),
+    ],
+    environment: pluginRuntimeEnvironment({
+      kind: "codex",
+      selections: { "codex-plugin:linear@openai-curated-remote": { enabled: true } },
+    }),
+  });
+  assert.throws(() => runtime.start(), /API-key authentication cannot install them/);
+  assert.equal(runtime.appServerStarts, 0);
+  assert.equal(runtime.marker(), undefined);
+  runtime.assertNativeScriptConsumed();
+});
+
 // Component conformance: scripted native output, real generated entrypoint and status handler.
 test("Codex runtime gates startup and readiness on a successful native authentication turn", async (t) => {
   const started = { type: "turn.started" };
   const assistant = { type: "item.completed", item: { type: "agent_message", text: "READY" } };
   const completed = { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } };
+  const missingModelMessage =
+    "unexpected status 404 Not Found: The model `gpt-4.1` does not exist or you do not have access to it.";
   const advisory = {
     type: "item.completed",
     item: errorEvent("Model catalog metadata unavailable"),
@@ -432,10 +465,52 @@ test("Codex runtime gates startup and readiness on a successful native authentic
       ],
       result: { status: 1 },
       expect: probeFailure(
-        { kind: "PROBE_STATUS", detail: "turn-failed" },
+        { kind: "PROBE_STATUS", detail: "model_not_found" },
         { status: 404, code: "model_not_found" },
       ),
     },
+    // Stock Codex renders the provider's 404 message without its structured code.
+    ...[
+      ["the pinned CLI error names the requested model", missingModelMessage, 404, true],
+      [
+        "a reconnect repeats that refusal",
+        `Reconnecting... 1/5 (${missingModelMessage}, request id: example)`,
+        404,
+        true,
+      ],
+      [
+        "a missing endpoint is not a missing model",
+        "unexpected status 404 Not Found: Unknown endpoint.",
+        404,
+        false,
+      ],
+      [
+        "the provider names a different model",
+        missingModelMessage.replace("gpt-4.1", "gpt-4.10"),
+        404,
+        false,
+      ],
+      [
+        "a different status keeps its own cause",
+        missingModelMessage.replace("404 Not Found", "400 Bad Request"),
+        400,
+        false,
+      ],
+      [
+        "quoted status text is not a provider response",
+        `example: ${missingModelMessage}`,
+        404,
+        false,
+      ],
+    ].map(([name, message, status, unavailable]) => ({
+      name,
+      events: [started, errorEvent(message)],
+      result: { status: 1 },
+      expect: probeFailure(
+        { kind: "PROBE_STATUS", detail: unavailable ? "model_not_found" : "error-event" },
+        unavailable ? { status, code: "model_not_found" } : { status },
+      ),
+    })),
     {
       name: "a server error naming the credential is not retried",
       events: [started, failedTurn("unexpected status 500: invalid api key for this server")],
@@ -480,6 +555,51 @@ test("Codex runtime gates startup and readiness on a successful native authentic
 // Finding 1576: one provider 5xx or dropped stream must not fail a deployment for good.
 // A transient failure gets the single retry a model timeout gets, inside the same 61 s
 // budget; the held cause is the last attempt's, marked as retried.
+// Finding 2412: Codex runs hook commands outside its sandbox with its own environment, and
+// sandboxed commands with the environment shell_environment_policy shapes. The sandbox
+// cannot read the hook directory, so its commands keep the CA path the Pod set.
+test("Codex app-server gives sandboxed commands the Pod's CA path, never the hook directory's", (t) => {
+  const hookCa = "/home/node/.oce-native-hooks/gateway-ca.pem";
+  const podCa = "/run/oce/repository-credentials/sessions/session/ca-bundle.pem";
+  const readyTurn = probe([
+    { type: "turn.started" },
+    { type: "item.completed", item: { type: "agent_message", text: "READY" } },
+    { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } },
+  ]);
+  for (const [name, shellCa, expected] of [
+    ["without a hook CA copy, Codex keeps its settings", undefined, []],
+    [
+      "a Pod CA reaches sandboxed commands",
+      podCa,
+      ["-c", "shell_environment_policy.set.NODE_EXTRA_CA_CERTS=" + JSON.stringify(podCa)],
+    ],
+    [
+      "without a Pod CA, sandboxed commands get none",
+      "",
+      ["-c", 'shell_environment_policy.exclude=["NODE_EXTRA_CA_CERTS"]'],
+    ],
+  ]) {
+    const runtime = createCodexStartup(t, {
+      native: [login(), readyTurn],
+      environment: {
+        NODE_EXTRA_CA_CERTS: hookCa,
+        ...(shellCa === undefined ? {} : { OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS: shellCa }),
+      },
+    });
+    runtime.start();
+    runtime.assertNativeScriptConsumed();
+    assert.equal(runtime.appServerSpawns.length, 1, name);
+    const [{ args, env }] = runtime.appServerSpawns;
+    const caArguments = args.flatMap((argument, index) =>
+      argument.includes("NODE_EXTRA_CA_CERTS") ? [args[index - 1], argument] : [],
+    );
+    assert.deepEqual(caArguments, expected, name);
+    // Hook commands inherit the app-server's own environment.
+    assert.equal(env.NODE_EXTRA_CA_CERTS, hookCa, name);
+    assert.equal(Object.hasOwn(env, "OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS"), false, name);
+  }
+});
+
 test("Codex runtime retries a transient startup model probe failure once", async (t) => {
   const started = { type: "turn.started" };
   const assistant = { type: "item.completed", item: { type: "agent_message", text: "READY" } };

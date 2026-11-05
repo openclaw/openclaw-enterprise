@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import test from "node:test";
-import pg from "pg";
 import {
   PostgresHumanAuthentication,
   PostgresPlatformState,
@@ -9,7 +8,7 @@ import {
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
 import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 
 function sessionRecord(userId) {
   const createdAt = new Date();
@@ -44,8 +43,7 @@ test(
   "PostgreSQL human authentication preserves exact identity and transactional currentness",
   requiresPostgres,
   async (context) => {
-    const pool = new pg.Pool({ connectionString: databaseUrl, max: 8 });
-    context.after(() => pool.end());
+    const pool = testPool(context, { connectionString: databaseUrl, max: 8 });
     const state = new PostgresPlatformState(pool);
     const suffix = randomUUID();
     const recoveryEmail = `recovery-${suffix}@example.test`;

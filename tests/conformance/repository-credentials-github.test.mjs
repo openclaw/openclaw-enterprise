@@ -1,11 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseInstallationTokenResponse } from "../../apps/controller/src/drivers/repo/github/credentials/driver/acquisition-response.ts";
+import { parseInstallationTokenResponse } from "../../apps/controller/src/drivers/repo/github/credentials/installation-token-response.ts";
 import { parseUnambiguousJson } from "../../apps/controller/src/drivers/repo/credentials/json-members.ts";
 import { createGitHubKeyOwner } from "../../apps/controller/src/drivers/repo/github/credentials/material.ts";
 import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/credentials/configuration.ts";
 import { createCredentialService } from "../../apps/controller/src/drivers/repo/credentials/service.ts";
-import { createGitHubPlanningFixture } from "../fixtures/repository-credentials/planning.mjs";
+import { createGitHubPlanningFixture } from "../fixtures/repository-credentials/planning.ts";
 import { startGitHubFixture } from "../fixtures/repository-credentials/github.mjs";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import { createProviderTransport } from "../../apps/controller/src/drivers/repo/github/credentials/provider-transport.ts";
@@ -336,9 +336,10 @@ test("provider transport pins destination and exact issuance scope before receiv
     deadlineMonoMs: clock.monotonicNow() + 30000,
     signal: new AbortController().signal,
     assertAdmitted() {},
-    observeDispatch() {},
+    observeDispatch() {
+      dispatches++;
+    },
   });
-  const onDispatch = () => dispatches++;
   const observeResponse = () => observations++;
   for (const { name, authorization } of [
     { name: "header injection", authorization: "unsafe\r\nHeader: value" },
@@ -347,7 +348,7 @@ test("provider transport pins destination and exact issuance scope before receiv
   ]) {
     await t.test(`refuses ${name} before dispatch`, async () => {
       await assert.rejects(
-        transport.issue(authorization, attempt("acquire"), onDispatch, () => {}, observeResponse),
+        transport.issue(authorization, attempt("acquire"), () => {}, observeResponse),
         /provider-unavailable/,
       );
     });
@@ -355,7 +356,7 @@ test("provider transport pins destination and exact issuance scope before receiv
   assert.equal(dispatches, 0);
   assert.equal(fixture.issuesOfTokens.length, 0);
   const issued = await key.withJwt((jwt, assertCurrent) =>
-    transport.issue(jwt, attempt("acquire"), onDispatch, assertCurrent, observeResponse),
+    transport.issue(jwt, attempt("acquire"), assertCurrent, observeResponse),
   );
   let token;
   try {
@@ -374,7 +375,7 @@ test("provider transport pins destination and exact issuance scope before receiv
     checks: "read",
     statuses: "read",
   });
-  const revoked = await transport.revoke(token, attempt("retire"), onDispatch);
+  const revoked = await transport.revoke(token, attempt("retire"));
   try {
     assert.equal(revoked.status, 204);
   } finally {

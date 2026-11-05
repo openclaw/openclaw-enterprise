@@ -16,7 +16,7 @@ Dispatch **Release OCC CLI** on `main` with the full `source_sha` of the selecte
 `main` commit and its successful `ci_run_id`. The workflow requires the source
 commit SHA to match the selected workflow commit and checks CI identity. It
 cross-compiles `darwin` and `linux` binaries for `amd64` and `arm64` with pinned
-Go 1.27.1, then checks each binary's source commit SHA and platform metadata.
+Go 1.27.3, then checks each binary's source commit SHA and platform metadata.
 It also runs the binary for the runner's platform to check its release version
 and help output. It uploads those exact bytes and checksums as a run
 artifact before the protected publication job starts. A failed-job rerun uses

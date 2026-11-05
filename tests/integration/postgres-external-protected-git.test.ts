@@ -19,10 +19,8 @@ import {
   readPublicCaBundle,
 } from "../../apps/controller/src/composition/installation-config.ts";
 import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/repository-credentials/prepared-git-owner.ts";
-import {
-  bindRepositoryGitTransport,
-  repositoryGitAuthority,
-} from "../../apps/controller/src/composition/repository-credentials/transport.ts";
+import { bindRepositoryGitTransport } from "../../apps/controller/src/composition/repository-credentials/transport.ts";
+import { repositoryGitAuthority } from "../../apps/controller/src/composition/repository-credentials/custody-selection.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { signComputeExecutionRelease } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
@@ -36,6 +34,7 @@ import {
 import { createBackendController } from "../helpers/postgres-backend-state.mjs";
 import { protectedDriverPackage } from "../helpers/protected-driver-package.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { createGatewayNodeEnrollment } from "../../apps/controller/src/gateway/node-enrollment-client.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { standingExecutionPlatform } from "../helpers/postgres-standing-execution.ts";
@@ -62,6 +61,7 @@ import {
   pluginRuntimeSpecForRevision,
 } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import { COMPUTE_RELEASE_PUBLIC_KEY } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
+import { PostgresPlatformState, ResourceStateConflictError } from "../../packages/occ/src/index.ts";
 
 const conversationRequired = process.env.OCC_TEST_REQUIRE_EXTERNAL_GIT_CONVERSATION === "1";
 const codex = process.env.OCC_TEST_STANDING_GIT_CODEX;
@@ -74,9 +74,19 @@ if (conversationRequired) {
   await access(codex, constants.X_OK);
 }
 
+// The worker reconciles a protected Git Driver every second. Cases here count reconcile passes
+// and wait for passes to settle deliveries, so every binding in this file uses the same loop with
+// a shorter wait between passes.
+const transportOptions = { reconcileIntervalMs: 100 };
+
 // Production package selection, OCC deployment, worker and custody. The external package,
 // its workload, Kubernetes placement, GitHub and the private Git origin are controlled locally.
 const journeyOptions = { ...requiresPostgres, timeout: 240_000 };
+test(
+  "protected Codex artifact admission freezes the acknowledged subset and refuses unsupported or ignored purpose",
+  journeyOptions,
+  externalGitJourney("repository", true),
+);
 test(
   "an installed external Driver fetches private Git across rotation and receives the next fetch after withdrawal",
   journeyOptions,
@@ -117,6 +127,10 @@ function repositoryConfiguration(input: {
   apiOrigin: string;
 }) {
   const base = createInstallationDriverConfiguration();
+  // Dedicated Agents need gateway routing with runtime storage (finding 2349); routing derives
+  // the Gateway client peer.
+  const compute = base.drivers.compute.configuration;
+  const { gatewayClients: _gatewayClients, ...network } = compute.network;
   return {
     ...base,
     presets: { includeDefaults: false },
@@ -140,6 +154,19 @@ function repositoryConfiguration(input: {
     },
     drivers: {
       ...base.drivers,
+      compute: {
+        ...base.drivers.compute,
+        configuration: {
+          ...compute,
+          network,
+          gatewayRouting: {
+            hostname: "agents.example.test",
+            gatewayName: "gateways",
+            gatewayNamespace: "occ-system",
+            envoyNamespace: "envoy",
+          },
+        },
+      },
       sandbox: { id: input.id, package: input.id, configuration: input.sandbox },
       credential_proxy: { id: input.id, configuration: {} },
     },
@@ -164,7 +191,7 @@ test("production composition separates repository policy from protected and expl
       })),
     })),
   };
-  await writeFile(registryPath, JSON.stringify(registry));
+  await writeFile(registryPath, JSON.stringify(registry), { mode: 0o600 });
   const path = join(directory, "installation.json");
   const configuration = repositoryConfiguration({
     ...origin,
@@ -333,6 +360,7 @@ function externalGitJourney(
     | "online-installation"
     | "reducible-installation"
     | "lost-rotation",
+  artifactAdmissionOnly = false,
 ) {
   return async (t: TestContext) => {
     let prepared: Awaited<ReturnType<typeof startPreparedGitHubGitOwner>> | undefined;
@@ -449,6 +477,7 @@ function externalGitJourney(
     const modelGateway = conversation
       ? new OpenShellCredentialGatewayDriver(modelGatewayConfiguration, {
           id: "external-journey-model",
+          modelProvider: { protocol: "openai-responses", baseUrl: conversation.baseUrl },
           backend: {
             id: "external-journey-model",
             drivers: { credential_gateway: "external-journey-model" },
@@ -465,7 +494,7 @@ function externalGitJourney(
           namespaceId,
           name: "external-journey-model",
           type: "openai",
-          config: { base_url: conversation.baseUrl },
+          config: { authorized_base_url: conversation.baseUrl },
           secrets: {},
           ownerCapability: "credential_gateway",
           driverId: modelGateway.id,
@@ -481,7 +510,8 @@ function externalGitJourney(
       join(entry, "repository-git.mjs")
     )) as typeof import("../fixtures/driver-packages/protected-execution-driver/repository-git.ts");
     const registryPath = join(directory, "registry.json");
-    await writeFile(registryPath, JSON.stringify(registry));
+    // The production loader refuses group-writable registry files, including under umask 0002.
+    await writeFile(registryPath, JSON.stringify(registry), { mode: 0o600 });
     const path = join(directory, "installation.json");
     const { privateKey, publicKey } = generateKeyPairSync("ed25519");
     const { certFile } = tls;
@@ -561,14 +591,21 @@ function externalGitJourney(
     assert.deepEqual(apiOwner.ref, owner.ref);
     const kube = modelGateway
       ? new KubernetesComputeDriver(
-          apiDrivers.installation.drivers.compute.configuration as unknown as ConstructorParameters<
-            typeof KubernetesComputeDriver
-          >[0],
+          {
+            ...apiDrivers.installation.drivers.compute.configuration,
+            runtime: {
+              ...(apiDrivers.installation.drivers.compute.configuration
+                .runtime as ConstructorParameters<typeof KubernetesComputeDriver>[0]["runtime"]),
+              modelProvider: { protocol: "openai-responses", baseUrl: conversation!.baseUrl },
+            },
+          } as unknown as ConstructorParameters<typeof KubernetesComputeDriver>[0],
           {
             id: apiDrivers.computeDriver.id,
             implementation: apiDrivers.computeDriver.implementation,
             protectedDriver: apiOwner,
             credentialGatewayDriver: modelGateway,
+            // As production composition selects it; this test never enrolls a node.
+            nodeEnrollment: createGatewayNodeEnrollment(async () => "unused"),
           },
         )
       : (apiDrivers.computeDriver as KubernetesComputeDriver);
@@ -588,7 +625,13 @@ function externalGitJourney(
         report: (code) => emit({ event: "worker.repository-owner", code }),
       });
     prepared = await startOwner();
-    transport = await bindRepositoryGitTransport(drivers, prepared, f.observerPool, emit);
+    transport = await bindRepositoryGitTransport(
+      drivers,
+      prepared.protectedGit,
+      f.observerPool,
+      emit,
+      transportOptions,
+    );
     assert.ok(transport);
     const { peer } = cedar;
     deliveryDiagnostic = () => ({
@@ -616,6 +659,7 @@ function externalGitJourney(
     });
     const compute: ComputeDriver = {
       ...f.compute,
+      ...(conversation && { admitRevision: kube.admitRevision.bind(kube) }),
       capability: "compute",
       async stopRevision(stopped) {
         // The cases share one database, so this worker can also claim an earlier case's due
@@ -658,7 +702,7 @@ function externalGitJourney(
             name: kubernetesNamespaceName(namespaceId),
             plane: "execution",
           });
-          assert.equal(login.credentialSource?.config.base_url, conversation.baseUrl);
+          assert.equal(login.credentialSource?.config.authorized_base_url, conversation.baseUrl);
           const manifest = pluginRuntimeSpecForRevision(revision, undefined, conversation.baseUrl)!;
           modelEnvironment = {
             ...Object.fromEntries(
@@ -936,6 +980,93 @@ function externalGitJourney(
       resolveApprovedHarness,
     );
     const deploy = () => controller.deployAgent(who, key, resolveApprovedHarness);
+    if (artifactAdmissionOnly) {
+      // This controlled external Driver proves OCC admission and PostgreSQL freezing.
+      // Native OpenShell artifact enforcement is qualified separately with shipped images.
+      const sandbox = apiOwner.require("sandbox");
+      const original = sandbox.admitProtectedCodexArtifactPolicy!;
+      const defaults = {
+        "codex-artifacts": {
+          name: "codex-artifacts",
+          binaries: [
+            {
+              path: "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.164.0-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
+            },
+          ],
+          endpoints: [
+            {
+              host: "assets.example.test",
+              ports: [443],
+              protocol: "rest",
+              enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+              access: "NETWORK_ACCESS_PRESET_READ_ONLY",
+            },
+          ],
+        },
+      };
+      const admission = (version: number) => ({
+        purpose: "protected-codex-artifacts",
+        declaredRuleNames: ["codex-artifacts"],
+        snapshot: { ...original(version).snapshot, defaults },
+      });
+      const fresh = new PostgresPlatformState(pool);
+      const refused: Array<[string, unknown]> = [
+        ["unsupported purpose", undefined],
+        ["ordinary snapshot", (version: number) => admission(version).snapshot],
+        [
+          "ignored purpose",
+          (version: number) => ({ ...admission(version), purpose: "ordinary-network-policy" }),
+        ],
+        [
+          "undeclared extra rule",
+          (version: number) => ({
+            ...admission(version),
+            snapshot: {
+              ...admission(version).snapshot,
+              defaults: { ...defaults, ambient: defaults["codex-artifacts"] },
+            },
+          }),
+        ],
+        [
+          "duplicate declaration",
+          (version: number) => ({
+            ...admission(version),
+            declaredRuleNames: ["codex-artifacts", "codex-artifacts"],
+          }),
+        ],
+      ];
+      try {
+        for (const [name, producer] of refused) {
+          await t.test(name, async () => {
+            Reflect.set(sandbox, "admitProtectedCodexArtifactPolicy", producer);
+            await assert.rejects(deploy, ResourceStateConflictError);
+            assert.deepEqual(
+              await fresh.read((view) => view.revisions.listRevisions(namespaceId, agentId)),
+              [],
+            );
+            assert.equal(
+              gh.issuesOfTokens.length,
+              0,
+              "refused admission cannot reach worker issuance",
+            );
+          });
+        }
+        Reflect.set(sandbox, "admitProtectedCodexArtifactPolicy", admission);
+        const expected = structuredClone(admission(1).snapshot);
+        const admitted = await deploy();
+        // A changed producer/default cannot broaden the previously stored revision.
+        defaults["codex-artifacts"].endpoints[0]!.host = "changed.example.test";
+        const stored = await fresh.read((view) =>
+          view.revisions.findRevision(namespaceId, agentId, admitted.id),
+        );
+        assert.deepEqual(stored?.sandboxPolicy, expected);
+        assert.equal(gh.issuesOfTokens.length, 0);
+        await controller.stopAgent(who, namespaceId, agentId);
+      } finally {
+        Reflect.set(sandbox, "admitProtectedCodexArtifactPolicy", original);
+      }
+      return;
+    }
     if (broad) {
       capability.profile = "repository_git";
       await assert.rejects(deploy, /did not confirm installation-wide repository access/);
@@ -1538,7 +1669,13 @@ function externalGitJourney(
           await transport!.close();
           await prepared.close();
           prepared = await startOwner();
-          transport = await bindRepositoryGitTransport(drivers, prepared, pool, emit);
+          transport = await bindRepositoryGitTransport(
+            drivers,
+            prepared.protectedGit,
+            pool,
+            emit,
+            transportOptions,
+          );
           await expireStoppedClaims(f, revision);
           await f.start(compute, {
             emit,
@@ -1831,7 +1968,13 @@ function externalGitJourney(
         await transport!.close();
         await prepared.close();
         prepared = await startOwner();
-        transport = await bindRepositoryGitTransport(drivers, prepared, pool, emit);
+        transport = await bindRepositoryGitTransport(
+          drivers,
+          prepared.protectedGit,
+          pool,
+          emit,
+          transportOptions,
+        );
         await expireStoppedClaims(f, revision);
         await f.start(compute, {
           emit,

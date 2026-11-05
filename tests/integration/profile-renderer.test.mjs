@@ -10,9 +10,12 @@ import {
   cpSync,
   existsSync,
   mkdtempSync,
+  mkdirSync,
+  linkSync,
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -30,7 +33,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
-import { fileTemporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { fileTemporaryDirectory, temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 import { helmTemplate } from "../helpers/production-chart.mjs";
 import {
   RenderRefusal,
@@ -398,11 +401,11 @@ const containerDefaultResources = {
   limits: { cpu: "4", memory: "2Gi" },
 };
 // Memory requests cover measured use between turns and limits cover measured
-// peaks (see the renderer): Gateways hold 1.2-1.6 GiB and peak at 2.2 GiB; a
+// peaks (see the renderer): Gateways hold 2.3-2.4 GiB and peak at 2.8 GiB; a
 // Codex Harness holds about 0.5 GiB and reached a 4 GiB limit building and testing.
 const gatewayResources = {
-  requests: { cpu: "100m", memory: "1792Mi" },
-  limits: { cpu: "4", memory: "3Gi" },
+  requests: { cpu: "100m", memory: "2560Mi" },
+  limits: { cpu: "4", memory: "4Gi" },
 };
 const harnessResources = {
   requests: { cpu: "100m", memory: "768Mi" },
@@ -413,8 +416,7 @@ test("preflight rejects noncanonical SHA-256 image digests", async (t) => {
   for (const profile of ["openclaw", "codex"]) {
     const input = profile === "codex" ? codexInput() : baseInput();
     input.repository = repositoryConfiguration();
-    const directory = mkdtempSync(join(tmpdir(), "oce-profile-digest-"));
-    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const directory = temporaryDirectorySync(t, "oce-profile-digest-");
     for (const [section, key] of [
       ["controlPlane", "controllerImage"],
       ["runtime", "image"],
@@ -485,8 +487,7 @@ test("managed ChatGPT service-account wiring is optional and explicit", async ()
 test("profiles reject invalid Helm release names before emitting deployment files", async (t) => {
   for (const profile of ["openclaw", "codex"]) {
     const input = profile === "codex" ? codexInput() : baseInput();
-    const directory = mkdtempSync(join(tmpdir(), `oce-release-name-${profile}-`));
-    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const directory = temporaryDirectorySync(t, `oce-release-name-${profile}-`);
     for (const releaseName of ["r".repeat(54), "Oce", "oce-", "oce..example", "oce example"]) {
       // A failed rerender must also remove files from a previously valid release.
       await render(profile, input, directory);
@@ -534,6 +535,66 @@ test(
   },
 );
 
+test("profile renderer refuses input paths owned by its output directory without deleting files", async (t) => {
+  for (const name of ["values.yaml", "installation.yaml", "preflight.json"]) {
+    for (const alias of ["direct", "input-directory", "output-directory", "file", "hardlink"]) {
+      await t.test(`${name}, alias=${alias}`, async () => {
+        const directory = fileTemporaryDirectory("occ-profile-input-collision-");
+        const output = join(directory, "output");
+        mkdirSync(output);
+        // Seed real rendered files. A naming mistake must not destroy the input or its siblings.
+        await render("openclaw", baseInput(), output);
+        const input = join(output, name);
+        writeFileSync(input, JSON.stringify(baseInput()));
+        const before = new Map(
+          ["values.yaml", "installation.yaml", "preflight.json"].map((file) => [
+            file,
+            readFileSync(join(output, file)),
+          ]),
+        );
+        let inputPath = input;
+        let outputPath = output;
+        if (alias === "input-directory" || alias === "output-directory") {
+          const link = join(directory, "output-alias");
+          symlinkSync(output, link, "dir");
+          if (alias === "input-directory") {
+            inputPath = join(link, name);
+          } else {
+            outputPath = link;
+          }
+        } else if (alias === "file" || alias === "hardlink") {
+          inputPath = join(directory, "input-alias.json");
+          if (alias === "file") {
+            symlinkSync(input, inputPath);
+          } else {
+            linkSync(input, inputPath);
+          }
+        }
+        assert.throws(
+          () =>
+            execFileSync(
+              process.execPath,
+              [
+                "scripts/render-installation-profile.mjs",
+                "--profile",
+                "openclaw",
+                "--input",
+                inputPath,
+                "--out-dir",
+                outputPath,
+              ],
+              { cwd: repository, stdio: "pipe" },
+            ),
+          /input must not name a generated output file/,
+        );
+        for (const [file, contents] of before) {
+          assert.deepEqual(readFileSync(join(output, file)), contents, file);
+        }
+      });
+    }
+  }
+});
+
 test("failed rerenders remove stale deployable artifacts from a reused directory", async () => {
   for (const profile of ["openclaw", "codex"]) {
     const input = profile === "codex" ? codexInput() : baseInput();
@@ -578,6 +639,32 @@ test("failed rerenders remove stale deployable artifacts from a reused directory
       assert.equal(existsSync(join(output.directory, name)), false);
     }
     assert.equal(readFileSync(notes, "utf8"), "Retain operator-owned files.\n");
+
+    // A filesystem metadata failure must still revoke stale success before reporting bad input.
+    assert.equal((await render(profile, input, output.directory)).preflight.ok, true);
+    const loop = join(output.directory, "loop.json");
+    symlinkSync(loop, loop);
+    assert.throws(
+      () =>
+        execFileSync(
+          process.execPath,
+          [
+            "scripts/render-installation-profile.mjs",
+            "--profile",
+            profile,
+            "--input",
+            loop,
+            "--out-dir",
+            output.directory,
+          ],
+          { cwd: repository, stdio: "pipe" },
+        ),
+      /unavailable or invalid JSON/,
+    );
+    for (const name of ["values.yaml", "installation.yaml", "preflight.json"]) {
+      assert.equal(existsSync(join(output.directory, name)), false);
+    }
+    assert.equal(readFileSync(notes, "utf8"), "Retain operator-owned files.\n");
   }
 });
 
@@ -593,8 +680,7 @@ test(
       // Provider ranges must survive rendering; individual DNS answers are not stable.
       const input = profile === "codex" ? codexInput() : baseInput();
       input.repository = repositoryConfiguration(["140.82.112.0/20", "192.30.252.0/22"]);
-      const directory = mkdtempSync(join(tmpdir(), `oce-profile-egress-${profile}-`));
-      t.after(() => rmSync(directory, { recursive: true, force: true }));
+      const directory = temporaryDirectorySync(t, `oce-profile-egress-${profile}-`);
       const output = renderCli(profile, input, directory, repository, dns.server);
       const manifests = helmTemplate(output);
       assert.match(manifests, /repository-credentials/);
@@ -2082,8 +2168,7 @@ test("profiles render without installed dependencies unless native admin is on",
     ["openclaw", externalSignInInput()],
     ["codex", codexInput({ controlPlane: externalSignInInput().controlPlane })],
   ]) {
-    const directory = mkdtempSync(join(tmpdir(), `oce-profile-${profile}-`));
-    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const directory = temporaryDirectorySync(t, `oce-profile-${profile}-`);
     let output;
     try {
       output = renderCli(profile, input, directory, root);
@@ -2095,8 +2180,7 @@ test("profiles render without installed dependencies unless native admin is on",
   }
 
   // Native admin needs the API's public suffix list, so it asks for the install, with a preflight.
-  const directory = mkdtempSync(join(tmpdir(), "oce-profile-native-admin-"));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const directory = temporaryDirectorySync(t, "oce-profile-native-admin-");
   const error = await renderError(() => renderCli("openclaw", baseInput(), directory, root));
   assert.match(
     error.profileRendererOutput,
@@ -2765,34 +2849,57 @@ test("preflight rejects Codex seccomp paths the compute driver refuses", async (
   assert.match(accepted.installation, /codexSeccompProfile: profiles\/codex\.json/);
 });
 
-test("the codex profile carries a Codex model endpoint under Compute startup's rule", async () => {
-  const field = "runtime.codexModelBaseUrl";
-  await assertFieldRefusals(
-    "openclaw",
-    baseInput(),
-    field,
-    ["https://models.example.com/v1"],
-    "is only consumed by the codex profile",
+test("both profiles carry the shared model endpoint under Compute startup's rule", async () => {
+  const field = "runtime.modelProvider.baseUrl";
+  const shared = { protocol: "openai-responses", baseUrl: "https://models.example.com/v1" };
+  const native = await render("openclaw", {
+    ...baseInput(),
+    runtime: { ...baseInput().runtime, modelProvider: shared },
+  });
+  assert.deepEqual(
+    loadYaml(native.installation).drivers.compute.configuration.runtime.modelProvider,
+    shared,
+  );
+  const capable = await render(
+    "codex",
+    codexInput({ runtime: { modelProvider: { ...shared, supportsStandaloneWebSearch: true } } }),
+  );
+  assert.equal(
+    loadYaml(capable.installation).drivers.compute.configuration.runtime.modelProvider
+      .supportsStandaloneWebSearch,
+    true,
   );
   const accepted = await render(
     "codex",
-    codexInput({ runtime: { codexModelBaseUrl: "https://Models.Example.com:443/v1/" } }),
+    codexInput({
+      runtime: {
+        modelProvider: {
+          protocol: "openai-responses",
+          baseUrl: "https://Models.Example.com:443/v1/",
+        },
+      },
+    }),
   );
   const compute = loadYaml(accepted.installation).drivers.compute.configuration;
   // Written as Compute normalizes it, and accepted by Compute startup.
-  assert.equal(compute.runtime.codexModelBaseUrl, "https://models.example.com/v1");
+  assert.equal(compute.runtime.modelProvider?.baseUrl, "https://models.example.com/v1");
   const backslashScheme = await render(
     "codex",
-    codexInput({ runtime: { codexModelBaseUrl: "https:\\\\192.0.2.1/v1" } }),
+    codexInput({
+      runtime: {
+        modelProvider: { protocol: "openai-responses", baseUrl: "https:\\\\192.0.2.1/v1" },
+      },
+    }),
   );
   assert.equal(
-    loadYaml(backslashScheme.installation).drivers.compute.configuration.runtime.codexModelBaseUrl,
+    loadYaml(backslashScheme.installation).drivers.compute.configuration.runtime.modelProvider
+      ?.baseUrl,
     "https://192.0.2.1/v1",
   );
   requireConfiguration(KubernetesComputeDriver, compute);
   assert.equal(
     loadYaml((await render("codex", codexInput())).installation).drivers.compute.configuration
-      .runtime.codexModelBaseUrl,
+      .runtime.modelProvider?.baseUrl,
     undefined,
   );
   // Each refusal is Compute startup's (finding 1292 spellings included), with its own message.
@@ -2838,31 +2945,56 @@ test("the codex profile carries a Codex model endpoint under Compute startup's r
     ],
     // A spelling refusal comes first, whatever host the parser would read.
     ["https:/192.168.1/v1", "must start with https:// (the // after the scheme is missing)."],
-    // Harness model egress is TCP/443 to public IPv4 only (finding 1740).
-    [
-      "https://models.example.com:8443/v1",
-      "must use port 443: Harness model egress allows only TCP/443.",
-    ],
-    [
-      "https://[2001:db8::1]/v1",
-      "must not be an IPv6 address: Harness model egress allows only IPv4.",
-    ],
-    [
-      "https://10.0.0.1/v1",
-      "IPv4 host must be outside 10.0.0.0/8, 100.64.0.0/10, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16: Harness model egress excludes them.",
-    ],
   ]) {
-    await assertFieldRefusals("codex", codexInput(), field, [value], message);
+    await assertFieldRefusals(
+      "codex",
+      codexInput({ runtime: { modelProvider: shared } }),
+      field,
+      [value],
+      message,
+    );
     assert.throws(
       () =>
         requireConfiguration(KubernetesComputeDriver, {
           ...compute,
-          runtime: { ...compute.runtime, codexModelBaseUrl: value },
+          runtime: {
+            ...compute.runtime,
+            modelProvider: { protocol: "openai-responses", baseUrl: value },
+          },
         }),
       // Compute startup has no separate nonempty-string refusal; its general rule covers it.
       SharedConfigurationValidationError,
       JSON.stringify(value),
     );
+  }
+  // Generated Harness model egress is TCP/443 to non-excluded IPv4, but an operator's own
+  // NetworkPolicy can admit more: preflight warns like Compute startup (findings 1740, 2284).
+  assert.doesNotMatch(accepted.preflight.warnings.join("\n"), /model egress/);
+  for (const [value, blocked] of [
+    [
+      "https://models.example.com:8443/v1",
+      "uses port 8443 but Harness model egress allows only TCP/443",
+    ],
+    [
+      "https://10.0.0.5:8443/v1",
+      "uses port 8443 but Harness model egress allows only TCP/443 and has an IPv4 host in 10.0.0.0/8 which Harness model egress excludes",
+    ],
+    ["https://[2001:db8::1]/v1", "is an IPv6 address but Harness model egress allows only IPv4"],
+    ["https://10.0.0.1/v1", "has an IPv4 host in 10.0.0.0/8 which Harness model egress excludes"],
+  ]) {
+    const warned = await render(
+      "codex",
+      codexInput({ runtime: { modelProvider: { protocol: "openai-responses", baseUrl: value } } }),
+    );
+    assert.ok(
+      warned.preflight.warnings.includes(
+        `${field} ${blocked}: the generated policy will not admit it unless another NetworkPolicy does.`,
+      ),
+      value,
+    );
+    const configured = loadYaml(warned.installation).drivers.compute.configuration;
+    assert.equal(configured.runtime.modelProvider?.baseUrl, value);
+    requireConfiguration(KubernetesComputeDriver, configured);
   }
 });
 

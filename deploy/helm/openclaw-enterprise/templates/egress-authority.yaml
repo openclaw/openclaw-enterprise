@@ -3,16 +3,19 @@
 {{- include "openclaw.validateResourceName" (dict "label" "egressAuthority.tlsSecretName" "value" (required "egressAuthority.tlsSecretName is required" $authority.tlsSecretName)) }}
 {{- include "openclaw.validateResourceName" (dict "label" "egressAuthority.issuerSecretName" "value" (required "egressAuthority.issuerSecretName is required" $authority.issuerSecretName)) }}
 {{- $port := include "openclaw.positiveSafeInteger" (dict "name" "egressAuthority.port" "value" $authority.port "port" true) | int }}
-{{- if or (gt $port 65535) (eq $port (int .Values.api.port)) (and .Values.metrics.enabled (eq $port (int .Values.metrics.port))) }}
-{{- fail "egressAuthority.port must be a distinct TCP port from 1 to 65535" }}
+{{- /* The API runs as a non-root user without capabilities: no port below 1024. */ -}}
+{{- if or (lt $port 1024) (gt $port 65535) (eq $port (int .Values.api.port)) (and .Values.metrics.enabled (eq $port (int .Values.metrics.port))) }}
+{{- fail "egressAuthority.port must be a distinct TCP port from 1024 to 65535" }}
 {{- end }}
 {{- if not $authority.clients }}
 {{- fail "egressAuthority.clients must select trusted callers" }}
 {{- end }}
-{{- range $authority.clients }}
-{{- if or (not .namespaceSelector) (and (not .namespaceSelector.matchLabels) (not .namespaceSelector.matchExpressions)) (not .podSelector) (not .podSelector.matchLabels) }}
+{{- range $index, $client := $authority.clients }}
+{{- if or (not $client.namespaceSelector) (and (not $client.namespaceSelector.matchLabels) (not $client.namespaceSelector.matchExpressions)) (not $client.podSelector) (not $client.podSelector.matchLabels) }}
 {{- fail "egressAuthority.clients require namespaceSelector and podSelector.matchLabels" }}
 {{- end }}
+{{- /* The API server refuses bool or number label values, after install hooks ran. */ -}}
+{{- include "openclaw.networkPolicy.peer" (dict "name" (printf "egressAuthority.clients[%d]" $index) "value" $client) }}
 {{- end }}
 apiVersion: v1
 kind: Service

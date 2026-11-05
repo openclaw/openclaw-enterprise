@@ -19,6 +19,7 @@ export const observedHookPath = "/oce-observe-request/";
 type Hook = NonNullable<RepositoryGitRecipient["observedHook"]>;
 
 interface Selection {
+  readonly mandatory?: true;
   readonly client: OpenShellGatewayClient;
   readonly sandbox: OpenShellSandboxResponse;
   readonly observed: OpenShellPreparedGitInstalled;
@@ -97,6 +98,7 @@ export async function previewPolicyAndRecipient({
   modelProvider,
   workload,
   signal,
+  mandatory,
 }: Selection): Promise<string | undefined> {
   const admission = sandbox.configurationAdmission;
   const started = sandbox.mainProcessStartedAt;
@@ -114,7 +116,7 @@ export async function previewPolicyAndRecipient({
     admission.policy_hash !== o.policyHash ||
     admission.config_revision !== o.configRevision ||
     admission.provider_env_revision !== o.providerEnvRevision ||
-    !(await client.readExclusivePreviewWorkspace?.(o.workspace, sandbox.id, signal))
+    (!mandatory && !(await client.readExclusivePreviewWorkspace?.(o.workspace, sandbox.id, signal)))
   ) {
     return;
   }
@@ -155,13 +157,29 @@ export async function previewPolicyAndRecipient({
     return;
   }
   const services = c.supervisor_middleware_services;
-  const service = Array.isArray(services) && services.length === 1 && asRecord(services[0]);
+  const selected = Array.isArray(services)
+    ? services.filter((s) => asRecord(s)?.name === registration)
+    : [];
+  const service = selected.length === 1 && asRecord(selected[0]);
+  // Legacy observed-only registrations omit both fields. Absence proves no mandatory
+  // support: strict grants never use it, and explicit/partial values cannot fall back.
+  // The recipient fingerprint below fences changes after the registration is witnessed.
+  const legacyObserved =
+    !mandatory &&
+    service &&
+    !Object.hasOwn(service, "binding_policy") &&
+    !Object.hasOwn(service, "bindings");
   // Stock defaults to 500 ms: enough for the deliberate denial, not for the full
   // per-request recheck. Qualify the operator's five-second RPC timeout; OCE still caps
   // its decision at three seconds and never retries a possible authorization commitment.
   const timeout = asRecord(service && service.request_timeout);
   if (
     !service ||
+    (!legacyObserved &&
+      (![2, 3].includes(service.binding_policy as number) ||
+        !Array.isArray(service.bindings) ||
+        service.bindings.length !== 1 ||
+        service.bindings[0] !== 1)) ||
     service.name !== registration ||
     service.allow_insecure_transport ||
     timeout?.seconds !== "5" ||
@@ -259,15 +277,20 @@ export class ObservedHookPreview {
     return op.id;
   }
 
-  constructor(workspace: string, bindingId: string) {
+  readonly mandatory: boolean;
+  constructor(workspace: string, bindingId: string, mandatory = false) {
+    this.mandatory = mandatory;
     this.workspace = workspace;
     this.bindingId = bindingId;
   }
-  arm(startupId: string) {
+  arm(startupId: string, repository?: string) {
     if (this.armed || !this.recipient || !this.bootstrapRevision) {
       throw new Error("Preview challenge is not fresh.");
     }
-    const path = observedHookPath + randomBytes(16).toString("hex") + ".git/info/refs";
+    // git-write has an exact repository endpoint; installation-shaped providers
+    // admit the root discovery probe. Both check policy before invoking the hook.
+    const prefix = repository === undefined ? "" : `/${repository}.git`;
+    const path = prefix + observedHookPath + randomBytes(16).toString("hex") + ".git/info/refs";
     this.armed = {
       startupId,
       path,

@@ -58,8 +58,8 @@ if (command === "login") {
       let response;
       if (message.method === "initialize") {
         response = { result: { userAgent: "oce-token-retry-fixture" } };
-      } else if (message.method === "plugin/list") {
-        response = { result: { marketplaces: [] } };
+      } else if (message.method === "plugin/search") {
+        response = { result: { data: [], nextCursor: null } };
       } else {
         response = { error: { code: -32601, message: "Unsupported fixture method" } };
       }

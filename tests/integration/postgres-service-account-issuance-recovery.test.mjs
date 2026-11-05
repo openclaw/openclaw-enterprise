@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import test from "node:test";
-import pg from "pg";
 import { ChatGPTServiceAccountDriver } from "../../apps/controller/src/drivers/service-account/chatgpt.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
@@ -11,7 +10,10 @@ import {
   ServiceAccountCredentialSecretExistsError,
 } from "../../packages/occ/src/index.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
-import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
+import {
+  createDevelopmentComputeDriver,
+  registerAndSelectDrivers,
+} from "../helpers/development.mjs";
 import {
   authorizedPrincipal,
   backendDefinition,
@@ -23,6 +25,7 @@ import {
   serviceAccountDriverId,
   workspaceId,
 } from "../helpers/postgres-backend-state.mjs";
+import { testPool } from "../helpers/postgres-database.mjs";
 import { waitForLockHolder } from "../helpers/postgres-lock-waits.mjs";
 
 /**
@@ -103,15 +106,12 @@ function apiController(fixture, state, { client, storage }) {
     state,
     storage,
   );
-  for (const selected of [
+  registerAndSelectDrivers(controller, [
     new NativeIAMDriver(state, { id: `issuance-recovery-iam-${randomUUID()}` }),
     createDevelopmentComputeDriver(),
     createTestConfigurationDriver(),
     driver,
-  ]) {
-    controller.registerDriver(selected);
-    controller.selectDriver(selected.capability, selected.id);
-  }
+  ]);
   return controller;
 }
 
@@ -240,8 +240,7 @@ test(
     const { pool } = fixture;
     // A second API process over its own pool: the later issuance must not share this request's
     // transaction context.
-    const otherPool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
-    context.after(() => otherPool.end());
+    const otherPool = testPool(context, { connectionString: databaseUrl, max: 4 });
     const other = apiController(fixture, new PostgresPlatformState(otherPool), issuing);
 
     const find = issuing.storage.findServiceAccountCredential;

@@ -4,7 +4,7 @@
 // Gateway restart after an unclean stop is in
 // runtime-image-gateway-unclean-restart.test.mjs.
 import assert from "node:assert/strict";
-import test from "node:test";
+import { describe, test } from "node:test";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import { imageTestOptions, runDocker, failureTail } from "../helpers/runtime-image-startup.mjs";
 import {
@@ -117,35 +117,41 @@ async function assertWrapperTermination(t, kind) {
   });
 }
 
-test(
-  "runtime image Codex Harness exits promptly on SIGTERM in every startup phase",
-  { ...imageTestOptions, timeout: 900_000 },
-  async (t) => {
-    await assertWrapperTermination(t, "codex");
-  },
-);
+// Each case starts its own wrappers and stand-in providers through the scenario
+// helper: random container names, its own certificate directory and network
+// namespace, no shared volume or port, and CPU-limited wrappers. Two run at a
+// time, as in the startup probe file.
+describe("runtime image wrapper termination", { concurrency: 2 }, () => {
+  test(
+    "runtime image Codex Harness exits promptly on SIGTERM in every startup phase",
+    { ...imageTestOptions, timeout: 900_000 },
+    async (t) => {
+      await assertWrapperTermination(t, "codex");
+    },
+  );
 
-test(
-  "runtime image embedded Gateway exits promptly on SIGTERM in every startup phase",
-  { ...imageTestOptions, timeout: 900_000 },
-  async (t) => {
-    await assertWrapperTermination(t, "gateway");
-  },
-);
+  test(
+    "runtime image embedded Gateway exits promptly on SIGTERM in every startup phase",
+    { ...imageTestOptions, timeout: 900_000 },
+    async (t) => {
+      await assertWrapperTermination(t, "gateway");
+    },
+  );
 
-test(
-  "runtime image dedicated Gateway exits promptly on SIGTERM while it waits for its Harness",
-  { ...imageTestOptions, timeout: 600_000 },
-  async (t) => {
-    const waiting = await runTerminationScenario(t, {
-      kind: "dedicated-gateway",
-      mode: "answer",
-      until: ({ output }) => /Waiting for Harness plugin runtime status/.test(output),
-      description: "dedicated Gateway waiting for its Harness",
-      phase: "harness-wait",
-    });
-    await withStartupProbeEvidence(waiting, async () => {
-      assert.equal(waiting.snapshot.events.some(observedValue("native", true)), false);
-    });
-  },
-);
+  test(
+    "runtime image dedicated Gateway exits promptly on SIGTERM while it waits for its Harness",
+    { ...imageTestOptions, timeout: 600_000 },
+    async (t) => {
+      const waiting = await runTerminationScenario(t, {
+        kind: "dedicated-gateway",
+        mode: "answer",
+        until: ({ output }) => /Waiting for Harness plugin runtime status/.test(output),
+        description: "dedicated Gateway waiting for its Harness",
+        phase: "harness-wait",
+      });
+      await withStartupProbeEvidence(waiting, async () => {
+        assert.equal(waiting.snapshot.events.some(observedValue("native", true)), false);
+      });
+    },
+  );
+});

@@ -253,6 +253,7 @@ Plan filenames and historical commit links retain their original names.
 | `40-agent-egress-0x`                         | [RFC-0017](../../specs/rfcs/0017-agent-egress-0x/index.md)              |
 | `2026-09-28-installation-profiles-design`    | [RFC-0018](../../specs/rfcs/0018-installation-profiles-design/index.md) |
 | `0021-driver-configuration-contributions.md` | [RFC-0022](../../specs/rfcs/0022-driver-configuration-contributions.md) |
+| `0027-shared-model-provider.md`              | [RFC-0028](../../specs/rfcs/0028-shared-model-provider.md)              |
 
 Earlier versions of the Credential Proxy proposal used these provisional paths.
 RFC-0019, RFC-0021 and RFC-0022 are now assigned to other proposals.
@@ -262,3 +263,5 @@ RFC-0019, RFC-0021 and RFC-0022 are now assigned to other proposals.
 | `0019-egress-proxy-credential-lifecycle/` | [RFC-0023](../../specs/rfcs/0023-egress-proxy-credential-lifecycle/index.md) |
 | `0021-egress-proxy-credential-lifecycle/` | [RFC-0023](../../specs/rfcs/0023-egress-proxy-credential-lifecycle/index.md) |
 | `0022-egress-proxy-credential-lifecycle/` | [RFC-0023](../../specs/rfcs/0023-egress-proxy-credential-lifecycle/index.md) |
+
+The unmerged managed OpenClaw plugin proposal in [#3142](https://github.com/openclaw/openclaw-enterprise/pull/3142) moved from `0024-managed-native-openclaw-plugins.md` to [RFC-0029](../../specs/rfcs/0029-managed-openclaw-plugins.md) when RFC-0024 was assigned to Sandbox/Harness mode support. Its linked plan retains its original filename.

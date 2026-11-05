@@ -23,16 +23,15 @@ images; individual Agents cannot choose their own implementations.
    `NODE_ENV=development` or `NODE_ENV=production` explicitly. Run the API and
    worker with the same file and controller image. Follow the
    [deployment guide](../../guides/deploy.md) for the chosen environment.
-4. Verify the Agent on the selected Driver. On local Kubernetes,
-   [deploy your first Agent](../../guides/first-agent.md). On production
-   Kubernetes, [verify an existing Agent's model response](../../guides/operate/model-verification.md).
+4. Verify the Agent on the selected Driver. On Kubernetes,
+   [verify the Agent's model response](../../guides/operate/model-verification.md).
    On SSH, follow the [host-managed credential requirements](ssh-compute.md#credentials-and-supported-boundaries)
    and send a model request through the host's configured gateway or channel;
-   the Kubernetes verification commands do not apply. Successful OCC startup
-   or gateway readiness alone does not prove that an Agent can use its model.
+   the Kubernetes verification commands do not apply. OCC startup or gateway
+   readiness alone does not prove the Agent can use its model.
 
-Default Docker or Podman Compose can run the control plane for development,
-but its Docker Compute Driver rejects the authentication used for new Agents.
+Default Docker or Podman Compose runs a development control plane, but its
+Docker Compute Driver rejects new Agents' authentication.
 The OpenShell development path remains experimental and unqualified; see its
 [qualification requirements](openshell-sandbox.md#qualification-contract).
 
@@ -78,45 +77,41 @@ contract still requires the Secret selection.
 
 ## Select a protected sender
 
-Implementers should start with the [Credential Proxy contract](credential-proxy.md)
-and [Driver walkthrough](../../contributing/credential-proxy-driver.md). The contract
-distinguishes request-time exchange, recipient installation and sender guarantees.
+Implementers start with the [Credential Proxy contract](credential-proxy.md), which
+distinguishes request-time exchange, recipient installation and sender guarantees,
+and the [Driver walkthrough](../../contributing/credential-proxy-driver.md).
 
 With bundled Kubernetes Compute, select the trusted package under
 `drivers.sandbox.package`, then set `drivers.credential_proxy.id` to the
 same Driver ID and its `configuration` to `{}`. Configure the package once,
 under `drivers.sandbox.configuration`. The API and worker each load one
-registration and compare its identity with the admitted revision.
+registration and check its identity against the Agent revision.
 
-For protected repository Git, set `repository.id`,
-`repository.configuration.sessionDurationSeconds`, and `repository.preparedGitHub`.
-The ID must match the GitHub Backend's `drivers.repo` policy member. Omit the
-Installation's `drivers.repo` and `repository.nativeSender`. A separately installed
-sender also omits `repository.openShell`. No native control socket or broker CA is needed. The Driver must implement
-both Sandbox repository access and the Credential Proxy's `bindRepositoryGit`.
-At release, Compute checks the installed recipient. Select the guarantee that
-the actual sender can enforce:
+For protected Git, match `repository.id` to the GitHub Backend's `drivers.repo`
+policy member. Set `repository.configuration.sessionDurationSeconds` and
+`repository.preparedGitHub`. Omit `drivers.repo` and `repository.nativeSender`
+from the Installation. External senders also omit `repository.openShell`.
+No native control socket or broker CA is required. The Driver supplies Sandbox
+repository access and `bindRepositoryGit`. Compute verifies the installed
+recipient before release.
 
-| Admission | Required behavior                                                                                                                                                                                      |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| v3        | Protected request-time routes and response custody; not repository delivery.                                                                                                                           |
-| v4        | Exact dispatch: enforce exclusive `sendStartBy` before connecting and again before writing if setup took time.                                                                                         |
-| v5        | Online authorization: return the decision by `replyBy`; an authorized request may finish after withdrawal. Only external packages; bundled OpenShell refuses it (`REPOSITORY_GIT_SENDER_UNQUALIFIED`). |
-| v6        | Bundled OpenShell preview: observe the request hook per start; this does not prove the hook cannot later be disabled.                                                                                  |
-| v7        | Exact dispatch plus verified policy reduction v2; can retain independently admitted routes and the same recipient when Git is removed.                                                                 |
+| Admission | Required behavior                                                                                                                                                                                                                             |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| v3        | Protected request-time routes and response custody; not repository delivery.                                                                                                                                                                  |
+| v4        | Exact dispatch: enforce exclusive `sendStartBy` before connecting and again before writing if setup took time.                                                                                                                                |
+| v5        | Online authorization returns a decision by `replyBy`. Bundled OpenShell supports selected repository sets and single `git-write` grants with a verified mandatory pre-credentials binding. An authorized request may finish after withdrawal. |
+| v6        | Bundled OpenShell preview: observe the request hook per start; this does not prove the hook cannot later be disabled.                                                                                                                         |
+| v7        | Exact dispatch plus verified policy reduction v2; can retain independently admitted routes and the same recipient when Git is removed.                                                                                                        |
 
-A lost authorization reply leaves possible use recorded; do not retry that
-exchange. v7 support in OCC is available to a capable Driver, not evidence that
-stock OpenShell enforces it. Selection establishes neither isolation nor release
-qualification. See the [contract](credential-proxy.md#delivery-profiles) and
-[OpenShell qualification boundary](../repository-credentials/protected-openshell-git.md).
+A lost authorization reply records possible use. Do not retry the exchange.
+Stock OpenShell lacks v7 qualification. For isolation and release requirements,
+see the [Driver contract](credential-proxy.md#delivery-profiles) and
+[OpenShell qualification guide](../repository-credentials/protected-openshell-git.md).
 
 ### Supply protected Git credentials with Helm
 
-After selecting your installed sender in the Installation, add these values to the
-[production chart](../../../deploy/helm/openclaw-enterprise/values.yaml). Use your own
-resource names. Replace the example IP address with an approved issuer destination.
-Keep Secret contents out of Helm values.
+Configure the [production chart](../../../deploy/helm/openclaw-enterprise/values.yaml)
+with your resource names and approved issuer address. Keep Secret contents out of Helm values.
 
 ```yaml
 repositoryCredentials:
@@ -151,26 +146,24 @@ Gateway Drivers, and its Credential Refresh Driver when it declares one. A
 selected Credential Gateway or Credential Refresh Driver must belong to a
 configured Backend. There is no per-Agent Driver selection.
 
-Runtime Backend injection is limited to those bundled Drivers. Installed factory
-arguments remain the contract below; Backend loading or injection into
-installed packages is deferred.
+Runtime Backend injection is limited to those bundled Drivers; installed
+packages keep the factory arguments below, and Backend loading or injection into
+them is deferred.
 
 ## Configuration definitions and discovery
 
-Each selected implementation supplies `ConfigurationDefinition<T>`: a serializable
-`configurationSchema` and synchronous `validateConfiguration(input)` semantic checks.
-The platform checks plain JSON input against the schema once per admission call,
-then passes an isolated, frozen copy typed as `Readonly<T>` to the Driver. The
-callback returns `readonly ErrorDetail[]`; an empty list means success. It cannot
-return replacement configuration. The platform returns the original input to the
-caller and retains the typed `ConfigurationResult<T>` for preview responses.
-Returning `undefined`, a data envelope, malformed field errors, or throwing fails
-closed. Independent constructor entry points still perform their own admission.
+Each selected implementation supplies a serializable `configurationSchema` and
+synchronous `validateConfiguration(input)` semantic checks. The platform checks
+plain JSON against the schema, then passes an isolated frozen copy to the Driver.
+The callback returns `readonly ErrorDetail[]`: empty means success; malformed
+results or throws fail closed. It cannot replace configuration. Admission returns
+the original input; previews use `ConfigurationResult<T>`.
+Independent constructors perform their own admission.
 
 Use JSON Schema 2020-12, or omit `$schema`. The installed TypeBox evaluator and its
 meta-schema check registration; unknown formats and unresolved references are
 refused. Validation does not coerce, insert defaults, strip fields, perform I/O,
-or transform submitted values. Diagnostics have bounded JSON Pointer paths,
+or transform submitted values. Diagnostics use JSON Pointer paths,
 uppercase codes, and safe messages. The platform returns at most 32 errors;
 submitted secrets and sensitive dynamic keys never belong in diagnostics.
 
@@ -183,9 +176,16 @@ fail registration. The current runtime binding is Sandbox
 [SandboxPolicy](../sandbox-policies.md). The Configuration Driver still owns
 native configuration rendering. The registry introduces no persistence layer.
 
-Installation administrators can inspect schemas in **Settings**, or call
-`GET /installation/driver-configurations`. This returns contextual descriptors
-without startup values, validators, or mutation actions. Agent discovery uses
+Administrators inspect values in **Settings → Installation
+Driver configuration** or `GET /installation/driver-configurations`.
+`startupConfiguration` serializes accepted input with `configurationSchema`
+before construction. Unmarked values remain visible.
+Drivers mark confidential fields and blocks `writeOnly: true`; serialization
+replaces each marked subtree with `[redacted]`, including its keys. Across
+references and branches, any true annotation wins, including ambiguous alternatives. Schema-valued `unevaluatedProperties`, `unevaluatedItems`, `contentSchema`, a write-only root, or inspection errors leave values unavailable,
+without raw fallback. `{}` means an empty object. No defaults or credential contents are added. Changes require startup configuration
+and restart. Descriptors retain schemas, without validators or mutation actions.
+Agent discovery uses
 `GET /namespaces/{namespaceId}/agents/{agentId}/driver-configurations`; the exact
 Agent and contribution owner's read permissions determine the returned sections.
 Owner bindings supply same-origin actions and availability. Actions always
@@ -242,8 +242,7 @@ releases, and the only way to read a detected format without running the file
 is Node's process-lifetime module hooks. Node itself treats the shape as a
 mistake: outside `node_modules` it warns about such a file and asks for
 `"type": "module"`. To fix a refusal, add `"type": "module"` to the
-`package.json` it names, or rename the entry to `.mjs`. See the
-[breaking-change notices](../../guides/deploy/breaking-changes.md).
+`package.json` it names, or rename the entry to `.mjs`.
 
 The entry point exports the existing Driver contract, not a separate plugin
 manifest or public plugin SDK. The controller validates its closed JSON Schema
@@ -351,10 +350,12 @@ checkout, readable only by its owner. Local dependency installation can select
 it through `NPM_CONFIG_USERCONFIG`; image builds accept it as the ephemeral
 BuildKit secret `id=npmrc`, not as a build argument or copied source file.
 
-The Dockerfile runs `pnpm install --frozen-lockfile --prod --ignore-scripts` and
-mounts the npmrc only for that installation. `.dockerignore` excludes npmrc
-files. Registry tokens must not enter source, image layers, lockfiles, Helm
-values, startup YAML, logs, or runtime Pods.
+The controller image mounts npmrc only for `pnpm install --frozen-lockfile --prod --ignore-scripts`.
+`.dockerignore` excludes npmrc files. Keep registry tokens out of source, image
+layers, lockfiles, Helm values, startup YAML, logs, and runtime Pods.
+
+For image builds that also need to download pnpm from a mirror, follow the
+[registry mirror procedure](../../guides/deploy/production-installation.md#build-through-a-package-registry-mirror).
 
 ## Loading, updates, and startup failures
 

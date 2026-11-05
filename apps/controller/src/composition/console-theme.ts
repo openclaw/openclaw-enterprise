@@ -19,6 +19,12 @@ function object(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** A validated theme hex colour as an opaque colour and its percentage for CSS color-mix(). */
+function colorMixStop(color: string): string {
+  const alpha = Number.parseInt(color.slice(7) || "ff", 16) / 255;
+  return `${color.slice(0, 7)} ${alpha * 100}%`;
+}
+
 async function readBounded(root: string, name: string, limit: number): Promise<Buffer> {
   // ConfigMap projections use symlinks. The mount and its parents are operator-controlled;
   // O_NOFOLLOW protects the resolved file, not a parent another writer could replace.
@@ -135,7 +141,15 @@ export async function loadConsoleTheme(
           "colors must use supported roles and six- or eight-digit hex colors.",
         );
       }
-      return `  --color-${consoleThemeColorRoles[role as keyof typeof consoleThemeColorRoles]}: ${color};`;
+      if (role === "overlay") {
+        // The backdrop and the scrollbar gutter mix this same colour over different backgrounds.
+        return `  --color-overlay-mix: ${colorMixStop(color)};`;
+      }
+      const token = `  --color-${consoleThemeColorRoles[role as keyof typeof consoleThemeColorRoles]}: ${color};`;
+      if (role === "bg" && color.length === 9) {
+        return `${token}\n  --color-canvas: color-mix(in srgb, ${colorMixStop(color)}, Canvas);`;
+      }
+      return token;
     });
     const assets = new Map<string, ConsoleThemeAsset>();
     let total = manifestBytes.length;

@@ -1,10 +1,27 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { randomUUID } from "node:crypto";
+import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { createServer as httpServer } from "node:http";
+import { createServer as httpsServer } from "node:https";
+import { createConnection } from "node:net";
+import { readFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 import { createOpenShellOnlineGitAuthority } from "../../apps/controller/src/drivers/egress-proxy/openshell-online-git-authority.ts";
-import { openShellOnlineGitWire } from "../helpers/openshell-online-git-wire.mjs";
+import { onlineGitAllow, openShellOnlineGitWire } from "../helpers/openshell-online-git-wire.mjs";
 import { invoke, token } from "../helpers/openshell-online-wire.mjs";
+import {
+  HARNESS_EGRESS_ENROLLMENT_HELPER,
+  HARNESS_EGRESS_ENROLLMENT_PATH,
+} from "../../apps/controller/src/drivers/compute/harness-egress-enrollment.ts";
+import { ObservedHookPreview } from "../../apps/controller/src/drivers/egress-proxy/openshell-request-hook-preview.ts";
+import { OpenShellPreparedGitProvider } from "../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts";
+import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
+import { signedLeaf } from "../helpers/certificates.mjs";
+import { listen } from "../helpers/listen.mjs";
+import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
+import { waitFor } from "../helpers/qa-utils.mjs";
 
 const binding = {
   sandboxId: "immutable-sandbox-id",
@@ -66,12 +83,12 @@ test(
         identities.push(identity);
         return binding;
       },
-      approve: async (q, installed) => {
+      authorizeOnlineRequest: async (q, installed) => {
         if (unavailable) {
           throw new Error("owner unavailable");
         }
         approvals.push({ q, installed });
-        return current;
+        return current ? onlineGitAllow(q, installed) : { kind: "denied", reason: "unavailable" };
       },
       onDeny: (denial) => denials.push(denial),
     });
@@ -173,6 +190,42 @@ test(
   },
 );
 
+test("stock Git refuses malformed branch policies and wildcard draft heads before approval", async (t) => {
+  let policy = binding;
+  let approvals = 0;
+  const denials = [];
+  const { client, keys } = await openShellOnlineGitWire(t, {
+    lookupBinding: async () => policy,
+    authorizeOnlineRequest: async (q, installed) => {
+      approvals++;
+      return onlineGitAllow(q, installed);
+    },
+    onDeny: (denial) => denials.push(denial.reason),
+  });
+  const auth = token(keys, "supervisor", binding.sandboxId);
+  // Corrupt the trusted lookup boundary to verify fail-closed handling of invalid
+  // policy. Valid Git-only patterns are covered through the real runtime journey.
+  for (const pushRef of [
+    "refs/heads/review*",
+    "refs/heads/*/review",
+    "refs/heads/review/../*",
+    "refs/heads/review/\u200b*",
+  ]) {
+    policy = { ...binding, pushRef, pullRequestBase: undefined };
+    assert.deepEqual(await invoke(client, "EvaluateHttpRequest", pushRequest(), auth), {
+      decision: 2,
+      reason_code: "online_authorization_denied",
+    });
+  }
+  policy = { ...binding, pushRef: "refs/heads/review/*" };
+  assert.deepEqual(await invoke(client, "EvaluateHttpRequest", pushRequest(), auth), {
+    decision: 2,
+    reason_code: "online_authorization_denied",
+  });
+  assert.equal(approvals, 0);
+  assert.deepEqual(denials, Array(5).fill("binding_mismatch"));
+});
+
 test(
   "stock Git refuses mixed refs, identity substitution and unsupported or ambiguous input before approval",
   { timeout: 10000 },
@@ -181,9 +234,9 @@ test(
     const denials = [];
     const { client, keys } = await openShellOnlineGitWire(t, {
       lookupBinding: async () => binding,
-      approve: async () => {
+      authorizeOnlineRequest: async (q, installed) => {
         approvals++;
-        return true;
+        return onlineGitAllow(q, installed);
       },
       onDeny: (denial) => denials.push(denial.reason),
     });
@@ -266,9 +319,11 @@ test(
     let allow = true;
     const { client, keys } = await openShellOnlineGitWire(t, {
       lookupBinding: async () => binding,
-      approve: async (q) => {
+      authorizeOnlineRequest: async (q, installed) => {
         approvals.push(q);
-        return allow;
+        return allow === true
+          ? onlineGitAllow(q, installed)
+          : { kind: "denied", reason: allow === false ? "unavailable" : allow };
       },
       onDeny: (denial) => denials.push(denial),
     });
@@ -377,9 +432,9 @@ test(
     const denials = [];
     const { client, keys } = await openShellOnlineGitWire(t, {
       lookupBinding: async () => lookup,
-      approve: async () => {
+      authorizeOnlineRequest: async (q, installed) => {
         approvals++;
-        return true;
+        return onlineGitAllow(q, installed);
       },
       onDeny: (denial) => denials.push(denial),
     });
@@ -419,9 +474,9 @@ test(
     const approvals = [];
     const { client, keys } = await openShellOnlineGitWire(t, {
       lookupBinding: async () => binding,
-      approve: async (q) => {
+      authorizeOnlineRequest: async (q, installed) => {
         approvals.push(q);
-        return true;
+        return onlineGitAllow(q, installed);
       },
     });
     const bearer = token(keys, "supervisor", binding.sandboxId);
@@ -499,10 +554,14 @@ test(
   },
 );
 
-test("Git authority cannot be constructed without both trusted owner callbacks", () => {
+test("Git authority cannot be constructed without both trusted owner callbacks", async (t) => {
   assert.throws(() => createOpenShellOnlineGitAuthority({}), /live binding and durable approval/);
   assert.throws(
     () => createOpenShellOnlineGitAuthority({ lookupBinding: async () => binding }),
+    /live binding and durable approval/,
+  );
+  await assert.rejects(
+    openShellOnlineGitWire(t, { lookupBinding: async () => binding, approve: async () => true }),
     /live binding and durable approval/,
   );
 });
@@ -513,6 +572,9 @@ test("protected Git replies to this online decision before its authority deadlin
     lookupBinding: async () => binding,
     authorizeOnlineRequest: async (q, installed) => {
       const { deadlineAt, exchangeId, requestDigestSha256 } = q;
+      if (typeof answer === "object") {
+        return answer;
+      }
       if (answer === "permit") {
         return { kind: "permit", sendStartBy: deadlineAt };
       }
@@ -537,6 +599,20 @@ test("protected Git replies to this online decision before its authority deadlin
     const result = await invoke(client, "EvaluateHttpRequest", pushRequest(), auth);
     assert.equal(result.decision, expected, decision);
   }
+  // The trusted owner can return malformed runtime values despite its TypeScript contract.
+  // A structured denial must never be treated as an allow, even with a truthy reason.
+  for (const [reason, reasonCode] of [
+    ["draft_already_opened", "draft_already_opened"],
+    ["access_withdrawn", "access_withdrawn"],
+    ["unavailable", "route_not_ready"],
+    [true, "route_not_ready"],
+  ]) {
+    await t.test(`structured denial: ${String(reason)}`, async () => {
+      answer = { kind: "denied", reason };
+      const result = await invoke(client, "EvaluateHttpRequest", pushRequest(), auth);
+      assert.deepEqual(result, { decision: 2, reason_code: reasonCode });
+    });
+  }
 });
 
 test("expired binding lookup cannot begin durable Git approval", { timeout: 10000 }, async (t) => {
@@ -549,9 +625,9 @@ test("expired binding lookup cannot begin durable Git approval", { timeout: 1000
       lookupAborted.resolve();
       return binding;
     },
-    approve: async () => {
+    authorizeOnlineRequest: async (q, installed) => {
       approvals++;
-      return true;
+      return onlineGitAllow(q, installed);
     },
   });
   const result = await invoke(
@@ -564,3 +640,520 @@ test("expired binding lookup cannot begin durable Git approval", { timeout: 1000
   await lookupAborted.promise;
   assert.equal(approvals, 0);
 });
+
+// Strong provider permissions do not authorize issuing a new portable credential.
+// Exercise the signed production RPC and prove refusal precedes the material owner.
+test("repository API credential issuance is refused while ordinary collaboration stays available", async (t) => {
+  let approvals = 0;
+  let current = true;
+  let lastDigest;
+  const repositories = [
+    { repositoryId: binding.repositoryId, repository: binding.repository },
+    { repositoryId: "43", repository: "openclaw/openclaw-enterprise" },
+  ];
+  let scope = "github-repository";
+  const { client, keys } = await openShellOnlineGitWire(t, {
+    budgetMs: 3000,
+    lookupBinding: async () =>
+      scope === undefined
+        ? binding
+        : {
+            ...binding,
+            scope,
+            installationId: "71",
+            apiOrigin: "https://api.github.com",
+            repositories,
+            installed: {
+              ...binding.installed,
+              route: { revisionId: binding.executionId, fence: 1 },
+            },
+          },
+    authorizeOnlineRequest: async (q, installed) => {
+      approvals++;
+      lastDigest = q.requestDigestSha256;
+      if (scope === "github-repository") {
+        assert.deepEqual(q.repositories, repositories);
+      }
+      if (!current) {
+        return { kind: "denied", reason: "access_withdrawn" };
+      }
+      return {
+        kind: "allow",
+        exchangeId: q.exchangeId,
+        requestDigestSha256: q.requestDigestSha256,
+        preparationAttemptId: installed.preparationAttemptId,
+        materialVersion: installed.materialVersion,
+        replyBy: q.deadlineAt,
+      };
+    },
+  });
+  const send = (input) =>
+    invoke(client, "EvaluateHttpRequest", input, token(keys, "supervisor", binding.sandboxId));
+  const evaluate = async (path, method = "POST", body) => {
+    const input = request(
+      path,
+      method,
+      body === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(body)),
+      body === undefined ? [] : [{ name: "content-type", value: "application/json" }],
+    );
+    input.target.host = "api.github.com";
+    return send(input);
+  };
+  for (scope of ["github-repository", "github-installation"]) {
+    for (const prefix of ["/repos/example/project", "/orgs/example"]) {
+      for (const endpoint of ["registration-token", "remove-token", "generate-jitconfig"]) {
+        for (const body of [
+          undefined,
+          { name: "runner", runner_group_id: 1, labels: ["self-hosted"] },
+        ]) {
+          const before = approvals;
+          const result = await evaluate(`${prefix}/actions/runners/${endpoint}`, "POST", body);
+          assert.equal(result.decision, 2, `${scope}: ${endpoint}`);
+          assert.equal(result.reason_code, "request_not_allowed");
+          assert.equal(
+            approvals,
+            before,
+            "credential issuer refusal must precede durable owner approval",
+          );
+        }
+      }
+    }
+    for (const path of [
+      "/repos/example/project/keys",
+      "/repos/EXAMPLE/Project/keys",
+      "/repos/example/project/KEYS",
+      "/REPOS/example/project/keys",
+      "/repos/openclaw/openclaw-enterprise/keys",
+    ]) {
+      for (const read_only of [undefined, false, true]) {
+        const before = approvals;
+        const result = await evaluate(path, "POST", {
+          title: "inert fixture",
+          key: "not-a-real-public-key",
+          ...(read_only === undefined ? {} : { read_only }),
+        });
+        assert.deepEqual(
+          [result.decision, approvals - before],
+          [2, 0],
+          `${scope}: ${path}: read_only=${read_only}; refusal before owner approval`,
+        );
+        assert.equal(result.reason_code, "request_not_allowed");
+      }
+    }
+    for (const [path, method, body] of [
+      ["/repos/example/project/keys", "GET"],
+      ["/repos/example/project/keys/12", "GET"],
+      ["/repos/example/project/keys/12", "DELETE"],
+      ["/repos/example/project/issues", "POST", { title: "keys" }],
+      ["/repos/example/project", "GET"],
+      ["/repos/example/project/actions/runners", "GET"],
+      ["/repos/example/project/actions/runners/12/labels", "POST", { labels: ["ordinary-label"] }],
+      ["/repos/example/project/issues", "POST", { title: "ordinary issue" }],
+      [
+        "/repos/example/project/pulls",
+        "POST",
+        { title: "ordinary pull", head: "feature", base: "main" },
+      ],
+      [
+        "/graphql",
+        "POST",
+        { query: 'query { repository(owner: "example", name: "project") { name } }' },
+      ],
+      [
+        "/graphql",
+        "POST",
+        { query: 'mutation { addStar(input: {starrableId: "node"}) { starrable { id } } }' },
+      ],
+    ]) {
+      assert.equal((await evaluate(path, method, body)).decision, 1, `${scope}: ${path}`);
+    }
+    const git = pushRequest();
+    assert.equal(
+      (
+        await invoke(
+          client,
+          "EvaluateHttpRequest",
+          git,
+          token(keys, "supervisor", binding.sandboxId),
+        )
+      ).decision,
+      1,
+    );
+  }
+
+  await t.test("bounded selected REST bodies retain transport and authority limits", async () => {
+    const KiB = 1024;
+    const MiB = 1024 * KiB;
+    const contents = (bytes) => {
+      const overhead = JSON.stringify({ message: "update", content: "" }).length;
+      const content = Buffer.alloc(Math.floor((bytes - overhead) / 4) * 3).toString("base64");
+      return Buffer.from(JSON.stringify({ message: "update", content }).padEnd(bytes));
+    };
+    const api = (body, path = "/repos/example/project/contents/src/data.json", method = "PUT") => {
+      const input = request(path, method, body, [
+        { name: "content-type", value: "application/json" },
+      ]);
+      input.target.host = "api.github.com";
+      return input;
+    };
+    const check = async (input, allowed) => {
+      const before = approvals;
+      const result = await send(input);
+      assert.deepEqual(
+        [result.decision, approvals - before],
+        allowed ? [1, 1] : [2, 0],
+        `${scope}: ${input.target.path}: ${input.body.length} bytes`,
+      );
+    };
+    scope = "github-repository";
+    await check(api(contents(64 * KiB + 1)), true);
+    await check(api(contents(MiB + 1)), false);
+    const large = api(contents(MiB));
+    await check(large, true);
+    const digest = lastDigest;
+    // Same request identity; only a byte near the end of the JSON string changes.
+    const tail = Buffer.from(large.body);
+    tail[tail.lastIndexOf('"') - 1] = 98;
+    await check({ ...large, body: tail }, true);
+    assert.notEqual(lastDigest, digest, "the digest covers the tail of the complete body");
+    await check(api(large.body, "/repos/example/outside/contents/data.json"), false);
+    current = false;
+    const before = approvals;
+    assert.equal((await send(large)).reason_code, "access_withdrawn");
+    assert.equal(approvals, before + 1, "large valid requests still need current owner authority");
+    current = true;
+
+    for (scope of ["github-repository", "github-installation"]) {
+      for (const bytes of [64 * KiB, 64 * KiB + 1]) {
+        const json = JSON.stringify({ query: "query { viewer { login } }" });
+        await check(api(Buffer.from(json.padEnd(bytes)), "/graphql", "POST"), bytes === 64 * KiB);
+      }
+    }
+    await check(api(contents(64 * KiB)), true);
+    await check(api(contents(64 * KiB + 1)), false);
+    scope = "github-repository";
+
+    // Exact RPC body boundaries, not valid Git packs or proof of upstream writes.
+    for (const [route, limit] of [
+      ["receive-pack", 4 * MiB],
+      ["upload-pack", MiB],
+    ]) {
+      for (const bytes of [limit, limit + 1]) {
+        await check(
+          request(`/example/project.git/git-${route}`, "POST", Buffer.alloc(bytes), [
+            { name: "content-type", value: `application/x-git-${route}-request` },
+          ]),
+          bytes === limit,
+        );
+      }
+    }
+  });
+
+  await t.test("shipped gh metadata stays within selected-repository authority", async () => {
+    // Exact captured bodies; stock 0.1.6 lowercases visible header names and
+    // omits credentials/framing. REST overrides only its differing metadata.
+    const fixture = JSON.parse(
+      readFileSync(new URL("../fixtures/gh-pr-create-2.103.2.json", import.meta.url), "utf8"),
+    );
+    const captured = (entry = fixture.requests[0]) => {
+      const target = { ...fixture.target, ...entry.target };
+      const headers = fixture.headers.flatMap(([name, value]) =>
+        entry.headers?.[name] === null ? [] : [{ name, value: entry.headers?.[name] ?? value }],
+      );
+      return { ...request(target.path, target.method, Buffer.from(entry.body), headers), target };
+    };
+    scope = "github-repository";
+    for (const entry of fixture.requests) {
+      const result = await send(captured(entry));
+      assert.equal(result.decision, 1, entry.operation);
+      assert.equal(result.has_body ?? false, false);
+      assert.deepEqual(result.header_mutations ?? [], []);
+    }
+    const beforeWithdrawal = approvals;
+    current = false;
+    assert.equal((await send(captured())).reason_code, "access_withdrawn");
+    assert.equal(approvals, beforeWithdrawal + 1, "valid shape still reaches the current owner");
+    current = true;
+    const refused = async (input) => {
+      const before = approvals;
+      assert.equal((await send(input)).decision, 2);
+      assert.equal(approvals, before, "shape/scope refusal must precede owner approval");
+    };
+    for (const name of ["graphql-features", "time-zone"]) {
+      const input = captured();
+      const header = input.headers.find((h) => h.name === name);
+      await refused({ ...input, headers: [...input.headers, header] });
+      header.value = "unapproved";
+      await refused(input);
+    }
+    for (const target of [
+      { host: "github.com" },
+      { path: "/repos/openclaw/openclaw-enterprise" },
+    ]) {
+      const input = captured();
+      await refused({ ...input, target: { ...input.target, ...target } });
+    }
+    await refused({
+      ...captured(),
+      body: Buffer.from(JSON.stringify({ query: "query { repository { tempCloneToken } }" })),
+    });
+    for (scope of ["github-installation", undefined]) {
+      await refused(captured());
+    }
+  });
+});
+
+// The generated launcher uses real curl, verified loopback TLS and the signed RPC.
+// The HTTP adapter does not emulate stock policy enforcement: the assertion compares
+// the actual request with the provider's emitted literal-prefix endpoint contract.
+// This is startup protocol integration, not an installed OpenShell supervisor proof.
+test(
+  "held Git startup observes a denial inside its provider endpoint without credential access",
+  { timeout: 30000 },
+  async (t) => {
+    for (const scope of [{ repository: "example/project" }, { installationId: "1234" }]) {
+      await t.test(
+        scope.repository ? "repository endpoint" : "installation endpoint",
+        async (t) => {
+          const preview = new ObservedHookPreview(
+            binding.workspace,
+            binding.bindingId,
+            !!scope.repository,
+          );
+          preview.recipient = "qualified-recipient";
+          preview.bootstrapRevision = "1";
+          const rule = new OpenShellPreparedGitProvider(
+            {},
+            {
+              ...scope,
+              workspace: binding.workspace,
+              workspaceId: "workspace-id",
+              sandbox: "held-git",
+              executionId: binding.executionId,
+              gitOrigin: "https://github.com",
+              apiOrigin: "https://api.github.com",
+              binaries: ["/usr/bin/git"],
+            },
+          ).previewNetworkRule();
+          const endpoint = rule.endpoints.find((value) => value.host === "github.com");
+          let hookCalls = 0;
+          let requests = 0;
+          let lookups = 0;
+          let approvals = 0;
+          const { client, keys } = await openShellOnlineGitWire(t, {
+            registrationName: "oce-prepared-git",
+            previewDenial: (q) => {
+              hookCalls++;
+              return preview.deny(q, binding.sandboxId);
+            },
+            lookupBinding: async () => {
+              lookups++;
+              return undefined;
+            },
+            authorizeOnlineRequest: async () => {
+              approvals++;
+              return { kind: "denied", reason: "unavailable" };
+            },
+          });
+          const bearer = token(keys, "supervisor", binding.sandboxId);
+          const { directory, authority, rootCertificatePath } = await harnessTlsFixture(t);
+          const leaf = await signedLeaf(directory, authority, {
+            name: "github",
+            commonName: "Fixture endpoint",
+            subjectAltName: "DNS:github.com",
+            days: 1,
+          });
+          let endpointError;
+          const server = httpsServer({ key: leaf.key, cert: leaf.cert }, async (req, res) => {
+            requests++;
+            try {
+              assert.equal(req.method, "GET");
+              assert.equal(req.headers.authorization, undefined);
+              assert.equal(req.headers.cookie, undefined);
+              const url = new URL(req.url, "https://github.com");
+              assert.equal(url.search, "?service=git-upload-pack");
+              if (scope.repository) {
+                assert.equal(endpoint.path, "/example/project.git/**");
+                assert.ok(
+                  url.pathname.startsWith(endpoint.path.slice(0, -2)),
+                  "the actual HTTPS request must be inside the provider endpoint",
+                );
+              } else {
+                assert.deepEqual(endpoint.rules[0], {
+                  allow: { method: "GET", path: "/**/info/refs" },
+                });
+                assert.ok(url.pathname.endsWith("/info/refs"));
+              }
+              const q = request(url.pathname);
+              q.middleware_name = "oce-prepared-git";
+              q.target.query = url.search.slice(1);
+              const decision = await invoke(client, "EvaluateHttpRequest", q, bearer);
+              assert.equal(decision.decision, 2);
+              res.writeHead(403, { "content-type": "application/json" });
+              res.end(
+                JSON.stringify({
+                  error: "middleware_denied",
+                  middleware: "oce-prepared-git",
+                  reason_code: decision.reason_code,
+                }),
+              );
+            } catch (error) {
+              endpointError = error;
+              res.writeHead(500).end();
+            }
+          });
+          const endpointPort = await listen(t, server);
+          const proxy = httpServer();
+          proxy.on("connect", (req, local, head) => {
+            if (req.url !== "github.com:443") {
+              local.destroy();
+              return;
+            }
+            const upstream = createConnection({ host: "127.0.0.1", port: endpointPort });
+            local.once("error", () => upstream.destroy());
+            local.once("close", () => upstream.destroy());
+            upstream.once("error", () => local.destroy());
+            upstream.once("connect", () => {
+              local.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+              if (head.length) {
+                upstream.write(head);
+              }
+              local.pipe(upstream);
+              upstream.pipe(local);
+            });
+          });
+          const proxyPort = await listen(t, proxy);
+          const reservation = await reservePort({ host: "0.0.0.0" });
+          t.after(() => reservation.release());
+          const revisionId = "revision-fixture";
+          const enrollment = {
+            inference: false,
+            routeCount: 1,
+            plan: { id: "plan", generation: 1 },
+            execution: {
+              installationId: "installation",
+              namespaceId: "tenant",
+              agentId: "agent",
+              servicePrincipalId: "principal",
+              revisionId,
+              executionId: binding.executionId,
+            },
+            repositoryGitAuthorization: scope.repository
+              ? "online-request"
+              : "request-hook-observed",
+          };
+          const releaseKey = generateKeyPairSync("ed25519");
+          const transport = "synthetic-harness-transport";
+          const launcher = spawn(
+            process.execPath,
+            [
+              ...reservedPortArgs(reservation),
+              "--input-type=commonjs",
+              "-e",
+              "const isPlainObject = v => !!v && Object.getPrototypeOf(v) === Object.prototype;\n" +
+                HARNESS_EGRESS_ENROLLMENT_HELPER +
+                "\nwaitForHarnessEgressEnrollment(" +
+                JSON.stringify(enrollment) +
+                ").catch(() => process.exitCode = 1);",
+            ],
+            {
+              env: {
+                APP_TOKEN_SHA: createHash("sha256").update(transport).digest("hex"),
+                APP_SERVER_PORT: String(reservation.port),
+                OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID: revisionId,
+                OPENCLAW_EGRESS_COMPUTE_RELEASE_PUBLIC_KEY: releaseKey.publicKey
+                  .export({ type: "spki", format: "der" })
+                  .toString("base64url"),
+                https_proxy: "http://127.0.0.1:" + proxyPort,
+                CURL_CA_BUNDLE: rootCertificatePath,
+              },
+              stdio: "ignore",
+            },
+          );
+          const exited = once(launcher, "exit");
+          t.after(async () => {
+            if (launcher.exitCode === null && launcher.signalCode === null) {
+              launcher.kill();
+              await exited;
+            }
+          });
+          // The reservation prevents another test taking the fixed enrollment port.
+          // A connection routed to the reservation can reset until the child is listening.
+          await waitFor(
+            "launcher listener",
+            async () => {
+              try {
+                const response = await fetch(
+                  "http://127.0.0.1:" + reservation.port + HARNESS_EGRESS_ENROLLMENT_PATH,
+                  {
+                    headers: { authorization: "Bearer " + transport },
+                    signal: AbortSignal.timeout(300),
+                  },
+                );
+                return response.ok;
+              } catch {
+                return false;
+              }
+            },
+            5000,
+            { interval: 25 },
+          );
+          await reservation.release();
+          const url = "http://127.0.0.1:" + reservation.port + HARNESS_EGRESS_ENROLLMENT_PATH;
+          const headers = {
+            authorization: "Bearer " + transport,
+            "content-type": "application/json",
+          };
+          const challenge = await (await fetch(url, { headers })).json();
+          const probePath = preview.arm(challenge.startupId, scope.repository);
+          const send = (path) =>
+            fetch(url, {
+              method: "POST",
+              headers,
+              body: JSON.stringify({ startupId: challenge.startupId, probePath: path }),
+              signal: AbortSignal.timeout(15000),
+            });
+          // Invalid URLs cannot send a request or consume the single valid challenge.
+          for (const invalid of [
+            "//other.example.test" + probePath,
+            probePath + "?extra=1",
+            [probePath],
+          ]) {
+            assert.equal((await send(invalid)).status, 409);
+          }
+          assert.equal(requests, 0);
+          const response = await send(probePath);
+          assert.ifError(endpointError);
+          assert.equal(response.status, 200);
+          preview.confirm(await response.json());
+          assert.equal(hookCalls, 1);
+          assert.equal(requests, 1);
+          assert.equal((await send(probePath)).status, 409);
+          assert.equal(requests, 1, "replay must not issue another HTTPS request");
+          // Malformed, replayed and substituted challenges stay on the denial path before binding lookup.
+          for (const path of [
+            probePath,
+            probePath.replace(/[0-9a-f]{32}\.git/, "bad-nonce.git"),
+            probePath.replace("/info/refs", "/git-upload-pack"),
+            "/other/project.git/oce-observe-request/" + "0".repeat(32) + ".git/info/refs",
+          ]) {
+            const q = request(path);
+            q.middleware_name = "oce-prepared-git";
+            q.target.query = "service=git-upload-pack";
+            assert.deepEqual(await invoke(client, "EvaluateHttpRequest", q, bearer), {
+              decision: 2,
+              reason_code: "preview_challenge_refused",
+            });
+          }
+          assert.equal(lookups, 0, "startup must not look up credential material");
+          assert.equal(approvals, 0, "startup must never authorize a Git operation");
+          assert.equal(
+            (await fetch(url, { headers })).status,
+            200,
+            "observation alone must not release the held launcher",
+          );
+        },
+      );
+    }
+  },
+);

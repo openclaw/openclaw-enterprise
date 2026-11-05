@@ -2,10 +2,11 @@ import type { PreparedGitHubPullScope } from "@openclaw-enterprise/contracts";
 import type {
   RequestPlan,
   PreparedRepositoryBackend,
-  PreparedRepositoryBackendFactory,
+  BoundPreparedRepositoryBackendFactory,
+  ResolvedGrant,
 } from "../../credentials/backend-contracts.ts";
-import { sameBinding } from "../../credentials/sessions.ts";
-import { githubProviderOrigin } from "./factory.ts";
+import { sameBinding } from "../../credentials/grant-identity.ts";
+import { githubProviderOrigin } from "./origin.ts";
 import { createGatewayAuthentication } from "./gateway-authentication.ts";
 import { resolveGitHubRepositoryBinding, validateGitHubRepositoryRegistry } from "./registry.ts";
 import type { GitHubRepositoryRegistry } from "./registry.ts";
@@ -25,7 +26,7 @@ type Options = Pick<GitHubFactoryOptions, "clock" | "limits" | "gatewayOrigin"> 
 /** Each exchange requires prepared material. Only an explicit draft grant adds the bounded create operation. */
 export function createPreparedGitHubRegistryFactory(
   options: Options,
-): PreparedRepositoryBackendFactory & { trustedUpstreamOrigins: ReadonlySet<string> } {
+): BoundPreparedRepositoryBackendFactory & { trustedUpstreamOrigins: ReadonlySet<string> } {
   const registry = validateGitHubRepositoryRegistry(options.registry);
   const { socketPath, clock, limits } = options;
   const gitOrigin = githubProviderOrigin(options.gitOrigin ?? "https://github.com");
@@ -83,8 +84,9 @@ export function createPreparedGitHubRegistryFactory(
       return { grant, route, client, namespaceId, repositoryRef, pushRef, profile, pull };
     }),
   );
+  const selections = new WeakMap<ResolvedGrant, (typeof entries)[number]>();
   return Object.freeze<
-    PreparedRepositoryBackendFactory & { trustedUpstreamOrigins: ReadonlySet<string> }
+    BoundPreparedRepositoryBackendFactory & { trustedUpstreamOrigins: ReadonlySet<string> }
   >({
     trustedUpstreamOrigins: new Set([
       gitOrigin,
@@ -93,30 +95,31 @@ export function createPreparedGitHubRegistryFactory(
     ...createGatewayAuthentication({
       isGitRoute: (head) => entries.some(({ route }) => !!route.route(head)),
     }),
-    resolve() {
-      throw new Error("BOUND_SESSION_REQUIRED");
-    },
     resolveBound(input) {
-      const entry = entries.find(
+      const matches = entries.filter(
         ({ grant, namespaceId, repositoryRef, profile }) =>
           sameBinding(grant, input.expectedBinding) &&
           input.namespaceId === namespaceId &&
           input.repositoryRef === repositoryRef &&
           input.profile === profile,
       );
-      if (!entry) {
+      if (matches.length !== 1) {
         throw new Error("INVALID_BINDING");
       }
       if (input.durationSeconds > registry.maximumDurationSeconds) {
         throw new Error("INVALID_DURATION");
       }
-      return { binding: entry.grant, client: entry.client };
+      const entry = matches[0]!;
+      const selection = Object.freeze({ binding: entry.grant, client: entry.client });
+      selections.set(selection, entry);
+      return selection;
     },
-    createPrepared(authority) {
-      const entry = entries.find(({ grant }) => sameBinding(grant, authority));
-      if (!entry || !authority.sessionId) {
+    createPrepared(authority, selection) {
+      const entry = selections.get(selection);
+      if (!entry || !sameBinding(entry.grant, authority) || !authority.sessionId) {
         throw new Error("INVALID_BINDING");
       }
+      selections.delete(selection);
       const { grant: binding, pushRef, route } = entry;
       const pulls = new WeakMap<RequestPlan, PreparedGitHubPullScope>();
       return Object.freeze<PreparedRepositoryBackend>({
