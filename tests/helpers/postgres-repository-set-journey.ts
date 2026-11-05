@@ -994,6 +994,7 @@ async function repositoryGitJourney(
         JSON.stringify({
           workerEvents: workerEvents.slice(-20),
           blocked: runtime["states"].get(revision.id)?.blocked,
+          routeBlocked: runtime["states"].get(revision.id)?.entry?.blocked,
           pending: runtime["states"].get(revision.id)?.entry?.pending,
           unobserved: runtime["states"].get(revision.id)?.entry?.unobserved,
         }),
