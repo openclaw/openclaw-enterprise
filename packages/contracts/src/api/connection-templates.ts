@@ -164,13 +164,7 @@ export const ConnectionTemplateSchema = Type.Object(
 const template = Type.Ref("ConnectionTemplate");
 export const ConnectionTemplateResponse = Type.Object({ data: template, meta: Meta }, strict);
 export const ConnectionTemplateListResponse = Type.Object(
-  {
-    data: Type.Array(template),
-    meta: Type.Object(
-      { ...Meta.properties, googleWorkspaceDestinations: ConnectionDestinationsSchema },
-      strict,
-    ),
-  },
+  { data: Type.Array(template), meta: Meta },
   strict,
 );
 export const OAuthClientResponse = Type.Object({ data: publicClient, meta: Meta }, strict);

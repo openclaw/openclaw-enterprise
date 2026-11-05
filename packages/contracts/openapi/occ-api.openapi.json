@@ -12349,12 +12349,7 @@
                     "summary": "No readable resources",
                     "value": {
                       "data": [],
-                      "meta": {
-                        "googleWorkspaceDestinations": [
-                          { "host": "gmail.googleapis.com", "path": "/gmail/**", "port": 443 }
-                        ],
-                        "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-                      }
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
                     }
                   },
                   "example": {
@@ -12383,12 +12378,7 @@
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                         }
                       ],
-                      "meta": {
-                        "googleWorkspaceDestinations": [
-                          { "host": "gmail.googleapis.com", "path": "/gmail/**", "port": 443 }
-                        ],
-                        "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
-                      }
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
                     }
                   }
                 },
@@ -12399,27 +12389,13 @@
                     "meta": {
                       "additionalProperties": false,
                       "properties": {
-                        "googleWorkspaceDestinations": {
-                          "items": {
-                            "additionalProperties": false,
-                            "properties": {
-                              "host": { "type": "string" },
-                              "path": { "type": "string" },
-                              "port": { "type": "integer" }
-                            },
-                            "required": ["host", "port", "path"],
-                            "type": "object"
-                          },
-                          "minItems": 1,
-                          "type": "array"
-                        },
                         "redirectUri": { "type": "string" },
                         "requestId": {
                           "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         }
                       },
-                      "required": ["requestId", "googleWorkspaceDestinations"],
+                      "required": ["requestId"],
                       "type": "object"
                     }
                   },

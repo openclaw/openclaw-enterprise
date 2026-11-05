@@ -185,3 +185,50 @@ REVOKE ALL ON FUNCTION occ.guard_connection_template_update(), occ.check_connect
 
 --> statement-breakpoint
 GRANT UPDATE (cleanup_after) ON occ.oauth_clients TO occ_app;
+--> statement-breakpoint
+-- Seed one ordinary Installation-wide template when this feature is installed. Its
+-- initial destinations come from the bundled google-install-v1 operation catalog.
+WITH template AS (
+  INSERT INTO occ.connection_templates (id, display_name, current_version, created_at)
+  VALUES ('ctp_' || gen_random_uuid(), 'Google OAuth', 1, now())
+  RETURNING id, created_at
+), routes (host, path) AS (
+  VALUES
+    ('admin.googleapis.com', '/admin/**'),
+    ('adsense.googleapis.com', '/v2/**'),
+    ('analyticsadmin.googleapis.com', '/v1beta/**'),
+    ('analyticsdata.googleapis.com', '/v1beta/**'),
+    ('chat.googleapis.com', '/v1/**'),
+    ('classroom.googleapis.com', '/v1/**'),
+    ('cloudidentity.googleapis.com', '/v1/**'),
+    ('docs.googleapis.com', '/v1/**'),
+    ('driveactivity.googleapis.com', '/v2/**'),
+    ('drivelabels.googleapis.com', '/v2/**'),
+    ('forms.googleapis.com', '/v1/**'),
+    ('gmail.googleapis.com', '/gmail/**'),
+    ('keep.googleapis.com', '/v1/**'),
+    ('meet.googleapis.com', '/v2/**'),
+    ('people.googleapis.com', '/v1/**'),
+    ('photoslibrary.googleapis.com', '/v1/**'),
+    ('photospicker.googleapis.com', '/v1/**'),
+    ('script.googleapis.com', '/v1/**'),
+    ('searchconsole.googleapis.com', '/v1/**'),
+    ('searchconsole.googleapis.com', '/webmasters/**'),
+    ('sheets.googleapis.com', '/v4/**'),
+    ('slides.googleapis.com', '/v1/**'),
+    ('tasks.googleapis.com', '/tasks/**'),
+    ('www.googleapis.com', '/calendar/**'),
+    ('www.googleapis.com', '/drive/**'),
+    ('youtube.googleapis.com', '/youtube/**')
+)
+INSERT INTO occ.oauth_connection_template_versions (
+  template_id, version, issuer, mode, authorization_url, token_url, revocation_url,
+  scopes, authorization_parameters, destinations, created_at
+)
+SELECT id, 1, 'https://accounts.google.com', 'manual',
+  'https://accounts.google.com/o/oauth2/v2/auth', 'https://oauth2.googleapis.com/token',
+  'https://oauth2.googleapis.com/revoke', '{}', '{"access_type":"offline","prompt":"consent"}',
+  (SELECT jsonb_agg(jsonb_build_object('host', host, 'port', 443, 'path', path)
+                    ORDER BY host COLLATE "C", path COLLATE "C") FROM routes),
+  created_at
+FROM template;

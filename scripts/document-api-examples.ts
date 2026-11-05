@@ -147,16 +147,7 @@ export function documentApiExamples<T>(document: T): T {
             }
             const data = lookup(responseExamples, name);
             const responseMeta =
-              name === "listAgentRevisions"
-                ? { ...meta, nextCursor: null }
-                : {
-                    ...meta,
-                    ...(name === "listConnectionTemplates" && {
-                      googleWorkspaceDestinations: [
-                        { host: "gmail.googleapis.com", port: 443, path: "/gmail/**" },
-                      ],
-                    }),
-                  };
+              name === "listAgentRevisions" ? { ...meta, nextCursor: null } : meta;
             const examples: Record<string, unknown> = example(
               { data, meta: responseMeta },
               "Example response",

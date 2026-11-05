@@ -1,9 +1,4 @@
-import type {
-  AuditEvent,
-  ConnectionEndpoint,
-  OAuthClient,
-  OccApiOperationId,
-} from "@openclaw-enterprise/contracts";
+import type { AuditEvent, OAuthClient, OccApiOperationId } from "@openclaw-enterprise/contracts";
 import type {
   CreateConnectionTemplateInput,
   CreateOAuthClientInput,
@@ -31,16 +26,11 @@ type TemplateHandler = (input: {
   mutationEvent: (templateId: string) => AuditEvent;
 }) => Promise<void>;
 
-export function listConnectionTemplates(
-  googleWorkspaceDestinations: readonly ConnectionEndpoint[],
-): TemplateHandler {
-  return async ({ meta, controller, actorId, reply }) => {
-    const data = await controller.listConnectionTemplates(actorId);
-    reply.send({ data, meta: { ...meta, googleWorkspaceDestinations } });
-  };
-}
-
 export const connectionTemplateHandlers: Partial<Record<OccApiOperationId, TemplateHandler>> = {
+  async listConnectionTemplates({ meta, controller, actorId, reply }) {
+    const data = await controller.listConnectionTemplates(actorId);
+    reply.send({ data, meta });
+  },
   async createConnectionTemplate({
     holdSession,
     meta,
