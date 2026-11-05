@@ -209,9 +209,9 @@ client would drop or change (a misspelled selector key, LimitRange `default`).
 Keep OpenShell credentials and cluster-scoped objects out of both lists.
 
 `kubernetes.sandboxDataMount` must match exactly one approved dedicated Harness
-workspace mount. It may not mount the PVC root or use `..`, and must mount
-under `/sandbox/`. For native OpenClaw, the permission preparer creates that subpath
-before Sandbox creation. After supervisor readiness, Sandbox initializes
+workspace mount. It may not mount the PVC root, use `..`, or leave `/sandbox/`.
+[`sandboxExtraMounts`](openshell-sandbox/extra-mounts.md) adds other subpaths.
+For native OpenClaw, the permission preparer creates them before Sandbox creation. After supervisor readiness, Sandbox initializes
 [private workspace inputs](../../flows/workspace-files.md#2-deployment-initializes-storage-before-execution)
 through private stdin; the Harness verifies completion at its effective path.
 
