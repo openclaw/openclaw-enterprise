@@ -1130,7 +1130,11 @@ function renderAgentForm(
       updateModelConfiguration(false, values);
       updateControls();
     }
-    (manualModel ? model : modelChoice).focus();
+    if (jsonObjectProblem(configuration.value) !== undefined) {
+      focusConfiguration();
+    } else {
+      (manualModel ? model : modelChoice).focus();
+    }
   });
   const modelField = field("Model ID", model, "Enter a model ID available to this credential.");
   const choiceField = field(
@@ -1375,7 +1379,7 @@ function renderAgentForm(
   function readModelConfiguration(
     targetHarness = harness.value,
   ): LaunchValues | "invalid-json" | "invalid-allow" {
-    const values = parseObject(configuration);
+    const values = parseObject(configuration, true);
     // Keep the existing control transitions for invalid JSON; only the merge is skipped.
     if (values === undefined) {
       return "invalid-json";

@@ -286,9 +286,24 @@ export function jsonObjectProblem(text: string): string | undefined {
       ? `Invalid JSON at ${where}: ${fix("there")}. Enter a valid JSON object.`
       : `Invalid JSON at ${where}. Enter a valid JSON object.`;
   }
-  return parsed === null || Array.isArray(parsed) || typeof parsed !== "object"
-    ? "Enter a valid JSON object, not an array or a single value."
-    : undefined;
+  if (parsed === null || Array.isArray(parsed) || typeof parsed !== "object") {
+    return "Enter a valid JSON object, not an array or a single value.";
+  }
+  // JSON.parse accepts numbers outside the supported range; JSON.stringify would silently
+  // replace them with null. Walk iteratively so deep drafts do not exhaust the call stack.
+  const pending: unknown[] = [parsed];
+  while (pending.length > 0) {
+    const value = pending.pop();
+    if (typeof value === "number" && !Number.isFinite(value)) {
+      return "A number is too large or too small to save. Use a number closer to zero.";
+    }
+    if (value !== null && typeof value === "object") {
+      for (const child of Object.values(value)) {
+        pending.push(child);
+      }
+    }
+  }
+  return undefined;
 }
 
 // The offset of the first character that breaks the JSON grammar (RFC 8259), `text.length` when
