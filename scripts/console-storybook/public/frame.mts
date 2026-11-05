@@ -1,5 +1,6 @@
 import type { PluginFieldsOptions } from "/console/agents/plugin-fields.mjs";
 import type { StoryAction } from "../story-action.mts";
+import type { ConnectionPreview } from "./scenario-groups/plugins.mts";
 import { scenarios } from "./scenarios.mts";
 import { installFixture } from "./fixtures.mts";
 
@@ -19,7 +20,7 @@ type FrameScenario = FrameScenarioBase &
     | {
         component: "plugins";
         pluginSelections?: string | undefined;
-        connectionPreview?: "choose" | "bound" | "empty" | "denied" | "loading" | "named";
+        connectionPreview?: ConnectionPreview;
         pluginCatalog?: PluginFieldsOptions["catalog"];
         pluginCapabilities?: PluginFieldsOptions["capabilities"];
         disabled?: boolean | undefined;

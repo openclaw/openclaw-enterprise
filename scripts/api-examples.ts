@@ -477,6 +477,7 @@ export const responseExamples = {
       mode: "manual",
       scopes: ["profile"],
       requiredScopes: [],
+      offeredScopes: [],
     },
   ],
   startAgentPluginConnection: {

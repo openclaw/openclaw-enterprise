@@ -18,7 +18,7 @@ OpenShell placeholder for that account. The Gateway loads the skill. The worker 
 
 Each account field names a plugin slot. Choose a saved account that you can read and use in this Namespace, then select **Save plugin selections**. OCC binds the selected account and grants this Agent access. If a plugin declares two slots, you can choose a different account for each one.
 
-The picker shows accounts from issuers accepted by the slot. If the account needs consent for this server, select **Authorize for this server**. To connect a new account, save the enabled plugin, choose a compatible connection template, and select **Connect and attach**. The provider asks which account to authorize. After consent, the Console returns to the Agent draft. You can replace an existing binding this way.
+The picker shows accounts from issuers accepted by the slot. If the account needs consent for this server, select **Authorize for this server**. To connect a new account, save the enabled plugin, choose a compatible connection template, then review the permissions before selecting **Connect and attach**. Required MCP scopes are already selected. On a template with no scope limit, you can enter additional scopes or use provider defaults if the server requires none. The provider asks which account to authorize. After consent, the Console returns to the Agent draft. You can replace an existing binding this way.
 
 If the slot or your permission to update the Agent changes during consent, the account stays saved in the Namespace. You can attach it later. Deploy the Agent draft to apply new selections. Clearing a slot retains any separate grant to the account. To stop a running revision from using it, [withdraw the source](../../reference/credential-sources/withdrawal.md).
 

@@ -44,7 +44,7 @@ type PluginScenario = {
 const pluginPreviewGap =
   "Catalog entries, local placeholder logos, and Driver capabilities are passed directly to the production component as Storybook fixtures. These previews do not verify PAT access, plugin availability, or runtime policy enforcement.";
 
-type ConnectionPreview =
+export type ConnectionPreview =
   "choose" | "bound" | "empty" | "denied" | "loading" | "named" | "unrestricted";
 
 function googleSlotStory(preview: ConnectionPreview) {
