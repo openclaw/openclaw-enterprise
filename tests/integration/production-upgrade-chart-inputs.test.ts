@@ -17,7 +17,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { commandCalls, commandPath, writeCommand } from "../helpers/fake-commands.mjs";
+import { commandCalls, commandPath, writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const execute = promisify(execFile);

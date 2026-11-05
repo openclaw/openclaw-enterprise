@@ -10,7 +10,7 @@ import test from "node:test";
 import { restoreLaneImages } from "../../scripts/ci/lane-images.ts";
 import { postgresSuperuserPassword, runPostgresAdmin } from "../../scripts/ci/postgres-admin.mjs";
 import { withStateLock } from "../../scripts/ci/state-lock.ts";
-import { commandCalls, writeCommand } from "../helpers/fake-commands.mjs";
+import { commandCalls, writeCommand } from "../helpers/fake-commands.ts";
 import { startFakePostgres } from "../helpers/fake-postgres-server.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";

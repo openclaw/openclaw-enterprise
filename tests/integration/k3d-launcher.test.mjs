@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { writeCommand } from "../helpers/fake-commands.mjs";
+import { writeCommand } from "../helpers/fake-commands.ts";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
