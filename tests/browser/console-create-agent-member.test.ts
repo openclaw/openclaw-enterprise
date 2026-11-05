@@ -36,7 +36,7 @@ import {
   shippedPreset,
   waitForCondition,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import { fulfillPatchedJson } from "./console-patched-response.ts";
 import { responseTo } from "./console-action-helpers.ts";
 import { refocus } from "./console-refocus-helpers.ts";

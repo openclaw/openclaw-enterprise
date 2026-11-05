@@ -20,7 +20,7 @@ import {
   nativeValues,
   newPage,
   shippedPreset,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import { SAVED_CONFIGURATION_CHANGED } from "../helpers/refusal-text.mjs";
 
 const defaultCodexPreset = await shippedPreset("default-codex");

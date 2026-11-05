@@ -54,6 +54,10 @@ const appliedPatches = [
     file: "openclaw-pinned-skill-sources.patch",
     sha256: "e08b0872595284cb8760578c06243382d7a26a7d44227acc6425270d4b8cac08",
   },
+  {
+    file: "openclaw-node-setup-renewal.patch",
+    sha256: "b4d860d00310e882404d62f630266c80d93df66492230c494e80cc1391bac538",
+  },
 ];
 const [command, sourceRoot, output, sourceManifest] = process.argv.slice(2);
 const root = await realpath(sourceRoot);

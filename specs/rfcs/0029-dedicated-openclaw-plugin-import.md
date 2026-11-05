@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Not implemented
+implementation_status: Implemented
 author: stevenlee-oai
 ---
 

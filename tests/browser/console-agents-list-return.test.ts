@@ -10,18 +10,18 @@ import {
 import type { DeploymentStatus } from "../../packages/occ/src/state/controller-work.ts";
 
 import {
+  persistedDeploymentError,
   fileBrowser,
   hasFocus,
   holdRequests,
   login,
   nativeValues,
   newPage,
-  persistedDeploymentError,
   settledView,
-  trackSettledFetches,
   waitForCondition,
-  waitForIdleFetches,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+
+import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
 import { fulfillPatchedJson } from "./console-patched-response.ts";
 import { refocus, tagView, viewTag } from "./console-refocus-helpers.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";

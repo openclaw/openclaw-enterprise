@@ -1926,9 +1926,9 @@ test(
   requiresHistoryPostgres,
   async (context) => {
     const db = await historyDatabase(context, await migrationHistoryFixture(), "publish", {
-      prefix: 66,
+      prefix: 67,
     });
-    // Freeze the 0066 built-in Role. Reordering its grants was valid, as was editing its permissions.
+    // Freeze the 0067 built-in Role. Reordering its grants was valid, as was editing its permissions.
     const previous = [
       ["installation", ["administer", "read"]],
       ["namespace", ["create", "read", "delete"]],
@@ -2047,6 +2047,7 @@ test(
       [63, "preGatewayManagedMode"],
       [64, "preSelectedRepositorySet"],
       [65, "preAgentDeployIntent"],
+      [66, "preAgentCredentialSourceLimit"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });

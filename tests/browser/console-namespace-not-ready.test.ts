@@ -33,7 +33,7 @@ import {
   settledView,
   statusTone,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import { fulfillPatchedJson } from "./console-patched-response.ts";
 import { routeInstallationProvisioning } from "./console-agents-test-support.mjs";
 import { refocus } from "./console-refocus-helpers.ts";

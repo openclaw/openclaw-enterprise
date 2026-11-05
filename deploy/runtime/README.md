@@ -4,25 +4,23 @@ Build a public local runtime image for the OpenClaw Enterprise quickstart and
 real-runtime integration tests. The image contains these runtime entrypoints:
 
 - OpenClaw gateway: `node /app/openclaw.mjs`.
-- Dedicated OpenClaw node: `node /app/openclaw.mjs connect --target-file <private-file> --ephemeral`.
+- Dedicated OpenClaw node: `node /app/openclaw.mjs connect --target-file <private-file> --ephemeral --pair-or-reconnect`.
 - Dedicated Codex app-server: `codex app-server`.
 
-The image sets `NPM_CONFIG_UPDATE_NOTIFIER=false` so local npm commands do not
-start npm's background version check. This avoids unrelated network approval
-requests during commands such as `npm test`; package installation and explicit
-network requests still use the configured network policy.
+`NPM_CONFIG_UPDATE_NOTIFIER=false` disables npm's background version check.
+Package installation and explicit network requests still use the configured
+network policy.
 
 The Dockerfile builds OpenClaw from a verified public source archive, using its
 pinned package manager, frozen dependency lockfile, and upstream Docker assembly.
 For a package registry mirror, supply the separate Corepack and pnpm build
 secrets described in [the image build guide](../../docs/guides/deploy/production-installation.md#build-through-a-package-registry-mirror).
 The selected upstream source pins stock Codex `0.164.0`. Both Codex entrypoints
-use that same installation and frozen upstream lockfile; no dependency downgrade
-or Codex binary patch is applied. The seccomp profile retains its existing syscall
+use this installation and frozen lockfile without dependency downgrades or binary patches. The seccomp profile retains its existing syscall
 rules; version admission does not replace native startup and sandbox verification.
-Codex and Slack come from that same source. The selected commit contains
-the restricted workspace-node commands and saved-token-first pairing required by
-split storage; published `2026.9.5` packages do not contain that complete contract.
+Codex and Slack come from that same source. Its restricted workspace-node commands
+and persistent device identity support split storage; published `2026.9.5` packages
+do not contain that complete contract.
 
 OCE builds an unreleased OpenClaw commit that supports Gateway managed mode
 and the separate tool policy for dedicated Harnesses. Managed mode restricts
@@ -57,7 +55,11 @@ unattributed owner requires operator confirmation.
 OpenClaw normalizes newly created owner-only Linux directories that inherit
 setgid and reports invalid plugin settings during startup. The build runs the
 upstream private-store regressions.
-The source archive and patch hashes identify the resulting custom build.
+`openclaw-node-setup-renewal.patch` adds `--pair-or-reconnect` for first enrollment
+or renewal under the same binding. Fresh setup comes first; a typed bootstrap rejection
+allows one validated saved-token retry. See [node enrollment](../../docs/reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
+for Gateway/TLS-pin checks, local credential retirement when switching targets,
+and pairing recovery. Remove this bridge when the selected source provides that contract.
 Provenance `patches` maps every patch the Dockerfile applies, in order, to its
 SHA-256; `scripts/build-runtime-assets.mjs` holds that list, and a test checks it
 against the Dockerfile.
@@ -327,9 +329,10 @@ the installed Codex plugin successfully initializes the image's real Codex
 app-server, and the Kubernetes dedicated-gateway startup path publishes the
 bundled skills directory into `/home/node/openclaw-runtime-assets`. These checks
 run without external network access or provider credentials. The smoke also
-enrolls a real restricted workspace node, checks its exact seven-command inventory,
-and restarts it with the redeemed setup code and saved identity. It requires the
-original bootstrap completion to remain unchanged. These checks do not exercise
+enrolls a real restricted workspace node under the production supervisor with an
+inert Codex sibling. It requires exactly seven commands, retained identity across
+redeemed/expired-code restarts and file/envelope setup replacement, and one
+completion per setup. These checks do not exercise
 all workspace command payloads, make a model call, or establish a Slack connection.
 When running this suite from inside another container that talks to a host Docker
 daemon, mount the repository and any temporary fixture directory at the same

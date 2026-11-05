@@ -25,7 +25,7 @@ import {
   settlePageRequests,
   settledView,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import { fulfillPatchedJson } from "./console-patched-response.ts";
 import { confirmAgentAction, responseTo } from "./console-action-helpers.ts";
 import {

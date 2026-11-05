@@ -17,7 +17,7 @@ import {
   pathRequests,
   waitForCondition,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import {
   deploymentRecordUrl,
   expectDeploymentOutcome,
