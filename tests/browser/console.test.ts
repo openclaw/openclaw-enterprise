@@ -31,15 +31,17 @@ import {
   newPage,
   nextFrames,
   nonAuthWriteRequests,
-  settledFetches,
   settledView,
   settlePageRequests,
-  trackSettledFetches,
   waitForEnabled,
+  writeRequests,
+} from "./console-agents-browser-helpers.ts";
+import {
+  settledFetches,
+  trackSettledFetches,
   waitForIdleFetches,
   waitForSettledFetches,
-  writeRequests,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-fetch-accounting.ts";
 import { responseTo } from "./console-action-helpers.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {

@@ -42,25 +42,28 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
+  persistedDeploymentError,
   apiRequests,
   login,
   nativeValues,
   newPage,
   nonAuthWriteRequests,
   pathRequests,
-  persistedDeploymentError,
   recordLayoutShifts,
   secretOptionLabel,
   secretPostRequests,
   selectSecret,
-  settledFetches,
   takeLayoutShifts,
-  trackSettledFetches,
   waitForCondition,
   waitForEnabled,
+} from "./console-agents-browser-helpers.ts";
+
+import {
+  settledFetches,
+  trackSettledFetches,
   waitForIdleFetches,
   waitForSettledFetches,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-fetch-accounting.ts";
 import {
   configurationPostRequests,
   routeInstallationProvisioning,

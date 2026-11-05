@@ -25,7 +25,7 @@ import {
   nonAuthWriteRequests,
   selectSecret,
   shippedPreset,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import { routeInstallationWithoutProvisioning } from "./console-agents-test-support.mjs";
 
 // The forms #2907 left on the browser's check (finding 1979): Plugin selections, the
