@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type {
   PreparedGitHubPullScope,
   PreparedGitHubInstallationUseRequest,
@@ -61,12 +60,16 @@ type ClassificationDenialReason =
   | "ref_not_allowed";
 
 /** Select GitHub request semantics after the caller validates its request and binding. */
-export function selectGitHubRequest(request: GitHubRequest, binding: GitHubScope): Selection {
+export function selectGitHubRequest(
+  request: GitHubRequest,
+  binding: GitHubScope,
+  createUUID: () => string,
+): Selection {
   const head = requestHead(request, binding);
   if (!head) {
     return { denied: "request_invalid" };
   }
-  return operation(request, binding, head);
+  return operation(request, binding, head, createUUID);
 }
 
 function matchesOrigin(origin: string, request: GitHubRequest): boolean {
@@ -136,6 +139,7 @@ function draftScope(
   request: GitHubRequest,
   binding: RepositoryScope,
   head: RequestHead,
+  createUUID: () => string,
 ): PreparedGitHubPullScope | undefined {
   const apiOrigin = binding.apiOrigin ?? "https://api.github.com";
   if (
@@ -163,7 +167,7 @@ function draftScope(
   // that canonical result, including the explicit restriction on maintainer modifications.
   const headers: Record<string, string> = {
     ...head.headers,
-    "x-oce-operation-id": randomUUID(),
+    "x-oce-operation-id": createUUID(),
   };
   delete headers["x-github-api-version"];
   let scope: PreparedGitHubPullScope | undefined;
@@ -283,7 +287,12 @@ type Selection =
     }
   | { readonly denied: ClassificationDenialReason };
 
-function operation(request: GitHubRequest, binding: GitHubScope, head: RequestHead): Selection {
+function operation(
+  request: GitHubRequest,
+  binding: GitHubScope,
+  head: RequestHead,
+  createUUID: () => string,
+): Selection {
   if (binding.scope !== undefined) {
     if (matchesOrigin("https://api.github.com", request)) {
       if (binding.scope === "github-repository" && request.target.path.startsWith("/repos/")) {
@@ -323,7 +332,7 @@ function operation(request: GitHubRequest, binding: GitHubScope, head: RequestHe
     }
     let pull: PreparedGitHubPullScope | undefined;
     try {
-      pull = draftScope(request, binding, head);
+      pull = draftScope(request, binding, head, createUUID);
     } catch {
       // Invalid UTF-8 or ambiguous JSON members: refused and logged like any other bad draft.
       pull = undefined;

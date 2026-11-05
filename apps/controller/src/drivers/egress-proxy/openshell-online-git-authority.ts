@@ -271,7 +271,7 @@ export function createOpenShellOnlineGitAuthority(
       if (!validBinding(binding, request)) {
         return deny("binding_mismatch");
       }
-      const selection = selectGitHubRequest(request, binding);
+      const selection = selectGitHubRequest(request, binding, randomUUID);
       if ("denied" in selection) {
         return deny(selection.denied);
       }
