@@ -1,3 +1,5 @@
+import { setTimeout as delay } from "node:timers/promises";
+import { waitForRevisionPass } from "./postgres-worker-revision-support.mjs";
 import { deferred } from "./deferred.ts";
 import { waitFor } from "./wait-for.mjs";
 import { buffer } from "node:stream/consumers";
@@ -76,15 +78,17 @@ export async function narrowOnlineGitJourney(
   return repositoryGitJourney(t, exercise, policy);
 }
 
-export async function repositorySetJourney(t: TestContext) {
-  return repositoryGitJourney(t);
+export async function repositorySetJourney(t: TestContext, standing = false) {
+  return repositoryGitJourney(t, undefined, {}, standing);
 }
 
 async function repositoryGitJourney(
   t: TestContext,
   narrow?: (journey: NarrowJourney) => Promise<void>,
   policy: NarrowPolicy = {},
+  standing = false,
 ) {
+  const selectedRepositories = repositorySet.slice(0, standing ? 1 : 2);
   const workspace = "selected-journey";
   const tls = await harnessTlsFixture(t);
   const tokenPath = join(tls.directory, "gateway-token");
@@ -240,7 +244,8 @@ async function repositoryGitJourney(
           selection: {
             entries: repositorySet,
             permissions: repositorySetPermissions,
-            selectedRepositoryIds: repositorySet.slice(0, 2).map((entry) => entry.repositoryId),
+            selectedRepositoryIds: selectedRepositories.map((entry) => entry.repositoryId),
+            ...(standing && { allowStandingApproval: true }),
           },
         }),
     beforeIssue: async () => {
@@ -269,7 +274,7 @@ async function repositoryGitJourney(
   const driver = new GitHubRepositoryPolicy(
     { driverId: peer.registry.backendId, backendId: peer.registry.backendId },
     peer.registry,
-    { sessionDurationSeconds: narrow && policy.draftPull === false ? 180 : 600 },
+    { sessionDurationSeconds: standing ? 90 : narrow && policy.draftPull === false ? 180 : 600 },
   );
   f.controller.registerDriver(driver);
   f.controller.selectDriver("repo", driver.id);
@@ -302,8 +307,28 @@ async function repositoryGitJourney(
     configurationId: configuration.id,
     repositoryBindings: narrow
       ? [{ repositoryRef: "source", profile: "git-write" }]
-      : repositorySet.slice(0, 2).map(({ repositoryRef }) => ({ repositoryRef })),
+      : selectedRepositories.map(({ repositoryRef }) => ({ repositoryRef })),
   });
+  if (standing) {
+    const [review] = await f.controller.listAgentStandingApprovalScopes(
+      f.actor.id,
+      f.namespace.id,
+      agent.id,
+    );
+    assert.ok(review);
+    await f.controller.updateAgent(f.actor.id, {
+      namespaceId: f.namespace.id,
+      agentId: agent.id,
+      configurationId: configuration.id,
+      repositoryStandingApproval: {
+        repositoryRef: "A",
+        approvalId: randomUUID(),
+        approved: true,
+        duration: "until-removed",
+        expectedScopeFingerprint: review.scopeFingerprint,
+      },
+    });
+  }
   const revision = (admitted = await f.controller.deployAgent(
     f.actor.id,
     { namespaceId: f.namespace.id, agentId: agent.id },
@@ -315,7 +340,7 @@ async function repositoryGitJourney(
   );
   assert.equal(queued.rows.length, 1);
   const work = { ...revision, idempotencyKey: queued.rows[0].idempotency_key };
-  assert.equal(revision.repositoryCredentials!.bindings.length, narrow ? 1 : 2);
+  assert.equal(revision.repositoryCredentials!.bindings.length, narrow || standing ? 1 : 2);
   assert.equal(revision.executionAdmission.version, 5);
   assert.equal(revision.egressPlan!.repositoryGitAuthorization, "online-request");
   Object.assign(state, {
@@ -402,7 +427,15 @@ async function repositoryGitJourney(
     implementation: kube.implementation,
     validateRepositoryCredentials: kube.validateRepositoryCredentials.bind(kube),
     validateExecutionAdmission: kube.validateExecutionAdmission.bind(kube),
+    ...(standing && {
+      verifyRepositoryExecution: (r: AgentRevision, signal: AbortSignal) =>
+        runtime.verifyExecution(r, signal),
+      observeRevision: async () => ({ state: "running" as const }),
+    }),
     async prepareRevision(r: AgentRevision, custody: ComputeRevisionContext) {
+      if (standing && acked) {
+        return f.compute.prepareRevision(r);
+      }
       let stage = "provider-bootstrap";
       try {
         const p = await runtime.prepare(
@@ -479,21 +512,27 @@ async function repositoryGitJourney(
       }
     },
   };
-  await f.start(compute, {
-    ...{ repositoryGitMaterial: peer.prepared.revisionMaterial },
-    transformDrivers: (d: { installation: { drivers: object } }) => ({
-      ...d,
-      repositoryPolicy: driver,
-      protectedDriver: owner,
-      sandboxDriver: sandbox,
-      proxyDriver: proxy,
-      credentialGatewayDriver: gateway,
-      installation: {
-        ...d.installation,
-        drivers: { ...d.installation.drivers, credential_gateway: { id: gateway.id } },
+  const workerEvents: { event?: string; code?: string; outcome?: string }[] = [];
+  const start = () =>
+    f.start(compute, {
+      emit: ({ event, code, outcome }: { event?: string; code?: string; outcome?: string }) => {
+        if (standing) workerEvents.push({ event, code, outcome });
       },
-    }),
-  });
+      ...{ repositoryGitMaterial: peer.prepared.revisionMaterial },
+      transformDrivers: (d: { installation: { drivers: object } }) => ({
+        ...d,
+        repositoryPolicy: driver,
+        protectedDriver: owner,
+        sandboxDriver: sandbox,
+        proxyDriver: proxy,
+        credentialGatewayDriver: gateway,
+        installation: {
+          ...d.installation,
+          drivers: { ...d.installation.drivers, credential_gateway: { id: gateway.id } },
+        },
+      }),
+    });
+  await start();
   try {
     try {
       await f.work(work, "succeeded");
@@ -584,6 +623,76 @@ async function repositoryGitJourney(
     });
     assert.equal(acked, true);
     assert.ok(state.installed, "production owner material reached the authenticated recipient");
+    if (standing) {
+      const credentials = revision.repositoryCredentials!;
+      const ownerKey = {
+        namespaceId: revision.namespaceId,
+        agentId: agent.id,
+        revisionId: revision.id,
+      };
+      const attempts = () =>
+        f.state.read((v) => v.repositorySessions.listRevisionAttempts(ownerKey));
+      const execution = await waitForRevisionPass(
+        "standing execution recorded",
+        f,
+        revision,
+        () => f.state.read((v) => v.repositorySessions.findStandingExecution(ownerKey)),
+        15_000,
+      );
+      assert.ok(execution);
+      const initialSandbox = wire.world.id;
+      const first = (await attempts())[0]!;
+      const request = () => peer.exchange(() => evaluate(probe), state.installed!, false);
+      assert.equal(((await request()) as { status: number }).status, 200);
+      assert.deepEqual(peer.gh.issuesOfTokens[0].repositoryIds, [73]);
+      await f.stop();
+      // Cross the original admitted session deadline in real time. Keep the exact
+      // running Sandbox and provider; only the worker is restarted.
+      await delay(Math.max(0, credentials.deadlineWallMs + 100 - Date.now()));
+      assert.equal((await evaluate(probe)).decision, 2, "expired session fails closed");
+      await start();
+      await waitForRevisionPass(
+        "selected repository successor installed",
+        f,
+        revision,
+        async () => {
+          await peer.prepared.maintain();
+          const rows = await attempts();
+          if (!rows.some((row) => row.phase === "open" && row.sessionId !== first.sessionId)) {
+            return;
+          }
+          return (await evaluate(probe)).decision === 1 ? true : undefined;
+        },
+        60_000,
+      );
+      await f.stop();
+      const successor = (await attempts()).find((row) => row.phase === "open")!;
+      assert.notEqual(successor.sessionId, first.sessionId);
+      assert.equal(successor.predecessorAdmissionId, first.admissionId);
+      assert.equal(successor.executionFingerprint, execution.fingerprint);
+      assert.ok(successor.deadlineWallMs > credentials.deadlineWallMs);
+      assert.equal(wire.world.id, initialSandbox, "renewal preserves the running Sandbox");
+      assert.equal((await f.currentAgent(agent))?.activeRevisionId, revision.id);
+      assert.equal(peer.gh.issuesOfTokens.length, 2);
+      assert.deepEqual(peer.gh.issuesOfTokens[1].repositoryIds, [73]);
+      assert.deepEqual(peer.gh.issuesOfTokens[1].permissions, repositorySetPermissions);
+      assert.equal(((await request()) as { status: number }).status, 200);
+      await f.controller.removeAgentStandingApproval(f.actor.id, {
+        ...ownerKey,
+        approvalId: credentials.standingApprovalId!,
+        expectedGeneration: credentials.standingApprovalGeneration!,
+      });
+      const before = peer.originCalls();
+      assert.equal(
+        (await evaluate(probe)).decision,
+        2,
+        "withdrawal closes the still-live successor",
+      );
+      assert.equal(peer.originCalls(), before);
+      assert.equal(wire.world.id, initialSandbox);
+      await peer.prepared.maintain();
+      return;
+    }
     if (narrow) {
       assert.equal(revision.repositoryCredentials!.bindings[0]!.profile, "git-write");
       assert.deepEqual(peer.gh.issuesOfTokens[0].repositoryIds, [73]);
@@ -865,6 +974,18 @@ async function repositoryGitJourney(
       "member removal denies before provider traffic",
     );
     assert.equal(withdrawn.decision, 2, "withdrawal closes the same native route");
+  } catch (error) {
+    if (standing) {
+      t.diagnostic(
+        JSON.stringify({
+          workerEvents: workerEvents.slice(-20),
+          blocked: runtime["states"].get(revision.id)?.blocked,
+          pending: runtime["states"].get(revision.id)?.entry?.pending,
+          unobserved: runtime["states"].get(revision.id)?.entry?.unobserved,
+        }),
+      );
+    }
+    throw error;
   } finally {
     await f.stop();
   }

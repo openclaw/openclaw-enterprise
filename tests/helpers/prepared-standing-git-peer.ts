@@ -32,6 +32,7 @@ export function clockBehind(behindMs: number): Clock {
 }
 
 export interface SelectedRepositories {
+  allowStandingApproval?: true;
   selectedRepositoryIds: readonly string[];
   entries: readonly { repositoryRef: string; repositoryId: string; repository: string }[];
   permissions: Readonly<Record<string, "read" | "write">>;
@@ -86,7 +87,12 @@ export async function standingGitOrigin(
       ? selection.entries.map((entry) => ({
           ...entry,
           namespaces: [
-            { namespaceId, profiles: ["github-repository"], permissions: selection.permissions },
+            {
+              namespaceId,
+              profiles: ["github-repository"],
+              permissions: selection.permissions,
+              ...(selection.allowStandingApproval && { allowStandingApproval: true }),
+            },
           ],
         }))
       : [

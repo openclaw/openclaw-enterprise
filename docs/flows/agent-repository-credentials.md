@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
 updated: "2026-11-05"
-last_updated_session: authoring-run/1247283d-6d2a-4d1f-9804-287f1ae13518
+last_updated_session: authoring-run/97c319f2-8bb0-4db4-9cfb-50478db52fdb
 ---
 
 # Agent repository credential flow
@@ -308,6 +308,10 @@ the selected Installation policy, or the registered Repo Driver when unbound. Co
 policy selection prevents startup. The worker rechecks [eligibility](../../packages/occ/src/repository-approval.ts)
 under Namespace then Agent locks. Withdrawal or a changed scope fingerprint raises
 `REPOSITORY_STANDING_POLICY_CHANGED` before successor release.
+The [GitHub registry](../../apps/controller/src/drivers/repo/github/credentials/registry.ts)
+includes canonical permissions and exact repository identity in `github-repository`
+approval scopes. Delivery rechecks both registry opt-ins and the current exact
+grant before material selection; standing delivery requires one binding.
 
 Prepared native Git issues the first token after activation publishes the version. Deployment runs
 `apps/controller/src/worker.ts:ControllerWorker.assertRepositoryGitMaterial`
@@ -391,6 +395,8 @@ denied before reaching the provider, and chat continues.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 14:57: Bind selected-repository standing approval to exact permissions and recheck delivery. (authoring-run/97c319f2-8bb0-4db4-9cfb-50478db52fdb - a383313636fc348a2325c0b1f6e05ae80327fd30)
 
 - 2026-11-05 13:46: Admit CLI cache hints without caching authorization. (authoring-run/1247283d-6d2a-4d1f-9804-287f1ae13518 - a825988313)
 
