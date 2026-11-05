@@ -16,7 +16,46 @@ author: cooktheryan
 
 Teams that keep source in GitLab must mirror their projects to GitHub or run Agents without repository access. We propose binding an Agent to one GitLab.com project. The selected Credential Proxy would authenticate approved requests with a project service account’s personal access token (PAT). The Agent would receive neither the PAT nor general API access.
 
-The design includes opening a draft merge request from an approved branch. Maintainers still need to choose who supplies and rotates the PAT.
+The design includes opening a draft merge request from an approved branch.
+
+### Decision for the first supported path
+
+The first supported GitLab path uses a **protected live static PAT**. It does
+not depend on Token Service preparation. Token Service preparation remains a
+future replacement source and is not part of GitLab composition until its
+provider contract and implementation are accepted.
+
+The operator owns the GitLab service account and its PAT. The protected
+credential owner receives the PAT through the existing protected service-input
+path, keeps it outside Agent files and logs, and lends it only to an admitted
+request. The Credential Proxy remains the authority for the final send: it
+checks the current execution, Agent revision, project, profile, operation, and
+withdrawal state immediately before GitLab I/O. A valid PAT does not authorize
+a request by itself.
+
+The supported lifecycle is:
+
+1. **Create:** The operator creates a project service account and PAT in
+   GitLab, with only the Git and draft-merge-request permissions qualified by
+   the live acceptance run. OCE accepts the PAT only through its protected
+   credential input. A broad bootstrap token or an experimental token-creation
+   flow is not a supported production prerequisite.
+2. **Rotate:** The operator stages a replacement PAT in the protected
+   credential input. New sends use the replacement after configuration reload
+   and final authorization. The old PAT remains available only until admitted
+   sends using it finish or reach their deadline, then the operator revokes it
+   in GitLab. Rotation never widens the OCE project or profile grant.
+3. **Expire:** An expired, revoked, missing, or unqualified PAT fails closed
+   before GitLab I/O. The first path does not mint or renew PATs.
+4. **Retire:** Withdrawal closes new use before the operator removes the
+   protected input and revokes the PAT in GitLab. Existing sends may finish
+   only if they already passed the final authorization check. An uncertain
+   mutation remains unresolved and is never replayed automatically.
+
+This choice is a release gate, not an implementation claim. Live GitLab
+qualification must prove that the selected service-account creation and
+permission procedure works on a supported GitLab.com project before the
+composition is enabled.
 
 ## Goals
 
@@ -88,9 +127,8 @@ Dashed arrows show the proposed GitLab path. The sender uses the selected PAT so
 ```mermaid
 flowchart TB
     Operator[Operator] -.->|binds project and profile| OCC[OCC]
-    Operator -.->|sets or rotates PAT| Secret[Protected secret]
-    Source[Token Service with GitLab adapter] -.->|prepares PAT| Proxy[Credential Proxy]
-    Secret -.->|supplies live PAT| Proxy
+    Operator -.->|sets or rotates PAT| Secret
+    Secret[Protected PAT input] -.->|supplies live PAT| Proxy
     Agent[Agent in paired Sandbox] -.->|Git or approved API request| Proxy
     Proxy -.->|checks grant for this request| OCC
     Proxy -.->|sends authorized request| GitLab[GitLab.com project]
@@ -98,25 +136,25 @@ flowchart TB
 
 ## Delivery and verification
 
-Use one running Agent, the selected Credential Proxy and paired Sandbox, and an authorized GitLab.com project. Record the installed versions, tier, project role, and token grants.
+Use one running Agent, the selected Credential Proxy and paired Sandbox, and an authorized GitLab.com project. Record the installed versions, tier, project role, token grants, PAT expiry, and rotation result.
 
 1. Clone a commit absent locally. Push a known commit to the allowed branch and verify its SHA at GitLab. Open a draft MR and verify its draft status, project, branches, and head commit in GitLab. Drop the reply to a separate create. Verify recovery sends no second `POST`; if the original operation cannot be identified in GitLab, keep it unresolved for an authorized operator.
-2. Attempt a forbidden push. Verify no upload reaches GitLab and that the denial is attributable in OCE audit. Withdraw the OCE binding while the PAT is still valid. Try a fresh fetch from the same Agent. Verify denial while its conversation still works. Use an observer that saw the allowed Git traffic to confirm zero upstream fetch requests. Record any gap in that observation.
+2. Attempt a forbidden push and a request for the nearest forbidden project or profile. Verify that both requests are denied before GitLab I/O and that each denial is attributable in OCE audit. Withdraw or reassign the OCE binding while the PAT is still valid. Try a fresh fetch and send from the same Agent. Verify denial while its conversation still works. Use an observer that saw the allowed Git traffic to confirm zero upstream requests after withdrawal or reassignment. Record any gap in that observation.
 3. Verify successful writes and uncertain creates have attributable audit evidence with the provider, project, actor, and OCE operation identity. Confirm audit records contain no PAT or request body. Submit a revision with both provider selections and verify admission refuses it while single-provider GitHub and GitLab revisions remain independently supported.
 
-The [implementation plan](../plans/0029-gitlab-repository-credentials.md) covers credential failures and token non-disclosure. This spike ran no live GitLab operations. Stock OpenShell’s refusal of unqualified Git access is a separate result.
+The [implementation plan](../plans/0029-gitlab-repository-credentials.md) covers credential failures and token non-disclosure. AWS qualification of the disposable OCE deployment reached a ready Agent and real model turn, but it did not qualify GitLab composition or live GitLab I/O. The PR branch's four GitLab provider conformance files passed 20 tests on the managed host; those tests do not establish Installation composition, final-send authorization, withdrawal, or Agent delivery. Stock OpenShell’s refusal of unqualified Git access is a separate result.
 
 ## Rationale and alternatives
 
-GitLab.com Free supports project service accounts, and fine-grained permissions can bound project Git and REST operations. The documented service-account API does not describe a stable fine-grained token creation procedure, so validate setup and rotation before selecting this path. OCE must enforce its own project and operation boundary.
+GitLab.com supports project service accounts, and GitLab documents permissions that can bound project Git and REST operations. The documented service-account API does not establish a stable fine-grained token creation procedure for this release. The first path therefore requires an operator-supplied protected PAT and a live qualification of its exact creation, scope, expiry, rotation, and revocation procedure. OCE must enforce its own project and operation boundary independently of the PAT's permissions.
 
 Support lets teams keep GitLab as their source of truth and retain their review and CI path while using the managed workflow already available for GitHub.
 
 ## Unresolved questions
 
-1. **Credential maintainers:** Should GitLab use a live static secret or a prepared-token provider? Which owner handles expiry, replacement, custody, and retirement for the selected source?
-2. **Product maintainers:** Can a supported GitLab.com project-service-account flow create the required fine-grained PAT without an experimental or lingering broad token, and how should rotation preserve its grants without interrupting active bindings?
-3. **Credential and Repo maintainers:** Which exact GitLab API operations and audit details do the selected profiles require?
+1. **Product maintainers:** Can the supported GitLab.com project-service-account procedure create the required PAT without an experimental or lingering broad token, and do its expiry and rotation steps preserve the qualified grants without interrupting active bindings?
+2. **Credential and Repo maintainers:** Which exact GitLab API operations and audit details do the selected profiles require?
+3. **Future Token Service maintainers:** What provider contract will replace the protected live PAT, including preparation, custody, renewal, retirement, and the same final-send authorization boundary?
 
 ## References
 
