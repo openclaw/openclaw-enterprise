@@ -5,7 +5,7 @@ rfc: ../rfcs/0029-dedicated-openclaw-plugin-import.md
 # Deliver imported plugins to dedicated OpenClaw Agents
 
 - **ID** RFC-0029
-- **Delivery status** In progress
+- **Delivery status** Completed
 - **Source baseline** `516ee6d87`
 
 ## Implementation
@@ -28,12 +28,14 @@ The first implementation uses the existing dedicated OpenShell Sandbox and Crede
 - Publish the same package name and version with different files in two Namespaces. Verify each Agent selects its own release. Use the other release ID to exercise denied reads, saves and deployments. Exercise an unauthorized publication, malformed or escaping packages, and a digest mismatch through the actual APIs. Check retained releases and Agent state after failure. On a managed Gateway, attempt native skill installation through its RPC and verify refusal before file or dependency changes. Check the OCE-selected skill still works.
 - Register integration coverage in the owning CI lanes. Record runtime image digest, launched binary version, selected release digest and assertion results against the [dedicated OpenClaw setup](../../docs/testing/openshell.md#native-openclaw-with-k3d). Capture the Console selection and result separately from fixture coverage.
 
-The Console import, Namespace authorization, PostgreSQL persistence and managed Gateway refusal have passed their integration checks. Dedicated worker skill execution and hosted MCP enforcement are in qualification. See the [plugin reference](../../docs/reference/agent-plugins.md) for the supported workflow.
+Both dedicated Kubernetes cases passed on `cd62c0ed6`. The worker read and ran two skill releases, rejected a workspace conflict and recovered after its removal. The managed Gateway refused native install and upload. The hosted MCP case verified a successful native call, a proxy denial before provider access, account replacement and withdrawal. The [PR verification](https://github.com/openclaw/openclaw-enterprise/pull/4734) records the running image, source, Console walkthrough and results. The [plugin reference](../../docs/reference/agent-plugins.md) describes the supported workflow.
 
 ## Manual Notes
 
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 04:37 UTC. Completed the dedicated Kubernetes verification on `cd62c0ed6`.
 
 - 2026-11-05 01:55 UTC. Drafted against `516ee6d87` for Codex session `01a1a93c-472f-70c0-b038-f7f673ffdc1e`.
