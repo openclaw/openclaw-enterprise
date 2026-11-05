@@ -112,6 +112,10 @@ test("the native pre-push hook runs the pinned formatter and blocks formatting f
   const install = installHooks(installationRoot);
   assert.equal(install.status, 0, install.stderr);
 
+  // Fixture setup must not invoke the contributor's hooks or signing agent.
+  const setupHooks = join(installationRoot, "empty-setup-hooks");
+  await mkdir(setupHooks);
+
   // The common hook also runs in sibling worktrees whose scripts were never installed.
   const commit = spawnSync(
     "git",
@@ -120,7 +124,10 @@ test("the native pre-push hook runs the pinned formatter and blocks formatting f
       "user.name=Fixture",
       "-c",
       "user.email=fixture@example.test",
+      "-c",
+      `core.hooksPath=${setupHooks}`,
       "commit",
+      "--no-gpg-sign",
       "--allow-empty",
       "-m",
       "Fixture",
@@ -129,10 +136,11 @@ test("the native pre-push hook runs the pinned formatter and blocks formatting f
   );
   assert.equal(commit.status, 0, commit.stderr);
   const fixtureRoot = join(await temporaryDirectory(t, "openclaw-hook-worktree-"), "checkout");
-  const worktree = spawnSync("git", ["worktree", "add", "--detach", fixtureRoot], {
-    cwd: installationRoot,
-    encoding: "utf8",
-  });
+  const worktree = spawnSync(
+    "git",
+    ["-c", `core.hooksPath=${setupHooks}`, "worktree", "add", "--detach", fixtureRoot],
+    { cwd: installationRoot, encoding: "utf8" },
+  );
   assert.equal(worktree.status, 0, worktree.stderr);
 
   for (const filename of [".prettierrc.json", ".prettierignore", ".bun-version"]) {
