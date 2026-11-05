@@ -5,7 +5,7 @@ import type {
   OAuthConnectionTemplateVersion,
 } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError, ResourceStateConflictError } from "../errors.ts";
-import type { ConnectionTemplateRepository } from "./platform-state.ts";
+import type { ConnectionTemplateRepository, StoredOAuthClient } from "./platform-state.ts";
 import type { PostgresQueryClient } from "./postgres-work-queue.ts";
 
 type Row = Record<string, unknown>;
@@ -82,7 +82,7 @@ function templateFromRow(row: Row): Readonly<ConnectionTemplate> {
   });
 }
 
-function registrationFromRow(row: Row): Readonly<OAuthClient> {
+function registrationFromRow(row: Row): Readonly<StoredOAuthClient> {
   return immutableCopy({
     id: text(row, "id"),
     ...(row.namespace_id === null ? {} : { namespaceId: text(row, "namespace_id") }),
@@ -93,7 +93,7 @@ function registrationFromRow(row: Row): Readonly<OAuthClient> {
     ...(row.revocation_url === null ? {} : { revocationUrl: text(row, "revocation_url") }),
     tokenEndpointAuthMethod:
       row.token_endpoint_auth_method as OAuthClient["tokenEndpointAuthMethod"],
-    credentialRefreshDriverId: text(row, "credential_refresh_driver_id"),
+    ...(row.secret_driver_id === null ? {} : { secretDriverId: text(row, "secret_driver_id") }),
     createdAt: timestamp(row, "created_at"),
   });
 }
@@ -241,14 +241,14 @@ export function postgresConnectionTemplates(
       await requireInitialized();
       await client.query(
         `INSERT INTO occ.oauth_clients
-         (id, namespace_id, issuer, client_id, credential_refresh_driver_id, created_at, display_name, token_url, revocation_url, token_endpoint_auth_method, cleanup_after)
+         (id, namespace_id, issuer, client_id, secret_driver_id, created_at, display_name, token_url, revocation_url, token_endpoint_auth_method, cleanup_after)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
         [
           registration.id,
           registration.namespaceId ?? null,
           registration.issuer,
           registration.clientId,
-          registration.credentialRefreshDriverId,
+          registration.secretDriverId ?? null,
           registration.createdAt,
           registration.displayName,
           registration.tokenUrl,

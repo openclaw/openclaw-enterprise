@@ -84,6 +84,13 @@ or Harness change keeps the last applied model, provider, Harness, and execution
 mode. The authentication method can still change: the form clears the prior
 credential and shows the new method's fields without changing the model or JSON.
 
+Before merging a model selection, `canMergeModelCatalog` checks the provider list
+that the selection would update. If the list is malformed, the form keeps the
+draft JSON as typed, opens **Advanced settings**, and focuses **Configuration JSON**.
+The warning names the affected `models.providers.<provider>.models` field. The
+edit sends no write request. [Correct the list and retry](../../reference/console/create-and-deploy.md#create-an-agent)
+to apply the model.
+
 Submission still matches the primary Configuration model to `model.value` and
 uses the normal server validation.
 

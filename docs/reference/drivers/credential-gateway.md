@@ -121,8 +121,13 @@ bundle or native-refresh fallback is supported. See
 
 Device-login source types require the paired [Credential Refresh Driver](credential-refresh.md#device-authorization)
 to implement authorization. The Gateway registers the source before login and
-owns its attachment and access-token retrieval; it receives no device-grant
-refresh material.
+owns its attachment. It receives no device-grant refresh material.
+
+The trusted bundled OpenShell Backend reader performs ordinary metadata lookup
+and operator-mTLS export for plugin discovery. An external Credential Gateway
+retains the optional `withSourceToken(context, use)` callback. Both paths require
+the same exact Gateway owner match and Namespace checks; neither falls back to
+another Gateway or tenant. The bundled reader does not take over refresh.
 
 `withSourceToken(context, use)` supplies a usable `CredentialSourceToken` only for
 an authorized configuration callback: access token and optional trusted account
@@ -132,8 +137,9 @@ and successor-token persistence; this operation must never return refresh
 material. OCC does not implement refresh or retain the returned access token
 outside the callback.
 
-OCC authorizes the source before retrieval, and the callback rechecks authorization
-before provider I/O. Cancellation or a failed recheck does not undo refresh already
+OCC checks authorization, source readiness, attachment where required, and the
+selected catalog before retrieval, then rechecks before catalog dispatch.
+Cancellation or a failed recheck does not undo refresh already
 started by the external service. Source withdrawal and token readiness remain
 that service's responsibility.
 

@@ -54,7 +54,7 @@ import {
 } from "./console-agents-browser-helpers.ts";
 import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
-import { createRepositoryLaunchFixture } from "./console-agents-test-support.mjs";
+import { createRepositoryLaunchFixture } from "./console-agents-test-support.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   CHANNEL_BINDING_CONSOLE_REMEDY,

@@ -258,6 +258,10 @@
                     "label": "Credential Proxy"
                   },
                   {
+                    "page": "design/credential-proxy-architecture",
+                    "label": "Credential Proxy Architecture"
+                  },
+                  {
                     "page": "reference/security/credential-proxy",
                     "label": "Credential Proxy Threat Model"
                   },

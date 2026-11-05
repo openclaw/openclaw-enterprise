@@ -6,8 +6,8 @@ import { writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import test from "node:test";
+import { bindOpenShellPluginSourceReader } from "../../apps/controller/src/composition/openshell-plugin-source-reader.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { PENDING_OAUTH_CONNECTION } from "../../packages/contracts/src/index.ts";
 import { refreshPinnedOAuthGrant } from "../../apps/controller/src/drivers/credential-refresh/oauth-token-endpoint.ts";
@@ -520,105 +520,6 @@ test("disconnect fences an in-flight OAuth refresh response", async (t) => {
 });
 
 test(
-  "a delayed OAuth client rotation cannot overwrite the acknowledged rotation",
-  { timeout: 10_000 },
-  async (t) => {
-    const proto = await loader.load(
-      join(import.meta.dirname, "../fixtures/openshell-oauth-poc-wire.proto"),
-      { keepCase: true, longs: String, defaults: false },
-    );
-    const service = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
-    const server = new grpc.Server();
-    t.after(() => server.forceShutdown());
-    const workspace = "oauth-clients";
-    const registrationId = randomUUID();
-    const labels = {
-      "app.kubernetes.io/managed-by": "openclaw-enterprise",
-      "openclaw.dev/client-registration-id": registrationId,
-    };
-    const started = Promise.withResolvers();
-    const release = Promise.withResolvers();
-    const late = Promise.withResolvers();
-    const first = randomUUID();
-    const second = randomUUID();
-    let current = randomUUID();
-    let version = 1;
-    let name;
-    const provider = () => ({
-      metadata: { name, resource_version: String(version), labels },
-      type: name,
-    });
-    server.addService(service.service, {
-      GetProvider(call, reply) {
-        name = call.request.name;
-        reply(null, { provider: provider() });
-      },
-      async UpdateProvider(call, reply) {
-        const incoming = call.request.provider;
-        const value = incoming.credentials.OCE_CLIENT_SECRET;
-        // Hold dispatched work past caller cancellation so the second rotation can commit first.
-        if (value === first) {
-          started.resolve();
-          await release.promise;
-        }
-        const expected = incoming.metadata.resource_version;
-        if (expected && expected !== String(version)) {
-          late.resolve("conflict");
-          reply({ code: grpc.status.ABORTED, details: "resource version conflict" });
-          return;
-        }
-        current = value;
-        version++;
-        if (value === first) {
-          late.resolve("overwritten");
-        }
-        reply(null, { provider: provider() });
-      },
-      GetProviderCredentials(call, reply) {
-        assert.equal(call.request.name, name);
-        assert.equal(call.request.workspace_scope.workspace, workspace);
-        reply(null, { credentials: { OCE_CLIENT_SECRET: { value: current } } });
-      },
-    });
-    const port = await new Promise((resolve, reject) =>
-      server.bindAsync("127.0.0.1:0", grpc.ServerCredentials.createInsecure(), (error, value) =>
-        error ? reject(error) : resolve(value),
-      ),
-    );
-    const configuration = { endpoint: `http://127.0.0.1:${port}` };
-    const client = new GrpcOpenShellGatewayClient(configuration);
-    t.after(() => client.close());
-    const backend = createOpenShellBackend(
-      {
-        id: "openshell-test",
-        type: "openshell",
-        configuration,
-        drivers: { credential_refresh: "openshell-refresh" },
-      },
-      { gatewayClient: client },
-    );
-    const driver = new OpenShellCredentialRefreshDriver(
-      { clientWorkspace: workspace },
-      { id: "openshell-refresh", backend },
-    );
-    const signal = t.signal;
-    const context = { registrationId, issuer: "https://issuer.example", clientId: "app", signal };
-    const abort = new AbortController();
-    const interrupted = driver.rotateClientSecret({ ...context, signal: abort.signal }, first);
-    await started.promise;
-    abort.abort();
-    await assert.rejects(interrupted, { name: "AbortError" });
-    await driver.rotateClientSecret(context, second);
-    release.resolve();
-    assert.equal(await late.promise, "conflict");
-    assert.equal(
-      (await client.getProviderCredential(workspace, name, "OCE_CLIENT_SECRET", signal)).value,
-      second,
-    );
-  },
-);
-
-test(
   "OpenShell OAuth RPCs preserve workspace/key scope and isolate operator credential reads",
   { timeout: 20_000 },
   async (t) => {
@@ -788,6 +689,7 @@ test(
       { binaries: ["/usr/local/bin/codex"] },
       { backend },
     );
+    const reader = bindOpenShellPluginSourceReader(backend, driver);
     // Incoming IP-SAN transport must also carry the operator identity without SNI or bearer headers.
     const ipBackend = createOpenShellBackend({
       id: "openshell-ip",
@@ -804,13 +706,21 @@ test(
       { binaries: ["/usr/local/bin/codex"] },
       { backend: ipBackend },
     );
+    const ipReader = bindOpenShellPluginSourceReader(ipBackend, ipDriver);
     const context = {
       signal,
       namespace: { id: "namespace", name: workspace },
-      source: { id: sourceId, namespaceId: "namespace", driverId: driver.id, type: "codex-oauth" },
+      source: {
+        id: sourceId,
+        namespaceId: "namespace",
+        driverId: driver.id,
+        type: "codex-oauth",
+        ownerCapability: "credential_gateway",
+        state: "ready",
+      },
     };
     assert.equal(
-      await ipDriver.withSourceToken(context, async ({ accessToken }) => accessToken),
+      await ipReader.withSourceToken(context, async ({ accessToken }) => accessToken),
       current,
     );
     const seen = [];
@@ -818,11 +728,11 @@ test(
       seen.push(token);
       return "catalog-result";
     };
-    assert.equal(await driver.withSourceToken(context, consume), "catalog-result");
+    assert.equal(await reader.withSourceToken(context, consume), "catalog-result");
     // The fake server represents an already-published replacement. This proves a fresh RPC read,
     // not OAuth rotation; the separate real-gateway test proves refresh and committed storage.
     current = "synthetic-access-replacement";
-    await driver.withSourceToken(context, consume);
+    await reader.withSourceToken(context, consume);
     assert.deepEqual(
       seen.map(({ accessToken }) => accessToken),
       ["synthetic-access-first", "synthetic-access-replacement"],
@@ -830,7 +740,7 @@ test(
     assert.equal(seen[1].accountId, "account-fixture");
     assert.equal(rotations, 1, "source reads leave refresh coordination to GetProviderCredentials");
     denyRead = true;
-    await assert.rejects(driver.withSourceToken(context, consume), (error) => {
+    await assert.rejects(reader.withSourceToken(context, consume), (error) => {
       assert.equal(error.grpcStatus, grpc.status.PERMISSION_DENIED);
       assert.match(error.message, /GetProviderCredentials failed/);
       assert.equal(error.message.includes("synthetic-private-provider-error"), false);
@@ -855,7 +765,7 @@ test(
       [{ [key]: { value: current, expiration_time: { seconds: "1" } } }, /expired/],
     ]) {
       readResponse = credentials;
-      await assert.rejects(driver.withSourceToken(context, consume), error);
+      await assert.rejects(reader.withSourceToken(context, consume), error);
     }
     assert.equal(seen.length, 2, "denied and unusable values never reach plugin discovery");
     readResponse = { [key]: { value: current } };
@@ -872,7 +782,7 @@ test(
     pendingRead = true;
     const abort = new AbortController();
     const reason = new Error("credential discovery cancelled");
-    const pending = driver.withSourceToken({ ...context, signal: abort.signal }, consume);
+    const pending = reader.withSourceToken({ ...context, signal: abort.signal }, consume);
     const rejection = assert.rejects(pending, (error) => error === reason);
     await received.promise;
     abort.abort(reason);

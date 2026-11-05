@@ -34,28 +34,27 @@ as the reason Dedicated OpenClaw is disabled.
    Review defaults and choose an existing or new model Secret.
    **Start with default Preset** loads `default-codex`; **Start without Preset**
    skips Presets.
-3. Enter a unique name within the Namespace. Choose **Provider**, then
-   **Harness**. OpenAI offers **Codex** by default and **OpenClaw**;
-   Anthropic offers only **OpenClaw**. Codex uses Dedicated **Execution mode**. OpenClaw
-   starts Embedded without a Sandbox Driver, or Dedicated (OpenAI only; **Runtime details**)
-   with one that provisions it. Anthropic OpenClaw stays Embedded.
+3. Name the Agent uniquely within its Namespace. Choose **Provider**, then
+   **Harness**. OpenAI offers **Codex** (default, Dedicated **Execution mode**)
+   and **OpenClaw**. Anthropic offers only Embedded **OpenClaw**. OpenAI OpenClaw
+   starts Embedded unless a Sandbox Driver provisions Dedicated (**Runtime details**).
    For Codex, choose **OpenAI API key**, **Service Accounts**, or **ChatGPT
    OAuth** ([experimental](../../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login)).
-   OpenClaw uses the provider's API key.
-   Use [OpenAI API keys](https://platform.openai.com/api-keys), or
-   [OpenAI admin](https://admin.openai.com/) → your workspace → **Service accounts**
-   to create a token with Codex scope.
-   Unless a Preset binds one or you use ChatGPT OAuth, choose a model Secret or
-   **Create new Secret...**.
-   Choose a model from the starter list or select **Enter model ID manually**.
-   **Choose a model from the list** returns. Switching modes retains that provider's listed models; returning with an unlisted custom ID
-   requires another selection. Other settings remain.
-   No model is preselected.
+   OpenClaw uses provider API keys. Get an
+   [OpenAI API key](https://platform.openai.com/api-keys) or create a Codex-scoped
+   token in [OpenAI admin](https://admin.openai.com/) → workspace → **Service accounts**.
+   Choose a model Secret or **Create new Secret...** unless a Preset binds one
+   or you use ChatGPT OAuth.
+   Choose a starter model or **Enter model ID manually**. **Choose a model from
+   the list** returns. Switching keeps listed models and other settings.
+   Unlisted IDs require reselection on return. No model is preselected.
 4. Check Installation, credential, and runtime model support. Primary and
-   fallback models must share a supported provider and Harness. In **Advanced
-   settings**, selections keep unrelated JSON edits; **Reset template** replaces
-   them. If `plugins.allow` blocks Codex, use an array of strings or remove
-   it in **Configuration JSON**, then retry.
+   fallback models must share a supported provider and Harness. Selections keep
+   unrelated JSON edits. **Advanced settings** → **Reset template** replaces them.
+   If a malformed provider list or Codex `plugins.allow` blocks a model change,
+   the form preserves draft text and focuses **Configuration JSON**.
+   Fix or remove the field, then retry. Provider lists take arrays of
+   model objects with string `id` values. `plugins.allow` takes a string array.
 5. Under **Repository access**, optionally select up to 16 approved repositories
    and set their [access levels](repository-access.md). Kubernetes supports Codex (Dedicated) and Embedded
    OpenClaw without a Sandbox Driver, not Dedicated OpenClaw. Use Codex for repositories

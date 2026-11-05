@@ -86,6 +86,15 @@ export function createConnectionTemplateFixture(
             tokenEndpointAuthMethod: "none",
             createdAt,
           },
+          {
+            id: "ccr_00000000-0000-4000-8000-000000000007",
+            displayName: "Customer operations reporting",
+            issuer: "https://identity.example.com/organizations/customer-operations",
+            tokenUrl: "https://identity.example.com/organizations/customer-operations/token",
+            clientId: "customer-reporting-demo",
+            tokenEndpointAuthMethod: "client_secret_basic",
+            createdAt,
+          },
         ]
       : [];
   const previousVersions: Record<string, unknown>[] = [];

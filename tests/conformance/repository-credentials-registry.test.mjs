@@ -4,6 +4,8 @@ import { chmod, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   resolveGitHubRepositoryBinding,
+  resolveGitHubStandingApprovalScope,
+  createGitHubRepositoryDeliveryResolver,
   validateGitHubRepositoryRegistry,
 } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { loadGitHubRepositoryRegistry } from "../../apps/controller/src/composition/repository-credentials/registry.ts";
@@ -81,7 +83,7 @@ test("canonical registry fingerprints bind exact authority and the selected Name
       value.maximumDurationSeconds = 3600;
     },
     "repository identity": (value) => {
-      value.repositories[0].repositoryId = "34568";
+      value.repositories[0].repositoryId = "34569";
     },
     "repository name": (value) => {
       value.repositories[0].repository = "example/renamed";
@@ -351,5 +353,114 @@ test("registry loader accepts a bounded projected regular file and rejects unsaf
   await assert.rejects(
     loadGitHubRepositoryRegistry(directory, "github-primary"),
     /invalid-repository-registry/,
+  );
+});
+
+test("selected repository standing approval binds permissions and rechecks delivery policy", () => {
+  const input = registryInput();
+  input.allowStandingApprovals = true;
+  input.repositories[0].namespaces = [
+    {
+      namespaceId: "namespace-a",
+      profiles: ["github-repository"],
+      permissions: { pull_requests: "write", metadata: "read", contents: "write" },
+      allowStandingApproval: true,
+    },
+  ];
+  input.repositories.push({
+    ...structuredClone(input.repositories[0]),
+    repositoryRef: "second",
+    repositoryId: "34568",
+    repository: "example/second",
+  });
+  const registry = validateGitHubRepositoryRegistry(input);
+  const request = { namespaceId: "namespace-a", repositoryRef: "application" };
+  const binding = resolveGitHubRepositoryBinding(registry, request);
+  const scopeInput = { namespaceId: request.namespaceId, binding };
+  const scope = resolveGitHubStandingApprovalScope(registry, scopeInput);
+  assert.equal(scope.repositorySelection, "repository");
+  assert.equal(scope.repositoryId, "34567");
+  assert.equal(scope.repository, "example/application");
+  assert.deepEqual(scope.apiPermissions, {
+    contents: "write",
+    metadata: "read",
+    pull_requests: "write",
+  });
+  const revision = {
+    id: "revision",
+    namespaceId: request.namespaceId,
+    repositoryCredentials: { bindings: [binding], standingApprovalId: "approval" },
+  };
+  assert.deepEqual(createGitHubRepositoryDeliveryResolver(registry)(revision).delivery, {
+    scope: "github-repository",
+    installationId: "67890",
+    repositories: [{ repositoryId: "34567", repository: "example/application" }],
+    permissions: scope.apiPermissions,
+  });
+  const reordered = structuredClone(input);
+  reordered.repositories[0].namespaces[0].permissions = {
+    contents: "write",
+    metadata: "read",
+    pull_requests: "write",
+  };
+  assert.deepEqual(
+    resolveGitHubStandingApprovalScope(validateGitHubRepositoryRegistry(reordered), scopeInput),
+    scope,
+    "permission order cannot invalidate the same reviewed authority",
+  );
+  for (const mutate of [
+    (value) => {
+      delete value.allowStandingApprovals;
+    },
+    (value) => {
+      delete value.repositories[0].namespaces[0].allowStandingApproval;
+    },
+  ]) {
+    const withdrawn = structuredClone(input);
+    mutate(withdrawn);
+    const current = validateGitHubRepositoryRegistry(withdrawn);
+    assert.deepEqual(resolveGitHubRepositoryBinding(current, request), binding);
+    assert.equal(resolveGitHubStandingApprovalScope(current, scopeInput), undefined);
+    assert.throws(
+      () => createGitHubRepositoryDeliveryResolver(current)(revision),
+      /Standing repository policy/,
+    );
+    assert.doesNotThrow(
+      () =>
+        createGitHubRepositoryDeliveryResolver(current)({
+          ...revision,
+          repositoryCredentials: { bindings: [binding] },
+        }),
+      "withdrawing standing permission does not reject an independent finite grant",
+    );
+  }
+  for (const mutate of [
+    (value) => {
+      value.repositories[0].namespaces[0].permissions.contents = "read";
+    },
+    (value) => {
+      value.repositories[0].repositoryId = "34569";
+    },
+    (value) => {
+      value.repositories[0].repository = "example/renamed";
+    },
+  ]) {
+    const changed = structuredClone(input);
+    mutate(changed);
+    const current = validateGitHubRepositoryRegistry(changed);
+    assert.equal(resolveGitHubStandingApprovalScope(current, scopeInput), undefined);
+    assert.throws(
+      () => createGitHubRepositoryDeliveryResolver(current)(revision),
+      /Standing repository policy/,
+    );
+  }
+  assert.throws(
+    () =>
+      createGitHubRepositoryDeliveryResolver(registry)({
+        ...revision,
+        repositoryCredentials: { ...revision.repositoryCredentials, bindings: [binding, binding] },
+      }),
+    /Standing repository policy/,
+    "standing approval never authorizes multiple bindings",
   );
 });

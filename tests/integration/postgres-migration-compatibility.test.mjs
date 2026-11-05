@@ -2042,8 +2042,8 @@ test(
           try {
             await db.app.query(
               `INSERT INTO occ.oauth_clients
-                 (id,namespace_id,display_name,issuer,client_id,token_url,token_endpoint_auth_method,credential_refresh_driver_id,created_at)
-               VALUES ($1,$2,'Namespace client','https://issuer.example.test','shared-client','https://issuer.example.test/token','none','refresh',now())`,
+                 (id,namespace_id,display_name,issuer,client_id,token_url,token_endpoint_auth_method,created_at)
+               VALUES ($1,$2,'Namespace client','https://issuer.example.test','shared-client','https://issuer.example.test/token','none',now())`,
               [registrationId, namespaceId],
             );
             await db.app.query(

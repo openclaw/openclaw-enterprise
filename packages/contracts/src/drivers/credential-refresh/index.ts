@@ -35,18 +35,6 @@ export interface CredentialRefreshDriver extends Driver {
     context: CredentialSourceContext,
     privateState: string,
   ): Promise<CredentialSourceDeviceAuthorizationResult>;
-  /** Stores the client secret for `issuer` and `clientId`; OCC keeps no copy. */
-  registerClient?(
-    context: CredentialClientRegistrationContext,
-    clientSecret: string,
-  ): Promise<void>;
-  /** Replaces the stored credential for operations that authenticate this client. */
-  rotateClientSecret?(
-    context: CredentialClientRegistrationContext,
-    clientSecret: string,
-  ): Promise<void>;
-  /** Deletes the stored client secret; an absent secret counts as removed. */
-  removeClient?(context: CredentialClientRegistrationContext): Promise<void>;
   /** Builds the consent URL for the source's pending browser authorization. */
   startBrowserAuthorization?(
     context: CredentialSourceContext,
@@ -87,15 +75,6 @@ export interface CredentialSourceDeviceAuthorization {
 }
 
 export type CredentialSourceDeviceAuthorizationResult = { readonly status: "pending" | "ready" };
-
-/** One OAuth client at one authorization server, whose secret the Refresh Driver keeps. */
-export interface CredentialClientRegistrationContext {
-  /** Stable OAuthClient ID. All grants for this client use its current private material. */
-  readonly registrationId: string;
-  readonly issuer: string;
-  readonly clientId: string;
-  readonly signal: AbortSignal;
-}
 
 /** The approved values of one connection template version that the browser flow uses. */
 export interface CredentialBrowserAuthorizationRequest {
