@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-11-05
-last_updated_session: authoring-run/5112cc08-58d9-46f9-9e8d-eb23191832e6
+last_updated_session: authoring-run/bbe8db1d-f7e2-4322-80db-fbdf882659e2
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -193,9 +193,8 @@ selects a named provider and HTTPS Responses transport.
 
 `apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness`
 
-`sandboxDataMount` validates Git revisions' Harness mounts;
-`OpenShellGitRuntime.prepare` adds process-scoped `safe.directory` for that path
-to the Sandbox environment.
+`sandboxDataMount` validates mounts; `OpenShellGitRuntime.prepare` supplies process-scoped,
+mount-specific `safe.directory` and `push.negotiate=true`.
 
 Dedicated Codex/OpenClaw requires Landlock. Kubernetes, filesystem, process and
 [binary-scoped network policy](agent-sandbox-policy.md) use pinned `v0.1.6`.
@@ -400,6 +399,8 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 02:27: Enable `push.negotiate`. (authoring-run/bbe8db1d-f7e2-4322-80db-fbdf882659e2 - b4c30b3593105309904715c7dfff29c987dbb885)
 
 - 2026-11-05 00:43: Trace exact workspace Git trust in the Sandbox environment. (authoring-run/5112cc08-58d9-46f9-9e8d-eb23191832e6 - 392d3f1d70fbf2d401afe0c1bdb2ddcf8f6341d9)
 
