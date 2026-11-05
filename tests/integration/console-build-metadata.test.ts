@@ -13,7 +13,7 @@ import { loadConsoleTheme } from "../../apps/controller/src/composition/console-
 import { renderConsoleThemeShell } from "../../apps/controller/src/console-theme.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { caAndLeaf } from "../helpers/certificates.mjs";
-import { captureChild } from "../helpers/child-processes.mjs";
+import { captureChild, type CaptureChildTextOptions } from "../helpers/child-processes.ts";
 import { listen } from "../helpers/listen.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
@@ -95,7 +95,7 @@ async function serveRelease(t: TestContext, release: Release) {
   ) => {
     override = options.response ?? {};
     requests.length = 0;
-    const childOptions = {
+    const childOptions: CaptureChildTextOptions = {
       encoding: "utf8",
       cwd: options.cwd,
       env: {

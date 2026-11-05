@@ -15,7 +15,7 @@ import { createInstallationDriverConfiguration } from "./installation-driver-con
 import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
-import { stopProcess } from "./stop-process.mjs";
+import { stopProcess } from "./stop-process.ts";
 import { waitFor } from "./wait-for.mjs";
 import { ensureDevelopmentBootstrap } from "./bootstrap-installation.mjs";
 import { reservedPortArgs } from "./available-port.mjs";

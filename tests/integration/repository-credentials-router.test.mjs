@@ -11,7 +11,7 @@ import {
   run,
   temporaryDirectory,
 } from "../fixtures/repository-credentials/process.mjs";
-import { settled as settle } from "../helpers/child-processes.mjs";
+import { settled as settle } from "../helpers/child-processes.ts";
 import { fileCompileCache } from "../helpers/compile-cache.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { parseGhInvocation } from "../../apps/controller/src/drivers/repo/github/credentials/client/commands.ts";

@@ -1,7 +1,7 @@
 import { GATEWAY_STOP_TIMEOUT_MS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { cleanupRepositoryJourney } from "./repository-remote-cleanup.mjs";
-import { captureChild } from "./child-processes.mjs";
+import { captureChild } from "./child-processes.ts";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { lookup } from "node:dns/promises";

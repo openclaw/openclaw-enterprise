@@ -24,7 +24,7 @@ import {
   runGatewaySmoke,
   waitForContainerReady,
 } from "../helpers/runtime-image-startup.mjs";
-import { eachSettled } from "../helpers/child-processes.mjs";
+import { eachSettled } from "../helpers/child-processes.ts";
 
 // The loopback provider owns all possible requests; no model turn is sent.
 const countingProvider = String.raw`

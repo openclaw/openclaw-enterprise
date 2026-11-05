@@ -11,7 +11,7 @@ import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
 import { jsonLines } from "../helpers/json-lines.mjs";
-import { stopProcess } from "../helpers/stop-process.mjs";
+import { stopProcess } from "../helpers/stop-process.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitFor, within } from "../helpers/wait-for.mjs";
 

@@ -3,7 +3,7 @@ import { access, cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, test } from "node:test";
-import { captureChild } from "../helpers/child-processes.mjs";
+import { captureChild } from "../helpers/child-processes.ts";
 import { verifyModuleBoundaries } from "../../scripts/verify-module-boundaries.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 

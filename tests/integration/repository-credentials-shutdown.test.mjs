@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { appRoot } from "../fixtures/repository-credentials/runtime.mjs";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
 import { createLoopbackServiceConfiguration } from "../fixtures/repository-credentials/service.mjs";
-import { stopProcess } from "../helpers/stop-process.mjs";
+import { stopProcess } from "../helpers/stop-process.ts";
 import { waitUntil } from "../helpers/wait-for.mjs";
 
 // The child uses the real process composition and common settlement owner. An

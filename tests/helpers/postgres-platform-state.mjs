@@ -19,7 +19,7 @@ import {
   validateExplicitK3dLoopbackContext,
 } from "../helpers/kubernetes-real.mjs";
 import { reservePort, reservedPortArgs } from "./available-port.mjs";
-import { stopProcess } from "./stop-process.mjs";
+import { stopProcess } from "./stop-process.ts";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 import { jsonLines as parseJsonLines } from "./json-lines.mjs";
 import { waitFor } from "./wait-for.mjs";

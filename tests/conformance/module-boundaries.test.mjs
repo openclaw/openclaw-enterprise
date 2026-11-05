@@ -17,7 +17,7 @@ import {
   diagnosticIdentity,
   validateExceptions,
 } from "../../scripts/module-boundaries/exceptions.ts";
-import { settled as settle } from "../helpers/child-processes.mjs";
+import { settled as settle } from "../helpers/child-processes.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repository = fileURLToPath(new URL("../../", import.meta.url));
