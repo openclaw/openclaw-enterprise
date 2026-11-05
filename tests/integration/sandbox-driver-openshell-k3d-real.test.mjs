@@ -4631,6 +4631,7 @@ function turnFailureSecrets(topology, gatewayPassword) {
       MODEL_CREDENTIAL: modelCredential,
       GATEWAY_PASSWORD: gatewayPassword,
       APP_SERVER_TOKEN: topology.appServerToken,
+      IMPORTED_MCP_BEARER: topology.importedMcp?.token,
     },
     Object.fromEntries(
       (topology.toolSources ?? []).map(({ token }, index) => [`TOOL_TOKEN_${index}`, token]),
@@ -6441,6 +6442,24 @@ async function replacementActivationDiagnostic(topology, revision, worker) {
   return `\n${sections.join("\n")}${diagnostic}`;
 }
 
+async function replacementActivationError(error, topology, revision) {
+  // Keep the original error and stack even if these bounded diagnostics fail.
+  const detail = await withinDiagnosticDeadline(
+    async () => {
+      try {
+        const worker = await topology.diagnoseRevision(revision.id);
+        return await replacementActivationDiagnostic(topology, revision, worker);
+      } catch (diagnosticError) {
+        return `\nReplacement diagnostic unavailable: ${diagnosticError?.name ?? "Error"}`;
+      }
+    },
+    { timedOut: `\nReplacement diagnostic timed out after ${diagnosticDeadlineMs / 1_000} s` },
+  );
+  const failure = error instanceof Error ? error : new Error(String(error));
+  failure.message += detail;
+  return failure;
+}
+
 /**
  * Makes the model provider unreachable: cluster DNS sends the model host to a Service with no
  * endpoints, so OpenShell's connection to it is refused. The turn must fail without exposing
@@ -7078,22 +7097,7 @@ async function assertDuplicateReconciliationDoesNotDuplicateOpenShell(topology) 
       return undefined;
     });
   } catch (error) {
-    const worker = await topology.diagnoseRevision(redeployed.data.id);
-    // A diagnostic that fails or stalls itself must not replace the timeout it explains.
-    const detail = await withinDiagnosticDeadline(
-      () =>
-        replacementActivationDiagnostic(topology, redeployed.data, worker).catch(
-          (diagnosticError) =>
-            `\nReplacement diagnostic unavailable: ${diagnosticError?.name ?? "Error"}`,
-        ),
-      { timedOut: `\nReplacement diagnostic timed out after ${diagnosticDeadlineMs / 1_000} s` },
-    );
-    // Keep the timeout's own stack, which names this wait, and add the evidence to its message.
-    if (error instanceof Error) {
-      error.message = `${error.message}${detail}`;
-      throw error;
-    }
-    assert.fail(`${String(error)}${detail}`);
+    throw await replacementActivationError(error, topology, redeployed.data);
   }
   // Activation already required the replacement's workspace node to reconnect. Dedicated Codex
   // enrolls that node through OpenShell provider files, so the Pod carries no node-state mount.
@@ -7408,15 +7412,7 @@ function nativePluginWorkflow(topology) {
         return (await request("GET", agent)).activeRevisionId === revision.id || undefined;
       });
     } catch (error) {
-      const worker = await topology.diagnoseRevision(revision.id);
-      const detail = await withinDiagnosticDeadline(
-        () => replacementActivationDiagnostic(topology, revision, worker),
-        { timedOut: "\nReplacement diagnostic timed out." },
-      );
-      if (error instanceof Error) {
-        error.message += detail;
-      }
-      throw error;
+      throw await replacementActivationError(error, topology, revision);
     }
     topology.harnessPod = await waitForProviderHarnessPod(topology.placement, revision);
     return revision;
@@ -7491,8 +7487,8 @@ async function stageInitialImportedPlugin(context, topology, provider) {
   return { source, secretRef: secret.ref };
 }
 
-async function importedPluginWorkspace(topology) {
-  // The native worker's configured directory must exist before an absence check can be meaningful.
+async function nativeWorkerDirectory(topology, variable) {
+  // Verify the directory in the actual launched worker before staging or checking any files.
   const directory = (
     await kubectl(
       "exec",
@@ -7505,19 +7501,46 @@ async function importedPluginWorkspace(topology) {
       "node",
       "-e",
       `const fs = require("node:fs");
-    const directory = process.env.OPENCLAW_WORKSPACE_DIR;
-    if (!fs.statSync(directory).isDirectory()) throw new Error("Missing dedicated Agent workspace");
+    const directory = process.env[process.argv[1]];
+    if (!fs.statSync(directory).isDirectory()) throw new Error("Missing dedicated Agent directory");
     process.stdout.write(fs.realpathSync(directory));`,
+      variable,
     )
   ).trim();
   assert.ok(isAbsolute(directory));
   return directory;
 }
 
+// A tool result proves the action only when it belongs to the matched invocation.
+function nativeToolResultIndex(messages, matchesCall, matchesText) {
+  const callIds = new Set();
+  for (const [index, message] of messages.entries()) {
+    if (message.role === "assistant" && Array.isArray(message.content)) {
+      for (const part of message.content) {
+        if (part.type === "toolCall" && matchesCall(part)) {
+          callIds.add(part.id);
+        }
+      }
+    }
+    if (
+      message.role === "toolResult" &&
+      message.isError === false &&
+      callIds.has(message.toolCallId) &&
+      message.content.some((part) => part.type === "text" && matchesText(part.text))
+    ) {
+      return index;
+    }
+  }
+  return -1;
+}
+
 async function assertImportedNativeSkill(context, topology) {
   const workflow = nativePluginWorkflow(topology);
   const skill = "import-probe";
-  const workspaceSkills = join(await importedPluginWorkspace(topology), "skills");
+  const workspaceSkills = join(
+    await nativeWorkerDirectory(topology, "OPENCLAW_WORKSPACE_DIR"),
+    "skills",
+  );
   const shadow = join(workspaceSkills, skill);
   const { namespace, request } = workflow;
   // The disposable Installation administrator can publish through the Namespace API.
@@ -7557,7 +7580,7 @@ async function assertImportedNativeSkill(context, topology) {
       sessionKey: key,
       idempotencyKey: randomUUID(),
       message:
-        "Use the import-probe skill. Run the executable that its instructions name and return only its output.",
+        "Use your file read tool to read the SKILL.md at the location listed for the import-probe skill in your available skills. Run the executable named by that file from its directory and return only its output.",
     });
     assert.ok(sent.runId);
     // A timeout from agent.wait is a polling result until the actual turn becomes terminal.
@@ -7576,27 +7599,32 @@ async function assertImportedNativeSkill(context, topology) {
     await worker("test", "!", "-e", shadow);
     const outcome = await runSkill(key);
     assert.equal(outcome.status, "ok", JSON.stringify(outcome.error));
-    await waitFor("the imported executable's worker result", async () => {
-      const { messages } = await client.request("chat.history", { sessionKey: key, limit: 40 });
-      const calls = messages
-        .filter((message) => message.role === "assistant" && Array.isArray(message.content))
-        .flatMap((message) => message.content)
-        .filter(
-          (part) =>
-            part.type === "toolCall" &&
-            part.name === "exec" &&
-            String(part.arguments?.command ?? "").includes("scripts/read-marker"),
+    const described = await client.request("sessions.describe", { key, agentId: "main" });
+    assert.equal(described.session?.placement?.inference, "worker");
+    await waitFor(
+      "the imported instructions and the executable's subsequent worker result",
+      async () => {
+        const { messages } = await client.request("chat.history", { sessionKey: key, limit: 40 });
+        const read = nativeToolResultIndex(
+          messages,
+          (call) =>
+            call.name === "read" &&
+            /(?:^|\/)SKILL\.md$/.test(call.arguments?.path ?? call.arguments?.file_path ?? ""),
+          (text) => text.includes("scripts/read-marker"),
         );
-      return (
-        messages.some(
-          (message) =>
-            message.role === "toolResult" &&
-            message.isError === false &&
-            calls.some((call) => call.id === message.toolCallId) &&
-            JSON.stringify(message.content).includes(marker),
-        ) || undefined
-      );
-    });
+        if (read < 0) {
+          return undefined;
+        }
+        const executed = nativeToolResultIndex(
+          messages.slice(read + 1),
+          (call) =>
+            call.name === "exec" &&
+            /(?:^|[\s/'"])read-marker(?:$|[\s'";&|])/.test(call.arguments?.command ?? ""),
+          (text) => text.includes(marker),
+        );
+        return executed >= 0 || undefined;
+      },
+    );
   }
 
   // The OCE-owned configuration allows archives and this authenticated operator can read it.
@@ -7714,22 +7742,7 @@ async function assertImportedNativeMcp(context, topology, provider) {
     assert.equal(terminal.status, "ok");
     return waitFor("native MCP tool result", async () => {
       const { messages } = await client.request("chat.history", { sessionKey: key, limit: 40 });
-      const ids = new Set(
-        messages
-          .filter((entry) => entry.role === "assistant" && Array.isArray(entry.content))
-          .flatMap((entry) => entry.content)
-          .filter((part) => part.type === "toolCall" && expectedCall(part))
-          .map((part) => part.id),
-      );
-      return (
-        messages.some(
-          (entry) =>
-            entry.role === "toolResult" &&
-            entry.isError === false &&
-            ids.has(entry.toolCallId) &&
-            entry.content.some((item) => item.type === "text" && expectedResult(item.text)),
-        ) || undefined
-      );
+      return nativeToolResultIndex(messages, expectedCall, expectedResult) >= 0 || undefined;
     });
   }
   // Native OpenClaw can expose a deferred MCP tool through dispatch_action by its catalog ID.
@@ -7753,7 +7766,14 @@ async function assertImportedNativeMcp(context, topology, provider) {
   // The worker only advertises the allowed tool. A real exec turn attempts the excluded
   // JSON-RPC call anyway, so a filtered catalog cannot satisfy this enforcement check.
   const nonce = randomUUID();
-  const path = join(await importedPluginWorkspace(topology), "mcp-policy-" + randomUUID() + ".mjs");
+  const path = join(
+    await nativeWorkerDirectory(topology, "OPENCLAW_WORKSPACE_DIR"),
+    "mcp-policy-" + randomUUID() + ".mjs",
+  );
+  const nodeConfigPath = join(
+    await nativeWorkerDirectory(topology, "OPENCLAW_NODE_STATE_DIR"),
+    "openclaw.json",
+  );
   assert.equal(typeof source.config.env_var, "string");
   await kubectl(
     "exec",
@@ -7767,7 +7787,7 @@ async function assertImportedNativeMcp(context, topology, provider) {
     "-e",
     'require("node:fs").writeFileSync(process.argv[1],process.argv[2],{mode:0o444})',
     path,
-    importedMcpProbeScript(provider.url, source.config.env_var, nonce),
+    importedMcpProbeScript(provider.url, source.config.env_var, nonce, nodeConfigPath),
   );
   const before = (await provider.receipts()).length;
   try {

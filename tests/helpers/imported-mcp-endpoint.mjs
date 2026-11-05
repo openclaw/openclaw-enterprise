@@ -174,13 +174,12 @@ export async function startImportedMcpEndpoint(context, kubectl, image) {
 
 // A normal Agent exec uses the same issued placeholder as the native transport for both
 // requests. Read only the selected endpoint's header if the exec environment omits its slot.
-async function probe(url, environment, nonce) {
+async function probe(url, environment, nonce, nodeConfigPath) {
   let marker = process.env[environment];
   if (!marker) {
     const { readFile } = await import("node:fs/promises");
-    const state = process.env.OPENCLAW_NODE_STATE_DIR ?? "/home/node/.openclaw-node";
-    const path = process.env.OPENCLAW_CONFIG_PATH ?? state + "/openclaw.json";
-    const config = JSON.parse(await readFile(path, "utf8"));
+    // A tool subprocess can have a per-turn config path. The node host owns the selected MCP account.
+    const config = JSON.parse(await readFile(nodeConfigPath, "utf8"));
     const endpoint = Object.values(config.nodeHost?.mcp?.servers ?? {}).find(
       (server) => server.enabled && server.url === url,
     );
@@ -229,6 +228,6 @@ async function probe(url, environment, nonce) {
   process.stdout.write(nonce + "_MCP_CONTROL_" + allowed + "_EXCLUDED_" + denied);
 }
 
-export function importedMcpProbeScript(url, environment, nonce) {
-  return `await (${probe.toString()})(${JSON.stringify(url)},${JSON.stringify(environment)},${JSON.stringify(nonce)});\n`;
+export function importedMcpProbeScript(url, environment, nonce, nodeConfigPath) {
+  return `await (${probe.toString()})(${JSON.stringify(url)},${JSON.stringify(environment)},${JSON.stringify(nonce)},${JSON.stringify(nodeConfigPath)});\n`;
 }
