@@ -58,17 +58,17 @@ graph TD
 
 `apps/controller/src/console/agents/detail.mts:renderAgentDetail`
 
-`loadDetails` settles history and snapshot independently. Rejected history
-(including `null`/`undefined`) warns without hiding readable drafts; Deploy waits.
-`snapshotErrorPanel` explains Configuration refusal without exposing drafts.
-Numeric `401` triggers sign-in.
+After the Agent read, `loadDetails` settles history and snapshot independently.
+Rejected history warns beside readable drafts; Deploy stays unavailable.
+`snapshotErrorPanel` explains Configuration refusal, hiding drafts. Numeric `401` returns to sign-in.
 
-Browsing uses `packages/occ/src/index.ts:listAgents`, `listRevisions`,
+Browsing: `packages/occ/src/index.ts:listAgents`, `listRevisions`,
 `getAgentForBrowsing`, and `getRevisionForBrowsing`.
-`packages/occ/src/state/postgres-state.ts:browseSavedConfiguration` returns decode-failure `configurationReadError` metadata; operational reads stay strict.
-Unreadable drafts block editing/deployment without defaults. **Selected for service** follows `activeRevisionId`.
-**Viewing version** switches draft/read-only (`revision=draft`/`revision=<id>`) without activation.
-**Load older versions** appends pages, keeps selection and focuses the picker after the last page.
+`packages/occ/src/state/postgres-state.ts:browseSavedConfiguration` returns metadata
+plus `configurationReadError` on decode failure. Queries/operational reads stay strict; unreadable drafts block editing/deployment without defaults.
+**Selected for service** shows `activeRevisionId`.
+**Viewing version** switches `revision=draft`/`revision=<id>` without activation.
+**Load older versions** appends, keeps selection and focuses the picker after the last page.
 `deploymentStatus`/`deploymentErrorCode` mark failures after reload, excluding superseded/stopped.
 
 **Deployment** mounts activity, the selected record, and diagnostics
@@ -344,7 +344,7 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
-- 2026-11-05 01:03: Document independent read failures. (authoring-run/68de7101-f5b0-459f-8861-9ec3e614dcb2 - 8ee2e630)
+- 2026-11-05 01:03: Document read failures. (authoring-run/68de7101-f5b0-459f-8861-9ec3e614dcb2 - 8ee2e630)
 - 2026-10-31 21:30: Hide the password button when save would refuse it. (fix-3064)
 
 [Console Agent editing documentation history](agent-editing/history.md) preserves the older dated entries.
