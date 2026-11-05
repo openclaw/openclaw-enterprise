@@ -259,14 +259,21 @@ export async function verifyInstalledWorkerRestarts(f, readLogs, kind) {
         "-e",
         "process.kill(1, 'SIGTERM')",
       );
-      const restarted = await f.waitFor("same worker Pod restarted", async () => {
-        const current = await f.get("pod", pod.metadata.name);
-        assert.equal(current.metadata.uid, pod.metadata.uid);
-        return status(current).restartCount === initial + index + 1 && status(current).ready
-          ? current
-          : false;
-      });
-      const exit = status(restarted).lastState.terminated;
+      const exit = await f.waitFor(
+        "same worker Pod restarted with termination evidence",
+        async () => {
+          const current = await f.get("pod", pod.metadata.name);
+          assert.equal(current.metadata.uid, pod.metadata.uid);
+          const worker = status(current);
+          // Restart count and readiness alone do not establish that the previous
+          // exit is available. Require the replacement and its termination record.
+          return worker.restartCount === initial + index + 1 &&
+            worker.ready &&
+            worker.state?.running
+            ? worker.lastState?.terminated
+            : false;
+        },
+      );
       assert.equal(exit.exitCode, 0, "Worker completed its shutdown handler");
       captured.push(exit);
       await f.waitFor("worker exit retained at OTLP backend", async () =>

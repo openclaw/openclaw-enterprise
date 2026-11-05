@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
-import { dirname } from "node:path";
+import { dirname, posix } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { githubInstallationProfile } from "@openclaw-enterprise/contracts";
 import type {
@@ -600,9 +600,19 @@ export class OpenShellGitRuntime {
     workspace: string,
     sandbox: string,
     signal: AbortSignal,
+    workspaceRoot: string,
     otherProviders: readonly string[] = [],
     otherHosts: readonly string[] = [],
   ) {
+    if (
+      !workspaceRoot.startsWith("/sandbox/") ||
+      workspaceRoot.endsWith("/") ||
+      posix.normalize(workspaceRoot) !== workspaceRoot ||
+      workspaceRoot.includes("*") ||
+      workspaceRoot.includes("\0")
+    ) {
+      throw new Error("OpenShell Git requires an exact Sandbox workspace path.");
+    }
     if (
       !revision.repositoryCredentials ||
       (revision.repositoryCredentials.deadlineWallMs <= Date.now() &&
@@ -882,7 +892,7 @@ export class OpenShellGitRuntime {
             ]
           : []),
         { name: "GIT_TERMINAL_PROMPT", value: "0" },
-        { name: "GIT_CONFIG_COUNT", value: "5" },
+        { name: "GIT_CONFIG_COUNT", value: "7" },
         { name: "GIT_CONFIG_KEY_0", value: "credential.helper" },
         { name: "GIT_CONFIG_VALUE_0", value: "" },
         {
@@ -899,6 +909,13 @@ export class OpenShellGitRuntime {
         { name: "GIT_CONFIG_VALUE_3", value: "true" },
         { name: "GIT_CONFIG_KEY_4", value: "credential.useHttpPath" },
         { name: "GIT_CONFIG_VALUE_4", value: "true" },
+        // The Sandbox user namespace presents the volume root as root-owned.
+        // Trust only the approved data mount, without changing persistent Git config.
+        { name: "GIT_CONFIG_KEY_5", value: "safe.directory" },
+        { name: "GIT_CONFIG_VALUE_5", value: workspaceRoot },
+        // Discover shared history even when the remote advanced after the last fetch.
+        { name: "GIT_CONFIG_KEY_6", value: "push.negotiate" },
+        { name: "GIT_CONFIG_VALUE_6", value: "true" },
       ],
       middlewares: openShellGitMiddleware(this.configuration.registrationName, entry.bindingId),
     };

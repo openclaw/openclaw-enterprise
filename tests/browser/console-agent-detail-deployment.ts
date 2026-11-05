@@ -1,3 +1,4 @@
+import { openAdvancedSettings, waitForLiveControls } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
@@ -17,9 +18,9 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.m
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
+  deploymentStatusResponse,
   authorizationDenials,
   apiRequests,
-  deploymentStatusResponse,
   detailUrl,
   draftActions,
   expectDeployHeld,
@@ -40,13 +41,13 @@ import {
   saveConfigurationUntilReady,
   settledView,
   storeRefusedConfiguration,
-  trackSettledFetches,
   versionChooser,
   versionOption,
   waitForChosenVersion,
   waitForEnabled,
-  waitForIdleFetches,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+
+import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import {
   deploymentRecordUrl,
@@ -55,12 +56,10 @@ import {
   openFailureDetails,
 } from "./console-deployment-activity-helpers.ts";
 import {
-  openAdvancedSettings,
   assertRevisionUrl,
   replyWithDifferentAgentId,
   configurationPatchRequests,
   nativeAdminValues,
-  waitForLiveControls,
 } from "./console-agents-test-support.mjs";
 import {
   AGENT_SAVE_DENIED,

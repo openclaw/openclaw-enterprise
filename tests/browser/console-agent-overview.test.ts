@@ -19,12 +19,14 @@ import {
   createRuntimeLogComputeDriver,
 } from "../helpers/runtime-logs.mjs";
 import {
+  deploymentStatusResponse,
+  persistedDeploymentError,
+  routeFailedDeployment,
   AGENT_READ,
   apiRequests,
   asksBeforeUnload,
   consoleViewports,
   denyRevisionRead,
-  deploymentStatusResponse as legacyDeploymentStatusResponse,
   detailUrl,
   fileBrowser,
   grantSecretOperate,
@@ -33,20 +35,21 @@ import {
   nativeValues,
   newPage,
   nextFrames,
-  persistedDeploymentError as legacyPersistedDeploymentError,
   recordLayoutShifts,
-  routeFailedDeployment,
   routeOneVersionPerPage,
-  settledFetches as legacySettledFetches,
   settledView,
   takeLayoutShifts,
-  trackSettledFetches,
   waitForChosenVersion,
   waitForCondition,
   waitForEnabled,
+} from "./console-agents-browser-helpers.ts";
+
+import {
+  settledFetches as legacySettledFetches,
+  trackSettledFetches,
   waitForIdleFetches,
   waitForSettledFetches,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-fetch-accounting.ts";
 import {
   deploymentDetailsOpen as legacyDeploymentDetailsOpen,
   deploymentRecordUrl,
@@ -70,21 +73,7 @@ import {
   NO_TEST_REQUEST,
 } from "../helpers/refusal-text.mjs";
 
-type DeploymentResponseOptions = {
-  status: string;
-  error?: ReturnType<typeof persistedDeploymentError> | null;
-  attempt?: { at: Date; code: string };
-  nextAttemptAt?: string;
-};
-function isCallable(value: unknown): value is (...args: unknown[]) => unknown {
-  return typeof value === "function";
-}
-function deploymentStatusResponse(revision: Revision, options: DeploymentResponseOptions) {
-  const respond: unknown = legacyDeploymentStatusResponse;
-  assert.ok(isCallable(respond));
-  const response = record(respond(revision, options));
-  return { json: record(response.json) };
-}
+type DeploymentResponseOptions = Parameters<typeof deploymentStatusResponse>[1];
 
 const versionChooser = (scope: Page | Locator) =>
   scope.getByLabel("Viewing version", { exact: true });
@@ -119,12 +108,6 @@ declare global {
 async function requiredAnswer(answer: Promise<Parameters<Route["fulfill"]>[0]> | null) {
   assert.ok(answer);
   return answer;
-}
-
-function persistedDeploymentError(...args: Parameters<typeof legacyPersistedDeploymentError>) {
-  const error = legacyPersistedDeploymentError(...args);
-  assert.ok(error);
-  return error;
 }
 
 // Narrow raw responses and domain-specific values at their usages.
@@ -960,7 +943,7 @@ test("Agent detail keeps Stop when its Agent reread fails after a first deployme
   const { fixture, namespace, agent, page } = await agentPage(t, "Reread fails", "Reread fails");
   const first = await fixture.deployAgent(namespace.id, agent.id);
   const recordUrl = deploymentRecordUrl(fixture, namespace.id, agent.id, first.id);
-  let status = "queued";
+  let status: DeploymentResponseOptions["status"] = "queued";
   await page.route(recordUrl, (route) =>
     route.fulfill(deploymentStatusResponse(first, { status })),
   );
@@ -2555,12 +2538,17 @@ test("a late first deployment read moves nothing above the version tabs", async 
   assert.equal(await freshnessNote.evaluate((node) => node.checkVisibility()), true);
 
   const unavailable = apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Service unavailable.");
-  for (const c of [
+  const outcomes: {
+    status: DeploymentResponseOptions["status"] | "read error";
+    label: string;
+    stillOn: string[];
+  }[] = [
     { status: "succeeded", label: "Completed", stillOn: ["draft", "version"] },
     { status: "running", label: "In progress", stillOn: ["draft", "version"] },
     { status: "failed", label: "Failed", stillOn: [] },
     { status: "read error", label: "Unavailable", stillOn: ["draft"] },
-  ]) {
+  ];
+  for (const c of outcomes) {
     for (const view of ["draft", "version"]) {
       const name = `${c.status} on the ${view}`;
       let respond: ((value: Parameters<Route["fulfill"]>[0]) => void) | undefined;
@@ -3158,7 +3146,7 @@ test("a deploy's details keep their queued height when its first claim starts", 
     { width: 1440, height: 900 },
     "Claimed",
   );
-  let record = { status: "queued" };
+  let record: DeploymentResponseOptions = { status: "queued" };
   await page.route(recordUrl, (route) => route.fulfill(deploymentStatusResponse(pending, record)));
   await open("Queued");
   const now = await page.evaluate(() => Date.now());

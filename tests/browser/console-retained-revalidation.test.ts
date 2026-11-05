@@ -19,7 +19,7 @@ import {
   settledView,
   stopFocusTrail,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import { confirmAgentAction, responseTo } from "./console-action-helpers.ts";
 import {
   heldView,
@@ -28,7 +28,7 @@ import {
   tagView,
   taggedView,
   viewTag,
-} from "./console-refocus-helpers.mjs";
+} from "./console-refocus-helpers.ts";
 import { restrict } from "../helpers/iam-grants.mjs";
 
 type Agent = Pick<AgentWire, "id" | "name" | "configurationId">;

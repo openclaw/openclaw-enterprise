@@ -46,6 +46,10 @@ const appliedPatches = [
     file: "openclaw-google-worker-placeholder.patch",
     sha256: "55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31",
   },
+  {
+    file: "openclaw-node-setup-renewal.patch",
+    sha256: "b4d860d00310e882404d62f630266c80d93df66492230c494e80cc1391bac538",
+  },
 ];
 const [command, sourceRoot, output, sourceManifest] = process.argv.slice(2);
 const root = await realpath(sourceRoot);

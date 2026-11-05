@@ -1,3 +1,4 @@
+import { focusedDescription, focusedText, LIVE_BUTTON } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
@@ -21,6 +22,7 @@ import { createConsoleRepositoryLaunchFixture } from "../helpers/console-reposit
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
+  routeFailedDeployment,
   accessBindingPostRequests,
   AGENT_READ,
   apiRequests,
@@ -38,7 +40,6 @@ import {
   pathRequests,
   recordFocusTrail,
   repositoryCheckbox,
-  routeFailedDeployment,
   secretOptionLabel,
   selectSecret,
   setSlackSelection,
@@ -48,12 +49,10 @@ import {
   waitForEnabled,
   waitForInputValue,
   writeRequests,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+
 import {
-  LIVE_BUTTON,
   createRepositoryLaunchFixture,
-  focusedDescription,
-  focusedText,
   withholdPermissionSummary,
 } from "./console-agents-test-support.mjs";
 import { responseTo } from "./console-action-helpers.ts";

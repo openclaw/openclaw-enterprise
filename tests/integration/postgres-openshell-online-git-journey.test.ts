@@ -230,3 +230,65 @@ for (const { name, action, expectedDenial } of [
     );
   });
 }
+
+test(
+  "OCE signed TLS Git authorization admits a Git-only branch pattern and refuses other destinations",
+  { ...requiresPostgres, timeout: 90_000 },
+  async (t) => {
+    await narrowOnlineGitJourney(
+      t,
+      async ({ pool, admissionId, evaluate, pushRef }) => {
+        assert.equal(pushRef, "refs/heads/review/*");
+        const receipts = async () =>
+          (
+            await pool.query<{ operation: string }>(
+              "SELECT operation FROM occ.prepared_repository_git_uses WHERE admission_id=$1 ORDER BY operation",
+              [admissionId],
+            )
+          ).rows;
+        const target = (method: string, suffix: string, query = "") => ({
+          scheme: "https",
+          host: "github.com",
+          port: 443,
+          method,
+          path: `/${fixtureRepository}.git/${suffix}`,
+          query,
+        });
+        // Real admission and runtime lookup deliver the registry's pattern unchanged to
+        // the TLS authorizer. A pattern is policy; each pushed destination is a concrete ref.
+        const allowed = await gitCommandBodies(t, "refs/heads/review/change");
+        const main = await gitCommandBodies(t, "refs/heads/main");
+        const command = (service: string, body: Buffer) => ({
+          target: target("POST", `git-${service}`),
+          headers: [{ name: "content-type", value: `application/x-git-${service}-request` }],
+          body,
+        });
+        assert.deepEqual(await receipts(), []);
+        assert.deepEqual(
+          await evaluate({ target: target("GET", "info/refs", "service=git-upload-pack") }),
+          { decision: 1 },
+        );
+        assert.deepEqual(await evaluate(command("upload-pack", allowed.fetch)), { decision: 1 });
+        assert.deepEqual(await evaluate(command("receive-pack", allowed.push)), { decision: 1 });
+        const approved = await receipts();
+        assert.deepEqual(approved, [
+          { operation: "advertise-upload-pack" },
+          { operation: "receive-pack" },
+          { operation: "upload-pack" },
+        ]);
+        // Denied pushes never spend a possible-use receipt, even when one update is allowed.
+        for (const body of [main.push, allowed.mixed]) {
+          assert.deepEqual(await evaluate(command("receive-pack", body)), {
+            decision: 2,
+            reason_code: "request_not_allowed",
+          });
+          assert.deepEqual(await receipts(), approved);
+        }
+        t.diagnostic(
+          "Real runtime lookup, signed TLS authorization and PostgreSQL receipts; no provider dispatch.",
+        );
+      },
+      { draftPull: false, pushRef: "refs/heads/review/*" },
+    );
+  },
+);
