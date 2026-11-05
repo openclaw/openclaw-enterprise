@@ -423,7 +423,7 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
 +            expect(changed.ok, JSON.stringify(changed.error)).toBe(true);
 +          }
 +        },
-+        // Reassignment revokes both the operator role and the retained request transport.
++        // Role revocation also invalidates the client; either retained authority check may refuse first.
 +        /^(?:Your operator role changed; reconnect before continuing\.|Gateway requester authority changed)$/,
 +      );
 +      if (!afterAcknowledgment) {

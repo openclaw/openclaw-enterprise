@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
 updated: 2026-11-05
-last_updated_session: authoring-run/5c90599f-4f7f-4ec9-bf5d-2724c7156128
+last_updated_session: authoring-run/0f9e4fc6-9649-465a-8ab4-3fc3124417e2
 ---
 
 # Harness Execution Topology Flow
@@ -200,20 +200,20 @@ Source authorization cannot override routing.
 `pluginRuntimeConfigMapData` in `apps/controller/src/drivers/compute/plugin-runtime.ts`
 writes Codex's provider and optional standalone-search declaration.
 Protected `providerTools: none` still disables search.
+Nested Codex omits native helpers (`runtime-entrypoints.ts:pluginRuntimeHelpers`).
+OpenShell compresses preludes with `node-program.ts:prependNodeProgramArguments`.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:writeCodexConfigToml`
-writes the generated file into `CODEX_HOME` before native startup. The capability
-belongs to Codex's user configuration, not a workspace override.
-Native CLI launch passes explicit log and metrics exporter overrides for login,
-the authentication probe and the app-server.
+writes the generated file into `CODEX_HOME` before native startup. Codex owns this user
+configuration, outside workspace overrides.
+Login, authentication probes and app-server launch override native log and metrics exporters.
 [Runtime logging](../reference/harness-execution.md#runtime-logging) defines the export defaults.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:probeCodexAuthentication`
 uses CLI overrides because the probe ignores user configuration. Account login and
 other Harnesses keep their endpoints; only the Harness holds model credentials.
 
-For admitted inference, Kubernetes Compute records launch behavior in new protected
-dedicated Codex revisions. The authentication probe and app-server disable unbounded
+Kubernetes Compute records admitted inference launch behavior in new protected Codex revisions. The authentication probe and app-server disable unbounded
 native connection retries, avoiding indefinite reconnects. Stored revisions retain
-original commands.
+original retry settings.
 
 For custom endpoints, `gatewayConfigurationDocument` uses
 `apps/controller/src/drivers/compute/codex-model-configuration.ts:codexGatewayModelConfiguration`
@@ -350,6 +350,8 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 14:07: Trace helper specialization. (authoring-run/0f9e4fc6-9649-465a-8ab4-3fc3124417e2 - 644b3f9)
 
 - 2026-11-05 13:08: Trace safe temporary SQLite staging before node startup. (authoring-run/5c90599f-4f7f-4ec9-bf5d-2724c7156128 - 894a5b6698049c41fba27f5c2c0764e86b4c0632)
 

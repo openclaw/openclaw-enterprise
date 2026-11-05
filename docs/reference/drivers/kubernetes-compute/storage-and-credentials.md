@@ -108,9 +108,10 @@ State on this claim outlives those upgrades. Before OpenClaw starts, the Gateway
 wrapper runs `openclaw doctor --fix --non-interactive` once, with the
 configuration read-only, when the shared state database or an agent database
 uses an older schema than the pinned OpenClaw; Doctor keeps a
-`.pre-startup-migration-<id>.bak` copy beside each. A database still older
-afterwards holds the Gateway unready with check `state-migration`
-(`RUNTIME_STARTUP_FAILED`).
+`.pre-startup-migration-<id>.bak` copy beside each. Outdated schemas or refused
+maintenance hold the Gateway unready with check `state-migration`
+(`RUNTIME_STARTUP_FAILED`). A marker beside the retained shared database requires retry after Pod replacement,
+even if schemas already advanced.
 
 ## Harness storage
 
@@ -131,7 +132,7 @@ recreates ownership and moves entries back; conflicting names remain in
 
 Node identity survives replacement. Before setup or connection,
 the Harness runs [Gateway](#gateway-storage) Doctor with the node environment
-for older databases; a still-old database holds at `state-migration`.
+for older databases; incomplete maintenance holds at `state-migration`.
 Doctor and the node stage SQLite under private `/tmp` children, avoiding
 group-writable persistent ancestors without changing state permissions.
 

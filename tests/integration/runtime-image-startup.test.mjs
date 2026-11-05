@@ -1872,7 +1872,7 @@ if (${historicalCodex}) {
 assert.equal(provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256, ${JSON.stringify(
       historicalCodex
         ? "4d7b31957dab6e8427eeb9a8cce0a8013f0f96b999e2692fdd6903595c3c4804"
-        : "c041f66efe98673af9c24699754888790ae6ffd245e6d6acd26cd9562e7304b3",
+        : "5939c62bd62c323c93cd3aa6a96fbb6f4cf9d5df8f5eafffada25a58fe727494",
     )});
 assert.deepEqual(provenance.patches, {
   "openclaw-codex-read-only-paths.patch": provenance.openclawBridgePatchSha256,
