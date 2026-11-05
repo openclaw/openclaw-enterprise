@@ -52,6 +52,7 @@ console uses the current origin and has no separate environment settings.
 - `OCC_AGENT_NATIVE_ADMIN_DOMAIN` — Agent hostname suffix; required when the pilot is enabled.
 - `OCC_AUTH_COOKIE_DOMAIN` — Shared parent domain for console and Agent cookies; required when the pilot is enabled.
 - `OCC_GATEWAY_API_KEY_PATH` — API/worker absolute path to the private gateway service-key file for operator RPCs and dedicated node enrollment.
+- `OCC_INSTALLATION_SECRET_NAMESPACE` — Kubernetes namespace for private OAuth client secrets on the selected Secret Driver. Helm provisions it and sets the name for the API and worker. For standalone Kubernetes, provision a dedicated namespace (default `oce-installation-secrets`) and grant the controller access to its Secrets.
 - `OCC_PREPROVISIONED_NAMESPACE` — API/worker JSON `{"namespaceId", "uid"}` binding one operator-created tenant namespace; set by Helm `preprovisionedNamespace`. See [preprovisioned namespace](../drivers/kubernetes-compute/preprovisioned-namespace.md).
 - `OCC_CHANNEL_DIRECTORY_PROXY_URL` — Optional API-only HTTP(S) proxy endpoint for production Slack directory lookup and credential validation; set by Helm `slackProxy.enabled` or `api.channelDirectoryProxyUrl`.
 - `OCC_API_HTTPS_EGRESS_OPEN` — `true` when API egress allows TCP 443 to any address, so a Slack check without a proxy can succeed; default: `false`. Set by the chart from sign-in `egressCidrs`.

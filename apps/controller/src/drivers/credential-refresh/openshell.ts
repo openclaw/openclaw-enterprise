@@ -13,6 +13,7 @@ import { ScopeViolationError } from "@openclaw-enterprise/occ";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
 
 import {
+  openShellOwnedBy,
   openShellProviderName,
   openShellWorkspaceName,
   type OpenShellGateway,
@@ -333,12 +334,7 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
       openShellProviderName(context.source.id),
       context.signal,
     );
-    if (
-      provider !== undefined &&
-      (provider.type !== openShellProviderName(context.source.id) ||
-        provider.labels["app.kubernetes.io/managed-by"] !== "openclaw-enterprise" ||
-        provider.labels["openclaw.dev/credential-source-id"] !== context.source.id)
-    ) {
+    if (provider !== undefined && !openShellOwnedBy(provider, context.source.id)) {
       throw new ScopeViolationError(
         "The OpenShell provider is not owned by this credential source.",
       );

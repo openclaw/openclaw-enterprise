@@ -178,7 +178,58 @@ const authAccount = {
 };
 const sessionKey = "example-session-binding-not-a-credential";
 
+const connectionTemplateId = id("ctp");
+const oauthClientId = id("ccr");
+const oauthClientInput = {
+  displayName: "Example provider client",
+  clientId: "example-client",
+  tokenEndpointAuthMethod: "client_secret_basic",
+};
+const oauthClient = {
+  ...oauthClientInput,
+  issuer: "https://accounts.example.com",
+  tokenUrl: "https://accounts.example.com/token",
+  id: oauthClientId,
+  createdAt: time,
+};
+const connectionTemplateInput = {
+  mode: "manual",
+  issuer: oauthClient.issuer,
+  authorizationUrl: "https://accounts.example.com/authorize",
+  tokenUrl: oauthClient.tokenUrl,
+  oauthClientId,
+  scopes: ["profile.read"],
+  destinations: [{ host: "api.example.com", port: 443, path: "/profile" }],
+};
+const connectionTemplate = {
+  id: connectionTemplateId,
+  namespaceId,
+  displayName: "Example account",
+  createdAt: time,
+  current: {
+    ...connectionTemplateInput,
+    templateId: connectionTemplateId,
+    authorizationParameters: {},
+    version: 1,
+    createdAt: time,
+  },
+};
+const mcpServerUrl = "https://tools.example.com/mcp";
+const discovered = {
+  serverUrl: mcpServerUrl,
+  resource: mcpServerUrl,
+  issuers: [oauthClient.issuer],
+  issuer: oauthClient.issuer,
+  authorizationUrl: connectionTemplateInput.authorizationUrl,
+  tokenUrl: oauthClient.tokenUrl,
+  requestedScopes: ["profile.read"],
+  resourceScopes: ["profile.read"],
+  tokenEndpointAuthMethods: ["client_secret_basic"],
+};
+
 export const parameterExamples = {
+  oauthClientId,
+  connectionTemplateId,
   key: "review-1",
   expectedConfigurationId: configurationId,
   expectedGeneration: "1",
@@ -220,6 +271,20 @@ export const parameterExamples = {
 };
 
 export const requestExamples = {
+  createConnectionTemplate: {
+    ...connectionTemplateInput,
+    namespaceId,
+    displayName: connectionTemplate.displayName,
+  },
+  updateConnectionTemplate: { displayName: "Engineering account" },
+  discoverConnectionTemplate: { serverUrl: mcpServerUrl },
+  createOAuthClient: {
+    ...oauthClientInput,
+    connectionTemplateId,
+    connectionTemplateVersion: 1,
+    clientSecret: "example-client-secret",
+  },
+  rotateOAuthClientSecret: { clientSecret: "replacement-example-client-secret" },
   deployAgentFirst: {
     key: "review-1",
     expectedConfigurationId: configurationId,
@@ -322,6 +387,14 @@ export const requestExamples = {
 
 // Values below are data members. The generator adds the common meta envelope.
 export const responseExamples = {
+  listConnectionTemplates: [connectionTemplate],
+  getConnectionTemplate: connectionTemplate,
+  createConnectionTemplate: connectionTemplate,
+  updateConnectionTemplate: { ...connectionTemplate, displayName: "Engineering account" },
+  discoverConnectionTemplate: discovered,
+  listOAuthClients: [oauthClient],
+  createOAuthClient: oauthClient,
+  rotateOAuthClientSecret: oauthClient,
   getInstallation: { id: id("ins"), name: "Engineering", createdAt: time },
   bootstrapInstallation: { id: id("ins"), name: "Engineering", createdAt: time },
   getInstallationDeploymentInventory: {
