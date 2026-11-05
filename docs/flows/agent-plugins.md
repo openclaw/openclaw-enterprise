@@ -119,7 +119,7 @@ Unsupported controls or incompatible selections return `400 INVALID_REQUEST`.
 [`validatePolicies`](../../apps/controller/src/drivers/plugin/runtime-translator.ts)
 detects conflicting enablement defaults. `BundledPluginDriverBase.validate`
 allowlists it for OCC's fixed `PluginPolicyValidationError` advice.
-Other refusals stay generic. The Console preserves rejected drafts.
+Unrecognized refusals stay generic. The Console preserves rejected drafts.
 
 [Save](../../apps/controller/src/console/agents/plugins.mts#L396) keeps out-of-range
 **Plugin selections JSON** text and skips Agent `GET`/`PATCH`.
