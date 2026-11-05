@@ -38,6 +38,40 @@ provide administrative cleanup. Never use a shared production project or print
 PAT contents. The lane is opt-in and is not included in ordinary CI or the
 `Full Integration` workflow.
 
+## Installed GitLab Agent lane
+
+The `gitlab-repository-installed` lane selects an explicit disposable k3d cluster
+and exercises the regular installed path: Helm startup, repository service
+projection, Installation admission, Agent Pod delivery, allowed read, forbidden
+push refusal before dispatch, independent GitLab observer confirmation, stop, and
+session disposal.
+
+It requires the GitLab project inputs, a protected PAT file, an authorized model
+credential, an explicit Kubernetes context, current GitLab.com IPv4 `/32` egress,
+and immutable controller, repository credential, runtime, PostgreSQL, and Node
+images:
+
+```sh
+OCC_TEST_GITLAB_REPOSITORY_KUBERNETES_REAL=1 \
+GITLAB_TEST_TOKEN_FILE=/path/to/protected/pat \
+GITLAB_TEST_PROJECT=example/project \
+GITLAB_TEST_PROJECT_ID=12345678 \
+OCC_TEST_KUBERNETES_KUBECONFIG=/path/to/kubeconfig \
+OCC_TEST_KUBERNETES_CONTEXT=k3d-disposable \
+OCC_TEST_GITLAB_UPSTREAM_CIDRS=203.0.113.10/32 \
+OPENAI_API_KEY=... \
+OCC_TEST_OPENAI_MODEL=codex/<model> \
+  node --test tests/integration/gitlab-repository-kubernetes-real.test.mjs
+```
+
+Also set `OCC_TEST_PRODUCTION_CONTROLLER_IMAGE`,
+`OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE`,
+`OCC_TEST_KUBERNETES_RUNTIME_IMAGE`, `OCC_TEST_PRODUCTION_POSTGRES_IMAGE`, and
+`OCC_TEST_PRODUCTION_NODE_IMAGE` to immutable references. The example replaces
+the model credential with `...`; a real run supplies it from a protected
+environment and never prints it. This lane is opt-in and is not included in
+ordinary PR CI or `Full Integration`.
+
 ## Run controlled tests
 
 ```sh

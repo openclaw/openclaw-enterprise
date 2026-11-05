@@ -571,14 +571,18 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- end -}}
 {{- $credentials := .Values.repositoryCredentials -}}
-{{- if ne $credentials.authority "prepared-git" -}}
-{{- fail "GitHub App signing gateway retired: stop admissions and drain accepted work on its original owner before switching to authority prepared-git and worker Token Service custody; do not transfer keys or replay uncertain work" -}}
+{{- if and (ne $credentials.authority "prepared-git") (ne $credentials.authority "gitlab-token-development") -}}
+{{- fail "repositoryCredentials.authority must select prepared-git or gitlab-token-development" -}}
 {{- end -}}
+{{- if eq $credentials.authority "gitlab-token-development" -}}
+{{- if not $credentials.tokenSecretName -}}{{- fail "repositoryCredentials.tokenSecretName is required for gitlab-token-development" -}}{{- end -}}
+{{- if not $credentials.tokenKey -}}{{- fail "repositoryCredentials.tokenKey is required for gitlab-token-development" -}}{{- end -}}
+{{- include "openclaw.validateSecretKey" (dict "label" "repositoryCredentials.tokenKey" "value" $credentials.tokenKey) -}}
+{{- else -}}
 {{- if not $credentials.appKeySecretName -}}{{- fail "repositoryCredentials.appKeySecretName is required when enabled" -}}{{- end -}}
 {{- if not $credentials.appKeyKey -}}{{- fail "repositoryCredentials.appKeyKey is required when enabled" -}}{{- end -}}
 {{- include "openclaw.validateSecretKey" (dict "label" "repositoryCredentials.appKeyKey" "value" $credentials.appKeyKey) -}}
-{{- if and (eq $credentials.authority "prepared-git") (not $credentials.preparedCustodySecretName) -}}
-{{- fail "repositoryCredentials.preparedCustodySecretName is required for prepared-git" -}}
+{{- if not $credentials.preparedCustodySecretName -}}{{- fail "repositoryCredentials.preparedCustodySecretName is required for prepared-git" -}}{{- end -}}
 {{- end -}}
 {{- $registryName := required "repositoryCredentials.registryConfigMapName is required when enabled" $credentials.registryConfigMapName -}}
 {{- include "openclaw.validateResourceName" (dict "label" "repositoryCredentials.registryConfigMapName" "value" $registryName) -}}

@@ -2244,7 +2244,71 @@ test(
     );
     await assert.rejects(
       render({ ...repositoryCredentialValues, "repositoryCredentials.authority": "unknown" }),
-      /signing gateway retired/,
+      /repositoryCredentials\.authority must select prepared-git or gitlab-token-development/,
+    );
+  },
+);
+
+test(
+  "GitLab development broker Helm selection keeps its token in the repository service",
+  tooling,
+  async () => {
+    const selected = {
+      ...repositoryCredentialValues,
+      "repositoryCredentials.authority": "gitlab-token-development",
+      "repositoryCredentials.appKeySecretName": "",
+      "repositoryCredentials.preparedCustodySecretName": "",
+      "repositoryCredentials.tokenSecretName": "gitlab-development-token",
+    };
+    const { stdout } = await render(selected);
+    const objects = await resources(stdout);
+    const pod = objects.find(
+      (object) =>
+        object.kind === "Deployment" && object.metadata.name === "openclaw-enterprise-worker",
+    ).spec.template.spec;
+    const broker = pod.containers.find(({ name }) => name === "repository-credentials");
+    assert.deepEqual(broker.args.slice(-2), ["--authority", "gitlab-token-development"]);
+    assert.equal(
+      pod.volumes.some(({ name }) => name === "prepared-repository-owner"),
+      false,
+    );
+    const inputs = pod.volumes.find(({ name }) => name === "repository-inputs");
+    assert.deepEqual(inputs.projected.sources, [
+      {
+        secret: {
+          name: "repository-config",
+          items: [{ key: "config.json", path: "config.json" }],
+        },
+      },
+      {
+        secret: {
+          name: "repository-tls",
+          items: [
+            { key: "tls.crt", path: "tls.crt" },
+            { key: "tls.key", path: "tls.key" },
+          ],
+        },
+      },
+      {
+        secret: {
+          name: "gitlab-development-token",
+          items: [{ key: "token", path: "token" }],
+        },
+      },
+    ]);
+    const tokenMounters = [...(pod.initContainers ?? []), ...pod.containers]
+      .filter(({ volumeMounts }) => volumeMounts?.some(({ name }) => name === "repository-inputs"))
+      .map(({ name }) => name);
+    assert.deepEqual(tokenMounters, ["repository-credentials"]);
+    const ingress = objects.find(
+      ({ kind, metadata }) =>
+        kind === "NetworkPolicy" &&
+        metadata.name === "openclaw-enterprise-prepared-repository-ingress",
+    );
+    assert.deepEqual(ingress.spec.ingress, []);
+    await assert.rejects(
+      render({ ...selected, "repositoryCredentials.tokenSecretName": "" }),
+      /tokenSecretName is required/,
     );
   },
 );

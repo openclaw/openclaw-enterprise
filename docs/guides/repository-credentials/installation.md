@@ -112,6 +112,15 @@ These commands create new operator-owned inputs and intentionally fail on
 existing ConfigMap or Secret names. Keep key contents out of Installation YAML,
 Helm values, Agent configuration and command arguments.
 
+### Use the development GitLab authority
+
+For a development-only GitLab.com installation, replace the GitHub App key and
+custody inputs with a project access token. Use the GitLab registry, a
+`gitlab-token` service backend, and the
+[development authority contract](../../reference/repository-credentials/gitlab-development-token.md).
+Create a token Secret in addition to the service, TLS, public-CA, and immutable
+registry inputs. The repository service alone mounts the token.
+
 ## Select composition and network access
 
 Add the [GitHub Backend and Driver fragment](../../reference/backends.md#github-repository-credentials)
@@ -173,6 +182,11 @@ repositoryCredentials:
   upstreamCidrs:
     - "<approved GitHub upstream CIDR>"
 ```
+
+For GitLab development, set `authority: gitlab-token-development`, replace
+`preparedCustodySecretName` and `appKeySecretName` with `tokenSecretName`, and
+supply the resolved GitLab.com IPv4 `/32` egress. Select the GitLab Repo Backend
+and `repository.nativeSender`; omit `repository.preparedGitHub`.
 
 `backendId` must follow the Backend ID rule: 1 to 200 characters, with no
 leading or trailing whitespace and no control characters or line or paragraph

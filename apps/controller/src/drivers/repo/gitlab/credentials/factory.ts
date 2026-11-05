@@ -68,7 +68,11 @@ export function createGitLabDriverFactory(options: GitLabFactoryOptions): GitLab
           if ("kind" in plan) {
             return plan;
           }
-          return Object.freeze({ ...plan, bindRequestDigest: true });
+          return Object.freeze({
+            ...plan,
+            bindRequestDigest: true,
+            ...(plan.category === "git-fetch" ? { inputPolicy: () => true } : {}),
+          });
         },
         async authorize(plan: RequestPlan, _requestDigestSha256, bounds) {
           return owner.withToken(async (bytes, assertCurrent) => {

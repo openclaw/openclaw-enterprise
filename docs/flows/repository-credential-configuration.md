@@ -9,7 +9,7 @@ last_updated_session: "authoring-run/1a8f6b59-50b6-4282-a383-5f45e22aa461"
 ## Overview
 
 The repository credential composition loader validates operator-selected
-configuration, prepared registry policy, and TLS files before returning a frozen
+configuration, provider policy, and TLS files before returning a frozen
 configuration owner. In Kubernetes projection mode, the sidecar derives the
 broker origin from its trusted deployment argument before protected loading. The
 standalone `--check-config` entry point still requires an explicit origin,
@@ -84,8 +84,10 @@ use Recreate.
 `apps/controller/src/composition/repository-credentials/projected-inputs.ts:prepareProjectedInputs`
 and `apps/controller/src/composition/repository-credentials/protected-file.ts:readProtectedFile`
 
-Kubernetes startup reads `config.json`, TLS files and registry from the
-currently selected projected-volume generation. The projection layer fills an
+Kubernetes startup reads `config.json` and the TLS files from the selected
+projected-volume generation. GitHub prepared startup also reads the registry;
+GitLab development startup reads the token and leaves the registry with the
+worker's public configuration. The projection layer fills an
 absent `gateway.publicOrigin` from the trusted `--public-origin` deployment
 argument. If operators provide `gateway.publicOrigin`, it must match that
 argument exactly. The same projection check verifies that the serving certificate
@@ -128,11 +130,18 @@ worker socket path and trusted upstream origins, then loads TLS. It constructs
 READY material and has no App key or issuer capability. The worker Token Service
 retains issuance and cleanup ownership.
 
-`github-token` is the explicit development alternative. It requires
+`github-token` is the explicit standalone development alternative. It requires
 `--development-authority`, an eight-hour session cap, and the configured push
 input bound. The same protected reader loads its token; composition removes one
 trailing newline and constructs `GitHubStaticTokenOwner`. Failure clears owned
 buffers. The returned configuration owns its TLS and selected factory.
+
+Installed GitLab development startup instead uses
+`authority: "gitlab-token-development"`. The projection must contain a
+`gitlab-token` backend whose `tokenFile` points to the projected token. The
+loader copies that token into the same private runtime directory, rewrites only
+its token path, and constructs the GitLab owner. It does not read an App key,
+custody key, or prepared GitHub registry.
 
 ### 4. Close validation material or hand it to service startup
 

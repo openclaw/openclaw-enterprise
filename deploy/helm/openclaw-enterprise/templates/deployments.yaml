@@ -179,6 +179,13 @@ spec:
                       path: tls.crt
                     - key: tls.key
                       path: tls.key
+              {{- if eq $.Values.repositoryCredentials.authority "gitlab-token-development" }}
+              - secret:
+                  name: {{ $.Values.repositoryCredentials.tokenSecretName | quote }}
+                  items:
+                    - key: {{ $.Values.repositoryCredentials.tokenKey | quote }}
+                      path: token
+              {{- end }}
         {{- end }}
         {{- if eq $.Values.repositoryCredentials.authority "prepared-git" }}
         - name: prepared-repository-owner
@@ -665,10 +672,8 @@ spec:
             - {{ include "openclaw.repositoryCredentials.origin" $ | quote }}
             - --backend-id
             - {{ $.Values.repositoryCredentials.backendId | quote }}
-            {{- if eq $.Values.repositoryCredentials.authority "prepared-git" }}
             - --authority
-            - prepared-git
-            {{- end }}
+            - {{ $.Values.repositoryCredentials.authority | quote }}
           securityContext:
             {{- include "openclaw.containerSecurity" $ | nindent 12 }}
           resources:

@@ -4496,17 +4496,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
     sandboxDriverId?: string,
   ): void {
     this.validateRepositoryCredentialSupport(sandboxDriverId);
-    if (!(
-      (!this.preparedRepositoryIngress &&
-        !this.sandboxDriver?.repositoryAccess &&
-        harness.id === "openclaw" &&
-        harness.mode === "embedded") ||
-      (harness.id === "codex" && harness.mode === "dedicated")
-    )) {
+    const embeddedOpenClaw = harness.id === "openclaw" && !this.sandboxDriver?.repositoryAccess;
+    const dedicatedCodex = harness.id === "codex" && harness.mode === "dedicated";
+    if (!((embeddedOpenClaw && harness.mode === "embedded") || dedicatedCodex)) {
       throw new ConfigurationFailure(
-        this.preparedRepositoryIngress
-          ? "Prepared repository credentials require a dedicated Compute-owned Codex Harness."
-          : "Repository credentials require an embedded OpenClaw or dedicated Codex Kubernetes runtime.",
+        "Repository credentials require an embedded OpenClaw or dedicated Codex Kubernetes runtime.",
       );
     }
   }
@@ -6710,7 +6704,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (repositoryMaterial !== undefined) {
       await this.prepareRevisionStage("repository_material", () =>
         this.reconcileRepositoryIngress(
-          { namespace: namespace.name, namespaceId: revision.namespaceId, revision },
+          {
+            namespace: namespace.name,
+            namespaceId: revision.namespaceId,
+            revision: { ...revision, harnessMode: revision.harness.mode },
+          },
           repositoryMaterial,
         ),
       );
@@ -7910,7 +7908,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
     );
     if (repositoryMaterial !== undefined) {
       await this.reconcileRepositoryIngress(
-        { namespace: namespace.name, namespaceId: revision.namespaceId, revision },
+        {
+          namespace: namespace.name,
+          namespaceId: revision.namespaceId,
+          revision: { ...revision, harnessMode: revision.harness.mode },
+        },
         repositoryMaterial,
       );
     }
@@ -9554,7 +9556,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     await this.reconcileRepositoryIngress({
       namespace: namespace.name,
       namespaceId: revision.namespaceId,
-      revision,
+      revision: { ...revision, harnessMode: revision.harness.mode },
     });
     const owner = {
       namespaceId: revision.namespaceId,

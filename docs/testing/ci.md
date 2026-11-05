@@ -523,6 +523,11 @@ Its [manifest](../../scripts/ci/test-suites/gitlab-repository-live.json) registe
 composed Agent-session coverage; it is not dispatched by ordinary PR CI or
 `Full Integration`. The conformance files run in `checks-baseline-1`.
 
+`gitlab-repository-installed` is a separate opt-in lane for the supported Helm,
+Installation admission, worker startup, Pod delivery, authorization refusal, and
+session-disposal path. See
+[installed GitLab Agent lane](repository-credentials.md#installed-gitlab-agent-lane).
+
 ### Observability Demo
 
 `Demo Observability Smoke` checks the chart, metrics/log ingestion and rendered

@@ -1445,7 +1445,7 @@ export async function loadInstallationConfiguration(options: {
         ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
         ...(protectedDriver === undefined ? {} : { protectedDriver }),
         preparedTokens: tokenService,
-        ...(preparedRepositoryGit === undefined || repositoryTransport || repositoryGitDriver
+        ...(repositoryDeliveryMode !== "native" || repositoryTransport || repositoryGitDriver
           ? {}
           : { preparedRepositoryIngress: true }),
         preprovisionedNamespace,

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import {
   chmod,
   lstat,
@@ -51,7 +52,9 @@ async function fixture(t) {
   const privateVolume = join(directory, "private-volume");
   // The control socket needs a short path, so its volume lives apart from the inputs.
   const controlVolume = join(
-    await socketDirectory(t, "rp-control-", { longest: "control/private/control.sock" }),
+    await socketDirectory(t, "rp-control-", {
+      longest: "control/private/prepared-git-use.sock",
+    }),
     "control",
   );
   for (const path of [inputsDirectory, registryDirectory, privateVolume, controlVolume]) {
@@ -225,6 +228,71 @@ test("prepared projection loads without an App key and refuses an authority mism
     }),
   });
   await assert.rejects(f.prepare(), /signing gateway retired/);
+});
+
+test("GitLab development projection keeps the token private and loads the real service", async (t) => {
+  const f = await fixture(t);
+  f.options.authority = "gitlab-token-development";
+  const backend = {
+    kind: "gitlab-token",
+    providerInstanceId: "gitlab-development",
+    configVersion: "1",
+    projectId: "88516404",
+    project: "example/project",
+    namespaceId: "example",
+    tokenFile: join(f.options.inputsDirectory, "token"),
+    developmentOnly: true,
+    pushRefAllowlist: [],
+    allowGraphql: false,
+    leaseSeconds: 900,
+  };
+  // GitLab startup must consume the projected PAT without requiring the
+  // prepared-GitHub registry or exposing the token outside the service.
+  await project(f.options.inputsDirectory, "..gitlab", {
+    "config.json": JSON.stringify({
+      ...f.config,
+      limits: { gitPushInputBytes: 67108864 },
+      sessionPolicy: {
+        maximumDurationSeconds: 900,
+        defaultProfile: "git-read",
+        allowedProfiles: ["git-read"],
+      },
+      backend,
+    }),
+    "tls.crt": f.values["tls.crt"],
+    "tls.key": f.values["tls.key"],
+    token: `glpat-${randomUUID().replaceAll("-", "")}`,
+  });
+  const loaded = await f.prepare();
+  assert.equal(loaded.authority, "gitlab-token-development");
+  assert.equal(loaded.tokenClass, "personal");
+  loaded.close();
+  assert.deepEqual((await readdir(f.options.privateDirectory)).sort(), [
+    "config.json",
+    "tls.crt",
+    "tls.key",
+    "token",
+  ]);
+  const copied = JSON.parse(
+    await readFile(join(f.options.privateDirectory, "config.json"), "utf8"),
+  );
+  assert.equal(copied.backend.tokenFile, join(f.options.privateDirectory, "token"));
+
+  await project(f.options.inputsDirectory, "..gitlab-missing-token", {
+    "config.json": JSON.stringify({
+      ...f.config,
+      limits: { gitPushInputBytes: 67108864 },
+      sessionPolicy: {
+        maximumDurationSeconds: 900,
+        defaultProfile: "git-read",
+        allowedProfiles: ["git-read"],
+      },
+      backend,
+    }),
+    "tls.crt": f.values["tls.crt"],
+    "tls.key": f.values["tls.key"],
+  });
+  await assert.rejects(f.prepare(), { message: "invalid-projected-inputs" });
 });
 
 test("projection startup derives the broker origin from the trusted deployment argument", async (t) => {

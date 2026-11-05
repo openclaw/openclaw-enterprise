@@ -555,6 +555,7 @@
               "guides/repository-credentials/standalone-service",
               "guides/repository-credentials/development-token",
               "reference/repository-credentials/development-token",
+	              "reference/repository-credentials/gitlab-development-token",
               "reference/repository-credentials/openshell-git",
               "reference/repository-credentials/openshell-git-refusals",
               "reference/repository-credentials/openshell-git-restarts"

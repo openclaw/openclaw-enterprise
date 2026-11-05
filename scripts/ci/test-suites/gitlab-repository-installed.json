@@ -1,0 +1,39 @@
+{
+  "env": {
+    "OCC_TEST_GITLAB_REPOSITORY_KUBERNETES_REAL": "1"
+  },
+  "requiredEnv": [
+    "GITLAB_TEST_TOKEN_FILE",
+    "GITLAB_TEST_PROJECT",
+    "GITLAB_TEST_PROJECT_ID",
+    "OCC_TEST_KUBERNETES_KUBECONFIG",
+    "OCC_TEST_KUBERNETES_CONTEXT",
+    "OCC_TEST_GITLAB_UPSTREAM_CIDRS",
+    "OPENAI_API_KEY",
+    "OCC_TEST_OPENAI_MODEL",
+    "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE",
+    "OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE",
+    "OCC_TEST_KUBERNETES_RUNTIME_IMAGE",
+    "OCC_TEST_PRODUCTION_POSTGRES_IMAGE",
+    "OCC_TEST_PRODUCTION_NODE_IMAGE"
+  ],
+  "prepare": {
+    "mode0600Env": "GITLAB_TEST_TOKEN_FILE",
+    "mode0600Description": "GitLab project access token",
+    "immutableEnvImages": [
+      "OCC_TEST_PRODUCTION_CONTROLLER_IMAGE",
+      "OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE",
+      "OCC_TEST_KUBERNETES_RUNTIME_IMAGE",
+      "OCC_TEST_PRODUCTION_POSTGRES_IMAGE",
+      "OCC_TEST_PRODUCTION_NODE_IMAGE"
+    ]
+  },
+  "files": [
+    {
+      "path": "tests/integration/gitlab-repository-kubernetes-real.test.mjs",
+      "expectedTests": [
+        "installed GitLab development authority admits, delivers, refuses, and disposes Agent sessions"
+      ]
+    }
+  ]
+}

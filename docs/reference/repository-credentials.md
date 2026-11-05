@@ -58,8 +58,9 @@ supplies the resolver that checks the admitted grant and selects its destination
 - `resolve` checks the selection against Namespace policy and returns the bindings and duration.
 
 For protected delivery, select `repository` and the installed Sandbox and
-Credential Proxy Driver. For native delivery, select `repository.nativeSender`
-with `repository.preparedGitHub`. Controller startup rejects the legacy
+Credential Proxy Driver. For native delivery, select `repository.nativeSender`;
+GitHub also selects `repository.preparedGitHub`, while GitLab selects its Repo
+Backend. Controller startup rejects the legacy
 Installation-level `drivers.repo` in every mode. Before switching, stop new
 admissions and drain accepted work on its original owner.
 
@@ -95,12 +96,11 @@ for what the original broker can confirm.
 
 ## GitLab development workflow
 
-GitLab.com uses registry-backed Repo policy, the credential service, and an
-operator-supplied PAT; registry entries bind projects to Namespaces and profiles.
-Native Agent sessions can read, push approved refs, and create drafts.
+GitLab.com development uses registry-backed Repo policy, the credential service,
+and a PAT. Native Agents can read, push approved refs, and create drafts.
 OpenShell delivery and durable receipts are excluded. See the
 [proposal](../../specs/rfcs/0029-gitlab-repository-credentials.md) and
-[checks](../testing/repository-credentials.md#gitlab-provider-checks).
+[development authority](repository-credentials/gitlab-development-token.md).
 
 ## Configuration
 

@@ -14,6 +14,7 @@ const inputLimits = {
   "config.json": 262144,
   "tls.crt": 131072,
   "tls.key": 65536,
+  token: 16384,
 } as const;
 const privateNames = [...Object.keys(inputLimits), "registry.json"];
 const controlSocket = "/run/openclaw/repository-control/private/control.sock";
@@ -25,7 +26,7 @@ interface ProjectedInputs {
   readonly controlSocket: string;
   readonly expectedOrigin: string;
   readonly backendId: string;
-  readonly authority: "prepared-git";
+  readonly authority: "prepared-git" | "gitlab-token-development";
 }
 
 async function realDirectory(path: string): Promise<void> {
@@ -175,23 +176,37 @@ export async function prepareProjectedInputs(
 ): Promise<LoadedConfiguration> {
   const contents = new Map<string, Buffer>();
   try {
-    if (options.authority !== "prepared-git") {
+    if (options.authority !== "prepared-git" && options.authority !== "gitlab-token-development") {
       throw new RetiredGitHubAuthorityError();
     }
     const generation = await projectionGeneration(options.inputsDirectory);
-    for (const [name, maximum] of Object.entries(inputLimits)) {
-      contents.set(name, await readProjected(join(generation, name), maximum));
+    const inputNames =
+      options.authority === "gitlab-token-development"
+        ? (Object.keys(inputLimits) as Array<keyof typeof inputLimits>)
+        : (["config.json", "tls.crt", "tls.key"] as const);
+    for (const name of inputNames) {
+      contents.set(name, await readProjected(join(generation, name), inputLimits[name]));
     }
-    const registryGeneration = await projectionGeneration(dirname(options.registryFile));
-    contents.set(
-      "registry.json",
-      await readProjected(join(registryGeneration, basename(options.registryFile)), 262144),
-    );
+    if (options.authority === "prepared-git") {
+      const registryGeneration = await projectionGeneration(dirname(options.registryFile));
+      contents.set(
+        "registry.json",
+        await readProjected(join(registryGeneration, basename(options.registryFile)), 262144),
+      );
+    }
     const root = record(JSON.parse(contents.get("config.json")!.toString("utf8")));
     const gateway = record(root.gateway);
     const backend = record(root.backend);
     if (backend.kind === "github-app" || backend.kind === "github-app-registry") {
       throw new RetiredGitHubAuthorityError();
+    }
+    if (options.authority === "gitlab-token-development") {
+      if (
+        backend.kind !== "gitlab-token" ||
+        backend.tokenFile !== join(options.inputsDirectory, "token")
+      ) {
+        throw new Error("invalid-projected-inputs");
+      }
     }
     if (gateway.publicOrigin === undefined) {
       gateway.publicOrigin = options.expectedOrigin;
@@ -200,15 +215,24 @@ export async function prepareProjectedInputs(
       gateway.publicOrigin !== options.expectedOrigin ||
       gateway.listen !== "0.0.0.0:8443" ||
       gateway.controlSocket !== options.controlSocket ||
-      backend.kind !== "github-prepared-git-registry" ||
-      backend.backendId !== options.backendId
+      backend.kind !==
+        (options.authority === "gitlab-token-development"
+          ? "gitlab-token"
+          : "github-prepared-git-registry") ||
+      (options.authority === "gitlab-token-development"
+        ? backend.backendId !== undefined
+        : backend.backendId !== options.backendId)
     ) {
       throw new Error("invalid-projected-inputs");
     }
     validateProjectedTlsHost(contents.get("tls.crt")!, options.expectedOrigin);
     gateway.tlsCertFile = join(options.privateDirectory, "tls.crt");
     gateway.tlsKeyFile = join(options.privateDirectory, "tls.key");
-    backend.registryFile = join(options.privateDirectory, "registry.json");
+    if (options.authority === "gitlab-token-development") {
+      backend.tokenFile = join(options.privateDirectory, "token");
+    } else {
+      backend.registryFile = join(options.privateDirectory, "registry.json");
+    }
     contents.get("config.json")!.fill(0);
     contents.set("config.json", Buffer.from(JSON.stringify(root)));
     await privateDirectory(options.privateDirectory);
@@ -217,7 +241,11 @@ export async function prepareProjectedInputs(
     for (const [name, value] of contents) {
       await writePrivate(join(options.privateDirectory, name), value);
     }
-    const loaded = await loadConfiguration(join(options.privateDirectory, "config.json"), clock);
+    const loaded = await loadConfiguration(
+      join(options.privateDirectory, "config.json"),
+      clock,
+      options.authority === "gitlab-token-development" ? { developmentAuthority: true } : undefined,
+    );
     // Leave time to report unresolved cleanup before the worker Pod's fixed
     // 75-second termination deadline forcibly ends the service process.
     if (loaded.config.limits.shutdownGraceMs > 60_000) {
@@ -264,7 +292,7 @@ async function main(args: readonly string[]): Promise<void> {
       controlSocket,
       expectedOrigin: values[1],
       backendId: values[3],
-      authority: values[5] as "prepared-git",
+      authority: values[5] as "prepared-git" | "gitlab-token-development",
     },
     clock,
   );

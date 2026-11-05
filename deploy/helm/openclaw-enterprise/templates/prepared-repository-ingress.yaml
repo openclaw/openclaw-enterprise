@@ -1,4 +1,4 @@
-{{- if and .Values.repositoryCredentials.enabled (eq .Values.repositoryCredentials.authority "prepared-git") }}
+{{- if .Values.repositoryCredentials.enabled }}
 {{- $name := "openclaw-enterprise-prepared-repository-ingress" }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

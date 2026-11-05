@@ -162,7 +162,8 @@ repositoryCredentials:
   # independently installed sender. Empty leaves selection to enabled or openshellGit.enabled.
   # See docs/reference/drivers/selection.md#supply-protected-git-credentials-with-helm.
   delivery: ""
-  # prepared-git gives the worker the App key and custody. Only the explicitly selected native sender needs its socket.
+  # prepared-git gives the worker the App key and custody. gitlab-token-development
+  # gives only the repository service a development PAT through projected inputs.
   authority: prepared-git
   image: ""
   # Internal HTTPS Service name. Fresh installs default to git. Upgrades must
@@ -185,6 +186,9 @@ repositoryCredentials:
   appKeyKey: private-key.pem
   # Prepared Git: only the worker mounts the App key and this 32-byte custody.key.
   preparedCustodySecretName: ""
+  # GitLab development authority: only the repository service mounts this token.
+  tokenSecretName: ""
+  tokenKey: token
   # Optional public ca.crt for a private issuer and Git origin, in worker and broker.
   preparedProviderCaConfigMapName: ""
   tlsSecretName: ""

@@ -100,7 +100,10 @@ export async function runService(
   };
   process.once("SIGTERM", shutdown);
   process.once("SIGINT", shutdown);
-  if (loaded.authority === "github-token-development") {
+  if (
+    loaded.authority === "github-token-development" ||
+    loaded.authority === "gitlab-token-development"
+  ) {
     // Name the development authority and token class (never the token) at startup.
     process.stderr.write(
       `${JSON.stringify({ event: "started", authority: loaded.authority, tokenClass: loaded.tokenClass })}\n`,
