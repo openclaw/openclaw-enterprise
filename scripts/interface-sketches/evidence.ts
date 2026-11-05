@@ -87,7 +87,7 @@ export const evidenceCatalog: readonly EvidenceDiagram[] = [
       {
         description:
           "The Git adapter has named calls to the explicit Git and installation authorities. The selected-repository authority uses an inline type outside the extractor’s scope.",
-        pointer: { kind: "edge", from: "adapter", to: "owner", label: "3  Check the grant" },
+        pointer: { kind: "edge", from: "adapter", to: "owner", label: "Check the grant" },
         required: [
           coupling(
             `${git}#protectedOpenShellGitOwner`,

@@ -1,11 +1,11 @@
 {
-  "title": "01 What happens when the Agent runs git push?",
+  "title": "What happens when the Agent runs git push?",
   "width": 1180,
-  "height": 640,
+  "height": 474,
   "items": [
     {
       "kind": "text",
-      "text": "01 What happens when the Agent runs git push?",
+      "text": "What happens when the Agent runs git push?",
       "x": 20,
       "y": 33,
       "size": 28,
@@ -13,41 +13,34 @@
     },
     {
       "kind": "text",
-      "text": "Request path in the OpenShell reference implementation · token setup is shown in 01b",
+      "text": "Request authorization in the OpenShell reference implementation",
       "x": 20,
       "y": 55,
       "size": 16,
       "role": "subtitle"
     },
-    { "kind": "box", "id": "worker", "x": 20, "y": 80, "w": 410, "h": 420, "role": "control" },
+    { "kind": "box", "id": "openshell", "x": 20, "y": 80, "w": 725, "h": 152, "role": "runtime" },
+    { "kind": "text", "text": "OpenShell runtime", "x": 32, "y": 98, "size": 16, "role": "group" },
+    { "kind": "box", "id": "sandbox", "x": 38, "y": 113, "w": 248, "h": 104, "role": "boundary" },
+    { "kind": "text", "text": "Sandbox", "x": 50, "y": 131, "size": 16, "role": "group" },
+    { "kind": "box", "id": "worker", "x": 330, "y": 275, "w": 830, "h": 120, "role": "control" },
     {
       "kind": "text",
-      "text": "OCE worker · control plane",
-      "x": 32,
-      "y": 98,
+      "text": "OpenClaw Enterprise worker",
+      "x": 342,
+      "y": 293,
       "size": 16,
       "role": "group"
     },
-    { "kind": "box", "id": "openshell", "x": 720, "y": 80, "w": 440, "h": 270, "role": "runtime" },
-    {
-      "kind": "text",
-      "text": "Execution environment",
-      "x": 732,
-      "y": 98,
-      "size": 16,
-      "role": "group"
-    },
-    { "kind": "box", "id": "sandbox", "x": 780, "y": 115, "w": 320, "h": 80, "role": "boundary" },
-    { "kind": "text", "text": "Sandbox", "x": 792, "y": 133, "size": 16, "role": "group" },
-    { "kind": "box", "id": "internet", "x": 720, "y": 390, "w": 440, "h": 110, "role": "external" },
-    { "kind": "text", "text": "Internet", "x": 732, "y": 408, "size": 16, "role": "group" },
+    { "kind": "box", "id": "internet", "x": 930, "y": 111, "w": 230, "h": 112, "role": "external" },
+    { "kind": "text", "text": "External service", "x": 942, "y": 129, "size": 16, "role": "group" },
     {
       "kind": "node",
       "id": "agent",
-      "x": 850,
-      "y": 145,
-      "w": 180,
-      "h": 40,
+      "x": 52,
+      "y": 147,
+      "w": 220,
+      "h": 56,
       "lines": ["Agent"],
       "titleLineCount": 1,
       "density": "compact",
@@ -56,10 +49,10 @@
     {
       "kind": "node",
       "id": "supervisor",
-      "x": 780,
-      "y": 245,
-      "w": 320,
-      "h": 55,
+      "x": 465,
+      "y": 147,
+      "w": 270,
+      "h": 56,
       "lines": ["Credential Proxy", "Holds the outgoing GitHub request"],
       "titleLineCount": 1,
       "density": "compact",
@@ -68,14 +61,14 @@
     {
       "kind": "node",
       "id": "adapter",
-      "x": 50,
-      "y": 235,
-      "w": 340,
+      "x": 450,
+      "y": 308,
+      "w": 300,
       "h": 75,
       "lines": [
         "Git transport adapter",
-        "Authenticates the caller and checks the",
-        "request, binding and loaded generation"
+        "Authenticates caller. Checks request,",
+        "binding and loaded generation"
       ],
       "titleLineCount": 1,
       "density": "compact",
@@ -84,14 +77,14 @@
     {
       "kind": "node",
       "id": "owner",
-      "x": 50,
-      "y": 405,
-      "w": 340,
+      "x": 892,
+      "y": 308,
+      "w": 248,
       "h": 75,
       "lines": [
         "Repository Git authority",
-        "Checks the Agent’s grant for",
-        "this repository and operation"
+        "Checks the Agent’s grant for this",
+        "repository and operation"
       ],
       "titleLineCount": 1,
       "density": "compact",
@@ -100,11 +93,11 @@
     {
       "kind": "node",
       "id": "github",
-      "x": 780,
-      "y": 417,
-      "w": 320,
-      "h": 75,
-      "lines": ["GitHub", "Enforces installation token permissions", "and GitHub branch rules"],
+      "x": 942,
+      "y": 137,
+      "w": 206,
+      "h": 76,
+      "lines": ["GitHub", "Enforces token permissions", "and GitHub branch rules"],
       "titleLineCount": 1,
       "density": "compact",
       "role": "external"
@@ -112,78 +105,17 @@
     {
       "kind": "line",
       "points": [
-        { "node": "agent", "side": "bottom" },
-        { "node": "supervisor", "side": "top" }
+        { "node": "agent", "side": "right" },
+        { "node": "supervisor", "side": "left" }
       ],
       "dashed": false,
       "arrow": true
     },
     {
       "kind": "text",
-      "text": "1  git push",
-      "x": 955,
-      "y": 223,
-      "size": 14,
-      "role": "label",
-      "backdrop": true,
-      "lineHeight": 16
-    },
-    {
-      "kind": "line",
-      "points": [
-        { "node": "supervisor", "side": "left" },
-        { "node": "adapter", "side": "right" }
-      ],
-      "dashed": false,
-      "arrow": true
-    },
-    {
-      "kind": "text",
-      "text": "2  Ask about this request\nEvaluateHttpRequest",
-      "x": 477,
-      "y": 248,
-      "size": 14,
-      "role": "label",
-      "backdrop": true,
-      "lineHeight": 16
-    },
-    {
-      "kind": "line",
-      "points": [
-        { "node": "adapter", "side": "left" },
-        [35, 272.5],
-        [35, 442.5],
-        { "node": "owner", "side": "left" }
-      ],
-      "dashed": false,
-      "arrow": true
-    },
-    {
-      "kind": "text",
-      "text": "3  Check the grant",
-      "x": 43,
-      "y": 366,
-      "size": 14,
-      "role": "label",
-      "backdrop": true,
-      "lineHeight": 16
-    },
-    {
-      "kind": "line",
-      "points": [
-        { "node": "adapter", "side": "bottom" },
-        [220, 335],
-        [940, 335],
-        { "node": "supervisor", "side": "bottom" }
-      ],
-      "dashed": false,
-      "arrow": true
-    },
-    {
-      "kind": "text",
-      "text": "4  Return allow or deny",
-      "x": 477,
-      "y": 325,
+      "text": "git push",
+      "x": 327,
+      "y": 164,
       "size": 14,
       "role": "label",
       "backdrop": true,
@@ -193,18 +125,54 @@
       "kind": "line",
       "points": [
         { "node": "supervisor", "side": "right" },
-        [1140, 272.5],
-        [1140, 454.5],
-        { "node": "github", "side": "right" }
+        { "node": "github", "side": "left" }
       ],
       "dashed": true,
       "arrow": true
     },
     {
       "kind": "text",
-      "text": "5  On allow, add the\ntoken and send",
-      "x": 976,
-      "y": 367,
+      "text": "On allow, add the token\nand send the request",
+      "x": 763,
+      "y": 146,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "supervisor", "side": "bottom" },
+        { "node": "adapter", "side": "top" }
+      ],
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "text",
+      "text": "EvaluateHttpRequest\nAsk for allow or deny",
+      "x": 615,
+      "y": 250,
+      "size": 14,
+      "role": "label",
+      "backdrop": true,
+      "lineHeight": 16
+    },
+    {
+      "kind": "line",
+      "points": [
+        { "node": "adapter", "side": "right" },
+        { "node": "owner", "side": "left" }
+      ],
+      "dashed": false,
+      "arrow": true
+    },
+    {
+      "kind": "text",
+      "text": "Check the grant",
+      "x": 765,
+      "y": 335,
       "size": 14,
       "role": "label",
       "backdrop": true,
@@ -214,7 +182,7 @@
       "kind": "text",
       "text": "github-repository restricts access to selected repositories. GitHub governs refs. Explicit git-write checks the pushed ref in OCE.",
       "x": 20,
-      "y": 522,
+      "y": 417,
       "size": 14,
       "role": "note"
     },
@@ -222,7 +190,7 @@
       "kind": "text",
       "text": "github-installation uses the App installation’s scope and requires opt-in. An allow leaves exact dispatch and delivery unconfirmed.",
       "x": 20,
-      "y": 544,
+      "y": 439,
       "size": 14,
       "role": "note"
     }
