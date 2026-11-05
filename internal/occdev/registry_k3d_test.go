@@ -403,9 +403,9 @@ func TestK3dRegistryAttachmentOrdering(t *testing.T) {
 	previousTransport := http.DefaultTransport
 	http.DefaultTransport = &k3dOrderingTransport{}
 	t.Cleanup(func() { http.DefaultTransport = previousTransport })
-	previousRetry := developmentRoutingManifestRetry
-	developmentRoutingManifestRetry.attempts = 1
-	t.Cleanup(func() { developmentRoutingManifestRetry = previousRetry })
+	previousRetry := developmentManifestRetry
+	developmentManifestRetry.attempts = 1
+	t.Cleanup(func() { developmentManifestRetry = previousRetry })
 	t.Setenv("PATH", t.TempDir())
 	commands := fakeProfileCommands(t, map[string]string{
 		"git": `"rev-parse --verify HEAD") echo 0123456789abcdef0123456789abcdef01234567 ;;`,

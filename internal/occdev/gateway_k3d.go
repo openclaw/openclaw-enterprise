@@ -169,7 +169,7 @@ func (r *runner) installDevelopmentRoutingControllers(ctx context.Context, state
 	steps := make([]func(context.Context, *runner) error, 0, len(developmentRoutingControllers))
 	for _, controller := range developmentRoutingControllers {
 		steps = append(steps, func(ctx context.Context, r *runner) error {
-			data, err := downloadDevelopmentRoutingManifest(ctx, r.opts.Err, controller.name, controller.url, controller.sha256, developmentRoutingManifestRetry)
+			data, err := downloadDevelopmentManifest(ctx, r.opts.Err, controller.name, controller.url, controller.sha256, developmentManifestRetry)
 			if err != nil {
 				return fmt.Errorf("%s: %w", controller.name, err)
 			}

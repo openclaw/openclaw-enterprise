@@ -180,7 +180,7 @@ export async function fetchPinnedBytes(
   }
 }
 
-async function downloadPinnedArtifact({ artifact, directory }) {
+export async function downloadPinnedArtifact({ artifact, directory }) {
   const destination = join(directory, artifact.path);
   assertInsideDirectory(directory, destination, `${artifact.name} manifest`);
   try {

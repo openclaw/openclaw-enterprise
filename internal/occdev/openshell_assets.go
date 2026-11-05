@@ -98,10 +98,18 @@ func (r *runner) agentSandboxManifest(ctx context.Context, root string) (string,
 		return selected, nil
 	}
 	path := filepath.Join(root, "agent-sandbox-v0.5.2.yaml")
-	if err := downloadVerified(ctx, agentSandboxManifestURL, path, agentSandboxManifestSHA256); err != nil {
+	if err := downloadVerifiedManifest(ctx, r.opts.Err, agentSandboxManifestURL, path, agentSandboxManifestSHA256); err != nil {
 		return "", err
 	}
 	return path, nil
+}
+
+func downloadVerifiedManifest(ctx context.Context, log io.Writer, url, destination, expected string) error {
+	data, err := downloadDevelopmentManifest(ctx, log, filepath.Base(destination), url, expected, developmentManifestRetry)
+	if err != nil {
+		return err
+	}
+	return exclusiveWrite(destination, data, 0600)
 }
 
 func downloadVerified(ctx context.Context, url, destination, expected string) error {

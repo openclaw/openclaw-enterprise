@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-11-05
-last_updated_session: authoring-run/a85a4857-880b-4f7b-8fe2-d648c86e601e
+last_updated_session: authoring-run/33ffb317-d84b-4de5-b946-70b58f35af74
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -92,6 +92,14 @@ independently of launcher architecture, verify 0.1.6 charts and pin
 Gateway/supervisor/sandbox images. Importing OCE images first prevents k3s garbage
 collection. `writeInstallation` selects curated Codex plugins; the selected
 Credential Gateway supplies credentials.
+
+Agent Sandbox manifest downloads use
+`internal/occdev/routing_manifest.go`; CI bootstrap uses
+`scripts/ci/routing.mjs:downloadPinnedArtifact`. Transient network failures
+and HTTP 408/429/5xx allow eight attempts, each limited to 60 seconds;
+retries start within 120 seconds. Other HTTP errors and checksum mismatches
+fail immediately. Only verified bytes become the private manifest passed to
+`kubectl`; source-archive downloads are unchanged.
 
 `dev-up` validates Kubernetes/OpenShell before `occ dev up`.
 `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` selects Kubernetes-only: in-cluster
@@ -400,6 +408,8 @@ model execution.
 
 ## Changelog
 
+- 2026-11-05 14:34: Reuse bounded retries for the pinned Agent Sandbox manifest. (authoring-run/33ffb317-d84b-4de5-b946-70b58f35af74 - a383313636fc348a2325c0b1f6e05ae80327fd30)
+
 - 2026-11-05 14:17: Revoke empty API grants. (authoring-run/a85a4857-880b-4f7b-8fe2-d648c86e601e - 2b92aa9b35de6e7633b960dfd7edcf1fd3fd46ea)
 
 - 2026-11-05 12:54: Reject projected identity at admission. (authoring-run/root-deployment_docs - 894a5b6698049c41fba27f5c2c0764e86b4c0632)
@@ -445,13 +455,5 @@ model execution.
 - 2026-10-28 16:50: Trace stdio plugin installation before verifier-only native startup. (01a184cd-7ec2-7fa2-8547-9629c51ad0ba - 000e1381e7)
 
 - 2026-10-28 15:09: Clarify mode support and Configuration transformation wording. (01a183dc-eb11-7f33-9992-dec02cd989e3 - a06c28fe0e)
-
-- 2026-10-28 12:05: Separate static Harness mode reporting from real Configuration transformation. (01a183dc-eb11-7f33-9992-dec02cd989e3 - 07418d1980)
-
-- 2026-10-28 01:58: Restrict released-preview readiness to HTTP 400/404 in the accompanying Driver change. (authoring-run/36631ccf-5c7d-4c18-aa49-9a068875fc88 - 19ecdca36)
-
-- 2026-10-27 10:15: Prepare private node state before startup in the accompanying setgid fix. (authoring-run/8777cd8a-6832-4b9e-8fdd-51579d6b02d2 - ed6a5e31e7912eb9e79fd039735b81d6f0bd1b2e)
-
-- 2026-10-24 20:50: Refuse dedicated OpenClaw with several operator-mode ServiceAccounts at admission, and offer only admitted OpenClaw modes. (finding 2346)
 
 [OpenShell Sandbox provisioning documentation history](openshell-sandbox-provisioning/history.md) preserves the older dated entries.

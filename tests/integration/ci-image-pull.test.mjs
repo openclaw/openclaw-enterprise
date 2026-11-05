@@ -1,9 +1,17 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { join } from "node:path";
 import test from "node:test";
 import { isTransientPullFailure, pullImage } from "../../scripts/ci/image-pull.ts";
-import { fetchPinnedBytes, isTransientFetchError } from "../../scripts/ci/routing.mjs";
+import {
+  downloadPinnedArtifact,
+  fetchPinnedBytes,
+  isTransientFetchError,
+} from "../../scripts/ci/routing.mjs";
 import { listen } from "../helpers/listen.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const image =
   "docker.io/otel/opentelemetry-collector-contrib:0.159.0@sha256:1f2c54a30e713fac6b3ae77a1ec84010c2007e29ced8ec666214fc2f6739c1cc";
@@ -161,6 +169,46 @@ const answer =
 const reset = (request) => request.socket.destroy();
 const hang = () => {};
 const quick = { firstDelayMs: 1, attemptTimeoutMs: 1_000 };
+
+test("pinned manifests retry transient downloads and publish only verified private bytes", async (t) => {
+  const directory = await temporaryDirectory(t, "pinned-manifest-");
+  const body = "kind: Namespace\nmetadata:\n  name: pinned-manifest\n";
+  const artifact = {
+    name: "Agent Sandbox",
+    version: "test",
+    path: "sandbox.yaml",
+    sha256: createHash("sha256").update(body).digest("hex"),
+  };
+  const destination = join(directory, artifact.path);
+
+  // A reset and a release-server outage must not publish a partial manifest.
+  const server = await flakyServer(t, [reset, answer(504), answer(200, body)]);
+  assert.equal(
+    await downloadPinnedArtifact({ artifact: { ...artifact, url: server.url }, directory }),
+    destination,
+  );
+  assert.equal(server.requests(), 3);
+  assert.equal(await readFile(destination, "utf8"), body);
+  assert.equal((await stat(destination)).mode & 0o777, 0o600);
+
+  // An invalid cached file is replaced only after the new bytes pass the pin.
+  await writeFile(destination, "previous unverified bytes");
+  const corrupt = await flakyServer(t, [answer(200, "wrong digest"), answer(200, body)]);
+  await assert.rejects(
+    downloadPinnedArtifact({ artifact: { ...artifact, url: corrupt.url }, directory }),
+    /SHA256 mismatch/,
+  );
+  assert.equal(corrupt.requests(), 1);
+  assert.equal(await readFile(destination, "utf8"), "previous unverified bytes");
+
+  const denied = await flakyServer(t, [answer(403), answer(200, body)]);
+  await assert.rejects(
+    downloadPinnedArtifact({ artifact: { ...artifact, url: denied.url }, directory }),
+    /HTTP 403 after 1 attempt/,
+  );
+  assert.equal(denied.requests(), 1);
+  assert.equal(await readFile(destination, "utf8"), "previous unverified bytes");
+});
 
 test("fetchPinnedBytes retries 5xx, resets and timeouts, then returns the body", async (t) => {
   const server = await flakyServer(t, [answer(503), reset, hang, answer(200, "pinned")]);
