@@ -1,7 +1,7 @@
 ---
 created: 2026-08-31
-updated: 2026-11-04
-last_updated_session: authoring-run/63c54d1f-8f48-4ab3-a707-9b0d72978728
+updated: 2026-11-05
+last_updated_session: authoring-run/813d3dd8-d371-45db-a6f1-d70156152311
 ---
 
 # Agent Workspace Files Flow
@@ -118,10 +118,10 @@ configuration, arguments and environment; remote output is discarded. The launch
 waits for completion. A workspace `flock` serializes attempts after lost
 acknowledgments. The verifier uses `OPENCLAW_WORKSPACE_DIR` after relocation.
 
-The runner validates the setup identity and workspace paths. It rejects symlinks
-and conflicting file contents. On first setup, the installed OpenClaw version must
-match `WORKSPACE_DEFAULTS_VERSION` and the template digest must match
-`WORKSPACE_DEFAULTS_ID`. Both constants live in `packages/contracts/src/workspace-defaults.mjs`.
+The runner validates setup identity and workspace paths, rejecting symlinks and
+conflicting contents. First setup requires the installed OpenClaw version and
+template digest to match `WORKSPACE_DEFAULTS_VERSION` and `WORKSPACE_DEFAULTS_ID`
+in `packages/contracts/src/workspace-defaults.mjs`.
 Native `setup` initializes workspace/Git without starting Gateway. Kubernetes init
 containers use Gateway resource budgets. Supplied files, including empty strings,
 atomically replace only absent, stock, or already-submitted content. The runner
@@ -157,8 +157,7 @@ live edits after activation do not update it.
 `apps/controller/src/api-startup.mjs:startApi` validates the optional absolute
 `OCC_GATEWAY_API_KEY_PATH` before opening the database. Production and
 PostgreSQL development composition bind the selected Compute Driver to
-`createWorkspaceFilesAccess`. The worker uses the same mounted service key
-for native node enrollment.
+`createWorkspaceFilesAccess`. The worker uses that key for node enrollment.
 
 API and worker Pods wait for the root Secret and load only public CA trust through `NODE_EXTRA_CA_CERTS` at
 startup, never the CA signing key; the
@@ -196,17 +195,21 @@ Only operator routes allow admin UI subpaths; both strip authorization and cooki
 The [node endpoint contract](../reference/gateway-routing.md#native-node-endpoint)
 owns route ownership across preparation, activation, stop and retirement.
 
-`prepareWorkspaceNode` uses
+`prepareWorkspaceNode` calls
 `gateway/node-enrollment-client.ts:createGatewayNodeEnrollment` after Gateway
-readiness. An Agent-owned Secret per Harness kind stores setup and device identity.
+readiness. Each Harness kind uses an Agent-owned setup/identity Secret.
 `confirmWorkspaceNodeSetup` retains `setupReceiptDeviceId` before `node.describe`.
-In the native bridge, `packages/gateway-client/src/client.ts` saves and reads back
-the token, then reconnects using only that token. `src/gateway/server-methods/nodes.read.ts`
-reports `deviceTokenAuthenticated` from `src/gateway/node-registry.ts`, bound to
-the current session and pairing generation. Only true permits promotion; expired
-status cannot authorize credentials. Readiness records the revision. [Harness storage](../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
-owns authentication and recovery. Native provisioning requires a Sandbox;
-unpaired expired setup waits for Gateway.
+`packages/gateway-client/src/client.ts` saves and reads back the token,
+reconnecting token-only. `src/gateway/server-methods/nodes.read.ts` reports
+`deviceTokenAuthenticated` from `src/gateway/node-registry.ts`, bound to the
+current session and pairing generation. Promotion requires true; live
+approval invalidates proof and forces reauthentication.
+
+After OCC retains a receipt, expired status cannot trigger fresh credentials.
+First reconciliation after Gateway's 20-minute retention can renew setup without
+recovering its receipt (readiness TODO).
+[Harness storage](../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
+owns recovery. Native provisioning requires Sandbox; expired unpaired setup awaits Gateway.
 
 - Gateway admits the seven file and workspace commands before pairing,
   preserving explicit denies.
@@ -372,6 +375,8 @@ replays it. Cleanup closes the native client.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 00:00: Clarify enrollment limits. (authoring-run/813d3dd8-d371-45db-a6f1-d70156152311 - a23d33a4d561d0678410a993e5c10a8cddf1a720)
 
 - 2026-11-04 23:20: Require credential possession before enrollment. (authoring-run/63c54d1f-8f48-4ab3-a707-9b0d72978728 - 24c8c7f7c2b012bd1b802be333a3420645808533)
 

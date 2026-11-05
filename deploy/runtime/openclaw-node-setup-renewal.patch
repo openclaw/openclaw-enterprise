@@ -62,7 +62,7 @@
  bootstrap enrollment approves the device and its first declared command surface,
  including `system.run` when declared. Later command, capability, or permission
  expansion still requires `openclaw nodes approve`. Gateway command policy and
-@@ -124,6 +134,14 @@
+@@ -124,6 +134,17 @@
  intentionally unavailable because a short-lived bearer setup link must not be
  persisted in service arguments.
  
@@ -70,14 +70,17 @@
 +`deviceTokenAuthenticated`. It is `true` only while the current connection has
 +authenticated with the device token for the current pairing generation. It is
 +`false` for a bootstrap connection, a disconnected node, or a connection whose
-+pairing has changed. A connected node or a consumed setup code alone does not
++pairing has changed. A live command approval reconnects a device-token session
++so it can authenticate for the new pairing generation; the observation remains
++`false` until that fresh connection authenticates. A connected node or a consumed
++setup code alone does not
 +prove the node received its credential. Checking this field requires no extra
 +node command grant.
 +
  For a managed foreground process, `--pair-if-needed` reuses native device-token
  storage across restarts; it does not keep a separate enrollment marker. Preserve
  the node state directory. After the setup code expires, the node can still reconnect
-@@ -140,6 +158,12 @@
+@@ -140,6 +161,12 @@
  override that pairing. A paired service install does not save those ambient
  Gateway credentials in its service environment.
  
@@ -90,7 +93,7 @@
  For an intentional shared-token or password connection, use `--auth-from-env`:
  
  ```bash
-@@ -154,8 +178,8 @@
+@@ -154,8 +181,8 @@
  available paired credential, startup names the selected environment variable
  in a warning without printing its value.
  
@@ -101,7 +104,7 @@
  
  - `OPENCLAW_GATEWAY_TOKEN` / `OPENCLAW_GATEWAY_PASSWORD` are checked first.
  - Otherwise, local config fallback applies: `gateway.auth.token` / `gateway.auth.password`.
-@@ -165,8 +189,8 @@
+@@ -165,8 +192,8 @@
  - Node host auth resolution only honors `OPENCLAW_GATEWAY_*` env vars.
  - A CWD `.env` cannot supply `OPENCLAW_*` variables; those are blocked by workspace dotenv policy.
  
@@ -7260,7 +7263,7 @@
        void startup.catch(stopAfterError);
 --- a/src/gateway/node-registry-pairing.test.ts
 +++ b/src/gateway/node-registry-pairing.test.ts
-@@ -30,6 +30,59 @@
+@@ -30,6 +30,88 @@
    vi.useRealTimers();
    setActiveNodeContexts([]);
  });
@@ -7311,10 +7314,39 @@
 +        ),
 +      ).not.toBeNull();
 +      expect(session.pairingGeneration).toBe("generation-b");
++      expect(client.socket.close).toHaveBeenCalledExactlyOnceWith(
++        1012,
++        "node pairing changed; reconnect required",
++      );
 +    } else {
 +      published = { identity: "revoked-identity", generation: "revoked-generation" };
 +    }
 +    expect(registry.isDeviceTokenAuthenticated(session)).toBe(false);
++  },
++);
++
++it.each(["bootstrap", "unchanged", "stale"])(
++  "does not reconnect a node for a %s approval transition",
++  (transition) => {
++    const registry = createNodeRegistry({});
++    const client = makeClient("proof-connection", "proof-node");
++    client.isDeviceTokenAuth = transition !== "bootstrap";
++    const session = registerNodeSession(registry, client, {
++      pairingIdentity: "identity-a",
++      pairingGeneration: "generation-a",
++    });
++    const updated = registry.updateSurface(
++      "proof-node",
++      { commands: [] },
++      {
++        expectedConnId: transition === "stale" ? "retired-connection" : client.connId,
++        expectedPairingIdentity: "identity-a",
++        expectedPairingGeneration: "generation-a",
++        nextPairingGeneration: transition === "unchanged" ? "generation-a" : "generation-b",
++      },
++    );
++    expect(updated).toBe(transition === "stale" ? null : session);
++    expect(client.socket.close).not.toHaveBeenCalled();
 +  },
 +);
  
@@ -7366,6 +7398,45 @@
    }
  
    private getRegisteredSession(nodeId: string): PairingBoundNodeSession | undefined {
+@@ -1023,6 +1046,19 @@
+       // Active-node leases capture the pairing generation, so a promoted live
+       // session must republish its lease even when its presence is unchanged.
+       this.publishActiveNodeContext();
++
++      if (
++        previousPairingGeneration !== node.pairingGeneration &&
++        node.client.isDeviceTokenAuth === true &&
++        node.client.connect.device?.id === nodeId &&
++        this.nodesById.get(nodeId) === node &&
++        node.client.invalidated !== true &&
++        node.client.socket.readyState === WEBSOCKET_OPEN_READY_STATE
++      ) {
++        // The old authentication lease remains bound to its admitted generation.
++        // A fresh token handshake must establish possession for the new approval.
++        node.client.socket.close(1012, "node pairing changed; reconnect required");
++      }
+     }
+ 
+     return node;
+--- a/src/gateway/server-methods/nodes.pairing.ts
++++ b/src/gateway/server-methods/nodes.pairing.ts
+@@ -26,6 +26,7 @@
+ import { invalidateNodeWakeState } from "../node-wake-state.js";
+ import { PAIRING_SCOPE } from "../operator-scopes.js";
+ import { broadcastRejectedNodePairing } from "../pairing-events.js";
++import { WEBSOCKET_OPEN_READY_STATE } from "../server-constants.js";
+ import {
+   deniesCrossDeviceManagement,
+   pairedDeviceHasNonOperatorRole,
+@@ -210,7 +211,7 @@
+         ts: Date.now(),
+       };
+       const updatedNode = promotion.node;
+-      if (updatedNode) {
++      if (updatedNode && updatedNode.client.socket.readyState === WEBSOCKET_OPEN_READY_STATE) {
+         refreshConnectedNodeSurfaceCaches({ context, nodeSession: updatedNode });
+         const notified = await context.nodeRegistry.sendEventForPairingIdentity({
+           nodeId: updatedNode.nodeId,
 --- a/src/gateway/server-methods/nodes.read.ts
 +++ b/src/gateway/server-methods/nodes.read.ts
 @@ -230,6 +230,9 @@
@@ -7380,17 +7451,25 @@
              : {}),
 --- a/src/gateway/server.node-bootstrap-reconnect.test.ts
 +++ b/src/gateway/server.node-bootstrap-reconnect.test.ts
-@@ -1,5 +1,8 @@
+@@ -1,70 +1,327 @@
  // Bootstrap retries must reuse unchanged node grants and their pairing generation.
 -import { expect, test } from "vitest";
 +import path from "node:path";
 +import { expect, test, vi } from "vitest";
 +import { createDeferred, withinTest } from "../../test/helpers/promise.js";
++import { writeConfigFile } from "../config/config.js";
 +import { loadDeviceAuthToken, storeDeviceAuthToken } from "../infra/device-auth-store.js";
  import { issueDeviceBootstrapToken } from "../infra/device-bootstrap.js";
  import { captureNodePairingGeneration } from "../infra/device-pairing-node-state.js";
- import { approveNodePairing, requestNodePairing } from "../infra/device-pairing-node.js";
-@@ -8,63 +11,174 @@
+-import { approveNodePairing, requestNodePairing } from "../infra/device-pairing-node.js";
+-import { listDevicePairing } from "../infra/device-pairing.js";
++import {
++  approveNodePairing,
++  listNodePairing,
++  requestNodePairing,
++} from "../infra/device-pairing-node.js";
++import { getPairedDevice } from "../infra/device-pairing.js";
+ import {
    CLOUD_WORKER_PAIRING_SETUP_BOOTSTRAP_PROFILE,
    NODE_PAIRING_SETUP_BOOTSTRAP_PROFILE,
  } from "../shared/device-bootstrap-profile.js";
@@ -7398,9 +7477,27 @@
  import { openTrackedWs, pairDeviceIdentity } from "./device-authz.test-helpers.js";
  import { describeWithGatewayServer } from "./server.node-pairing.test-support.js";
 -import { connectReq, installGatewayTestHooks } from "./test-helpers.js";
+-
+-installGatewayTestHooks({ scope: "suite" });
 +import { connectOk, installGatewayTestHooks, rpcReq } from "./test-helpers.js";
- 
- installGatewayTestHooks({ scope: "suite" });
++
++const commands = [
++  "dir.list",
++  "file.create",
++  "file.fetch",
++  "file.stat",
++  "file.write",
++  "workspace.memory",
++  "workspace.skills",
++];
++
++installGatewayTestHooks({
++  scope: "suite",
++  setup: async () => {
++    // Pairing approval and Gateway command policy are independent admission gates.
++    await writeConfigFile({ gateway: { nodes: { commands: { allow: commands } } } });
++  },
++});
  
  describeWithGatewayServer("node bootstrap reconnect", (getStarted) => {
 -  test.each([
@@ -7414,27 +7511,6 @@
 -      platform: "linux",
 -      mode: "node" as const,
 -    };
--    const paired = await pairDeviceIdentity({
--      name: `bootstrap-reconnect-${name}`,
--      role: "node",
--      scopes: [],
--      clientId: client.id,
--      clientMode: client.mode,
--      platform: client.platform,
--    });
--    const surface = await requestNodePairing({
--      nodeId: paired.identity.deviceId,
--      platform: client.platform,
--      commands: [],
--    });
--    await approveNodePairing(surface.request.requestId, { callerScopes: ["operator.pairing"] });
--    const generation = await captureNodePairingGeneration(paired.identity.deviceId);
--    expect(generation).not.toBeNull();
--    const issued = await issueDeviceBootstrapToken({ profile });
--    const ws = await openTrackedWs(getStarted().port);
--    try {
--      const response = await connectReq(ws, {
--        client,
 +  ] as const)(
 +    "proves durable token possession without expanding a %s node grant",
 +    async ([name, profile], { signal }) => {
@@ -7444,19 +7520,10 @@
 +        platform: "linux",
 +        mode: "node" as const,
 +      };
-+      const commands = [
-+        "dir.list",
-+        "file.create",
-+        "file.fetch",
-+        "file.stat",
-+        "file.write",
-+        "workspace.memory",
-+        "workspace.skills",
-+      ];
 +      const paired = await pairDeviceIdentity({
 +        name: `bootstrap-reconnect-${name}`,
-         role: "node",
-         scopes: [],
++        role: "node",
++        scopes: [],
 +        clientId: client.id,
 +        clientMode: client.mode,
 +        platform: client.platform,
@@ -7504,10 +7571,7 @@
 +        scopes: [],
 +        caps: [],
 +        commands,
-         bootstrapToken: issued.token,
--        skipDefaultAuth: true,
--        prePairDevice: false,
--        deviceIdentityPath: paired.identityPath,
++        bootstrapToken: issued.token,
 +        preferBootstrapToken: true,
 +        nodeSetupAuth: { deviceId: paired.identity.deviceId },
 +        hostDeps: {
@@ -7525,21 +7589,7 @@
 +          stored.reject(error);
 +          ready.reject(error);
 +        },
-       });
--      expect.soft(response).toMatchObject({
--        ok: true,
--        payload: { type: "hello-ok", auth: { role: "node", scopes: [] } },
--      });
--      expect(await captureNodePairingGeneration(paired.identity.deviceId)).toEqual(generation);
--      expect(
--        (await listDevicePairing()).pending.filter(
--          (request) => request.deviceId === paired.identity.deviceId,
--        ),
--      ).toEqual([]);
--    } finally {
--      ws.close();
--    }
--  });
++      });
 +      let resumed: GatewayClient | undefined;
 +      try {
 +        node.start();
@@ -7561,8 +7611,8 @@
 +        expect(onHello).toHaveBeenCalledOnce();
 +        expect(await captureNodePairingGeneration(paired.identity.deviceId)).toEqual(generation);
 +        expect(
-+          (await listDevicePairing()).pending.filter(
-+            (request) => request.deviceId === paired.identity.deviceId,
++          (await listNodePairing()).pending.filter(
++            (request) => request.nodeId === paired.identity.deviceId,
 +          ),
 +        ).toEqual([]);
 +        await node.stopAndWait();
@@ -7611,6 +7661,170 @@
 +      }
 +    },
 +  );
++
++  test("reauthenticates the retained token after a live command approval", async ({ signal }) => {
+     const paired = await pairDeviceIdentity({
+-      name: `bootstrap-reconnect-${name}`,
++      name: "live-node-command-approval",
+       role: "node",
+       scopes: [],
+-      clientId: client.id,
+-      clientMode: client.mode,
+-      platform: client.platform,
++      clientId: "node-host",
++      clientMode: "node",
++      platform: "linux",
+     });
+-    const surface = await requestNodePairing({
+-      nodeId: paired.identity.deviceId,
+-      platform: client.platform,
+-      commands: [],
++    const nodeId = paired.identity.deviceId;
++    const approvedCommands = commands.slice(0, -1);
++    const initialSurface = await requestNodePairing({
++      nodeId,
++      platform: "linux",
++      commands: approvedCommands,
+     });
+-    await approveNodePairing(surface.request.requestId, { callerScopes: ["operator.pairing"] });
+-    const generation = await captureNodePairingGeneration(paired.identity.deviceId);
+-    expect(generation).not.toBeNull();
+-    const issued = await issueDeviceBootstrapToken({ profile });
+-    const ws = await openTrackedWs(getStarted().port);
++    const initialApproval = await approveNodePairing(initialSurface.request.requestId, {
++      callerScopes: ["operator.pairing", "operator.write"],
++    });
++    expect(initialApproval && !("status" in initialApproval)).toBe(true);
++    const originalGeneration = await captureNodePairingGeneration(nodeId);
++    expect(originalGeneration).not.toBeNull();
++    const token = (await getPairedDevice(nodeId))?.tokens?.node?.token;
++    expect(token).toEqual(expect.any(String));
++    const url = `ws://127.0.0.1:${getStarted().port}`;
++    const env = {
++      ...process.env,
++      OPENCLAW_STATE_DIR: path.join(path.dirname(paired.identityPath), "node-cache"),
++    };
++    const lookup = { deviceId: nodeId, role: "node", env };
++    await storeDeviceAuthToken({ ...lookup, token: token!, scopes: [] });
++    const observer = await openTrackedWs(getStarted().port);
++    await connectOk(observer, { scopes: ["operator.admin"] });
++    const describe = async () => {
++      const response = await rpcReq(observer, "node.describe", { nodeId });
++      expect(response.ok).toBe(true);
++      return response.payload;
++    };
++    const firstReady = createDeferred();
++    const reconnectStarted = createDeferred();
++    const permitReconnect = createDeferred();
++    const reauthenticated = createDeferred();
++    // Connection errors must reach whichever lifecycle phase is being awaited.
++    void reconnectStarted.promise.catch(() => {});
++    void reauthenticated.promise.catch(() => {});
++    const connectionIds: string[] = [];
++    const onClose = vi.fn();
++    let delayReconnect = false;
++    const node = new GatewayClient({
++      url,
++      env,
++      deviceIdentity: paired.identity,
++      clientName: "node-host",
++      clientVersion: "1.0.0",
++      platform: "linux",
++      mode: "node",
++      role: "node",
++      scopes: [],
++      caps: [],
++      commands,
++      nodeSetupAuth: { deviceId: nodeId, deviceToken: token!, savedGateway: { scope: url } },
++      hostDeps: {
++        loadDeviceAuthToken: async (params) => {
++          if (delayReconnect) {
++            reconnectStarted.resolve();
++            await permitReconnect.promise;
++          }
++          return await loadDeviceAuthToken(params);
++        },
++      },
++      onHelloOk: (hello) => {
++        connectionIds.push(hello.server.connId);
++        if (connectionIds.length === 1) {
++          firstReady.resolve();
++        } else {
++          reauthenticated.resolve();
++        }
++      },
++      onConnectError: (error) => {
++        firstReady.reject(error);
++        reconnectStarted.reject(error);
++        reauthenticated.reject(error);
++      },
++      onClose,
++    });
+     try {
+-      const response = await connectReq(ws, {
+-        client,
+-        role: "node",
+-        scopes: [],
+-        bootstrapToken: issued.token,
+-        skipDefaultAuth: true,
+-        prePairDevice: false,
+-        deviceIdentityPath: paired.identityPath,
+-      });
+-      expect.soft(response).toMatchObject({
+-        ok: true,
+-        payload: { type: "hello-ok", auth: { role: "node", scopes: [] } },
+-      });
+-      expect(await captureNodePairingGeneration(paired.identity.deviceId)).toEqual(generation);
+-      expect(
+-        (await listDevicePairing()).pending.filter(
+-          (request) => request.deviceId === paired.identity.deviceId,
+-        ),
+-      ).toEqual([]);
++      node.start();
++      await withinTest(firstReady.promise, signal);
++      expect(await describe()).toMatchObject({
++        connected: true,
++        deviceTokenAuthenticated: true,
++        commands: approvedCommands,
++      });
++      // The actual node handshake requests the additional command. Approval
++      // must go through the RPC owner that publishes the new live generation.
++      const pending = (await listNodePairing()).pending.find((entry) => entry.nodeId === nodeId);
++      expect(pending?.commands).toEqual(commands);
++      const previousCloseCount = onClose.mock.calls.length;
++      delayReconnect = true;
++      const approval = await rpcReq(observer, "node.pair.approve", {
++        requestId: pending!.requestId,
++      });
++      expect(approval.ok).toBe(true);
++      await withinTest(reconnectStarted.promise, signal);
++      expect(await captureNodePairingGeneration(nodeId)).not.toEqual(originalGeneration);
++      expect(await describe()).toMatchObject({ deviceTokenAuthenticated: false });
++      expect(connectionIds).toHaveLength(1);
++
++      // Delay only the real credential lookup on the successor connection so
++      // false is observable before the retained token authenticates it again.
++      permitReconnect.resolve();
++      await withinTest(reauthenticated.promise, signal);
++      expect(await describe()).toMatchObject({
++        connected: true,
++        deviceTokenAuthenticated: true,
++        commands,
++      });
++      expect(connectionIds).toHaveLength(2);
++      expect(connectionIds[1]).not.toBe(connectionIds[0]);
++      expect(onClose.mock.calls.slice(previousCloseCount)).toEqual([
++        [1012, "node pairing changed; reconnect required", expect.any(Object)],
++      ]);
++      expect((await loadDeviceAuthToken(lookup))?.token).toBe(token);
++      expect((await listNodePairing()).pending.filter((entry) => entry.nodeId === nodeId)).toEqual([]);
+     } finally {
+-      ws.close();
++      permitReconnect.resolve();
++      await node.stopAndWait();
++      observer.close();
+     }
+   });
  });
 --- a/src/infra/dotenv-global-core.ts
 +++ b/src/infra/dotenv-global-core.ts

@@ -88,7 +88,7 @@ let observer;
 function describeNode(nodeId) {
   return observer.request("node.describe", { nodeId }, { timeoutMs: remainingMs("node.describe") });
 }
-const rejectedDeviceIds = [];
+const rejectedConnects = [];
 const upstreamSockets = new Set();
 // The proxy changes only delivery: the native node signs its own connect and
 // the real Gateway consumes the setup and issues the credential-bearing hello.
@@ -160,7 +160,11 @@ proxy.on("connection", (downstream) => {
         return;
       }
       if (!frame.ok) {
-        rejectedDeviceIds.push(deviceId);
+        rejectedConnects.push({
+          deviceId,
+          usedBootstrapAuth: bootstrapConnect,
+          detailCode: frame.error?.details?.code,
+        });
       }
     }
     if (downstream.readyState === WebSocket.OPEN) {
@@ -360,11 +364,17 @@ try {
   assert.deepEqual(readSavedNodeCredentials(), missingCredentials);
 
   // Retrying the consumed setup with the retained identity cannot manufacture
-  // the lost token. Require a real connect rejection after this process restart.
-  rejectedDeviceIds.length = 0;
+  // the lost token. Rate limiting or unrelated refusals must not satisfy this proof.
+  rejectedConnects.length = 0;
   start();
   await waitForTransportObservation(
-    () => rejectedDeviceIds.includes(lostHelloDeviceId),
+    () =>
+      rejectedConnects.some(
+        (attempt) =>
+          attempt.deviceId === lostHelloDeviceId &&
+          attempt.usedBootstrapAuth &&
+          attempt.detailCode === "AUTH_BOOTSTRAP_TOKEN_INVALID",
+      ),
     "same-device consumed-setup rejection",
   );
   await stop();

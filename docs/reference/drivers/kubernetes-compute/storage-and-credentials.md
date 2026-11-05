@@ -133,21 +133,26 @@ Node identity survives replacement. Before setup or connection,
 the Harness runs [Gateway](#gateway-storage) Doctor with the node environment
 for older databases; a still-old database holds at `state-migration`.
 
-Setup expires after ten minutes. `--pair-or-reconnect` first tries fresh setup;
-only `AUTH_BOOTSTRAP_TOKEN_INVALID` permits a saved-token retry. Expired codes
-require saved credentials bound to the same device, Gateway scope and TLS pin.
-Enrollment saves the endpoint; renewal preserves it.
+Setup expires after ten minutes. `--pair-or-reconnect` tries fresh setup;
+only `AUTH_BOOTSTRAP_TOKEN_INVALID` permits saved-token retry. Expired codes
+require credentials bound to the same device, Gateway scope and TLS pin.
+Renewal preserves the enrolled endpoint.
 
-Gateway receipts record `setupReceiptDeviceId` before checks.
-After saving and reading back its credential, the node reconnects using only that token. `node.describe` must confirm token authentication for the
-current session before setting `deviceId`. Disconnect or pairing replacement clears that fact. Command grants stay unchanged.
-Presence and hello writes do not prove possession. Missing status cannot
-authorize fresh credentials. For unconfirmed possession after expiry, follow recovery below. Readiness records the revision.
+OCC records receipts as `setupReceiptDeviceId`. The node saves, reads back, and
+reconnects with its credential. `node.describe` must confirm
+current-session token authentication before setting `deviceId`. Disconnect or
+pairing replacement clears proof; live approval requires reauthentication.
+Grants stay unchanged. Readiness records the revision.
 
-Modes permitting endpoint changes retire credentials before switching; failed
-retirement blocks switching. All modes preserve identity. Exact-device resume
-uses saved endpoint and Cloudflare Access settings without ambient overrides or
-configuration writes. Saved Access requires matching WebSocket scope and TLS pin.
+After OCC retains the receipt, missing status cannot trigger fresh credentials.
+If its first reconciliation follows Gateway's 20-minute receipt retention,
+preparation can renew expired setup without recovering the prior receipt; this
+remains a limitation. Unconfirmed possession after expiry requires recovery below.
+
+Endpoint changes require successful credential retirement and preserve identity.
+Exact-device resume uses saved endpoint and Cloudflare Access settings without
+ambient overrides or configuration writes. Saved Access requires matching
+WebSocket scope and TLS pin.
 
 Each local profile permits one node runner; [lock recovery](../../../guides/topics/agent-troubleshoot.md#deployment-is-blocked-or-has-no-selected-version)
 never relies on age.
