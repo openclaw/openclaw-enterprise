@@ -7620,7 +7620,7 @@ async function assertImportedNativeSkill(context, topology) {
           (call) =>
             call.name === "exec" &&
             /(?:^|[\s/'"])read-marker(?:$|[\s'";&|])/.test(call.arguments?.command ?? ""),
-          (text) => text.includes(marker),
+          (text) => text.includes("IMPORT_SCRIPT_RESULT=" + marker),
         );
         return executed >= 0 || undefined;
       },

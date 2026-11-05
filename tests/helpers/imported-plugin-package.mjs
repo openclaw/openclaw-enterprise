@@ -28,7 +28,7 @@ export async function importedPluginPackage(t, marker, options = {}) {
   await writeFile(join(skill, "references", "marker.txt"), marker);
   await writeFile(
     join(skill, "scripts", "read-marker"),
-    '#!/bin/sh\nexec cat "$(dirname "$0")/../references/marker.txt"\n',
+    '#!/bin/sh\nprintf "IMPORT_SCRIPT_RESULT="\nexec cat "$(dirname "$0")/../references/marker.txt"\n',
     { mode: 0o755 },
   );
   const entries = ["plugin.json", "skills"];
