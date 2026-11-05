@@ -810,17 +810,13 @@ export class CredentialProxy implements CredentialProxyExchange {
       if (!selected) {
         return { kind: "not_ready", code: "material_missing" };
       }
-      const { value, usableUntil, ...selection } = selected;
-      const until = Math.min(
-        deadline,
-        Date.parse(usableUntil),
-        Date.parse(selection.providerExpiresAt),
-      );
+      const { accessToken, expiresAt, usableUntil, ...selection } = selected;
+      const until = Math.min(deadline, Date.parse(usableUntil), Date.parse(expiresAt));
       if (!Number.isFinite(until) || until <= this.ports.now() || lifetime.signal.aborted) {
         return { kind: "not_ready", code: "expired" };
       }
       return {
-        value,
+        value: accessToken,
         evidence: immutableCopy({
           family: selection.family,
           ownerEpoch: selection.ownerEpoch,
@@ -828,7 +824,7 @@ export class CredentialProxy implements CredentialProxyExchange {
           preparationAttemptId: selection.preparationAttemptId,
           materialId: selection.materialId,
           materialVersion: selection.materialVersion,
-          providerExpiresAt: selection.providerExpiresAt,
+          providerExpiresAt: expiresAt,
           kind: source.schemaVersion === 2 ? "prepared_github" : "prepared_token",
           source: source.key,
           binding: route.binding.binding,

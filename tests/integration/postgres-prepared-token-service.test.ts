@@ -236,14 +236,14 @@ test(
         const m = warm.material;
         try {
           return {
-            value: Buffer.from(m.bytes).toString(),
+            accessToken: Buffer.from(m.bytes).toString(),
             family: reference.source,
             materialId: family.familyId,
             inputVersion: family.inputVersion,
             ownerEpoch: family.ownerEpoch,
             preparationAttemptId: m.attemptId,
             materialVersion: m.materialVersion,
-            providerExpiresAt: new Date(m.providerExpiresAt).toISOString(),
+            expiresAt: new Date(m.providerExpiresAt).toISOString(),
             usableUntil: new Date(m.usableUntil).toISOString(),
           };
         } finally {

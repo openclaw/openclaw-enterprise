@@ -91,7 +91,11 @@ test(
     assert.ok(ready, "an authorized cold proxy request gets a token without a maintenance pass");
     const selected = JSON.parse(ready.evidence.authority_evidence);
     assert.equal(selected.family.id, source.key.source.id);
-    assert.equal((await lateClaim)?.materialVersion, selected.materialVersion);
+    const resolvedToken = await lateClaim;
+    assert.ok(resolvedToken?.accessToken);
+    assert.equal(resolvedToken.materialVersion, selected.materialVersion);
+    assert.equal(selected.providerExpiresAt, resolvedToken.expiresAt);
+    assert.equal(JSON.stringify(selected).includes(resolvedToken.accessToken), false);
     assert.deepEqual(
       gh.issuesOfTokens.map((issue) => ({
         repositoryIds: issue.repositoryIds.map(String),
@@ -100,6 +104,18 @@ test(
       [{ repositoryIds: [String(fixtureRepositoryId)], permissions: { metadata: "read" } }],
     );
     await dispatchMetadata(f, gh, request, ready);
+    const {
+      rows: [receipt],
+    } = await f.pool.query(
+      "SELECT binding, authorized_dispatch FROM occ.egress_send_receipts WHERE use_id=$1",
+      [request.request.context.request_id],
+    );
+    assert.equal(receipt.binding.material.providerExpiresAt, resolvedToken.expiresAt);
+    assert.equal(
+      JSON.stringify(receipt).includes(resolvedToken.accessToken),
+      false,
+      "the durable receipt contains no token bytes",
+    );
     const warm = captureMetadata(f);
     const second = await f.resolve(warm);
     assert.ok(second.ready);
@@ -594,7 +610,7 @@ test(
         ).once("error", reject);
       });
     assert.equal(
-      await status(old.value),
+      await status(old.accessToken),
       200,
       "actual token must be accepted for the exact metadata read",
     );
@@ -605,7 +621,7 @@ test(
       [old.materialVersion],
     );
     assert.equal(
-      sealed.includes(Buffer.from(old.value)),
+      sealed.includes(Buffer.from(old.accessToken)),
       false,
       "database stored bearer in plaintext",
     );
@@ -723,7 +739,12 @@ test(
           assert.equal(diagnostic.publication, "committed");
           assert.equal(diagnostic.clockTolerance, true);
           assert.equal(diagnostic.firstFailureStage, undefined);
-          for (const secret of [old.value, renewed.value, String(secretValue), "PRIVATE KEY"]) {
+          for (const secret of [
+            old.accessToken,
+            renewed.accessToken,
+            String(secretValue),
+            "PRIVATE KEY",
+          ]) {
             assert.equal(JSON.stringify(diagnostics).includes(secret), false);
           }
           assert.notEqual(renewed.materialVersion, old.materialVersion);
@@ -801,7 +822,7 @@ test(
         );
         assert.equal(await restartedAtB.ready(source, signal), false);
         assert.equal(Boolean(await restartedAtB.readWarm(source, readWindow())), false);
-        assert.equal(await status(old.value), 200, "A still accepts the displaced token");
+        assert.equal(await status(old.accessToken), 200, "A still accepts the displaced token");
       },
     );
     await t.test(
@@ -813,8 +834,8 @@ test(
       },
     );
     await fresh.maintain(signal); // Drains the displaced token. GitHub confirms DELETE independently.
-    assert.equal(await status(old.value), 401);
-    assert.equal(await status(renewed.value), 200);
+    assert.equal(await status(old.accessToken), 401);
+    assert.equal(await status(renewed.accessToken), 200);
 
     await t.test("before-send refuses a rejected prepared selection", async () => {
       const selected = await selectSend();
@@ -835,7 +856,7 @@ test(
     const rotated = await fresh.readWarm(source, readWindow());
     assert.equal(rotated.ownerEpoch, 2);
     assert.notEqual(rotated.inputVersion, old.inputVersion);
-    assert.equal(await status(rotated.value), 200);
+    assert.equal(await status(rotated.accessToken), 200);
     // A issued a real token, but its response cannot qualify the token for use. Withdrawal
     // under B must preserve that exceptional cleanup candidate and A's now-displaced current token.
     const withdrawn = await selectSend();
@@ -888,7 +909,7 @@ test(
     assert.equal(await fresh.ready(source, signal), false);
     assert.equal(await fresh.readWarm(source, readWindow()), undefined);
     assert.equal(
-      await status(rotated.value),
+      await status(rotated.accessToken),
       401,
       "withdrawal must revoke the actual provider credential",
     );
