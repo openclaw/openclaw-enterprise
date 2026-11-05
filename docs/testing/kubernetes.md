@@ -98,8 +98,8 @@ OCC_TEST_KUBERNETES_IMAGE=oce-fixture:local \
 
 Checks cover isolation, management DNS/API/Git TCP reachability, denied ports and
 destinations, and grant withdrawal. TLS-preserving API proxies verify withdrawal;
-a controlled discovery snapshot tests removal of the last backend. The file runs
-alone and awaits slice and namespace cleanup. No database or model credentials
+a controlled discovery snapshot tests removal of the last backend. Its CI lane owns
+a separate cluster and awaits slice and namespace cleanup. No database or model credentials
 are required.
 
 ## Kubernetes model turns and Secrets

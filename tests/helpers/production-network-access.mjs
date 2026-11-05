@@ -403,6 +403,22 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
   });
   let managementTenants;
   let ownedApiDiscoveryPath;
+  async function updateApiEndpointSlice(update) {
+    const current = await resource("endpointslice", apiEndpointSlice.metadata.name, "default");
+    assert.equal(
+      current.metadata.uid,
+      apiEndpointSlice.metadata.uid,
+      "the API fixture slice must still have its acknowledged owner",
+    );
+    update(current);
+    // Replace carries the freshly read resourceVersion: concurrent changes must
+    // conflict rather than overwrite another writer or reuse an old snapshot.
+    const updated = JSON.parse(
+      await kubectlWithInput(["replace", "-f", "-", "-o", "json"], current),
+    );
+    assert.equal(updated.metadata.uid, apiEndpointSlice.metadata.uid);
+    apiEndpointSlice = updated;
+  }
   return {
     async installOpenShellManagement(tenantIndex) {
       if (!managementTenants) {
@@ -648,8 +664,9 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
     async withdrawManagementApiEndpoint() {
       // Keep the old proxy listening. A failed connection must be caused by the
       // rerendered egress policy, not by tearing down its destination.
-      apiEndpointSlice.endpoints[1].conditions.ready = false;
-      await apply([apiEndpointSlice]);
+      await updateApiEndpointSlice((slice) => {
+        slice.endpoints[1].conditions.ready = false;
+      });
       await runNetworkHelper("repository_network", managementTenants[0]);
     },
     async useOwnedManagementApiDiscovery() {
@@ -698,18 +715,25 @@ print(json.dumps(payload))
         { mode: 0o700 },
       );
       ownedApiDiscoveryPath = `${directory}:${process.env.PATH}`;
-      for (const endpoint of apiEndpointSlice.endpoints) {
-        endpoint.conditions.ready = true;
-      }
-      await apply([apiEndpointSlice]);
+      await updateApiEndpointSlice((slice) => {
+        for (const endpoint of slice.endpoints) {
+          endpoint.conditions.ready = true;
+        }
+      });
       await runNetworkHelper("repository_network", managementTenants[0], ownedApiDiscoveryPath);
     },
-    async withdrawAllManagementApiEndpoints() {
+    async withdrawAllManagementApiEndpoints({ empty = false } = {}) {
       assert.ok(ownedApiDiscoveryPath, "select the owned API discovery snapshot first");
-      for (const endpoint of apiEndpointSlice.endpoints) {
-        endpoint.conditions.ready = false;
-      }
-      await apply([apiEndpointSlice]);
+      await updateApiEndpointSlice((slice) => {
+        if (empty) {
+          slice.endpoints = [];
+          slice.ports = [];
+        } else {
+          for (const endpoint of slice.endpoints) {
+            endpoint.conditions.ready = false;
+          }
+        }
+      });
       const result = await runNetworkHelper(
         "repository_network",
         managementTenants[0],

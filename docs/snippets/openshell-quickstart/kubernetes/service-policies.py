@@ -54,13 +54,15 @@ def api_edges():
     slices = resource("default", "endpointslices", "-l", "kubernetes.io/service-name=kubernetes")
     backends = []
     for endpoint_slice in slices["items"]:
+        ready = [endpoint for endpoint in endpoint_slice["endpoints"]
+                 if endpoint.get("conditions", {}).get("ready") is not False]
+        if not ready:
+            continue
         target, = [p["port"] for p in endpoint_slice["ports"]
                    if p.get("name") == https.get("name") and p.get("protocol", "TCP") == "TCP"]
         if not isinstance(target, int) or not 1 <= target <= 65535:
             raise ValueError("The Kubernetes API endpoint must declare its TCP port")
-        for endpoint in endpoint_slice["endpoints"]:
-            if endpoint.get("conditions", {}).get("ready") is False:
-                continue
+        for endpoint in ready:
             for address in endpoint["addresses"]:
                 ip = ipaddress.ip_address(address)
                 backends.append({"to": [{"ipBlock": {"cidr": f"{ip}/{ip.max_prefixlen}"}}],

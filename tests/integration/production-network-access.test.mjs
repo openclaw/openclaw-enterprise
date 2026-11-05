@@ -178,18 +178,22 @@ test(
             });
             // A controlled discovery snapshot contains only the acknowledged
             // proxy slice; the native cluster API endpoints remain unchanged.
-            await access.useOwnedManagementApiDiscovery();
-            await access.verify({
-              source: "management",
-              allow: allowed.filter((name) => name !== "kubernetesApi"),
-              deny: denied,
-            });
-            await access.withdrawAllManagementApiEndpoints();
-            await access.verify({
-              source: "management",
-              allow: ["dns", "dnsTcp", "managementGit", "managementGitService"],
-              deny: [...denied, "managementApi", "withdrawnManagementApi"],
-            });
+            // Re-admit both backends before each withdrawal: readiness=false and
+            // an empty placeholder slice must each remove previously live grants.
+            for (const empty of [false, true]) {
+              await access.useOwnedManagementApiDiscovery();
+              await access.verify({
+                source: "management",
+                allow: allowed.filter((name) => name !== "kubernetesApi"),
+                deny: denied,
+              });
+              await access.withdrawAllManagementApiEndpoints({ empty });
+              await access.verify({
+                source: "management",
+                allow: ["dns", "dnsTcp", "managementGit", "managementGitService"],
+                deny: [...denied, "managementApi", "withdrawnManagementApi"],
+              });
+            }
           },
         );
 
