@@ -19414,7 +19414,7 @@ test("activating a revision that leaves OpenShell deletes the Agent policies it 
       (name) =>
         !written.has(name) &&
         name !== `allow-agent-auth-${suffix}` &&
-        name !== `allow-gateway-proxy-${suffix}`,
+        name !== `allow-gateway-channels-${suffix}`,
     ),
     [],
   );
@@ -19474,7 +19474,7 @@ test("activating an embedded revision deletes a dedicated predecessor's Gateway 
     .filter((name) => name.startsWith(`NetworkPolicy:${namespace}:`) && name.endsWith(suffix))
     .map((name) => name.slice(`NetworkPolicy:${namespace}:`.length));
   assert.deepEqual(
-    remaining.filter((name) => !written.has(name) && name !== `allow-gateway-proxy-${suffix}`),
+    remaining.filter((name) => !written.has(name) && name !== `allow-gateway-channels-${suffix}`),
     [],
   );
   // The embedded Gateway keeps the model egress it writes under the shared name.
@@ -20339,6 +20339,84 @@ function workspaceSetupFixture(
   };
   const context = { ...authContext(revision, control), workspaceSetup: setup };
   return { driver, revision, namespace, objects, records, state, setup, context };
+}
+
+for (const embedded of [true, false]) {
+  test(`${embedded ? "embedded" : "dedicated"} Gateway replaces the existing proxy grant and revokes it on removal`, async () => {
+    const runtime = {
+      transportSecretPrefix: "transport",
+      gatewayStorageClassName: "local-path",
+      proxy: { proxyUrl: "http://192.0.2.20:3128" },
+    };
+    const { driver, revision, namespace, objects, state, context } = workspaceSetupFixture(
+      embedded,
+      true,
+      undefined,
+      { runtime },
+    );
+    const name = `allow-gateway-channels-${digest(revision.agentId)}`;
+    const key = `NetworkPolicy:${namespace}:${name}`;
+    // Persist the policy shape written before general Gateway proxy routing.
+    // Reconciliation must replace this grant, not add a second policy beside it.
+    const existing = {
+      ...driver.manifest(
+        "networking.k8s.io/v1",
+        "NetworkPolicy",
+        name,
+        { namespaceId: revision.namespaceId, agentId: revision.agentId },
+        { name: namespace, plane: "execution" },
+      ),
+      spec: {
+        podSelector: {
+          matchLabels: {
+            "openclaw.dev/network-profile": "broad-egress-v1",
+            "openclaw.dev/workload-role": "gateway",
+            "openclaw.dev/agent": revision.agentId,
+          },
+        },
+        policyTypes: ["Egress"],
+        egress: [
+          {
+            to: [{ ipBlock: { cidr: "192.0.2.10/32" } }],
+            ports: [{ protocol: "TCP", port: 3128 }],
+          },
+        ],
+      },
+    };
+    existing.metadata.uid = "existing-proxy-policy-uid";
+    existing.metadata.resourceVersion = "1";
+    objects.set(key, structuredClone(existing));
+    state.ready = true;
+    await prepareUntilReady(driver, revision, context);
+    await driver.activateRevision(revision, context);
+    assert.equal(objects.get(key)?.metadata.uid, existing.metadata.uid);
+    assert.deepEqual(objects.get(key)?.spec.egress, [
+      { to: [{ ipBlock: { cidr: "192.0.2.20/32" } }], ports: [{ protocol: "TCP", port: 3128 }] },
+    ]);
+    assert.equal(
+      objects.has(`NetworkPolicy:${namespace}:allow-gateway-proxy-${digest(revision.agentId)}`),
+      false,
+    );
+
+    // Reloading operator configuration without a proxy uses a new Driver. Keep
+    // the same Kubernetes transport fixture so it observes the persisted grant.
+    const removed = workspaceSetupFixture(embedded);
+    removed.driver.apiClients = driver.apiClients;
+    removed.state.ready = true;
+    const successor = {
+      ...revision,
+      id: `${revision.id}-no-proxy`,
+      revision: revision.revision + 1,
+    };
+    const successorContext = { ...context, ...authContext(successor) };
+    await prepareUntilReady(removed.driver, successor, successorContext);
+    await removed.driver.activateRevision(successor, successorContext);
+    assert.equal(objects.get(key)?.metadata.uid, existing.metadata.uid);
+    assert.deepEqual(objects.get(key)?.spec.egress, []);
+
+    await removed.driver.retireRevision(successor);
+    assert.equal(objects.has(key), false, "retirement removes the same owned policy");
+  });
 }
 
 test("external ChatGPT source preparation delivers the exact placeholder and account only to its Harness", async (t) => {
@@ -22125,7 +22203,7 @@ for (const embedded of [true, false]) {
       }
       for (const name of [
         "allow-gateway-agent",
-        "allow-gateway-proxy",
+        "allow-gateway-channels",
         "allow-plugin-status-gateway",
       ]) {
         save("NetworkPolicy", `${name}-${suffix}`, oldTarget);
@@ -22156,7 +22234,7 @@ for (const embedded of [true, false]) {
       }
       for (const name of [
         "allow-gateway-agent",
-        "allow-gateway-proxy",
+        "allow-gateway-channels",
         "allow-plugin-status-gateway",
       ]) {
         assert.equal(
@@ -22499,7 +22577,7 @@ test("every allow policy requires an explicit approved network profile", () => {
     `${execution.name}/allow-agent-runtime-${e}`,
     `${execution.name}/allow-plugin-status-proxy-${e}`,
     `${execution.name}/allow-agent-auth-${d}`,
-    `${control.name}/allow-gateway-proxy-${d}`,
+    `${control.name}/allow-gateway-channels-${d}`,
   ];
   const checked = [];
   let workloadPeers = 0;

@@ -1,7 +1,7 @@
 ---
 created: 2026-11-05
-updated: "2026-11-05 20:13"
-last_updated_session: authoring-run/e9bf9370-1230-46cf-a388-d218708b8969
+updated: "2026-11-05 20:33"
+last_updated_session: authoring-run/7e915b47-503f-4c59-85b5-679cc43bd09f
 ---
 
 # Gateway outbound proxy flow
@@ -58,7 +58,12 @@ configuration and networking behavior stay unchanged.
 `apps/controller/src/drivers/compute/kubernetes/index.ts:kubernetesGatewayConfigurationDocument`
 rejects contradictory Agent settings and generates native proxy configuration.
 `gatewayProxyNetworkPolicy` permits the selected peer and TCP port even without
-channels. `deployment` gives the Gateway its endpoint; separate Harnesses do
+channels. `reconcileGatewayProxyNetworkPolicy` keeps the existing
+`allow-gateway-channels-<Agent hash>` object name. Switching endpoints replaces
+the old grant on that object; removing the proxy writes an empty egress list
+when the owned policy exists. `deleteRetiredAgentPolicies` deletes that same
+owned object at retirement. This stable identity prevents additive stale grants.
+`deployment` gives the Gateway its endpoint; separate Harnesses do
 not inherit it. Embedded model/tool egress remains separately owned. Existing
 channel and native-worker qualification gates are unchanged.
 Embedded two-cluster Gateways reject a managed control-cluster proxy Service;
@@ -115,5 +120,6 @@ prevents direct Internet fallback; this is not whole-Harness containment.
 
 ## Changelog
 
+- 2026-11-05 20:33: Preserve proxy-policy identity across endpoint changes, removal and retirement (authoring-run/7e915b47-503f-4c59-85b5-679cc43bd09f - 393028040769a3d0064b0bf74af7378b4ba07381)
 - 2026-11-05 20:13: Trace explicit all-hosts policy with unchanged port and address restrictions (authoring-run/e9bf9370-1230-46cf-a388-d218708b8969 - dc5024a57ef9a046e31b191295a379296309d5ff)
 - 2026-11-05 19:30: Trace one selected proxy and the exact internal transport bridge (authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62 - 324fbad6f248bce4606e175fbb67ac506cd824ff)

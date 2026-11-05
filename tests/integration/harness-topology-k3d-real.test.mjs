@@ -333,7 +333,7 @@ for (const mode of ["embedded", "dedicated"]) {
       );
       await resource(
         "networkpolicy",
-        `allow-gateway-proxy-${hash(topology.agent.id)}`,
+        `allow-gateway-channels-${hash(topology.agent.id)}`,
         topology.gatewayPlacement,
       );
       // Dedicated Codex must retain its exact internal transport even though OC's

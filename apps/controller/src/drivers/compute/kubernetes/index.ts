@@ -9032,7 +9032,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     // and authentication policies (finding 860).
     for (const name of [
       "allow-gateway-agent",
-      "allow-gateway-proxy",
+      "allow-gateway-channels",
       "allow-gateway-workspace-node",
       "allow-plugin-status-gateway",
     ]) {
@@ -14989,7 +14989,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       ...this.manifest(
         "networking.k8s.io/v1",
         "NetworkPolicy",
-        `allow-gateway-proxy-${sha256Hex(revision.agentId, 12)}`,
+        // Keep the existing resource identity so changing or removing the proxy
+        // replaces its old grant instead of leaving an additive policy behind.
+        `allow-gateway-channels-${sha256Hex(revision.agentId, 12)}`,
         ownership,
         namespace,
       ),

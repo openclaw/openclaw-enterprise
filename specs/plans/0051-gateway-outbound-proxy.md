@@ -106,6 +106,14 @@ Slack-only; TCP 443 and the existing public-IPv4 NetworkPolicy remain unchanged.
 
 ## Delivery record
 
+Policy identity correction on 2026-11-05: keep the existing Agent-scoped
+`allow-gateway-channels-<Agent hash>` NetworkPolicy name for general proxy
+reconciliation and retirement. The proposed rename left an existing grant
+outside both paths. Embedded and dedicated regression cases reproduced the
+stale grant before the correction, then passed endpoint replacement, proxy
+removal, and retirement through the production Driver lifecycle with a
+Kubernetes transport fixture. This is not live-cluster enforcement proof.
+
 Local verification on 2026-11-05, against the original experiment baseline above, before the upstream refresh:
 
 - Focused Node suite: 756 passed, no failures or skips. It covers the proxy

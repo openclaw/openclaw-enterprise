@@ -7,6 +7,11 @@ port. Compute validates the pair and permits only that peer and port from the
 Agent's Gateway, whether channels are enabled or not. Embedded Gateways receive
 the same setting; dedicated Harness processes do not.
 
+Compute reuses the Agent's existing proxy NetworkPolicy when the endpoint
+changes. Reconciliation replaces its egress grant rather than adding a second
+policy. Removing the selected proxy clears the existing grant; Agent retirement
+deletes the owned policy.
+
 The bundled proxy's `gatewayProxy.allowedHosts` accepts exact DNS names,
 `*.example.com` for subdomains, or `"*"` for all hosts. The default permits Slack;
 an empty list denies all hosts. `"*"` removes hostname filtering only. CONNECT

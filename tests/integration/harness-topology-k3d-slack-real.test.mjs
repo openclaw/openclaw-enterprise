@@ -150,7 +150,7 @@ test(
     );
     const policy = await resource(
       "networkpolicy",
-      `allow-gateway-proxy-${suffix}`,
+      `allow-gateway-channels-${suffix}`,
       topology.gatewayPlacement,
     );
     // NetworkPolicy scopes its Pod selector to the owning Kubernetes namespace.
