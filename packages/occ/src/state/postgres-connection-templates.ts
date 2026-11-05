@@ -158,7 +158,7 @@ export function postgresConnectionTemplates(
     hasOtherConnectionIssuer: async (issuer) =>
       (
         await client.query(
-          "SELECT 1 FROM occ.oauth_connection_template_versions WHERE issuer <> $1 LIMIT 1",
+          "SELECT 1 FROM occ.oauth_connection_template_versions WHERE oauth_client_id IS NOT NULL AND issuer <> $1 LIMIT 1",
           [issuer],
         )
       ).rows.length > 0,

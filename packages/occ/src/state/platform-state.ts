@@ -2013,7 +2013,7 @@ function repositories(
       ).length,
     hasOtherConnectionIssuer: async (issuer) =>
       [...snapshot.oauthConnectionTemplateVersions.values()].some(
-        (version) => version.issuer !== issuer,
+        (version) => version.oauthClientId !== undefined && version.issuer !== issuer,
       ),
     listConnectionTemplates: async () =>
       Object.freeze(
