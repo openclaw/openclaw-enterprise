@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
 updated: "2026-11-05"
-last_updated_session: authoring-run/39d1461a-eab1-4cec-8122-86c74cb4dd3f
+last_updated_session: authoring-run/ee922707-f7d0-41ed-8771-8616413f3488
 ---
 
 # Agent repository credential flow
@@ -270,15 +270,13 @@ Custom hook paths and API writes remain outside this
 [guardrail](../reference/repository-credentials/push-ref-guardrail.md).
 
 `apps/controller/src/drivers/repo/github/credentials/client/router.ts:routeRepositoryClient`
-routes supported `gh` commands using explicit targets or effective Git remotes. It pins
-generation, reference and session, selects private `gh` configuration and preserves HOME
-without changing shared selection.
-
-See [draft creation from a prepared Git session](../reference/repository-credentials/protected-openshell-git.md#use-the-admitted-repository).
+routes supported `gh` using explicit targets or effective Git remotes. It pins generation,
+reference and session, selects private configuration and preserves HOME and shared selection.
 
 OpenShell's
 `apps/controller/src/drivers/egress-proxy/openshell-online-git-authority.ts:requestHead`
-validates [CLI metadata](../reference/repository-credentials/protected-openshell-git.md#use-the-admitted-repository).
+validates [CLI metadata](../reference/repository-credentials/protected-openshell-git.md#use-the-admitted-repository);
+cache hints never replace authorization.
 `apps/controller/src/drivers/egress-proxy/openshell-online-git-authority.ts:validBinding`
 uses `normalizePushRefAllowlist` for Git-only policies, including terminal `/*`
 patterns. Draft-pull heads remain concrete refs. Receive-pack rejects any disallowed
@@ -291,18 +289,18 @@ fresh installation tokens under the same grant until the version deadline.
 
 ### 6. Maintain, recover and retire ownership
 
-The [worker](../../apps/controller/src/worker.mjs) owns maintenance and shutdown and binds the selected
-`ProtectedRepositoryGitAuthority` through the [sender binder](../../apps/controller/src/composition/repository-credentials/transport.ts).
-Missing authority or mismatched Drivers prevent route-store and sender calls.
-OpenShell connects first; bare Sandboxes have no Git.
+The [worker](../../apps/controller/src/worker.mjs) maintains and closes the
+[sender](../../apps/controller/src/composition/repository-credentials/transport.ts),
+supplying `ProtectedRepositoryGitAuthority`. Missing authority or mismatched Drivers prevent store/sender calls.
+OpenShell connects storage first; bare Sandboxes lack Git.
 
-Optional `reconcile` runs with a 25-second abort signal, one second after the preceding call
-finishes. Close aborts and joins. Readback settles delivery without reinstalling or restoring
-withdrawn access.
+Optional `reconcile` calls have 25-second abort signals, starting one second after their
+predecessors finish. Close aborts and joins. Readback settles delivery without reinstalling
+or restoring withdrawn access.
 
-Activation and maintenance commit atomically, preserving the actor. Maintenance uses 30 seconds,
-the native sender interval or a shorter Compute interval. Restart invalidates missing known
-sessions without reminting; cleanup permits deployment.
+Activation and maintenance commit atomically, preserving actors. Maintenance uses 30 seconds,
+the native sender interval or shorter Compute interval. Restart invalidates missing known sessions
+without reminting; cleanup permits deployment.
 
 [Preview, save and deploy](../../packages/occ/src/index.ts) require current scope and standing permission.
 The [worker](../../apps/controller/src/worker/repository-credentials.ts) rechecks
@@ -334,32 +332,35 @@ its replacement. Compute mismatch or stop failure remains retryable beyond foreg
 limits. Completion requires session disposal and runtime retirement; `CLOSED`, missing
 inventory and invalidation do not prove disposal. Retained attempts survive version deletion.
 
-`ControllerWorker.withdrawExpiredRepositoryAccess` retires the original version for IAM
-refusal, confirmed actor or Agent-principal absence, required model-source withdrawal,
-or unsupported Git withdrawal. Model withdrawal precedes Gateway readiness.
-Failed reads stay pending unless independent facts prove authority loss. Optional withdrawals
-cannot justify retirement. Maintenance recovers exhausted original and companion source work
-through `recoverPendingCredentialWithdrawals`, preserving outstanding work and manual-replay
-holds. The v7 reducer observes stored operations without reapplying.
+`ControllerWorker.withdrawExpiredRepositoryAccess` retires the original version after IAM
+refusal, confirmed actor/Agent-principal absence, required model-source withdrawal or
+unsupported Git withdrawal. Model withdrawal precedes Gateway readiness.
+Failed reads stay pending without authority-loss evidence; optional withdrawals cannot justify retirement. `recoverPendingCredentialWithdrawals` recovers exhausted original
+and companion maintenance, preserving work and manual-replay holds. The v7 reducer observes
+stored operations without reapplying.
 See [tests](../../tests/integration/postgres-standing-expiry-authority.test.ts).
 
-`apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts:subtractExpiredOpenShellGit`
-checks retained profiles between supervisor reports, including recovery.
+`apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts:observeOpenShellGitPredecessor`
+guards subtraction and standing succession: expired predecessors require matching identity/generation,
+the current ready Sandbox instance and an observation under 15 seconds old.
+`witnessOpenShellGitLaunch` returns unverified identity for matching expired model evidence
+on cold observation; the worker independently supervises and durably defers renewal.
+`subtractExpiredOpenShellGit` confirms revoked Git, ready model and retained profiles between
+reports, including recovery.
 `apps/controller/src/drivers/sandbox/openshell-gateway-client.ts:GrpcOpenShellGatewayClient.getProviderProfile`
-verifies profile identity and defaults omitted protobuf endpoint/credential lists to empty.
-Files-only profiles can pass; missing profiles, GitHub endpoints and `GITHUB_TOKEN` prevent retention.
+verifies identity and defaults omitted protobuf endpoint/credential lists to empty.
+Files-only profiles pass; missing profiles, GitHub endpoints and `GITHUB_TOKEN` prevent retention.
 
 `ControllerWorker.processAgentDeletion` retires Compute and queues version-keyed cleanup
-without waiting for sessions. Under the claim, `PostgresWorkQueue.completeAgentDeletion`
-calls `occ.finalize_agent_deletion` to atomically detach attempts, delete live rows and audit
-deletion. Attempts and cleanup survive without fabricated disposal. Unresolved provisioning effects defer completion
-without consuming retries.
+without waiting for sessions. Claimed `PostgresWorkQueue.completeAgentDeletion` calls
+`occ.finalize_agent_deletion` to atomically detach attempts, delete live rows and audit deletion.
+Attempts and cleanup survive; unresolved provisioning defers without consuming retries.
 
-Compute retirement waits for owned Pods to stop before removing material. It preserves Secrets
-referenced by Pods and current Deployments, and limits deletion to exact ownership with UID
-preconditions. Stop removes only the stopped version's route and preserves newer shared
-resources. Route and Deployment deletion require the observed resourceVersion. Shared cleanup
-remains retryable after partial failure; service restart cannot prove remote token revocation.
+Compute retirement removes material after owned Pods stop, preserving Secrets referenced by
+Pods/current Deployments and requiring exact ownership and UID preconditions.
+Stop removes only its version's route, preserving newer shared resources. Route/Deployment deletion
+requires the observed resourceVersion. Partial shared cleanup remains retryable; restart cannot
+prove remote token revocation.
 
 ## Debugging and Verification
 
@@ -368,22 +369,20 @@ Inspect worker events for
 `REPOSITORY_BINDING_CHANGED`, `REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED`,
 `REPOSITORY_SESSION_RECOVERY_UNSAFE`, `REPOSITORY_GIT_TOKEN_QUARANTINED`, `REPOSITORY_GIT_TOKEN_PENDING`, `REPOSITORY_CLEANUP_PENDING` or
 `REPOSITORY_CLEANUP_COMPLETE`. Check registry identity and deadline before retry.
-A cleanup that stays pending logs `worker.repository-cleanup-warning` with its
+Pending cleanup logs `worker.repository-cleanup-warning` with its
 `cause` once.
 
 `repository-not-admitted` means an unselected target; `name-one-repository-target`
-or `name-one-repository-ref` requires explicit selection. Inspect metadata
-and Pod generation without printing credentials.
+or `name-one-repository-ref` requires explicit selection. Inspect metadata and Pod generation without credentials.
 
-The [test guide](../testing/repository-credentials.md) distinguishes lifecycle,
-installed-runtime and live-provider proof. The
-[image volume case](../testing/docker.md#repository-runtime-volume-test-environment)
-checks Docker mounts; Helm checks rendered ingress. Neither proves CNI enforcement.
+[Testing](../testing/repository-credentials.md) distinguishes lifecycle, installed-runtime and provider proof.
+[Image volumes](../testing/docker.md#repository-runtime-volume-test-environment) check mounts;
+Helm checks rendered ingress. Neither proves CNI enforcement.
 Console recordings cover fixture/API behavior, not model, Slack or GitHub execution.
-The registered Driver test pushes two commits to one draft PR at a local provider.
-On the same Agent revision, the shipped Codex client completes a turn before and after Git
-withdrawal. On a team installation, verify that the Agent updates the PR itself, Git is
-denied before reaching the provider, and chat continues.
+The Driver test pushes two commits to a local draft PR.
+Codex completes turns before and after Git withdrawal on the same revision.
+On team installations, verify Agent-authored PR updates, Git denial before reaching the provider,
+and continued chat.
 
 ## Related docs
 
@@ -398,6 +397,12 @@ denied before reaching the provider, and chat continues.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 14:59: Verify the live expired predecessor. (authoring-run/ee922707-f7d0-41ed-8771-8616413f3488 - d0f452ea7b2e8040d330e6e6d851dc1f042002c3)
+
+- 2026-11-05 14:14: Merge flow updates. (authoring-run/bef19a68-8a96-4f07-9be2-414c284f8c50 - 2446db2c52e4a9cec230b84ee0f50d0063f013a5)
+
+- 2026-11-05 13:46: Admit CLI cache hints without caching authorization. (authoring-run/1247283d-6d2a-4d1f-9804-287f1ae13518 - a825988313)
 
 - 2026-11-05 13:02: Merge configuration ownership and profile verification. (authoring-run/39d1461a-eab1-4cec-8122-86c74cb4dd3f - 8d8d6143aba4362c00a414f8f0c5de408d49f0d1)
 

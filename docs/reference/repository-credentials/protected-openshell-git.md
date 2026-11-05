@@ -1,14 +1,13 @@
 # Protected repository access with OpenShell
 
-Selected repositories require a pre-credentials request binding. Before issuing
-credentials, OCE verifies the registration and matches a held launcher request to
-an authenticated middleware denial. The Agent starts after credential installation
-and signed release.
+Before issuing repository credentials, OCE verifies registration and matches a held
+launcher request to an authenticated middleware denial. The Agent starts after
+credential installation and signed release.
 
 Follow [OpenShell enrollment](../../guides/repository-credentials/openshell-enrollment.md).
-Select repositories sharing an explicit permission map. OCE requests their canonical
-IDs and verifies GitHub’s returned scope. GitHub governs refs and REST/GraphQL
-operations. Changing or removing a grant blocks subsequent use of that grant.
+Select repositories sharing an explicit permission map. OCE requests canonical IDs
+and verifies GitHub’s returned scope. GitHub governs refs and REST/GraphQL.
+Changed or removed grants block subsequent use.
 
 Existing `git-write` grants retain their exact ref policy. OCE qualifies the live
 sender by its configured capabilities and runtime evidence. `git-read` and
@@ -21,8 +20,6 @@ existing installation, follow the
 [compatibility upgrade](../../guides/deploy/credential-proxy-upgrade.md#check-compatibility-before-interrupting-access).
 
 ## Prerequisites
-
-Check these before qualifying a release:
 
 - **Kernel.** The Driver requires Landlock (`hard_requirement`). Sandboxes need ABI
   v3 or later and Linux 6.2 or newer. Ubuntu 22.04's 5.15 kernel cannot start them.
@@ -206,11 +203,13 @@ The Sandbox sets process-scoped `safe.directory` for its approved mount,
 allowing root-owned workspaces without trusting nested repositories or changing
 persistent Git configuration. `push.negotiate=true` reduces redundant transfers; [push request limits](../../guides/repository-credentials/openshell-enrollment.md#plan-for-request-limits) apply.
 
-With `github-repository`, use selected HTTPS Git URLs. API operations
-use token permissions. Both API scopes refuse runner-token and deploy-key
-creation. For selected repositories, the sender accepts the CLI’s
-`Time-Zone: Etc/UTC` and, on GraphQL POSTs, `Graphql-Features: merge_queue`.
-Duplicate headers are refused. Each request requires current authorization.
+With `github-repository`, use selected HTTPS Git URLs; API operations use token
+permissions. Both API scopes refuse runner-token and deploy-key creation.
+Selected-repository requests to `api.github.com` accept `Time-Zone: Etc/UTC`;
+GraphQL POSTs also accept `Graphql-Features: merge_queue` and bounded
+`X-GH-CACHE-TTL` hints (such as `24h0m0s`).
+Hints support `gh pr list --search`; OCE ignores their values and checks current
+authorization. Duplicate headers are refused.
 
 With `git-write`, use exactly
 `https://github.com/$OCE_OPENSHELL_GIT_REPOSITORY.git` for clone, fetch and push.
@@ -276,38 +275,41 @@ A version that is still deploying has no credential yet, so its requests answer
 
 ### Worker log
 
-Each refused request logs one `worker.openshell-git-denied` line. Its `reasonCode`
-is the code above, and its `reason` is the worker's detailed cause, such as
+Each refusal logs `worker.openshell-git-denied`: `reasonCode` is listed above;
+`reason` details the cause, such as
 `ref_not_allowed`, `draft_rejected`, `session_closed`, `material_unavailable`,
-`installation_changed` or `route_blocked`. The line also carries the Sandbox ID and
-the request ID that the supervisor's own log shows. The
+`installation_changed` or `route_blocked`. It includes the Sandbox and supervisor request IDs. The
 `worker.openshell-git-route-warning` line for a lost credential carries the same
 `reasonCode`, so an alert can tell a removed binding (`access_withdrawn`) from a
 rejected App key (`credential_unavailable`).
 
 ## Route state, restarts and recovery
 
-`REPOSITORY_GIT_ROUTE_PENDING` means Sandbox, supervisor or provider-generation
-verification is incomplete, or material is unavailable. `REPOSITORY_GIT_ROUTE_BLOCKED`
-closes Git until a new revision. Continued chat requires independent model access
-and verified Git-only removal. Unsafe identity changes, retained GitHub access or
-failed observation can require retirement. Removal records one conditional detach
-request, repeated while Git stays attached; a changed Sandbox version or unknown
-gateway outcome retires the runtime.
-An empty profile workspace selects the platform profile. Files-only profiles can
-remain attached: omitted protobuf endpoint/credential lists mean empty lists.
-Exact profile identity and Git-overlap checks still apply.
+`REPOSITORY_GIT_ROUTE_PENDING` means unverified Sandbox/supervisor/provider generation
+or unavailable material. `REPOSITORY_GIT_ROUTE_BLOCKED` closes Git until a new revision.
+Continued chat requires independent model access and verified Git-only removal. Unsafe
+identity changes, retained GitHub access or failed observation can require retirement.
+Conditional detach repeats while Git stays attached; a changed Sandbox version
+or unknown gateway outcome retires the runtime.
+An original `WITHHELD / CREDENTIAL_EXPIRED` installation requires matching identity/generation,
+the current ready Sandbox instance and an observation under 15 seconds old.
+Expired credentials remain unusable. A cold worker defers under global withholding from
+expired attached Git. Without warm-owner renewal, waiting cannot restore model readiness or authorize cold adoption.
+After detach, Git must be revoked and the model ready.
+An empty profile workspace selects the platform profile. Files-only profiles may
+remain: omitted protobuf endpoint/credential lists are empty. Exact profile identity
+and Git-overlap checks apply.
 
-A transient observation failure closes access until the same installation verifies,
-with retry backoff from 1 s to 10 s. The held-launch paths (`github-repository`,
-protected `git-write`, and installation preview) cannot be adopted by a replacement
-worker: deploy a new revision after `worker_replaced` or terminal `bootstrap_failed`.
-Neither live preparation nor background issuance restores historical
-installation-wide routes, even with open, unexpired sessions. Installation-wide
-issuance requires explicit observed-hook preview.
-A replacement worker can verify historical metadata and finish the original detach
-without requesting credentials or taking over delivery. No path replays an
-uncertain provider write. Provider writes retain their own deadline. See
+Transient observation failure closes access until the same installation verifies
+(1–10 s backoff). Replacement workers cannot adopt held-launch paths (`github-repository`,
+protected `git-write`, installation preview): deploy a new revision after
+`worker_replaced` or terminal `bootstrap_failed`.
+Live preparation and background issuance never restore historical installation-wide
+routes, including open, unexpired sessions. Installation-wide issuance requires
+explicit observed-hook preview.
+Replacement workers may verify historical metadata and finish the original detach
+without requesting credentials or taking over delivery. No path replays uncertain
+provider writes; writes retain their deadlines. See
 [Credential Proxy lifecycle](../drivers/credential-proxy.md#cancellation-retries-and-uncertainty).
 Prepared-material expiry, quarantine and retirement belong to
 [Token Service lifecycle](../repository-credentials.md#token-service-lifecycle) and
@@ -320,13 +322,12 @@ or `gateway_unauthorized`. `worker.openshell-git-route-warning` distinguishes
 `withdrawn` and `repository_expired` when another worker closed the route) and
 `retained` ones.
 `OPENSHELL_GIT_WITHDRAWAL_UNRECORDED` means the store did not record a withdrawal:
-this worker still refuses the route. Verify recorded withdrawal and Git detach or
-runtime retirement; replacement preparation fails closed. The worker drops a closed
-route after its Sandbox reads absent
-(twice if never observed). Failed reads retain it. A denied read logs one `retained`
-warning with `gateway_unauthorized`; reads continue with backoff until absence.
-The worker still refuses to
-prepare, adopt or verify that revision, and later denials log `no_binding`.
+the worker still refuses the route. Verify recorded withdrawal and Git detach or
+runtime retirement; replacement preparation fails closed. Closed routes are dropped
+after absent Sandbox reads (two if never observed); failed reads retain them.
+A denied read logs one `retained` warning with `gateway_unauthorized` and retries
+with backoff until absence. Preparing, adopting and verifying remain refused;
+later denials log `no_binding`.
 `worker.openshell-git-route` reports restoration within the same worker, with `durationMs`.
 Correlate the revision and request ID with `worker.openshell-git-denied`.
 

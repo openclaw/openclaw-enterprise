@@ -8,6 +8,7 @@ import {
   OpenShellGitRuntime,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { OpenShellPreparedGitProvider } from "../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts";
+import { witnessOpenShellGitLaunch } from "../../apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts";
 import {
   createGitHubRepositoryDeliveryResolver,
   resolveGitHubRepositoryBinding,
@@ -49,7 +50,13 @@ const legacyRegistrationBytes = Buffer.from(
 
 async function observedGitRoute(
   mandatoryPolicy,
-  { legacy = false, removeBinding = false, changedStartup = false, narrowRepository } = {},
+  {
+    legacy = false,
+    removeBinding = false,
+    changedStartup = false,
+    narrowRepository,
+    afterRelease,
+  } = {},
 ) {
   const repositoryOnly = narrowRepository !== undefined;
   const previewRegistry = validateGitHubRepositoryRegistry(
@@ -434,6 +441,10 @@ async function observedGitRoute(
   assert.ok(f.entry.installed, "active generation completes its original launch witness");
   await f.runtime.releasePreview(revision.id, startupId, async () => true);
   assert.ok(await f.lookup(), "first read after held launch ACK");
+  if (afterRelease) {
+    await afterRelease(f, revision);
+    return;
+  }
   environment = "1001";
   f.faults.observe = true;
   await f.reconcile();
@@ -567,5 +578,260 @@ test("the running OpenShell recipient refuses a changed Repo ref or foreign supp
     "foreign-repository-id",
   ]) {
     await observedGitRoute(2, { narrowRepository });
+  }
+});
+
+test("held-launch Git expiry requires a fresh original predecessor and a revoked reduced installation", async (t) => {
+  for (const fault of [
+    "valid expired predecessor",
+    "generic withholding",
+    "failed predecessor",
+    "stale predecessor",
+    "changed predecessor",
+    "replaced live instance",
+    "stopped live instance",
+    "expired after detach",
+  ]) {
+    await t.test(fault, async (t) => {
+      // Advance only time after the supported held launch; the admitted grant stays immutable.
+      t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+      await observedGitRoute(2, {
+        narrowRepository: "healthy",
+        afterRelease: async (f, revision) => {
+          const { client, sandbox: box, store, entry } = f;
+          const row = store.rows.get(revision.id);
+          const git = structuredClone(row.observed);
+          assert.equal(git.credentialState, "active");
+          assert.match(row.retainedLaunchHash, /^[a-f0-9]{64}$/);
+          const retainedProviders = box.spec.providers.filter((name) => name !== git.provider);
+          const requests = [];
+          const confirmations = [];
+          let detach;
+
+          // This conformance store records expiry intent and confirmation. PostgreSQL worker
+          // journeys separately prove durable fencing, restart and lost-detach-reply recovery.
+          store.expire = async () => {
+            row.blocked = "repository_expired";
+            return { ...structuredClone(row), detach };
+          };
+          store.beginDetach = async (revisionId, hash, requestId, resourceVersion) => {
+            detach = { revisionId, hash, requestId, resourceVersion };
+            return true;
+          };
+          store.confirmDetached = async (...args) => {
+            confirmations.push(args);
+            return true;
+          };
+          const identify = client.getProvider;
+          client.getProvider = async (workspace, name, signal) => ({
+            ...(await identify(workspace, name, signal)),
+            workspace,
+            name,
+            ...(name === git.provider && {
+              id: git.providerId,
+              profileWorkspace: workspace,
+              resourceVersion: git.providerResourceVersion,
+            }),
+          });
+          client.detachSandboxProvider = async (
+            workspace,
+            sandbox,
+            provider,
+            _signal,
+            conditional,
+          ) => {
+            requests.push({ workspace, sandbox, provider, conditional });
+            box.spec.providers = [...retainedProviders];
+            box.spec.provider_attachment_epoch = "reduced-epoch";
+            box.resourceVersion = "2";
+            return { detached: true, receiptId: "detach-receipt" };
+          };
+          // Raw peer responses feed the production predecessor/expiry checks. An expired
+          // environment withholds credentials globally, even though its old witness is present.
+          client.getSandboxProviderStatus = async (
+            workspace,
+            sandbox,
+            provider,
+            _signal,
+            receiptId,
+          ) => {
+            const removed = !box.spec.providers.includes(git.provider);
+            const absent = removed && provider === git.provider;
+            let state = "WITHHELD";
+            if (removed) {
+              state = absent ? "REVOKED" : "READY";
+            }
+            let providerId = "model-id";
+            let providerResourceVersion = "1";
+            if (absent) {
+              providerId = "";
+              providerResourceVersion = "0";
+            } else if (provider === git.provider) {
+              providerId = git.providerId;
+              providerResourceVersion = git.providerResourceVersion;
+            }
+            const snapshot = {
+              attachmentEpoch: removed ? "reduced-epoch" : git.attachmentEpoch,
+              providerEnvRevision: removed ? "100" : git.providerEnvRevision,
+              configRevision: git.configRevision,
+              policyHash: removed ? "reduced-policy" : git.policyHash,
+            };
+            const result = {
+              state: "PROVIDER_READINESS_STATE_" + state,
+              reason: removed ? undefined : "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED",
+              receipt: {
+                workspace,
+                provider,
+                receiptId: receiptId ?? "observe-" + provider,
+                kind:
+                  "PROVIDER_MUTATION_KIND_" +
+                  (receiptId === "detach-receipt" ? "DETACH" : "OBSERVE"),
+                desired: {
+                  ...snapshot,
+                  sandboxId: box.id,
+                  sandbox,
+                  providerId,
+                  providerResourceVersion,
+                },
+              },
+              observed: {
+                ...snapshot,
+                sequence: "81",
+                sessionId: git.supervisorSessionId,
+                processInstanceId: git.processInstanceId,
+                credentialsInstalled: removed,
+                launchEnvironmentInstalled: removed,
+                policyActive: true,
+                reason: removed ? undefined : "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED",
+              },
+              networkInstanceId: git.networkInstanceId,
+              // The valid control is immediately inside the 15-second predecessor lease.
+              observedTime: new Date(Date.now() - (removed ? 0 : 14_999)).toISOString(),
+              evaluatedTime: new Date().toISOString(),
+            };
+            if (!removed) {
+              if (fault === "generic withholding") {
+                result.reason = "PROVIDER_READINESS_REASON_CREDENTIALS_WITHHELD";
+              }
+              if (fault === "failed predecessor") {
+                result.state = "PROVIDER_READINESS_STATE_FAILED";
+              }
+              if (fault === "stale predecessor") {
+                result.observedTime = new Date(Date.now() - 15_000).toISOString();
+              }
+              if (fault === "changed predecessor") {
+                // Internally consistent evidence still cannot substitute another installation.
+                result.receipt.desired.providerEnvRevision = "999";
+                result.observed.providerEnvRevision = "999";
+              }
+              // Replacement occurs after the first Sandbox read; the response names the old
+              // instance. The owner must re-read live state after receiving that response.
+              if (fault === "replaced live instance") {
+                box.mainProcessInstanceId = "replacement-instance";
+              }
+              if (fault === "stopped live instance") {
+                box.phase = "SANDBOX_PHASE_STOPPING";
+              }
+            }
+            if (absent && fault === "expired after detach") {
+              result.state = "PROVIDER_READINESS_STATE_WITHHELD";
+              result.reason = "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED";
+            }
+            return result;
+          };
+          t.mock.timers.setTime(revision.repositoryCredentials.deadlineWallMs + 1);
+          if (fault === "valid expired predecessor") {
+            // A cold observer may recognize global expiry but cannot reconstruct the warm
+            // launch witness. This exercises only that read-only contract, not cold adoption.
+            const before = {
+              material: f.calls.material,
+              rotate: f.calls.rotate,
+              writes: f.calls.providerWrites,
+            };
+            const cold = (sandbox) =>
+              witnessOpenShellGitLaunch(
+                client,
+                entry.continuity,
+                sandbox,
+                git,
+                AbortSignal.timeout(5_000),
+                { coldObservation: true },
+              );
+            assert.equal(await cold({ ...box }), undefined, "expired cold observation defers");
+            for (const changed of [
+              { mainProcessInstanceId: "replacement-instance" },
+              { phase: "SANDBOX_PHASE_STOPPING" },
+            ]) {
+              await assert.rejects(cold({ ...box, ...changed }), {
+                message: "OpenShell cannot retain this execution after Git expiry.",
+              });
+            }
+            assert.deepEqual(
+              {
+                material: f.calls.material,
+                rotate: f.calls.rotate,
+                writes: f.calls.providerWrites,
+              },
+              before,
+            );
+            assert.deepEqual(requests, []);
+            assert.deepEqual(confirmations, []);
+          }
+          await f.reconcile();
+          assert.equal(await f.lookup(), undefined, "expiry denies Git before any detach");
+          const outcome = await f.runtime.retireExpiredRepositoryAccess(
+            revision,
+            client,
+            box.workspace,
+            box.name,
+            entry.continuity,
+            AbortSignal.timeout(5_000),
+          );
+          const valid = fault === "valid expired predecessor";
+          const sent = valid || fault === "expired after detach";
+          assert.equal(outcome, valid ? "withdrawn" : "retire-runtime");
+          assert.equal(requests.length, sent ? 1 : 0, "unsafe predecessors cannot trigger detach");
+          assert.equal(confirmations.length, valid ? 1 : 0, "only revoked Git permits retention");
+          if (sent) {
+            assert.deepEqual(requests[0], {
+              workspace: box.workspace,
+              sandbox: box.name,
+              provider: git.provider,
+              conditional: { requestId: detach.requestId, expectedResourceVersion: "1" },
+            });
+            assert.equal(detach.revisionId, revision.id);
+            assert.equal(detach.hash, row.retainedLaunchHash);
+            assert.equal(detach.resourceVersion, "1");
+          }
+          if (valid) {
+            assert.deepEqual(confirmations[0], [
+              revision.id,
+              row.retainedLaunchHash,
+              detach.requestId,
+              "reduced-epoch",
+            ]);
+          }
+          assert.equal(
+            f.events.some(
+              (event) =>
+                event.event === "worker.openshell-git-expiry" &&
+                event.check === "record-reduced-generation",
+            ),
+            valid,
+            "refused evidence cannot establish retained-runtime completion",
+          );
+          if (!valid) {
+            const refusal = f.events.find((event) => event.event === "worker.openshell-git-expiry");
+            assert.equal(
+              refusal.check,
+              sent ? "git-revocation-on-original-supervisor" : "original-git-installation",
+              "the mutated peer evidence must cause the refusal",
+            );
+          }
+          assert.equal(await f.lookup(), undefined, "withdrawal never restores expired Git access");
+          assert.equal(f.calls.rotate, 1, "expiry never reinstalls credentials");
+        },
+      });
+    });
   }
 });

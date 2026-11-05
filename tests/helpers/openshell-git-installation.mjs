@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import {
   openShellGitRetentionKind,
+  projectOpenShellGitExpiryObservation,
   projectOpenShellGitRetention,
 } from "../../scripts/ci/openshell-git-retention.mjs";
 import { run } from "../fixtures/repository-credentials/process.mjs";
@@ -869,25 +870,44 @@ async function installOpenShellGit(t) {
       custodyVersion: custody.resourceVersion,
     };
   };
-  const workerEvents = async (pod) => {
-    const logs = await kube([
-      "logs",
-      pod.metadata.name,
-      "-n",
-      platform,
-      "-c",
-      "worker",
-      "--tail=2000",
-    ]);
+  const workerEvents = async (pod, diagnostics) => {
+    if (diagnostics) {
+      diagnostics.logReads++;
+    }
+    let logs;
+    try {
+      logs = await kube(["logs", pod.metadata.name, "-n", platform, "-c", "worker", "--tail=2000"]);
+    } catch (error) {
+      if (diagnostics) {
+        diagnostics.logReadFailures++;
+      }
+      throw error;
+    }
+    if (diagnostics) {
+      diagnostics.logReadSuccesses++;
+    }
+    const lines = logs.split("\n").filter((line) => line.length > 0);
+    if (diagnostics) {
+      diagnostics.linesRead += lines.length;
+      if (lines.length >= 2000) {
+        diagnostics.tailLimitReads++;
+      }
+    }
     const events = [];
-    for (const line of logs.split("\n")) {
+    for (const line of lines) {
       try {
         const event = JSON.parse(line);
         if (event !== null && typeof event === "object") {
           events.push(event);
+          if (diagnostics) {
+            diagnostics.parsedEvents++;
+          }
         }
       } catch {
         // Container startup can write non-JSON lines; only structured events qualify.
+        if (diagnostics) {
+          diagnostics.parseFailures++;
+        }
       }
     }
     return events;
@@ -911,50 +931,162 @@ async function installOpenShellGit(t) {
   };
   // The scenario waits for the public deadline before starting this bounded
   // observation. No clock override or explicit withdrawal drives expiry.
-  const waitForExpiry = async (identity) =>
-    eventually("observed repository expiry", async () => {
-      const pod = await worker();
-      if (!pod) {
-        return undefined;
-      }
-      const events = await workerEvents(pod);
-      // This bundled Driver event follows the retained-provider profile read and
-      // recording of the reduced generation. A generic cleanup acknowledgement
-      // alone cannot establish that expiry exercised this path rather than v2.
-      const expiry = events.find(
-        (event) =>
-          event.event === "worker.openshell-git-expiry" &&
-          event.namespaceId === namespace.id &&
-          event.agentId === identity.agentId &&
-          event.revisionId === identity.revisionId &&
-          event.repositoryRef === origin.repositoryRef &&
-          event.outcome === "withdrawn" &&
-          event.check === "record-reduced-generation",
-      );
-      if (!expiry) {
-        return undefined;
-      }
-      const completion = await completedWork(
-        pod,
-        identity,
-        (event) => event.code === "REPOSITORY_ACCESS_WITHDRAWN",
-        events,
-      );
-      return (
-        completion && {
-          ...completion,
-          expiry: {
-            event: expiry.event,
-            namespaceId: expiry.namespaceId,
-            agentId: expiry.agentId,
-            revisionId: expiry.revisionId,
-            repositoryRef: expiry.repositoryRef,
-            outcome: expiry.outcome,
-            check: expiry.check,
-          },
+  const waitForExpiry = async (identity) => {
+    const diagnostics = {
+      namespaceId: namespace.id,
+      agentId: identity.agentId,
+      revisionId: identity.revisionId,
+      repositoryRef: origin.repositoryRef,
+      lastWorkerUid: null,
+      polls: 0,
+      workerReadFailures: 0,
+      noReadyWorkerPolls: 0,
+      logReads: 0,
+      logReadSuccesses: 0,
+      logReadFailures: 0,
+      linesRead: 0,
+      parsedEvents: 0,
+      parseFailures: 0,
+      tailLimitReads: 0,
+      workerChanges: 0,
+      matchingEventReads: 0,
+      rejectedEventReads: 0,
+      driverSuccessSeen: false,
+      workerAcknowledgementSeen: false,
+      observationsTruncated: false,
+      observations: [],
+    };
+    try {
+      return await eventually("observed repository expiry", async () => {
+        diagnostics.polls++;
+        let pod;
+        try {
+          pod = await worker();
+        } catch (error) {
+          diagnostics.workerReadFailures++;
+          throw error;
         }
-      );
-    });
+        if (!pod) {
+          diagnostics.noReadyWorkerPolls++;
+          return undefined;
+        }
+        if (diagnostics.lastWorkerUid && diagnostics.lastWorkerUid !== pod.metadata.uid) {
+          diagnostics.workerChanges++;
+        }
+        diagnostics.lastWorkerUid = pod.metadata.uid;
+        const events = await workerEvents(pod, diagnostics);
+        for (const event of events) {
+          if (
+            event.agentId !== identity.agentId ||
+            event.revisionId !== identity.revisionId ||
+            ![
+              "worker.openshell-git-expiry",
+              "worker.completed",
+              "worker.repository-cleanup-warning",
+            ].includes(event.event)
+          ) {
+            continue;
+          }
+          diagnostics.matchingEventReads++;
+          // Keep scope mismatches visible without publishing another scope's ID.
+          // Project before buffering: neither unknown enums nor extra log fields
+          // may enter the diagnostic, including when the file later fails.
+          let repository = "mismatch";
+          if (event.repositoryRef === undefined) {
+            repository = "absent";
+          } else if (event.repositoryRef === origin.repositoryRef) {
+            repository = "match";
+          }
+          const observation = projectOpenShellGitExpiryObservation({
+            event: event.event,
+            outcome: event.outcome,
+            check: event.check,
+            failure: event.failure,
+            code: event.code,
+            cause: event.cause,
+            workerUid: pod.metadata.uid,
+            namespaceMatches: event.namespaceId === namespace.id,
+            repository,
+          });
+          if (!observation) {
+            diagnostics.rejectedEventReads++;
+            continue;
+          }
+          if (
+            observation.event === "worker.openshell-git-expiry" &&
+            observation.namespaceMatches &&
+            observation.repository === "match" &&
+            observation.outcome === "withdrawn" &&
+            observation.check === "record-reduced-generation"
+          ) {
+            diagnostics.driverSuccessSeen = true;
+          }
+          if (
+            observation.event === "worker.completed" &&
+            observation.namespaceMatches &&
+            observation.outcome === "success" &&
+            observation.code === "REPOSITORY_ACCESS_WITHDRAWN"
+          ) {
+            diagnostics.workerAcknowledgementSeen = true;
+          }
+          const duplicate = diagnostics.observations.findIndex(
+            (previous) => JSON.stringify(previous) === JSON.stringify(observation),
+          );
+          if (duplicate !== -1) {
+            diagnostics.observations.splice(duplicate, 1);
+          }
+          diagnostics.observations.push(observation);
+          if (diagnostics.observations.length > 16) {
+            diagnostics.observations.shift();
+            diagnostics.observationsTruncated = true;
+          }
+        }
+        // This bundled Driver event follows the retained-provider profile read and
+        // recording of the reduced generation. A generic cleanup acknowledgement
+        // alone cannot establish that expiry exercised this path rather than v2.
+        const expiry = events.find(
+          (event) =>
+            event.event === "worker.openshell-git-expiry" &&
+            event.namespaceId === namespace.id &&
+            event.agentId === identity.agentId &&
+            event.revisionId === identity.revisionId &&
+            event.repositoryRef === origin.repositoryRef &&
+            event.outcome === "withdrawn" &&
+            event.check === "record-reduced-generation",
+        );
+        if (!expiry) {
+          return undefined;
+        }
+        const completion = await completedWork(
+          pod,
+          identity,
+          (event) => event.code === "REPOSITORY_ACCESS_WITHDRAWN",
+          events,
+        );
+        return (
+          completion && {
+            ...completion,
+            expiry: {
+              event: expiry.event,
+              namespaceId: expiry.namespaceId,
+              agentId: expiry.agentId,
+              revisionId: expiry.revisionId,
+              repositoryRef: expiry.repositoryRef,
+              outcome: expiry.outcome,
+              check: expiry.check,
+            },
+          }
+        );
+      });
+    } catch (error) {
+      try {
+        measurement("git-expiry-unconfirmed", diagnostics);
+      } catch {
+        // Diagnostic failures must not hide the original timeout/read failure.
+      }
+      throw error;
+    }
+  };
   const restartWorker = async (identity) => {
     const before = await eventually("ready worker", worker);
     const durable = await durableIdentity();

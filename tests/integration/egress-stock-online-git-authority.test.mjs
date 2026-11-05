@@ -869,6 +869,37 @@ test("repository API credential issuance is refused while ordinary collaboration
       assert.equal(result.has_body ?? false, false);
       assert.deepEqual(result.header_mutations ?? [], []);
     }
+    // gh 2.103.2 uses a 24-hour cache hint before PR search. The query shape
+    // comes from upstream feature_detection.go; only header names were observed
+    // in the native failure. This exercises middleware, not the gh executable.
+    const cachedSearch = (ttl = "24h0m0s") => {
+      const input = captured();
+      // Isolate the cache header so another metadata restriction cannot hide a regression.
+      input.headers = input.headers.filter(
+        (h) => h.name !== "graphql-features" && h.name !== "time-zone",
+      );
+      input.headers.push({ name: "x-gh-cache-ttl", value: ttl });
+      input.body = Buffer.from(
+        JSON.stringify({
+          query:
+            'query SearchType_enumValues { SearchType: __type(name: "SearchType") { enumValues(includeDeprecated: true) { name } } }',
+        }),
+      );
+      return input;
+    };
+    // The client owns duration parsing; OCE ignores the hint and never caches approval.
+    for (const ttl of ["24h0m0s", "5m0s", "1.5s", "ignored-by-client"]) {
+      const searchResult = await send(cachedSearch(ttl));
+      assert.equal(searchResult.decision, 1, "gh search capability query accepts its cache hint");
+      assert.equal(searchResult.has_body ?? false, false);
+      assert.deepEqual(searchResult.header_mutations ?? [], []);
+    }
+    const beforeSearchWithdrawal = approvals;
+    current = false;
+    assert.equal((await send(cachedSearch())).reason_code, "access_withdrawn");
+    assert.equal(approvals, beforeSearchWithdrawal + 1);
+    current = true;
+
     const beforeWithdrawal = approvals;
     current = false;
     assert.equal((await send(captured())).reason_code, "access_withdrawn");
@@ -897,8 +928,27 @@ test("repository API credential issuance is refused while ordinary collaboration
       ...captured(),
       body: Buffer.from(JSON.stringify({ query: "query { repository { tempCloneToken } }" })),
     });
+    const cacheHeader = { name: "x-gh-cache-ttl", value: "24h0m0s" };
+    const search = cachedSearch();
+    await refused({ ...search, headers: [...search.headers, cacheHeader] });
+    for (const ttl of ["", "24h\n", "24h\r", "24h\u0000", "24h\u007f", "1".repeat(65)]) {
+      await refused(cachedSearch(ttl));
+    }
+    for (const target of [
+      { host: "github.com" },
+      { method: "GET" },
+      { path: "/repos/openclaw/openclaw-enterprise" },
+    ]) {
+      await refused({ ...search, target: { ...search.target, ...target } });
+    }
+    await refused({ ...search, body: Buffer.from("not JSON") });
+    await refused({
+      ...search,
+      body: Buffer.from(JSON.stringify({ query: "query { repository { tempCloneToken } }" })),
+    });
     for (scope of ["github-installation", undefined]) {
       await refused(captured());
+      await refused(cachedSearch());
     }
   });
 });

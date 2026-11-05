@@ -76,7 +76,125 @@ const launch = {
   observerMs: ["observerMs", integer(3_600_000)],
 };
 const stages = choice("before-expiry", "after-expiry", "after-worker-restart");
+const boolean = (value) => (typeof value === "boolean" ? value : undefined);
+// Safety vocabulary from openshell-expired-git.ts. Keep the standalone reporter
+// independent of controller imports, and never accept arbitrary diagnostic text.
+const expiryCheck = choice(
+  "model-provider",
+  "original-launch-and-pods",
+  "original-git-provider",
+  "attachment-after-send-intent",
+  "original-git-installation",
+  "before-detach",
+  "sandbox-version-moved-before-intent",
+  "detach-intent",
+  "conditional-detach",
+  "repeated-conditional-detach",
+  "launch-after-uncertain-detach",
+  "launch-after-detach",
+  "git-revocation-on-original-supervisor",
+  "retained-provider-profiles",
+  "model-on-original-supervisor",
+  "reduced-generation-moved-across-provider-check",
+  "sandbox-version-moved-after-read",
+  "record-reduced-generation",
+);
+const cleanupCode = choice(
+  "REPOSITORY_ACCESS_WITHDRAWN",
+  "REPOSITORY_CLEANUP_COMPLETE",
+  "REPOSITORY_CLEANUP_PENDING",
+  "REPOSITORY_RUNTIME_RETIREMENT_QUEUED",
+);
+const cleanupCause = choice(
+  "REPOSITORY_WITHDRAWAL_UNCONFIRMED",
+  "REPOSITORY_ATTEMPT_INVALIDATED",
+  "REPOSITORY_CLEANUP_FAILED",
+  "REPOSITORY_CLEANUP_PENDING",
+  "COMPUTE_DRIVER_MISMATCH",
+);
+
+/** Select before buffering: worker records may contain unrelated private fields. */
+export function projectOpenShellGitExpiryObservation(value) {
+  if (!record(value)) {
+    return undefined;
+  }
+  const fields = {
+    event: [
+      "event",
+      choice(
+        "worker.openshell-git-expiry",
+        "worker.completed",
+        "worker.repository-cleanup-warning",
+      ),
+    ],
+    workerUid: ["workerUid", uuid],
+    namespaceMatches: ["namespaceMatches", boolean],
+    repository: ["repository", choice("match", "mismatch", "absent")],
+  };
+  switch (value.event) {
+    case "worker.openshell-git-expiry":
+      fields.outcome = ["outcome", choice("withdrawn", "pending", "retire-runtime")];
+      fields.check = ["check", expiryCheck];
+      if (value.outcome === "pending") {
+        fields.failure = [
+          "failure",
+          choice("unconfirmed", "admission_limit", "gateway_unavailable", "timeout", "failed"),
+        ];
+      }
+      break;
+    case "worker.completed":
+      fields.outcome = ["outcome", choice("success", "pending", "retry", "permanent")];
+      fields.code = ["code", (code) => cleanupCode(code) ?? "unrecognized"];
+      break;
+    case "worker.repository-cleanup-warning":
+      fields.code = ["code", choice("REPOSITORY_CLEANUP_STALLED")];
+      fields.cause = ["cause", (cause) => cleanupCause(cause) ?? "unrecognized"];
+      break;
+    default:
+      return undefined;
+  }
+  return project(value, fields);
+}
+
+const expiryDiagnostics = {
+  namespaceIdHash: ["namespaceId", identityHash],
+  agentIdHash: ["agentId", identityHash],
+  revisionIdHash: ["revisionId", identityHash],
+  repositoryRefHash: ["repositoryRef", identityHash],
+  lastWorkerUid: ["lastWorkerUid", (value) => (value === null ? null : uuid(value))],
+  driverSuccessSeen: ["driverSuccessSeen", boolean],
+  workerAcknowledgementSeen: ["workerAcknowledgementSeen", boolean],
+  observationsTruncated: ["observationsTruncated", boolean],
+  observations: [
+    "observations",
+    (value) => {
+      if (!Array.isArray(value) || value.length > 16) {
+        return undefined;
+      }
+      const selected = value.map(projectOpenShellGitExpiryObservation);
+      return selected.every((item) => item !== undefined) ? selected : undefined;
+    },
+  ],
+};
+for (const name of [
+  "polls",
+  "workerReadFailures",
+  "noReadyWorkerPolls",
+  "logReads",
+  "logReadSuccesses",
+  "logReadFailures",
+  "linesRead",
+  "parsedEvents",
+  "parseFailures",
+  "tailLimitReads",
+  "workerChanges",
+  "matchingEventReads",
+  "rejectedEventReads",
+]) {
+  expiryDiagnostics[name] = [name, count];
+}
 const events = {
+  "git-expiry-unconfirmed": expiryDiagnostics,
   "supervisor-trust": {
     parentDigest: ["parent", imageDigest],
     imageDigest: ["reference", imageDigest],
