@@ -29,6 +29,7 @@ export {
 export type { PreparedGitHubMetadataAdmission } from "./state/prepared-github-state.ts";
 import {
   connectionValuesChanged,
+  isGoogleApisRecipient,
   validateConnectionTemplateAuthorization,
   ConnectionTemplateValidationError,
   assertExecutionAdmission,
@@ -161,6 +162,8 @@ import type {
   McpAuthorizationMetadata,
   ConnectionTemplate,
   ConnectionTemplateValues,
+  GoogleApisRecipient,
+  ConnectionRecipient,
   CredentialRefreshDriver,
   CredentialRefreshStatus,
   CredentialSource,
@@ -1027,14 +1030,48 @@ type TemplateInput = ApprovedTemplateSettings &
         readonly authorizationUrl: string;
         readonly tokenUrl: string;
         readonly revocationUrl?: string;
-        readonly recipient: {
-          readonly host: string;
-          readonly port?: number;
-          readonly path?: string;
-        };
+        readonly recipient:
+          | GoogleApisRecipient
+          | {
+              readonly host: string;
+              readonly port?: number;
+              readonly path?: string;
+            };
       }
     | { readonly mode: "mcp_discovery"; readonly serverUrl: string; readonly issuer: string }
   );
+function manualConnectionRecipient(
+  input: Extract<TemplateInput, { mode: "manual" }>,
+): ConnectionRecipient {
+  if (isGoogleApisRecipient(input.recipient)) {
+    if (
+      input.issuer !== "https://accounts.google.com" ||
+      input.authorizationUrl !== "https://accounts.google.com/o/oauth2/v2/auth" ||
+      input.tokenUrl !== "https://oauth2.googleapis.com/token" ||
+      (input.revocationUrl !== undefined &&
+        input.revocationUrl !== "https://oauth2.googleapis.com/revoke")
+    ) {
+      throw new ConnectionTemplateValidationError(
+        "recipient",
+        "Google APIs requires Google's published OAuth endpoints.",
+      );
+    }
+    return { kind: "google_apis" };
+  }
+  const { host, port = 443, path = "/**" } = input.recipient;
+  if (
+    !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(host) ||
+    !/^\/[!-~]*$/.test(path) ||
+    /[?#\\]/.test(path)
+  ) {
+    throw new ConnectionTemplateValidationError(
+      "recipient",
+      "Choose a DNS host and HTTPS request path for this account.",
+    );
+  }
+  return { host, port, path };
+}
+
 export type CreateConnectionTemplateInput = TemplateInput & {
   readonly namespaceId?: string;
   readonly displayName: string;
@@ -4490,19 +4527,6 @@ export class OpenClawController {
     };
     let values: ConnectionTemplateValues;
     if (input.mode === "manual") {
-      const { host, port = 443, path = "/**" } = input.recipient;
-      if (
-        !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(
-          host,
-        ) ||
-        !/^\/[!-~]*$/.test(path) ||
-        /[?#\\]/.test(path)
-      ) {
-        throw new ConnectionTemplateValidationError(
-          "recipient",
-          "Choose a DNS host and HTTPS request path for this account.",
-        );
-      }
       values = {
         ...settings,
         mode: input.mode,
@@ -4510,7 +4534,7 @@ export class OpenClawController {
         authorizationUrl: input.authorizationUrl,
         tokenUrl: input.tokenUrl,
         ...(input.revocationUrl && { revocationUrl: input.revocationUrl }),
-        recipient: { host, port, path },
+        recipient: manualConnectionRecipient(input),
       };
     } else {
       const observed = await discover(input.serverUrl, input.issuer);

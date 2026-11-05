@@ -22,6 +22,18 @@ const ConnectionEndpointSchema = Type.Object(
   { additionalProperties: false },
 );
 
+const googleApisRecipient = Type.Object(
+  { kind: Type.Literal("google_apis") },
+  { additionalProperties: false },
+);
+export const ConnectionRecipientSchema = Type.Union([
+  Type.Object(
+    { host: Type.String(), port: Type.Integer(), path: Type.String() },
+    { additionalProperties: false },
+  ),
+  googleApisRecipient,
+]);
+
 const Meta = Type.Object(
   { requestId: RequestId, redirectUri: Type.Optional(Type.String()) },
   { additionalProperties: false },
@@ -57,7 +69,7 @@ const manual = {
   authorizationUrl: HttpsUrl,
   tokenUrl: HttpsUrl,
   revocationUrl: Type.Optional(HttpsUrl),
-  recipient: ConnectionEndpointSchema,
+  recipient: Type.Union([ConnectionEndpointSchema, googleApisRecipient]),
 };
 const mcp = { mode: Type.Literal("mcp_discovery"), serverUrl: HttpsUrl, issuer: HttpsUrl };
 const strict = { additionalProperties: false };
@@ -125,10 +137,7 @@ export const OAuthConnectionTemplateVersionSchema = Type.Object(
     authorizationUrl: HttpsUrl,
     tokenUrl: HttpsUrl,
     revocationUrl: Type.Optional(HttpsUrl),
-    recipient: Type.Object(
-      { host: Type.String(), port: Type.Integer(), path: Type.String() },
-      strict,
-    ),
+    recipient: ConnectionRecipientSchema,
     scopes: Scopes,
     authorizationParameters: Parameters,
     oauthClientId: Type.Optional(OAuthClientId),

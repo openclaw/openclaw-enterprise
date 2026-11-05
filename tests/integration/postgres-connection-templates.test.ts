@@ -34,6 +34,47 @@ const manual = {
 };
 
 test(
+  "a Google API recipient pins the provider and can be narrowed in a new template version",
+  requiresPostgres,
+  async (t) => {
+    const { inject, state } = await createPostgresAgentApp(t, options);
+    const google = {
+      ...manual,
+      issuer: "https://accounts.google.com",
+      authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+      tokenUrl: "https://oauth2.googleapis.com/token",
+      revocationUrl: "https://oauth2.googleapis.com/revoke",
+      recipient: { kind: "google_apis" },
+    };
+    const created = await inject("POST", "/connection-templates", google);
+    assert.equal(created.statusCode, 201, created.body);
+    const template = created.json().data;
+    assert.deepEqual(template.current.recipient, { kind: "google_apis" });
+    assert.equal(template.current.oauthClientId, undefined);
+    // The family is reserved for Google's OAuth flow, even when creating a draft without a client.
+    for (const field of ["issuer", "authorizationUrl", "tokenUrl", "revocationUrl"]) {
+      const mismatch = await inject("PATCH", "/connection-templates/" + template.id, {
+        ...google,
+        [field]: issuer,
+      });
+      assert.equal(mismatch.statusCode, 400, mismatch.body);
+    }
+    const endpoint = { host: "gmail.googleapis.com", port: 443, path: "/gmail/v1/**" };
+    const narrowed = await inject("PATCH", "/connection-templates/" + template.id, {
+      ...google,
+      recipient: endpoint,
+    });
+    assert.equal(narrowed.statusCode, 200, narrowed.body);
+    assert.equal(narrowed.json().data.current.version, 2);
+    assert.deepEqual(narrowed.json().data.current.recipient, endpoint);
+    const pinned = await state.read((tx) =>
+      tx.connectionTemplates.findOAuthConnectionTemplateVersion(template.id, 1),
+    );
+    assert.deepEqual(pinned?.recipient, { kind: "google_apis" });
+  },
+);
+
+test(
   "independent scoped OAuth clients can be attached to an immutable template version",
   requiresPostgres,
   async (t) => {

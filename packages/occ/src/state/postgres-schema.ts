@@ -2423,9 +2423,10 @@ export const oauthConnectionTemplateVersions = occSchema.table(
     authorizationParameters: jsonb("authorization_parameters")
       .$type<Record<string, string>>()
       .notNull(),
-    recipientHost: collatedText("recipient_host").notNull(),
-    recipientPort: integer("recipient_port").notNull(),
-    recipientPath: collatedText("recipient_path").notNull(),
+    recipientKind: text("recipient_kind").notNull(),
+    recipientHost: collatedText("recipient_host"),
+    recipientPort: integer("recipient_port"),
+    recipientPath: collatedText("recipient_path"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
   (table) => [
@@ -2458,10 +2459,18 @@ export const oauthConnectionTemplateVersions = occSchema.table(
     ),
     check(
       "oauth_connection_template_versions_recipient_valid",
-      sql`${table.recipientHost} ~ '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$'
-    AND length(${table.recipientHost}) <= 253
-    AND ${table.recipientPort} BETWEEN 1 AND 65535
-    AND ${table.recipientPath} ~ '^/[!-~]*$' AND length(${table.recipientPath}) <= 512`,
+      sql`(${table.recipientKind} = 'endpoint'
+      AND ${table.recipientHost} IS NOT NULL AND ${table.recipientPort} IS NOT NULL AND ${table.recipientPath} IS NOT NULL
+      AND ${table.recipientHost} ~ '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$'
+      AND length(${table.recipientHost}) <= 253
+      AND ${table.recipientPort} BETWEEN 1 AND 65535
+      AND ${table.recipientPath} ~ '^/[!-~]*$' AND length(${table.recipientPath}) <= 512) OR
+    (${table.recipientKind} = 'google_apis' AND ${table.mode} = 'manual'
+      AND ${table.recipientHost} IS NULL AND ${table.recipientPort} IS NULL AND ${table.recipientPath} IS NULL
+      AND ${table.issuer} = 'https://accounts.google.com'
+      AND ${table.authorizationUrl} = 'https://accounts.google.com/o/oauth2/v2/auth'
+      AND ${table.tokenUrl} = 'https://oauth2.googleapis.com/token'
+      AND (${table.revocationUrl} IS NULL OR ${table.revocationUrl} = 'https://oauth2.googleapis.com/revoke'))`,
     ),
     check(
       "oauth_connection_template_versions_discovery",

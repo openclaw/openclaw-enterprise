@@ -145,6 +145,8 @@ export type {
   OAuthClientAuthMethod,
   McpAuthorizationMetadata,
   ConnectionEndpoint,
+  GoogleApisRecipient,
+  ConnectionRecipient,
   ConnectionTemplate,
   ConnectionTemplateValues,
   OAuthConnectionTemplateVersion,
@@ -154,6 +156,7 @@ export {
   connectionValuesChanged,
   isFlowOwnedOAuthParameter,
   isOAuthScopeToken,
+  isGoogleApisRecipient,
   validateConnectionTemplateAuthorization,
 } from "./connection-templates.ts";
 export type { ComputePreparationFailureEvidence } from "./compute-preparation.ts";

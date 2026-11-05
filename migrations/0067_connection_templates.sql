@@ -56,9 +56,10 @@ CREATE TABLE occ.oauth_connection_template_versions (
   token_url text COLLATE "C" NOT NULL,
   scopes text[] NOT NULL,
   authorization_parameters jsonb NOT NULL,
-  recipient_host text COLLATE "C" NOT NULL,
-  recipient_port integer NOT NULL,
-  recipient_path text COLLATE "C" NOT NULL,
+  recipient_kind text NOT NULL,
+  recipient_host text COLLATE "C",
+  recipient_port integer,
+  recipient_path text COLLATE "C",
 
   created_at timestamptz NOT NULL,
   PRIMARY KEY (template_id, version),
@@ -77,11 +78,18 @@ CREATE TABLE occ.oauth_connection_template_versions (
     jsonb_typeof(authorization_parameters) = 'object'
   ),
   CONSTRAINT oauth_connection_template_versions_recipient_valid CHECK (
-    -- A DNS name whose last label starts with a letter, so an IPv4 address never matches.
-    recipient_host ~ '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$'
-    AND length(recipient_host) <= 253
-    AND recipient_port BETWEEN 1 AND 65535
-    AND recipient_path ~ '^/[!-~]*$' AND length(recipient_path) <= 512
+    (recipient_kind = 'endpoint'
+      AND recipient_host IS NOT NULL AND recipient_port IS NOT NULL AND recipient_path IS NOT NULL
+      AND recipient_host ~ '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$'
+      AND length(recipient_host) <= 253
+      AND recipient_port BETWEEN 1 AND 65535
+      AND recipient_path ~ '^/[!-~]*$' AND length(recipient_path) <= 512) OR
+    (recipient_kind = 'google_apis' AND mode = 'manual'
+      AND recipient_host IS NULL AND recipient_port IS NULL AND recipient_path IS NULL
+      AND issuer = 'https://accounts.google.com'
+      AND authorization_url = 'https://accounts.google.com/o/oauth2/v2/auth'
+      AND token_url = 'https://oauth2.googleapis.com/token'
+      AND (revocation_url IS NULL OR revocation_url = 'https://oauth2.googleapis.com/revoke'))
   ),
   CONSTRAINT oauth_connection_template_versions_discovery CHECK (
     (mode = 'manual' AND observed_metadata IS NULL) OR

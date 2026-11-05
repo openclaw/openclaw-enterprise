@@ -916,14 +916,24 @@
             "type": "object"
           },
           "recipient": {
-            "additionalProperties": false,
-            "properties": {
-              "host": { "type": "string" },
-              "path": { "type": "string" },
-              "port": { "type": "integer" }
-            },
-            "required": ["host", "port", "path"],
-            "type": "object"
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "host": { "type": "string" },
+                  "path": { "type": "string" },
+                  "port": { "type": "integer" }
+                },
+                "required": ["host", "port", "path"],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": { "kind": { "const": "google_apis", "type": "string" } },
+                "required": ["kind"],
+                "type": "object"
+              }
+            ]
           },
           "revocationUrl": { "maxLength": 2048, "pattern": "^https://[^\\s/]", "type": "string" },
           "scopes": {
@@ -12520,19 +12530,29 @@
                         "type": "string"
                       },
                       "recipient": {
-                        "additionalProperties": false,
-                        "properties": {
-                          "host": { "maxLength": 253, "minLength": 1, "type": "string" },
-                          "path": {
-                            "maxLength": 512,
-                            "minLength": 1,
-                            "pattern": "^/",
-                            "type": "string"
+                        "anyOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "host": { "maxLength": 253, "minLength": 1, "type": "string" },
+                              "path": {
+                                "maxLength": 512,
+                                "minLength": 1,
+                                "pattern": "^/",
+                                "type": "string"
+                              },
+                              "port": { "maximum": 65535, "minimum": 1, "type": "integer" }
+                            },
+                            "required": ["host"],
+                            "type": "object"
                           },
-                          "port": { "maximum": 65535, "minimum": 1, "type": "integer" }
-                        },
-                        "required": ["host"],
-                        "type": "object"
+                          {
+                            "additionalProperties": false,
+                            "properties": { "kind": { "const": "google_apis", "type": "string" } },
+                            "required": ["kind"],
+                            "type": "object"
+                          }
+                        ]
                       },
                       "revocationUrl": {
                         "maxLength": 2048,
@@ -13319,19 +13339,29 @@
                         "type": "string"
                       },
                       "recipient": {
-                        "additionalProperties": false,
-                        "properties": {
-                          "host": { "maxLength": 253, "minLength": 1, "type": "string" },
-                          "path": {
-                            "maxLength": 512,
-                            "minLength": 1,
-                            "pattern": "^/",
-                            "type": "string"
+                        "anyOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "host": { "maxLength": 253, "minLength": 1, "type": "string" },
+                              "path": {
+                                "maxLength": 512,
+                                "minLength": 1,
+                                "pattern": "^/",
+                                "type": "string"
+                              },
+                              "port": { "maximum": 65535, "minimum": 1, "type": "integer" }
+                            },
+                            "required": ["host"],
+                            "type": "object"
                           },
-                          "port": { "maximum": 65535, "minimum": 1, "type": "integer" }
-                        },
-                        "required": ["host"],
-                        "type": "object"
+                          {
+                            "additionalProperties": false,
+                            "properties": { "kind": { "const": "google_apis", "type": "string" } },
+                            "required": ["kind"],
+                            "type": "object"
+                          }
+                        ]
                       },
                       "revocationUrl": {
                         "maxLength": 2048,

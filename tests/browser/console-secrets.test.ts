@@ -238,7 +238,8 @@ test("an administrator can register an OAuth client independently of a connectio
   await page.getByRole("button", { name: "Set up Google OAuth" }).click();
   const editor = dialog(page, "Create connection template");
   assert.equal(await editor.getByLabel("Template availability").inputValue(), namespace.id);
-  await editor.getByLabel("Destination host").fill("gmail.googleapis.com");
+  assert.equal(await editor.getByLabel("API destination").inputValue(), "google_apis");
+  assert.equal(await editor.getByLabel("Destination host").isVisible(), false);
   await editor.getByLabel("OAuth scope limit").selectOption({ label: "No template limit" });
   await editor
     .getByLabel("OAuth client", { exact: true })
@@ -251,7 +252,7 @@ test("an administrator can register an OAuth client independently of a connectio
   assert.equal(current.oauthClientId, record.id);
   assert.equal(current.authorizationUrl, "https://accounts.google.com/o/oauth2/v2/auth");
   assert.deepEqual(current.authorizationParameters, { access_type: "offline", prompt: "consent" });
-  assert.equal(current.recipient.host, "gmail.googleapis.com");
+  assert.deepEqual(current.recipient, { kind: "google_apis" });
 
   restrict(fixture.policy, "administer", "installation");
   await page.goto(fixture.origin + "/console/credentials/oauth-clients?namespace=" + namespace.id);

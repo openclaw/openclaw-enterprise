@@ -1779,10 +1779,7 @@ List all Installation-wide and Namespace-scoped connection templates
 | `data[].current.observed.supportedScopes` | `array<string>` | No | — |
 | `data[].current.observed.tokenEndpointAuthMethods` | `array<string>` | No | — |
 | `data[].current.observed.tokenUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data[].current.recipient` | `object` | Yes | — |
-| `data[].current.recipient.host` | `string` | Yes | — |
-| `data[].current.recipient.path` | `string` | Yes | — |
-| `data[].current.recipient.port` | `integer` | Yes | — |
+| `data[].current.recipient` | `object or object` | Yes | — |
 | `data[].current.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
 | `data[].current.scopes` | `array<string>` | Yes | Scopes approved by the administrator. An empty list leaves scope selection to the account owner and provider. |
 | `data[].current.templateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -1928,10 +1925,7 @@ Example request
 | `data.current.observed.supportedScopes` | `array<string>` | No | — |
 | `data.current.observed.tokenEndpointAuthMethods` | `array<string>` | No | — |
 | `data.current.observed.tokenUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.recipient` | `object` | Yes | — |
-| `data.current.recipient.host` | `string` | Yes | — |
-| `data.current.recipient.path` | `string` | Yes | — |
-| `data.current.recipient.port` | `integer` | Yes | — |
+| `data.current.recipient` | `object or object` | Yes | — |
 | `data.current.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.scopes` | `array<string>` | Yes | Scopes approved by the administrator. An empty list leaves scope selection to the account owner and provider. |
 | `data.current.templateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -2168,10 +2162,7 @@ Get one connection template
 | `data.current.observed.supportedScopes` | `array<string>` | No | — |
 | `data.current.observed.tokenEndpointAuthMethods` | `array<string>` | No | — |
 | `data.current.observed.tokenUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.recipient` | `object` | Yes | — |
-| `data.current.recipient.host` | `string` | Yes | — |
-| `data.current.recipient.path` | `string` | Yes | — |
-| `data.current.recipient.port` | `integer` | Yes | — |
+| `data.current.recipient` | `object or object` | Yes | — |
 | `data.current.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.scopes` | `array<string>` | Yes | Scopes approved by the administrator. An empty list leaves scope selection to the account owner and provider. |
 | `data.current.templateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -2297,10 +2288,7 @@ Example request
 | `data.current.observed.supportedScopes` | `array<string>` | No | — |
 | `data.current.observed.tokenEndpointAuthMethods` | `array<string>` | No | — |
 | `data.current.observed.tokenUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.recipient` | `object` | Yes | — |
-| `data.current.recipient.host` | `string` | Yes | — |
-| `data.current.recipient.path` | `string` | Yes | — |
-| `data.current.recipient.port` | `integer` | Yes | — |
+| `data.current.recipient` | `object or object` | Yes | — |
 | `data.current.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.scopes` | `array<string>` | Yes | Scopes approved by the administrator. An empty list leaves scope selection to the account owner and provider. |
 | `data.current.templateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |

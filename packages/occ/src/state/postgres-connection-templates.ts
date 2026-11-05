@@ -11,7 +11,7 @@ import type { PostgresQueryClient } from "./postgres-work-queue.ts";
 type Row = Record<string, unknown>;
 
 const versionColumns = `v.template_id, v.version, v.oauth_client_id, v.issuer, v.mode, v.observed_metadata, v.revocation_url,
-  v.authorization_url, v.token_url, v.scopes, v.authorization_parameters, v.recipient_host,
+  v.authorization_url, v.token_url, v.scopes, v.authorization_parameters, v.recipient_kind, v.recipient_host,
   v.recipient_port, v.recipient_path, v.created_at AS version_created_at`;
 
 function invalid(): never {
@@ -68,11 +68,14 @@ function versionFromRow(row: Row): OAuthConnectionTemplateVersion {
     tokenUrl: text(row, "token_url"),
     scopes,
     authorizationParameters: parameters as Record<string, string>,
-    recipient: {
-      host: text(row, "recipient_host"),
-      port: integer(row, "recipient_port"),
-      path: text(row, "recipient_path"),
-    },
+    recipient:
+      row.recipient_kind === "google_apis"
+        ? { kind: "google_apis" }
+        : {
+            host: text(row, "recipient_host"),
+            port: integer(row, "recipient_port"),
+            path: text(row, "recipient_path"),
+          },
     createdAt: timestamp(row, "version_created_at"),
   };
 }
@@ -107,11 +110,12 @@ async function insertVersion(
   client: PostgresQueryClient,
   version: OAuthConnectionTemplateVersion,
 ): Promise<void> {
+  const endpoint = "host" in version.recipient ? version.recipient : undefined;
   await client.query(
     `INSERT INTO occ.oauth_connection_template_versions
      (template_id, version, oauth_client_id, issuer, mode, authorization_url, token_url, revocation_url, scopes,
-      authorization_parameters, recipient_host, recipient_port, recipient_path, observed_metadata, created_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+      authorization_parameters, recipient_kind, recipient_host, recipient_port, recipient_path, observed_metadata, created_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
     [
       version.templateId,
       version.version,
@@ -123,9 +127,10 @@ async function insertVersion(
       version.revocationUrl ?? null,
       version.scopes,
       JSON.stringify(version.authorizationParameters),
-      version.recipient.host,
-      version.recipient.port,
-      version.recipient.path,
+      endpoint ? "endpoint" : "google_apis",
+      endpoint?.host ?? null,
+      endpoint?.port ?? null,
+      endpoint?.path ?? null,
       version.observed ?? null,
       version.createdAt,
     ],

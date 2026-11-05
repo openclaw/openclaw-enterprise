@@ -7,6 +7,10 @@ replace a value; ask an administrator for the exact operation permissions.
 Without Secret `create` in the Namespace, **Create Secret** is disabled and a
 note under it says so.
 
+## Set up a Google connection template
+
+Installation administrators can open **Credentials → Connection templates → Set up Google OAuth**. Choose availability, allowed scopes and your registered Google OAuth client. Keep **Google APIs** to use the account across Google APIs. For a single host and path, select **Specific endpoint**. See [Connection templates](../../reference/connection-templates.md) to register a client.
+
 ## Create and use a Secret
 
 1. Select **Create Secret** and enter a unique name and value. Names cannot be

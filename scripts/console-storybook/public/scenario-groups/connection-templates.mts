@@ -55,7 +55,7 @@ export const connectionTemplateScenarios = {
     oauthCatalog: "ready",
     actions: [click("Set up Google OAuth")],
     description:
-      "The built-in Google template supplies the provider settings. The administrator chooses the API destination, scopes, and a registered client.",
+      "The built-in Google template selects Google APIs. The administrator chooses the scope limit and their registered Google client.",
   },
   credentialsManualTemplate: {
     group: "Pages/Credentials",

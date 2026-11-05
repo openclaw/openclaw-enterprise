@@ -153,19 +153,54 @@ export function renderConnectionTemplates(
       type: "url",
       value: initialProvider?.revocationUrl ?? "",
     });
-    const host = element("input", { required: true, value: version?.recipient.host ?? "" });
+    const exactRecipient = version && "host" in version.recipient ? version.recipient : undefined;
+    const recipient = element(
+      "select",
+      {},
+      option("google_apis", "Google APIs"),
+      option("endpoint", "Specific endpoint"),
+    );
+    recipient.value =
+      preset || (version && "kind" in version.recipient) ? "google_apis" : "endpoint";
+    const recipientChoice = field({ label: "API destination", control: recipient });
+    const host = element("input", { required: true, value: exactRecipient?.host ?? "" });
     const port = element("input", {
       type: "number",
       required: true,
       min: 1,
       max: 65535,
-      value: String(version?.recipient.port ?? 443),
+      value: String(exactRecipient?.port ?? 443),
     });
     const path = element("input", {
       required: true,
       pattern: "/.*",
-      value: version?.recipient.path ?? "/**",
+      value: exactRecipient?.path ?? "/**",
     });
+    const exactFields = element(
+      "fieldset",
+      { className: "connection-template-fields" },
+      field({ label: "Destination host", control: host }),
+      field({ label: "Port", control: port }),
+      field({ label: "Path", control: path }),
+    );
+    function showRecipient() {
+      const google =
+        issuer.value.trim() === googleOAuthProvider.issuer &&
+        authorizationUrl.value.trim() === googleOAuthProvider.authorizationUrl &&
+        tokenUrl.value.trim() === googleOAuthProvider.tokenUrl &&
+        (!revocationUrl.value.trim() ||
+          revocationUrl.value.trim() === googleOAuthProvider.revocationUrl);
+      if (!google) {
+        recipient.value = "endpoint";
+      }
+      recipientChoice.hidden = !google;
+      exactFields.hidden = exactFields.disabled = recipient.value === "google_apis";
+    }
+    recipient.addEventListener("change", showRecipient);
+    for (const control of [issuer, authorizationUrl, tokenUrl, revocationUrl]) {
+      control.addEventListener("input", showRecipient);
+    }
+    showRecipient();
     const manual = element(
       "fieldset",
       { className: "connection-template-fields" },
@@ -174,9 +209,8 @@ export function renderConnectionTemplates(
       field({ label: "Authorization URL", control: authorizationUrl }),
       field({ label: "Token URL", control: tokenUrl }),
       field({ label: "Revocation URL (optional)", control: revocationUrl }),
-      field({ label: "Destination host", control: host }),
-      field({ label: "Port", control: port }),
-      field({ label: "Path", control: path }),
+      recipientChoice,
+      exactFields,
     );
     const server = element("input", {
       id: "connection-template-server",
@@ -449,11 +483,14 @@ export function renderConnectionTemplates(
               authorizationUrl: authorizationUrl.value.trim(),
               tokenUrl: tokenUrl.value.trim(),
               ...(revocationUrl.value.trim() && { revocationUrl: revocationUrl.value.trim() }),
-              recipient: {
-                host: host.value.trim(),
-                port: Number(port.value),
-                path: path.value.trim(),
-              },
+              recipient:
+                recipient.value === "google_apis"
+                  ? { kind: "google_apis" }
+                  : {
+                      host: host.value.trim(),
+                      port: Number(port.value),
+                      path: path.value.trim(),
+                    },
             }
           : { mode: "mcp_discovery", serverUrl: server.value.trim(), issuer: observed!.issuer }),
       };
