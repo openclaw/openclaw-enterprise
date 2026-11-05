@@ -5,9 +5,9 @@ import {
 import { bindOpenShellPluginSourceReader } from "../../apps/controller/src/composition/openshell-plugin-source-reader.ts";
 import {
   CODEX_ACCESS_TOKEN_ENV,
-  CODEX_ACCOUNT_CONFIG,
   CODEX_OAUTH_TYPE,
-} from "../../apps/controller/src/drivers/credential-refresh/codex-device-authorization.ts";
+} from "../../apps/controller/src/backends/openshell-refresh-sources.ts";
+import { CODEX_ACCOUNT_CONFIG } from "../../apps/controller/src/drivers/credential-refresh/codex-device-authorization.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import type { Backend, Namespace } from "../../packages/contracts/src/index.ts";
 import type * as Grpc from "../../apps/controller/node_modules/@grpc/grpc-js/build/src/index.js";
