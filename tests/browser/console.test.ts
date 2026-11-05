@@ -85,28 +85,7 @@ const createConsoleAppFixture = (
 ) => createBaseConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset], ...options });
 // The sign-in page tests share one app (fileConsoleApp): they make no Namespace, change no
 // policy and end no session. Every other test keeps an app of its own.
-const sharedSignInApp = fileConsoleApp({ defaultPresets: [defaultCodexPreset] });
-type SignInFixture = Pick<
-  Awaited<ReturnType<typeof createConsoleAppFixture>>,
-  "origin" | "credentials"
-> & { sharedByFile: true };
-
-function isSignInFixture(value: unknown): value is SignInFixture {
-  return (
-    isJsonObject(value) &&
-    typeof value.origin === "string" &&
-    value.sharedByFile === true &&
-    isJsonObject(value.credentials) &&
-    typeof value.credentials.email === "string" &&
-    typeof value.credentials.password === "string"
-  );
-}
-
-async function signInApp(t: TestContext) {
-  const fixture: unknown = await sharedSignInApp(t);
-  assert.ok(isSignInFixture(fixture));
-  return fixture;
-}
+const signInApp = fileConsoleApp({ defaultPresets: [defaultCodexPreset] });
 
 test("mounted theme brands sign-in, Agent navigation and mobile without losing session behavior", async (t) => {
   const directory = await temporaryDirectory(t, "occ-browser-theme-");
