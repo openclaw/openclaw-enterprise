@@ -31,7 +31,8 @@ async function docker(args) {
 // had stopped.
 async function waitFor(outcome, check, fixture) {
   const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline) {
+  // The deadline is checked after each check, so the last check happens at or past it.
+  for (;;) {
     let done;
     try {
       done = await check();
@@ -44,6 +45,9 @@ async function waitFor(outcome, check, fixture) {
     if (done) {
       return;
     }
+    if (Date.now() >= deadline) {
+      break;
+    }
     await delay(100);
   }
   const state = fixture ? ` ${await fixture.describe()}` : "";
@@ -52,7 +56,7 @@ async function waitFor(outcome, check, fixture) {
 
 function attributes(entries = []) {
   return Object.fromEntries(
-    entries.map(({ key, value }) => [key, value.stringValue ?? value.intValue]),
+    entries.map(({ key, value }) => [key, value.stringValue ?? value.intValue ?? value.boolValue]),
   );
 }
 
@@ -74,12 +78,28 @@ async function collectorFixture(t, prefix) {
     join(directory, "backend.yaml"),
     `receivers:\n  otlp:\n    protocols:\n      http:\n        endpoint: 0.0.0.0:4318\nexporters:\n  file:\n    path: /out/logs.jsonl\nservice:\n  telemetry:\n    logs:\n      level: error\n  pipelines:\n    logs:\n      receivers: [otlp]\n      exporters: [file]\n`,
   );
+  let networkCreated = false;
+  // node:test runs after hooks in registration order, so this hook runs before any hook a
+  // test adds for a container it attaches to the network later. Remove every container on
+  // the network (backend, Collector and those test fixtures) before the network itself:
+  // Docker refuses to remove a network with attached containers, and each leaked network
+  // keeps an address pool until Compose networks on the host find none left. A failed
+  // removal fails the test instead of leaking silently.
   t.after(async () => {
-    await docker(["rm", "--force", collector, backend]).catch(() => {});
-    await docker(["network", "rm", network]).catch(() => {});
-    await rm(directory, { recursive: true, force: true });
+    try {
+      if (networkCreated) {
+        const attached = await docker(["ps", "--all", "--quiet", "--filter", `network=${network}`]);
+        if (attached.length > 0) {
+          await docker(["rm", "--force", ...attached.split("\n")]);
+        }
+        await docker(["network", "rm", network]);
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
   await docker(["network", "create", network]);
+  networkCreated = true;
   await docker([
     "run",
     "--detach",
@@ -273,6 +293,32 @@ async function exportedOccEventPattern() {
   return new RegExp(pattern.replaceAll("$$", "$"));
 }
 
+test("the Collector exports bounded native-admin audit diagnostics", async () => {
+  const event = "native_admin.pending_work_unresolved";
+  const pattern = await exportedOccEventPattern();
+  // A computed event field hid both denial names from the documented-event inventory.
+  const source = await readFile(join(root, "apps/controller/src/http/native-admin.ts"), "utf8");
+  const emitted = new Set(
+    [...source.matchAll(/\bevent: "([a-z_]+[.][a-z_.-]+)"/g)].map(([, name]) => name),
+  );
+  const flow = await readFile(join(root, "docs/flows/common-logging.md"), "utf8");
+  for (const denial of [
+    "native_admin.http_denial_audit_failed",
+    "native_admin.websocket_denial_audit_failed",
+  ]) {
+    assert.ok(emitted.has(denial), `${denial} is visible to the event inventory`);
+    assert.ok(flow.includes(`\`${denial}\``), `${denial} is documented`);
+    assert.ok(pattern.test(denial), `${denial} reaches the backend`);
+    for (const name of [`${denial}.detail`, `${denial}-unreviewed`]) {
+      assert.equal(pattern.test(name), false, "nearby unreviewed diagnostics stay local");
+    }
+  }
+  assert.ok(pattern.test(event), "the documented shutdown diagnostic reaches the backend");
+  for (const name of [`${event}.detail`, `${event}-unreviewed`, "native_admin.other_event"]) {
+    assert.equal(pattern.test(name), false, "nearby unreviewed diagnostics stay local");
+  }
+});
+
 async function sourceFiles(directory, extensions) {
   return (await readdir(join(root, directory), { recursive: true }))
     .filter((path) => extensions.some((extension) => path.endsWith(extension)))
@@ -293,7 +339,10 @@ test("the Collector exports every OCC API and worker event the docs name", async
   ]) {
     // The Kubernetes Compute Driver renders this file's events into Gateway and Codex
     // Pods; the Collector classifies those runtime wrapper diagnostics separately.
-    if (path.endsWith("drivers/compute/kubernetes/runtime-entrypoints.ts")) {
+    if (
+      path.endsWith("drivers/compute/kubernetes/runtime-entrypoints.ts") ||
+      path.endsWith("drivers/compute/harness-egress-enrollment.ts")
+    ) {
       continue;
     }
     const text = await readFile(join(root, path), "utf8");
@@ -1218,6 +1267,9 @@ test(
               }),
               line(phase("agent", "codex-login", "ok")),
               line(phase("agent", "codex-login", "ok"), "stdout"),
+              line({ event: "runtime.protected_startup", startupHash: "b".repeat(64) }),
+              line({ event: "runtime.protected_startup", startupHash: canary }),
+              line({ event: "runtime.protected_startup", startupHash: "b".repeat(64) }, "stdout"),
               // A failed phase keeps a bounded cause code; an unbounded one is dropped.
               line({
                 ...phase("agent", "plugin-install", "failed"),
@@ -1275,6 +1327,11 @@ test(
         gateway("WARN", phaseEvent),
         codex("WARN", { "event.name": "codex.model_probe", "occ.code": "AUTHENTICATION_FAILED" }),
         codex("INFO", { ...phaseEvent, "occ.startup.phase": "codex-login" }),
+        codex("INFO", {
+          "event.name": "runtime.protected_startup",
+          "occ.startup.hash": "b".repeat(64),
+        }),
+        codex("INFO", { "event.name": "runtime.protected_startup" }),
         codex("WARN", {
           ...phaseEvent,
           "occ.startup.phase": "plugin-install",
@@ -1398,7 +1455,59 @@ test(
                 agentId,
                 revisionId,
               }),
-              line({ severity: "WARN", event: "native_admin.websocket_denial_audit_failed" }),
+              // Both denial paths export the fixed event, never supplied caller or error fields.
+              ...[
+                "native_admin.http_denial_audit_failed",
+                "native_admin.websocket_denial_audit_failed",
+              ].map((event) =>
+                line({
+                  severity: "WARN",
+                  event,
+                  requestId,
+                  namespaceId,
+                  agentId,
+                  revisionId,
+                  code: "UNREVIEWED_EXTRA",
+                  pending: 7,
+                  userId: canary,
+                  headers: { authorization: canary },
+                  error: { message: canary, stack: canary },
+                  payload: { private: canary },
+                }),
+              ),
+              line({ severity: "WARN", event: "native_admin.http_denial_audit_failed.detail" }),
+              line({
+                severity: "WARN",
+                event: "native_admin.websocket_denial_audit_failed-unreviewed",
+              }),
+              // Shutdown exports only its bounded pending count; payloads and identities stay local.
+              ...[
+                0,
+                7,
+                9007199254740991,
+                -1,
+                1.5,
+                "7",
+                9007199254740992,
+                true,
+                null,
+                { private: canary },
+              ].map((pending) =>
+                line({
+                  severity: "WARN",
+                  event: "native_admin.pending_work_unresolved",
+                  pending,
+                  message: canary,
+                  userId: canary,
+                  requestId,
+                  namespaceId,
+                  agentId,
+                  revisionId,
+                  code: "UNREVIEWED_EXTRA",
+                  payload: { private: canary },
+                }),
+              ),
+              line({ severity: "WARN", event: "native_admin.pending_work_unresolved.detail" }),
               // A Compute-owner mismatch keeps the Agent's IDs; the Driver names stay local.
               line({
                 severity: "WARN",
@@ -1535,7 +1644,17 @@ test(
           "occ.agent.id": agentId,
           "occ.revision.id": revisionId,
         }),
+        api("WARN", { "event.name": "native_admin.http_denial_audit_failed" }),
         api("WARN", { "event.name": "native_admin.websocket_denial_audit_failed" }),
+        ...["0", "7", "9007199254740991"].map((pending) =>
+          api("WARN", {
+            "event.name": "native_admin.pending_work_unresolved",
+            "occ.native_admin.pending": pending,
+          }),
+        ),
+        ...Array.from({ length: 7 }, () =>
+          api("WARN", { "event.name": "native_admin.pending_work_unresolved" }),
+        ),
         api("WARN", {
           "event.name": "native_admin.compute_owner_mismatch",
           "occ.namespace.id": namespaceId,
@@ -1579,6 +1698,39 @@ function codeFieldCases({ canary, identity, exportedIdentity }) {
   const longest = `a${"b".repeat(63)}`;
   // `sandboxDriverId`, `status` and `reason` stay in local logs.
   const kept = [
+    {
+      record: {
+        event: "worker.openshell-git-continuity-refused",
+        check: "held-startup-recorded",
+        keyHash: "a".repeat(64),
+      },
+      exported: { "occ.check": "held-startup-recorded", "occ.continuity.key_hash": "a".repeat(64) },
+    },
+    {
+      record: {
+        event: "worker.openshell-git-continuity-refused",
+        check: "sandbox-restart-count",
+        result: 7,
+      },
+      exported: { "occ.check": "sandbox-restart-count", "occ.continuity.result": "7" },
+    },
+    {
+      record: { event: "worker.openshell-git-continuity-refused", result: false, keyHash: canary },
+      exported: { "occ.continuity.result": false },
+    },
+    {
+      record: {
+        event: "worker.openshell-git-continuity-refused",
+        result: canary,
+        keyHash: "A".repeat(64),
+      },
+      exported: {},
+    },
+    { record: { event: "worker.openshell-git-continuity-refused", result: 7.5 }, exported: {} },
+    {
+      record: { event: "worker.openshell-git-continuity-refused", result: 2147483648 },
+      exported: {},
+    },
     {
       record: {
         event: "worker.openshell-git-expiry",
@@ -1806,7 +1958,7 @@ test(
         record.attributes.map(({ key, value }) => [
           key,
           // OTLP JSON carries an int64 as a string; a JSON number may arrive as either.
-          value.stringValue ?? String(value.intValue ?? value.doubleValue),
+          value.stringValue ?? value.boolValue ?? String(value.intValue ?? value.doubleValue),
         ]),
       ),
     }));
@@ -2155,8 +2307,8 @@ test(
   },
   async (t) => {
     const fixture = await collectorFixture(t, "sync");
+    // The fixture's cleanup removes this container with the rest of its network.
     const api = `oce-otel-sync-api-${fixture.suffix}`;
-    t.after(() => docker(["rm", "--force", api]).catch(() => {}));
     const namespace = `system-${fixture.suffix}`;
     const podName = `openclaw-enterprise-worker-${fixture.suffix}`;
     const podUid = randomUUID();

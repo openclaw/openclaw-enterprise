@@ -8,6 +8,14 @@ This record preserves the dated changes to the bootstrap and human authenticatio
 
 ## Changelog
 
+- 2026-10-07 10:10: Treat IPv4-mapped trusted proxies as IPv4; refuse catch-all proxy CIDRs. (fix-678 - bf67a4317)
+
+- 2026-10-06 07:30: Reject undeclared maintenance commands before configuration. (authoring-run/8f5b1566-4538-437c-8e8a-fd2049050c6e - 4bacc7925fcef75ea8715905a0c6c86abb7203d2)
+
+- 2026-10-04 21:00: Verify an existing Installation with SQL before loading Better Auth. (fix/bootstrap-fast-path)
+
+- 2026-10-01 14:36: Bind result receipts to provider instances. (authoring-run/afd78df4-12de-4f41-b2df-7ebb53ed3213 - f22a584e6ce21d505b40a72fdb5ae1c6e74c1c84)
+
 - 2026-09-30 20:57: Receive landed PR751 while preserving bounded device proofs and both documentation histories. (authoring-run/b38fdf7a-4e45-40ac-a7d7-7da3aa8e0070 - 0e59bf4479aabfa0d00c6940c55be760fa19a200)
 
 - 2026-09-30 20:28: Receive bounded device proofs and clarify audit-failure accounting and cookie delivery. (authoring-run/b84d8248-fb41-44b3-8ed5-30d7fd777926 - 2702a01c6c2136cf9fb5b6808d3972379158f2ff)

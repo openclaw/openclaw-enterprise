@@ -37,6 +37,7 @@ import { startCredentialServiceFixture } from "../fixtures/repository-credential
 import { selfSigned } from "../helpers/certificates.mjs";
 import { fileCompileCache } from "../helpers/compile-cache.mjs";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { relaySockets } from "../helpers/socket-relay.mjs";
 import {
   cleanEnvironment,
   listen,
@@ -101,6 +102,32 @@ const gitEnvironment = (root, extra = {}) => {
 };
 const git = (root, args, input, extra) =>
   run("/usr/bin/git", args, { env: gitEnvironment(root, extra), input, allowFailure: true });
+
+test("published client files stay owner-readable when umask masks owner read", async (t) => {
+  const parent = await realpath(await temporaryDirectory(t));
+  const session = join(parent, "session");
+  const script = `
+    import { lstat, readFile } from "node:fs/promises";
+    import { join } from "node:path";
+    import { writeClientConfiguration, readClientConfiguration } from ${JSON.stringify(
+      resolve("apps/controller/src/drivers/repo/github/credentials/client/config.ts"),
+    )};
+    process.umask(0o400);
+    await writeClientConfiguration(${JSON.stringify(opened)}, ${JSON.stringify(session)}, undefined);
+    const mode = (await lstat(join(${JSON.stringify(session)}, "client.json"))).mode & 0o777;
+    const directory = (await lstat(${JSON.stringify(session)})).mode & 0o777;
+    await readClientConfiguration(${JSON.stringify(session)});
+    await readFile(join(${JSON.stringify(session)}, "bearer"));
+    process.stdout.write(JSON.stringify({ mode, directory }));
+  `;
+  const result = childProcess.spawnSync(
+    process.execPath,
+    ["--experimental-strip-types", "--input-type=module", "--eval", script],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { mode: 0o600, directory: 0o700 });
+});
 
 isolatedTest("gh refuses mixed and unsafe session files before starting a child", async (t) => {
   const parent = await temporaryDirectory(t);
@@ -650,7 +677,7 @@ test("operator rejects unsafe or conflicting bound request files before admissio
   assert.equal(admitted.stdout, "");
   assert.match(
     admitted.stderr,
-    /^credential-admission [0-9]{13}-[0-9a-f-]{36}; recover with open --admission-id and the same inputs\ncredential-operator-not-found\n$/,
+    /^credential-admission [0-9]{13}-[0-9a-f-]{36}; if the outcome is uncertain, inspect the original owner and use status for any known session\ncredential-operator-not-found\n$/,
   );
   assert.deepEqual(requests, [
     { method: "POST", path: "/v1/sessions", body: { ...request, durableAdmission: true } },
@@ -687,6 +714,101 @@ test("operator rejects unsafe or conflicting bound request files before admissio
   refused(await invoke(alias));
 });
 
+test("operator open refuses an unusable --output before admission and names the rule", async (t) => {
+  const parent = await temporaryDirectory(t);
+  const socket = join(await socketDirectory(t, "operator-output-"), "control.sock");
+  const requests = [];
+  // A path that appears while the session is admitted, as from a concurrent operator.
+  const racing = join(parent, "racing");
+  // This peer answers with an admitted session in the owner's reply shape. It proves how the
+  // actual operator handles a client directory it cannot publish, not admission itself.
+  const server = createHttpServer(async (incoming, response) => {
+    for await (const _chunk of incoming) {
+      // Drain the request body.
+    }
+    requests.push(`${incoming.method} ${incoming.url}`);
+    if (incoming.url === "/v1/sessions") {
+      await mkdir(racing, { mode: 0o700 });
+    }
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(
+      JSON.stringify(
+        incoming.url === "/v1/sessions"
+          ? opened
+          : { sessionId: opened.session.sessionId, state: "CLOSED" },
+      ),
+    );
+  });
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  server.listen(socket);
+  await once(server, "listening");
+  const open = (output) =>
+    run(
+      process.execPath,
+      [
+        resolve("apps/controller/src/drivers/repo/github/credentials/client/operator.ts"),
+        "open",
+        "--socket",
+        socket,
+        "--output",
+        output,
+        "--duration-seconds",
+        "60",
+        "--profile",
+        "git-read",
+      ],
+      { env: clean(), allowFailure: true },
+    );
+  const refusedBeforeAdmission = async (output, refusal) => {
+    requests.length = 0;
+    const result = await open(output);
+    assert.equal(result.code, 1);
+    assert.equal(result.stdout, "");
+    // Only the fixed rule text: no admission, no session, no OS error or path.
+    assert.equal(result.stderr, `${refusal}\ncredential-operator-failed\n`);
+    assert.deepEqual(requests, []);
+  };
+
+  // A group-writable parent, such as a shared 0775 directory, is not private.
+  const shared = join(parent, "shared");
+  await mkdir(shared);
+  await chmod(shared, 0o775);
+  await refusedBeforeAdmission(
+    join(shared, "session"),
+    "unsafe-client-directory: the --output parent must be a real directory you own with no group or other access (0700); no ancestor may be a symbolic link, or group- or world-writable without the sticky bit",
+  );
+  await assert.rejects(lstat(join(shared, "session")), { code: "ENOENT" });
+
+  // An existing output directory is never replaced.
+  const existing = join(parent, "existing");
+  await mkdir(existing, { mode: 0o700 });
+  await refusedBeforeAdmission(
+    existing,
+    "client-directory-exists: the --output directory must not exist yet; choose a new path",
+  );
+
+  // A missing parent (here also a missing grandparent) gets its own reason, not the ENOENT text.
+  await refusedBeforeAdmission(
+    join(parent, "missing", "deeper", "session"),
+    "client-parent-missing: the --output parent directory must exist; create it first with mode 0700",
+  );
+  await assert.rejects(lstat(join(parent, "missing")), { code: "ENOENT" });
+
+  // The publish checks again: a path created after the early check refuses after admission,
+  // keeps the session ID for cleanup and closes the session. The bearer never reaches output.
+  requests.length = 0;
+  const raced = await open(racing);
+  assert.equal(raced.code, 1);
+  assert.equal(raced.stdout, "");
+  assert.match(raced.stderr, /client-configuration-failed session=session-test;/);
+  assert.match(
+    raced.stderr,
+    /\nclient-directory-exists: the --output directory must not exist yet/,
+  );
+  assert.equal(raced.stderr.includes(opened.bearer), false);
+  assert.deepEqual(requests, ["POST /v1/sessions", "POST /v1/sessions/session-test/close"]);
+});
+
 async function loopbackBrokerTunnel(t, fixture) {
   // Preserve the service's canonical HTTPS origin while tunneling stock Git to
   // its ephemeral loopback listener. TLS, authentication and Git RPC remain real.
@@ -698,12 +820,10 @@ async function loopbackBrokerTunnel(t, fixture) {
     }
     const upstream = connect(fixture.listeners.address.port, "127.0.0.1", () => {
       socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-      upstream.write(head);
-      socket.pipe(upstream).pipe(socket);
     });
-    socket.on("error", () => upstream.destroy());
-    socket.on("close", () => upstream.destroy());
-    upstream.on("error", () => socket.destroy());
+    // Bytes the client sent after CONNECT go first; the socket queues them until connected.
+    upstream.write(head);
+    relaySockets(socket, upstream);
   });
   return (await listen(t, proxy)).replace("https:", "http:");
 }

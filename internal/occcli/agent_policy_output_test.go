@@ -33,7 +33,7 @@ func TestAgentPolicyCommandsDefaultToStructuredOutput(t *testing.T) {
 		{"get", "GET", "", `{"editingEnabled":true,"policy":{"id":"spl_1","namespaceId":"` + namespace + `","agentId":"` + agent + `","version":1,"additions":[]},"defaults":{},"ceiling":[]}`, nil},
 		{"update", "PUT", "", `{"id":"spl_1","namespaceId":"` + namespace + `","agentId":"` + agent + `","version":2,"additions":[]}`, []string{"--file", file}},
 		{"apply", "POST", "/apply", `{"id":"spl_1","namespaceId":"` + namespace + `","agentId":"` + agent + `","version":1,"additions":[],"application":{"id":"app_1","revisionId":"` + revision + `","policyVersion":1,"state":"pending","requestedBy":"admin","requestedAt":"2026-10-21T00:00:00Z"}}`, []string{"--revision", revision, "--expected-version", "1"}},
-		{"editing", "PATCH", "/editing", `{"id":"` + agent + `","namespaceId":"` + namespace + `","name":"Synthetic Agent","configurationId":"cfg_1","backendId":null,"servicePrincipalId":"spn_1","executionMode":"embedded","status":"active","desiredRuntimeState":"running","sandboxPolicyEditing":true,"createdAt":"2026-10-21T00:00:00Z"}`, []string{"--enabled=true"}},
+		{"editing", "PATCH", "/editing", `{"id":"` + agent + `","namespaceId":"` + namespace + `","name":"Synthetic Agent","configurationId":"cfg_00000000-0000-4000-8000-000000000001","backendId":null,"servicePrincipalId":"spn_1","executionMode":"embedded","status":"active","desiredRuntimeState":"running","sandboxPolicyEditing":true,"createdAt":"2026-10-21T00:00:00Z"}`, []string{"--enabled=true"}},
 		{"recommendations", "GET", "/recommendations", `{"recommendations":[],"truncated":false}`, []string{"--revision", revision}},
 	} {
 		for _, output := range []string{"default", "json", "yaml", "table", "text"} {

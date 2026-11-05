@@ -5,10 +5,8 @@ import {
   PreparedGitHubAppKeyError,
   startPreparedGitHubGitOwner,
 } from "./backends/repository-credentials/prepared-git-owner.ts";
-import {
-  bindRepositoryGitTransport,
-  repositoryGitAuthority,
-} from "./composition/repository-credentials/transport.ts";
+import { bindRepositoryGitTransport } from "./composition/repository-credentials/transport.ts";
+import { repositoryGitAuthority } from "./composition/repository-credentials/custody-selection.ts";
 import {
   loadInstallationConfiguration,
   loadOperationalLoggingConfiguration,
@@ -18,6 +16,7 @@ import {
 import { PresetFileError } from "./composition/installation-presets.ts";
 import { createOccLogger, createWorkerLogEmitter, emitOccLogEvent } from "./logging.ts";
 import { createControllerWorker, workerDatabasePoolOptions } from "./worker.ts";
+import { closeWorkerComposition } from "./worker/shutdown.ts";
 import { workerEnvironmentSettings } from "./worker/timer-settings.ts";
 import { PostgresMetricsSnapshot } from "@openclaw-enterprise/occ";
 import { createOccMetrics } from "./metrics/index.ts";
@@ -52,11 +51,23 @@ function configuration() {
   };
 }
 
+// workerStartupFailureCode maps this message to the setting's code; the path is never logged.
+function markerRefusal(name, cause) {
+  return new Error(`${name} must identify an absolute writable path.`, { cause });
+}
+
 function workerStartupFailureCode(error) {
   if (error instanceof PresetFileError) {
     return "PRESET_FILE_INVALID";
   }
   const message = error instanceof Error ? error.message : "";
+  // Name the health marker setting an unusable path came from (finding 2327).
+  if (/^OCC_WORKER_READINESS_PATH /.test(message)) {
+    return "WORKER_READINESS_PATH_INVALID";
+  }
+  if (/^OCC_WORKER_LIVENESS_PATH /.test(message)) {
+    return "WORKER_LIVENESS_PATH_INVALID";
+  }
   if (/stored Installation name breaks the Name rule/.test(message)) {
     return "INSTALLATION_NAME_INVALID";
   }
@@ -123,20 +134,41 @@ try {
       continue;
     }
     if (!marker.startsWith("/")) {
-      throw new Error(`${name} must identify an absolute writable path.`);
+      throw markerRefusal(name);
     }
     try {
       await unlink(marker);
     } catch (error) {
       if (error?.code !== "ENOENT") {
-        throw error;
+        throw markerRefusal(name, error);
       }
     }
   }
   // Startup (Installation and IAM load, Compute preflight) counts against the liveness
   // bound, and an unwritable path fails here rather than as a restart loop later.
   if (livenessPath !== undefined) {
-    await writeFile(livenessPath, `${Date.now()}\n`, { encoding: "utf8", mode: 0o600 });
+    try {
+      await writeFile(livenessPath, `${Date.now()}\n`, { encoding: "utf8", mode: 0o600 });
+    } catch (cause) {
+      throw markerRefusal("OCC_WORKER_LIVENESS_PATH", cause);
+    }
+  }
+  // The readiness marker appears only once queue health is observed, so its directory is probed
+  // through a sibling file. An unwritable path left the worker running but never Ready
+  // (finding 2311).
+  if (readinessPath !== undefined) {
+    const probe = `${readinessPath}.${process.pid}.probe`;
+    try {
+      await unlink(probe).catch((error) => {
+        if (error?.code !== "ENOENT") {
+          throw error;
+        }
+      });
+      await writeFile(probe, "", { flag: "wx", mode: 0o600 });
+      await unlink(probe);
+    } catch (cause) {
+      throw markerRefusal("OCC_WORKER_READINESS_PATH", cause);
+    }
   }
   const drivers = await loadInstallationConfiguration({ mode, startupConfiguration });
   let computeDriver;
@@ -165,16 +197,16 @@ try {
       pool,
       registry: drivers.repositoryRegistry,
       ...repositoryGitAuthority(drivers),
-      report: (code, context) =>
-        emitOccLogEvent(logger, { event: "worker.error", code, ...context }),
+      report: (code, context, severity = "error") =>
+        emitOccLogEvent(logger, { event: `worker.${severity}`, code, ...context }),
     });
     repositoryGitTransport = await bindRepositoryGitTransport(
       drivers,
-      preparedRepositoryGit,
+      preparedRepositoryGit.protectedGit,
       pool,
       (event) => emitOccLogEvent(logger, event),
     );
-  } else if (drivers?.repositoryGitDriver || drivers?.openShellGit) {
+  } else if (drivers?.repositoryGitDriver || drivers?.repositoryTransport) {
     throw new Error("The repository Git transport requires its selected prepared owner.");
   }
   let metrics;
@@ -200,6 +232,10 @@ try {
     ...options,
     emit: createWorkerLogEmitter(logger),
     ...(drivers === undefined ? { computeDriver } : { drivers }),
+    // Native prepared Git: a deployment waits for its version's first GitHub token (finding 2415).
+    ...(preparedRepositoryGit?.revisionMaterial === undefined
+      ? {}
+      : { repositoryGitMaterial: preparedRepositoryGit.revisionMaterial }),
     ...(readinessPath === undefined
       ? {}
       : {
@@ -216,7 +252,9 @@ try {
   preparedGitHub = drivers?.preparedGitHub;
   await preparedGitHub?.connect(pool);
   await worker.start();
-  preparedGitHub?.startWorker((code) => emitOccLogEvent(logger, { event: "worker.error", code }));
+  preparedGitHub?.startWorker((code, context, severity = "error") =>
+    emitOccLogEvent(logger, { event: `worker.${severity}`, code, ...context }),
+  );
 
   let closing = false;
   async function shutdown() {
@@ -225,24 +263,15 @@ try {
     }
     closing = true;
     try {
-      if (readinessPath !== undefined) {
-        await unlink(readinessPath).catch(() => {});
-      }
-      try {
-        try {
-          try {
-            await repositoryGitTransport?.close();
-          } finally {
-            await preparedRepositoryGit?.close();
-          }
-          await receiptServer?.close();
-        } finally {
-          await closeMetrics();
-        }
-      } finally {
-        await preparedGitHub?.close();
-        await worker.stop();
-      }
+      await closeWorkerComposition({
+        readinessPath,
+        repositoryGitTransport,
+        preparedRepositoryGit,
+        receiptServer,
+        closeMetrics,
+        preparedGitHub,
+        worker,
+      });
       process.exitCode = 0;
     } catch {
       emitOccLogEvent(logger, { event: "worker.error", code: "SHUTDOWN_FAILED" });

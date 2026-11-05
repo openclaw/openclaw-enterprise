@@ -1,10 +1,9 @@
+import type { GitHubRepositoryGrant } from "./repository-grant.ts";
 import type { GitHubTokenProfile } from "./types.ts";
 import type {
   TokenAdmission,
   TokenAttempt,
   TokenFamily,
-  TokenMaterial,
-  TokenReadPort,
   TokenPreparationStore,
 } from "../../../../backends/token-service/custody.ts";
 
@@ -20,6 +19,7 @@ export type GitHubInstallationGrant = GrantIdentity & Readonly<{ profile: "githu
 
 export interface GitHubPreparationAdmission extends TokenAdmission {
   readonly grant:
+    | GitHubRepositoryGrant
     | GitHubInstallationGrant
     | (GrantIdentity &
         Readonly<{
@@ -34,6 +34,4 @@ export interface GitHubPreparationAdmission extends TokenAdmission {
 
 export type GitHubPreparationAttempt = TokenAttempt<GitHubPreparationAdmission>;
 export type GitHubPreparationFamily = TokenFamily<GitHubPreparationAdmission>;
-export type GitHubPreparedMaterial = TokenMaterial<GitHubPreparationAdmission>;
-export type GitHubPreparedReadPort = TokenReadPort<GitHubPreparationAdmission>;
 export type GitHubPreparationStore = TokenPreparationStore<GitHubPreparationAdmission>;

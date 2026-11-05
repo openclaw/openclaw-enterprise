@@ -26,6 +26,9 @@ assign existing issues to a two-week iteration in the project.
 
 ## Build, test, and debug
 
+- [oce-cookbook](../../.agents/skills/oce-cookbook/SKILL.md) provides maintenance
+  recipes only when deliberately invoked. Start with
+  `$oce-cookbook update-openclaw-pin <ref>` to update the source pin and qualify its images.
 - [Local development](local-development.md) covers the checkout, a running local
   platform, and how to choose checks for your change.
 - [Console components and styles](console-ui.md) shows how to build a page with

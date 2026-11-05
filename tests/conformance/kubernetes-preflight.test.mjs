@@ -18,6 +18,7 @@ import {
 import { refusingPort } from "../helpers/available-port.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { loadInstallationFile } from "../helpers/installation-file.mjs";
+import { jsonChunkDestination } from "../helpers/json-lines.mjs";
 
 function driverForVersion(gitVersion) {
   const driver = createTestKubernetesComputeDriver("compute-kubernetes-preflight");
@@ -159,12 +160,7 @@ test("Kubernetes preflight names the unreachable API server endpoint", async (t)
     const lines = [];
     const logger = createOccLogger({
       component: "occ-worker",
-      destination: {
-        write(chunk) {
-          lines.push(JSON.parse(String(chunk)));
-          return true;
-        },
-      },
+      destination: jsonChunkDestination(lines),
     });
     emitOccLogEvent(logger, { event: "worker.startup-error", ...startupDependencyFailure(error) });
     assert.deepEqual(
@@ -466,12 +462,7 @@ test("Kubernetes preflight warns about status proxy sources wider than one addre
   const lines = [];
   const logger = createOccLogger({
     component: "occ-worker",
-    destination: {
-      write(chunk) {
-        lines.push(JSON.parse(String(chunk)));
-        return true;
-      },
-    },
+    destination: jsonChunkDestination(lines),
   });
   for (const entry of result.warnings) {
     emitOccLogEvent(logger, { event: "compute.preflight-warning", ...entry });

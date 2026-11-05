@@ -2,12 +2,36 @@
 
 <!-- Generated from packages/contracts/openapi/occ-api.openapi.json. Do not edit directly. -->
 
+## Table of contents
+
+- [Authentication accounts](#authentication-accounts)
+- [Authentication sessions](#authentication-sessions)
+- [Service API keys](#service-api-keys)
+- [Authentication](#authentication)
+- [Installation](#installation)
+- [Namespaces](#namespaces)
+- [Agents](#agents)
+- [Agent deployments](#agent-deployments)
+- [Agent revisions](#agent-revisions)
+- [Agent runtime credentials](#agent-runtime-credentials)
+- [Agent workspace files](#agent-workspace-files)
+- [Configurations](#configurations)
+- [IAM access bindings](#iam-access-bindings)
+- [IAM roles](#iam-roles)
+- [IAM service principals](#iam-service-principals)
+- [Secrets](#secrets)
+- [Service accounts](#service-accounts)
+- [Service account credentials](#service-account-credentials)
+- [Backends](#backends)
+- [Credential sources](#credential-sources)
+- [Presets](#presets)
+
 ## Operations
 
 ### Authentication accounts
 
 - [`getAuthAccount`](../api.md#get-apiauthaccountsuserid): Inspect current human account state.
-- [`createAuthAccount`](../api.md#post-apiauthaccounts): Create an administrator-controlled local auth account.
+- [`createAuthAccount`](../api.md#post-apiauthaccounts): Create a local auth account as an Installation administrator.
 - [`attachGitHubIdentity`](../api.md#post-apiauthaccountsuseridprovidersgithub): Attach an exact GitHub identity to an existing account.
 - [`attachGoogleIdentity`](../api.md#post-apiauthaccountsuseridprovidersgoogle): Attach an exact Google identity to an existing account.
 - [`attachOidcIdentity`](../api.md#post-apiauthaccountsuseridprovidersoidc): Attach an exact OIDC identity to an existing account.
@@ -38,14 +62,14 @@
 - [`confirmGitHubSignIn`](../api.md#post-apiauthprovidersgithubresult): Confirm which session a GitHub sign-in created.
 - [`confirmGoogleSignIn`](../api.md#post-apiauthprovidersgoogleresult): Confirm which session a Google sign-in created.
 - [`confirmOidcSignIn`](../api.md#post-apiauthprovidersoidcresult): Confirm which session an OIDC sign-in created.
-- [`replaceAuthRecovery`](../api.md#post-apiauthrecovery): Move the recovery designation to another administrator.
+- [`replaceAuthRecovery`](../api.md#post-apiauthrecovery): Move the recovery designation to another Installation administrator.
 - [`startGitHubSignIn`](../api.md#post-apiauthprovidersgithubstart): Start GitHub sign-in for an enrolled account.
 - [`startGoogleSignIn`](../api.md#post-apiauthprovidersgooglestart): Start Google sign-in for an enrolled account.
 - [`startOidcSignIn`](../api.md#post-apiauthprovidersoidcstart): Start OIDC sign-in for an enrolled account.
 
 ### Installation
 
-- [`discoverInstallationConfigurations`](../api.md#get-installationdriverconfigurations): Inspect selected Driver startup configuration schemas.
+- [`discoverInstallationConfigurations`](../api.md#get-installationdriverconfigurations): Inspect selected Driver accepted startup values and configuration schemas.
 - [`getInstallation`](../api.md#get-installation): Get the singleton Installation.
 - [`getInstallationDeploymentInventory`](../api.md#get-installationdeploymentinventory): Get the complete authorized Agent deployment inventory.
 - [`getObservability`](../api.md#get-observability): Get the configured external observability destination.
@@ -56,6 +80,7 @@
 - [`listNamespaces`](../api.md#get-namespaces): List authorized Namespaces.
 - [`getNamespace`](../api.md#get-namespacesnamespaceid): Get an exact Installation-owned Namespace.
 - [`getNamespaceCallerPermissions`](../api.md#get-namespacesnamespaceidpermissions): Report advisory primary IAM permissions on a readable Namespace, not authorization for a later operation.
+- [`getNamespaceSecretPermissions`](../api.md#get-namespacesnamespaceidpermissionssecrets): Report the readable Secrets that the caller may not bind to a new Agent, not authorization for a later operation.
 - [`createNamespace`](../api.md#post-namespaces): Create an Installation-owned Namespace.
 - [`deleteNamespace`](../api.md#delete-namespacesnamespaceid): Begin or retry deletion of an empty Installation-owned Namespace.
 
@@ -75,7 +100,9 @@
 - [`getAgentRuntimeImages`](../api.md#get-namespacesnamespaceidagentsagentidruntimeimages): Read observed images and source commits for an Agent's active runtime.
 - [`getAgentSandboxPolicy`](../api.md#get-namespacesnamespaceidagentsagentidsandboxpolicyfacet): Read one Agent sandbox policy and delegation ceiling.
 - [`getAgentSandboxRecommendations`](../api.md#get-namespacesnamespaceidagentsagentidrevisionsrevisionidsandboxpolicyfacetrecommendations): Read policy suggestions for the requested Agent revision.
+- [`getAgentSecretPermissions`](../api.md#get-namespacesnamespaceidagentsagentidpermissionssecrets): Report the readable Secrets that the caller may not bind to a readable Agent, not authorization for a later operation.
 - [`getSavedAgentPluginPolicyCapabilities`](../api.md#get-namespacesnamespaceidagentsagentidpluginscapabilities): Read selected Plugin Driver policy capabilities for an active Agent with caller Agent read/update permission.
+- [`recoverAgentFirstDeployment`](../api.md#get-namespacesnamespaceidagentsagentiddeployfirstkeyexpectedconfigurationidexpectedgeneration): Read an exact first-deployment receipt; null does not prove failure; requires Configuration read.
 - [`resolveAgentNativeAdminReturn`](../api.md#get-nativeadminreturnagentkey): Resolve an authorized Agent from a copied native chat link.
 - [`createAgent`](../api.md#post-namespacesnamespaceidagents): Create a Namespace-owned Agent.
 - [`provisionAgent`](../api.md#post-namespacesnamespaceidagentsprovision): Create a new Agent and queue first-time provisioning.
@@ -84,10 +111,11 @@
 - [`updateAgentSandboxPolicy`](../api.md#put-namespacesnamespaceidagentsagentidsandboxpolicyfacet): Replace one Agent network policy additions.
 - [`applyAgentSandboxPolicy`](../api.md#post-namespacesnamespaceidagentsagentidsandboxpolicyfacetapply): Apply the saved policy to the running Agent revision.
 - [`deployAgent`](../api.md#post-namespacesnamespaceidagentsagentiddeploy): Save an Agent revision from the Agent's saved settings.
+- [`deployAgentFirst`](../api.md#post-namespacesnamespaceidagentsagentiddeployfirst): Admit the first deployment of an exact reviewed Configuration; requires Configuration read.
 - [`discoverAgentModels`](../api.md#post-namespacesnamespaceidagentsmodels): List provider models for Agent creation without storing the supplied credential.
 - [`discoverAgentPluginDetails`](../api.md#post-namespacesnamespaceidagentspluginsdetails): Read plugin details using the selected Driver.
 - [`discoverAgentPlugins`](../api.md#post-namespacesnamespaceidagentsplugins): List or search available plugins for Agent creation using the selected Driver.
-- [`discoverSavedAgentPluginDetails`](../api.md#post-namespacesnamespaceidagentsagentidpluginsdetails): Read plugin details for an active Agent; caller needs Agent read/update. Curated discovery needs no Secret; hosted discovery needs the Agent's bound Service Accounts Secret with caller and Agent Secret operate grants.
+- [`discoverSavedAgentPluginDetails`](../api.md#post-namespacesnamespaceidagentsagentidpluginsdetails): Read plugin details for an active Agent with Agent read/update access. Hosted discovery uses the Agent's bound credential. Managed MCP discovery uses an eligible saved connection. The caller and Agent need operate access to the credential.
 - [`discoverSavedAgentPlugins`](../api.md#post-namespacesnamespaceidagentsagentidplugins): List or search plugins for an active Agent; caller needs Agent read/update. Curated discovery needs no Secret; hosted discovery needs the Agent's bound Service Accounts Secret with caller and Agent Secret operate grants.
 - [`lookupChannelDirectory`](../api.md#post-namespacesnamespaceidchanneldirectorylookup): Search a channel directory using an authorized Namespace Secret.
 - [`pollAgentDeviceAuthorization`](../api.md#post-namespacesnamespaceidagentsdeviceauthorizationssecretidpoll): Experimental: Complete device login without returning credential material.
@@ -97,7 +125,7 @@
 - [`startAgentDeviceAuthorization`](../api.md#post-namespacesnamespaceidagentsdeviceauthorizations): Experimental: Start a private device login for Agent configuration.
 - [`startSavedAgentDeviceAuthorization`](../api.md#post-namespacesnamespaceidagentsagentiddeviceauthorizations): Experimental: Start a private device login for Agent configuration.
 - [`stopAgent`](../api.md#post-namespacesnamespaceidagentsagentidstop): Stop one Agent and keep its saved Agent revision and persistent state.
-- [`validateAgentCreate`](../api.md#post-namespacesnamespaceidagentsvalidate): Check an unsaved Agent Configuration, plugin selections and initial workspace files as Configuration and Agent create would, without saving anything.
+- [`validateAgentCreate`](../api.md#post-namespacesnamespaceidagentsvalidate): Check an unsaved Agent Configuration, plugin selections, initial workspace files and Harness authentication as Configuration and Agent create would, without saving anything.
 - [`validateAgentSandboxPolicy`](../api.md#post-namespacesnamespaceidagentsagentidsandboxpolicyfacetvalidate): Preview Agent network policy admission without saving or applying.
 - [`withdrawAgentCredentialSource`](../api.md#post-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdraw): Revoke one credential source from the selected Agent revision.
 - [`getAgentNativeAdmin`](../api.md#get-namespacesnamespaceidagentsagentidnativeadmin): Resolve native admin UI launch availability for one Agent.

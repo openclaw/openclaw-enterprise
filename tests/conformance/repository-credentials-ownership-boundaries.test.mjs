@@ -149,24 +149,13 @@ test(
               () => target.service.execute(foreignExchange, target.send),
               /FOREIGN_EXCHANGE/,
             );
-            await assert.rejects(
-              target.observed.custody.withAccess(
-                source.observed.credential,
-                "authenticate",
-                async () => {
-                  assert.fail("foreign custody must not expose access bytes");
-                },
-              ),
-              /FOREIGN_CREDENTIAL/,
-            );
-            await assert.rejects(
-              target.observed.driver.withAuthentication(
-                source.observed.credential,
-                target.service.plan(ownExchange),
-                async () => {
-                  assert.fail("a foreign credential must not reach the sender");
-                },
-              ),
+            assert.equal("withAccess" in target.observed.custody, false);
+            assert.throws(
+              () =>
+                target.observed.driver.prepareAuthentication(
+                  source.observed.credential,
+                  target.service.plan(ownExchange),
+                ),
               /invalid-credential/,
             );
             assert.deepEqual(await target.service.execute(ownExchange, target.send), completed);

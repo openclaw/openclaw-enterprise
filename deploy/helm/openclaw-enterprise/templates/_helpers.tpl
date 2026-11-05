@@ -233,15 +233,18 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- $oidcCa := default dict $oidc -}}
 {{- range $key := list "caSecretName" "caSecretKey" -}}
-{{- if and (hasKey $oidcCa $key) (not (kindIs "string" (index $oidcCa $key))) -}}{{- fail (printf "auth.oidc.%s must be a string" $key) -}}{{- end -}}
+{{- if hasKey $oidcCa $key -}}{{- include "openclaw.requireString" (dict "label" (printf "auth.oidc.%s" $key) "value" (index $oidcCa $key)) -}}{{- end -}}
 {{- end -}}
 {{- if or $oidcCa.caSecretName $oidcCa.caSecretKey -}}
 {{- if or (not (kindIs "bool" $oidcCa.enabled)) (not $oidcCa.enabled) -}}{{- fail "auth.oidc CA configuration requires auth.oidc.enabled: true" -}}{{- end -}}
 {{- if or (not $oidcCa.caSecretName) (not $oidcCa.caSecretKey) -}}{{- fail "auth.oidc.caSecretName and auth.oidc.caSecretKey must be set together" -}}{{- end -}}
+{{- /* eq refuses to compare a string with a number or boolean, so check the type first for the documented message. */ -}}
+{{- if not (kindIs "invalid" $oidcCa.secretName) -}}{{- include "openclaw.requireString" (dict "label" "auth.oidc.secretName" "value" $oidcCa.secretName) -}}{{- end -}}
 {{- if eq $oidcCa.caSecretName $oidcCa.secretName -}}{{- fail "auth.oidc.caSecretName must differ from the OIDC client credential Secret" -}}{{- end -}}
 {{- if or (gt (len $oidcCa.caSecretName) 253) (not (regexMatch "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$" $oidcCa.caSecretName)) -}}{{- fail "auth.oidc.caSecretName must be a Kubernetes Secret name" -}}{{- end -}}
 {{- include "openclaw.validateSecretKey" (dict "label" "auth.oidc.caSecretKey" "value" $oidcCa.caSecretKey) -}}
 {{- if not .Values.database.caSecretName -}}{{- fail "auth.oidc CA configuration requires database.caSecretName and an explicit sslrootcert in the application database URL" -}}{{- end -}}
+{{- include "openclaw.requireString" (dict "label" "database.caSecretName" "value" .Values.database.caSecretName) -}}
 {{- if eq $oidcCa.caSecretName .Values.database.caSecretName -}}{{- fail "auth.oidc.caSecretName must differ from the database CA Secret" -}}{{- end -}}
 {{- end -}}
 {{- if and $oidc $oidc.enabled -}}
@@ -349,6 +352,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- fail "bootstrap.serviceKey.fileName must identify the service key output file name" -}}
 {{- end -}}
 {{- range $label, $fileName := dict "bootstrap.password.fileName" .Values.bootstrap.password.fileName "bootstrap.serviceKey.fileName" .Values.bootstrap.serviceKey.fileName -}}
+{{- include "openclaw.requireString" (dict "label" $label "value" $fileName) -}}
 {{- if or (eq $fileName ".") (eq $fileName "..") (gt (len (toString $fileName)) 255) (not (regexMatch "^[A-Za-z0-9._-]+$" $fileName)) -}}
 {{- fail (printf "%s must be a simple basename of at most 255 characters" $label) -}}
 {{- end -}}
@@ -364,9 +368,10 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" (toString .Values.database.port))) (gt (int .Values.database.port) 65535) -}}
 {{- fail "database.port must be an integer TCP port from 1 to 65535" -}}
 {{- end -}}
-{{- /* The server reads OCC_PORT with decimal Number(); Kubernetes YAML reads an unquoted leading zero as octal. Sprig int returns 0 past int64, and this check used to treat that 0 as in range, then emit the original digits. */ -}}
-{{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" (toString .Values.api.port))) (gt (int .Values.api.port) 65535) -}}
-{{- fail "api.port must be an integer TCP port from 1 to 65535" -}}
+{{- /* The server reads OCC_PORT with decimal Number(); Kubernetes YAML reads an unquoted leading zero as octal. Sprig int returns 0 past int64, and this check used to treat that 0 as in range, then emit the original digits.
+     The API runs as UID 1000 without capabilities, so a port below 1024 fails to bind where the runtime keeps privileged ports. */ -}}
+{{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" (toString .Values.api.port))) (lt (int .Values.api.port) 1024) (gt (int .Values.api.port) 65535) -}}
+{{- fail "api.port must be an integer TCP port from 1024 to 65535: the API runs as a non-root user without capabilities" -}}
 {{- end -}}
 {{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" (toString .Values.cluster.port))) (gt (int .Values.cluster.port) 65535) -}}
 {{- fail "cluster.port must be an integer TCP port from 1 to 65535" -}}
@@ -421,6 +426,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- end -}}
 {{- end -}}
+{{- if .Values.controlPlane.installationChecksum -}}{{- include "openclaw.requireString" (dict "label" "controlPlane.installationChecksum" "value" .Values.controlPlane.installationChecksum) -}}{{- end -}}
 {{- if and .Values.controlPlane.installationChecksum (not (regexMatch "^[a-f0-9]{64}$" .Values.controlPlane.installationChecksum)) -}}{{- fail "controlPlane.installationChecksum must be an empty string or a lowercase SHA-256 digest" -}}{{- end -}}
 {{- range $label, $key := dict "database.appUrlKey" .Values.database.appUrlKey "database.migrationUrlKey" .Values.database.migrationUrlKey -}}
 {{- include "openclaw.validateSecretKey" (dict "label" $label "value" $key) -}}
@@ -438,6 +444,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (not .Values.database.caKey) (not .Values.database.caMountPath) -}}
 {{- fail "database CA Secret mounts require database.caKey and database.caMountPath" -}}
 {{- end -}}
+{{- include "openclaw.requireString" (dict "label" "database.caKey" "value" .Values.database.caKey) -}}
 {{- if or (eq .Values.database.caKey ".") (eq .Values.database.caKey "..") (not (regexMatch "^[A-Za-z0-9._-]+$" .Values.database.caKey)) -}}
 {{- fail "database.caKey must be a simple basename" -}}
 {{- end -}}
@@ -496,6 +503,9 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if .Values.executionCluster.enabled -}}
 {{- $execution := .Values.executionCluster -}}
+{{- range $key := list "apiKubeconfigSecretName" "workerKubeconfigSecretName" -}}
+{{- if index $execution $key -}}{{- include "openclaw.requireString" (dict "label" (printf "executionCluster.%s" $key) "value" (index $execution $key)) -}}{{- end -}}
+{{- end -}}
 {{- if or (not $execution.apiKubeconfigSecretName) (not $execution.workerKubeconfigSecretName) (eq $execution.apiKubeconfigSecretName $execution.workerKubeconfigSecretName) -}}
 {{- fail "executionCluster requires separate API and worker kubeconfig Secrets" -}}
 {{- end -}}
@@ -527,14 +537,13 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if kindIs "map" .Values.api.consoleTheme -}}
 {{- if hasKey .Values.api.consoleTheme "configMapName" -}}
 {{- $consoleThemeName := .Values.api.consoleTheme.configMapName -}}
-{{- if not (kindIs "string" $consoleThemeName) -}}
-{{- fail "api.consoleTheme.configMapName must be a string: quote a name YAML reads as a number or boolean, or pass it with --set-string" -}}
-{{- else if ne $consoleThemeName "" -}}
+{{- include "openclaw.requireString" (dict "label" "api.consoleTheme.configMapName" "value" $consoleThemeName) -}}
+{{- if ne $consoleThemeName "" -}}
 {{- include "openclaw.validateResourceName" (dict "label" "api.consoleTheme.configMapName" "value" $consoleThemeName) -}}
 {{- end -}}
 {{- end -}}
-{{- if and (hasKey .Values.api.consoleTheme "checksum") (not (kindIs "string" .Values.api.consoleTheme.checksum)) -}}
-{{- fail "api.consoleTheme.checksum must be a string: quote a value YAML reads as a number or boolean, or pass it with --set-string" -}}
+{{- if hasKey .Values.api.consoleTheme "checksum" -}}
+{{- include "openclaw.requireString" (dict "label" "api.consoleTheme.checksum" "value" .Values.api.consoleTheme.checksum) -}}
 {{- end -}}
 {{- end -}}
 {{- if .Values.slackProxy.enabled -}}
@@ -544,8 +553,8 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (gt (len $proxy.serviceName) 63) (not (regexMatch "^[a-z]([-a-z0-9]*[a-z0-9])?$" $proxy.serviceName)) -}}
 {{- fail "slackProxy.serviceName must be a DNS-1035 Service name" -}}
 {{- end -}}
-{{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $proxy.port))) (lt (int $proxy.port) 1) (gt (int $proxy.port) 65535) -}}
-{{- fail "slackProxy.port must be an integer TCP port from 1 to 65535" -}}
+{{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $proxy.port))) (lt (int $proxy.port) 1024) (gt (int $proxy.port) 65535) -}}
+{{- fail "slackProxy.port must be an integer TCP port from 1024 to 65535: the proxy runs as a non-root user without capabilities" -}}
 {{- end -}}
 {{- include "openclaw.resourceRequirements" (dict "name" "slackProxy.resources" "requirements" $proxy.resources) -}}
 {{- end -}}
@@ -650,6 +659,9 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- /* The EnvoyProxy envoyService.type enum. The API server refuses any other value at apply, after the pre-install hooks have run. */ -}}
 {{- if not (has $routing.serviceType (list "ClusterIP" "LoadBalancer" "NodePort")) -}}{{- fail "gatewayRouting.serviceType must be ClusterIP, LoadBalancer or NodePort" -}}{{- end -}}
 {{- /* Compute required() keeps the original string. validateGatewayName then refuses a name that is not DNS-safe, or longer than 63 characters, because Envoy copies it into the owning-gateway-name label. Check the name the Gateway template emits, including surrounding spaces. */ -}}
+{{- range $key := list "gatewayName" "tlsSecretName" -}}
+{{- if index $routing $key -}}{{- include "openclaw.requireString" (dict "label" (printf "gatewayRouting.%s" $key) "value" (index $routing $key)) -}}{{- end -}}
+{{- end -}}
 {{- $gatewayName := include "openclaw.gatewayRouting.gatewayName" . -}}
 {{- if or (gt (len $gatewayName) 63) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$" $gatewayName)) -}}
 {{- fail "gatewayRouting.gatewayName must be a DNS-safe Kubernetes resource name" -}}
@@ -684,20 +696,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- /* Null matches main: an omitted list renders no remote-node peers. NetworkPolicy ipBlock does not apply Node trusted-proxy mapped-prefix rules. */ -}}
 {{- if kindIs "slice" $routing.remoteNodeCidrs -}}
 {{- range $cidr := $routing.remoteNodeCidrs -}}
-{{- $value := toString $cidr -}}
-{{- if regexMatch "^(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])(?:\\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])){3}/(?:0|[1-9]|[12][0-9]|3[0-2])$" $value -}}
-{{- else if regexMatch "^[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*/(?:0|[1-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$" $value -}}
-{{- $addr := first (splitList "/" $value) -}}
-{{- $tail := regexFind ":(?:0|[1-9][0-9]{0,2})(?:\\.(?:0|[1-9][0-9]{0,2})){3}$" $addr -}}
-{{- range $octet := splitList "." (default ":0.0.0.0" $tail | trimPrefix ":") -}}
-{{- if gt (int $octet) 255 -}}{{- fail "gatewayRouting.remoteNodeCidrs contains an invalid IPv6 address" -}}{{- end -}}
-{{- end -}}
-{{- $hex := ternary (printf "%s:0:0" (trimSuffix $tail $addr)) $addr (ne $tail "") -}}
-{{- $groups := len (regexFindAll "[0-9A-Fa-f]+" $hex -1) -}}
-{{- if or (not (regexMatch "^(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4})*)?(?:::(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4})*)?)?$" $hex)) (ternary (gt $groups 7) (ne $groups 8) (contains "::" $hex)) -}}{{- fail "gatewayRouting.remoteNodeCidrs contains an invalid IPv6 address" -}}{{- end -}}
-{{- else -}}
-{{- fail "gatewayRouting.remoteNodeCidrs requires an IPv4 or IPv6 CIDR" -}}
-{{- end -}}
+{{- include "openclaw.networkPolicy.cidr" (dict "name" "gatewayRouting.remoteNodeCidrs" "value" $cidr) -}}
 {{- end -}}
 {{- else if not (kindIs "invalid" $routing.remoteNodeCidrs) -}}
 {{- fail "gatewayRouting.remoteNodeCidrs must be a list of IPv4 or IPv6 CIDR strings" -}}
@@ -874,6 +873,14 @@ capabilities:
 {{- printf "occ-gateway-%s" (include "openclaw.gatewayRouting.routeNamespaceLabel" .) -}}
 {{- end -}}
 
+{{- define "openclaw.gatewayRouting.defaultHostname" -}}
+{{- printf "%s.%s.svc" (include "openclaw.gatewayRouting.serviceName" .) .Values.gatewayRouting.envoyNamespace -}}
+{{- end -}}
+
+{{- define "openclaw.gatewayRouting.hostname" -}}
+{{- default (include "openclaw.gatewayRouting.defaultHostname" .) .Values.gatewayRouting.hostname -}}
+{{- end -}}
+
 
 {{- define "openclaw.gatewayRouting.rootSecretName" -}}
 {{- printf "%s-root" (include "openclaw.gatewayRouting.serviceName" .) -}}
@@ -887,7 +894,7 @@ capabilities:
      A values file delivers a float64, and toString prints 1000000 and above as an exponent.
      With "port", also refuse leading zeros: callers pass the value through Sprig int, and
      startup's listener comparison refuses "08443". With "timer", also refuse values above
-     2147483647: Node.js fires a longer timer after 1 ms (the worker's MAX_TIMER_DELAY_MS). */}}
+     2147483647: Node.js fires a longer timer after 1 ms (MAX_TIMER_DELAY_MS in @openclaw-enterprise/utils). */}}
 {{- define "openclaw.positiveSafeInteger" -}}
 {{- $raw := toString .value -}}
 {{- if and (kindIs "float64" .value) (eq (floor .value) .value) -}}
@@ -909,11 +916,16 @@ capabilities:
 {{/* Each listener the chart routes through a Service: its port, or disabled. API and worker
      startup and the upgrade check refuse an Installation listener on another port, not on
      all addresses, without the chart listener (finding 2213), or naming TLS or issuer files
-     other than the chart's mounts. */}}
+     other than the chart's mounts. The chart-owned private Gateway expectation also checks
+     selected Kubernetes routing against the rendered resource identity and hostname. */}}
 {{- define "openclaw.listenerEnv" -}}
 {{- range $listener := list (dict "name" "OCC_EGRESS_AUTHORITY_PORT" "label" "egressAuthority.port" "values" .Values.egressAuthority) (dict "name" "OCC_OPENSHELL_GIT_PORT" "label" "openshellGit.port" "values" .Values.openshellGit) }}
 - name: {{ $listener.name }}
   value: {{ if $listener.values.enabled }}{{ include "openclaw.positiveSafeInteger" (dict "name" $listener.label "value" $listener.values.port "port" true) | quote }}{{ else }}"disabled"{{ end }}
+{{- end }}
+{{- if .Values.gatewayRouting.enabled }}
+- name: OCC_CHART_GATEWAY_ROUTING
+  value: {{ dict "gatewayName" (include "openclaw.gatewayRouting.gatewayName" .) "gatewayNamespace" .Release.Namespace "envoyNamespace" .Values.gatewayRouting.envoyNamespace "hostname" (include "openclaw.gatewayRouting.hostname" .) "defaultHostname" (include "openclaw.gatewayRouting.defaultHostname" .) | toJson | quote }}
 {{- end }}
 {{- end -}}
 
@@ -934,7 +946,19 @@ capabilities:
 {{- end -}}
 {{- end -}}
 
-{{/* A null map clears chart defaults. Skip it; indexing nil aborts install and upgrade. */}}
+{{/* openclaw.quantity, and Kubernetes refuses a negative resource quantity or emptyDir sizeLimit.
+     A syntax check, not a parser: a leading "-" before a nonzero digit is negative ("-0" is zero).
+     Range and request-to-limit checks stay Kubernetes' responsibility (see openclaw.quantity). */}}
+{{- define "openclaw.nonNegativeQuantity" -}}
+{{- include "openclaw.quantity" . -}}
+{{- if regexMatch "^-[0-9.]*[1-9]" (trim (toString .value)) -}}
+{{- fail (printf "%s must not be negative" .name) -}}
+{{- end -}}
+{{- end -}}
+
+{{/* A null map clears chart defaults. Skip it; indexing nil aborts install and upgrade. Kubernetes
+     refuses a Deployment whose container resources name another resource or are negative, after
+     the release's other objects changed. */}}
 {{- define "openclaw.resourceRequirements" -}}
 {{- if .requirements -}}
 {{- $name := .name -}}
@@ -942,7 +966,13 @@ capabilities:
 {{- range $section := list "requests" "limits" -}}
 {{- with index $requirements $section -}}
 {{- range $key, $qty := . -}}
-{{- include "openclaw.quantity" (dict "name" (printf "%s.%s.%s" $name $section $key) "value" $qty) -}}
+{{- $field := printf "%s.%s.%s" $name $section $key -}}
+{{- if not (or (regexMatch "^(cpu|memory|ephemeral-storage|hugepages-[0-9]+(\\.[0-9]+)?([KMGTPE]i|[kMGTPE]|[eE][0-9]+)?)$" $key) (and (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$" $key) (not (hasPrefix "requests." $key)))) -}}
+{{- fail (printf "%s names a resource Kubernetes does not accept: use cpu, memory, ephemeral-storage, hugepages-<size> or a domain-prefixed resource such as example.com/gpu, not starting with requests." $field) -}}
+{{- end -}}
+{{- if not (kindIs "invalid" $qty) -}}
+{{- include "openclaw.nonNegativeQuantity" (dict "name" $field "value" $qty) -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -962,7 +992,8 @@ capabilities:
 {{- end -}}
 
 {{- define "openclaw.gatewayRouting.envoyNetworkPolicyName" -}}
-{{- printf "%s-%s-envoy-dataplane" (.Release.Name | trunc 34 | trimSuffix "-") (include "openclaw.gatewayRouting.routeNamespaceLabel" .) -}}
+{{- /* A truncated dotted release name can end in "." as well as "-" (finding 2338). */ -}}
+{{- printf "%s-%s-envoy-dataplane" (regexReplaceAll "[-.]+$" (.Release.Name | trunc 34) "") (include "openclaw.gatewayRouting.routeNamespaceLabel" .) -}}
 {{- end -}}
 
 {{/*

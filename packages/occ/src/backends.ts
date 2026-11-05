@@ -9,7 +9,11 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { BACKEND_ID_MAX_CHARACTERS, isBackendId } from "@openclaw-enterprise/contracts";
 import { asRecord, deepFreeze, isNonEmptyString } from "@openclaw-enterprise/utils";
-import { DriverSelectionError, ResourceConflictError, ScopeViolationError } from "./errors.ts";
+import {
+  DriverSelectionError,
+  ScopeViolationError,
+  ServiceAccountBackendBindingError,
+} from "./errors.ts";
 
 const WORKSPACE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_CHATGPT_CREDENTIAL_TTL_SECONDS = 30 * 24 * 60 * 60;
@@ -599,9 +603,7 @@ export function validateServiceAccountBackendBinding(
 ): void {
   const backend = assertConfiguredBackend(backends, backendIdValue, "Agent Backend");
   if (backend === undefined || backend.type !== "chatgpt" || binding === undefined) {
-    throw new ResourceConflictError(
-      "The managed ServiceAccount credential has no Backend binding.",
-    );
+    throw new ServiceAccountBackendBindingError("noBinding");
   }
   if (
     binding.backendId !== backend.id ||
@@ -609,8 +611,6 @@ export function validateServiceAccountBackendBinding(
     binding.workspaceId !== backend.configuration.workspaceId ||
     !binding.credentialIssued
   ) {
-    throw new ResourceConflictError(
-      "The managed ServiceAccount credential does not match its Backend.",
-    );
+    throw new ServiceAccountBackendBindingError("mismatch");
   }
 }
