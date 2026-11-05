@@ -50,7 +50,7 @@ flowchart LR
     S["Credential Proxy"]
     A["OCE worker<br/>authorize this request"]
     W --> G --> S
-    W --> R -->|"Release scoped token"| S
+    W -.-> R -.->|"Release scoped token"| S
     S -->|"Both paths"| A
     classDef removed fill:#fce8e6,stroke:#b42318,color:#651813
     classDef added fill:#dcf5e5,stroke:#147d44,color:#104728
@@ -58,6 +58,6 @@ flowchart LR
     class R added
 ```
 
-Red marks the provider update that pull would replace for Git. Green marks the proposed release check. Sandbox provisioning and other Gateway uses have their own lifecycle.
+Red marks the provider update that pull would replace for Git. Green and dashed arrows mark the proposed release check. Sandbox provisioning and other Gateway uses have their own lifecycle.
 
 The open contract question is the first request. Today's `authorize` takes the version already installed at the recipient. Checking the operation **before releasing any token bytes** needs an earlier decision, followed by evidence that the same recipient installed that version. The proposal grants the proxy no general Secret lookup. See the [repository Git authority](../../packages/contracts/src/protected-repository-git.ts).

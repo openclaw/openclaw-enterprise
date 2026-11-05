@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -169,6 +170,48 @@ test("CLI rejects invalid references before creating or replacing outputs", () =
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test(
+  "CLI limits bytes read from a stream without a reported file size",
+  {
+    skip: process.platform !== "linux",
+  },
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sketch-input-limit-"));
+    try {
+      const prefix = join(dir, "output");
+      const input = join(dir, "input.json");
+      assert.equal(spawnSync("mkfifo", [input]).status, 0);
+      // A pipe reports zero bytes to stat, but can supply more than the input budget.
+      // Padding valid JSON ensures the byte limit, not parsing, rejects the stream.
+      const writer = spawn(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          'import { writeFileSync } from "node:fs"; writeFileSync(process.argv[1], process.argv[2].padEnd(2_000_001));',
+          input,
+          JSON.stringify(sample()),
+        ],
+        { stdio: "ignore" },
+      );
+      const written = once(writer, "close");
+      const result = spawnSync(
+        process.execPath,
+        [fileURLToPath(new URL("./render.ts", import.meta.url)), input, prefix],
+        { encoding: "utf8", timeout: 10_000 },
+      );
+      writer.kill();
+      await written;
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stderr, /input exceeds 2 MB/);
+      assert.equal(existsSync(`${prefix}.svg`), false);
+      assert.equal(existsSync(`${prefix}.png`), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
 
 test("offline renderer produces deterministic PNG with requested dimensions", async () => {
   const first = await render(sample());

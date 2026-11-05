@@ -1,4 +1,4 @@
-import { readFileSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, openSync, readFileSync, readSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -164,10 +164,25 @@ async function main(args: string[]): Promise<void> {
     throw new Error("Usage: node scripts/interface-sketches/render.ts INPUT.json OUTPUT_PREFIX");
   }
   const [input, prefix] = args as [string, string];
-  if (statSync(input).size > MAX_INPUT) {
+  const buffer = Buffer.alloc(MAX_INPUT + 1);
+  const descriptor = openSync(input, "r");
+  let length = 0;
+  try {
+    // Bound the actual read, including files that grow after they are opened.
+    while (length < buffer.length) {
+      const count = readSync(descriptor, buffer, length, buffer.length - length, null);
+      if (count === 0) {
+        break;
+      }
+      length += count;
+    }
+  } finally {
+    closeSync(descriptor);
+  }
+  if (length > MAX_INPUT) {
     throw new Error("Invalid sketch: input exceeds 2 MB");
   }
-  const data: unknown = JSON.parse(readFileSync(input, "utf8"));
+  const data: unknown = JSON.parse(buffer.toString("utf8", 0, length));
   const { svg, png } = await render(data);
   writeFileSync(`${prefix}.svg`, svg);
   writeFileSync(`${prefix}.png`, png);
