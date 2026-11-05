@@ -387,13 +387,142 @@ function holdStartupFailure(check, code) {
 }
 `;
 
+const OPENCLAW_PLUGIN_INSTALL_HELPERS = String.raw`
+function openClawPluginPackageSpec(plugin) {
+  const packageName = requireNonEmptyString(plugin.packageName, "OpenClaw plugin package name");
+  const version = requireNonEmptyString(plugin.version, "OpenClaw plugin version");
+  return packageName + "@" + version;
+}
+
+function runOpenClaw(args, description, diagnostic) {
+  const result = pluginSpawnSync("node", ["/app/openclaw.mjs", ...args], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.error !== undefined || typeof result.status !== "number") {
+    throw new Error(description + " failed.");
+  }
+  if (result.status !== 0 && diagnostic !== undefined) {
+    throw new PluginTerminalDiagnosticError(diagnostic, description + " failed.");
+  }
+  if (result.status !== 0) {
+    throw new Error(description + " failed.");
+  }
+  return result.stdout;
+}
+
+function runOpenClawJson(args, description) {
+  const stdout = runOpenClaw(args, description);
+  try {
+    return JSON.parse(stdout);
+  } catch {
+    throw new Error(description + " returned invalid JSON.");
+  }
+}
+
+function installRecordIntegrity(record) {
+  return record?.integrity ?? record?.npmIntegrity ?? record?.acceptedSurfaceIntegrity;
+}
+
+function assertPathInside(parent, child, description) {
+  const root = pluginResolve(parent);
+  const candidate = pluginResolve(child);
+  if (candidate !== root && !candidate.startsWith(root + "/")) {
+    throw new Error(description + " does not resolve inside the admitted install path.");
+  }
+}
+
+function verifyOpenClawPluginInstall(plugin) {
+  const nativeId = requireNonEmptyString(plugin.nativeId, "OpenClaw plugin native ID");
+  const packageName = requireNonEmptyString(plugin.packageName, "OpenClaw plugin package name");
+  const version = requireNonEmptyString(plugin.version, "OpenClaw plugin version");
+  const report = runOpenClawJson(["plugins", "inspect", nativeId, "--json"], "OpenClaw plugin inspect");
+  if (report?.plugin?.id !== nativeId) {
+    throw new Error("OpenClaw plugin installed identity does not match the admitted release.");
+  }
+  if (report.plugin.version !== version) {
+    throw new Error("OpenClaw plugin runtime version does not match the admitted release.");
+  }
+  const record = report.install;
+  if (record?.source !== "npm") {
+    throw new Error("OpenClaw plugin install record source does not match the admitted release.");
+  }
+  if (record.resolvedName !== packageName) {
+    throw new Error("OpenClaw plugin installed package does not match the admitted release.");
+  }
+  if ((record.resolvedVersion ?? record.version) !== version) {
+    throw new Error("OpenClaw plugin installed version does not match the admitted release.");
+  }
+  if (plugin.integrity !== undefined && installRecordIntegrity(record) !== plugin.integrity) {
+    throw new Error("OpenClaw plugin installed integrity does not match the admitted release.");
+  }
+  const installPath = requireNonEmptyString(record.installPath, "OpenClaw plugin install path");
+  const rootDir = requireNonEmptyString(report.plugin.rootDir, "OpenClaw plugin runtime root directory");
+  assertPathInside(installPath, rootDir, "OpenClaw plugin runtime root directory");
+  if (typeof report.plugin.source === "string" && report.plugin.source.startsWith("/")) {
+    assertPathInside(installPath, report.plugin.source, "OpenClaw plugin runtime source");
+  }
+}
+
+function installOpenClawPlugins(runtime, failures = []) {
+  const artifact =
+    runtime.manifest?.kind === "openclaw"
+      ? pluginRuntimeTranslator.openClawRuntimeArtifact(runtime.manifest.selections ?? {}, failures, runtime.manifest.pluginApprovers)
+      : { installs: [] };
+  const installs = artifact.installs ?? [];
+  const failed = [...failures];
+  const successfulPluginIds = [];
+  const failedIds = pluginFailureIds(failed);
+  const originalTools = readOpenClawConfig().tools;
+  applyOpenClawPluginConfiguration(runtime, failed);
+  for (const plugin of installs) {
+    if (failedIds.has(plugin.pluginId)) continue;
+    const spec = openClawPluginPackageSpec(plugin);
+    try {
+      runOpenClaw(
+        ["plugins", "install", spec, "--pin", "--force", "--no-enable"],
+        "OpenClaw plugin install",
+        pluginDiagnostic(plugin.pluginId, "PLUGIN_INSTALL_FAILED"),
+      );
+      successfulPluginIds.push(plugin.pluginId);
+    } catch (error) {
+      if (isPluginTerminalDiagnosticError(error)) {
+        if (!pluginBestEffortEnabled()) throw error;
+        failed.push(error.diagnostic);
+        failedIds.add(error.diagnostic.pluginId);
+        continue;
+      }
+      throw error;
+    }
+  }
+  if (successfulPluginIds.length > 0) {
+    runOpenClawJson(["plugins", "registry", "--refresh", "--json"], "OpenClaw plugin registry refresh");
+  }
+  // Rebuild grants from the operator's policy so failed installs cannot leave
+  // generated allow entries behind or erase an original restrictive allowlist.
+  const installedConfig = readOpenClawConfig();
+  installedConfig.tools = originalTools;
+  writeOpenClawConfig(installedConfig);
+  const overlay = applyOpenClawPluginConfiguration(runtime, failed, { allowManagedOpenClawPluginReplacement: true });
+  if (overlay !== undefined) {
+    assertConfigContainsOverlay(readOpenClawConfig(), overlay);
+  }
+  for (const plugin of installs) {
+    if (failedIds.has(plugin.pluginId)) continue;
+    verifyOpenClawPluginInstall(plugin);
+  }
+  return { successfulPluginIds, failures: failed };
+}
+`;
+
 // pluginTimerMs reads a Harness timer setting as whole milliseconds from 1 to 2147483647, the
 // longest delay a Node.js timer honours (MAX_TIMER_DELAY_MS in @openclaw-enterprise/utils, which
 // this script cannot import). The request timeout feeds AbortSignal.timeout, where Number() read
 // "12abc" as NaN, "" as 0 and 3e9 as a timer that fires after 1 ms (finding 2312); the install
 // deadline shares the bound. Whole-line comments here cost nothing at runtime: nodeProgramArguments
 // drops them before the dedicated Harness command is measured against the exec string budget.
-export const PLUGIN_RUNTIME_HELPERS = String.raw`
+function pluginRuntimeHelpers(includeOpenClawInstaller: boolean): string {
+  return String.raw`
 const pluginRuntimeTranslator = (${PLUGIN_RUNTIME_TRANSLATOR_SOURCE})();
 const {
   dirname: pluginDirname,
@@ -1448,133 +1577,7 @@ function assertCodexPluginRuntime(runtime) {
     throw new Error("Codex protected inference profile is invalid.");
   }
 }
-
-function openClawPluginPackageSpec(plugin) {
-  const packageName = requireNonEmptyString(plugin.packageName, "OpenClaw plugin package name");
-  const version = requireNonEmptyString(plugin.version, "OpenClaw plugin version");
-  return packageName + "@" + version;
-}
-
-function runOpenClaw(args, description, diagnostic) {
-  const result = pluginSpawnSync("node", ["/app/openclaw.mjs", ...args], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  if (result.error !== undefined || typeof result.status !== "number") {
-    throw new Error(description + " failed.");
-  }
-  if (result.status !== 0 && diagnostic !== undefined) {
-    throw new PluginTerminalDiagnosticError(diagnostic, description + " failed.");
-  }
-  if (result.status !== 0) {
-    throw new Error(description + " failed.");
-  }
-  return result.stdout;
-}
-
-function runOpenClawJson(args, description) {
-  const stdout = runOpenClaw(args, description);
-  try {
-    return JSON.parse(stdout);
-  } catch {
-    throw new Error(description + " returned invalid JSON.");
-  }
-}
-
-function installRecordIntegrity(record) {
-  return record?.integrity ?? record?.npmIntegrity ?? record?.acceptedSurfaceIntegrity;
-}
-
-function assertPathInside(parent, child, description) {
-  const root = pluginResolve(parent);
-  const candidate = pluginResolve(child);
-  if (candidate !== root && !candidate.startsWith(root + "/")) {
-    throw new Error(description + " does not resolve inside the admitted install path.");
-  }
-}
-
-function verifyOpenClawPluginInstall(plugin) {
-  const nativeId = requireNonEmptyString(plugin.nativeId, "OpenClaw plugin native ID");
-  const packageName = requireNonEmptyString(plugin.packageName, "OpenClaw plugin package name");
-  const version = requireNonEmptyString(plugin.version, "OpenClaw plugin version");
-  const report = runOpenClawJson(["plugins", "inspect", nativeId, "--json"], "OpenClaw plugin inspect");
-  if (report?.plugin?.id !== nativeId) {
-    throw new Error("OpenClaw plugin installed identity does not match the admitted release.");
-  }
-  if (report.plugin.version !== version) {
-    throw new Error("OpenClaw plugin runtime version does not match the admitted release.");
-  }
-  const record = report.install;
-  if (record?.source !== "npm") {
-    throw new Error("OpenClaw plugin install record source does not match the admitted release.");
-  }
-  if (record.resolvedName !== packageName) {
-    throw new Error("OpenClaw plugin installed package does not match the admitted release.");
-  }
-  if ((record.resolvedVersion ?? record.version) !== version) {
-    throw new Error("OpenClaw plugin installed version does not match the admitted release.");
-  }
-  if (plugin.integrity !== undefined && installRecordIntegrity(record) !== plugin.integrity) {
-    throw new Error("OpenClaw plugin installed integrity does not match the admitted release.");
-  }
-  const installPath = requireNonEmptyString(record.installPath, "OpenClaw plugin install path");
-  const rootDir = requireNonEmptyString(report.plugin.rootDir, "OpenClaw plugin runtime root directory");
-  assertPathInside(installPath, rootDir, "OpenClaw plugin runtime root directory");
-  if (typeof report.plugin.source === "string" && report.plugin.source.startsWith("/")) {
-    assertPathInside(installPath, report.plugin.source, "OpenClaw plugin runtime source");
-  }
-}
-
-function installOpenClawPlugins(runtime, failures = []) {
-  const artifact =
-    runtime.manifest?.kind === "openclaw"
-      ? pluginRuntimeTranslator.openClawRuntimeArtifact(runtime.manifest.selections ?? {}, failures, runtime.manifest.pluginApprovers)
-      : { installs: [] };
-  const installs = artifact.installs ?? [];
-  const failed = [...failures];
-  const successfulPluginIds = [];
-  const failedIds = pluginFailureIds(failed);
-  const originalTools = readOpenClawConfig().tools;
-  applyOpenClawPluginConfiguration(runtime, failed);
-  for (const plugin of installs) {
-    if (failedIds.has(plugin.pluginId)) continue;
-    const spec = openClawPluginPackageSpec(plugin);
-    try {
-      runOpenClaw(
-        ["plugins", "install", spec, "--pin", "--force", "--no-enable"],
-        "OpenClaw plugin install",
-        pluginDiagnostic(plugin.pluginId, "PLUGIN_INSTALL_FAILED"),
-      );
-      successfulPluginIds.push(plugin.pluginId);
-    } catch (error) {
-      if (isPluginTerminalDiagnosticError(error)) {
-        if (!pluginBestEffortEnabled()) throw error;
-        failed.push(error.diagnostic);
-        failedIds.add(error.diagnostic.pluginId);
-        continue;
-      }
-      throw error;
-    }
-  }
-  if (successfulPluginIds.length > 0) {
-    runOpenClawJson(["plugins", "registry", "--refresh", "--json"], "OpenClaw plugin registry refresh");
-  }
-  // Rebuild grants from the operator's policy so failed installs cannot leave
-  // generated allow entries behind or erase an original restrictive allowlist.
-  const installedConfig = readOpenClawConfig();
-  installedConfig.tools = originalTools;
-  writeOpenClawConfig(installedConfig);
-  const overlay = applyOpenClawPluginConfiguration(runtime, failed, { allowManagedOpenClawPluginReplacement: true });
-  if (overlay !== undefined) {
-    assertConfigContainsOverlay(readOpenClawConfig(), overlay);
-  }
-  for (const plugin of installs) {
-    if (failedIds.has(plugin.pluginId)) continue;
-    verifyOpenClawPluginInstall(plugin);
-  }
-  return { successfulPluginIds, failures: failed };
-}
-
+${includeOpenClawInstaller ? OPENCLAW_PLUGIN_INSTALL_HELPERS : ""}
 function pluginRuntimeDelay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -2237,6 +2240,9 @@ function codexPluginStartupFailureCode(error) {
   }
 }
 `;
+}
+
+export const PLUGIN_RUNTIME_HELPERS = pluginRuntimeHelpers(true);
 
 // Holds unready until an explicit restart; readiness polls never submit model calls.
 // A failed probe's cause is a closed kind and a fixed token, never native output,
@@ -3874,7 +3880,8 @@ function codexReadinessFailure(url, token) {
 }
 `;
 
-// Preserve the legacy command bytes: running Sandboxes compare their immutable command.
+// The Codex child uses its own plugin lifecycle; native OpenClaw installation stays
+// in the full helper consumed by Gateway and Docker entrypoints.
 // Zero provider retry budgets do not disable native connection waiting. Protected
 // launches turn that feature off explicitly in both native CLI invocations.
 function agentRuntimeEntrypoint(
@@ -3887,7 +3894,7 @@ const { mkdirSync, mkdtempSync, rmSync } = require("node:fs");
 const { spawn, spawnSync } = require("node:child_process");
 const { performance } = require("node:perf_hooks");
 
-${PLUGIN_RUNTIME_HELPERS}
+${pluginRuntimeHelpers(false)}
 ${AUTH_PROBE_FAILURE_HELPER}
 ${CODEX_FAILURE_OUTPUT_CLASS_HELPER}
 ${CODEX_STDERR_FILTER_HELPER}

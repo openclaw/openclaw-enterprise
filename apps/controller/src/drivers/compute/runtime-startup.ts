@@ -85,8 +85,10 @@ export const OPENCLAW_STATE_DATABASE_SCHEMA_VERSION = 39;
 // without Doctor's ~15 s. Doctor must not rewrite the controller-owned
 // configuration (OPENCLAW_CONFIG_READONLY), and it never deletes state: it saves
 // a pre-migration copy beside each database and verifies integrity first. The
-// schema versions after Doctor, not its exit status, decide: Doctor also exits
-// non-zero for problems it can only report here. On failure the step is named
+// schema versions and Doctor's settled machine result both gate startup. Harmless
+// diagnostic warnings do not override successful maintenance, but cleanup or
+// maintenance refusal must hold startup even if the schemas advanced. On failure
+// the step is named
 // and the wrapper must not start OpenClaw; `retry` completes the log line's
 // remedy. The wrapper provides `spawn`, `logStartupPhase` and
 // `publishRuntimeFailure`.
@@ -158,7 +160,7 @@ function outdatedOpenClawDatabases(stateDirectory) {
 // release its lock, while setup itself ends within seconds, inside the Pod's
 // termination grace period. Resolves { status, signal, error } as spawnSync reports a
 // child, and terminating when a stop arrived.
-function runOpenClawStateOwner(args, options, { forwardStop }) {
+function runOpenClawStateOwner(args, options, { forwardStop, onStdout }) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, ["/app/openclaw.mjs", ...args], options);
     let terminating = false;
@@ -175,22 +177,59 @@ function runOpenClawStateOwner(args, options, { forwardStop }) {
       process.off("SIGINT", onInt);
       resolve({ status: null, signal: null, ...result, terminating });
     };
-    child.on("error", (error) => settle({ error }));
-    child.on("exit", (status, signal) => settle({ status, signal }));
+    let error;
+    child.on("error", (cause) => { error = cause; if (!onStdout) settle({ error }); });
+    if (onStdout) {
+      child.stdout.on("data", onStdout);
+      child.stdout.on("error", (cause) => { error = cause; });
+    }
+    // A piped final result can arrive after exit; close also waits for its EOF.
+    child.on(onStdout ? "close" : "exit", (status, signal) => settle({ status, signal, error }));
   });
 }
 
 async function runStateMigrationDoctor(environment) {
-  // Doctor's maintenance lease owns termination: let it stop its transaction.
+  const resultKey = "OPENCLAW_UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH";
+  const prefix = resultKey + "=";
+  const chunks = [];
+  let bytes = 0;
+  const limit = 4 * 1024 * 1024;
+  const onStdout = (chunk) => {
+    bytes += chunk.length;
+    // Match the native adapter's bound, but keep draining after overflow so
+    // output handling cannot strand Doctor's maintenance owner.
+    if (bytes <= limit) chunks.push(chunk);
+  };
+  // The native stdout adapter emits only after Doctor and its owned processes
+  // settle. Reading the internal result file directly would miss cleanup failure.
   const doctor = await runOpenClawStateOwner(
     ["doctor", "--fix", "--non-interactive"],
-    { stdio: "inherit", env: { ...environment, OPENCLAW_CONFIG_READONLY: "1" } },
-    { forwardStop: true },
+    { stdio: ["inherit", "pipe", "inherit"], env: {
+      ...environment, OPENCLAW_CONFIG_READONLY: "1", [resultKey]: "-",
+    } },
+    { forwardStop: true, onStdout },
   );
+  let result;
+  let records = 0;
+  let invalid = bytes > limit;
+  // Buffer only stdout (bounded above); stderr still reports progress live.
+  // Decode after close so split UTF-8 characters and the final line stay intact.
+  for (const line of require("node:buffer").Buffer.concat(chunks).toString("utf8").split("\n")) {
+    if (!line.startsWith(prefix)) {
+      if (line) process.stdout.write(line + "\n");
+      continue;
+    }
+    records += 1;
+    try { result = JSON.parse(line.slice(prefix.length)); } catch { invalid = true; }
+  }
+  const completed = !doctor.error && !doctor.signal && [0, 86].includes(doctor.status) &&
+    !invalid && records === 1 && result && ["ok", "advisory"].includes(result.status) &&
+    result.maintenanceRefusal === undefined && result.configWriteRefusal === undefined &&
+    (result.failureFacts === undefined || (Array.isArray(result.failureFacts) && result.failureFacts.length === 0));
   const outcome = doctor.error
     ? "error-" + (doctor.error.code ?? "spawn")
     : doctor.signal ?? "exit-" + doctor.status;
-  return { outcome, terminating: doctor.terminating };
+  return { outcome, completed: Boolean(completed), terminating: doctor.terminating };
 }
 
 // Runs Doctor with the environment OpenClaw itself starts with on stateDirectory.
@@ -206,15 +245,16 @@ async function migrateOpenClawState(stateDirectory, outdated, environment) {
   const doctor = await runStateMigrationDoctor(environment);
   if (doctor.terminating) process.exit(0);
   const remaining = outdatedOpenClawDatabases(stateDirectory);
-  if (remaining.length === 0) {
+  if (doctor.completed && remaining.length === 0) {
     logStartupPhase("state-migration", startedAt);
     return true;
   }
   logStartupPhase("state-migration", startedAt, "failed");
   publishRuntimeFailure("state-migration", "UNAVAILABLE");
   console.error(
-    "${owner} state migration failed: openclaw doctor --fix (" + doctor.outcome + ") left " +
-      remaining.map(({ path, version }) => path + " at schema " + version).join(", ") +
+    "${owner} state migration failed: openclaw doctor --fix (" + doctor.outcome + ") " +
+      (remaining.length ? "left " + remaining.map(({ path, version }) => path + " at schema " + version).join(", ")
+        : "did not confirm completed maintenance") +
       ". OpenClaw was not started. Read the Doctor output above, fix the cause, then ${retry}.",
   );
   return false;

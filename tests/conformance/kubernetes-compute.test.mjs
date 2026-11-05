@@ -19,6 +19,8 @@ import { inflateRawSync } from "node:zlib";
 import test from "node:test";
 import {
   AGENT_READINESS_ENTRYPOINT,
+  AGENT_WITH_NODE_ENTRYPOINT as SANDBOX_AGENT_WITH_NODE_ENTRYPOINT,
+  PROTECTED_CODEX_WITH_NODE_ENTRYPOINT as SANDBOX_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   COMPUTE_AGENT_RUNTIME_ENTRYPOINT as AGENT_RUNTIME_ENTRYPOINT,
   COMPUTE_AGENT_WITH_NODE_ENTRYPOINT as AGENT_WITH_NODE_ENTRYPOINT,
   GATEWAY_RUNTIME_ENTRYPOINT,
@@ -3579,6 +3581,19 @@ test("rendered runtime programs reach node without whole-line comments", () => {
     assert.equal(code(sent), code(program), name);
     const [, ...pieces] = nodeProgramArguments(program);
     assert.equal(inflateRawSync(Buffer.from(pieces.join(""), "base64")).toString("utf8"), sent);
+  }
+  // Both Sandbox and Compute wrap the Codex child inside the node supervisor.
+  // Budget the complete serialized command so nesting cannot exceed exec limits.
+  for (const [name, program] of Object.entries({
+    AGENT_WITH_NODE_ENTRYPOINT,
+    PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
+    SANDBOX_AGENT_WITH_NODE_ENTRYPOINT,
+    SANDBOX_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
+  })) {
+    const bytes = Buffer.byteLength(
+      JSON.stringify([...RUNTIME_WRAPPER_COMMAND, ...nodeProgramArguments(program)]),
+    );
+    assert.ok(bytes <= EXEC_STRING_BUDGET, `${name}: ${bytes} exceeds ${EXEC_STRING_BUDGET}`);
   }
   // A `//` line can sit inside a template literal, a continued string, a string with a raw
   // U+2028 or U+2029, or a block comment; a program with any of those (the Gateway
