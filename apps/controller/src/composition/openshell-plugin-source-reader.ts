@@ -5,11 +5,8 @@ import {
   openShellWorkspaceName,
   type OpenShellGateway,
 } from "../backends/openshell.ts";
-import {
-  CODEX_ACCESS_TOKEN_ENV,
-  CODEX_OAUTH_TYPE,
-  codexAccountMetadata,
-} from "../drivers/credential-refresh/codex-device-authorization.ts";
+import { CODEX_ACCESS_TOKEN_ENV, CODEX_OAUTH_TYPE } from "../backends/openshell-refresh-sources.ts";
+import { codexAccountMetadata } from "../drivers/credential-refresh/codex-device-authorization.ts";
 
 export function bindOpenShellPluginSourceReader(
   backend: Backend<OpenShellGateway>,
