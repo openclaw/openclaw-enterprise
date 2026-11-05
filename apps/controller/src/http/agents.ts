@@ -109,7 +109,10 @@ function clientRevision(revision: Readonly<AgentRevisionRead>): Record<string, u
     sandboxDriverId: revision.sandboxDriverId,
     secretDriverId: revision.secretDriverId,
     secretBindings: revision.secretBindings,
-    plugins: revision.plugins,
+    plugins: revision.plugins && {
+      driver: revision.plugins.driver,
+      plugins: revision.plugins.plugins,
+    },
     pluginApprovers: revision.pluginApprovers,
     ...(revision.repositoryCredentials === undefined
       ? {}

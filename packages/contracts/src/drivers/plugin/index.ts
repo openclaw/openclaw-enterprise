@@ -39,11 +39,12 @@ export interface PluginDriver extends Driver {
       slotId: string,
       source: CredentialSource,
     ): { readonly endpoint: string } | undefined;
+    /** Returns the saved display names needed to select among accounts in this revision. */
     validate(
       selections: PluginDesiredState,
       sources: readonly CredentialSource[],
       modelSourceId?: string,
-    ): void;
+    ): Readonly<Record<string, string>> | void;
   };
   /** Checks policy support without installing plugins or performing authenticated discovery. */
   validatePolicies(selections: PluginDesiredState, defaultApprovers?: PluginApprovers): void;

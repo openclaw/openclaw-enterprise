@@ -29,7 +29,7 @@ export type ManagedToolDiscovery = {
   message?: string;
 };
 export type CatalogEntry = PluginCatalogEntry & {
-  managedTools?: ManagedToolDiscovery | undefined;
+  managedTools?: readonly ManagedToolDiscovery[] | undefined;
   toolStatus?: "loading" | "loaded" | undefined;
   toolError?: string | undefined;
 };
@@ -114,6 +114,13 @@ const validApprovers = (value: unknown): value is PluginApprovers =>
   value.every(
     (entry) => isObject(entry) && typeof entry.channel === "string" && typeof entry.id === "string",
   );
+function selectedSourceIds(value: unknown): string[] {
+  if (typeof value === "string") {
+    return [value];
+  }
+  return Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : [];
+}
+
 function validToolPolicy(value: unknown, allowApprovers = false): value is PluginToolPolicy {
   return (
     isObject(value) &&
@@ -444,21 +451,25 @@ export function createPluginFields({
   function managedToolPicker(
     entry: CatalogEntry,
     slot: AgentPluginCredentialSlot,
-    sourceId: string,
+    sourceIds: string[],
     selected: EditableSelection,
   ) {
-    const connection = { slot: slot.id, sourceId };
-    const result =
-      entry.managedTools?.connection.slot === slot.id &&
-      entry.managedTools.connection.sourceId === sourceId
-        ? entry.managedTools
-        : undefined;
-    const load = button("Load tools", () => onLoadTools?.(entry.id, connection), {
-      "aria-label": `Load tools for ${entry.name}`,
-    });
+    const results = (entry.managedTools ?? []).filter(
+      ({ connection }) => connection.slot === slot.id && sourceIds.includes(connection.sourceId),
+    );
+    const loading = results.some(({ status }) => status === "loading");
+    const load = button(
+      "Load tools",
+      () => {
+        for (const sourceId of sourceIds) {
+          onLoadTools?.(entry.id, { slot: slot.id, sourceId });
+        }
+      },
+      { "aria-label": `Load tools for ${entry.name}` },
+    );
     load.dataset.discovery = "true";
     load.dataset.policyUnsupported = String(
-      !catalog?.canLoad || catalog.status === "loading" || result?.status === "loading",
+      !catalog?.canLoad || catalog.status === "loading" || loading,
     );
     const picker = element(
       "fieldset",
@@ -467,54 +478,94 @@ export function createPluginFields({
       element(
         "p",
         { className: "hint" },
-        "Tools are loaded from the server using this account. Select which tools this Agent can use on its next deployment.",
+        sourceIds.length > 1
+          ? "Load tools from the selected accounts. Choose each tool once for this Agent."
+          : "Load tools from this account and select which ones the Agent can use.",
       ),
       load,
     );
-    if (result?.status === "loading") {
+    if (loading) {
       picker.append(element("p", { className: "hint", role: "status" }, "Loading tools…"));
-    } else if (result?.status === "error") {
+    }
+    const sourceNames = new Map(slot.sources.map(({ id, name }) => [id, name]));
+    const available = new Map<string, string[]>();
+    const choices = new Map<string, string>();
+    for (const result of results) {
+      const account = sourceNames.get(result.connection.sourceId) ?? result.connection.sourceId;
+      if (result.status === "error") {
+        picker.append(
+          element(
+            "p",
+            { className: "status", "data-tone": "danger", role: "status" },
+            `${account}: ${result.message ?? "Tools could not be loaded."}`,
+          ),
+        );
+      }
+      for (const tool of result.tools ?? []) {
+        choices.set(tool.id, tool.name);
+        const accounts = available.get(tool.id) ?? [];
+        accounts.push(account);
+        available.set(tool.id, accounts);
+      }
+    }
+    const complete =
+      results.filter(({ status }) => status === "loaded").length === sourceIds.length;
+    if (complete && !choices.size) {
+      picker.append(
+        element("p", { className: "hint" }, "The selected accounts returned no tools."),
+      );
+    }
+    const saved = selected.driverPolicy?.toolNames;
+    const allowed = new Set<string>(Array.isArray(saved) ? saved : []);
+    for (const id of allowed) {
+      if (!choices.has(id)) {
+        choices.set(id, id);
+      }
+    }
+    for (const [id, name] of choices) {
+      const checkbox = element("input", {
+        type: "checkbox",
+        checked: allowed.has(id),
+        "aria-label": name,
+      });
+      checkbox.addEventListener("change", () =>
+        updateSelection(entry.id, (selection) => {
+          const policy = selection.driverPolicy;
+          const credentials = policy?.credentials;
+          if (
+            policy?.releaseSha256 !== slot.releaseSha256 ||
+            !isObject(credentials) ||
+            !selectedSourceIds(credentials[slot.id]).length
+          ) {
+            return;
+          }
+          const names = new Set(Array.isArray(policy.toolNames) ? policy.toolNames : []);
+          if (checkbox.checked) {
+            names.add(id);
+          } else {
+            names.delete(id);
+          }
+          selection.driverPolicy = { ...policy, toolNames: [...names] };
+        }),
+      );
+      const accounts = available.get(id);
+      let availability: string | undefined;
+      if (accounts && sourceIds.length > 1) {
+        availability = accounts.join(", ");
+      } else if (!accounts && results.length && !loading) {
+        availability = complete
+          ? "No selected account lists this tool"
+          : "Availability unconfirmed";
+      }
       picker.append(
         element(
-          "p",
-          { className: "status", "data-tone": "danger", role: "status" },
-          result.message ?? "Tools could not be loaded.",
+          "label",
+          { className: "plugin-toggle" },
+          checkbox,
+          name,
+          availability ? element("span", { className: "hint" }, availability) : null,
         ),
       );
-    } else if (result?.status === "loaded") {
-      const tools = result.tools ?? [];
-      if (!tools.length) {
-        picker.append(element("p", { className: "hint" }, "This account returned no tools."));
-      }
-      for (const tool of tools) {
-        const toolNames = selected.driverPolicy?.toolNames;
-        const checkbox = element("input", {
-          type: "checkbox",
-          checked: Array.isArray(toolNames) && toolNames.includes(tool.id),
-          "aria-label": tool.name,
-        });
-        checkbox.addEventListener("change", () =>
-          updateSelection(entry.id, (selection) => {
-            const policy = selection.driverPolicy;
-            const credentials = policy?.credentials;
-            if (
-              policy?.releaseSha256 !== slot.releaseSha256 ||
-              !isObject(credentials) ||
-              credentials[slot.id] !== sourceId
-            ) {
-              return;
-            }
-            const allowed = new Set(Array.isArray(policy.toolNames) ? policy.toolNames : []);
-            if (checkbox.checked) {
-              allowed.add(tool.id);
-            } else {
-              allowed.delete(tool.id);
-            }
-            selection.driverPolicy = { ...policy, toolNames: [...allowed] };
-          }),
-        );
-        picker.append(element("label", { className: "plugin-toggle" }, checkbox, tool.name));
-      }
     }
     return picker;
   }
@@ -973,34 +1024,83 @@ export function createPluginFields({
         for (const slot of credentialSlots) {
           const bindings = selected.driverPolicy?.credentials;
           const current = isObject(bindings) ? bindings[slot.id] : undefined;
+          const ids = selectedSourceIds(current);
           const stale =
-            typeof current === "string" &&
-            selected.driverPolicy?.releaseSha256 !== slot.releaseSha256;
-          const options: Choice[] = [
-            ["", "Install without an account"],
-            ...slot.sources.map(({ id, name }) => [id, name] as const),
-          ];
-          if (stale) {
-            options.push(["stale", "Release changed — select an account again", true]);
+            ids.length > 0 && selected.driverPolicy?.releaseSha256 !== slot.releaseSha256;
+          const setAccounts = (next: string[]) =>
+            updateSelection(entry.id, (selection) => {
+              const policy =
+                selection.driverPolicy?.releaseSha256 === slot.releaseSha256
+                  ? selection.driverPolicy
+                  : undefined;
+              const credentials = isObject(policy?.credentials) ? { ...policy.credentials } : {};
+              if (next.length) {
+                credentials[slot.id] = slot.repeatable ? next : next[0];
+              } else {
+                delete credentials[slot.id];
+              }
+              if (!Object.keys(credentials).length) {
+                delete selection.driverPolicy;
+                return;
+              }
+              selection.driverPolicy = {
+                ...(slot.repeatable && policy),
+                releaseSha256: slot.releaseSha256,
+                credentials,
+              };
+            });
+          if (slot.repeatable) {
+            const accounts = element(
+              "fieldset",
+              { className: "plugin-tool" },
+              element("legend", {}, slot.label),
+            );
+            if (stale) {
+              accounts.append(
+                element(
+                  "p",
+                  { className: "hint" },
+                  "The release changed. Select the accounts for this version again.",
+                ),
+                button("Clear accounts", () => setAccounts([])),
+              );
+            }
+            const sources = new Map(slot.sources.map(({ id, name }) => [id, name]));
+            const checkedIds = stale ? [] : ids;
+            for (const id of checkedIds) {
+              if (!sources.has(id)) {
+                sources.set(id, `${id} (unavailable)`);
+              }
+            }
+            for (const [id, name] of sources) {
+              const checkbox = element("input", {
+                type: "checkbox",
+                checked: checkedIds.includes(id),
+              });
+              checkbox.addEventListener("change", () =>
+                setAccounts(
+                  checkbox.checked
+                    ? [...checkedIds, id]
+                    : checkedIds.filter((selectedId) => selectedId !== id),
+                ),
+              );
+              accounts.append(element("label", { className: "plugin-toggle" }, checkbox, name));
+            }
+            details.append(accounts);
+          } else {
+            const options: Choice[] = [
+              ["", "Install without an account"],
+              ...slot.sources.map(({ id, name }) => [id, name] as const),
+            ];
+            if (stale) {
+              options.push(["stale", "Release changed — select an account again", true]);
+            }
+            details.append(
+              select(slot.label, stale ? "stale" : (ids[0] ?? ""), options, (sourceId) =>
+                setAccounts(sourceId ? [sourceId] : []),
+              ),
+            );
           }
-          details.append(
-            select(
-              slot.label,
-              stale ? "stale" : typeof current === "string" ? current : "",
-              options,
-              (sourceId) =>
-                updateSelection(entry.id, (selection) => {
-                  if (sourceId) {
-                    selection.driverPolicy = {
-                      releaseSha256: slot.releaseSha256,
-                      credentials: { [slot.id]: sourceId },
-                    };
-                  } else {
-                    delete selection.driverPolicy;
-                  }
-                }),
-            ),
-          );
           if (!slot.sources.length) {
             details.append(
               element(
@@ -1010,16 +1110,12 @@ export function createPluginFields({
               ),
             );
           }
-          if (slot.toolDiscovery && !current && slot.sources.length > 0) {
+          if (slot.toolDiscovery && !ids.length && slot.sources.length > 0) {
             details.append(element("p", { className: "hint" }, "Select an account to load tools."));
           }
-          if (
-            slot.toolDiscovery &&
-            !stale &&
-            typeof current === "string" &&
-            slot.sources.some(({ id }) => id === current)
-          ) {
-            details.append(managedToolPicker(entry, slot, current, selected));
+          const readyIds = ids.filter((id) => slot.sources.some((source) => source.id === id));
+          if (slot.toolDiscovery && !stale && readyIds.length) {
+            details.append(managedToolPicker(entry, slot, readyIds, selected));
           }
         }
       }

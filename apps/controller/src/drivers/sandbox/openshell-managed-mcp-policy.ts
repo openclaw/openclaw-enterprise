@@ -5,6 +5,7 @@ import { openShellProviderName } from "../../backends/openshell.ts";
 import {
   type ManagedMcpInstall,
   managedMcpCredentialBinding,
+  managedMcpCredentialEnvironment,
   managedMcpInstalls,
 } from "../plugin/managed-catalog.ts";
 import { openShellProfileEndpoint } from "./openshell-gateway-client.ts";
@@ -60,33 +61,40 @@ function openShellManagedMcpPolicy(
 ) {
   const binding = managedMcpCredentialBinding(revision.plugins?.plugins, install);
   const { host, port, path } = install.endpoint;
+  const selected = new Set(binding?.sourceIds);
   const attached = requirements.credentialAttachments.filter(
     ({ sourceId, requestScope }) =>
-      sourceId === binding?.sourceId || (requestScope?.host === host && requestScope.port === port),
+      selected.has(sourceId) || (requestScope?.host === host && requestScope.port === port),
   );
-  const selected = attached[0];
-  // Compute drops withdrawn sources from the dispatch even when the immutable revision names one.
-  if (
-    !selected &&
-    (!binding || revision.credentialSources?.some(({ sourceId }) => sourceId === binding.sourceId))
-  ) {
+  // Compute omits withdrawn providers while the immutable revision retains their IDs.
+  for (const id of selected) {
+    if (
+      !attached.some(({ sourceId }) => sourceId === id) &&
+      !revision.credentialSources?.some(({ sourceId }) => sourceId === id)
+    ) {
+      unsupported("The selected managed MCP credential is missing from the revision.");
+    }
+  }
+  if (!attached.length) {
     return undefined;
   }
   if (
-    attached.length !== 1 ||
-    !selected ||
-    selected.ref !== openShellProviderName(selected.sourceId) ||
-    selected.requestScope?.host !== host ||
-    selected.requestScope.port !== port ||
-    selected.requestScope.path !== path ||
+    attached.some(
+      ({ sourceId, ref, requestScope }) =>
+        ref !== openShellProviderName(sourceId) ||
+        requestScope?.host !== host ||
+        requestScope.port !== port ||
+        requestScope.path !== path ||
+        (binding && !selected.has(sourceId)),
+    ) ||
+    (!binding && !install.repeatable && attached.length !== 1) ||
     requirements.proxyWiring ||
     revision.egressPlan ||
     installationProviders.length ||
     (binding &&
       (revision.plugins?.driver.implementation !== "occ/openclaw-plugin" ||
         revision.harness.id !== "openclaw" ||
-        revision.harness.mode !== "dedicated" ||
-        binding.sourceId !== selected.sourceId))
+        revision.harness.mode !== "dedicated"))
   ) {
     unsupported(
       "A managed MCP credential requires its reviewed OpenShell provider and an isolated endpoint.",
@@ -94,8 +102,11 @@ function openShellManagedMcpPolicy(
   }
   return {
     install,
-    provider: {
-      name: "_provider_" + selected.ref.replaceAll("-", "_"),
+    credentialEnvironments: attached.map(({ sourceId }) =>
+      managedMcpCredentialEnvironment(install, sourceId),
+    ),
+    providers: attached.map(({ ref }) => ({
+      name: "_provider_" + ref.replaceAll("-", "_"),
       binaries: [{ path: install.binaryPath }],
       endpoints: [
         {
@@ -103,7 +114,7 @@ function openShellManagedMcpPolicy(
           provider_credentialed: true,
         },
       ],
-    },
+    })),
     network: managedMcpNetwork(install, binding?.toolNames ?? []),
   };
 }
@@ -199,7 +210,7 @@ export function verifyManagedMcpPolicy(
   const policies = asRecord(asRecord(config.policy)?.network_policies);
   const network = expected.network;
   const exact = [
-    expected.provider,
+    ...expected.providers,
     {
       ...network,
       endpoints: network.endpoints.map((endpoint) => ({

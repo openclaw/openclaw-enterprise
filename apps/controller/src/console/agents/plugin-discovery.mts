@@ -148,8 +148,11 @@ export function createPluginDiscovery({
       if (entry.toolStatus === "loading") {
         entries.set(id, { ...entry, toolStatus: undefined });
       }
-      if (entry.managedTools?.status === "loading") {
-        entries.set(id, { ...entries.get(id)!, managedTools: undefined });
+      if (entry.managedTools?.some(({ status }) => status === "loading")) {
+        entries.set(id, {
+          ...entries.get(id)!,
+          managedTools: entry.managedTools.filter(({ status }) => status !== "loading"),
+        });
       }
     }
   }
@@ -296,7 +299,12 @@ export function createPluginDiscovery({
       status: "loading",
     };
     if (pending) {
-      entries.set(id, { ...entry, managedTools: pending });
+      const others = (entry.managedTools ?? []).filter(
+        ({ connection }) =>
+          connection.slot !== pending.connection.slot ||
+          connection.sourceId !== pending.connection.sourceId,
+      );
+      entries.set(id, { ...entry, managedTools: [...others, pending] });
     } else {
       if (!entry.remoteId || entry.toolStatus === "loading") {
         return;
@@ -308,7 +316,7 @@ export function createPluginDiscovery({
       const current = entries.get(id);
       return context.isCurrent() &&
         active === generation &&
-        (pending ? current?.managedTools === pending : current?.remoteId === entry.remoteId)
+        (pending ? current?.managedTools?.includes(pending) : current?.remoteId === entry.remoteId)
         ? current
         : undefined;
     };
@@ -331,7 +339,11 @@ export function createPluginDiscovery({
         pending
           ? {
               ...current,
-              managedTools: { ...pending, status: "loaded", tools: detail.tools ?? [] },
+              managedTools: current.managedTools?.map((result) =>
+                result === pending
+                  ? { ...pending, status: "loaded" as const, tools: detail.tools ?? [] }
+                  : result,
+              ),
             }
           : { ...current, ...detail, toolStatus: "loaded", toolError: undefined },
       );
@@ -357,7 +369,12 @@ export function createPluginDiscovery({
       entries.set(
         id,
         pending
-          ? { ...current, managedTools: { ...pending, status: "error", message } }
+          ? {
+              ...current,
+              managedTools: current.managedTools?.map((result) =>
+                result === pending ? { ...pending, status: "error" as const, message } : result,
+              ),
+            }
           : { ...current, toolStatus: undefined, toolError: message },
       );
     } finally {

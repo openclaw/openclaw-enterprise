@@ -26156,6 +26156,7 @@
                               "label": { "type": "string" },
                               "pluginId": { "type": "string" },
                               "releaseSha256": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                              "repeatable": { "const": true, "type": "boolean" },
                               "sources": {
                                 "items": {
                                   "additionalProperties": false,

@@ -315,14 +315,14 @@ test("managed MCP bindings preserve both servers' credentials and require unambi
     [second.id]: select(second, "cs_second", "write"),
   };
   assert.deepEqual(
-    managedMcpCredentialBindings(selections, installs).map(({ install, sourceId, toolNames }) => [
+    managedMcpCredentialBindings(selections, installs).map(({ install, sourceIds, toolNames }) => [
       install.id,
-      sourceId,
+      sourceIds,
       toolNames,
     ]),
     [
-      [first.id, "cs_first", ["team_read"]],
-      [second.id, "cs_second", ["write"]],
+      [first.id, ["cs_first"], ["team_read"]],
+      [second.id, ["cs_second"], ["write"]],
     ],
   );
   assert.throws(

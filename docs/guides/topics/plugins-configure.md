@@ -57,10 +57,9 @@ and [runtime proof limits](../../reference/drivers/plugin-bundled.md#native-mapp
 ## Configure a hosted MCP plugin
 
 A hosted MCP package pins its server endpoint and declares a credential slot.
-OCE discovers available tools using the selected account. On a dedicated OpenClaw
-Agent, select an attached credential for that slot and the upstream tool names
-the Agent may call. The worker advertises those tools; the Sandbox enforces the
-selection for both worker and script calls.
+On a dedicated OpenClaw Agent, choose the accounts for the slot and the upstream
+tools the Agent may call. The worker advertises each tool once. The Sandbox
+enforces the shared selection for worker and script calls.
 [Managed MCP plugins](../../reference/agent-plugins.md#current-support)
 
 The bundled credentialed path uses the OpenShell Sandbox and Credential Gateway
@@ -77,17 +76,30 @@ set Helm `api.pluginDiscoveryCidrs` to the endpoint's IPv4 `/32` hosts and refre
 them when DNS changes. Other ports need the Installation's managed egress policy.
 This setting is separate from model discovery. Worker calls use the Sandbox policy.
 
-Open **Plugins**, add the plugin, choose the account, and choose **Load tools**.
-Choose the tools to enable, then save and deploy. Loading tools again refreshes
-the inventory. Additional tools require selection and deployment before the Agent
+Open **Plugins** and add the plugin. For a repeatable slot such as Slack, select
+each account the Agent should use. Give the saved accounts distinct names that
+the model can match to a request, such as “Engineering” and “Customer support”.
+Choose **Load tools** to discover tools with each selected account. The list
+combines the results and identifies accounts that offer a tool. If one account
+fails, retry discovery for a complete list. A refresh preserves your selections.
+Choose the tools to enable, then save and deploy. Each account can use the
+selected tools its server offers. Additional tools require selection and deployment before the Agent
 can use them. An empty selection leaves the worker server disabled.
+When one account is selected, the worker uses it automatically. With several,
+the Agent can read the `oce-plugin-accounts` skill to match a saved name to
+the user's request. It asks when the choice is ambiguous. The tool takes
+`{"account":"<source ID>","arguments":{...}}`. The worker sends the inner
+arguments to the selected account and reports any failure on that account.
+
 Removing the plugin keeps its independently attached
 credential; [withdraw the source](../../reference/credential-sources/withdrawal.md)
 to revoke a running version's credential access.
 
 For example, Slack uses `host: mcp.slack.com`, `port: "443"`, `path: /mcp` and
 `env_var: SLACK_MCP_TOKEN`. Select `slack_search_public` if the account advertises
-it. Inspect its worker server and tool filter:
+it. If OpenShell reports that a source uses the old shared placeholder, register
+a replacement source from the same Secret, select it and deploy the Agent.
+Inspect the worker server and tool filter:
 
 ```sh
 OPENCLAW_CONFIG_PATH="$OPENCLAW_NODE_STATE_DIR/openclaw.json" openclaw config get nodeHost.mcp.servers.oce_mcp_slack --json

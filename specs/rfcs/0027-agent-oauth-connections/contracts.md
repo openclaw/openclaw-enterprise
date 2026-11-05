@@ -155,7 +155,8 @@ source IDs in an array. An existing single source ID string still selects one
 account. Slots that omit the repeatable flag accept at most one account.
 
 The first release supports managed Model Context Protocol (MCP) bearer slots.
-Console offers ready sources attached to the Agent. Admission checks every
+Console combines tool names discovered with each selected account. It records
+tool enablement once per plugin and reports incomplete discovery. Admission checks every
 source against the slot and the caller's authority. For each bound source,
 the platform derives a distinct placeholder name from the declared variable
 and a stable source-specific suffix. Reordering accounts keeps their identities.

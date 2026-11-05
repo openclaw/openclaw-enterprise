@@ -72,7 +72,10 @@ import {
   withYieldingGatewayDrain,
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { normalizeSecretBindings } from "../../packages/contracts/src/index.ts";
-import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import {
+  managedMcpCredentialEnvironment,
+  managedMcpInstalls,
+} from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import { managedGatewayConfiguration } from "../../apps/controller/src/drivers/compute/gateway-tool-policy.ts";
 import { assertCleanupFailure } from "../helpers/compute-cleanup-failure.mjs";
@@ -1916,8 +1919,21 @@ async function verifyManagedRelease({
       });
     }
   }
+  const accountNames = { cs_test_account: "Work", cs_second_account: "Personal" };
+  if (kind === "mcp" && managedMcpInstalls.find((install) => install.id === id)?.repeatable) {
+    selectionCases.push({
+      enabled: true,
+      driverPolicy: {
+        releaseSha256,
+        credentials: { [slotId]: Object.keys(accountNames) },
+        toolNames,
+      },
+    });
+  }
   for (const selection of selectionCases) {
     const { enabled, driverPolicy } = selection;
+    const selected = driverPolicy?.credentials[slotId];
+    const selectedAccounts = Array.isArray(selected) ? selected : selected ? [selected] : [];
     const selections = {
       ...(kind === "mcp" && { [managedGoogleInstall.id]: { enabled: true } }),
       [id]: selection,
@@ -1956,6 +1972,7 @@ async function verifyManagedRelease({
         plugins: {
           driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
           plugins: selections,
+          ...(selectedAccounts.length > 1 && { accountNames }),
         },
       },
     });
@@ -1981,7 +1998,17 @@ async function verifyManagedRelease({
         packageName,
         slotId,
         ...(enabled && { releaseSha256 }),
-        ...(driverPolicy?.toolNames?.length && { toolNames: driverPolicy.toolNames }),
+        ...(driverPolicy && {
+          accounts: selectedAccounts.map((sourceId) => ({
+            id: sourceId,
+            env: managedMcpCredentialEnvironment(
+              managedMcpInstalls.find((install) => install.id === id),
+              sourceId,
+            ),
+            ...(selectedAccounts.length > 1 && { name: accountNames[sourceId] }),
+          })),
+          toolNames: driverPolicy.toolNames ?? [],
+        }),
       },
     ];
     const workerSettings = variable(worker.environment, "OPENCLAW_MANAGED_PLUGIN_JSON");
@@ -10957,8 +10984,47 @@ test("non-model credential sources resolved at dispatch must match the revision'
     );
   }
 
-  // Plugin selection references an Agent credential. Compute always passes every
-  // active source to its owner, including when a selected source has been withdrawn.
+  // Selecting one of two attached MCP accounts grants the shared tool policy to that account alone.
+  const slack = managedMcpInstalls.find((install) => install.repeatable);
+  const mcpSources = [first, second].map((source) => ({
+    ...source,
+    config: {
+      protocol: "mcp",
+      host: slack.endpoint.host,
+      path: slack.endpoint.path,
+      env_var: slack.credentialEnvironment,
+    },
+    secrets: { token: { namespaceId: tenant.id, id: "secret" } },
+  }));
+  for (const [selected, expected] of [
+    [first.id, [mcpSources[0]]],
+    [undefined, []],
+  ]) {
+    const plugins = {
+      driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+      plugins: {
+        [slack.id]: {
+          enabled: true,
+          ...(selected && {
+            driverPolicy: {
+              releaseSha256: slack.releaseSha256,
+              credentials: { [slack.slotId]: selected },
+              toolNames: ["search"],
+            },
+          }),
+        },
+      },
+    };
+    assert.deepEqual(
+      driver.credentialSourcesForRevision(
+        { ...revision, plugins },
+        { credentialSources: mcpSources },
+      ),
+      expected,
+    );
+  }
+
+  // Google sources remain independently attached when its selected source is withdrawn.
   const accounts = [first, second].map((tool) => ({
     ...tool,
     type: "oauth2-refresh-token",

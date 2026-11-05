@@ -196,6 +196,95 @@ test("A dedicated OpenClaw Agent can enable and disable Google Workspace without
   catalog.release();
 });
 
+test("Slack tool selection combines account inventories and survives a partial refresh", async (t) => {
+  const { fixture, namespace: namespaceValue }: { fixture: Fixture; namespace: unknown } =
+    await createReadyConsoleNamespace(t, "Slack tool discovery");
+  const namespace = entity(namespaceValue);
+  for (const driver of [
+    new OCCPluginDriver(),
+    createTestKubernetesComputeDriver("compute-slack-tools"),
+  ]) {
+    controller(fixture).registerDriver(driver);
+    controller(fixture).selectDriver(driver.capability, driver.id);
+  }
+  const agent = agentEntity(
+    await fixture.createAgent(namespace.id, "Slack Agent", nativeValues("package"), {
+      executionMode: "dedicated",
+      harnessAuth: null,
+    }),
+  );
+  const { page } = await newPage(t, fixture, { browser });
+  const design = "cs_00000000-0000-4000-8000-000000000001";
+  const support = "cs_00000000-0000-4000-8000-000000000002";
+  // Supply two eligible accounts and their provider inventories at the Console HTTP boundary.
+  // Agent admission and authorization of these requests are covered by the API integration.
+  await page.route("**/plugins/capabilities", async (route) => {
+    const upstream = await route.fetch();
+    const json = record(await upstream.json());
+    const slots = record(json.data).credentialSlots;
+    assert.ok(Array.isArray(slots));
+    const slack = slots.map(record).find((slot) => slot.pluginId === "occ-plugin:slack@1.0.0");
+    assert.ok(slack);
+    slack.sources = [
+      { id: design, name: "Design" },
+      { id: support, name: "Support" },
+    ];
+    await route.fulfill({ response: upstream, json });
+  });
+  let supportNames: string[] | undefined = ["search", "read_thread"];
+  await page.route("**/plugins/details", async (route) => {
+    const body = record(route.request().postDataJSON());
+    const source = record(body.managedConnection).sourceId;
+    assert.ok(source === design || source === support);
+    const names = source === design ? ["search", "list_files"] : supportNames;
+    if (!names) {
+      await route.fulfill({
+        status: 403,
+        json: {
+          error: { code: "FORBIDDEN", message: "Account access denied." },
+          meta: { requestId: "req_fixture" },
+        },
+      });
+      return;
+    }
+    await route.fulfill({
+      json: {
+        data: {
+          id: body.pluginId,
+          name: "Slack",
+          tools: names.map((name) => ({ id: name, name, ownerId: body.pluginId })),
+        },
+        meta: { requestId: "req_fixture" },
+      },
+    });
+  });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+  await page.getByRole("button", { name: "Configure plugins" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: "Slack", exact: true }).click();
+  await dialog.getByRole("button", { name: "Add Slack" }).click();
+  await dialog.getByRole("checkbox", { name: "Design", exact: true }).check();
+  await dialog.getByRole("checkbox", { name: "Support", exact: true }).check();
+  const load = dialog.getByRole("button", { name: "Load tools for Slack" });
+  await load.click();
+  const tool = (name: string) => dialog.getByRole("checkbox", { name, exact: true });
+  await tool("read_thread").check();
+  assert.equal(await tool("search").count(), 1);
+  assert.match(await tool("search").locator("..").innerText(), /Design, Support/);
+  assert.match(await tool("list_files").locator("..").innerText(), /Design/);
+  assert.match(await tool("read_thread").locator("..").innerText(), /Support/);
+  supportNames = undefined;
+  await load.click();
+  await dialog.getByText(/Support: Tool discovery requires/).waitFor();
+  assert.equal(await tool("list_files").isVisible(), true);
+  assert.equal(await tool("read_thread").isChecked(), true);
+  assert.match(await tool("read_thread").locator("..").innerText(), /Availability unconfirmed/);
+  supportNames = ["search"];
+  await load.click();
+  await dialog.getByText("No selected account lists this tool").waitFor();
+  assert.equal(await tool("read_thread").isChecked(), true);
+});
+
 test("Plugin details refresh preserves the user's current keyboard focus", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();

@@ -30,6 +30,7 @@ import { managedMcpProviderEndpoint } from "../sandbox/openshell-managed-mcp-pol
 import {
   managedCredentialBinding,
   managedMcpCredentialBindings,
+  managedMcpCredentialEnvironment,
   managedMcpInstallForSourceConfig,
   managedMcpSlotAcceptsSource,
 } from "../plugin/managed-catalog.ts";
@@ -368,6 +369,40 @@ function checkStoredHost(config: Readonly<Record<string, string>>): void {
   }
 }
 
+/** A source stores the release's slot name in OCC. Each provider owns its concrete key. */
+function providerSourceConfig(sourceId: string, config: Readonly<Record<string, string>>) {
+  const install = managedMcpInstallForSourceConfig(config);
+  return install
+    ? { ...config, env_var: managedMcpCredentialEnvironment(install, sourceId) }
+    : config;
+}
+
+const MCP_PROVIDER_KEY_UNAVAILABLE =
+  "This MCP provider lacks its source-specific placeholder. Register a replacement credential source with the same Secret and select it for the plugin.";
+
+function managedMcpProviderKeyMatches(
+  provider: OpenShellProviderResponse,
+  sourceId: string,
+  config: Readonly<Record<string, string>>,
+): boolean {
+  const install = managedMcpInstallForSourceConfig(config);
+  return (
+    !install ||
+    (provider.credentialKeys?.length === 1 &&
+      provider.credentialKeys[0] === managedMcpCredentialEnvironment(install, sourceId))
+  );
+}
+
+function requireManagedMcpProviderKey(
+  provider: OpenShellProviderResponse,
+  sourceId: string,
+  config: Readonly<Record<string, string>>,
+): void {
+  if (!managedMcpProviderKeyMatches(provider, sourceId, config)) {
+    throw new ScopeViolationError(MCP_PROVIDER_KEY_UNAVAILABLE);
+  }
+}
+
 /** A per-source profile that injects one bearer token at the protected endpoint. */
 function bearerProfile(
   sourceId: string,
@@ -383,7 +418,7 @@ function bearerProfile(
     credentials: [
       {
         ...credential,
-        envVars: [config.env_var ?? ""],
+        envVars: [providerSourceConfig(sourceId, config).env_var ?? ""],
         required: true,
         authStyle: "bearer",
         headerName: "authorization",
@@ -1039,13 +1074,16 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     }
     const workspace = openShellWorkspaceName(context.namespace);
     const client = this.client(context);
-    const credentials = providerCredentials(type, input);
+    const credentials = providerCredentials(type, context.source.id, input);
     const name = openShellProviderName(context.source.id);
     const existing = await client.getProvider(workspace, name, context.signal);
     if (existing !== undefined && !ownedBy(existing, context.source.id)) {
       throw new ScopeViolationError(
         "An OpenShell provider with this source's name is not owned by the source.",
       );
+    }
+    if (existing) {
+      requireManagedMcpProviderKey(existing, context.source.id, input.config);
     }
     // Reject known collisions before changing the profile. These are separate RPCs:
     // orphan profiles and provider replacement after this read remain outside this check.
@@ -1084,6 +1122,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
           "An OpenShell provider with this source's name is not owned by the source.",
         );
       }
+      requireManagedMcpProviderKey(existing, context.source.id, input.config);
     }
     return { state: input.type === CODEX_OAUTH_TYPE ? "pending" : "ready" };
   }
@@ -1115,6 +1154,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         "An OpenShell provider with this source's name is not owned by the source.",
       );
     }
+    requireManagedMcpProviderKey(existing, context.source.id, context.source.config);
     // The profile follows the current configuration, so a narrowed binary list applies here.
     // Narrow first: if the credential update then fails, the old token is only less reachable.
     await this.ensureProfile(
@@ -1129,7 +1169,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     await client.updateProviderCredentials(
       workspace,
       name,
-      providerCredentials(type, input),
+      providerCredentials(type, context.source.id, input),
       context.signal,
     );
     return { state: "ready" };
@@ -1169,6 +1209,9 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     if (!ownedBy(provider, context.source.id)) {
       return { state: "failed", reason: "The OpenShell provider is not owned by this source." };
     }
+    if (!managedMcpProviderKeyMatches(provider, context.source.id, context.source.config)) {
+      return { state: "failed", reason: MCP_PROVIDER_KEY_UNAVAILABLE };
+    }
     if (context.source.type === CODEX_OAUTH_TYPE && !provider.config[CODEX_ACCOUNT_CONFIG]) {
       return { state: "pending" };
     }
@@ -1205,11 +1248,14 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       context.revision.plugins?.plugins,
       managedGoogleInstall,
     );
-    for (const { install, sourceId } of managedMcpCredentialBindings(
-      context.revision.plugins?.plugins,
-    )) {
-      const source = context.sources.find(({ id }) => id === sourceId);
-      if (source && !managedMcpSlotAcceptsSource(install, source)) {
+    const mcpBindings = managedMcpCredentialBindings(context.revision.plugins?.plugins);
+    for (const { install, sourceIds } of mcpBindings) {
+      if (
+        context.sources.some(
+          (source) =>
+            sourceIds.includes(source.id) && !managedMcpSlotAcceptsSource(install, source),
+        )
+      ) {
         throw new ScopeViolationError(
           "The attached MCP account does not match the reviewed credential slot.",
         );
@@ -1222,15 +1268,25 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
           "The attached credential does not match a reviewed MCP slot.",
         );
       }
+      const bound = mcpBindings.find((binding) => binding.install === install);
+      if (bound && !bound.sourceIds.includes(source.id)) {
+        throw new ScopeViolationError(
+          "An unselected credential cannot share the bound managed MCP endpoint.",
+        );
+      }
       const conflict = context.sources.some((other) => {
+        const independent =
+          !bound && install.repeatable && managedMcpSlotAcceptsSource(install, other);
+        if (other.id === source.id || bound?.sourceIds.includes(other.id) || independent) {
+          return false;
+        }
         const host =
           other.type === "openai"
             ? new URL(modelProviderBaseUrl(this.modelProvider)).hostname
             : (other.config.host ?? "");
         return (
-          other.id !== source.id &&
-          (host.toLowerCase().replace(/\.$/, "") === install.endpoint.host ||
-            other.config.env_var === install.credentialEnvironment)
+          host.toLowerCase().replace(/\.$/, "") === install.endpoint.host ||
+          other.config.env_var === install.credentialEnvironment
         );
       });
       if (conflict) {
@@ -1289,7 +1345,9 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         }
       }
       // Two sources cannot place their placeholders in the same Sandbox variable.
-      for (const name of Object.values(type.credentials(source.config))) {
+      for (const name of Object.values(
+        type.credentials(providerSourceConfig(source.id, source.config)),
+      )) {
         if (environment.has(name)) {
           throw new CredentialSourceRevisionError(
             "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT",
@@ -1305,6 +1363,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
           "The OpenShell provider for a bound credential source is unavailable.",
         );
       }
+      requireManagedMcpProviderKey(provider, source.id, source.config);
       // Each deployment applies the current binary lists to the profiles it attaches. OpenShell
       // composes Sandbox policy from the stored profile, so attached Sandboxes narrow too.
       await this.ensureProfile(
@@ -1529,6 +1588,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
 
 function providerCredentials(
   type: OpenShellSourceType,
+  sourceId: string,
   input: CredentialSourceInput,
 ): Record<string, string> {
   // OpenShell mints a refresh type's token; its secrets are refresh material, not credentials.
@@ -1536,13 +1596,15 @@ function providerCredentials(
     return {};
   }
   return Object.fromEntries(
-    Object.entries(type.credentials(input.config)).map(([field, key]) => {
-      const value = input.secrets[field];
-      if (!isNonEmptyString(value)) {
-        throw new ScopeViolationError(`The credential source secret ${field} is required.`);
-      }
-      return [key, value];
-    }),
+    Object.entries(type.credentials(providerSourceConfig(sourceId, input.config))).map(
+      ([field, key]) => {
+        const value = input.secrets[field];
+        if (!isNonEmptyString(value)) {
+          throw new ScopeViolationError(`The credential source secret ${field} is required.`);
+        }
+        return [key, value];
+      },
+    ),
   );
 }
 

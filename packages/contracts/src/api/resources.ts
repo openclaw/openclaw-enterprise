@@ -258,6 +258,7 @@ export const AgentPluginPolicyCapabilitiesResponse = Type.Object(
                 releaseSha256: Type.String({ pattern: "^[a-f0-9]{64}$" }),
                 id: Type.String(),
                 label: Type.String(),
+                repeatable: Type.Optional(Type.Literal(true)),
                 toolDiscovery: Type.Optional(Type.Literal(true)),
                 sources: Type.Array(
                   Type.Object(

@@ -23,6 +23,7 @@ import {
 import {
   managedInstalls,
   managedMcpInstalls,
+  managedMcpCredentialEnvironment,
 } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
@@ -41,11 +42,15 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const slack = managedMcpInstalls.find(({ id }) => id === "occ-plugin:slack@1.0.0");
 
+function slackAccount(id, name) {
+  return { id, name, env: managedMcpCredentialEnvironment(slack, id) };
+}
+
 function managedPackages(...packages) {
   return "OPENCLAW_MANAGED_PLUGIN_JSON=" + JSON.stringify(packages);
 }
 
-async function startGatewayWithSlack(t, enabled, workspaceNodeId) {
+async function startGatewayWithSlack(t, enabled, workspaceNodeId, accounts = []) {
   const { id, releaseSha256 } = managedGoogleInstall;
   const configurationPath = await temporaryGatewayConfiguration(t, "openclaw");
   const manifest = {
@@ -74,6 +79,7 @@ async function startGatewayWithSlack(t, enabled, workspaceNodeId) {
           packageName: slack.packageName,
           slotId: slack.slotId,
           releaseSha256: slack.releaseSha256,
+          accounts,
         },
       ),
     ],
@@ -299,7 +305,9 @@ process.exit(r.status);`,
         slotId: "account",
         releaseSha256: managedGoogleInstall.releaseSha256,
       };
-      const settings = (digest, toolNames) =>
+      const work = slackAccount("cs_work", "Work");
+      const personal = slackAccount("cs_personal", "Personal");
+      const settings = (digest, toolNames, accounts = [work]) =>
         digest === undefined
           ? managedPackages(google)
           : managedPackages(google, {
@@ -308,6 +316,7 @@ process.exit(r.status);`,
               slotId,
               releaseSha256: digest,
               toolNames,
+              accounts,
             });
       const inspect = async (digest, mounts = [], toolNames) => {
         const result = await runManagedWorker(
@@ -330,13 +339,13 @@ require("node:child_process").execFileSync("gog", ["--version"]);
 console.log(require("node:fs").readFileSync(process.env.OPENCLAW_CONFIG_PATH, "utf8"));
 `;
       for (const marker of [
-        "openshell:resolve:env:v7_SLACK_MCP_TOKEN",
-        "openshell:resolve:env:s" + "a".repeat(64) + "_SLACK_MCP_TOKEN",
+        "openshell:resolve:env:v7_" + work.env,
+        "openshell:resolve:env:s" + "a".repeat(64) + "_" + work.env,
       ]) {
         const connected = await runManagedWorker(
           ["-e", probe],
           ["-v", volume + ":/tmp/node"],
-          [settings(releaseSha256, tools), "SLACK_MCP_TOKEN=" + marker],
+          [settings(releaseSha256, tools), work.env + "=" + marker],
         );
         assert.deepEqual(JSON.parse(connected.stdout).nodeHost.mcp.servers.oce_mcp_slack, {
           ...selected.mcp.servers.oce_mcp_slack,
@@ -345,6 +354,19 @@ console.log(require("node:fs").readFileSync(process.env.OPENCLAW_CONFIG_PATH, "u
           toolFilter: { include: ["slack_search_public"] },
         });
       }
+      // Only the personal marker remains after withdrawal. It still requires an explicit handle.
+      const personalMarker = "openshell:resolve:env:v8_" + personal.env;
+      const remaining = await runManagedWorker(
+        ["-e", probe],
+        ["-v", volume + ":/tmp/node"],
+        [settings(releaseSha256, tools, [work, personal]), personal.env + "=" + personalMarker],
+      );
+      assert.deepEqual(JSON.parse(remaining.stdout).nodeHost.mcp.servers.oce_mcp_slack, {
+        ...selected.mcp.servers.oce_mcp_slack,
+        enabled: true,
+        toolFilter: { include: tools },
+        accounts: { cs_personal: { headers: { Authorization: "Bearer " + personalMarker } } },
+      });
       const withdrawn = await inspect(releaseSha256, [], tools);
       assert.deepEqual(withdrawn.mcp.servers.oce_mcp_slack, selected.mcp.servers.oce_mcp_slack);
       const deselected = await inspect(undefined);
@@ -397,7 +419,8 @@ console.log(require("node:fs").readFileSync(process.env.OPENCLAW_CONFIG_PATH, "u
       await writeFile(join(directory, "mcp.json"), manifest);
       await writeFile(join(directory, "ai.openclaw.oce/release.json"), release);
       const marker = "openshell:resolve:env:v9_DOCUMENTS_ACCESS_TOKEN";
-      const slackMarker = "openshell:resolve:env:v19_SLACK_MCP_TOKEN";
+      const work = slackAccount("cs_work", "Work");
+      const slackMarker = "openshell:resolve:env:v19_" + work.env;
       const run = (toolNames) =>
         runManagedWorker(
           [
@@ -412,6 +435,7 @@ console.log(require("node:fs").readFileSync(process.env.OPENCLAW_CONFIG_PATH, "u
                 packageName: slack.packageName,
                 slotId: slack.slotId,
                 releaseSha256: slack.releaseSha256,
+                accounts: [work],
                 toolNames: ["slack_search_public"],
               },
               {
@@ -419,10 +443,11 @@ console.log(require("node:fs").readFileSync(process.env.OPENCLAW_CONFIG_PATH, "u
                 packageName: "oce-documents",
                 slotId: "workspace",
                 releaseSha256: digest(release),
+                accounts: [{ id: "cs_documents", env: "DOCUMENTS_ACCESS_TOKEN" }],
                 toolNames,
               },
             ),
-            "SLACK_MCP_TOKEN=" + slackMarker,
+            work.env + "=" + slackMarker,
             "DOCUMENTS_ACCESS_TOKEN=" + marker,
           ],
         );
@@ -460,7 +485,11 @@ console.log(require("node:fs").readFileSync(process.env.OPENCLAW_CONFIG_PATH, "u
     "the native Gateway discovers the Google instructions with Slack selected alongside it",
     imageTestOptions,
     async (t) => {
-      const { containerName } = await startGatewayWithSlack(t, true);
+      const accounts = [
+        slackAccount("cs_work", "Office workspace"),
+        slackAccount("cs_home", "Home workspace"),
+      ];
+      const { containerName } = await startGatewayWithSlack(t, true, undefined, accounts);
       const { stdout } = await runDocker([
         "exec",
         "-e",
@@ -477,6 +506,28 @@ console.log(require("node:fs").readFileSync(process.env.OPENCLAW_CONFIG_PATH, "u
         JSON.parse(stdout).filePath,
         "/usr/local/lib/oce/plugin-catalog/oce-google-workspace/skills/oce-google/SKILL.md",
       );
+      const skill = await runDocker([
+        "exec",
+        "-e",
+        "OPENCLAW_CONFIG_PATH=/home/node/.openclaw/openclaw.json",
+        containerName,
+        "node",
+        "/app/openclaw.mjs",
+        "skills",
+        "info",
+        "oce-plugin-accounts",
+        "--json",
+      ]);
+      const body = await runDocker([
+        "exec",
+        containerName,
+        "cat",
+        JSON.parse(skill.stdout).filePath,
+      ]);
+      for (const { id, name, env } of accounts) {
+        assert.ok(body.stdout.includes(id) && body.stdout.includes(name));
+        assert.ok(!body.stdout.includes(env));
+      }
     },
   );
 

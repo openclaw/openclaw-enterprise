@@ -746,6 +746,7 @@ export interface AgentPluginCredentialSlot {
   readonly releaseSha256: string;
   readonly id: string;
   readonly label: string;
+  readonly repeatable?: true;
   readonly toolDiscovery?: true;
   readonly sources: readonly { readonly id: string; readonly name: string }[];
 }
@@ -779,6 +780,7 @@ export interface PluginCatalogPage {
 }
 
 export interface PluginRevisionState {
+  readonly accountNames?: Readonly<Record<string, string>>;
   readonly driver: PluginDriverIdentity;
   readonly plugins: PluginDesiredState;
 }
@@ -837,9 +839,12 @@ export function validPluginRevisionState(value: unknown): value is PluginRevisio
     return true;
   }
   const record = asRecord(value);
+  const accountNames = asRecord(record?.accountNames);
   if (
     record === undefined ||
-    Object.keys(record).some((key) => key !== "driver" && key !== "plugins")
+    Object.keys(record).some((key) => !["driver", "plugins", "accountNames"].includes(key)) ||
+    (record.accountNames !== undefined &&
+      (!accountNames || !Object.values(accountNames).every(isNonEmptyString)))
   ) {
     return false;
   }

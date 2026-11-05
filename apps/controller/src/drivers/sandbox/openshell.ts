@@ -38,6 +38,8 @@ import {
 import {
   managedCredentialBinding,
   managedMcpCredentialBinding,
+  managedMcpCredentialBindings,
+  managedMcpCredentialEnvironment,
   managedMcpInstalls,
   managedInstalls,
 } from "../plugin/managed-catalog.ts";
@@ -3439,6 +3441,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
                 Object.values(credentials).map((slot) => slot.delivery.env),
               )
             : []),
+          ...mcpPolicies.flatMap(({ credentialEnvironments }) => credentialEnvironments),
+          ...managedMcpCredentialBindings(context.revision.plugins?.plugins).flatMap(
+            ({ install, sourceIds }) =>
+              sourceIds.map((id) => managedMcpCredentialEnvironment(install, id)),
+          ),
           // Only the attached provider supplies its identity-bound credential alias.
           // A static placeholder would survive withdrawal and shadow its absence.
           ...(context.requirements.loginMode === "chatgptAuthTokens" ? ["CODEX_ACCESS_TOKEN"] : []),
@@ -4601,6 +4608,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       }
     }
     const baselineRules = asRecord(baseline.network_policies);
+    const attachedProviders = sandbox.spec?.providers;
     for (const install of managedMcpInstalls) {
       const binding = managedMcpCredentialBinding(context.revision.plugins?.plugins, install);
       const expected = managedMcpNetwork(install, binding?.toolNames ?? []);
@@ -4608,8 +4616,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         assertNoManagedMcpRouteOverlap(candidate.network_policies, install, [expected.name]);
       } else if (
         binding &&
-        Array.isArray(sandbox.spec?.providers) &&
-        sandbox.spec.providers.includes(openShellProviderName(binding.sourceId))
+        Array.isArray(attachedProviders) &&
+        binding.sourceIds.some((sourceId) =>
+          attachedProviders.includes(openShellProviderName(sourceId)),
+        )
       ) {
         throw new SandboxNetworkPolicyConflictError(
           "The managed MCP route differs from the admitted revision.",

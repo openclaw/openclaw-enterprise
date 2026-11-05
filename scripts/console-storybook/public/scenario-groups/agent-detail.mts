@@ -169,6 +169,7 @@ export function createAgentDetailScenarios({
   const slackPluginId = "occ-plugin:slack@1.0.0";
 
   const slackSourceId = "cs_00000000-0000-4000-8000-000000000001";
+  const secondSlackSourceId = "cs_00000000-0000-4000-8000-000000000002";
 
   const slackEntry = { id: slackPluginId, name: "Slack", tools: [] };
 
@@ -1086,12 +1087,12 @@ export function createAgentDetailScenarios({
       },
       slackMcpTools: {
         group: "Pages/Agent detail",
-        name: "Choose tools for a connected Slack account",
+        name: "Choose accounts and tools for Slack",
         path: `${draft}&tab=plugins`,
         harnessId: "openclaw",
         deployed: true,
         agentPlugins: { [slackPluginId]: { enabled: true } },
-        credentialSources: [{ sourceId: slackSourceId }],
+        credentialSources: [{ sourceId: slackSourceId }, { sourceId: secondSlackSourceId }],
         pluginDiscoveryCredential: "none",
         pluginCapabilities: {
           driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
@@ -1105,15 +1106,31 @@ export function createAgentDetailScenarios({
               pluginId: slackPluginId,
               releaseSha256: "a".repeat(64),
               id: "account",
-              label: "Slack account",
+              label: "Slack user accounts",
+              repeatable: true,
               toolDiscovery: true,
-              sources: [{ id: slackSourceId, name: "Slack search connection (simulated)" }],
+              sources: [
+                { id: slackSourceId, name: "Design workspace" },
+                { id: secondSlackSourceId, name: "Support workspace" },
+              ],
             },
           ],
         },
         pluginDiscovery: {
           pages: { initial: { plugins: [slackEntry], nextCursor: null } },
-          details: { [slackPluginId]: { ...slackEntry, tools: [slackTool] } },
+          details: { [slackPluginId]: slackEntry },
+          toolsByAccount: {
+            [slackPluginId]: {
+              [slackSourceId]: [
+                slackTool,
+                { id: "slack_list_files", name: "slack_list_files", ownerId: slackPluginId },
+              ],
+              [secondSlackSourceId]: [
+                slackTool,
+                { id: "slack_read_thread", name: "slack_read_thread", ownerId: slackPluginId },
+              ],
+            },
+          },
         },
         rules: [
           {
@@ -1127,11 +1144,11 @@ export function createAgentDetailScenarios({
         ],
         actions: [click("Configure plugins")],
         description:
-          "The Tools picker loads available tools from the selected Slack account. Select the tools the next deployment may call.",
+          "Attach two Slack accounts and choose the tools the Agent can use with either account.",
         steps: [
-          "Open Slack. Before selecting an account, no tools can be loaded. Select Slack search connection (simulated).",
-          "Choose Load tools. The first request shows a loading state, then a permission error. Choose Load tools again to recover.",
-          "Check slack_search_public. Choose Done and Save plugin selections. Open the picker and load tools again to confirm the saved choice.",
+          "Open Slack, then select Design workspace and Support workspace. One Load tools action checks both accounts.",
+          "Choose Load tools. Support returns its tools while Design shows a permission error. Choose Load tools again to see the shared search tool and each workspace’s other tool.",
+          "Check slack_search_public. Choose Done and Save plugin selections. Reopen the picker, load tools, and confirm both accounts and the shared tool selection. Remove one account and confirm the tool stays selected.",
         ],
         gap: "The account and MCP response are simulated. This verifies Console selection and readback.",
       },

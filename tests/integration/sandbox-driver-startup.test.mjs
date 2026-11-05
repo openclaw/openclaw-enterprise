@@ -1,5 +1,8 @@
 import { runDocker, image, imageTestOptions } from "../helpers/runtime-image-startup.mjs";
-import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import {
+  managedMcpCredentialEnvironment,
+  managedMcpInstalls,
+} from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import { routeStore } from "../fixtures/openshell-git-route-store.mjs";
 import { openShellWorkspaceChartResources } from "../fixtures/openshell-workspace-chart.mjs";
@@ -1418,7 +1421,7 @@ test("OpenShell builds managed MCP rules for the declared endpoint and upstream 
   );
 });
 
-test("OpenShell limits a Slack connection to the revision's exact MCP tools and recovers after detach", async () => {
+test("OpenShell grants the selected Slack accounts one exact tool policy and preserves the remaining account after detach", async () => {
   assert.ok(managedSlackInstall);
   const client = workspaceGatewayClient();
   const driver = openShellDriver(client);
@@ -1427,6 +1430,8 @@ test("OpenShell limits a Slack connection to the revision's exact MCP tools and 
   });
   const sourceId = "cs_00000000-0000-4000-8000-000000000091";
   const ref = openShellProviderName(sourceId);
+  const secondId = "cs_00000000-0000-4000-8000-000000000094";
+  const secondRef = openShellProviderName(secondId);
   const routeName = "oce-slack-mcp";
   const broadGrant = {
     id: "slack-bypass",
@@ -1438,7 +1443,7 @@ test("OpenShell limits a Slack connection to the revision's exact MCP tools and 
     enabled: true,
     driverPolicy: {
       releaseSha256: managedSlackInstall.releaseSha256,
-      credentials: { account: sourceId },
+      credentials: { account: [sourceId, secondId] },
       toolNames: ["slack_search_public", "slack_search_emojis"],
     },
   };
@@ -1459,6 +1464,14 @@ test("OpenShell limits a Slack connection to the revision's exact MCP tools and 
     },
   ];
   requirements.environment.push({ name: "SLACK_MCP_TOKEN", value: "arbitrary-unbound-value" });
+  const accountEnvironment = managedMcpCredentialEnvironment(managedSlackInstall, secondId);
+  requirements.environment.push({ name: accountEnvironment, value: "unbound-second-value" });
+  revision.credentialSources = [{ sourceId }, { sourceId: secondId }];
+  requirements.credentialAttachments.push({
+    ...requirements.credentialAttachments[0],
+    sourceId: secondId,
+    ref: secondRef,
+  });
   let created;
   let broadenEffective = false;
   let updateCount = 0;
@@ -1480,7 +1493,11 @@ test("OpenShell limits a Slack connection to the revision's exact MCP tools and 
   };
   client.getSandboxConfig = async (workspace) => {
     const policy = structuredClone(created.spec.policy);
-    admitSlackProvider(policy, ref);
+    for (const provider of [ref, secondRef]) {
+      if (created.spec.providers.includes(provider)) {
+        admitSlackProvider(policy, provider);
+      }
+    }
     if (broadenEffective) {
       policy.network_policies.unexpected = { endpoints: [{ host: "mcp.slack.com", port: 443 }] };
     }
@@ -1505,9 +1522,10 @@ test("OpenShell limits a Slack connection to the revision's exact MCP tools and 
     { allow: { method: "ping" } },
   ]);
   assert.ok(created.spec.providers.includes(ref));
+  assert.ok(created.spec.providers.includes(secondRef));
+  assert.equal(created.spec.environment[accountEnvironment], undefined);
   created = undefined;
   revision.plugins = plugins;
-  revision.credentialSources = [{ sourceId }];
   const requestScope = requirements.credentialAttachments[0].requestScope;
   requestScope.port = 8443;
   await assert.rejects(
@@ -1517,6 +1535,8 @@ test("OpenShell limits a Slack connection to the revision's exact MCP tools and 
   assert.equal(created, undefined);
   requestScope.port = 443;
   await provision();
+  assert.ok(created.spec.providers.includes(ref));
+  assert.ok(created.spec.providers.includes(secondRef));
   const route = created.spec.policy.network_policies[routeName];
   assert.equal(route.endpoints[0].protocol, "mcp");
   assert.deepEqual(route.endpoints[0].ports, [443]);
@@ -1529,6 +1549,7 @@ test("OpenShell limits a Slack connection to the revision's exact MCP tools and 
     { allow: { method: "tools/call", params: { name: { glob: "slack_search_emojis" } } } },
   ]);
   assert.equal(created.spec.environment.SLACK_MCP_TOKEN, undefined);
+  assert.equal(created.spec.environment[accountEnvironment], undefined);
   assert.equal(created.spec.policy.network_middlewares, undefined);
 
   const snapshot = {
@@ -1563,10 +1584,19 @@ test("OpenShell limits a Slack connection to the revision's exact MCP tools and 
   await assert.rejects(provision, /overlaps the credentialed managed MCP endpoint/);
   broadenEffective = false;
 
-  requirements.credentialAttachments = [];
+  // Detaching one provider preserves the tool rule until the last account goes away.
+  requirements.credentialAttachments = requirements.credentialAttachments.filter(
+    (entry) => entry.sourceId === secondId,
+  );
   await assert.rejects(provision, /exact AgentRevision ownership and content/);
   created.spec.providers = created.spec.providers.filter((name) => name !== ref);
   route.endpoints[0].mcp._strict_tool_names = "strict_tool_names";
+  await provision();
+  assert.ok(created.spec.providers.includes(secondRef));
+  assert.equal(created.spec.policy.network_policies[routeName], route);
+  requirements.credentialAttachments = [];
+  await assert.rejects(provision, /exact AgentRevision ownership and content/);
+  created.spec.providers = created.spec.providers.filter((name) => name !== secondRef);
   await provision();
   created = undefined;
   await provision();
@@ -4836,7 +4866,10 @@ function credentialGatewayOverProviders({
       if (providers.has(provider.name)) {
         throw new OpenShellProviderAlreadyExistsError(provider.name);
       }
-      providers.set(provider.name, { ...provider });
+      providers.set(provider.name, {
+        ...provider,
+        credentialKeys: Object.keys(provider.credentials),
+      });
     },
     async getProvider(_workspace, name) {
       return providers.get(name);
@@ -5334,7 +5367,7 @@ test("Google requires an OAuth source whose effective binary list is exactly the
   }
 });
 
-test("a Slack MCP source stays independent and cannot acquire a broad REST credential route", async () => {
+test("the Credential Gateway projects selected Slack accounts separately and refuses broader or unselected credentials", async () => {
   const f = credentialGatewayOverProviders({
     toolBinaries: ["/usr/bin/curl", "/usr/local/bin/node"],
   });
@@ -5381,6 +5414,69 @@ test("a Slack MCP source stays independent and cannot acquire a broad REST crede
       },
     },
   ]);
+  const secondId = "cs_00000000-0000-4000-8000-000000000094";
+  const second = { ...source, id: secondId };
+  await f.driver.registerSource(
+    { ...context, source: second },
+    { type: source.type, config, secrets: { token: "synthetic-second-slack-bearer" } },
+  );
+  const secondRef = openShellProviderName(secondId);
+  const mcpContext = f.revisionContext([source, second]);
+  assert.deepEqual(
+    (await f.driver.attachForRevision(mcpContext)).map(({ ref }) => ref),
+    [ref, secondRef],
+  );
+  const account = [sourceId, secondId];
+  mcpContext.revision.plugins = {
+    driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+    plugins: {
+      [managedSlackInstall.id]: {
+        enabled: true,
+        driverPolicy: {
+          releaseSha256: managedSlackInstall.releaseSha256,
+          credentials: { account },
+          toolNames: ["slack_search_public"],
+        },
+      },
+    },
+  };
+  const environments = [sourceId, secondId].map((id) =>
+    managedMcpCredentialEnvironment(managedSlackInstall, id),
+  );
+  assert.notEqual(environments[0], environments[1]);
+  for (const [i, provider] of [ref, secondRef].entries()) {
+    assert.deepEqual(f.profiles.get(provider).credentials[0].envVars, [environments[i]]);
+    assert.deepEqual(Object.keys(f.providers.get(provider).credentials), [environments[i]]);
+  }
+  assert.deepEqual(
+    (await f.driver.attachForRevision(mcpContext)).map(({ ref }) => ref),
+    [ref, secondRef],
+  );
+  await f.driver.updateSource(
+    { ...context, source: second },
+    { type: source.type, config, secrets: { token: "rotated-second-slack-token" } },
+  );
+  assert.deepEqual(f.providers.get(secondRef).credentials, {
+    [environments[1]]: "rotated-second-slack-token",
+  });
+  assert.deepEqual(f.providers.get(ref).credentials, {
+    [environments[0]]: "synthetic-slack-bearer",
+  });
+  // Removing the second account from the slot cannot grant it the first account's tool policy.
+  account.pop();
+  await assert.rejects(
+    f.driver.attachForRevision(mcpContext),
+    /unselected credential|conflicts with another credential/,
+  );
+  // A pre-change provider still stores its token under the shared base key.
+  f.providers.get(ref).credentialKeys = [config.env_var];
+  assert.equal((await f.driver.sourceStatus(sourceContext)).state, "failed");
+  const previousWrites = f.profileWrites.length;
+  await assert.rejects(
+    f.driver.attachForRevision(f.revisionContext([source])),
+    /Register a replacement credential source/,
+  );
+  assert.equal(f.profileWrites.length, previousWrites);
   const legacy = {
     ...source,
     id: "cs_00000000-0000-4000-8000-000000000093",

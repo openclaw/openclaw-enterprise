@@ -11419,6 +11419,19 @@ test("deploying Google Workspace and Slack together freezes both selections and 
     },
   });
   assert.equal(source.status, 201, JSON.stringify(source.body));
+  const secondSecret = await controller.request("POST", `${base}/secrets`, {
+    body: { name: "Other Slack token", value: "fixture-second-slack-token" },
+  });
+  assert.equal(secondSecret.status, 201, JSON.stringify(secondSecret.body));
+  const second = await controller.request("POST", `${base}/credential-sources`, {
+    body: {
+      name: "Other Slack account",
+      type: "bearer-token",
+      config: sourceConfig,
+      secrets: { token: { kind: "secret", id: secondSecret.data.id, namespaceId: namespace.id } },
+    },
+  });
+  assert.equal(second.status, 201, JSON.stringify(second.body));
   tokenReads = 0;
   const model = await controller.request("POST", `${base}/credential-sources`, {
     body: { name: "Model account", type: "openai" },
@@ -11429,7 +11442,11 @@ test("deploying Google Workspace and Slack together freezes both selections and 
     namespace.id,
     createHarnessConfiguration("openclaw", "gpt-5.1"),
   );
-  const credentialSources = [{ sourceId: model.data.id }, { sourceId: source.data.id }];
+  const credentialSources = [
+    { sourceId: model.data.id },
+    { sourceId: second.data.id },
+    { sourceId: source.data.id },
+  ];
   const created = await controller.request("POST", `${base}/agents`, {
     body: {
       name: "Slack Agent",
@@ -11576,16 +11593,23 @@ test("deploying Google Workspace and Slack together freezes both selections and 
   const capabilities = await controller.request("GET", `${agentPath}/plugins/capabilities`);
   assert.equal(capabilities.status, 200, JSON.stringify(capabilities.body));
   const slot = capabilities.data.credentialSlots.find((entry) => entry.pluginId === pluginId);
-  assert.deepEqual(slot.sources, [{ id: source.data.id, name: "Slack account" }]);
+  assert.deepEqual(
+    new Map(slot.sources.map(({ id, name }) => [id, name])),
+    new Map([
+      [source.data.id, "Slack account"],
+      [second.data.id, "Other Slack account"],
+    ]),
+  );
   assert.equal(slot.toolDiscovery, true);
+  assert.equal(slot.repeatable, true);
   const google = { "occ-plugin:google@1.0.0": { enabled: true } };
-  const pluginsFor = (toolNames) => ({
+  const pluginsFor = (toolNames, account = source.data.id) => ({
     ...google,
     [pluginId]: {
       enabled: true,
       driverPolicy: {
         releaseSha256: slot.releaseSha256,
-        credentials: { account: source.data.id },
+        credentials: { account },
         toolNames,
       },
     },
@@ -11597,16 +11621,39 @@ test("deploying Google Workspace and Slack together freezes both selections and 
   const refused = await save(pluginsFor(["slack_*"]));
   assertApiError(refused, 400, "INVALID_REQUEST");
   assert.match(refused.body.error.message, /Select distinct literal Slack tool names/);
-  // Discovery offers both tools. The operator selects one, and deployment freezes that subset.
-  const approved = pluginsFor(["slack_send_message"]);
+  // An existing single-account selection can add another attached source. Both use one tool policy.
+  assert.equal((await save(pluginsFor(["slack_send_message"]))).status, 200);
+  assertApiError(
+    await save(pluginsFor([], [source.data.id, source.data.id])),
+    400,
+    "INVALID_REQUEST",
+  );
+  assertApiError(
+    await save(pluginsFor([], [source.data.id, model.data.id])),
+    400,
+    "INVALID_REQUEST",
+  );
+  const approved = pluginsFor(["slack_send_message"], [source.data.id, second.data.id]);
   const saved = await save(approved);
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   assert.deepEqual(saved.data.plugins[pluginId].driverPolicy.toolNames, ["slack_send_message"]);
   const deployed = await controller.request("POST", `${agentPath}/deploy`);
   assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
   assert.deepEqual(deployed.data.plugins.plugins, approved);
+  const revisions = await controller.fixture.platformState.read((view) =>
+    view.revisions.listRevisions(namespace.id, created.data.id),
+  );
+  const frozen = revisions.find(({ id }) => id === deployed.data.id);
+  assert.deepEqual(frozen?.plugins.accountNames, {
+    [source.data.id]: "Slack account",
+    [second.data.id]: "Other Slack account",
+  });
   assert.deepEqual(deployed.data.credentialSources, credentialSources);
 
+  const one = pluginsFor(["slack_send_message"], [second.data.id]);
+  const remaining = await save(one);
+  assert.equal(remaining.status, 200, JSON.stringify(remaining.body));
+  assert.deepEqual(remaining.data.plugins, one);
   const cleared = await save(google);
   assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
   assert.deepEqual(cleared.data.plugins, google);

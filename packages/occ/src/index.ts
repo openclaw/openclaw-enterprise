@@ -11055,7 +11055,7 @@ export class OpenClawController {
         lockedAgent,
       );
       this.requireCredentialSourceDrivers(harnessAuth, sandbox);
-      const credentialSources = await this.admitCredentialSources(
+      const { credentialSources, accountNames } = await this.admitCredentialSources(
         state,
         principalId,
         lockedAgent,
@@ -11156,6 +11156,7 @@ export class OpenClawController {
               return immutableCopy({
                 driver: { id: driver.id, implementation: driver.implementation },
                 plugins: lockedAgent.plugins,
+                ...(accountNames && { accountNames }),
               } satisfies PluginRevisionState);
             })();
       // Agent saves check the plugins against the Configuration they name, but a later
@@ -12783,7 +12784,7 @@ export class OpenClawController {
     bindings: readonly AgentCredentialSourceBinding[],
     harnessAuth: HarnessAuthBinding | null | undefined,
     plugins?: PluginDesiredState,
-  ): Promise<void> {
+  ) {
     const sources: CredentialSource[] = [];
     for (const { sourceId } of bindings) {
       await this.authorize(principalId, "operate", {
@@ -12811,16 +12812,16 @@ export class OpenClawController {
       sources.push(source);
     }
     this.assertHarnessSourceListed(bindings, harnessAuth);
-    this.validatePluginCredentialSources(plugins, sources, harnessAuth);
+    return this.validatePluginCredentialSources(plugins, sources, harnessAuth);
   }
 
   private validatePluginCredentialSources(
     plugins: PluginDesiredState | undefined,
     sources: readonly CredentialSource[],
     harnessAuth?: HarnessAuthBinding | null,
-  ): void {
+  ) {
     if (plugins && Object.keys(plugins).length) {
-      this.pluginDriver().credentials?.validate(
+      return this.pluginDriver().credentials?.validate(
         plugins,
         sources,
         harnessAuth?.method === "credential_source" ? harnessAuth.sourceId : undefined,
@@ -12837,11 +12838,11 @@ export class OpenClawController {
     principalId: string,
     agent: Readonly<Agent>,
     sandbox: SandboxDriver | undefined,
-  ): Promise<readonly CredentialSourceSnapshot[]> {
+  ) {
     const bindings = agent.credentialSources ?? [];
     if (bindings.length === 0) {
       this.validatePluginCredentialSources(agent.plugins, [], agent.harnessAuth);
-      return [];
+      return { credentialSources: [], accountNames: undefined };
     }
     // A state refusal, so HTTP keeps the message instead of the generic "already exists".
     if (sandbox === undefined) {
@@ -12849,7 +12850,7 @@ export class OpenClawController {
         "Agent credential sources require a selected Sandbox Driver.",
       );
     }
-    await this.authorizeAgentCredentialSources(
+    const accountNames = await this.authorizeAgentCredentialSources(
       state,
       principalId,
       agent.namespaceId,
@@ -12882,7 +12883,7 @@ export class OpenClawController {
         snapshots.push({ sourceId, credentialGatewayId: owner.driver.id, sourceType: source.type });
       }
     }
-    return immutableCopy(snapshots);
+    return { credentialSources: immutableCopy(snapshots), accountNames };
   }
 
   /**

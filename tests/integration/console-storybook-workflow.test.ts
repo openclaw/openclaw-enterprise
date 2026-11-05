@@ -1297,7 +1297,7 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
         saved.data !== null && typeof saved.data === "object" && "credentialSources" in saved.data,
       );
       assert.deepEqual(saved.data.credentialSources, catalog.slackMcpTools.credentialSources);
-      assert.equal(catalog.slackMcpTools.credentialSources.length, 1);
+      assert.equal(catalog.slackMcpTools.credentialSources.length, 2);
     },
   );
 

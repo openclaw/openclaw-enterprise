@@ -191,7 +191,13 @@ import {
 } from "../workspace-setup-runtime.ts";
 import { requireHarnessAuthMethod } from "../harness-auth-method.ts";
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
-import { managedInstalls, managedMcpCredentialBinding } from "../../plugin/managed-catalog.ts";
+import {
+  managedInstalls,
+  managedMcpCredentialBinding,
+  managedMcpCredentialEnvironment,
+  managedMcpInstallForSourceConfig,
+  managedMcpSlotAcceptsSource,
+} from "../../plugin/managed-catalog.ts";
 import { requireManagedCredentialRuntime } from "../../plugin/managed-runtime.ts";
 import {
   validatePlaintextNativeGateway,
@@ -603,6 +609,7 @@ const PROTECTED_CODEX_NO_CONNECTION_RETRY = "protected-codex-no-connection-retry
 interface PluginRuntimeSnapshot {
   readonly name: string;
   readonly runtime: PluginRuntimeSpec;
+  readonly accountNames?: Readonly<Record<string, string>>;
   readonly entrypoint: string;
   readonly workspaceEntrypoint: string;
 }
@@ -14454,6 +14461,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return {
       name: `plugin-runtime-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`,
       runtime,
+      ...(revision.plugins?.accountNames && { accountNames: revision.plugins.accountNames }),
       entrypoint: protectedCodex ? entrypoints.protected : entrypoints.agent,
       workspaceEntrypoint: protectedCodex ? entrypoints.protectedWorkspace : entrypoints.workspace,
     };
@@ -15415,7 +15423,26 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       }
       seen.add(source.id);
     }
-    return resolved;
+    const plugins = revision.plugins;
+    if (plugins?.driver.implementation !== "occ/openclaw-plugin") {
+      return resolved;
+    }
+    // A source attached to the Agent can be left out of an enabled plugin's account slot.
+    // Only selected providers may share the endpoint's enabled tool policy.
+    return resolved.filter((source) => {
+      const install = managedMcpInstallForSourceConfig(source.config);
+      if (
+        !install?.repeatable ||
+        !plugins.plugins[install.id]?.enabled ||
+        !managedMcpSlotAcceptsSource(install, source)
+      ) {
+        return true;
+      }
+      return (
+        managedMcpCredentialBinding(plugins.plugins, install)?.sourceIds.includes(source.id) ===
+        true
+      );
+    });
   }
 
   private harnessAuthForRevision(
@@ -16209,7 +16236,14 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           slotId: Object.keys(install.credentials)[0],
           ...(role === "gateway" && { id: install.id }),
           ...(selection.enabled && { releaseSha256: install.releaseSha256 }),
-          ...(binding?.toolNames.length && { toolNames: binding.toolNames }),
+          ...(binding && {
+            accounts: binding.sourceIds.map((id) => ({
+              id,
+              env: managedMcpCredentialEnvironment(binding.install, id),
+              ...(pluginRuntime.accountNames?.[id] && { name: pluginRuntime.accountNames[id] }),
+            })),
+            toolNames: binding.toolNames,
+          }),
         });
       }
       if (packages.length > 0) {

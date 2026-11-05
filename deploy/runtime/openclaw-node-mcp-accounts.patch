@@ -1,0 +1,520 @@
+diff --git a/src/config/types.node-host.ts b/src/config/types.node-host.ts
+index 519020d..6166ae2 100644
+--- a/src/config/types.node-host.ts
++++ b/src/config/types.node-host.ts
+@@ -1,11 +1,11 @@
+ import type { z } from "zod";
+-import type { McpServerConfig } from "./types.mcp.js";
++import type { NodeHostMcpServerConfig } from "./zod-schema.mcp-server.js";
+ import type { NodeHostSchema } from "./zod-schema.root-support.js";
+ 
+ type NodeHostSchemaInput = NonNullable<z.input<typeof NodeHostSchema>>;
+ 
+ export type NodeHostConfig = Omit<NodeHostSchemaInput, "mcp"> & {
+   mcp?: {
+-    servers?: Record<string, McpServerConfig>;
++    servers?: Record<string, NodeHostMcpServerConfig>;
+   };
+ };
+diff --git a/src/config/zod-schema.mcp-server.ts b/src/config/zod-schema.mcp-server.ts
+index 66d914f..f05fb00 100644
+--- a/src/config/zod-schema.mcp-server.ts
++++ b/src/config/zod-schema.mcp-server.ts
+@@ -156,4 +156,35 @@ export const McpServerSchema = z
+   })
+   .catchall(z.unknown());
+ 
++/** A node can keep independent HTTP sessions for the accounts on one server. */
++export const NodeHostMcpServerSchema = McpServerSchema.safeExtend({
++  accounts: z
++    .record(
++      z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/),
++      z.strictObject({
++        headers: z
++          .record(z.string().min(1), z.string().min(1).register(sensitive))
++          .refine(
++            (headers) => Object.keys(headers).length > 0,
++            "An account requires its own headers",
++          ),
++      }),
++    )
++    .optional(),
++}).refine(
++  (server) =>
++    server.accounts === undefined ||
++    (server.transport === "streamable-http" &&
++      server.url !== undefined &&
++      server.command === undefined &&
++      server.auth === undefined &&
++      server.oauth === undefined &&
++      server.headers === undefined),
++  {
++    message: "Account sessions require a streamable HTTP server URL and account-specific headers",
++    path: ["accounts"],
++  },
++);
++
++export type NodeHostMcpServerConfig = z.input<typeof NodeHostMcpServerSchema>;
+ export type McpServerConfigInput = z.input<typeof McpServerSchema>;
+diff --git a/src/config/zod-schema.root-support.ts b/src/config/zod-schema.root-support.ts
+index 177ddcf..6476671 100644
+--- a/src/config/zod-schema.root-support.ts
++++ b/src/config/zod-schema.root-support.ts
+@@ -3,7 +3,7 @@ import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/st
+ import { z } from "zod";
+ import { ALL_THINKING_LEVELS } from "../auto-reply/thinking.shared.js";
+ import { findEdgeAuthIssue } from "../shared/gateway-edge-auth-headers.js";
+-import { McpServerSchema } from "./zod-schema.mcp-server.js";
++import { McpServerSchema, NodeHostMcpServerSchema } from "./zod-schema.mcp-server.js";
+ import { MemorySearchSchema } from "./zod-schema.memory-search.js";
+ import { NodeHostAgentRunsSchema, NodeHostWorkerRunsSchema } from "./zod-schema.node-host.js";
+ import { SecretInputSchema } from "./zod-schema.secret-input.js";
+@@ -273,7 +273,10 @@ export const NodeHostMcpServerNameSchema = McpServerNameSchema.refine(
+   "MCP server name must be non-empty and must not have surrounding whitespace",
+ );
+ 
+-function createMcpServersSchema(serverNameSchema: z.ZodType<string>) {
++function createMcpServersSchema<T extends z.ZodType>(
++  serverNameSchema: z.ZodType<string>,
++  serverSchema: T,
++) {
+   return z.preprocess(
+     (value, ctx) => {
+       // Plain assignment treats "__proto__" as a setter, so one unhardened map builder
+@@ -293,7 +296,7 @@ function createMcpServersSchema(serverNameSchema: z.ZodType<string>) {
+       }
+       return value;
+     },
+-    z.record(serverNameSchema, McpServerSchema),
++    z.record(serverNameSchema, serverSchema),
+   );
+ }
+ 
+@@ -313,7 +316,7 @@ export function validateHttpOrigin(value: string): boolean {
+ export const McpConfigSchema = z
+   .strictObject({
+     sessionIdleTtlMs: z.number().finite().min(0).optional(),
+-    servers: createMcpServersSchema(McpServerNameSchema).optional(),
++    servers: createMcpServersSchema(McpServerNameSchema, McpServerSchema).optional(),
+     apps: z
+       .strictObject({
+         enabled: z.boolean().optional(),
+@@ -348,7 +351,10 @@ export const NodeHostSchema = z
+       .optional(),
+     mcp: z
+       .strictObject({
+-        servers: createMcpServersSchema(NodeHostMcpServerNameSchema).optional(),
++        servers: createMcpServersSchema(
++          NodeHostMcpServerNameSchema,
++          NodeHostMcpServerSchema,
++        ).optional(),
+       })
+       .optional(),
+     skills: z
+diff --git a/src/node-host/mcp-server-config.ts b/src/node-host/mcp-server-config.ts
+index c5c97ab..c54fcd9 100644
+--- a/src/node-host/mcp-server-config.ts
++++ b/src/node-host/mcp-server-config.ts
+@@ -1,8 +1,8 @@
+-import type { McpServerConfig } from "../config/types.mcp.js";
++import type { NodeHostMcpServerConfig } from "../config/zod-schema.mcp-server.js";
+ 
+ export function listEnabledNodeHostMcpServers(
+-  servers: Record<string, McpServerConfig> | undefined,
+-): ReadonlyArray<readonly [string, McpServerConfig]> {
++  servers: Record<string, NodeHostMcpServerConfig> | undefined,
++): ReadonlyArray<readonly [string, NodeHostMcpServerConfig]> {
+   return Object.entries(servers ?? {})
+     .filter(
+       ([serverName, config]) =>
+diff --git a/src/node-host/mcp.ts b/src/node-host/mcp.ts
+index 12cfdc5..1e29c22 100644
+--- a/src/node-host/mcp.ts
++++ b/src/node-host/mcp.ts
+@@ -7,6 +7,7 @@ import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
+ import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
+ import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+ import pLimit from "p-limit";
++import { Value } from "typebox/value";
+ import type { NodePluginToolDescriptor } from "../../packages/gateway-protocol/src/schema/nodes.js";
+ import { assignSafeServerNames } from "../agents/agent-bundle-mcp-names.js";
+ import { listAllMcpTools } from "../agents/mcp-catalog-listing.js";
+@@ -27,7 +28,7 @@ import {
+ } from "../agents/mcp-tool-metadata.js";
+ import { resolveMcpRequestTimeoutMs } from "../agents/mcp-transport-config.js";
+ import type { resolveMcpTransport } from "../agents/mcp-transport.js";
+-import type { McpServerConfig } from "../config/types.mcp.js";
++import type { NodeHostMcpServerConfig } from "../config/zod-schema.mcp-server.js";
+ import {
+   NODE_MCP_TOOL_CALL_TIMEOUT_MS,
+   NODE_MCP_TOOLS_CALL_COMMAND,
+@@ -65,7 +66,9 @@ type NodeHostMcpSession = NodeHostMcpTransport & {
+ 
+ type NodeHostMcpServerState = {
+   serverName: string;
+-  config: McpServerConfig;
++  key: string;
++  account?: string;
++  config: NodeHostMcpServerConfig;
+   current?: NodeHostMcpSession;
+   listedTools: Tool[];
+   work: Promise<void>;
+@@ -132,9 +135,66 @@ function reserveDescriptorName(baseName: string, usedNames: Set<string>): string
+   }
+ }
+ 
++type ListedNodeMcpTool = {
++  serverName: string;
++  tool: Pick<Tool, "name" | "description"> & { inputSchema: Record<string, unknown> };
++};
++
++function listNodeMcpTools(states: Iterable<NodeHostMcpServerState>): ListedNodeMcpTool[] {
++  const listedTools: ListedNodeMcpTool[] = [];
++  const grouped = new Map<
++    string,
++    { serverName: string; tool: Tool; schemas: Tool["inputSchema"][] }
++  >();
++  for (const state of states) {
++    for (const tool of state.listedTools) {
++      if (state.account === undefined) {
++        listedTools.push({ serverName: state.serverName, tool });
++        continue;
++      }
++      const key = JSON.stringify([state.serverName, tool.name]);
++      const group = grouped.get(key);
++      if (!group) {
++        grouped.set(key, { serverName: state.serverName, tool, schemas: [tool.inputSchema] });
++      } else if (!group.schemas.some((schema) => isDeepStrictEqual(schema, tool.inputSchema))) {
++        group.schemas.push(tool.inputSchema);
++      }
++    }
++  }
++  for (const { serverName, tool, schemas } of grouped.values()) {
++    // Each embedded upstream schema stays its own resource: #/$defs and recursive
++    // references keep resolving relative to the native argument object.
++    const variants = schemas.map((schema, index) => ({
++      ...schema,
++      $id:
++        schema.$id ??
++        `urn:openclaw:node-mcp:${encodeURIComponent(serverName)}:${encodeURIComponent(tool.name)}:${index}`,
++    }));
++    listedTools.push({
++      serverName,
++      tool: {
++        ...tool,
++        inputSchema: {
++          type: "object",
++          additionalProperties: false,
++          required: ["account", "arguments"],
++          properties: {
++            account: {
++              type: "string",
++              description: "Account handle from the oce-plugin-accounts skill.",
++            },
++            arguments: variants.length === 1 ? variants[0] : { anyOf: variants },
++          },
++        },
++      },
++    });
++  }
++  return listedTools;
++}
++
+ /** Builds provider-safe MCP descriptors in stable server/tool order. */
+ function buildNodeMcpToolDescriptors(
+-  listedTools: ReadonlyArray<{ serverName: string; tool: Tool }>,
++  listedTools: readonly ListedNodeMcpTool[],
+ ): NodePluginToolDescriptor[] {
+   const usedNames = new Set<string>();
+   const descriptors: NodePluginToolDescriptor[] = [];
+@@ -193,7 +253,7 @@ async function disposeNodeHostMcpSession(
+ 
+ /** Starts process-lifetime MCP server state for the node host. */
+ export async function startNodeHostMcpManager(
+-  servers: Record<string, McpServerConfig> | undefined,
++  servers: Record<string, NodeHostMcpServerConfig> | undefined,
+   deps: NodeHostMcpManagerDeps = {},
+ ) {
+   const [
+@@ -216,23 +276,36 @@ export async function startNodeHostMcpManager(
+   const lifecycleSignal = deps.signal
+     ? AbortSignal.any([deps.signal, lifecycleAbortController.signal])
+     : lifecycleAbortController.signal;
+-  const states = new Map<string, NodeHostMcpServerState>(
+-    listEnabledNodeHostMcpServers(servers).map(([serverName, config]) => [
+-      serverName,
+-      {
++  const enabledServers = listEnabledNodeHostMcpServers(servers);
++  const safeServerNames = assignSafeServerNames(enabledServers.map(([name]) => name));
++  const accountServers = new Set<string>();
++  const states = new Map<string, NodeHostMcpServerState>();
++  for (const [serverName, { accounts, ...config }] of enabledServers) {
++    function addState(account?: string, headers = config.headers) {
++      const key = JSON.stringify([serverName, account]);
++      states.set(key, {
++        key,
+         serverName,
+-        config,
++        account,
++        config: { ...config, headers },
+         listedTools: [],
+         work: Promise.resolve(),
+         catalogWork: Promise.resolve(),
+         refreshQueued: false,
+         retryDelayMs: NODE_MCP_RETRY_INITIAL_MS,
+-      },
+-    ]),
+-  );
+-  const safeServerNames = assignSafeServerNames(
+-    Object.keys(servers ?? {}).filter((name) => states.has(name)),
+-  );
++      });
++    }
++    if (accounts === undefined) {
++      addState();
++    } else {
++      accountServers.add(serverName);
++      for (const [account, connection] of Object.entries(accounts).toSorted(([left], [right]) =>
++        left.localeCompare(right),
++      )) {
++        addState(account, connection.headers);
++      }
++    }
++  }
+   let closed = false;
+   let startupComplete = false;
+ 
+@@ -240,9 +313,7 @@ export async function startNodeHostMcpManager(
+     if (closed) {
+       return;
+     }
+-    const listedTools = Array.from(states.values()).flatMap((state) =>
+-      state.listedTools.map((tool) => ({ serverName: state.serverName, tool })),
+-    );
++    const listedTools = listNodeMcpTools(states.values());
+     const next = buildNodeMcpToolDescriptors(listedTools);
+     if (next.length < listedTools.length) {
+       console.warn(
+@@ -339,7 +410,7 @@ export async function startNodeHostMcpManager(
+       try {
+         resolved = resolveMcpTransport(state.serverName, state.config);
+         if (!resolved) {
+-          states.delete(state.serverName);
++          states.delete(state.key);
+           throw new Error("invalid or unsupported transport");
+         }
+         let onToolsChanged = () => {};
+@@ -480,7 +551,7 @@ export async function startNodeHostMcpManager(
+ 
+   const tasks = Array.from(states.values(), (state) => async () => {
+     if (state.config.auth === "oauth" || state.config.oauth) {
+-      states.delete(state.serverName);
++      states.delete(state.key);
+       console.warn(`node host MCP server "${state.serverName}" skipped: OAuth is not supported`);
+       return;
+     }
+@@ -513,7 +584,20 @@ export async function startNodeHostMcpManager(
+         signal?: AbortSignal;
+       },
+     ) {
+-      const state = states.get(params.server);
++      let args = params.arguments ?? {};
++      let account: string | undefined;
++      if (accountServers.has(params.server)) {
++        const inner = asOptionalRecord(args.arguments);
++        if (typeof args.account !== "string" || !inner || Object.keys(args).length !== 2) {
++          throw new NodeHostMcpError(
++            "MCP_TOOL_ERROR",
++            "Provide an account handle and tool arguments.",
++          );
++        }
++        account = args.account;
++        args = inner;
++      }
++      const state = states.get(JSON.stringify([params.server, account]));
+       const session = state?.current;
+       if (!state || !session?.connected) {
+         throw new NodeHostMcpError(
+@@ -531,6 +615,21 @@ export async function startNodeHostMcpManager(
+           `MCP tool "${params.tool}" is unavailable on server "${params.server}"`,
+         );
+       }
++      if (account !== undefined) {
++        const selectedTool = state.listedTools.find((tool) => tool.name === params.tool);
++        if (!selectedTool) {
++          throw new NodeHostMcpError(
++            "MCP_TOOL_UNAVAILABLE",
++            "The selected account does not provide this tool.",
++          );
++        }
++        if (!Value.Check(selectedTool.inputSchema, args)) {
++          throw new NodeHostMcpError(
++            "MCP_TOOL_ERROR",
++            "Invalid tool arguments for the selected account.",
++          );
++        }
++      }
+       const requestedTimeoutMs =
+         clampPositiveTimerTimeoutMs(params.timeoutMs) ?? NODE_MCP_TOOL_CALL_TIMEOUT_MS;
+       const validateResult = session.toolMetadata?.validatorForCall(params.tool);
+@@ -540,7 +639,7 @@ export async function startNodeHostMcpManager(
+           session.client.request(
+             {
+               method: "tools/call",
+-              params: { name: params.tool, arguments: params.arguments ?? {} },
++              params: { name: params.tool, arguments: args },
+             },
+             mcpCallToolResultSchema,
+             options,
+diff --git a/src/node-host/node-worker-mcp-accounts.integration.test.ts b/src/node-host/node-worker-mcp-accounts.integration.test.ts
+new file mode 100644
+index 0000000..5a31573
+--- /dev/null
++++ b/src/node-host/node-worker-mcp-accounts.integration.test.ts
+@@ -0,0 +1,146 @@
++import assert from "node:assert/strict";
++import { randomUUID } from "node:crypto";
++import { expect, it } from "vitest";
++import {
++  readMcpFixtureMessage,
++  replyMcpFixtureResult,
++  startMcpHttpFixture,
++} from "../agents/agent-bundle-mcp-lifecycle.test-support.js";
++import { NodeHostMcpServerSchema } from "../config/zod-schema.mcp-server.js";
++import { NODE_WORKER_SUPERVISOR_LAUNCH_COMMAND } from "../infra/node-commands.js";
++import { startNodeHostMcpManager } from "./mcp.js";
++import { createNodeWorkerMcpTurn, NodeWorkerMcpPolicy } from "./node-worker-mcp.js";
++import {
++  TEST_WORKER_ENDPOINT,
++  testWorkerLaunchInput,
++} from "./node-worker-supervisor.test-support.js";
++
++it("routes one admitted worker tool to its chosen account on the same HTTP endpoint", async ({
++  onTestFinished,
++}) => {
++  const credentials = { cs_west: randomUUID(), cs_east: randomUUID() };
++  const identities = new Map(
++    Object.entries(credentials).map(([name, token]) => ["Bearer " + token, name]),
++  );
++  const calls: Array<{ identity: string; name?: string; arguments: unknown }> = [];
++  const server = await startMcpHttpFixture(async (request, response) => {
++    const identity = identities.get(request.headers.authorization ?? "");
++    if (!identity || request.method !== "POST") {
++      response.writeHead(405).end();
++      return;
++    }
++    const message = await readMcpFixtureMessage<{
++      protocolVersion?: string;
++      name?: string;
++      arguments?: unknown;
++    }>(request);
++    if (message.method === "initialize") {
++      replyMcpFixtureResult(response, message, {
++        protocolVersion: message.params?.protocolVersion,
++        capabilities: { tools: {} },
++        serverInfo: { name: "account-probe", version: "1" },
++      });
++    } else if (message.method === "tools/list") {
++      // Both accounts expose probe. Its native field named account means something
++      // different on each account and must reach the remote server unchanged.
++      const probe = {
++        name: "probe",
++        inputSchema: {
++          type: "object",
++          $defs: {
++            target: { type: identity === "cs_west" ? "string" : "integer" },
++          },
++          properties: { account: { $ref: "#/$defs/target" } },
++          required: ["account"],
++        },
++      };
++      const tools = identity === "cs_east" ? [probe, { ...probe, name: "east_only" }] : [probe];
++      replyMcpFixtureResult(response, message, { tools });
++    } else if (message.method === "tools/call") {
++      calls.push({ identity, name: message.params?.name, arguments: message.params?.arguments });
++      replyMcpFixtureResult(response, message, { content: [{ type: "text", text: identity }] });
++    } else {
++      response.writeHead(202).end();
++    }
++  });
++  onTestFinished(() => server.close());
++
++  async function start(accounts: Record<string, string>) {
++    const fixture = NodeHostMcpServerSchema.parse({
++      transport: "streamable-http",
++      url: server.url,
++      toolFilter: { include: ["probe", "east_only"] },
++      accounts: Object.fromEntries(
++        Object.entries(accounts).map(([id, value]) => [
++          id,
++          { headers: { Authorization: "Bearer " + value } },
++        ]),
++      ),
++    });
++    const manager = await startNodeHostMcpManager({ fixture });
++    onTestFinished(() => manager.close());
++    const descriptor = testWorkerLaunchInput("/synthetic/workspace", "accounts-turn").descriptor;
++    descriptor.assignment.toolAuthority.mcpTools = manager.descriptors.map(({ mcp }) => ({
++      id: mcp!.tool,
++      ...mcp!,
++    }));
++    const policy = new NodeWorkerMcpPolicy();
++    policy.setAllowed(true);
++    const turn = createNodeWorkerMcpTurn(
++      { ...descriptor, connectionEndpoint: TEST_WORKER_ENDPOINT },
++      policy.sessionForCommand(NODE_WORKER_SUPERVISOR_LAUNCH_COMMAND, manager),
++    );
++    assert(turn);
++    onTestFinished(() => turn.close());
++    return {
++      manager,
++      async invoke(args: Record<string, unknown>, toolId = "probe") {
++        const reply = Promise.withResolvers<unknown>();
++        await turn.invoke(
++          {
++            type: "mcp-call",
++            requestId: randomUUID(),
++            turnId: descriptor.assignment.turnId,
++            toolId,
++            arguments: args,
++          },
++          async (frame) => reply.resolve(frame),
++        );
++        return reply.promise;
++      },
++    };
++  }
++
++  const both = await start(credentials);
++  expect(both.manager.descriptors.map(({ name }) => name)).toEqual([
++    "fixture_east_only",
++    "fixture_probe",
++  ]);
++  const result = (identity: string) => ({
++    result: { content: [{ type: "text", text: identity }] },
++  });
++  const west = { account: "cs_west", arguments: { account: "native-account" } };
++  const east = { account: "cs_east", arguments: { account: 17 } };
++  const replies = await Promise.all([both.invoke(west), both.invoke(east)]);
++  expect(replies).toMatchObject([result("cs_west"), result("cs_east")]);
++  // The union advertised to the model accepts both native shapes. The dispatcher
++  // still checks this particular account's own catalog and schema before I/O.
++  expect(await both.invoke({ ...east, arguments: west.arguments })).toHaveProperty("error");
++  expect(await both.invoke(east, "east_only")).toMatchObject(result("cs_east"));
++  expect(await both.invoke({ ...east, account: "cs_west" }, "east_only")).toHaveProperty("error");
++  expect(await both.invoke({ arguments: west.arguments })).toHaveProperty("error");
++  expect(await both.invoke({ ...west, account: "cs_unknown" })).toHaveProperty("error");
++  await both.manager.close();
++
++  const remaining = await start({ cs_east: credentials.cs_east });
++  expect(await remaining.invoke(west)).toHaveProperty("error");
++  expect(await remaining.invoke(east)).toMatchObject(result("cs_east"));
++  expect(calls.filter(({ identity }) => identity === "cs_west")).toEqual([
++    { identity: "cs_west", name: "probe", arguments: west.arguments },
++  ]);
++  expect(calls.filter(({ identity }) => identity === "cs_east")).toEqual([
++    { identity: "cs_east", name: "probe", arguments: east.arguments },
++    { identity: "cs_east", name: "east_only", arguments: east.arguments },
++    { identity: "cs_east", name: "probe", arguments: east.arguments },
++  ]);
++});
