@@ -18,7 +18,7 @@ const outputPath = fileURLToPath(
 );
 const documentationInstallationId = "ins_6054d30d-0f89-4cd0-aa56-2b76e3c5fb52";
 
-function sortKeys(value: unknown): unknown {
+function sortKeys(value) {
   if (Array.isArray(value)) {
     return value.map(sortKeys);
   }
@@ -60,7 +60,7 @@ async function generateDocument() {
 
 const arguments_ = process.argv.slice(2);
 if (arguments_.length > 1 || (arguments_.length === 1 && arguments_[0] !== "--check")) {
-  throw new Error("Usage: node scripts/generate-occ-openapi.ts [--check]");
+  throw new Error("Usage: node scripts/generate-occ-openapi.mjs [--check]");
 }
 
 const document = await generateDocument();
