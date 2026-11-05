@@ -151,6 +151,22 @@ configuration.
 | `OCC_TEST_OPENAI_MODEL`        | Authorized provider model; defaults to exact API model ID `gpt-6-astra`.                |
 | `PYTHON`                       | Optional host Python interpreter for `tests/helpers/tui-pty.py`; defaults to `python3`. |
 
+## ClawHub qualification boundary
+
+The proxy change has a separate packaged-Gateway smoke proof: real ClawHub
+search, owner-qualified detail fetch and installation of `@steipete/weather`
+version `1.0.0`, workspace discovery, integrity/lock checks, and discovery after
+a native Gateway restart. The actual bundled server permitted `clawhub.ai`, and
+TLS verification remained enabled. No model or installed skill was executed.
+See the [delivery record](../../specs/plans/0045-gateway-outbound-proxy.md#delivery-record).
+
+That container proof is not an OCE deployment qualification. Through the regular
+API/worker workflow, repeat it for embedded and dedicated workspaces, verify
+the workspace files and discovery, then replace the Agent revision and verify
+persistence. Keep enforced NetworkPolicies active. A registry-installed skill
+can require other services or subprocess networking; fetching it does not prove
+that its execution is permitted or functional.
+
 ## Related
 
 - [Choose another test suite](README.md).

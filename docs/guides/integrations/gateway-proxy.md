@@ -43,6 +43,13 @@ enabling an integration does not expand the proxy allowlist. Check the selected
 runtime's supported plugins and integration prerequisites. General proxy routing
 does not remove the existing embedded-channel or dedicated-native support gates.
 
+For native ClawHub registry requests, include `clawhub.ai` in the list. Other
+artifact sources and services used by installed skills need their own hosts;
+this is not permission for every destination a skill might use. The
+[ClawHub proof boundary](../../testing/docker.md#clawhub-qualification-boundary)
+distinguishes the passing packaged-Gateway smoke check from pending OCE
+deployment and revision-persistence qualification.
+
 ## External proxy
 
 Instead of `bundled`, set one credential-free HTTP(S) literal IPv4 endpoint with

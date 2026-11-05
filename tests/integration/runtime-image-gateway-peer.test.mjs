@@ -34,12 +34,14 @@ test(
   async (t) => {
     const directory = await mkdtemp(join(tmpdir(), "oce-runtime-proxy-"));
     const prefix = `oce-runtime-proxy-${randomBytes(5).toString("hex")}`;
+    const volume = `${prefix}-material`;
     const containers = [];
     t.after(async () => {
       for (const name of containers.reverse()) {
         await runDocker(["rm", "-f", name]).catch(() => {});
       }
       await runDocker(["network", "rm", prefix]).catch(() => {});
+      await runDocker(["volume", "rm", volume]).catch(() => {});
       await rm(directory, { recursive: true, force: true });
     });
     await writeFile(join(directory, "token"), randomBytes(32).toString("hex"), { mode: 0o644 });
@@ -73,6 +75,24 @@ test(
       await writeFile(join(directory, file), await readFile(source));
     }
     await runDocker(["network", "create", prefix]);
+    // CI may use a remote Docker daemon: local temporary paths are not valid
+    // daemon bind mounts. Copy proof material into a daemon-owned volume.
+    await runDocker(["volume", "create", volume]);
+    const staging = `${prefix}-material`;
+    containers.push(staging);
+    await runDocker([
+      "create",
+      "--name",
+      staging,
+      "-v",
+      `${volume}:/proof`,
+      "--entrypoint",
+      "node",
+      image,
+    ]);
+    for (const file of ["token", "key.pem", "cert.pem", "fixture.mjs", "gateway-proxy.mjs"]) {
+      await runDocker(["cp", join(directory, file), `${staging}:/proof/${file}`]);
+    }
     async function start(role, aliases) {
       const name = `${prefix}-${role}`;
       containers.push(name);
@@ -100,7 +120,7 @@ test(
         "-e",
         "NODE_EXTRA_CA_CERTS=/proof/cert.pem",
         "-v",
-        `${directory}:/proof:ro`,
+        `${volume}:/proof:ro`,
         "--entrypoint",
         "node",
         image,

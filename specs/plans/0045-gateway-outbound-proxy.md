@@ -80,6 +80,24 @@ Local verification on 2026-11-05, from the source baseline above with this chang
 - Lint, TypeScript, workspace isolation, documentation/link/length checks,
   changed flow validators, and CI suite audit passed.
 
+Follow-up verification on 2026-11-05:
+
+- The first native image run passed both controller architectures but failed
+  both runtime lanes. The new proxy case used a local bind mount that was not
+  visible to the CI Docker daemon. It now copies material into a Docker volume;
+  the repaired packaged-runtime case passed locally with the image above.
+  A separate stock-broker case failed with a bubblewrap mount-permission error;
+  native CI remains unresolved, not passed.
+- A genuine Gateway from that image searched ClawHub, fetched the owner-qualified
+  `@steipete/weather` detail, and installed version `1.0.0` through the bundled
+  server permitting `clawhub.ai`. Workspace discovery reported the installed
+  skill eligible and model-visible, with valid archive integrity and a lock
+  record. Discovery remained valid after a native Gateway restart. TLS
+  verification remained enabled; no model or installed skill was executed.
+  The disposable containers and network were removed. This does not prove OCC
+  deployment, dedicated remote-workspace delivery, NetworkPolicy enforcement,
+  skill execution, or persistence across Agent revision replacement.
+
 The real API/worker embedded and dedicated Codex proxy cases are authored under
 `tests/integration/harness-topology-k3d-real.test.mjs`. They were not selected for
 live execution: an approved disposable cluster/database, immutable image pair,
