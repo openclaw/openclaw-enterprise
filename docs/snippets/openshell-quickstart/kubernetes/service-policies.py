@@ -1,6 +1,7 @@
 """Render the strict-CNI service peers for the OpenShell quickstart as a Kubernetes List."""
 import argparse
 import hashlib
+import ipaddress
 import json
 import os
 import subprocess
@@ -16,9 +17,9 @@ envoy = "envoy-gateway-system"
 items = []
 
 
-def resource(namespace, kind, name):
+def resource(namespace, kind, *selection):
     return json.loads(subprocess.check_output(
-        ["kubectl", "--kubeconfig", os.environ["KUBECONFIG"], "--context", os.environ["CONTEXT"], "-n", namespace, "get", kind, name, "-o", "json"], text=True
+        ["kubectl", "--kubeconfig", os.environ["KUBECONFIG"], "--context", os.environ["CONTEXT"], "-n", namespace, "get", kind, *selection, "-o", "json"], text=True
     ))
 
 
@@ -44,6 +45,29 @@ def service_edges(namespace, service, number):
     target, = [p["targetPort"] for p in spec["ports"] if p["port"] == number]
     return [{"to": [{"ipBlock": {"cidr": spec["clusterIP"] + "/32"}}], "ports": [port(number)]},
             {"to": [peer(namespace, spec["selector"])], "ports": [port(target)]}]
+
+
+def api_edges():
+    service = resource("default", "service", "kubernetes")["spec"]
+    https, = [p for p in service["ports"] if p["port"] == 443 and p["protocol"] == "TCP"]
+    slices = resource("default", "endpointslices", "-l", "kubernetes.io/service-name=kubernetes")
+    backends = []
+    for endpoint_slice in slices["items"]:
+        target, = [p["port"] for p in endpoint_slice["ports"]
+                   if p.get("name") == https.get("name") and p.get("protocol", "TCP") == "TCP"]
+        if not isinstance(target, int) or not 1 <= target <= 65535:
+            raise ValueError("The Kubernetes API endpoint must declare its TCP port")
+        for endpoint in endpoint_slice["endpoints"]:
+            if endpoint.get("conditions", {}).get("ready") is False:
+                continue
+            for address in endpoint["addresses"]:
+                ip = ipaddress.ip_address(address)
+                backends.append({"to": [{"ipBlock": {"cidr": f"{ip}/{ip.max_prefixlen}"}}],
+                                 "ports": [port(target)]})
+    if not backends:
+        raise ValueError("No ready Kubernetes API endpoint was found")
+    return [{"to": [{"ipBlock": {"cidr": service["clusterIP"] + "/32"}}],
+             "ports": [port(443)]}] + backends
 
 
 def policy(namespace, name, selector, direction, rules):
@@ -74,8 +98,6 @@ policy(system, "oce-management-from-controller", management_selector, "ingress",
 tenant_suffix = hashlib.sha256(args.namespace_id.encode()).hexdigest()[:12]
 policy(system, "oce-management-from-supervisors-" + tenant_suffix, management_selector, "ingress",
        [{"from": [tenant_peer(supervisor["matchLabels"])], "ports": [port(8080)]}])
-if hook:
-    policy(system, "oce-hook-sender", management_selector, "egress", hook)
 policy(args.tenant, "oce-supervisor-services", supervisor, "egress",
        hook + service_edges(envoy, private, 443) + service_edges(system, management, 8080))
 policy(envoy, "oce-proxy-control", proxy, "egress", service_edges(envoy, controller, 18000))
@@ -85,9 +107,19 @@ policy(system, "oce-api-private-route", {"matchLabels": api["spec"]["selector"]}
        service_edges(envoy, private, 443))
 policy(envoy, "oce-private-route-from-api", proxy, "ingress",
        [{"from": [peer(system, api["spec"]["selector"])], "ports": [port(10443)]}])
-dns = resource("kube-system", "service", "kube-dns")["spec"]["clusterIP"]
+dns_service = resource("kube-system", "service", "kube-dns")["spec"]
+dns = dns_service["clusterIP"]
 dns_rule = [{"to": [{"ipBlock": {"cidr": dns + "/32"}}],
              "ports": [{"port": 53, "protocol": p} for p in ["UDP", "TCP"]]}]
+if hook:
+    # This is the Gateway's first egress policy: retain DNS and Kubernetes reconciliation.
+    dns_ports = [{"port": p["targetPort"], "protocol": p["protocol"]}
+                 for p in dns_service["ports"] if p["port"] == 53 and p["protocol"] in ["UDP", "TCP"]]
+    if {p["protocol"] for p in dns_ports} != {"UDP", "TCP"}:
+        raise ValueError("The DNS Service must expose both UDP and TCP port 53")
+    dns_backends = [{"to": [peer("kube-system", dns_service["selector"])], "ports": dns_ports}]
+    policy(system, "oce-hook-sender", management_selector, "egress",
+           hook + dns_rule + dns_backends + api_edges())
 policy(envoy, "oce-proxy-dns-vip", proxy, "egress", dns_rule)
 if args.agent_id:
     suffix = hashlib.sha256(args.agent_id.encode()).hexdigest()[:12]
