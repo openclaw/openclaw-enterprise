@@ -23,6 +23,7 @@
     "tests/integration/postgres-password-default.test.mjs",
     "tests/integration/postgres-github-admin-scope.test.mjs",
     "tests/integration/postgres-github-org-allowlist.test.mjs",
+    "tests/integration/postgres-github-roster.test.ts",
     "tests/integration/postgres-github-cookie-commit.test.mjs",
     "tests/integration/postgres-sign-in-unmatched-callbacks.test.mjs",
     "tests/integration/postgres-github-session-cookie.test.mjs",
@@ -30,6 +31,7 @@
     "tests/integration/postgres-auth-binding.test.mjs"
   ],
   "files": [
+    { "path": "tests/integration/postgres-github-roster.test.ts" },
     {
       "path": "tests/integration/native-admin-session-postgres.test.mjs",
       "expectedTests": [

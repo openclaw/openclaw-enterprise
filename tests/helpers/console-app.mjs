@@ -453,6 +453,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     createController(installation) {
       controller = new OpenClawController(installation, {
         state: platformState,
+        githubRosterMappings: options.githubRosterMappings,
         ...(authorizeWith === undefined ? {} : { authorize: authorizeWith(iamDriver) }),
         preparedTokens: options.preparedTokens,
         sandboxNetworkPolicyCeiling: options.sandboxNetworkPolicyCeiling,

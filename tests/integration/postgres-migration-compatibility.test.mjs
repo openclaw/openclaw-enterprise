@@ -1371,6 +1371,7 @@ async function assertCompletedHistory(db, previous = []) {
       ["occ.close_repository_standing_execution()", false],
       ["occ.create_agent_sandbox_policy()", false, "search_path=pg_catalog, occ"],
       ["occ.finalize_agent_deletion(text,text,text,uuid)", true],
+      ["occ.hold_github_roster_override_policy()", true, "search_path=pg_catalog, pg_temp"],
       ["occ.record_repository_standing_execution(text,text,text,text,text)", true],
       ["occ.remove_sandbox_policy_access()", false, "search_path=pg_catalog, occ"],
       ["occ.retry_failed_agent_deletion(text,text,text,text)", true],
@@ -1848,6 +1849,7 @@ async function assertUpgradedRevisionReadable(db) {
 async function canonicalData(db) {
   const result = { presets: [] };
   const migrationOwnedColumns = {
+    iam_group_memberships: ["roster_source_id"],
     account: ["authentication_version", "identity_only"],
     agents: [
       "repository_bindings",
@@ -1997,6 +1999,7 @@ test(
       [64, "preSelectedRepositorySet"],
       [65, "preAgentDeployIntent"],
       [66, "preDefaultUsers"],
+      [67, "preGithubRosterMemberships"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });

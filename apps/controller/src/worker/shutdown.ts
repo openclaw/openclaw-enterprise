@@ -15,6 +15,7 @@ export interface WorkerComposition {
   readonly receiptServer?: Closable;
   readonly closeMetrics: () => Promise<void>;
   readonly preparedGitHub?: Closable;
+  readonly githubRosterWorker?: Closable;
   readonly worker: { stopLoop(): Promise<void>; stop(): Promise<void> };
 }
 
@@ -37,6 +38,7 @@ export function closeWorkerComposition(composition: WorkerComposition): Promise<
     composition.receiptServer,
     { close: composition.closeMetrics },
     composition.preparedGitHub,
+    composition.githubRosterWorker,
     { close: () => composition.worker.stop() },
   );
 }

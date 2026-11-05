@@ -1,3 +1,4 @@
+import { bindGithubTeamMappings } from "../auth/github-team-mappings.ts";
 import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
 import { installationControllerOptions } from "./installation-config.ts";
@@ -168,7 +169,12 @@ export async function composePostgresDevelopment(
       drivers === undefined
         ? new NativeIAMDriver(state, { id: driverId, implementation: "native" })
         : drivers.createIAMDriver(state);
+    const githubRosterMappings = bindGithubTeamMappings(
+      drivers?.installation.iam,
+      config.github?.clientId,
+    );
     const auth = await createPostgresControllerAuth({
+      githubRosterMappings,
       mode: config.mode,
       installationId,
       secret: config.authSecret,
@@ -253,6 +259,7 @@ export async function composePostgresDevelopment(
       persistedInstallation,
       {
         ...installationControllerOptions(drivers?.installation),
+        githubRosterMappings,
         state,
         ...(drivers?.tokenService && { preparedTokens: drivers.tokenService }),
         recordOperations: true,

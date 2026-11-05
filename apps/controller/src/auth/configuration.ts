@@ -124,3 +124,12 @@ export function isDevelopmentBrowserOrigin(value: string): boolean {
     labels.every((label) => label.length > 0)
   );
 }
+
+/** The immutable IDs accepted by GitHub team membership readers on the JSON wire. */
+export function isGitHubTeamDatabaseId(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^[1-9][0-9]{0,15}$/.test(value) &&
+    Number.isSafeInteger(Number(value))
+  );
+}

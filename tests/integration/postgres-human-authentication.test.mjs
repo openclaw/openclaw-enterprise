@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import test from "node:test";
+import { assertGithubRosterMemberships } from "../helpers/github-roster-memberships.ts";
 import {
   PostgresHumanAuthentication,
   PostgresPlatformState,
@@ -262,6 +263,36 @@ test(
         assert.equal((await peer.currentSession(session.token)).user.id, recoveryUser.id);
         await peer.revokeSession(session.token);
         assert.equal(await persistence.currentSession(session.token), undefined);
+      },
+    );
+
+    await context.test(
+      "GitHub roster withdrawals preserve independent Group membership sources and fence delayed observations",
+      async () => {
+        const prepared = await preparedAccount("roster");
+        const rosterSeed = auth.principalSeed(prepared, { roleId });
+        await persistence.provisionPasswordAccount(prepared, rosterSeed);
+        const rejecting = new PostgresPlatformState(
+          transportPool(pool, (client, sql, parameters) => {
+            if (
+              sql.includes("INSERT INTO occ.audit_events") &&
+              parameters[4] === "iam.github_roster.refresh"
+            ) {
+              return client.query(sql, ["invalid-audit-id", ...parameters.slice(1)]);
+            }
+            return client.query(sql, parameters);
+          }),
+        );
+        await assertGithubRosterMemberships(
+          state,
+          rejecting,
+          pool,
+          installation.id,
+          issuer,
+          admin,
+          prepared.id,
+          rosterSeed.principal.id,
+        );
       },
     );
 

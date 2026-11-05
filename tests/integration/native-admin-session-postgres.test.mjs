@@ -184,6 +184,15 @@ async function createApi(t, label, upstreamPort, options = {}) {
   const controller = new OpenClawController(installation, {
     state,
     recordOperations: false,
+    githubRosterMappings: [
+      {
+        id: "support",
+        providerId: "github:fixture",
+        organizationId: "1",
+        teamId: "2",
+        groupId: "group_config_support",
+      },
+    ],
   });
   for (const driver of [iamDriver, computeDriver, configurationDriver, secretDriver]) {
     controller.registerDriver(driver);
@@ -205,7 +214,7 @@ async function createApi(t, label, upstreamPort, options = {}) {
       domain: nativeDomain,
       sharedCookieDomain: cookieDomain,
     },
-    nativeAdminGatewayApiKey: async () => nativeGatewayApiKey,
+    nativeAdminGatewayApiKey: options.nativeAdminGatewayApiKey ?? (async () => nativeGatewayApiKey),
     nativeAdminWebSocketLeaseIntervalMs: leaseIntervalMs,
   });
   app.addHook("onClose", async () => {
@@ -727,9 +736,15 @@ test(
     await ensureBootstrap(t);
     const upstream = await startNativeHttpsUpstream(t);
     trustLocalUpstreamCertificate(t, upstream.cert);
+    let prepareKey;
     const [apiA, apiB] = await Promise.all([
       createApi(t, "a", upstream.port),
-      createApi(t, "b", upstream.port),
+      createApi(t, "b", upstream.port, {
+        nativeAdminGatewayApiKey: async () => {
+          await prepareKey?.();
+          return nativeGatewayApiKey;
+        },
+      }),
     ]);
     t.after(() => Promise.allSettled([apiA.app.close(), apiB.app.close()]));
     const session = await signIn(apiA.app);
@@ -787,6 +802,28 @@ test(
       "openclaw.agents.native_admin.read",
       limited.principal.id,
     );
+    // The proxy already authorized this exact Agent before asking for its Gateway key.
+    // Commit a withdrawal from the other API before the held transport can forward it.
+    const entered = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    prepareKey = () => {
+      entered.resolve();
+      return release.promise;
+    };
+    const pending = nativeGet(apiB, native, nativeCookie);
+    try {
+      await within(entered.promise, 3_000, "the authorized proxy request must reach key loading");
+      await apiA.pool.query(
+        `INSERT INTO occ.iam_restrictions (id, namespace_id, action, resource_kind, resource_id, effect)
+         VALUES ($1,$2,'administer','agent',$3,'deny')`,
+        [`native-admission-${randomUUID()}`, namespace.id, agent.id],
+      );
+    } finally {
+      release.resolve();
+    }
+    const refused = await pending;
+    assert.equal(refused.statusCode, 403, refused.body);
+    assert.equal(upstream.requests.length, 1, "the withdrawn request never reaches the Gateway");
   },
 );
 

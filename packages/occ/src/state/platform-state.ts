@@ -1,3 +1,4 @@
+import type { GithubRosterMapping } from "./github-roster-state.ts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import { assertExecutionAdmission } from "@openclaw-enterprise/contracts";
 import { memoryEgressSendReceipts } from "./egress-send-receipts.ts";
@@ -132,6 +133,7 @@ export interface InstallationRepository extends InstallationReadRepository {
    * while OCC applies the `iam` configuration, so the two commit one after the other.
    */
   holdIAMConfiguration(mode: "shared" | "exclusive"): Promise<void>;
+  syncGithubRosterMappings?(mappings: readonly GithubRosterMapping[]): Promise<void>;
 }
 
 export interface NamespaceReadRepository {
@@ -1078,7 +1080,10 @@ export interface PlatformUnitOfWork extends PlatformReadView {
 
 export interface PlatformStateStore {
   read<T>(work: (state: PlatformReadView) => Promise<T>): Promise<T>;
-  transact<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T>;
+  transact<T>(
+    work: (state: PlatformUnitOfWork) => Promise<T>,
+    isolation?: "read committed",
+  ): Promise<T>;
 }
 
 export interface TransactionalAuditWriter {

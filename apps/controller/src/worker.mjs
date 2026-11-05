@@ -1,3 +1,5 @@
+import { bindGithubTeamMappings } from "./auth/github-team-mappings.ts";
+import { startGithubRosterWorker } from "./worker/github-roster.ts";
 import { unlink, writeFile } from "node:fs/promises";
 import { createPostgresPool, PostgresPlatformState } from "@openclaw-enterprise/occ";
 import { startRepositoryReceiptServer } from "./backends/repository-credentials/receipt-server.ts";
@@ -95,6 +97,7 @@ function workerStartupFailureCode(error) {
 }
 
 let worker;
+let githubRosterWorker;
 let pool;
 let readinessPath;
 let livenessPath;
@@ -251,7 +254,36 @@ try {
   });
   preparedGitHub = drivers?.preparedGitHub;
   await preparedGitHub?.connect(pool);
+  const mappings = bindGithubTeamMappings(
+    drivers?.installation.iam,
+    process.env.OCC_AUTH_GITHUB_CLIENT_ID,
+  );
+  const rosterTokenFile = process.env.OCC_GITHUB_TEAM_TOKEN_FILE;
+  if (mappings.length && !rosterTokenFile?.startsWith("/")) {
+    throw new Error(
+      "Configured GitHub team mappings require an absolute OCC_GITHUB_TEAM_TOKEN_FILE.",
+    );
+  }
   await worker.start();
+  if (mappings.length) {
+    const rosterState = new PostgresPlatformState(pool);
+    const installation = await rosterState.loadInstallation();
+    if (!installation) {
+      throw new Error("GitHub team mappings require a bootstrapped Installation.");
+    }
+    githubRosterWorker = startGithubRosterWorker(
+      rosterState,
+      installation.id,
+      mappings,
+      rosterTokenFile,
+      (mappingId) =>
+        emitOccLogEvent(logger, {
+          event: "worker.warn",
+          code: "GITHUB_TEAM_ROSTER_UNAVAILABLE",
+          mappingId,
+        }),
+    );
+  }
   preparedGitHub?.startWorker((code, context, severity = "error") =>
     emitOccLogEvent(logger, { event: `worker.${severity}`, code, ...context }),
   );
@@ -269,6 +301,7 @@ try {
         preparedRepositoryGit,
         receiptServer,
         closeMetrics,
+        githubRosterWorker,
         preparedGitHub,
         worker,
       });
@@ -281,6 +314,7 @@ try {
   process.once("SIGTERM", shutdown);
   process.once("SIGINT", shutdown);
 } catch (error) {
+  await githubRosterWorker?.close().catch(() => {});
   await preparedGitHub?.close().catch(() => {});
   await repositoryGitTransport?.close().catch(() => {});
   await preparedRepositoryGit?.close().catch(() => {});

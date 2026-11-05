@@ -1,3 +1,4 @@
+import { bindGithubTeamMappings } from "../auth/github-team-mappings.ts";
 import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
 import { installationControllerOptions } from "./installation-config.ts";
@@ -161,7 +162,12 @@ export async function composeProduction(
     validatePersistedNativeIAMState(iamState);
     phaseCompleted("database");
     const iamDriver = createIAMDriver(state);
+    const githubRosterMappings = bindGithubTeamMappings(
+      config.drivers.installation.iam,
+      config.github?.clientId,
+    );
     const auth = await createPostgresControllerAuth({
+      githubRosterMappings,
       mode: config.mode,
       installationId: persistedInstallation.id,
       secret: config.authSecret,
@@ -299,6 +305,7 @@ export async function composeProduction(
       persistedInstallation,
       {
         ...installationControllerOptions(config.drivers.installation),
+        githubRosterMappings,
         state,
         ...(config.drivers.tokenService && { preparedTokens: config.drivers.tokenService }),
         recordOperations: true,

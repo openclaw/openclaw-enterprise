@@ -25,6 +25,7 @@
     "helpers/node-test-summary.ts",
     "helpers/image-smoke-timeout.ts",
     "helpers/credential-source-owner-upgrade.ts",
+    "helpers/github-roster-memberships.ts",
     "helpers/populated-upgrade-return.ts",
     "helpers/deployed-repository-capability.ts",
     "helpers/production-upgrade-dispatch-restore.ts",

@@ -31,6 +31,7 @@
 ### Authentication accounts
 
 - [`getAuthAccount`](../api.md#get-apiauthaccountsuserid): Inspect current human account state.
+- [`getGitHubTeamMembershipOverride`](../api.md#get-apiauthaccountsuseridmethodsmethodidgithubteammappingsmappingidoverride): Read a mapped membership override and its version.
 - [`createAuthAccount`](../api.md#post-apiauthaccounts): Create a local auth account as an Installation administrator.
 - [`attachGitHubIdentity`](../api.md#post-apiauthaccountsuseridprovidersgithub): Attach an exact GitHub identity to an existing account.
 - [`attachGoogleIdentity`](../api.md#post-apiauthaccountsuseridprovidersgoogle): Attach an exact Google identity to an existing account.
@@ -40,6 +41,7 @@
 - [`enableAuthAccount`](../api.md#post-apiauthaccountsuseridenable): Re-enable a disabled human account.
 - [`enrolAuthAccount`](../api.md#post-apiauthaccountsuseridenrol): Enrol an existing account that activation skipped.
 - [`revokeAuthAccountSessions`](../api.md#post-apiauthaccountsuseridrevoke): Revoke all sessions for a human account.
+- [`setGitHubTeamMembershipOverride`](../api.md#post-apiauthaccountsuseridmethodsmethodidgithubteammappingsmappingidoverride): Withdraw a mapped membership or permit a future verified sign-in.
 
 ### Authentication sessions
 

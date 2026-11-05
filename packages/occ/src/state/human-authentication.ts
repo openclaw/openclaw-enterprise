@@ -1,4 +1,15 @@
-import { randomUUID } from "node:crypto";
+import {
+  activeRosterMapping,
+  mappingParameters,
+  unavailableMapping,
+  type GithubRosterMapping,
+  type GithubRosterObservation,
+  type GithubRosterRefreshClaim,
+  type GithubRosterSignInClaim,
+  type GithubRosterStatus,
+} from "./github-roster-state.ts";
+import { NativeIAMDriver } from "@openclaw-enterprise/iam";
+import { createHash, randomUUID } from "node:crypto";
 import {
   CallerStateDeniedError,
   ResourceConflictError,
@@ -8,6 +19,11 @@ import {
 import type { PlatformUnitOfWork } from "./platform-state.ts";
 import type { PersistedNativeIAMPrincipalSeed, PostgresPlatformState } from "./postgres-state.ts";
 import type { AuditEvent } from "@openclaw-enterprise/contracts";
+
+interface GithubRosterSignInObservation {
+  readonly claim: GithubRosterSignInClaim;
+  readonly result: "present" | "absent";
+}
 
 export interface HumanAuthenticationActor {
   readonly userId: string;
@@ -696,6 +712,420 @@ export class PostgresHumanAuthentication {
     };
   }
 
+  async beginRosterSignIn(
+    proof: HumanAuthenticationProof,
+    mapping: GithubRosterMapping,
+  ): Promise<GithubRosterSignInClaim | undefined> {
+    if (
+      proof.providerId !== mapping.providerId ||
+      !this.externalProviderIds.includes(mapping.providerId)
+    ) {
+      return undefined;
+    }
+    return this.state.transact(async (unit) => {
+      const user = await this.lockUser(unit, proof.userId);
+      const current = await this.snapshot(unit, user, proof.providerId, proof.subject);
+      if (
+        !current ||
+        current.proof.methodId !== proof.methodId ||
+        current.proof.version !== proof.version ||
+        current.proof.methodVersion !== proof.methodVersion ||
+        current.proof.principalId !== proof.principalId
+      ) {
+        return undefined;
+      }
+      await unit.installations.holdIAMConfiguration("exclusive");
+      const [row] = await this.query(
+        unit,
+        `WITH mapping AS (
+          SELECT key,generation FROM occ.github_roster_mappings WHERE ${activeRosterMapping}
+            AND last_successful_at IS NOT NULL
+        ), claimed AS (
+          INSERT INTO occ.github_roster_sources (mapping_key,method_id,method_version,sign_in_id)
+          SELECT key,$6,$7,gen_random_uuid() FROM mapping
+          ON CONFLICT(mapping_key,method_id) DO UPDATE SET sign_in_id=EXCLUDED.sign_in_id
+          RETURNING sign_in_id
+        ) SELECT generation, sign_in_id FROM mapping,claimed`,
+        [...mappingParameters(mapping), proof.methodId, proof.methodVersion],
+      );
+      if (!row) {
+        return undefined;
+      }
+      return {
+        mapping,
+        generation: row.generation as string,
+        version: row.sign_in_id as string,
+        methodId: proof.methodId,
+        subject: proof.subject,
+      };
+    });
+  }
+
+  private async applyRosterSignIn(
+    unit: PlatformUnitOfWork,
+    proof: HumanAuthenticationProof,
+    observation: GithubRosterSignInObservation,
+  ): Promise<void> {
+    const { claim, result } = observation;
+    if (
+      claim.methodId !== proof.methodId ||
+      claim.subject !== proof.subject ||
+      claim.mapping.providerId !== proof.providerId
+    ) {
+      throw new ScopeViolationError(
+        "The GitHub roster observation belongs to a different authentication method.",
+      );
+    }
+    const [source] = await this.query(
+      unit,
+      `UPDATE occ.github_roster_sources s SET sign_in_id=NULL, refresh_id=NULL
+      FROM (SELECT key FROM occ.github_roster_mappings WHERE ${activeRosterMapping} AND generation=$6 AND last_successful_at IS NOT NULL) m
+      WHERE s.mapping_key=m.key AND s.method_id=$7 AND s.sign_in_id=$8
+      RETURNING s.id,s.denied`,
+      [...mappingParameters(claim.mapping), claim.generation, claim.methodId, claim.version],
+    );
+    if (!source) {
+      throw unavailableMapping();
+    }
+    const granted = result === "present" && source.denied === false;
+    if (granted) {
+      await this.query(
+        unit,
+        `INSERT INTO occ.iam_group_memberships(group_id,principal_id,roster_source_id)
+        VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
+        [claim.mapping.groupId, proof.principalId, source.id],
+      );
+    } else {
+      await this.query(unit, `DELETE FROM occ.iam_group_memberships WHERE roster_source_id=$1`, [
+        source.id,
+      ]);
+    }
+    await this.audit(unit, "iam.github_roster.sign_in", proof.principalId, {
+      mappingId: claim.mapping.id,
+      groupId: claim.mapping.groupId,
+      methodId: claim.methodId,
+      subject: claim.subject,
+      result,
+      granted,
+    });
+  }
+
+  async claimRosterRefresh(
+    mapping: GithubRosterMapping,
+  ): Promise<GithubRosterRefreshClaim | undefined> {
+    return this.state.transact(async (unit) => {
+      await unit.installations.holdIAMConfiguration("exclusive");
+      const [run] = await this.query(
+        unit,
+        `UPDATE occ.github_roster_mappings SET refresh_id=gen_random_uuid(),
+        next_refresh_at=clock_timestamp()+interval '10 minutes',last_attempt_at=clock_timestamp(),status='running'
+        WHERE ${activeRosterMapping} AND next_refresh_at<=clock_timestamp() RETURNING key,generation,refresh_id`,
+        mappingParameters(mapping),
+      );
+      if (!run) {
+        return undefined;
+      }
+      // Capture durably which admitted attachments this observation may affect. A later
+      // committed sign-in, operator decision, detach or disable invalidates the per-source claim.
+      const captured = await this.query(
+        unit,
+        `UPDATE occ.github_roster_sources s SET refresh_id=$2
+        FROM occ.iam_group_memberships g,occ.account a,occ.human_authentication_accounts h
+        WHERE s.mapping_key=$1 AND g.roster_source_id=s.id AND a.id=s.method_id AND h.user_id=a.user_id
+          AND g.principal_id=h.principal_id AND a.identity_only AND NOT h.disabled AND NOT s.denied
+        RETURNING a.account_id`,
+        [run.key, run.refresh_id],
+      );
+      return {
+        mapping,
+        generation: run.generation as string,
+        claimId: run.refresh_id as string,
+        subjects: captured.map((row) => row.account_id as string),
+      };
+    });
+  }
+
+  async finishRosterRefresh(
+    claim: GithubRosterRefreshClaim,
+    result: GithubRosterObservation,
+  ): Promise<boolean> {
+    return this.state.transact(async (unit) => {
+      await unit.installations.holdIAMConfiguration("exclusive");
+      const [run] = await this.query(
+        unit,
+        `UPDATE occ.github_roster_mappings SET refresh_id=NULL,status=$8,
+        next_refresh_at=clock_timestamp()+CASE WHEN $8='complete' THEN interval '6 hours' ELSE interval '5 minutes' END,
+        last_successful_at=CASE WHEN $8='complete' THEN clock_timestamp() ELSE last_successful_at END
+        WHERE ${activeRosterMapping} AND generation=$6 AND refresh_id=$7 AND next_refresh_at>clock_timestamp() RETURNING key`,
+        [...mappingParameters(claim.mapping), claim.generation, claim.claimId, result.status],
+      );
+      if (!run) {
+        return false;
+      }
+      let withdrawn = 0;
+      if (result.status === "complete") {
+        const claimed = await this.query(
+          unit,
+          `SELECT a.account_id FROM occ.github_roster_sources s
+          JOIN occ.account a ON a.id=s.method_id WHERE s.mapping_key=$1 AND s.refresh_id=$2`,
+          [run.key, claim.claimId],
+        );
+        const present = new Set(result.presentSubjects);
+        const absent = new Set(result.confirmedAbsentSubjects);
+        if (
+          claimed.some((row) => {
+            const subject = row.account_id as string;
+            return present.has(subject) === absent.has(subject);
+          })
+        ) {
+          throw new ScopeViolationError(
+            "The GitHub roster refresh did not resolve every captured subject.",
+          );
+        }
+        // Even a first sign-in can already be reading the provider without a grant to capture.
+        // A confirmed roster fences all such unfinished observations. An abandoned sign-in
+        // cannot defeat an already claimed withdrawal.
+        await this.query(
+          unit,
+          `UPDATE occ.github_roster_sources SET sign_in_id=NULL
+          WHERE mapping_key=$1 AND sign_in_id IS NOT NULL`,
+          [run.key],
+        );
+        const deleted = await this.query(
+          unit,
+          `DELETE FROM occ.iam_group_memberships g USING occ.github_roster_sources s,occ.account a
+          WHERE g.roster_source_id=s.id AND s.mapping_key=$1 AND s.refresh_id=$2
+            AND a.id=s.method_id AND a.account_id=ANY($3::text[])
+          RETURNING g.principal_id, a.id AS method_id, a.account_id AS subject`,
+          [run.key, claim.claimId, result.confirmedAbsentSubjects],
+        );
+        for (const row of deleted) {
+          await unit.audit.append({
+            id: `aud_${randomUUID()}`,
+            installationId: this.installationId,
+            occurredAt: new Date().toISOString(),
+            kind: "mutation",
+            actorId: this.installationId,
+            action: "iam.github_roster.withdraw",
+            resource: { kind: "installation", id: this.installationId },
+            outcome: "success",
+            details: {
+              mappingId: claim.mapping.id,
+              providerId: claim.mapping.providerId,
+              organizationId: claim.mapping.organizationId,
+              teamId: claim.mapping.teamId,
+              groupId: claim.mapping.groupId,
+              principalId: row.principal_id,
+              methodId: row.method_id,
+              subject: row.subject,
+              reason: "confirmed_absence",
+            },
+          });
+        }
+        withdrawn = deleted.length;
+        await this.query(
+          unit,
+          `UPDATE occ.github_roster_sources SET refresh_id=NULL
+          WHERE mapping_key=$1 AND refresh_id=$2`,
+          [run.key, claim.claimId],
+        );
+      }
+      await unit.audit.append({
+        id: `aud_${randomUUID()}`,
+        installationId: this.installationId,
+        occurredAt: new Date().toISOString(),
+        kind: "mutation",
+        actorId: this.installationId,
+        action: "iam.github_roster.refresh",
+        resource: { kind: "installation", id: this.installationId },
+        outcome: "success",
+        details: {
+          mappingId: claim.mapping.id,
+          groupId: claim.mapping.groupId,
+          result: result.status,
+          withdrawn,
+        },
+      });
+      return true;
+    });
+  }
+
+  async readRosterStatuses(
+    mappings: readonly GithubRosterMapping[],
+    actor: HumanAuthenticationActor,
+  ): Promise<readonly (GithubRosterStatus & { mappingId: string })[]> {
+    return this.state.transact(async (unit) => {
+      await this.guardActor(unit, actor, []);
+      await unit.installations.holdIAMConfiguration("shared");
+      const rows = await this.query(
+        unit,
+        `SELECT m.mapping_id,m.status,m.last_attempt_at,m.last_successful_at
+        FROM occ.github_roster_mappings m JOIN jsonb_array_elements($1::jsonb) WITH ORDINALITY AS d(mapping,ord)
+          ON (m.mapping_id,m.provider_id,m.organization_id,m.team_id,m.group_id) =
+          (d.mapping->>'id',d.mapping->>'providerId',d.mapping->>'organizationId',d.mapping->>'teamId',d.mapping->>'groupId')
+        WHERE m.generation IS NOT NULL ORDER BY d.ord`,
+        [JSON.stringify(mappings)],
+      );
+      if (rows.length !== mappings.length) {
+        throw unavailableMapping();
+      }
+      return rows.map((row) => ({
+        mappingId: row.mapping_id as string,
+        status: row.status as GithubRosterStatus["status"],
+        lastAttemptAt: (row.last_attempt_at as Date | null)?.toISOString() ?? null,
+        lastSuccessfulAt: (row.last_successful_at as Date | null)?.toISOString() ?? null,
+      }));
+    });
+  }
+
+  private async rosterOverride(
+    unit: PlatformUnitOfWork,
+    userId: string,
+    methodId: string,
+    mapping: GithubRosterMapping,
+    mode: "shared" | "exclusive",
+  ) {
+    // Direct Better Auth replacement also locks its method before invalidating IAM.
+    const [method] = await this.query(
+      unit,
+      `SELECT account_id, authentication_version FROM occ.account
+      WHERE id=$1 AND user_id=$2 AND provider_id=$3 AND identity_only FOR SHARE`,
+      [methodId, userId, mapping.providerId],
+    );
+    if (!method) {
+      throw unavailableMapping();
+    }
+    await unit.installations.holdIAMConfiguration(mode);
+    const [row] = await this.query(
+      unit,
+      `SELECT m.key,m.generation,s.denied,s.override_version
+      FROM (SELECT key,generation FROM occ.github_roster_mappings WHERE ${activeRosterMapping}) m
+      LEFT JOIN occ.github_roster_sources s ON s.mapping_key=m.key AND s.method_id=$6`,
+      [...mappingParameters(mapping), methodId],
+    );
+    if (!row) {
+      throw unavailableMapping();
+    }
+    // A method can be reassigned in place and later restored to the same subject.
+    // Hold its row through settlement and distinguish each attachment incarnation.
+    const version = createHash("sha256")
+      .update(
+        JSON.stringify([
+          row.generation,
+          userId,
+          methodId,
+          method.account_id,
+          method.authentication_version,
+          row.override_version,
+        ]),
+      )
+      .digest("hex");
+    return {
+      key: row.key,
+      methodVersion: method.authentication_version,
+      denied: row.denied === true,
+      version,
+    };
+  }
+
+  async readRosterOverride(
+    userId: string,
+    methodId: string,
+    mapping: GithubRosterMapping,
+    actor: HumanAuthenticationActor,
+  ): Promise<{ denied: boolean; version: string; accountVersion: number }> {
+    return this.state.transact(async (unit) => {
+      const account = await this.guardAccounts(unit, userId, actor);
+      const { denied, version } = await this.rosterOverride(
+        unit,
+        userId,
+        methodId,
+        mapping,
+        "shared",
+      );
+      return { denied, version, accountVersion: account.version as number };
+    });
+  }
+
+  async setRosterOverride(
+    userId: string,
+    methodId: string,
+    mapping: GithubRosterMapping,
+    denied: boolean,
+    actor: HumanAuthenticationActor,
+    expectedVersion: number,
+    expectedOverrideVersion: string,
+  ): Promise<void> {
+    if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) {
+      throw new ResourceStateConflictError("A current account version is required.");
+    }
+    await this.state.transact(async (unit) => {
+      const account = await this.guardAccounts(
+        unit,
+        userId,
+        actor,
+        expectedVersion,
+        "roster-override",
+      );
+      if (!(await unit.installations.holdAuthenticationSession(actor.sessionId, actor.userId))) {
+        throw new CallerStateDeniedError("The human administrator session is no longer current.");
+      }
+      const current = await this.rosterOverride(unit, userId, methodId, mapping, "exclusive");
+      if (current.version !== expectedOverrideVersion) {
+        throw new ResourceStateConflictError("The GitHub roster override has changed.");
+      }
+      const [held] = await this.query(
+        unit,
+        "SELECT occ.hold_github_roster_override_policy() AS held",
+      );
+      if (held?.held !== true) {
+        throw new ResourceStateConflictError(
+          "IAM policy is changing. Read the current roster override before retrying.",
+        );
+      }
+      const snapshot = await this.state.loadNativeIAMStateInTransaction(unit, this.installationId);
+      const iam = new NativeIAMDriver({ loadNativeIAMState: async () => snapshot });
+      const decision = await iam.authorize({
+        principalId: actor.principalId,
+        action: "administer",
+        resource: { kind: "installation", id: this.installationId },
+      });
+      if (
+        !decision.allowed ||
+        !(await iam.coversIdentityAccess({
+          principalId: actor.principalId,
+          targetIdentityId: account.principal_id as string,
+        }))
+      ) {
+        throw new CallerStateDeniedError(
+          "The current actor cannot administer this account's roster membership.",
+        );
+      }
+      const [source] = await this.query(
+        unit,
+        `INSERT INTO occ.github_roster_sources(mapping_key,method_id,denied,override_version,method_version)
+        VALUES($1,$2,$3,gen_random_uuid(),$4)
+        ON CONFLICT(mapping_key,method_id) DO UPDATE SET denied=EXCLUDED.denied,override_version=EXCLUDED.override_version,
+          sign_in_id=NULL,refresh_id=CASE WHEN EXCLUDED.denied THEN NULL ELSE github_roster_sources.refresh_id END
+        RETURNING id`,
+        [current.key, methodId, denied, current.methodVersion],
+      );
+      // Clearing permits a new authenticated admission; it does not recreate a grant.
+      if (denied) {
+        await this.query(unit, `DELETE FROM occ.iam_group_memberships WHERE roster_source_id=$1`, [
+          source!.id,
+        ]);
+      }
+      await this.audit(unit, "iam.github_roster.override", actor.principalId, {
+        userId,
+        methodId,
+        mappingId: mapping.id,
+        groupId: mapping.groupId,
+        denied,
+      });
+    });
+  }
+
   async issueSession(
     proof: HumanAuthenticationProof,
     session: Pick<
@@ -708,6 +1138,7 @@ export class PostgresHumanAuthentication {
       readonly login?: string | undefined;
       readonly attemptId: string;
     },
+    roster: readonly GithubRosterSignInObservation[] = [],
   ): Promise<HumanAuthenticationSession> {
     if (
       audit !== undefined &&
@@ -722,6 +1153,11 @@ export class PostgresHumanAuthentication {
       throw new ScopeViolationError("The authentication audit identity is invalid.");
     }
     return this.state.transact(async (unit) => {
+      if (roster.length) {
+        if (roster.some(({ result }) => result !== "present" && result !== "absent")) {
+          throw new ScopeViolationError("GitHub roster verification is incomplete.");
+        }
+      }
       const user = await this.lockUser(unit, proof.userId);
       const current = await this.snapshot(unit, user, proof.providerId, proof.subject);
       if (
@@ -736,6 +1172,12 @@ export class PostgresHumanAuthentication {
         current.proof.passwordHash !== proof.passwordHash
       ) {
         throw new ScopeViolationError("The authentication proof is no longer current.");
+      }
+      if (roster.length) {
+        await unit.installations.holdIAMConfiguration("exclusive");
+      }
+      for (const observation of roster) {
+        await this.applyRosterSignIn(unit, proof, observation);
       }
       const [inserted] = await this.query(
         unit,
@@ -861,8 +1303,9 @@ export class PostgresHumanAuthentication {
     userId: string,
     actor: HumanAuthenticationActor,
     expectedVersion?: number,
+    intent: "account-operation" | "roster-override" = "account-operation",
   ): Promise<Row> {
-    await this.guardActor(unit, actor, [userId]);
+    await this.guardActor(unit, actor, [userId], intent);
     const account = await this.enrolled(unit, userId);
     if (
       expectedVersion !== undefined &&
@@ -882,11 +1325,11 @@ export class PostgresHumanAuthentication {
     unit: PlatformUnitOfWork,
     actor: HumanAuthenticationActor,
     userIds: readonly string[],
-    intent: "account-operation" | "session-hold" = "account-operation",
+    intent: "account-operation" | "session-hold" | "roster-override" = "account-operation",
   ): Promise<void> {
     // Account operations own bounded acquisition. A session hold borrows the
     // caller's transaction limits and shares the user against revocation.
-    if (intent === "account-operation") {
+    if (intent !== "session-hold") {
       await this.query(unit, `SET LOCAL lock_timeout = '5s'`);
       await this.query(unit, `SET LOCAL statement_timeout = '10s'`);
     }
@@ -903,7 +1346,8 @@ export class PostgresHumanAuthentication {
        WHERE s.id = $1 AND s.user_id = $2 AND h.principal_id = $3 AND h.installation_id = $5
        AND s.expires_at > clock_timestamp() AND NOT h.disabled
        AND ((m.provider_id = 'credential' AND m.password IS NOT NULL AND m.password <> '')
-         OR (m.identity_only AND m.provider_id = ANY($6::text[])))`,
+         OR (m.identity_only AND m.provider_id = ANY($6::text[])))
+       ${intent === "roster-override" ? "FOR SHARE OF m" : ""}`,
       [
         actor.sessionId,
         actor.userId,
@@ -1044,6 +1488,7 @@ export class PostgresHumanAuthentication {
       ) {
         throw new ResourceStateConflictError("Only an attached external identity can be detached.");
       }
+      await unit.installations.holdIAMConfiguration("exclusive");
       // Bindings cascade with the method; the recovery credential is never identity-only.
       await this.query(unit, `DELETE FROM occ.account WHERE id = $1`, [methodId]);
       await this.query(
@@ -1083,6 +1528,21 @@ export class PostgresHumanAuthentication {
         if (recovery !== undefined) {
           throw new ResourceStateConflictError("The recovery account cannot be disabled.");
         }
+      }
+      if (operation === "disable") {
+        await unit.installations.holdIAMConfiguration("exclusive");
+        await this.query(
+          unit,
+          `DELETE FROM occ.iam_group_memberships g USING occ.github_roster_sources s,occ.account a
+          WHERE g.roster_source_id=s.id AND s.method_id=a.id AND a.user_id=$1`,
+          [userId],
+        );
+        await this.query(
+          unit,
+          `UPDATE occ.github_roster_sources s SET sign_in_id=NULL,refresh_id=NULL
+          FROM occ.account a WHERE s.method_id=a.id AND a.user_id=$1`,
+          [userId],
+        );
       }
       if (operation === "enable" && account.disabled !== true) {
         throw new ResourceStateConflictError("The authentication account is not disabled.");

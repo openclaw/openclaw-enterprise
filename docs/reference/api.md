@@ -81,7 +81,7 @@ the paths.
 
 | Resource | Operations |
 | --- | --- |
-| [Authentication](#authentication) | 27 operations |
+| [Authentication](#authentication) | 29 operations |
 | [Backends](#backends) | 1 operation |
 | [Installation](#installation) | 5 operations |
 | [Namespaces](#namespaces) | 6 operations |
@@ -109,6 +109,8 @@ the paths.
 | [`POST /api/auth/accounts/{userId}/enable`](#post-apiauthaccountsuseridenable) | Re-enable a disabled human account |
 | [`POST /api/auth/accounts/{userId}/enrol`](#post-apiauthaccountsuseridenrol) | Enrol an existing account that activation skipped |
 | [`POST /api/auth/accounts/{userId}/methods/{methodId}/detach`](#post-apiauthaccountsuseridmethodsmethodiddetach) | Detach an external sign-in identity from an account |
+| [`GET /api/auth/accounts/{userId}/methods/{methodId}/github-team-mappings/{mappingId}/override`](#get-apiauthaccountsuseridmethodsmethodidgithubteammappingsmappingidoverride) | Read a mapped membership override and its version |
+| [`POST /api/auth/accounts/{userId}/methods/{methodId}/github-team-mappings/{mappingId}/override`](#post-apiauthaccountsuseridmethodsmethodidgithubteammappingsmappingidoverride) | Withdraw a mapped membership or permit a future verified sign-in |
 | [`POST /api/auth/accounts/{userId}/providers/github`](#post-apiauthaccountsuseridprovidersgithub) | Attach an exact GitHub identity to an existing account |
 | [`POST /api/auth/accounts/{userId}/providers/google`](#post-apiauthaccountsuseridprovidersgoogle) | Attach an exact Google identity to an existing account |
 | [`POST /api/auth/accounts/{userId}/providers/oidc`](#post-apiauthaccountsuseridprovidersoidc) | Attach an exact OIDC identity to an existing account |
@@ -247,6 +249,11 @@ Inspect current human account state
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
 | `data.disabled` | `boolean` | Yes | — |
+| `data.githubTeamRefresh` | `array<object>` | No | — |
+| `data.githubTeamRefresh[].lastAttemptAt` | `null,string` | Yes | — |
+| `data.githubTeamRefresh[].lastSuccessfulAt` | `null,string` | Yes | — |
+| `data.githubTeamRefresh[].mappingId` | `string` | Yes | — |
+| `data.githubTeamRefresh[].status` | `"pending" or "running" or "complete" or "unavailable"` | Yes | — |
 | `data.methods` | `array<object>` | Yes | — |
 | `data.methods[].methodId` | `string` | Yes | — |
 | `data.methods[].providerId` | `string` | Yes | — |
@@ -517,6 +524,145 @@ Example request
 ```json
 {
   "expectedVersion": 1
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `409` | Conflict |
+| `413` | Payload Too Large |
+| `415` | Unsupported Media Type |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.userId` | `string` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | — |
+
+Example response
+```json
+{
+  "data": {
+    "userId": "user-docs-admin"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `GET /api/auth/accounts/{userId}/methods/{methodId}/github-team-mappings/{mappingId}/override`
+
+<span id="get-apiauthaccountsuseridmethodsmethodidgithubteammappingsmappingidoverride"></span>
+
+Read a mapped membership override and its version
+
+**Operation ID:** `getGitHubTeamMembershipOverride`
+
+**Permissions:** Requires a current human Installation administrator, trusted Origin and coverage of the target account's grants. Clearing an override requires a new verified sign-in before this mapping can restore access.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `userId` | path | `string` | Yes | min length: 1; max length: 200 | "user-docs-admin" |
+| `methodId` | path | `string` | Yes | min length: 1; max length: 200 | "method-password" |
+| `mappingId` | path | `string` | Yes | min length: 1; max length: 63 | "support" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `409` | Conflict |
+| `413` | Payload Too Large |
+| `415` | Unsupported Media Type |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.accountVersion` | `integer` | Yes | minimum: 1 |
+| `data.denied` | `boolean` | Yes | — |
+| `data.version` | `string` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | — |
+
+Example response
+```json
+{
+  "data": {
+    "accountVersion": 1,
+    "denied": false,
+    "version": "override-version"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /api/auth/accounts/{userId}/methods/{methodId}/github-team-mappings/{mappingId}/override`
+
+<span id="post-apiauthaccountsuseridmethodsmethodidgithubteammappingsmappingidoverride"></span>
+
+Withdraw a mapped membership or permit a future verified sign-in
+
+**Operation ID:** `setGitHubTeamMembershipOverride`
+
+**Permissions:** Requires a current human Installation administrator, trusted Origin and coverage of the target account's grants. Clearing an override requires a new verified sign-in before this mapping can restore access.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `installation` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `userId` | path | `string` | Yes | min length: 1; max length: 200 | "user-docs-admin" |
+| `methodId` | path | `string` | Yes | min length: 1; max length: 200 | "method-password" |
+| `mappingId` | path | `string` | Yes | min length: 1; max length: 63 | "support" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `expectedOverrideVersion` | `string` | Yes | min length: 1; max length: 200 |
+| `expectedVersion` | `integer` | Yes | minimum: 1; maximum: 2147483647 |
+| `withdrawn` | `boolean` | Yes | — |
+
+Example request
+```json
+{
+  "expectedOverrideVersion": "override-version",
+  "expectedVersion": 1,
+  "withdrawn": true
 }
 ```
 

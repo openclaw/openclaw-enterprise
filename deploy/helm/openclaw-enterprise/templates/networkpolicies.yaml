@@ -205,7 +205,15 @@ spec:
     matchLabels:
       app.kubernetes.io/name: openclaw-enterprise
       app.kubernetes.io/instance: {{ .Release.Name | quote }}
+      {{- if not .Values.auth.github.teamRosterTokenSecretName }}
       app.kubernetes.io/component: api
+      {{- end }}
+    {{- if .Values.auth.github.teamRosterTokenSecretName }}
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [api, worker]
+    {{- end }}
   policyTypes: [Egress]
   egress:
     # Empty egressCidrs permits HTTPS for github.com and api.github.com to any address

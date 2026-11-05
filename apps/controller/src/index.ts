@@ -2136,16 +2136,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     );
   }
 
-  // Each OCC transaction that writes durable authority (an Owner binding or deploy-time grants)
-  // holds a session caller's session through COMMIT, as Namespace policy writes do (#2311), so a
-  // sign-out or account disable cannot commit in between. Other work runs unchanged.
+  // OCC takes the session and IAM locks in the transaction that admits each mutation.
   function performFenced(
     request: FastifyRequest,
     reply: FastifyReply,
     operation: OccApiRoute,
   ): Promise<void> {
     const admitted = admissions.get(request);
-    if (controller === undefined || admitted?.method !== "session") {
+    if (controller === undefined || admitted?.method !== "session" || operation.method === "GET") {
       return perform(request, reply, operation);
     }
     const { session } = admitted;
@@ -3713,6 +3711,23 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 principalId: { type: "string" },
                 version: { type: "integer", minimum: 1 },
                 disabled: { type: "boolean" },
+                githubTeamRefresh: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    additionalProperties: false,
+                    required: ["mappingId", "lastAttemptAt", "lastSuccessfulAt", "status"],
+                    properties: {
+                      mappingId: { type: "string" },
+                      lastAttemptAt: { type: ["string", "null"] },
+                      lastSuccessfulAt: { type: ["string", "null"] },
+                      status: {
+                        type: "string",
+                        enum: ["pending", "running", "complete", "unavailable"],
+                      },
+                    },
+                  },
+                },
                 methods: {
                   type: "array",
                   items: {
@@ -3751,9 +3766,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         }
         const { userId } = request.params as { userId: string };
         const account = await options.auth.readAccount(userId, actor);
-        reply
-          .header("cache-control", "no-store")
-          .send({ data: account, meta: { requestId: request.id } });
+        const githubTeamRefresh =
+          options.auth.readRosterStatuses && options.auth.githubRosterMappings
+            ? await options.auth.readRosterStatuses(options.auth.githubRosterMappings, actor)
+            : undefined;
+        reply.header("cache-control", "no-store").send({
+          data: { ...account, ...(githubTeamRefresh ? { githubTeamRefresh } : {}) },
+          meta: { requestId: request.id },
+        });
       },
     );
 
@@ -3914,6 +3934,129 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           reply.send({ data: { userId }, meta: { requestId: request.id } });
         },
       );
+    }
+
+    for (const method of ["GET", "POST"] as const) {
+      const mutation = method === "POST";
+      const operation = {
+        ...accountReadOperation,
+        method,
+        path: "/api/auth/accounts/:userId/methods/:methodId/github-team-mappings/:mappingId/override",
+        operationId: mutation
+          ? "setGitHubTeamMembershipOverride"
+          : "getGitHubTeamMembershipOverride",
+        action: mutation
+          ? "openclaw.auth.accounts.github-team-override"
+          : "openclaw.auth.accounts.github-team-override.read",
+        summary: mutation
+          ? "Withdraw a mapped membership or permit a future verified sign-in"
+          : "Read a mapped membership override and its version",
+      } as unknown as OccApiRoute;
+      routes.route({
+        method,
+        url: operation.path,
+        schema: {
+          operationId: operation.operationId,
+          summary: operation.summary,
+          tags: ["Authentication"],
+          description:
+            "Requires a current human Installation administrator, trusted Origin and coverage of the target account's grants. Clearing an override requires a new verified sign-in before this mapping can restore access.",
+          security: [{ sessionCookie: [] }],
+          "x-openclaw-permissions": [
+            { action: "administer", resourceKind: "installation", scope: "requested" },
+          ],
+          params: {
+            ...methodParams,
+            required: [...methodParams.required, "mappingId"],
+            properties: {
+              ...methodParams.properties,
+              mappingId: { type: "string", minLength: 1, maxLength: 63 },
+            },
+          },
+          ...(mutation
+            ? {
+                body: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: ["withdrawn", "expectedVersion", "expectedOverrideVersion"],
+                  properties: {
+                    withdrawn: { type: "boolean" },
+                    expectedVersion: { type: "integer", minimum: 1, maximum: 2147483647 },
+                    expectedOverrideVersion: { type: "string", minLength: 1, maxLength: 200 },
+                  },
+                },
+              }
+            : {}),
+          response: {
+            ...responses(
+              mutation
+                ? {
+                    type: "object",
+                    additionalProperties: false,
+                    required: ["userId"],
+                    properties: { userId: { type: "string" } },
+                  }
+                : {
+                    type: "object",
+                    additionalProperties: false,
+                    required: ["denied", "version", "accountVersion"],
+                    properties: {
+                      denied: { type: "boolean" },
+                      version: { type: "string" },
+                      accountVersion: { type: "integer", minimum: 1 },
+                    },
+                  },
+            ),
+            ...bodyErrors,
+            400: { description: "Bad Request", ...error },
+            403: { description: "Forbidden", ...error },
+            404: { description: "Not Found", ...error },
+            409: { description: "Conflict", ...error },
+          },
+        },
+        onRequest: async (request) => admit(request, operation),
+        preValidation: async (request) => {
+          refuseUnstorableText(request);
+          await resolveIdentity(request, operation);
+        },
+        handler: async (request, reply) => {
+          const context = contexts.get(request);
+          if (!context) {
+            throw dependencyUnavailable();
+          }
+          const { userId, methodId, mappingId } = request.params as {
+            userId: string;
+            methodId: string;
+            mappingId: string;
+          };
+          const actor = await humanAccountActor(request, operation, context, userId);
+          const mapping = options.auth.githubRosterMappings?.find((rule) => rule.id === mappingId);
+          if (!mapping || !options.auth.readRosterOverride || !options.auth.setRosterOverride) {
+            throw failure(404, "NOT_FOUND", "The requested GitHub team mapping is unavailable.");
+          }
+          if (!mutation) {
+            const data = await options.auth.readRosterOverride(userId, methodId, mapping, actor);
+            return reply
+              .header("cache-control", "no-store")
+              .send({ data, meta: { requestId: request.id } });
+          }
+          const { withdrawn, expectedVersion, expectedOverrideVersion } = request.body as {
+            withdrawn: boolean;
+            expectedVersion: number;
+            expectedOverrideVersion: string;
+          };
+          await options.auth.setRosterOverride(
+            userId,
+            methodId,
+            mapping,
+            withdrawn,
+            actor,
+            expectedVersion,
+            expectedOverrideVersion,
+          );
+          return reply.send({ data: { userId }, meta: { requestId: request.id } });
+        },
+      });
     }
 
     const recoveryResponse = {

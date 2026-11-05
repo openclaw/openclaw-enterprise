@@ -69,6 +69,9 @@ auth:
     # when GitHub cannot answer the membership lookup.
     allowedOrgs: []
     allowedTeams: []
+    # Worker-only token supplied and rotated by the operator for configured GitHub team mappings.
+    teamRosterTokenSecretName: ""
+    teamRosterTokenKey: token
     # API Pod HTTPS egress for github.com and api.github.com. Empty allows TCP 443 to any
     # address except link-local 169.254.0.0/16; list the web and api IPv4 ranges from
     # api.github.com/meta to narrow it.

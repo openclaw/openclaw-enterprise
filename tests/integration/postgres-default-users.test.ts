@@ -9,6 +9,7 @@ import {
   OpenClawController,
   PostgresHumanAuthentication,
   type PostgresPlatformState,
+  type GithubRosterMapping,
 } from "../../packages/occ/src/index.ts";
 import { createAuthenticatedControllerRequest } from "../helpers/auth-session.mjs";
 import { controllerIAMConfiguration, defaultUsersIAM } from "../helpers/default-users-iam.mjs";
@@ -31,13 +32,20 @@ async function defaultUsersApp(
   t: test.TestContext,
   label: string,
   iam: ReturnType<typeof defaultUsersIAM> = defaultUsersIAM(),
+  roster?: readonly GithubRosterMapping[],
 ) {
   type ProvisionAuthAccount = NonNullable<ControllerAppOptions["provisionAuthAccount"]>;
   const accounts: { provision?: ProvisionAuthAccount } = {};
   const agentApp = await createPostgresAgentApp(t, {
     label,
     authSecret: "default-users-postgres-auth-secret-minimum-32-chars",
-    controllerOptions: { iamConfiguration: controllerIAMConfiguration(iam) },
+    controllerOptions: {
+      iamConfiguration: controllerIAMConfiguration(iam),
+      githubRosterMappings: roster,
+    },
+    ...(roster === undefined
+      ? {}
+      : { poolOptions: { options: "-c default_transaction_isolation=repeatable\\ read" } }),
     appOptions: {
       provisionAuthAccount: ((...args) =>
         accounts.provision!(...args)) satisfies ProvisionAuthAccount,
@@ -525,6 +533,66 @@ test(
       agent.id,
     ]);
     assert.equal(revisions.rowCount, 0);
+  },
+);
+
+test(
+  "withdrawing a Group grant before a Secret update is admitted sends no Driver write",
+  requiresPostgres,
+  async (t) => {
+    const iam = defaultUsersIAM();
+    iam.roles[0]!.permissions.push("secret:update");
+    const app = await defaultUsersApp(t, "group-secret-update", iam, [
+      {
+        id: "members",
+        providerId: "github:fixture",
+        organizationId: "1",
+        teamId: "2",
+        groupId: DEFAULT_USER_GROUP,
+      },
+    ]);
+    assert.equal(
+      (await app.pool.query("SHOW default_transaction_isolation")).rows[0]
+        .default_transaction_isolation,
+      "repeatable read",
+    );
+    const { account, controller, inject, pool, state } = app;
+    const namespaceId = await defaultNamespace(app);
+    const alice = await account("alice");
+    const secret = await inject("POST", `/namespaces/${namespaceId}/secrets`, {
+      name: `administrator-owned ${randomUUID()}`,
+      value: "initial",
+    });
+    assert.equal(secret.statusCode, 201, secret.body);
+    const path = `/namespaces/${namespaceId}/secrets/${secret.json().data.id}`;
+    const update = t.mock.method(controller.selectedDriver("secret"), "update");
+    assert.equal((await alice.request("PATCH", path, { value: "before" })).status, 200);
+    assert.equal(update.mock.callCount(), 1);
+
+    // Hold both possible waits. A caller that authorizes before taking the Namespace lock
+    // has already accepted the old grant. A fenced caller waits first on its own account.
+    const blocker = await pool.connect();
+    await blocker.query("BEGIN");
+    let pending;
+    try {
+      await blocker.query('SELECT id FROM occ."user" WHERE email=$1 FOR UPDATE', [alice.email]);
+      await blocker.query("SELECT id FROM occ.namespaces WHERE id=$1 FOR UPDATE", [namespaceId]);
+      pending = alice.request("PATCH", path, { value: "after" });
+      await lockWaiters(pool, 1);
+      await restartedController(controller, state, {
+        ...iam,
+        roleBindings: [],
+      }).applyIAMConfiguration();
+    } finally {
+      await blocker.query("ROLLBACK");
+      blocker.release();
+    }
+    const result = await pending;
+    assert.deepEqual(
+      { status: result.status, writes: update.mock.callCount() },
+      { status: 403, writes: 1 },
+      "withdrawal must precede any new provider write",
+    );
   },
 );
 

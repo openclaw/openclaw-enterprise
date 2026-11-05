@@ -165,6 +165,11 @@ true
 {{- if or (not .Values.auth.secretName) (not .Values.auth.secretKey) -}}{{- fail "auth must reference an operator-created Better Auth signing Secret" -}}{{- end -}}
 {{- include "openclaw.validateSecretKey" (dict "label" "auth.secretKey" "value" .Values.auth.secretKey) -}}
 {{- $github := .Values.auth.github -}}
+{{- if and $github $github.teamRosterTokenSecretName -}}
+{{- if or (empty $github.egressCidrs) (has "0.0.0.0/0" (default list $github.egressCidrs)) -}}{{- fail "a GitHub team roster reader requires explicit auth.github.egressCidrs for GitHub HTTPS" -}}{{- end -}}
+{{- if not $github.enabled -}}{{- fail "auth.github.teamRosterTokenSecretName requires GitHub sign-in" -}}{{- end -}}
+{{- include "openclaw.validateSecretKey" (dict "label" "auth.github.teamRosterTokenKey" "value" $github.teamRosterTokenKey) -}}
+{{- end -}}
 {{- $recoveryUserId := toString (default "" .Values.auth.recoveryUserId) -}}
 {{- if hasKey (default dict $github) "recoveryUserId" -}}{{- fail "auth.github.recoveryUserId is not a chart value; set auth.recoveryUserId" -}}{{- end -}}
 {{- if and $recoveryUserId (not (regexMatch "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$" $recoveryUserId)) -}}{{- fail "auth.recoveryUserId must be the existing local password administrator's user ID" -}}{{- end -}}
@@ -741,6 +746,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if $routing.sandbox.enabled -}}{{- $roles = append $roles (list "gatewayRouting.sandbox.tlsSecretName" $routing.sandbox.tlsSecretName) -}}{{- end -}}
 {{- $roles = concat $roles (list (list "gatewayRouting.apiKeySecretName" $routing.apiKeySecretName) (list "gatewayRouting.caSecretName" $routing.caSecretName "ca")) -}}
 {{- end -}}
+{{- if and $github $github.teamRosterTokenSecretName -}}{{- $roles = append $roles (list "auth.github.teamRosterTokenSecretName" $github.teamRosterTokenSecretName) -}}{{- end -}}
 {{- range $provider := list "github" "google" "oidc" -}}
 {{- $signIn := index $.Values.auth $provider -}}
 {{- if and $signIn $signIn.enabled -}}{{- $roles = append $roles (list (printf "auth.%s.secretName" $provider) $signIn.secretName) -}}{{- end -}}

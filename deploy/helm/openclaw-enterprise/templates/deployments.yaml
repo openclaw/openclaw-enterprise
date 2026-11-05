@@ -65,6 +65,15 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       volumes:
+        {{- if and (eq $component "worker") $.Values.auth.github $.Values.auth.github.teamRosterTokenSecretName }}
+        - name: github-team-reader
+          secret:
+            secretName: {{ $.Values.auth.github.teamRosterTokenSecretName | quote }}
+            defaultMode: 288
+            items:
+              - key: {{ $.Values.auth.github.teamRosterTokenKey | quote }}
+                path: token
+        {{- end }}
         {{- if $.Values.backend.openshell.clientSecretName }}
         - name: openshell-client
           secret:
@@ -390,6 +399,11 @@ spec:
             - name: NODE_EXTRA_CA_CERTS
               value: /etc/openclaw/gateway-ca/ca.crt
             {{- end }}
+            {{- if and (eq $component "worker") $.Values.auth.github $.Values.auth.github.teamRosterTokenSecretName }}
+            {{- include "openclaw.secretEnv" (dict "name" "OCC_AUTH_GITHUB_CLIENT_ID" "secretName" $.Values.auth.github.secretName "key" $.Values.auth.github.clientIdKey) | nindent 12 }}
+            - name: OCC_GITHUB_TEAM_TOKEN_FILE
+              value: /etc/openclaw/github-team-reader/token
+            {{- end }}
             {{- if eq $component "api" }}
             - name: OCC_HOST
               valueFrom:
@@ -495,6 +509,11 @@ spec:
               value: {{ include "openclaw.positiveSafeInteger" (dict "name" "worker.convergenceTimeoutMs" "value" $.Values.worker.convergenceTimeoutMs) | quote }}
             {{- end }}
           volumeMounts:
+            {{- if and (eq $component "worker") $.Values.auth.github $.Values.auth.github.teamRosterTokenSecretName }}
+            - name: github-team-reader
+              mountPath: /etc/openclaw/github-team-reader
+              readOnly: true
+            {{- end }}
             {{- if $.Values.backend.openshell.clientSecretName }}
             - name: openshell-client
               mountPath: /etc/openclaw/openshell

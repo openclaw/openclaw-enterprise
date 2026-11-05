@@ -84,7 +84,11 @@ import {
   PreprovisionedKubernetesNamespace,
   type KubernetesComputeDriverOptions,
 } from "../drivers/compute/kubernetes/index.ts";
-import { refuseRewrittenIpv4Host, refuseWrittenUserinfo } from "../auth/configuration.ts";
+import {
+  isGitHubTeamDatabaseId,
+  refuseRewrittenIpv4Host,
+  refuseWrittenUserinfo,
+} from "../auth/configuration.ts";
 import {
   createExternalDriver,
   createExternalProtectedDriver,
@@ -434,7 +438,11 @@ function iamConfiguration(value: unknown): InstallationIAMConfiguration | undefi
     return undefined;
   }
   const configuration = object(value, "iam");
-  closed(configuration, ["roles", "defaultUserGroups", "ownerRole", "roleBindings"], "iam");
+  closed(
+    configuration,
+    ["roles", "defaultUserGroups", "ownerRole", "roleBindings", "githubTeamMappings"],
+    "iam",
+  );
   const listed = (field: string): readonly unknown[] => {
     const entries = configuration[field] ?? [];
     if (!Array.isArray(entries)) {
@@ -498,8 +506,43 @@ function iamConfiguration(value: unknown): InstallationIAMConfiguration | undefi
     roleBindings.map(({ group, role, scope }) => JSON.stringify([group, role, scope])),
     "iam.roleBindings",
   );
+  const groups = new Set([...defaultUserGroups, ...roleBindings.map((binding) => binding.group)]);
+  const githubTeamMappings = listed("githubTeamMappings").map((entry, index) => {
+    const path = `iam.githubTeamMappings[${index}]`;
+    const rule = object(entry, path);
+    closed(rule, ["id", "organizationId", "teamId", "group"], path);
+    const group = iamName(rule.group, `${path}.group`);
+    if (!groups.has(group)) {
+      throw new Error(`${path}.group must name a configured Group.`);
+    }
+    const numericId = (value: unknown, field: string): string => {
+      if (!isGitHubTeamDatabaseId(value)) {
+        throw new Error(`${path}.${field} must be a positive decimal GitHub ID string.`);
+      }
+      return value;
+    };
+    return Object.freeze({
+      id: iamName(rule.id, `${path}.id`),
+      organizationId: numericId(rule.organizationId, "organizationId"),
+      teamId: numericId(rule.teamId, "teamId"),
+      group,
+    });
+  });
+  unique(
+    githubTeamMappings.map((rule) => rule.id),
+    "iam.githubTeamMappings",
+  );
+  if (new Set(githubTeamMappings.map((rule) => rule.organizationId)).size > 1) {
+    throw new Error(
+      "iam.githubTeamMappings must use one GitHub organization per installation reader.",
+    );
+  }
+  if (githubTeamMappings.length > 10) {
+    throw new Error("iam.githubTeamMappings supports at most 10 team mappings.");
+  }
   return Object.freeze({
     roles: Object.freeze(roles),
+    ...(githubTeamMappings.length ? { githubTeamMappings: Object.freeze(githubTeamMappings) } : {}),
     defaultUserGroups: Object.freeze(defaultUserGroups),
     ...(configuration.ownerRole === undefined
       ? {}

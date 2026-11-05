@@ -154,6 +154,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 66 && completedCount > 66) {
     return "preDefaultUsers";
   }
+  if (count === 67 && completedCount > 67) {
+    return "preGithubRosterMemberships";
+  }
   if (count === completedCount) {
     return "completed";
   }

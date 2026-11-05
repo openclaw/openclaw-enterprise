@@ -1,3 +1,4 @@
+import type { GithubRosterMapping } from "./ports/github-roster.ts";
 import { NativeIAMDriver } from "@openclaw-enterprise/iam";
 import { isReducedCredentialPlan } from "./credential-policy-reduction.ts";
 
@@ -645,6 +646,13 @@ export {
   refusePluginEntryKeyVariants,
   waitsOnVariable,
 } from "./configuration-settings.ts";
+export type {
+  GithubRosterMapping,
+  GithubRosterSignInClaim,
+  GithubRosterRefreshClaim,
+  GithubRosterObservation,
+  GithubRosterStatus,
+} from "./state/github-roster-state.ts";
 export { PostgresCommitOutcomeUnknownError };
 export {
   PostgresHumanAuthentication,
@@ -786,6 +794,13 @@ export interface InstallationIAMConfiguration {
     readonly id: string;
     readonly permissions: readonly Permission[];
   }[];
+  /** Each GitHub team rule contributes independently to one configured Group. */
+  readonly githubTeamMappings?: readonly {
+    readonly id: string;
+    readonly organizationId: string;
+    readonly teamId: string;
+    readonly group: string;
+  }[];
   /** Groups that each account created through `POST /api/auth/accounts` joins. */
   readonly defaultUserGroups: readonly string[];
   /** The configured Role that OCC binds to each creator on what it creates. */
@@ -803,6 +818,7 @@ export interface ControllerOptions {
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
   /** Installation configuration `iam`; `applyIAMConfiguration` writes it to IAM policy. */
   readonly iamConfiguration?: InstallationIAMConfiguration;
+  readonly githubRosterMappings?: readonly GithubRosterMapping[];
   readonly authorize?: (
     request: AuthorizationRequest,
   ) => AuthorizationDecision | Promise<AuthorizationDecision>;
@@ -2098,6 +2114,7 @@ export class OpenClawController {
 
   private readonly sandboxNetworkPolicyCeiling: readonly SandboxNetworkGrant[];
   private readonly iamConfiguration?: InstallationIAMConfiguration;
+  private readonly githubRosterMappings: readonly GithubRosterMapping[];
   private readonly authorization?: ControllerOptions["authorize"];
   private readonly clock: () => Date;
   private readonly identifier?: ControllerOptions["createId"];
@@ -2145,6 +2162,7 @@ export class OpenClawController {
       "/sandboxNetworkPolicyCeiling",
     );
     this.sandboxNetworkPolicyCeiling = immutableCopy(options.sandboxNetworkPolicyCeiling ?? []);
+    this.githubRosterMappings = options.githubRosterMappings ?? [];
     if (options.iamConfiguration !== undefined) {
       this.iamConfiguration = options.iamConfiguration;
     }
@@ -3739,7 +3757,7 @@ export class OpenClawController {
           progress: {},
         });
       }
-      const revision = await this.mutate(async (state) => {
+      const revision = await this.transactProvisioning(async (state) => {
         const current = await state.provisioning.findByWorkId(claim.idempotencyKey);
         if (
           current === undefined ||
@@ -4831,7 +4849,9 @@ export class OpenClawController {
     namespaceId: string,
     agentId: string,
   ): Promise<ActiveAgentRevisionSelection> {
-    return this.getAuthorizedActiveAgentRevision(principalId, namespaceId, agentId, "operate");
+    return this.admitSessionEffect(() =>
+      this.getAuthorizedActiveAgentRevision(principalId, namespaceId, agentId, "operate"),
+    );
   }
 
   async getAdministerableActiveAgentRevision(
@@ -5000,25 +5020,35 @@ export class OpenClawController {
     return driver;
   }
 
-  /**
-   * Runs `work` with a fence that each transaction writing durable authority applies first: the
-   * HTTP layer holds the caller's session through COMMIT, as Namespace policy writes do, so a
-   * sign-out or account disable cannot commit in between (#2311).
-   */
-  withAuthorityFence<T>(fence: AuthorityFence, work: () => Promise<T>): Promise<T> {
-    return this.authorityFence.run(fence, work);
+  get hasGithubRosterMappings(): boolean {
+    return this.githubRosterMappings.length > 0;
   }
 
-  /**
-   * Fences a transaction that writes durable authority (an Owner binding or deploy-time grants)
-   * before it authorizes. It applies the caller's session fence, if any, then holds the IAM
-   * configuration lock shared. Applying a changed `iam` configuration takes that lock
-   * exclusively, so it commits either before this, and the authorization below sees it, or
-   * after this COMMIT.
-   */
+  private get mappedSessionFence(): AuthorityFence | undefined {
+    return this.hasGithubRosterMappings ? this.authorityFence.getStore() : undefined;
+  }
+
+  /** Order each session-authorized mutation against account and configured Group withdrawal.
+   * Nested operations share the original transaction's locks. */
+  withAuthorityFence<T>(fence: AuthorityFence, work: () => Promise<T>): Promise<T> {
+    const held = new WeakSet<PlatformUnitOfWork>();
+    return this.authorityFence.run(async (state) => {
+      if (!held.has(state)) {
+        await fence(state);
+        await state.installations.holdIAMConfiguration("shared");
+        held.add(state);
+      }
+    }, work);
+  }
+
+  /** Durable grants also hold the configuration lock when created outside a human request. */
   private async holdAuthority(state: PlatformUnitOfWork): Promise<void> {
-    await this.authorityFence.getStore()?.(state);
-    await state.installations.holdIAMConfiguration("shared");
+    const fence = this.authorityFence.getStore();
+    if (fence) {
+      await fence(state);
+    } else {
+      await state.installations.holdIAMConfiguration("shared");
+    }
   }
 
   /**
@@ -5248,6 +5278,7 @@ export class OpenClawController {
       const changes = await this.iamPolicyOperation(() =>
         driver.applyConfiguredPolicy!({ policy: state.iamPolicy }, { policy }),
       );
+      await state.installations.syncGithubRosterMappings?.(this.githubRosterMappings);
       await this.auditConfiguredPolicy(
         state,
         this.installation.id,
@@ -7165,7 +7196,7 @@ export class OpenClawController {
     } catch (error) {
       if (source.egress?.adoption === "prepared") {
         // Unknown configure outcome stays visible and denied. DELETE withdraws the exact family without replay.
-        await this.mutate((state) =>
+        await this.transact((state) =>
           state.credentialSources.markCredentialSourceDeleting(source.namespaceId, source.id),
         );
         throw error;
@@ -7176,7 +7207,8 @@ export class OpenClawController {
       throw error;
     }
     // A commit failure leaves the record `registering`; deleting it removes any stored copy.
-    const ready = await this.mutate(async (state) => {
+    // Settle the committed registration, even if the requesting session has since ended.
+    const ready = await this.transact(async (state) => {
       await this.lockNamespace(state, namespace.id);
       const marked = await state.credentialSources.markCredentialSourceReady(
         namespace.id,
@@ -7550,7 +7582,7 @@ export class OpenClawController {
       removed = false;
     }
     try {
-      await this.mutate(async (state) => {
+      await this.transact(async (state) => {
         await this.lockNamespace(state, source.namespaceId);
         await (removed && terminal
           ? state.credentialSources.deleteCredentialSource(source.namespaceId, source.id)
@@ -7737,7 +7769,7 @@ export class OpenClawController {
       throw new RetryLaterError("registrationFence", fenceMs / 1000);
     }
     // The success event commits with the final removal, so a completed deletion is always audited.
-    await this.mutate(async (state) => {
+    await this.transact(async (state) => {
       await this.lockNamespace(state, namespace.id);
       const removed = await accessBindingsTargeting(
         state,
@@ -8353,6 +8385,42 @@ export class OpenClawController {
     });
   }
 
+  /** The login handle and its Agent scope jointly authorize a device action. Starting
+   * creates a handle, while polling and cancellation use the existing exact Secret. */
+  private async admitDeviceAction(
+    principalId: string,
+    namespaceId: string,
+    agentId: string | undefined,
+    secretId: string | undefined,
+    sourceId?: string,
+  ): Promise<void> {
+    if (!this.mappedSessionFence) {
+      return;
+    }
+    await this.admitSessionEffect(async () => {
+      await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
+      await this.authorize(principalId, secretId === undefined ? "create" : "operate", {
+        kind: "secret",
+        id: secretId ?? namespaceId,
+        namespaceId,
+      });
+      if (secretId === undefined) {
+        await this.authorize(principalId, "create", {
+          kind: "credential_source",
+          id: namespaceId,
+          namespaceId,
+        });
+      }
+      if (sourceId !== undefined) {
+        await this.authorize(principalId, "operate", {
+          kind: "credential_source",
+          id: sourceId,
+          namespaceId,
+        });
+      }
+    });
+  }
+
   private async authorizedCredentialSource(
     principalId: string,
     namespaceId: string,
@@ -8448,6 +8516,7 @@ export class OpenClawController {
       audit === undefined ? undefined : (source) => audit(source, "source_registering"),
     );
     const { context } = await this.authorizedCredentialSource(principalId, namespaceId, source.id);
+    await this.admitDeviceAction(principalId, namespaceId, agentId, undefined, source.id);
     let started: CredentialSourceDeviceAuthorization;
     try {
       started = await refresh.startDeviceAuthorization(context);
@@ -8456,7 +8525,6 @@ export class OpenClawController {
         ? error
         : new DeviceAuthorizationStartError("unavailable");
     }
-    await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
     const { privateState, expiresAt, ...authorization } = started;
     const session: DeviceAuthorizationSession = {
       kind: "harness_device_authorization",
@@ -8477,6 +8545,7 @@ export class OpenClawController {
       privateState,
     };
     const secret = await this.mutate(async (state) => {
+      await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
       const created = await this.createSecret(principalId, {
         namespaceId,
         name: `Device login session ${crypto.randomUUID()}`,
@@ -8530,6 +8599,7 @@ export class OpenClawController {
         phase: "cancelled",
         privateState: undefined,
       });
+      await this.admitDeviceAction(principalId, namespaceId, agentId, secretId);
       if (await this.secretOperation(() => driver.compareAndSwap!(secret, value, expired))) {
         return { secret, driver, value: expired, session: deviceAuthorizationSession(expired) };
       }
@@ -8587,36 +8657,51 @@ export class OpenClawController {
       return response("pending");
     }
     const claimed = JSON.stringify({ ...session, phase: "polling" });
+    await this.admitDeviceAction(principalId, namespaceId, agentId, secretId, session.sourceId);
     if (!(await this.secretOperation(() => driver.compareAndSwap!(secret, value, claimed)))) {
       return response("pending");
     }
-    let result: CredentialSourceDeviceAuthorizationResult;
-    try {
-      result = await refresh.pollDeviceAuthorization(context, session.privateState!);
-    } catch (error) {
-      // An uncertain external exchange is not replayed. The source remains visible for recovery.
-      await this.secretOperation(() =>
+    const discardClaim = () =>
+      this.secretOperation(() =>
         driver.compareAndSwap!(
           secret,
           claimed,
           JSON.stringify({ ...session, phase: "cancelled", privateState: undefined }),
         ),
       );
+    let result: CredentialSourceDeviceAuthorizationResult;
+    try {
+      result = await refresh.pollDeviceAuthorization(context, session.privateState!);
+    } catch (error) {
+      // An uncertain external exchange is not replayed. The source remains visible for recovery.
+      await discardClaim();
       throw new RetryLaterError("deviceLoginFailed", error);
     }
-    await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
-    await this.authorize(principalId, "operate", { kind: "secret", id: secretId, namespaceId });
-    const current = await this.authorizedCredentialSource(
-      principalId,
-      namespaceId,
-      session.sourceId,
-    );
-    if (
-      current.gateway.id !== session.credentialGatewayId ||
-      !this.selections.has("credential_refresh") ||
-      this.credentialRefreshDriver().id !== session.credentialRefreshId
-    ) {
-      throw new ResourceStateConflictError("The login Driver changed. Connect again.");
+    try {
+      await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
+      await this.authorize(principalId, "operate", { kind: "secret", id: secretId, namespaceId });
+      const current = await this.authorizedCredentialSource(
+        principalId,
+        namespaceId,
+        session.sourceId,
+      );
+      if (
+        current.gateway.id !== session.credentialGatewayId ||
+        !this.selections.has("credential_refresh") ||
+        this.credentialRefreshDriver().id !== session.credentialRefreshId
+      ) {
+        throw new ResourceStateConflictError("The login Driver changed. Connect again.");
+      }
+      await this.admitDeviceAction(principalId, namespaceId, agentId, secretId, session.sourceId);
+    } catch (error) {
+      if (
+        this.mappedSessionFence &&
+        error instanceof AuthorizationDeniedError &&
+        !(error instanceof DependencyUnavailableError)
+      ) {
+        await discardClaim();
+      }
+      throw error;
     }
     const { privateState: _privateState, ...completedSession } = session;
     const next: DeviceAuthorizationSession =
@@ -8661,6 +8746,7 @@ export class OpenClawController {
       phase: "cancelled",
       privateState: undefined,
     });
+    await this.admitDeviceAction(principalId, namespaceId, agentId, secretId);
     if (!(await this.secretOperation(() => driver.compareAndSwap!(secret, value, discarded)))) {
       throw new ResourceStateConflictError("The login session changed. Refresh and retry.");
     }
@@ -9781,12 +9867,12 @@ export class OpenClawController {
     enabled: boolean,
   ): Promise<Readonly<Agent>> {
     this.requireNetworkPolicyFacet(facet);
-    await this.authorize(principalId, "administer", {
-      kind: "installation",
-      id: this.installation.id,
-    });
-    await this.authorize(principalId, "administer", { kind: "agent", id: agentId, namespaceId });
     return this.mutate(async (state) => {
+      await this.authorize(principalId, "administer", {
+        kind: "installation",
+        id: this.installation.id,
+      });
+      await this.authorize(principalId, "administer", { kind: "agent", id: agentId, namespaceId });
       await this.lockNamespace(state, namespaceId);
       const agent = await state.agents.lockAgent(namespaceId, agentId);
       if (agent === undefined || agent.status !== "active") {
@@ -10016,15 +10102,19 @@ export class OpenClawController {
     additions: readonly SandboxNetworkGrant[],
   ): Promise<Readonly<SandboxPolicy>> {
     this.requireNetworkPolicyFacet(facet);
-    await this.authorize(principalId, "manage_policy", { kind: "agent", id: agentId, namespaceId });
-    await this.authorize(principalId, "update", {
-      kind: "sandbox_policy",
-      id: `sbp_${agentId.slice(4)}`,
-      namespaceId,
-    });
-    // The cause comes before the editing setting and version checks it would otherwise hide (D774).
-    this.requireNetworkPolicyAvailable();
     return this.mutate(async (state) => {
+      await this.authorize(principalId, "manage_policy", {
+        kind: "agent",
+        id: agentId,
+        namespaceId,
+      });
+      await this.authorize(principalId, "update", {
+        kind: "sandbox_policy",
+        id: `sbp_${agentId.slice(4)}`,
+        namespaceId,
+      });
+      // The cause comes before the editing setting and version checks it would otherwise hide (D774).
+      this.requireNetworkPolicyAvailable();
       await this.lockNamespace(state, namespaceId);
       const agent = await state.agents.lockAgent(namespaceId, agentId);
       const previous = await state.sandboxPolicies.find(namespaceId, agentId);
@@ -10079,20 +10169,24 @@ export class OpenClawController {
     revisionId: string,
   ): Promise<Readonly<SandboxPolicy>> {
     this.requireNetworkPolicyFacet(facet);
-    await this.authorize(principalId, "manage_policy", { kind: "agent", id: agentId, namespaceId });
-    const sandboxPolicy = {
-      kind: "sandbox_policy",
-      id: `sbp_${agentId.slice(4)}`,
-      namespaceId,
-    } as const;
-    await this.authorize(principalId, "update", sandboxPolicy);
-    // Finding 2874: apply admits the saved additions (ceiling and Driver refusals name them)
-    // and returns the saved policy, so it needs SandboxPolicy read before either, even with
-    // no additions. Deploy needs read only when saved additions exist (finding 2151).
-    await this.authorize(principalId, "read", sandboxPolicy);
-    // The cause comes before the editing setting and version checks it would otherwise hide (D774).
-    this.requireNetworkPolicyAvailable();
     return this.mutate(async (state) => {
+      await this.authorize(principalId, "manage_policy", {
+        kind: "agent",
+        id: agentId,
+        namespaceId,
+      });
+      const sandboxPolicy = {
+        kind: "sandbox_policy",
+        id: `sbp_${agentId.slice(4)}`,
+        namespaceId,
+      } as const;
+      await this.authorize(principalId, "update", sandboxPolicy);
+      // Finding 2874: apply admits the saved additions (ceiling and Driver refusals name them)
+      // and returns the saved policy, so it needs SandboxPolicy read before either, even with
+      // no additions. Deploy needs read only when saved additions exist (finding 2151).
+      await this.authorize(principalId, "read", sandboxPolicy);
+      // The cause comes before the editing setting and version checks it would otherwise hide (D774).
+      this.requireNetworkPolicyAvailable();
       const namespace = await this.lockNamespace(state, namespaceId);
       const agent = await state.agents.lockAgent(namespaceId, agentId);
       const policy = await state.sandboxPolicies.find(namespaceId, agentId);
@@ -12621,7 +12715,10 @@ export class OpenClawController {
   }
 
   /** Stage resources, reconciliation intents, and audit evidence as one unit. */
-  async transact<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
+  async transact<T>(
+    work: (state: PlatformUnitOfWork) => Promise<T>,
+    isolation?: "read committed",
+  ): Promise<T> {
     const active = this.transactionContext.getStore();
     if (active) {
       return work(active);
@@ -12629,20 +12726,22 @@ export class OpenClawController {
 
     const rollbacks: (() => Promise<void>)[] = [];
     try {
-      return await this.state.transact(async (state) =>
-        this.transactionContext.run(state, () =>
-          this.mutationRollbacks.run(rollbacks, async () => {
-            const existing = await state.installations.getInstallation();
-            if (!existing) {
-              await state.installations.createInstallation(this.installation);
-            } else if (existing.id !== this.installation.id) {
-              throw new ScopeViolationError(
-                "The controller state belongs to another Installation.",
-              );
-            }
-            return work(state);
-          }),
-        ),
+      return await this.state.transact(
+        async (state) =>
+          this.transactionContext.run(state, () =>
+            this.mutationRollbacks.run(rollbacks, async () => {
+              const existing = await state.installations.getInstallation();
+              if (!existing) {
+                await state.installations.createInstallation(this.installation);
+              } else if (existing.id !== this.installation.id) {
+                throw new ScopeViolationError(
+                  "The controller state belongs to another Installation.",
+                );
+              }
+              return work(state);
+            }),
+          ),
+        isolation ?? (this.mappedSessionFence ? "read committed" : undefined),
       );
     } catch (error) {
       if (error instanceof PostgresCommitOutcomeUnknownError) {
@@ -13742,11 +13841,17 @@ export class OpenClawController {
     );
   }
 
+  // A worker authorizes the original requester after an IAM lock wait. A database-wide
+  // repeatable-read default would keep the snapshot from before that wait.
+  private transactProvisioning<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
+    return this.transact(work, "read committed");
+  }
+
   private async checkpointAgentProvisioning(
     claim: ClaimedWork,
     checkpoint: AgentProvisioningCheckpoint,
   ): Promise<Readonly<AgentProvisioningRecord>> {
-    return this.mutate(async (state) => {
+    return this.transactProvisioning(async (state) => {
       await this.fenceAgentProvisioning(state, claim);
       return this.commitProvisioningCheckpoint(state, claim, checkpoint);
     });
@@ -13790,6 +13895,9 @@ export class OpenClawController {
     if (record === undefined) {
       throw new WorkClaimLostError();
     }
+    // Hold the IAM configuration lock so a configuration change that revokes the requester's
+    // Group binding commits before this check or after the Owner bindings provisioning writes.
+    await state.installations.holdIAMConfiguration("shared");
     const namespace = await this.lockNamespace(state, record.namespaceId);
     if (namespace.status !== "ready") {
       throw new NamespaceNotReadyError();
@@ -13804,9 +13912,6 @@ export class OpenClawController {
         throw new ResourceStateConflictError("The Agent lifecycle changed during provisioning.");
       }
     }
-    // Hold the IAM configuration lock so a configuration change that revokes the requester's
-    // Group binding commits before this check or after the Owner bindings provisioning writes.
-    await state.installations.holdIAMConfiguration("shared");
     await this.authorizeProvisioningRecord(state, record.actorId, record);
     return state.provisioning.checkpoint(claim, {
       completedPhase: record.completedPhase,
@@ -13818,7 +13923,7 @@ export class OpenClawController {
     claim: ClaimedWork,
     effect: ProvisioningEffectTarget,
   ): Promise<Readonly<AgentProvisioningRecord>> {
-    return this.mutate(async (state) => {
+    return this.transactProvisioning(async (state) => {
       await this.fenceAgentProvisioning(state, claim);
       return state.provisioning.beginEffect(claim, effect);
     });
@@ -13937,7 +14042,9 @@ export class OpenClawController {
       );
     }
     // The fence stamps updated_at on the database clock, the clock that stamped startedAt.
-    const fenced = await this.mutate((state) => this.fenceAgentProvisioning(state, claim));
+    const fenced = await this.transactProvisioning((state) =>
+      this.fenceAgentProvisioning(state, claim),
+    );
     if (!this.provisioningPendingEffectMatches(fenced, effect)) {
       throw new DependencyUnavailableError(
         "The pending Configuration provisioning effect outcome is unknown.",
@@ -14273,7 +14380,7 @@ export class OpenClawController {
       }
     }
 
-    return this.mutate(async (state) => {
+    return this.transactProvisioning(async (state) => {
       current = await this.fenceAgentProvisioning(state, claim);
       if (!this.provisioningBefore(current, "configuration")) {
         return current;
@@ -16499,9 +16606,21 @@ export class OpenClawController {
     }
   }
 
+  /** Complete the final authority check for one immediate Driver handoff before remote I/O. */
+  private admitSessionEffect<T>(check: () => Promise<T>): Promise<T> {
+    return this.mappedSessionFence ? this.mutate(check) : check();
+  }
+
   private async mutate<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
-    const active = this.transactionContext.getStore();
-    return active ? work(active) : this.transact(work);
+    const fence = this.mappedSessionFence;
+    if (!fence) {
+      return this.transact(work);
+    }
+    return this.transact(async (state) => {
+      // Authorize against the policy that stays effective until this mutation commits.
+      await fence(state);
+      return work(state);
+    });
   }
 
   private validateLifecycleScope(result: unknown, namespace: Readonly<Namespace>): void {

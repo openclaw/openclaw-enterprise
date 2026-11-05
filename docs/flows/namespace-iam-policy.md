@@ -209,8 +209,7 @@ selected account, session, and policy writers join the same protocol.
 
 `packages/occ/src/index.ts:OpenClawController.bindCreator`
 
-[Default users](../reference/authorization/default-users.md) defines the
-behavior.
+[Default users](../reference/authorization/default-users.md)
 
 - **Configured policy.** The compositions call `applyIAMConfiguration` at
   startup, and the bootstrap route after bootstrap. It takes the IAM
@@ -221,10 +220,9 @@ behavior.
   deletes unlisted rows, but refuses to delete a Role that a binding uses.
   `createNamespace` passes its `namespaceId` to write only what it lacks.
   `auditConfiguredPolicy` records each change.
-- **Membership.** The `createAuthAccount` route adds
-  `controller.defaultUserGroupIds` to the account seed and its audit event as
-  `groupIds`. `insertNativeIAMPrincipal` takes the IAM configuration lock shared
-  and inserts each membership with the account.
+- **Membership.** Account creation inserts default Groups under the shared IAM lock
+  and audits their IDs. GitHub sign-in commits verified mapping contributions with
+  the session. The worker withdraws each contribution independently.
 - **Authority fence.** `performFenced` runs each session request inside
   `controller.withAuthorityFence`. The create paths below and
   `deployAgentWithAuthorization` call `holdAuthority` first, which holds the
