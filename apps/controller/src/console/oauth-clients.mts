@@ -85,7 +85,8 @@ export function renderOAuthClients(
   }
 
   function edit() {
-    openOAuthClientRegistration(context, {
+    let recoveryNotice: string | undefined;
+    const closeRegistration = openOAuthClientRegistration(context, {
       parent: section,
       templates,
       namespaces,
@@ -101,11 +102,15 @@ export function renderOAuthClients(
             templates.push(saved);
             selectCreated(saved);
           },
-          onUnconfirmed: () => void refresh(),
+          onUnconfirmed() {
+            recoveryNotice =
+              "Could not confirm template creation. Reopen registration and check the template list before creating another.";
+            closeRegistration();
+          },
         });
       },
       onClose(client) {
-        void refresh(client ? `Registered ${client.displayName}.` : undefined);
+        void refresh(client ? `Registered ${client.displayName}.` : recoveryNotice);
       },
     });
   }

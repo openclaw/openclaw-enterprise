@@ -317,6 +317,47 @@ test("registering a provider-issued client uses a saved or newly created templat
   assert.equal(await page.getByRole("button", { name: "Register OAuth client" }).count(), 0);
 });
 
+test("a lost template creation response closes registration and reloads the committed template", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Registration recovery");
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, secretsUrl(namespace));
+  await page
+    .getByRole("navigation", { name: "Credential sections" })
+    .getByRole("link", { name: "OAuth clients", exact: true })
+    .click();
+  const open = page.getByRole("button", { name: "Register OAuth client", exact: true });
+  await open.click();
+  const registration = dialog(page, "Register OAuth client");
+  const choice = registration.getByLabel("Connection template", { exact: true });
+  await choice.selectOption({ label: "Set up Google OAuth…" });
+  const editor = dialog(page, "Create connection template");
+  await editor.getByLabel("OAuth scope limit").selectOption({ label: "No template limit" });
+  // The real API commits the template. Only the browser response is lost.
+  await page.route(fixture.origin + "/connection-templates", async (route) => {
+    if (route.request().method() !== "POST") {
+      return route.continue();
+    }
+    const response = await route.fetch();
+    assert.equal(response.status(), 201);
+    await route.abort("failed");
+  });
+  await editor.getByRole("button", { name: "Create template", exact: true }).click();
+  await editor.getByText(/Could not confirm the template change/).waitFor();
+  const reloaded = responseTo(page, "GET", fixture.origin + "/connection-templates");
+  await editor.getByRole("button", { name: "Cancel" }).click();
+  const saved = (await (await reloaded).json()).data;
+  assert.equal(saved.length, 1);
+  await registration.waitFor({ state: "hidden" });
+  await page.getByText(/Reopen registration and check the template list/).waitFor();
+  await open.click();
+  await choice.selectOption(saved[0].id);
+  assert.equal(await choice.getByRole("option", { name: /Google OAuth · Namespace/ }).count(), 1);
+  assert.equal(
+    await registration.getByLabel("Client availability").inputValue(),
+    "Namespace · Registration recovery",
+  );
+});
+
 test("console Secret creation, replacement, Agent consumers and cleanup use real API and IAM", async (t) => {
   const audit = new InMemoryAuditSink();
   const storage = createTestSecretDriver();

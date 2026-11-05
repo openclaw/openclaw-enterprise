@@ -282,4 +282,5 @@ export function openOAuthClientRegistration(
   select(options.selected);
   dialog.showModal();
   (options.selected ? name : choice).focus();
+  return () => dialog.close();
 }
