@@ -10,7 +10,7 @@ import {
   tokenEchoDigest,
   tokenEchoReply,
 } from "../helpers/k3d-failure-diagnostics.mjs";
-import { commandCalls, prependPath, writeCommand } from "../helpers/fake-commands.mjs";
+import { commandCalls, prependPath, writeCommand } from "../helpers/fake-commands.ts";
 import { diagnosticRequestTimeout, withinDiagnosticDeadline } from "../helpers/kubernetes-real.mjs";
 import { withHelmInstallDiagnostic } from "../helpers/production-helm-real.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";

@@ -10,7 +10,7 @@ import {
   createTestAuthPrincipal,
   signInToControllerApp,
 } from "./auth-session.mjs";
-import { createTestConfigurationDriver } from "./configuration-driver.mjs";
+import { createTestConfigurationDriver } from "./configuration-driver.ts";
 
 // Bootstrap allocates the first Namespace ID for the initial default Namespace, so the
 // first Namespace a test creates is tenant A.

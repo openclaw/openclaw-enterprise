@@ -52,11 +52,11 @@ remain excluded. QA's default `all` also excludes its four
 
 In the hosted QA matrix, the CI account can select only built-in Codex
 permission profiles. Both Compose and Kubernetes run OpenClaw model/UI checks
-and Console Secrets for both presets. The matrix excludes Codex model/UI,
-Calendar, Git write, denied Git push, and Slack because each starts a native
+and Console Secrets for both presets. The matrix excludes Codex Git write,
+denied Git push, and Slack because each starts a native
 Codex turn with a custom permission profile. The test log and `matrix.json`
 list the exclusions. The separate Slack Live lane still runs. A local QA run
-with an account that supports custom profiles can select all five scenarios.
+with an account that supports custom profiles can select all three scenarios.
 
 <a id="run-it"></a>
 

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cp, readFile } from "node:fs/promises";
+import { cp } from "node:fs/promises";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import type { ServerResponse } from "node:http";
@@ -32,6 +32,7 @@ import {
   nextFrames,
   nonAuthWriteRequests,
   settledView,
+  shippedPreset,
   settlePageRequests,
   waitForEnabled,
   writeRequests,
@@ -73,9 +74,7 @@ function namedResource(value: unknown): Pick<Namespace, "id" | "name"> {
   return { id: resource.id, name: resource.name };
 }
 
-const defaultCodexPreset: unknown = JSON.parse(
-  await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
-);
+const defaultCodexPreset = await shippedPreset("default-codex");
 const createConsoleAppFixture = (
   t: TestContext,
   options: {
@@ -86,28 +85,7 @@ const createConsoleAppFixture = (
 ) => createBaseConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset], ...options });
 // The sign-in page tests share one app (fileConsoleApp): they make no Namespace, change no
 // policy and end no session. Every other test keeps an app of its own.
-const sharedSignInApp = fileConsoleApp({ defaultPresets: [defaultCodexPreset] });
-type SignInFixture = Pick<
-  Awaited<ReturnType<typeof createConsoleAppFixture>>,
-  "origin" | "credentials"
-> & { sharedByFile: true };
-
-function isSignInFixture(value: unknown): value is SignInFixture {
-  return (
-    isJsonObject(value) &&
-    typeof value.origin === "string" &&
-    value.sharedByFile === true &&
-    isJsonObject(value.credentials) &&
-    typeof value.credentials.email === "string" &&
-    typeof value.credentials.password === "string"
-  );
-}
-
-async function signInApp(t: TestContext) {
-  const fixture: unknown = await sharedSignInApp(t);
-  assert.ok(isSignInFixture(fixture));
-  return fixture;
-}
+const signInApp = fileConsoleApp({ defaultPresets: [defaultCodexPreset] });
 
 test("mounted theme brands sign-in, Agent navigation and mobile without losing session behavior", async (t) => {
   const directory = await temporaryDirectory(t, "occ-browser-theme-");
@@ -2878,7 +2856,7 @@ test("compact navigation preserves the page position while its drawer can still 
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
   await toggle.click();
-  await page.getByRole("link", { name: "Secrets", exact: true }).click();
+  await page.getByRole("link", { name: "Credentials", exact: true }).click();
   await page.locator(settledView).waitFor();
   const returned = await page.evaluate(() => {
     const heading = globalThis.document.querySelector("h1");

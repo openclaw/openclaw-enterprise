@@ -28,7 +28,7 @@ import {
 import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.mjs";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 import { ensurePostgresAgentBootstrap } from "../helpers/postgres-agent-app.mjs";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
@@ -1288,6 +1288,7 @@ test(
     assert.doesNotMatch(staleDeploy.body, new RegExp(approvalId));
     await selectRepo(registry);
     const savedConfig = configuration.stored({ namespaceId, id: configurationId });
+    assert.ok(savedConfig, "Expected the stored Configuration");
     await configuration.delete({ namespaceId, id: configurationId });
     secrets.setResolveOverride(() => {
       throw new Error("Synthetic Secret unavailable");

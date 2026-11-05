@@ -8,7 +8,7 @@ author: mrunalp
 
 - **ID:** RFC-0027
 - **Created:** 2026-10-20
-- **Last updated:** 2026-11-03
+- **Last updated:** 2026-11-04
 - **RFC PR:** [#3068](https://github.com/openclaw/openclaw-enterprise/pull/3068)
 - **Implementation plan:** [Backend implementation and plan, #3098](https://github.com/openclaw/openclaw-enterprise/pull/3098)
 - **Companion:** [Driver contracts, failure, and verification](contracts.md)
@@ -32,8 +32,8 @@ OCE checks that Agent's grant and the actual request before adding a credential.
 A Gmail policy allowing only message headers applies to both `gog` and a script
 running in the same Agent execution.
 
-Installation administrators define connections as Installation-wide **connection
-templates**, which Presets can reference. OCE handles client setup, consent,
+Installation administrators define **connection templates** for the whole
+Installation or for a single Namespace. Presets can reference them. OCE handles client setup, consent,
 and the authorization-code exchange. For MCP it uses the official TypeScript
 MCP client. After exchange, the OCE Token Service keeps the grant and refreshes
 access tokens in the background. OpenShell presents the prepared token at the
@@ -79,40 +79,48 @@ It separates background refresh from the worker's outbound request.
 - Service-account or domain-wide delegation.
 - Per-message provider identity. A shared Agent uses the account attached to it
   for requests from its authorized users, subject to the deployed request policy.
-- Namespace-owned connection templates. Start with the Installation-wide catalog;
-  add Namespace templates later only if Namespaces need different providers or
-  OAuth clients.
+- Delegating template administration to Namespace administrators.
 
 ## Proposal
 
 ### Connection templates
 
-A connection template is an Installation-scoped resource with IAM kind
-`connection_template` and actions `create`, `read`, `update`, `delete`, and `use`.
-Installation administrators manage the catalog through the API, CLI, and console.
-They grant `use` on an exact connection template to a person, or to a Namespace so
-that people authorized to connect accounts in that Namespace may use it. IAM gains
-Installation-level access bindings for this ([IAM changes](contracts.md#iam-driver)).
-A user needs `use` to see a connection template under **Connect** and to start a
-connection from it. Each resulting credential source stays in the Namespace
-where that person connected it.
+Installation administrators manage the catalog. They set the scope at creation:
+the whole Installation or one Namespace. Client registrations in different
+scopes rotate independently. A person with `credential_source:create` in the
+destination Namespace can connect an account using a template available there.
+OCC checks scope and authority when listing usable templates, starting consent
+and handling the callback. The [per-template IAM proposal](contracts.md#iam-driver)
+can be reviewed independently.
 
-| Field                               | Why it is needed                                                                                                                                |
-| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `displayName`                       | The label on the **Connect** button and consent warning.                                                                                        |
-| `issuer`                            | The authorization server's identifier, an exact `https` URL. It scopes the client ID and is the expected `iss` for `accountIdentity: oidc`.     |
-| `authorizationUrl`, `tokenUrl`      | Where OCC sends the user, and where the Driver exchanges the code. Exact `https` URLs.                                                          |
-| `clientId`, `clientSecret`          | For a preregistered client, its ID and any required secret. DCR supplies these for an MCP client registered at setup.                           |
-| `scopes`, `authorizationParameters` | Fixed scopes for configured OAuth. MCP owners pick a subset. Google needs `access_type=offline` and `prompt=consent` to return a refresh token. |
-| `endpoint`                          | Credential destination (`host`, `port`, `path`). `access` is `read-only` or `full` for `oauth2`, and `full` for `mcp_oauth`.                    |
-| `envVar`                            | The placeholder variable supplied to an authorized Agent execution.                                                                             |
-| `accountIdentity`                   | `none` (default) or `oidc`. With `oidc`, OCC also requests `openid email` so it can show a verified address.                                    |
-| `jwksUri`                           | Optional with `oidc`. Without it, the Driver discovers the signing keys from `issuer`.                                                          |
+An OAuth template has two setup methods. For manual setup the administrator
+supplies the provider and approved recipient. For MCP discovery the administrator
+enters the server URL. The protected resource identifies its resource and accepted
+authorization servers. The administrator selects one issuer. OCC validates its
+metadata and shows the observed endpoints, capabilities and scopes separately
+from the administrator's choices. The administrator can set a scope allowlist
+or leave the choice to the connecting user and provider. The approved recipient
+identifies where the token may be sent. Plugin policy determines which
+operations are allowed there. Saving pins the effective values. A later
+discovery can propose a new version.
 
-Existing templates use configured `oauth2` endpoints. For an `mcp_oauth`
-template, the administrator enters the MCP server URL and supplies a preregistered
-client or approves Dynamic Client Registration (DCR) when the issuer advertises
-it. At **Connect**, the owner chooses from the template's approved scopes. [MCP authorization contract](contracts.md#mcp-authorization)
+Manual templates list HTTPS destinations. Each row binds a host, port and path.
+Each Installation starts with an editable Google OAuth template whose
+destinations cover the Google Workspace release’s reviewed operations. The administrator controls where existing accounts can send
+access tokens, including newly added hosts. A request must match a current row,
+the selected plugin operation and the Agent’s deployed policy. The provider
+enforces its grant. Public discovery requests carry no bearer token.
+
+An administrator registers an OAuth client against a saved template version.
+OCC takes its availability, issuer and client authentication endpoints from that
+version. The administrator supplies the client ID, authentication method and
+any secret. The selected Driver protects the secret. The first registration
+fills an empty client selection. An administrator chooses whether to switch an
+existing selection. Consent pins the selected client's identity.
+
+A version records the approved recipient (for MCP, both the protected resource
+and the server URL). The Agent plugin release owns its named credential slots
+and their local delivery placeholders. [MCP authorization contract](contracts.md#mcp-authorization)
 
 OCC rejects non-HTTPS URLs. At deployment it verifies that the selected Sandbox
 and protected sender can enforce the approved request policy.
@@ -131,25 +139,24 @@ whether or not the source has an address.
 
 ### Versions and consent
 
-An edit never changes what an existing connection does. Changing any field except
-`displayName` creates a new connection template version. The credential source
-records the version and the values its owner approved: issuer and its URLs, client
-registration, this connection's scopes, authorization parameters, endpoint and
-access, placeholder variable, and OIDC settings. OCC and both Drivers use only that
-record, so an administrator cannot redirect a user's refresh grant or credential.
-Source configuration is already immutable.
+Changing the configuration creates an immutable template version. Consent pins the
+issuer, OAuth endpoints, client registration, scopes and, for MCP, the protected
+resource and exact server URL. The Token Service refreshes that grant with the
+original issuer and registration.
 
-After a new version, existing connections keep working and Console shows
-**Reconnect to apply changes**. Reconnecting asks for consent again and creates a
-new source. To stop an old version, for example after an endpoint compromise,
-administrators disconnect the affected sources. OCC refuses to delete a connection
-template while any source references one of its versions.
+OCE resolves manual destinations by the saved account’s template ID. An
+administrator can add, narrow, remove or replace rows for that grant without
+another consent flow. OCC reconciles the senders of affected running Agents. A sender can use its
+previous policy until reconciliation completes. Changing the default client
+applies to future connections. Changing the issuer, setup method or MCP target
+requires a new grant for that target. OCC refuses to delete a template while a
+saved account references it.
 
-Rotating the client secret is not a consent change. The secret belongs to a client
-registration for one `issuer` and `clientId` pair, so the same client ID at another
-issuer stays independent. Rotation applies to new connections; existing
-connections keep the secret they were configured with until the provider disables
-it ([client registrations](contracts.md#client-registrations)).
+When an administrator rotates the secret for the same OAuth client, the next
+code exchange or token refresh uses its current secret. An existing account
+can refresh its original grant without another consent flow. Its issuer,
+client identity and token endpoint stay pinned to the registration.
+See [client registrations](contracts.md#client-registrations).
 
 ### Ownership and Agent attachments
 
@@ -201,8 +208,8 @@ Preset stays valid. Deployment requires a ready, authorized binding for each ent
 These changes require review of this RFC before implementation. The
 [companion](contracts.md) defines their inputs, results, and failure behavior.
 
-1. **`CredentialRefreshDriver`** exposes browser authorization, client registration,
-   and OIDC provider verification to OCC. After exchange, the Driver hands the
+1. **`CredentialRefreshDriver`** exposes browser authorization
+   and OIDC provider verification to OCC. OCC manages client registrations through its Secret Driver. After exchange, the Driver hands the
    source's grant and first access token to the OCE Token Service for refresh.
 2. **Protected egress** uses the [RFC-0023 contract](../0023-egress-proxy-credential-lifecycle/contracts.md).
    The sender checks the authorized execution, destination and request policy
@@ -229,7 +236,7 @@ sequenceDiagram
   API->>OAuth: startBrowserAuthorization
   OAuth-->>API: authorizationUrl, privateState
   API-->>User: Consent warning, then popup to authorizationUrl
-  User->>Issuer: Approve the fixed scopes
+  User->>Issuer: Approve the requested access
   Issuer->>API: GET /oauth/callback with code, state, and optional iss
   API->>OAuth: completeBrowserAuthorization
   OAuth->>Issuer: Exchange code with PKCE verifier
@@ -251,24 +258,29 @@ _The diagram shows a template with configured OAuth endpoints. MCP adds scope
 selection before the redirect and uses the
 [MCP authorization contract](contracts.md#mcp-authorization)._
 
-1. For MCP, the owner selects scopes in Console before starting OAuth.
+1. For MCP or a template without a scope limit, the owner reviews requested
+   scopes in Console before starting OAuth.
    `POST /namespaces/:namespaceId/connections` takes the template
-   ID and, for MCP, the displayed template version and `selectedScopes`. OCC
-   checks access to the Namespace and template `use`, and validates the
+   ID, the version shown for consent, and any selected scopes. OCC
+   checks template availability and `credential_source:create` in the Namespace, and validates the
    selection. It then registers an empty source as `registering` and calls
-   `startBrowserAuthorization`. It stores `privateState` in a Namespace Secret, as
-   device login does, and returns the source ID and `authorizationUrl`.
-2. The console shows the destination and scopes the person will approve, then
-   opens the consent URL in a popup. When a browser blocks popups, it redirects
+   `startBrowserAuthorization`. It stores the PKCE verifier in a temporary,
+   control-plane-owned row bound to the initiating browser session and returns
+   the source ID and `authorizationUrl`.
+2. The console shows the connection template and requested scopes, then opens
+   the consent URL in a popup. When a browser blocks popups, it redirects
    the page.
 3. `GET /oauth/callback` requires the session that started the connection. OCC
    finds the session by a hash of `state`, rejects reuse or an age above ten
    minutes, and calls `completeBrowserAuthorization` once. The response sets
    `Referrer-Policy: no-referrer` and redirects without the query string. OCC
    excludes the code from logs and audit.
-4. On `ready`, OCC saves the connection, its owner and the approved access in the
-   Namespace. A completed callback grants no Agent access by itself. At Agent
-   setup an authorized caller selects that saved source and explicitly attaches it.
+4. OCC saves the account for its owner in the destination Namespace. **Connect**
+   in account settings stops there. **Connect and attach to this Agent** in a
+   plugin records the target Agent and slot before redirect. After consent OCC
+   checks the caller's current rights and the slot and applies the same attachment
+   as the saved-account picker. If this fails the account stays saved and the
+   caller can retry attachment without repeating consent.
 5. **Detach** removes one Agent's binding. **Disconnect account** shows the
    affected Agents and withdraws the account from all of them. **Reconnect**
    creates a newly consented source; replacing a binding requires the same
@@ -296,9 +308,7 @@ integration, real-cluster, and live-provider outcomes.
 - **OCC exchanges the code and stores the refresh token as a Secret.** This needs no
   new Refresh Driver methods, but it puts a rotating refresh token in OCC storage
   and inherits the `issuerRotated` update hazards.
-- **Installation-owned Secrets for the OAuth client secret.** The Driver already
-  manages the client registration. Adding an Installation Secret would introduce
-  a new Secret scope solely for this feature.
+- **Store OAuth client secrets in a Credential Gateway.** This would require a Gateway before an administrator could configure a template. OCC can hold a private reference in the Installation's existing Secret Driver. The Token Service takes custody when a user connects an account.
 - **A Google-specific Gateway type.** Each new provider would need an OCE release.
 - **Executable-specific consent.** RFC-0023 authenticates the execution. A
   process name adds no evidence that a request is authorized. Restricting the
