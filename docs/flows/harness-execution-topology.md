@@ -328,10 +328,6 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
   `node --test tests/integration/harness-topology-k3d-real.test.mjs` (Kubernetes) with the
   inputs in [the real-runtime suite](../testing/kubernetes.md#run-the-real-runtime-suite-directly).
   Docker Compute deploys no Agent: it rejects every Harness authentication binding.
-- Verify provider-backed dedicated Codex with
-  `node --test tests/integration/service-account-driver-real.test.mjs`,
-  `OCC_TEST_CHATGPT_SERVICE_ACCOUNT_REAL=1` and an authorized mounted
-  `OCC_TEST_CHATGPT_ADMIN_KEY_PATH`; it does not use `OPENAI_API_KEY`.
 - Missing credentials, images, access or either model response fail verification;
   readiness probes, handshakes, fixtures and skipped tests are not substitutes.
 - HTTP 401 before worker admission indicates callback fallthrough from node-only
