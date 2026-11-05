@@ -152,9 +152,12 @@ function catalogAtMigrationCount(count, completedCount) {
     return "preAgentDeployIntent";
   }
   if (count === 66 && completedCount > 66) {
-    return "preConnectionTemplates";
+    return "preAgentCredentialSourceLimit";
   }
   if (count === 67 && completedCount > 67) {
+    return "preConnectionTemplates";
+  }
+  if (count === 68 && completedCount > 68) {
     return "preSavedConnections";
   }
   if (count === completedCount) {

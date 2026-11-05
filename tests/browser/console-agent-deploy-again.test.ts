@@ -16,6 +16,8 @@ import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
 import {
+  persistedDeploymentError,
+  routeFailedDeployment,
   apiRequests,
   authorizationDenials,
   denyRevisionRead,
@@ -27,9 +29,8 @@ import {
   newPage,
   nextFrames,
   pathRequests,
-  persistedDeploymentError,
-  routeFailedDeployment,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+
 import {
   deploymentDetailsOpen,
   deploymentRecordUrl,

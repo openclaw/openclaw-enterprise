@@ -9,7 +9,7 @@ import {
   nativeValues,
   newPage,
   settledView,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { restrict } from "../helpers/iam-grants.mjs";
 

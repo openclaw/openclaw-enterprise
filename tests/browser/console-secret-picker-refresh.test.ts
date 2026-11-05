@@ -20,7 +20,7 @@ import {
   selectSecret,
   settlePageRequests,
   waitForInputValue,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import { responseTo } from "./console-action-helpers.ts";
 import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.ts";
 

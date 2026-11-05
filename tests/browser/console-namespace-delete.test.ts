@@ -17,13 +17,15 @@ import {
   login,
   newPage,
   pathRequests,
-  settledFetches,
   settledView,
+} from "./console-agents-browser-helpers.ts";
+import {
+  settledFetches,
   trackSettledFetches,
   waitForIdleFetches,
   waitForSettledFetches,
-} from "./console-agents-browser-helpers.mjs";
-import { focusedLabel, waitForFocusedLabel } from "./console-refocus-helpers.mjs";
+} from "./console-fetch-accounting.ts";
+import { focusedLabel, waitForFocusedLabel } from "./console-refocus-helpers.ts";
 
 const browser = fileBrowser();
 

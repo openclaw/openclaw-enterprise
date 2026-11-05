@@ -34,6 +34,7 @@ import {
   normalizeConnectionDestinations,
   validateConnectionTemplateAuthorization,
   ConnectionTemplateValidationError,
+  MAX_AGENT_CREDENTIAL_SOURCES,
   assertExecutionAdmission,
   assertExecutionReleaseAllowed,
   credentialFreeMetadataGrant,
@@ -1246,7 +1247,6 @@ const CONNECTION_SESSION_TTL_MS = 10 * 60 * 1000;
 const PENDING_CONNECTION: unique symbol = Symbol("pending-connection");
 const CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES =
   "Credential source Secrets cannot cross Namespaces.";
-const MAX_AGENT_CREDENTIAL_SOURCES = 8;
 /** Overall deadline for one runtime status or log request, Driver calls included. */
 const RUNTIME_LOG_REQUEST_TIMEOUT_MS = 10_000;
 // Bounds the Sandbox Driver's Harness record read that runs beside Compute diagnostics.

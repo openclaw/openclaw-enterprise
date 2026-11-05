@@ -26,6 +26,7 @@ import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
+  persistedDeploymentError,
   accessBindingPostRequests,
   accessibleDescription,
   AGENT_READ,
@@ -48,24 +49,26 @@ import {
   nonAuthWriteRequests,
   operateDeniedSecretOption,
   pathRequests,
-  persistedDeploymentError,
   recordLayoutShifts,
   revealNativeConfiguration,
   revokeMemberGrant,
   secretOptionLabel,
   secretPostRequests,
   selectSecret,
-  settledFetches,
   settlePageRequests,
   statusTone,
   takeLayoutShifts,
-  trackSettledFetches,
   versionChooser,
   waitForChosenVersion,
   waitForEnabled,
   waitForInputValue,
+} from "./console-agents-browser-helpers.ts";
+
+import {
+  settledFetches,
+  trackSettledFetches,
   waitForSettledFetches,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-fetch-accounting.ts";
 import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import {
@@ -4053,6 +4056,40 @@ test("a negative permission answer reaching an open Stop or Delete dialog preven
     await expectReachableReason(page, control, reason);
     await page.unroute(permissionPath);
   }
+});
+
+test("a null revision-history rejection preserves the readable draft Configuration", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Rejected history", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Rejected History Agent",
+    nativeValues("rejected-history"),
+  );
+  const { page }: { page: Page } = await newPage(t, fixture);
+  await page.addInitScript((path: string) => {
+    const originalFetch = globalThis.fetch.bind(globalThis);
+    const target = new URL(path, globalThis.location.origin);
+    let rejected = false;
+    globalThis.fetch = (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : input, globalThis.location.href);
+      const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+      if (!rejected && method === "GET" && url.href === target.href) {
+        rejected = true;
+        // Inject a JS boundary rejection: falsy reasons must not look like empty history.
+        return Promise.reject(null);
+      }
+      return originalFetch(input, init);
+    };
+  }, `/namespaces/${namespace.id}/agents/${agent.id}/revisions`);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await page.getByText(/Version history unavailable\./).waitFor({ state: "visible" });
+  await page
+    .locator(".configuration-draft-editor")
+    .getByText("View native Configuration")
+    .waitFor({ state: "visible" });
+  assert.equal(await page.getByText(/No readable versions\./).count(), 0);
 });
 
 // A `null` passed to replaceChildren is painted as the text "null" (finding 1567).

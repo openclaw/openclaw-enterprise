@@ -2,6 +2,7 @@ import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import {
   assertExecutionAdmission,
   validateConnectionTemplateDestinations,
+  MAX_AGENT_CREDENTIAL_SOURCES,
 } from "@openclaw-enterprise/contracts";
 import { memoryEgressSendReceipts } from "./egress-send-receipts.ts";
 import type { EgressSendReceiptRepository, StoredSendReceipt } from "../egress-send-receipts.ts";
@@ -985,7 +986,7 @@ export function validCredentialSourceSnapshots(value: unknown): boolean {
   if (value === undefined) {
     return true;
   }
-  if (!Array.isArray(value) || value.length === 0 || value.length > 8) {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_AGENT_CREDENTIAL_SOURCES) {
     return false;
   }
   const seen = new Set<string>();
