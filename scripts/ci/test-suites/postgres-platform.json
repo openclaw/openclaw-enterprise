@@ -8,6 +8,7 @@
     "tests/integration/postgres-password-sign-in-limit.test.mjs",
     "tests/integration/postgres-bootstrap-failures.test.mjs",
     "tests/integration/postgres-agent-provisioning.test.mjs",
+    "tests/integration/postgres-plugin-discovery.test.ts",
     "tests/integration/postgres-platform-state.test.mjs",
     "tests/integration/postgres-github-recovery-replacement.test.mjs",
     "tests/integration/postgres-production-wireup.test.mjs",
@@ -87,6 +88,12 @@
         "production and development bootstrap refuse an Installation name outside the Name rule before creating anything",
         "API and worker startup refuse a stored Installation name outside the Name rule",
         "development bootstrap preserves credentials when COMMIT acknowledgement is lost"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-plugin-discovery.test.ts",
+      "expectedTests": [
+        "saved Agent catalog discovery releases the database connection while reading Configuration"
       ]
     },
     {

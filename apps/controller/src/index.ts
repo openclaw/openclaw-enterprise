@@ -2551,6 +2551,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         context.actorId,
         namespaceId,
         {
+          harnessId: body?.harnessId as "codex" | "openclaw",
           ...(body?.credentialSource === undefined
             ? {}
             : { credentialSource: body.credentialSource as CredentialSourceReference }),
@@ -2572,6 +2573,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         context.actorId,
         namespaceId,
         {
+          harnessId: body?.harnessId as "codex" | "openclaw",
           ...(body?.credentialSource === undefined
             ? {}
             : { credentialSource: body.credentialSource as CredentialSourceReference }),

@@ -2099,10 +2099,12 @@ async function prepareProductionInstallation(
     cluster: "k3d-openshell-sandboxdriver",
   });
   if (pluginInstallOnly) {
-    configuration.drivers.plugin = {
-      id: "codex-plugin",
-      configuration: { catalogSource: "openai-curated" },
-    };
+    configuration.drivers.plugin = [
+      {
+        id: "codex-plugin",
+        configuration: { catalogSource: "openai-curated" },
+      },
+    ];
     // These are observed native package origins, admitted through ordinary operator
     // configuration. Keep artifact access credential-free; new origins need review.
     configuration.drivers.sandbox.configuration.policy.networkPolicies.push({
