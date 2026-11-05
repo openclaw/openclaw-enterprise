@@ -146,6 +146,37 @@ connection template needs these additions:
 A Driver without these methods cannot grant `use` to anyone except Installation
 administrators, who hold every action through the built-in administrator role.
 
+## Plugin Driver: choose an account for a tool call
+
+A plugin release can mark a credential slot as repeatable and declare its delivery
+environment variable. In Agent setup, the operator can leave the slot empty,
+attach one compatible credential source, or add more. The selection records the
+source IDs in an array. An existing single source ID string still selects one
+account. Slots that omit the repeatable flag accept at most one account.
+
+The first release supports managed Model Context Protocol (MCP) bearer slots.
+Console offers ready sources attached to the Agent. Admission checks every
+source against the slot and the caller's authority. For each bound source,
+the platform derives a distinct placeholder name from the declared variable
+and a stable source-specific suffix. Reordering accounts keeps their identities.
+The saved OAuth account picker and consent flow can adopt this contract in a
+[follow-up to the named-slot implementation](https://github.com/openclaw/openclaw-enterprise/pull/4673).
+
+When any enabled plugin slot has several accounts, one account-selection skill
+lists the bindings by plugin and slot. It includes the source ID, saved name,
+and provider-confirmed email or workspace when available. If the user's request could refer
+to either account, the skill directs the model to ask which one to use. The
+worker exposes each selected upstream tool once. With one account it accepts
+the tool's native arguments. With several it accepts `{account, arguments}`,
+uses the source ID to select a private MCP session, and forwards the native
+arguments. An unknown ID fails before dispatch. All accounts share the plugin's
+tool selection. Each call still uses the selected account's own credential and
+approved destination.
+
+Qualify the change by calling the same tool on two accounts, checking which
+account answered each call, then removing one binding and using the other.
+With zero bindings the Agent can retain the plugin without a credentialed call.
+
 ## Protected egress
 
 Use [RFC-0023 admission and sender contracts](../0023-egress-proxy-credential-lifecycle/contracts.md)
