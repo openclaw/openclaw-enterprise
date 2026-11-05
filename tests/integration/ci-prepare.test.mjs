@@ -593,6 +593,29 @@ describe("CI preparation", { concurrency }, () => {
     }
   });
 
+  test("installer preparation populates its builder even when the engine holds the images", async (t) => {
+    const commands = await fixtureImageCommands(t, "engine-holds-images", "qa-matrix", {
+      ...imageCacheEnv,
+      NODE_BASE_IMAGE: packagingNodeBaseImage,
+      BUILDX_BUILDER: "owned-installer-builder",
+    });
+    const prepared = await commands.prepare([
+      "--selected-file",
+      "tests/integration/qa-matrix-real.test.mjs",
+    ]);
+    assert.equal(prepared.status, 0, prepared.stderr);
+    const builds = (await commands.commands()).filter(({ args }) => args[0] === "buildx");
+    // The installer builds again from source on this builder; tagging an engine image
+    // cannot supply that builder's layers. This checks orchestration, not live image storage.
+    assert.equal(builds.length, 2);
+    assert.ok(builds.every(({ args }) => args.includes("--load") && args.includes("--cache-from")));
+    assert.ok(builds.every(({ args }) => !args.includes("--cache-to")));
+    const state = JSON.parse(await readFile(commands.statePath, "utf8"));
+    assert.equal(state.env.BUILDX_BUILDER, "owned-installer-builder");
+    assert.equal(state.env.SOURCE_DATE_EPOCH, "0");
+    assert.doesNotMatch(JSON.stringify(state), /synthetic-cache-credential/);
+  });
+
   test("image lanes tag the engine's copy when the restored cache resolves to an image it holds", async (t) => {
     const commands = await fixtureImageCommands(t, "engine-holds-images", "images-packaging", {
       ...imageCacheEnv,

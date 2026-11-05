@@ -265,9 +265,9 @@ export function createDevUpModelProvider({
             "--cache-from",
             `type=gha,version=2,scope=oce-ci-${role}-${process.platform}-${process.arch}-v1,timeout=60s`,
           ]
-        : // The ordinary launcher builds on the engine's default builder. Reuse
-          // those layers when this lane has no hosted cache credentials.
-          ["--builder", "default"];
+        : // Reuse the installer's selected builder without passing hosted cache
+          // credentials into the test. Local runs retain the engine builder.
+          ["--builder", env.BUILDX_BUILDER || "default"];
     const builds = await Promise.allSettled([
       create(
         controllerTag,

@@ -172,7 +172,7 @@ export async function fixtureImageCommands(
   return {
     statePath,
     githubEnv,
-    prepare: () => run("prepare.mjs", prepareArgs),
+    prepare: (args = []) => run("prepare.mjs", [...prepareArgs, ...args]),
     warmImageCache: (args = []) =>
       run("prepare.mjs", ["--warm-image-cache", "--state", statePath, ...args]),
     prepareFile: (file) =>

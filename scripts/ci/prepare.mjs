@@ -1251,6 +1251,7 @@ async function buildRuntimeImages(
     nodeBaseImage = process.env.NODE_BASE_IMAGE,
     localStore = false,
     cacheWarm = false,
+    reuseEngineImages = true,
     revision,
     controllerTarget = "runtime",
     buildConcurrency,
@@ -1464,7 +1465,11 @@ async function buildRuntimeImages(
         await rm(entry.metadataFile, { force: true });
       } else {
         // The warm job builds every step so its export has them all.
-        if (cacheWarm || !(await reuseEngineImage(state, entry.role, entry.args, entry.tag))) {
+        if (
+          cacheWarm ||
+          !reuseEngineImages ||
+          !(await reuseEngineImage(state, entry.role, entry.args, entry.tag))
+        ) {
           await build(entry.role, entry.args);
         }
         await markResourceReady(statePath, state, entry.resource);
@@ -2942,6 +2947,9 @@ async function prepareLane({ lane, statePath, file }) {
         controller: true,
         runtime: true,
         nodeBaseImage: effectiveLaneEnv(name, env).NODE_BASE_IMAGE,
+        // These callers build from source next; an engine tag does not populate
+        // the selected builder's layer cache, even if it holds an identical image.
+        reuseEngineImages: false,
       }),
     );
     env.BUILDX_BUILDER = builder;

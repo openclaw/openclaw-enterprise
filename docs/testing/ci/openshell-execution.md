@@ -38,7 +38,10 @@ from the read-only cache. The real installer still builds from the checkout, wit
 the same builder and automatic engine loading. Hosted installer children also
 use preparation's fixed `SOURCE_DATE_EPOCH=0`; otherwise [BuildKit invalidates
 WORKDIR and subsequent cache entries](https://docs.docker.com/build/cache/invalidation/#workdir-and-source_date_epoch). Local installation and QA-matrix jobs use the
-same approach. Cache credentials are not passed to tests. Other OpenShell files
+same approach. Source-build preparation materializes layers on that builder even when the
+host engine already holds an identical image. The model-provider installation
+fixture uses the same selected builder for its checkout images. Cache credentials
+are not passed to tests. Other OpenShell files
 prepare their required cluster, database server, routing, and images; their image
 builds now read the same cache. The runner enforces both lane-wide and per-file `requiredEnv`
 inputs, expected cases, and cleanup. A failed shard does not cancel the
