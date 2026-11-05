@@ -131,7 +131,7 @@ Installation uses `GET /installation`; Agent editors use
 OCC snapshots the validated Configuration, Driver and plugin selections in the queued Agent revision. Compute projects one package descriptor; shared startup verifies its release and CLI or MCP assets.
 
 - **CLI packages.** The Gateway loads skill instructions. The Harness runs its image’s pinned executable. The shared guard checks operation and credential restrictions before injection.
-- **Hosted MCP packages.** Compute gives the worker the pinned descriptor and selected upstream tool names. The worker advertises that subset and the Gateway admits it. The credential driver attaches the source. The Sandbox delivers its placeholder and translates the selection into request policy for worker and script calls. The bundled OpenShell implementation enforces exact MCP names and rejects overlapping routes. An account and nonempty selection enable the server.
+- **Hosted MCP packages.** With an account and selected tools, the worker advertises those tools from Compute’s pinned descriptor. Per-turn Gateway grants allow same-node execution. For other nodes or Gateway hooks, the Gateway returns structured results or policy denials to Code Mode. The credential driver attaches the source. Sandbox delivers its placeholder and scopes worker and script requests to the selection. OpenShell enforces exact MCP names and rejects overlapping routes.
 - **Native runtime plugins.** Startup installs packages and verifies native tool policy.
 
 Credential withdrawal removes injection. Recovery preserves other attachments.

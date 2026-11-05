@@ -1375,24 +1375,70 @@ test("every formatting check provisions pinned Bun and scans without a formatter
   }
 });
 
-test("lane lists outside the lane table name every lane they must", async () => {
+test("lane lists outside the lane table name every lane they must", async (t) => {
   const suiteIndex = JSON.parse(read("scripts/ci/test-suites.json"));
   // The lane action exposes the cache credentials and sets OCC_CI_IMAGE_CACHE for
   // exactly the lanes prepare.mjs restores the BuildKit cache for. A lane missing
   // from either condition builds its images cold, and nothing fails.
   const action = loadYaml(".github/actions/run-ci-lane/action.yml");
-  const lanesIn = (expression) =>
-    [...String(expression).matchAll(/inputs\.lane == '([a-z0-9-]+)'/g)]
-      .map((match) => match[1])
-      .sort();
   const { imageCacheLanes } = await import(
     pathToFileURL(join(repositoryRoot, "scripts/ci/prepare.mjs")).href
   );
   const cached = [...imageCacheLanes.keys()].sort();
   const exposeStep = action.runs.steps.find((step) => step.id === "image-cache");
   const prepareStep = action.runs.steps.find((step) => step.name === "Prepare lane");
-  assert.deepEqual(lanesIn(exposeStep.if), cached);
-  assert.deepEqual(lanesIn(prepareStep.env.OCC_CI_IMAGE_CACHE), cached);
+  const mode = action.runs.steps.find(({ id }) => id === "image-mode");
+  const root = temporaryDirectorySync(t, "cache-lane-selection-");
+  const output = join(root, "outputs");
+  const openshell = JSON.parse(read("scripts/ci/test-suites/openshell.json"));
+  const firstAgentFiles = new Set([
+    "tests/integration/local-first-agent-openshell-real.test.mjs",
+    "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
+  ]);
+  const observed = new Set();
+  for (const lane of Object.keys(suiteIndex.lanes)) {
+    const files = lane === "openshell" ? ["", ...openshell.files.map(({ path }) => path)] : [""];
+    for (const file of files) {
+      writeFileSync(output, "");
+      const selection = spawnSync("bash", ["-c", mode.run], {
+        cwd: repositoryRoot,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          CI_SELECTED_LANE: lane,
+          CI_SELECTED_TEST_FILE: file,
+          GITHUB_OUTPUT: output,
+        },
+      });
+      assert.equal(selection.status, 0, selection.stderr);
+      const firstAgent = /^first-agent=(true|false)$/m.exec(readFileSync(output, "utf8"))?.[1];
+      assert.ok(firstAgent);
+      const evaluate = (expression) =>
+        runInNewContext(
+          expression
+            .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
+            .replaceAll(
+              "steps.image-mode.outputs.first-agent",
+              'steps["image-mode"].outputs["first-agent"]',
+            ),
+          {
+            inputs: { lane },
+            steps: { "image-mode": { outputs: { "first-agent": firstAgent } } },
+          },
+        );
+      const expected = lane === "openshell" ? firstAgentFiles.has(file) : cached.includes(lane);
+      assert.equal(evaluate(exposeStep.if), expected, `${lane}: ${file}: cache credentials`);
+      assert.equal(
+        evaluate(prepareStep.env.OCC_CI_IMAGE_CACHE),
+        expected ? "1" : "",
+        `${lane}: ${file}: cache flag`,
+      );
+      if (expected) {
+        observed.add(lane);
+      }
+    }
+  }
+  assert.deepEqual([...observed].sort(), cached);
   for (const lane of Object.keys(suiteIndex.lanes).filter((name) => name.startsWith("images-"))) {
     assert.ok(cached.includes(lane), `${lane} restores the image cache`);
   }

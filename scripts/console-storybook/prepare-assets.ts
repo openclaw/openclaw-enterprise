@@ -1,11 +1,42 @@
 import { createHash } from "node:crypto";
-import { cp, mkdir, copyFile, rm, readFile, writeFile, readdir, stat } from "node:fs/promises";
+import {
+  cp,
+  mkdir,
+  copyFile,
+  rm,
+  readFile,
+  writeFile,
+  readdir,
+  stat,
+  lstat,
+} from "node:fs/promises";
+import { join } from "node:path";
 import { stripTypeScriptTypes } from "node:module";
 import { fileURLToPath } from "node:url";
 
 import { loadConsoleTheme } from "../../apps/controller/src/composition/console-theme.ts";
 import { consoleAssetPaths, readConsoleAsset } from "../../apps/controller/src/console-assets.ts";
 import { renderConsoleThemeShell } from "../../apps/controller/src/console-theme.ts";
+
+async function includeFixture(path: string): Promise<boolean> {
+  if (/\.(js|mjs|cjs)$/.test(path) && (await stat(path)).isFile()) {
+    throw new Error(`Authored Storybook JavaScript is not allowed: ${path}. Use .mts instead.`);
+  }
+  return !path.endsWith(".mts");
+}
+
+async function validateFixtures(path: string): Promise<void> {
+  if (!(await includeFixture(path)) || !(await lstat(path)).isDirectory()) {
+    return;
+  }
+  for (const name of await readdir(path)) {
+    await validateFixtures(join(path, name));
+  }
+}
+
+const fixtureSource = new URL("./public/", import.meta.url);
+// Reject authored JavaScript before replacing either existing preview tree.
+await validateFixtures(fileURLToPath(fixtureSource));
 
 const assets = new URL("./dist/assets/console/", import.meta.url);
 await rm(assets, { recursive: true, force: true });
@@ -49,17 +80,11 @@ for (const [name, file] of [
 
 // Version the entire static module graph so an existing rehearsal browser cannot
 // mix cached Console/preset modules with a newly built Storybook manager.
-const fixtureSource = new URL("./public/", import.meta.url);
 const fixtureAssets = new URL("./dist/assets/storybook-fixtures/", import.meta.url);
 await rm(fixtureAssets, { recursive: true, force: true });
 await cp(fixtureSource, fixtureAssets, {
   recursive: true,
-  filter: async (path) => {
-    if (/\.(js|mjs|cjs)$/.test(path) && (await stat(path)).isFile()) {
-      throw new Error(`Authored Storybook JavaScript is not allowed: ${path}. Use .mts instead.`);
-    }
-    return !path.endsWith(".mts");
-  },
+  filter: includeFixture,
 });
 for (const path of await readdir(fixtureSource, { recursive: true })) {
   if (!path.endsWith(".mts")) {

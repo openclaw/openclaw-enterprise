@@ -696,7 +696,11 @@ export function createShell({
       },
     );
     refresh.disabled = true;
-    const heading = element("h1", { tabindex: "-1" }, pages[feature]);
+    const heading = element(
+      "h1",
+      { tabindex: "-1" },
+      subpage?.agentId ? "Agent details" : pages[feature],
+    );
     const actions = element(
       "div",
       { className: "page-actions" },

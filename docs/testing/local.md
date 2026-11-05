@@ -1,3 +1,9 @@
+---
+tags: [human_verified]
+# Backfilled from the verification tag recorded in 17ff921c5.
+last_verified: "2026-11-04"
+---
+
 # Local, browser, and metrics tests
 
 ## Overview
@@ -83,7 +89,7 @@ node --test tests/integration/console-api.test.mjs
 ### Browser failure diagnostics
 
 Failed `checks-browser` CI lanes retain `browser-failures-*` artifacts for three
-days. Use the [CI evidence overrides](ci.md#local-runner-overrides) to collect them
+days. Use the [CI evidence overrides](ci/configuration.md#runner-overrides) to collect them
 locally, including an optional Playwright trace. Open a trace with
 `pnpm exec playwright show-trace`.
 
@@ -227,3 +233,46 @@ For model builds, first pull `NODE_BASE_IMAGE` and the base pinned in
 [`deploy/runtime/Dockerfile`](../../deploy/runtime/Dockerfile); the external
 receiver files in `RUNNER_TEMP` must be visible to the host and VM. Do not weaken
 permission checks.
+
+### Worker termination observer
+
+The `k3d-observability` lane also runs the observer against actual Helm-installed
+workers. A namespace-scoped ServiceAccount lists and watches Pods. The test sends
+SIGTERM to each worker twice, waits for kubelet to restart the container in the
+same Pod, and checks that the OTLP receiver still holds both terminations
+after the second restart. The two cases cover the ordinary worker container and
+the native repository sender profile, where the worker is a restartable init
+container. The latter uses generated keys and an unadmitted test repository; it
+does not call a Git provider or prove repository operations. The lane builds the
+real native sender image and requires `OCC_TEST_REPOSITORY_CREDENTIALS_IMAGE` in
+its prepared state. To run both installed cases in that environment:
+
+```sh
+OCC_TEST_PRODUCTION_OBSERVABILITY=1 node --test tests/integration/production-observability-k3d.test.mjs
+```
+
+Both cases must pass. The receiver writes decoded OTLP to a temporary volume.
+Its contents verify receipt after the second restart. Backend retention over
+time needs a separate check against the operator's storage policy.
+
+For the synthetic LIST/WATCH case, use Node.js 24+ and `kubectl`:
+
+```sh
+OCC_TEST_WORKER_COLLECTOR_BIN=/trusted/bin/otelcol-contrib \
+  node --test tests/integration/worker-termination-observer.test.ts
+```
+
+In CI, the test extracts `/otelcol-contrib` from the host image pinned by
+`logging.collector.image` in the production chart. It creates a temporary
+container with `--pull=never` and removes it after copying the binary.
+`OCC_TEST_OBSERVABILITY_COLLECTOR_IMAGE` identifies the separate k3d import.
+`OCC_DOCKER_BIN` and `OCC_KUBECTL_BIN` select the executables. The standalone
+binary override above bypasses image extraction and requires a verified 0.159.0
+Collector.
+
+The synthetic API exercises backoff before the restart count advances, distinct
+139/137 exits, missing status, and watch closure. The real Collector reads the
+private file, rejects malformed records and excludes canaries from OTLP. Set
+`OCC_TEST_WORKER_OBSERVATION_EVIDENCE` to a new private file path to retain the
+synthetic batches. See the [operator guide](../guides/observability/worker-terminations.md)
+for deployment and retention.

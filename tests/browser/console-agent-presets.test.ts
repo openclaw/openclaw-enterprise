@@ -1,5 +1,15 @@
 /// <reference lib="es2024.promise" />
 
+import {
+  createModelCredentialSecret,
+  enterManualModel,
+  openAdvancedSettings,
+  assertAgentNameTaken,
+  optionValues,
+  waitForCreateFormReads,
+  submitCreateAgent,
+  createAgentThroughForm,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
@@ -63,20 +73,12 @@ import {
 } from "./console-agents-browser-helpers.mjs";
 import { normalizeProvisioningConfiguration } from "../../packages/occ/src/agent-provisioning.ts";
 import { resolveConfiguredHarnessId } from "../../packages/occ/src/index.ts";
-import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
+import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import {
-  createModelCredentialSecret,
-  enterManualModel,
-  openAdvancedSettings,
   configurationPostRequests,
   routeInstallationWithoutProvisioning,
   agentPostRequests,
-  assertAgentNameTaken,
-  optionValues,
   raceAgentName,
-  waitForCreateFormReads,
-  submitCreateAgent,
-  createAgentThroughForm,
 } from "./console-agents-test-support.mjs";
 import {
   AGENT_NAME_CONFLICT,
@@ -2848,6 +2850,7 @@ for (const viewport of consoleViewports) {
     // The real Kubernetes deploy admission admits the Configuration the form saved, so this path
     // cannot pass with one a Kubernetes install refuses (finding 3133). The Agent uses its model
     // Secret once an Installation administrator grants it.
+    assert.ok(created.harnessAuth && "source" in created.harnessAuth);
     await fixture.grantAgentSecretOperate(created, created.harnessAuth.source, {
       modelGrant: true,
     });

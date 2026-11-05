@@ -33,7 +33,7 @@ import {
 import { restrict } from "../helpers/iam-grants.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { selectTemplateDrivers } from "../helpers/connection-template-drivers.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { consoleStorage } from "../helpers/console-storage.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {

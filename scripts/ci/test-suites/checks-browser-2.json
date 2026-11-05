@@ -23,7 +23,7 @@
     "tests/browser/console-repository-picker-network.test.ts",
     "tests/browser/console-create-agent-provisioning-400.test.ts",
     "tests/browser/console-agent-deploy-focus.test.ts",
-    "tests/browser/console-agents-list-return.test.mjs",
+    "tests/browser/console-agents-list-return.test.ts",
     "tests/browser/console-refocus-focus.test.ts",
     "tests/browser/console-focus-ring.test.ts",
     "tests/browser/console-drafts-kept.test.ts",
@@ -93,7 +93,7 @@
       "path": "tests/browser/console-agent-deploy-focus.test.ts"
     },
     {
-      "path": "tests/browser/console-agents-list-return.test.mjs"
+      "path": "tests/browser/console-agents-list-return.test.ts"
     },
     {
       "path": "tests/browser/console-refocus-focus.test.ts"
