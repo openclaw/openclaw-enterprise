@@ -1,0 +1,46 @@
+---
+title: Proposed GitHub credential lifecycle
+config:
+  theme: base
+  themeVariables:
+    fontFamily: "Arial, sans-serif"
+    actorBkg: "#eff4f7"
+    actorBorder: "#7b909d"
+    actorTextColor: "#20313b"
+    noteBkgColor: "#e8f3ef"
+    noteBorderColor: "#75a191"
+    noteTextColor: "#203b35"
+    signalColor: "#617887"
+    signalTextColor: "#20313b"
+  sequence:
+    useMaxWidth: false
+    mirrorActors: true
+    actorMargin: 14
+    width: 100
+    height: 48
+    diagramMarginX: 8
+    diagramMarginY: 10
+    messageMargin: 22
+    wrap: false
+---
+sequenceDiagram
+    participant A as Agent
+    participant O as OCE
+    participant G as OpenShell gateway<br/>embedded issuer
+    participant S as OpenShell<br/>sender
+    participant H as GitHub
+    Note over O,G: 1 · Approve and provision
+    O->>G: Configure this Agent’s grant
+    G->>H: Sign with App key and request token
+    H-->>G: Scoped installation token
+    G->>S: Deliver token
+    Note over A,H: 2 · Send to an approved repository
+    A->>S: Git request
+    S->>O: Check Agent, repository and operation
+    O-->>S: Allow
+    S->>H: Send with token
+    Note over A,H: 3 · OCE withdraws this Agent’s Git grant
+    A->>S: Next Git request
+    S->>O: Check again
+    O-->>S: Deny
+    S-->>A: Access denied
