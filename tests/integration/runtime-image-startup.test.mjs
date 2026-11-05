@@ -1199,8 +1199,10 @@ try {
       [{ permissions: ":workspace", config: { default_permissions: ":read-only" } }, "permissions", "both-different"],
     ]) {
       await assert.rejects(client.request("thread/start", { ...request, ...selection }), (error) => {
-        assert.match(error.message, new RegExp("^thread/start: Codex did not grant the requested permission profile \\(requestSource=" +
-          source + ", selectors=" + selectors + ", comparison=(nonobject-result|field-absent|field-null|field-not-object|id-not-string|string-id-different)\\)$"));
+        // The real managed read-only response has activePermissionProfile: null.
+        // Exact text also excludes arbitrary profile values from the diagnostic.
+        assert.equal(error.message, "thread/start: Codex did not grant the requested permission profile (requestSource=" +
+          source + ", selectors=" + selectors + ", comparison=field-null)");
         return true;
       });
     }

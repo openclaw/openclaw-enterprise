@@ -129,9 +129,10 @@ checks remain unchanged. The final image records the patch checksums in its
 provenance.
 
 The [Codex profile patch](../../deploy/runtime/openclaw-codex-full-access-profile.patch)
-requires the requested named profile before returning a thread. Refusals report fixed
-request-source, selector-agreement and response-comparison categories, without profile
-names or configuration. Missing metadata and a different returned ID remain refusals.
+requires the requested named profile before returning a thread. Refusals for profiles
+other than `:danger-full-access` report fixed request-source, selector-agreement and
+response-comparison categories, without profile names or configuration. Missing metadata
+and a different returned ID remain refusals.
 
 The runtime disables npm background update checks. See the
 [runtime defaults](../../deploy/runtime/README.md).
