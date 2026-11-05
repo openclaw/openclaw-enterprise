@@ -7,7 +7,10 @@ import {
   OpenShellGitRouteBlockedError,
   openShellGitRouteReadiness,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
-import { OpenShellPreparedGitProviderError } from "../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts";
+import {
+  OpenShellPreparedGitProviderError,
+  type OpenShellPreparedGitProvider,
+} from "../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import {
   createGitHubRepositoryDeliveryResolver,
@@ -116,6 +119,7 @@ async function selectedV5(t: TestContext) {
       f.sandbox.workspace,
       f.sandbox.name,
       t.signal,
+      "/sandbox/enterprise",
       ["openai"],
       otherHosts,
     );
@@ -160,9 +164,10 @@ async function heldGit(t: TestContext) {
   const preview = entry.preview;
   assert.ok(preview);
   assert.equal(preview.mandatory, true);
-  const runtimeProvider = entry.provider;
+  const runtimeProvider: OpenShellPreparedGitProvider = entry.provider;
   const originalBinding = structuredClone(entry.binding);
   const gitRule = runtimeProvider.previewNetworkRule();
+  assert.ok(gitRule);
   const gitEndpoint = gitRule.endpoints.find((endpoint) => endpoint.host === "github.com");
   assert.ok(gitEndpoint);
   const runtimeFilesProvider = "oce-runtime-" + "a".repeat(16);
@@ -195,7 +200,7 @@ async function heldGit(t: TestContext) {
     spec,
   });
   f.faults.sandboxMissing = false;
-  const client = entry.client;
+  const client: RuntimeClient = entry.client;
   // Independent gateway desired/installed aggregate facts; Git version stays on provider.
   const environment: { desired?: string; installed?: string } = {};
   const generation = () => ({
@@ -723,7 +728,14 @@ test("bundled live Git refuses historical v5 installation scope before any effec
     return new Error("unadmitted v5 installation reached the Gateway");
   };
   await assert.rejects(
-    f.runtime.prepare(saved, fixtureClient(f), f.sandbox.workspace, f.sandbox.name, t.signal),
+    f.runtime.prepare(
+      saved,
+      fixtureClient(f),
+      f.sandbox.workspace,
+      f.sandbox.name,
+      t.signal,
+      "/sandbox/enterprise",
+    ),
     /requires one explicitly admitted GitHub binding/,
   );
   assert.equal(gateway, 0);
@@ -1314,8 +1326,8 @@ test("finite v5 Git expiry refuses resolver substitution and never replays an un
     } = await heldReleased(t);
     // Controlled persistence/peer extension, NOT a real DB, wire, or provider test.
     // Everything below descends from the runtime's actual fresh preparation and witness.
-    const events: { outcome?: string; check?: string; failure?: string }[] = [];
-    f.runtime["emit"] = (event) => {
+    const events: Readonly<Record<string, unknown>>[] = [];
+    f.runtime["emit"] = (event: Readonly<Record<string, unknown>>) => {
       if (event.event === "worker.openshell-git-expiry") {
         events.push(event);
       }
@@ -2841,4 +2853,34 @@ test("selected route readiness separates no material, access refusal, and replac
   assert.equal(readiness(), "blocked");
   assert.equal(await lookup(), undefined);
   assert.equal(activity.updates, 1);
+});
+
+test("Git preparation refuses broad or noncanonical workspace trust before provider writes", async (t) => {
+  const { f, revision } = await selectedV5(t);
+  for (const path of [
+    "*",
+    "/",
+    "/sandbox",
+    "/sandbox/",
+    "/sandbox/enterprise/",
+    "/sandbox/*",
+    "/sandbox/enterprise/*",
+    "/sandbox/../etc",
+    "/sandbox/enterprise/../other",
+    "/sandbox//enterprise",
+    "/sandbox/enterprise\0",
+  ]) {
+    await assert.rejects(
+      f.runtime.prepare(
+        revision,
+        fixtureClient(f),
+        f.sandbox.workspace,
+        f.sandbox.name,
+        t.signal,
+        path,
+      ),
+      /exact Sandbox workspace path/,
+    );
+    assert.equal(f.calls.providerWrites, 0);
+  }
 });

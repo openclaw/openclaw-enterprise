@@ -391,10 +391,11 @@ async function observedGitRoute(
     name: "openai",
     workspace: f.sandbox.workspace,
   });
+  let modelEnvironment;
   f.client.getSandboxProviderStatus = async () => {
     const generation = {
       attachmentEpoch: f.supervisor.attachmentEpoch,
-      providerEnvRevision: environment ?? f.entry.binding.resourceVersion,
+      providerEnvRevision: modelEnvironment ?? environment ?? f.entry.binding.resourceVersion,
       configRevision: "1",
       policyHash: "original-policy",
     };
@@ -440,6 +441,11 @@ async function observedGitRoute(
   assert.equal(f.denials().at(-1).reason, "route_pending");
   assert.equal(preview.release, "acknowledged", "refresh does not reset held launch ACK");
   f.faults.observe = false;
+  // Git rotation changes the aggregate environment; the model observation must catch up.
+  modelEnvironment = "1000";
+  await f.reconcile();
+  assert.equal(await f.lookup(), undefined, "model observation must catch up with Git rotation");
+  modelEnvironment = "1001";
   await f.reconcile();
   assert.ok(await f.lookup(), "later request uses the newly verified environment");
   assert.equal(f.calls.rotate, 1, "observation recovery does not reinstall credentials");
@@ -461,6 +467,7 @@ async function observedGitRoute(
         f.sandbox.workspace,
         f.sandbox.name,
         signal,
+        "/sandbox/enterprise",
         f.entry.otherProviders,
       );
     if (changedDelivery) {
@@ -522,9 +529,15 @@ async function observedGitRoute(
   replacement.owner = f.owner;
   replacement.routes = f.store;
   await assert.rejects(
-    replacement.prepare(revision, f.client, f.sandbox.workspace, f.sandbox.name, signal, [
-      "openai",
-    ]),
+    replacement.prepare(
+      revision,
+      f.client,
+      f.sandbox.workspace,
+      f.sandbox.name,
+      signal,
+      "/sandbox/enterprise",
+      ["openai"],
+    ),
     { reason: coldReason },
   );
   assert.equal(f.store.rows.get(revision.id).blocked, coldReason);

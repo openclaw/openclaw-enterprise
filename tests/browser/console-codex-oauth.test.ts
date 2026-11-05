@@ -25,11 +25,13 @@ import {
   newPage,
   revokeAdministratorGrant,
   settlePageRequests,
-  trackSettledFetches,
   waitForEnabled,
+} from "./console-agents-browser-helpers.ts";
+import {
+  trackSettledFetches,
   waitForIdleFetches,
   waitForSettledFetches,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-fetch-accounting.ts";
 import { createReadyConsoleNamespace as createUntypedReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   AGENT_DEVICE_LOGIN_CANCEL_DENIED,

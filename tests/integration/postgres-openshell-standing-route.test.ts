@@ -14,8 +14,9 @@ import { standingExecutionFixture } from "../helpers/postgres-standing-execution
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import type { PostgresPool } from "../../packages/occ/src/index.ts";
 
-// Independent current-path coverage. The historical rotation cases below remain
-// intact until their launch witness and real owner renewal can be reconstructed.
+type RuntimeOwner = Parameters<OpenShellGitRuntime["start"]>[0];
+
+// These cases use selected-repository held launch and the original route owner.
 test(
   "held OpenShell route stays closed to a cold reader and closes on worker replacement",
   { ...requiresPostgres, timeout: 120_000 },
@@ -33,11 +34,12 @@ test(
       cold["routes"] = routes;
       // Delegate to the selected production owner; count only the cold worker's reads.
       cold["owner"] = {
-        readOpenShellMaterial: (...args) => {
+        readOpenShellMaterial: (...args: Parameters<RuntimeOwner["readOpenShellMaterial"]>) => {
           reads++;
           return owner.readOpenShellMaterial(...args);
         },
-        authorizeOnlineRequest: (...args) => owner.authorizeOnlineRequest(...args),
+        authorizeOnlineRequest: (...args: Parameters<RuntimeOwner["authorizeOnlineRequest"]>) =>
+          owner.authorizeOnlineRequest(...args),
       };
       t.after(() => cold.close());
       const identity = {
@@ -83,7 +85,9 @@ test(
       }
       assert.equal(reads, 0);
       await assert.rejects(
-        cold.prepare(revision, client, workspace, sandbox, t.signal, ["openai"]),
+        cold.prepare(revision, client, workspace, sandbox, t.signal, "/sandbox/enterprise", [
+          "openai",
+        ]),
         { name: "OpenShellGitRouteBlockedError", reason: "worker_replaced" },
       );
       const closed = await row();
@@ -99,7 +103,9 @@ test(
         "the former holder loses service",
       );
       await assert.rejects(
-        cold.prepare(revision, client, workspace, sandbox, t.signal, ["openai"]),
+        cold.prepare(revision, client, workspace, sandbox, t.signal, "/sandbox/enterprise", [
+          "openai",
+        ]),
         { name: "OpenShellGitRouteBlockedError", reason: "worker_replaced" },
       );
       assert.deepEqual(await row(), closed, "retry cannot take another fence or reopen the route");
@@ -156,8 +162,11 @@ for (const outcome of ["unsent", "lost-reply", "withdrawn"] as const) {
         // Delegate every authority read. Never turn an absent/withdrawn answer into material.
         // The controlled successor isolates the shared CAS path from issuer renewal policy.
         runtime["owner"] = {
-          authorizeOnlineRequest: (...args) => owner.authorizeOnlineRequest(...args),
-          readOpenShellMaterial: async (...args) => {
+          authorizeOnlineRequest: (...args: Parameters<RuntimeOwner["authorizeOnlineRequest"]>) =>
+            owner.authorizeOnlineRequest(...args),
+          readOpenShellMaterial: async (
+            ...args: Parameters<RuntimeOwner["readOpenShellMaterial"]>
+          ) => {
             const current = await owner.readOpenShellMaterial(...args);
             if (atWriter) {
               finalReads++;
@@ -306,9 +315,15 @@ for (const outcome of ["unsent", "lost-reply", "withdrawn"] as const) {
           cold["owner"] = owner;
           t.after(() => cold.close());
           await assert.rejects(
-            cold.prepare(revision, client, journey.workspace, journey.sandbox, t.signal, [
-              "openai",
-            ]),
+            cold.prepare(
+              revision,
+              client,
+              journey.workspace,
+              journey.sandbox,
+              t.signal,
+              "/sandbox/enterprise",
+              ["openai"],
+            ),
             { name: "OpenShellGitRouteBlockedError" },
           );
           assert.equal(await cold.lookup(identity, t.signal), undefined);
@@ -376,7 +391,9 @@ test(
               return rows[0];
             });
         const prepare = (owner: OpenShellGitRuntime) =>
-          owner.prepare(revision, client, workspace, sandbox, t.signal, ["openai"]);
+          owner.prepare(revision, client, workspace, sandbox, t.signal, "/sandbox/enterprise", [
+            "openai",
+          ]);
         const baseline = {
           writes: writes(),
           issues: peer.gh.issuesOfTokens.length,

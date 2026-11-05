@@ -8,7 +8,7 @@ import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/driv
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { withNativeAdminGateway } from "../helpers/harness-configuration.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
-import { nativeValues, pathRequests } from "./console-agents-browser-helpers.mjs";
+import { nativeValues, pathRequests } from "./console-agents-browser-helpers.ts";
 
 /** @import { GitHubRepositoryRegistration } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts" */
 

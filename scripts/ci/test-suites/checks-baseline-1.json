@@ -613,7 +613,8 @@
         "selected released v5 unsent cancellation: not committed",
         "selected released v5 unsent cancellation: committed reply lost",
         "selected released v5 unsent cancellation: replacement holder",
-        "selected route readiness separates no material, access refusal, and replacement"
+        "selected route readiness separates no material, access refusal, and replacement",
+        "Git preparation refuses broad or noncanonical workspace trust before provider writes"
       ]
     },
     {

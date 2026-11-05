@@ -25,7 +25,6 @@ import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbo
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
-import { PostgresOpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
 import { createGitHubRepositoryDeliveryResolver } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { standingExecutionPlatform } from "./postgres-standing-execution.ts";
@@ -59,6 +58,14 @@ import { CREDENTIAL_GATEWAY_FIXTURE_ID } from "./postgres-worker-revision-fixtur
 // PostgreSQL admission, worker, owner, route and bundled proxy are production code.
 // Compute observations, the authenticated Gateway, launcher and Git provider are controlled.
 type NarrowJourney = {
+  maintenance: {
+    fixture: Awaited<ReturnType<typeof standingExecutionPlatform>>;
+    agent: Awaited<ReturnType<Awaited<ReturnType<typeof standingExecutionPlatform>>["agent"]>>;
+    world: Awaited<ReturnType<typeof gitExpiryGateway>>["world"];
+    events: Array<Readonly<Record<string, unknown>>>;
+    stopped: string[];
+    restart: () => Promise<void>;
+  };
   runtime: OpenShellGitRuntime;
   revision: AgentRevision;
   client: Parameters<OpenShellGitRuntime["prepare"]>[1];
@@ -88,14 +95,22 @@ export async function beforeNarrowGitPreparation(
   t: TestContext,
   exercise: (journey: NarrowPreparation) => Promise<void>,
 ) {
-  return repositoryGitJourney(t, undefined, exercise);
+  return repositoryGitJourney(t, undefined, {}, exercise);
 }
+
+type NarrowPolicy = {
+  draftPull?: boolean;
+  pushRef?: string;
+  sessionDurationSeconds?: number;
+  platformProfile?: boolean;
+};
 
 export async function narrowOnlineGitJourney(
   t: TestContext,
   exercise: (journey: NarrowJourney) => Promise<void>,
+  policy: NarrowPolicy = {},
 ) {
-  return repositoryGitJourney(t, exercise);
+  return repositoryGitJourney(t, exercise, policy);
 }
 
 export async function repositorySetJourney(t: TestContext) {
@@ -105,6 +120,7 @@ export async function repositorySetJourney(t: TestContext) {
 async function repositoryGitJourney(
   t: TestContext,
   narrow?: (journey: NarrowJourney) => Promise<void>,
+  policy: NarrowPolicy = {},
   beforePrepare?: (journey: NarrowPreparation) => Promise<void>,
 ) {
   const narrowProfile = narrow !== undefined || beforePrepare !== undefined;
@@ -145,7 +161,8 @@ async function repositoryGitJourney(
     sandbox: state.sandbox,
     revisionId: "",
     deadline: Date.now() + 600_000,
-    platformProfile: false,
+    platformProfile: policy.platformProfile ?? false,
+    trackGitExpiry: policy.sessionDurationSeconds !== undefined,
     gatewayVersion: "0.1.6",
     gatewayTls: { ...tls, tokenPath },
     ...{ supervisor: state },
@@ -176,22 +193,25 @@ async function repositoryGitJourney(
     repositoryMiddlewareName: "oce-prepared-git",
     authorityScope: "execution" as const,
   };
-  const runtime = new OpenShellGitRuntime(
-    {
-      registrationName: "oce-prepared-git",
-      authority: {
-        host: "127.0.0.1",
-        port,
-        issuer: "https://gateway.example.test",
-        audience: "repository-set",
-        keyId: "gateway-key",
-        certificatePath: tls.certPath,
-        privateKeyPath: tls.keyPath,
-        issuerPublicKeyPath,
+  const createRuntime = () =>
+    new OpenShellGitRuntime(
+      {
+        registrationName: "oce-prepared-git",
+        authority: {
+          host: "127.0.0.1",
+          port,
+          issuer: "https://gateway.example.test",
+          audience: "repository-set",
+          keyId: "gateway-key",
+          certificatePath: tls.certPath,
+          privateKeyPath: tls.keyPath,
+          issuerPublicKeyPath,
+        },
       },
-    },
-    (revision) => createGitHubRepositoryDeliveryResolver(peer.registry)(revision),
-  );
+      (revision) => createGitHubRepositoryDeliveryResolver(peer.registry)(revision),
+    );
+  let runtime = createRuntime();
+  t.after(() => runtime.close());
   const sandbox = new OpenShellSandboxDriver(
     {
       gateway: { workspaceMode: "operator" },
@@ -273,7 +293,7 @@ async function repositoryGitJourney(
     driver: owner.ref,
     tokenLifetimeMs: 600_000,
     ...(narrowProfile
-      ? { draftPull: true }
+      ? { ...policy, draftPull: policy.draftPull ?? true }
       : {
           selection: {
             entries: repositorySet,
@@ -297,7 +317,9 @@ async function repositoryGitJourney(
       await issuanceRelease.promise;
     },
   });
-  runtime["routes"] = new PostgresOpenShellGitRouteStore(f.observerPool);
+  const events: NarrowJourney["maintenance"]["events"] = [];
+  const stopped: string[] = [];
+  runtime.connectRouteStore(f.observerPool, (event) => events.push(event));
   const bound = await owner.requireRepositoryGitTransport()!(peer.prepared.protectedGit!);
   t.after(() => bound.close());
   // The authority listens now. Release the hold before the first request: while both listen, the
@@ -307,7 +329,10 @@ async function repositoryGitJourney(
   const driver = new GitHubRepositoryPolicy(
     { driverId: peer.registry.backendId, backendId: peer.registry.backendId },
     peer.registry,
-    { sessionDurationSeconds: 600 },
+    {
+      sessionDurationSeconds:
+        policy.sessionDurationSeconds ?? (narrow && policy.draftPull === false ? 180 : 600),
+    },
   );
   f.controller.registerDriver(driver);
   f.controller.selectDriver("repo", driver.id);
@@ -457,6 +482,10 @@ async function repositoryGitJourney(
       { timeoutMs: 10_000, intervalMs: 20 },
     );
   };
+  const continuity = {
+    model: "openai",
+    workload: async () => "controlled-pod-uid/container-id",
+  };
   let preparationError: unknown;
   const compute = {
     ...f.compute,
@@ -464,7 +493,23 @@ async function repositoryGitJourney(
     implementation: kube.implementation,
     validateRepositoryCredentials: kube.validateRepositoryCredentials.bind(kube),
     validateExecutionAdmission: kube.validateExecutionAdmission.bind(kube),
+    retireExpiredRepositoryAccess: (r: AgentRevision, signal: AbortSignal) =>
+      runtime.retireExpiredRepositoryAccess(
+        r,
+        client,
+        workspace,
+        state.sandbox,
+        continuity,
+        signal,
+      ),
+    async stopRevision(r: AgentRevision) {
+      // Compute is controlled: this records the worker's stop request, not a real Pod exit.
+      stopped.push(r.id);
+    },
     async prepareRevision(r: AgentRevision, custody: ComputeRevisionContext) {
+      if (policy.sessionDurationSeconds !== undefined) {
+        assert.equal(wire.world.id, undefined, "expiry maintenance must not prepare a replacement");
+      }
       let stage = "provider-bootstrap";
       try {
         if (conversation && !launching) {
@@ -526,7 +571,15 @@ async function repositoryGitJourney(
         if (conversation) {
           startupId = await nativeChallenge.promise;
         }
-        const p = await runtime.prepare(r, client, workspace, state.sandbox, t.signal, ["openai"]);
+        const p = await runtime.prepare(
+          r,
+          client,
+          workspace,
+          state.sandbox,
+          t.signal,
+          "/sandbox/enterprise",
+          ["openai"],
+        );
         // The controlled Sandbox reports startup only after preview registration.
         // The opt-in native Harness is already waiting for enrollment.
         if (!wire.world.id) {
@@ -536,10 +589,7 @@ async function repositoryGitJourney(
         const entry = runtime["states"].get(revision.id)!.entry!;
         state.gitRule = entry.provider.previewNetworkRule()!;
         stage = "recipient-bind";
-        await runtime.bind(r.id, () => {}, {
-          model: "openai",
-          workload: async () => "controlled-pod-uid/container-id",
-        });
+        await runtime.bind(r.id, () => {}, continuity);
         stage = "recipient-observation";
         await reconcile();
         stage = "held-hook-probe";
@@ -606,8 +656,9 @@ async function repositoryGitJourney(
       }
     },
   };
-  try {
-    await f.start(compute, {
+  const start = () =>
+    f.start(compute, {
+      emit: (event) => events.push(event),
       ...{ repositoryGitMaterial: peer.prepared.revisionMaterial },
       transformDrivers: (d: { installation: { drivers: object } }) => ({
         ...d,
@@ -622,6 +673,8 @@ async function repositoryGitJourney(
         },
       }),
     });
+  try {
+    await start();
     try {
       await f.work(work, "succeeded");
     } catch (error) {
@@ -725,7 +778,7 @@ async function repositoryGitJourney(
       assert.deepEqual(peer.gh.issuesOfTokens[0].permissions, {
         metadata: "read",
         contents: "write",
-        pull_requests: "write",
+        ...((policy.draftPull ?? true) && { pull_requests: "write" }),
       });
       const binding = revision.repositoryCredentials!.bindings[0]!;
       const delivery = createGitHubRepositoryDeliveryResolver(peer.registry)(revision);
@@ -761,6 +814,21 @@ async function repositoryGitJourney(
       assert.equal(rows.length, 1);
       const heldCredential = state.installed;
       await narrow({
+        maintenance: {
+          fixture: f,
+          agent,
+          world: wire.world,
+          events,
+          stopped,
+          async restart() {
+            await f.stop();
+            await runtime.close();
+            runtime = createRuntime();
+            runtime.connectRouteStore(f.observerPool, (event) => events.push(event));
+            await runtime.bindRepositoryGit(peer.prepared.protectedGit!);
+            await start();
+          },
+        },
         runtime,
         revision,
         client,

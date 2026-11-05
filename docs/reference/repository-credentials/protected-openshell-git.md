@@ -202,18 +202,20 @@ for profile-specific allowed/denied requests and the required model-source choic
 
 ## Use the admitted repository
 
+The Sandbox sets process-scoped `safe.directory` for its approved mount,
+allowing root-owned workspaces without trusting nested repositories or changing
+persistent Git configuration. `push.negotiate=true` reduces redundant transfers; [push request limits](../../guides/repository-credentials/openshell-enrollment.md#plan-for-request-limits) apply.
+
 With `github-repository`, use selected HTTPS Git URLs. API operations
 use token permissions. Both API scopes refuse runner-token and deploy-key
 creation. For selected repositories, the sender accepts the CLI’s
 `Time-Zone: Etc/UTC` and, on GraphQL POSTs, `Graphql-Features: merge_queue`.
 Duplicate headers are refused. Each request requires current authorization.
 
-For an explicit `git-write` grant, clone, fetch and push exactly
-`https://github.com/$OCE_OPENSHELL_GIT_REPOSITORY.git`: the lowercase name OCE
-gives the Sandbox, with `.git`. Git and OpenShell match the credential path
-case-sensitively, so GitHub's mixed-case spelling, such as
-`https://github.com/Acme/Widgets.git`, or the URL without `.git` gets no
-credential, and Git fails, for example with `could not read Username` or
+With `git-write`, use exactly
+`https://github.com/$OCE_OPENSHELL_GIT_REPOSITORY.git` for clone, fetch and push.
+Credential paths are case-sensitive: mixed-case URLs or those missing `.git`
+receive no credential. Git reports `could not read Username` or
 `The requested URL returned error: 403`.
 
 [OCC access rules](../../flows/agent-repository-credentials.md) own grant lifetime
@@ -300,8 +302,9 @@ A transient observation failure closes access until the same installation verifi
 with retry backoff from 1 s to 10 s. The held-launch paths (`github-repository`,
 protected `git-write`, and installation preview) cannot be adopted by a replacement
 worker: deploy a new revision after `worker_replaced` or terminal `bootstrap_failed`.
-Waiting for reconciliation cannot reopen that route. Other qualified paths may retry
-a pre-write read or re-observe durable delivery after restart. No path replays an
+The bundled Driver never restores legacy installation-wide routes for live use.
+A replacement worker can verify historical metadata and finish the original detach
+without requesting credentials or taking over delivery. No path replays an
 uncertain provider write. Provider writes retain their own deadline. See
 [Credential Proxy lifecycle](../drivers/credential-proxy.md#cancellation-retries-and-uncertainty).
 Prepared-material expiry, quarantine and retirement belong to
@@ -316,13 +319,12 @@ or `gateway_unauthorized`. `worker.openshell-git-route-warning` distinguishes
 `retained` ones.
 `OPENSHELL_GIT_WITHDRAWAL_UNRECORDED` means the store did not record a withdrawal:
 this worker still refuses the route, but confirm its Sandbox was deleted, or another
-worker could adopt it. The worker drops a closed route once its Sandbox reads absent
-(twice if it never observed one); a failed read keeps it. A read the gateway refuses by
-the worker's identity logs one `retained` warning with `gateway_unauthorized`: the
-route stays in memory, read again with backoff, until a read finds its Sandbox gone.
+worker could adopt it. The worker drops a closed route after its Sandbox reads absent
+(twice if never observed). Failed reads retain it. A denied read logs one `retained`
+warning with `gateway_unauthorized`; reads continue with backoff until absence.
 The worker still refuses to
 prepare, adopt or verify that revision, and later denials log `no_binding`.
-`worker.openshell-git-route` reports adoption and restoration, with `durationMs`.
+`worker.openshell-git-route` reports restoration within the same worker, with `durationMs`.
 Correlate the revision and request ID with `worker.openshell-git-denied`.
 
 ### Qualification history

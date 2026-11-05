@@ -314,7 +314,7 @@ test(
         readOpenShellMaterial: noAuthority,
         authorizeOnlineRequest: noAuthority,
       };
-      runtime["emit"] = (event) => {
+      runtime["emit"] = (event: Readonly<Record<string, unknown>>) => {
         if (event.event === "worker.openshell-git-expiry") {
           checks.push(event.outcome + ":" + event.check);
         }

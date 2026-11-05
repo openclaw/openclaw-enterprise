@@ -1,16 +1,15 @@
 ---
 created: "2026-10-14"
-updated: 2026-11-04
-last_updated_session: authoring-run/62d369a1-b693-49c9-badd-c92eeda35a6b
+updated: 2026-11-05
+last_updated_session: authoring-run/8ffac278-3c9e-4308-aec7-96da3b06d9d4
 ---
 
 # Protected credential request flow
 
 ## Overview
 
-A dedicated Agent requests GitHub repository identity. The supervisor holds the
-reply until OpenClaw Control Plane (OCC) permits release. The bundled legacy
-supervisor lacks this exchange; see the [release cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
+The supervisor holds an Agent's GitHub identity reply until OpenClaw Control Plane
+(OCC) permits release. See the [legacy supervisor cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
 and [threat model](../reference/security/credential-proxy.md).
 
 ## Entry Points
@@ -30,30 +29,27 @@ and [threat model](../reference/security/credential-proxy.md).
 Suppose the revision admits `github-app-metadata` for repository ID `12345`,
 `acme/widgets`, at `https://api.github.com`.
 
-1. **Match the request.** The supervisor captures the process's bodyless
-   `GET /repos/acme/widgets` and binds the reply to that exchange. The GitHub
-   adapter checks the method, URL, headers and body against the installed route.
-2. **Resolve the token.** OCC checks the installation, binding, withdrawal
-   state and the Agent's current `credential_source:operate`. The resolver
-   selects a usable installation token that the worker already prepared.
-   OCC returns the resulting `Authorization: Bearer …` header to the supervisor.
+1. **Match the request.** The supervisor binds the bodyless `GET /repos/acme/widgets`
+   reply to its exchange. The GitHub adapter checks method, URL, headers and body
+   against the installed route.
+2. **Resolve the token.** OCC checks installation, binding, withdrawal and current
+   `credential_source:operate`, selects a usable worker-prepared token, then returns
+   its `Authorization: Bearer …` header to the supervisor.
 3. **Permit one send.** On the same stream, OCC rechecks authority and the
    token version. If the Agent lost its source grant after resolution, OCC
    refuses the send. Otherwise, the supervisor can start the request by the
    deadline in the permit. Issuing a permit does not confirm receipt by GitHub.
-4. **Release the identity.** The supervisor submits GitHub's complete reply.
-   The adapter checks for a `200` JSON response of at most 64 KiB with the
-   admitted ID and name (ASCII letter case may differ). For example, even if
-   GitHub returns `"full_name":"Acme/Widgets"` and a description, the caller
-   can receive a `200` with `Content-Type: application/json`,
-   `Cache-Control: no-store` and this body.
+4. **Release the identity.** The adapter checks GitHub's complete reply: `200` JSON,
+   at most 64 KiB, with the admitted ID and name (ASCII case may differ). The caller
+   receives `200`, `Content-Type: application/json`, `Cache-Control: no-store`
+   and only this body.
 
 ```json
 { "id": 12345, "full_name": "acme/widgets" }
 ```
 
-If GitHub returns ID `67890` under the same name, the supervisor withholds the
-response. GitHub has already received the request. With the credential-free
+For ID `67890` under the same name, the supervisor withholds the response
+although GitHub received the request. With the credential-free
 profile the same filters apply, but resolution records `no_material_required`
 and the supervisor sends no credential header.
 [GitHub metadata adapter](https://github.com/openclaw/openclaw-enterprise/blob/0418ef3a2c116b73f025281395d92477daf665d2/apps/controller/src/drivers/egress-proxy/github-metadata.ts)
@@ -133,6 +129,12 @@ resolves material nor retries business requests. The worker's active-revision br
 repeat this sequence when work is queued. Default Kubernetes has no periodic maintenance
 interval, so Harness-only restart recovery is not automatic;
 see the [supported recovery boundary](../reference/credential-sources/protected-inference.md#installation-configuration).
+
+`openshell-git-installation.ts:observeOpenShellGitInstallation` completes a model
+OBSERVE per active environment for observed Git routes, including rotations.
+`ObservedHookPreview.completedModelReceipt` caches completion per environment revision.
+Stale or incomplete model receipts keep the route pending without changing the
+original launch witness or startup acknowledgment.
 
 ### 2. Capture identity, operation and first authority decision
 
@@ -282,47 +284,45 @@ Inline developer tools keep the local-tool restrictions.
 ### 6. Reduce the live credential policy
 
 OCC commits withdrawal before provider action. Under the Agent lock,
-`packages/occ/src/credential-policy-reduction.ts:reduceCredentialPolicy` records an
-exact compare-and-reduce request in `credential_delivery_reductions` for a source or
-repository binding. Concurrent reductions wait; recovery observes the recorded operation
-without another capability probe or mutation. The reductions owner manages these and
-material-delivery reduction receipts; their evidence shapes are separately constrained
-in the same store.
+`packages/occ/src/credential-policy-reduction.ts:reduceCredentialPolicy` records the
+source or repository compare-and-reduce request in `credential_delivery_reductions`.
+Concurrent reductions wait; recovery observes without another capability probe or
+mutation. The store separately constrains policy and material reduction receipts.
 
-Admission selects reduction v2 only for exact-dispatch Git. Online and observed-hook
-Git keep their v5 and v6 semantics. Ordinary v3 uses reduction v1 only when the Driver
+Only exact-dispatch Git uses reduction v2. Online and observed-hook Git retain v5/v6. Ordinary v3 uses reduction v1 only when the Driver
 explicitly declares it; v2 alone does not authorize v1 or multiple static sources.
 
-Independent observation of the exact operation, stable recipient and retained plan
-supplies the current policy view; the original installation receipt remains unchanged.
-Missing identity, stale operation, incomplete configuration or wrong policy evidence
-keeps withdrawal pending; a positively identified replacement recipient can require
-retirement. Remaining grants stay unchanged, and the last route leaves deny-all. Receipt
-settlement cannot reopen withdrawn authorization, and the Driver prevents stale
-installation from restoring routes. Reference-peer proof does not qualify released
+Policy requires the exact observed operation, stable recipient and retained plan;
+the original receipt stays unchanged. Missing identity, stale operations or invalid
+configuration/policy evidence keeps withdrawal pending. A confirmed replacement
+recipient can require retirement. Remaining grants stay unchanged; the last route leaves deny-all. Settlement and stale
+installation cannot restore withdrawn routes. Reference-peer proof does not qualify released
 Sandboxes or continued model execution.
 
 ### 7. Retain installation custody
 
-`packages/occ/src/state/credential-deliveries.ts:CredentialDeliveries` fixes the
-settlement policy: independent confirmation for registered recipients; the original
-reserving worker for snapshots, including bootstrap. Reservations advance the
-operation fence. Confirmation grants no request authority.
+`packages/occ/src/state/credential-deliveries.ts:CredentialDeliveries` requires
+independent confirmation for registered recipients and the original reserving
+worker for snapshots, including bootstrap. Reservations advance the fence;
+confirmation grants no request authority.
 
 `apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts:reconcile`
 cancels only definitely unsent writes. Uncertain writes stay pending and blocked.
 `release` drops closed routes whose Sandbox is gone; refusal stays.
+`prepare` requires held launch or explicit installation preview and closes another
+worker's persisted route before credential access. Historical `verifyExecution`
+permits cleanup, not live recovery; `retireExpiredRepositoryAccess` settles the
+original detach through its stored fence.
 See [restart behavior](../reference/repository-credentials/protected-openshell-git.md#route-state-restarts-and-recovery).
 
-Creation requires the exact live owner. Deletion retains custody but prevents live
-use. `apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts:confirmDetached`
+Creation requires live ownership; deletion keeps custody but stops use. `apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts:confirmDetached`
 checks the retained fence, recipient, material, policy and request without another apply.
 
 ## Debugging and Verification
 
-Follow the [testing guide](../testing/static-egress.md). Qualify model execution,
-response custody and NetworkPolicy with the selected chart and image. Observe
-the origin and caller independently.
+Follow the [testing guide](../testing/static-egress.md) to qualify model execution,
+response custody and NetworkPolicy on the selected deployment. Observe origin and
+caller independently.
 
 ## Related docs
 
@@ -338,6 +338,10 @@ the origin and caller independently.
 None.
 
 ## Changelog
+
+- 2026-11-05 11:50: Retain historical cleanup without legacy live recovery. (authoring-run/8ffac278-3c9e-4308-aec7-96da3b06d9d4 - 8389365da2b59206fb8727901a64f6cf1311a3b7)
+
+- 2026-11-05 02:35: Refresh model observation after Git credential rotation. (authoring-run/cdb62c1d-61db-4f65-985f-7b44e64f10d0 - 261e4b54cbd0366ff0cba0dc6a00b7890b8e39f2)
 
 - 2026-11-04 08:59: Validate effective image policy in streamed response envelopes. (authoring-run/62d369a1-b693-49c9-badd-c92eeda35a6b - 54ad9dad2610ed99ab8ce8134fb03d3b10ed6be4)
 

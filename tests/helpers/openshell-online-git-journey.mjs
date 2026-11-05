@@ -154,10 +154,30 @@ export async function gitExpiryGateway(
   };
   if (platformProfile) {
     profiles.service = serviceProfile;
-    providers["operator-service"] = {
-      // On the stock wire an omitted profile_workspace is the empty string (platform).
-      type: "service",
-      metadata: { workspace, name: "operator-service", id: "service-id", resource_version: "4" },
+    if (supervisor) {
+      // Mandatory launch has exactly model, runtime files and Git. Its model may select
+      // the platform profile even when the Workspace has a benign namesake.
+      providers[model].type = "service";
+      delete providers[model].profile_workspace;
+    } else {
+      providers["operator-service"] = {
+        // On the stock wire an omitted profile_workspace is the empty string (platform).
+        type: "service",
+        metadata: { workspace, name: "operator-service", id: "service-id", resource_version: "4" },
+      };
+    }
+  }
+  if (supervisor) {
+    profiles.runtime = { id: "runtime", endpoints: [], credentials: [] };
+    providers[supervisor.runtimeProvider] = {
+      type: "runtime",
+      profile_workspace: workspace,
+      metadata: {
+        workspace,
+        name: supervisor.runtimeProvider,
+        id: "runtime-id",
+        resource_version: "1",
+      },
     };
   }
   world.retainedProviders = Object.keys(providers);
@@ -287,9 +307,7 @@ export async function gitExpiryGateway(
             restart_policy: "SANDBOX_RESTART_POLICY_NEVER",
             providers: world.detaches.length
               ? world.retainedProviders
-              : supervisor
-                ? [model, supervisor.runtimeProvider, gitName]
-                : [...world.retainedProviders, gitName],
+              : [...world.retainedProviders, gitName],
             provider_attachment_epoch: world.detaches.length
               ? "reduced"
               : repositoryGitRecipient.attachmentEpoch,
@@ -377,7 +395,7 @@ export async function gitExpiryGateway(
     },
     GetSandboxProviderStatus: observe,
     DetachSandboxProvider: (req) => {
-      assert.equal(req.sandbox, sandbox);
+      assert.equal(req.sandbox, supervisor?.sandbox ?? sandbox);
       assert.equal(req.provider, gitName);
       assert.equal(req.workspace_scope.workspace, workspace);
       assert.deepEqual(world.detaches, []);
