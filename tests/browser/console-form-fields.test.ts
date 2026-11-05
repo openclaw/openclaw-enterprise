@@ -15,7 +15,7 @@ import {
   SECRET_NAME_CONFLICT,
 } from "../helpers/refusal-text.mjs";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   apiRequests,
   consoleViewports,

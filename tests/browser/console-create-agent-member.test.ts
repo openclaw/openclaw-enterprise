@@ -16,7 +16,7 @@ import type {
 
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { authorizationDenials, createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { restrict } from "../helpers/iam-grants.mjs";
 import {
   deniedCreateSecretOption,
@@ -39,7 +39,7 @@ import {
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
 import { responseTo } from "./console-action-helpers.ts";
-import { refocus } from "./console-refocus-helpers.mjs";
+import { refocus } from "./console-refocus-helpers.ts";
 import {
   ADMINISTRATOR_ACCESS_DENIED,
   AGENT_CREATE_DENIED,

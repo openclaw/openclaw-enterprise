@@ -93,6 +93,21 @@ for (const file of walk(docs)) {
     unpublished.add(source);
     continue;
   }
+  const humanVerified =
+    Array.isArray(frontmatter?.tags) && frontmatter.tags.includes("human_verified");
+  const lastVerified = frontmatter?.last_verified;
+  if (humanVerified || lastVerified !== undefined) {
+    if (
+      typeof lastVerified !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(lastVerified) ||
+      !Number.isFinite(Date.parse(lastVerified)) ||
+      new Date(lastVerified).toISOString().slice(0, 10) !== lastVerified
+    ) {
+      throw new Error(
+        source + ": last_verified must be a valid YYYY-MM-DD date for human verification",
+      );
+    }
+  }
   const text = publicMarkdown(authored, md);
   const parsed = parseDocsDocument(text, md, { sourceFile: file, root: docs });
   const githubAliases = new Map();
@@ -120,6 +135,8 @@ for (const file of walk(docs)) {
     title,
     route: route(source),
     searchable: frontmatter?.searchable !== false,
+    humanVerified,
+    lastVerified,
     ids,
     githubAliases,
     parsed,
@@ -358,6 +375,23 @@ for (const page of pages.values()) {
     const alias = page.githubAliases.get(md.utils.unescapeAll(id ?? ""));
     return tag + (alias ? '<span class="anchor-alias" id="' + escape(alias) + '"></span>' : "");
   });
+  if (page.humanVerified) {
+    page.html = page.html.replace(
+      /<\/h1>/,
+      '$&<details class="human-verification" data-pagefind-ignore>' +
+        '<summary><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></svg>' +
+        '<span>Human verified</span><span aria-hidden="true">·</span>' +
+        '<time datetime="' +
+        escape(page.lastVerified) +
+        '" aria-label="Last verified: ' +
+        escape(page.lastVerified) +
+        '">' +
+        escape(page.lastVerified) +
+        "</time>" +
+        '<span class="verification-info" aria-hidden="true">ⓘ</span></summary>' +
+        "<p>A human reviewed this page, but it may be out of date. Later edits may not have been reviewed.</p></details>",
+    );
+  }
 }
 for (const page of pages.values()) {
   if (page.source === "reference/api-explorer.md") {

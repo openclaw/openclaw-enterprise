@@ -35,7 +35,7 @@ import {
   createRepositoryLaunchFixture,
   routeInstallationWithoutProvisioning,
 } from "./console-agents-test-support.mjs";
-import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 
 // The console's control patterns. Button hierarchy (UX plan C2): each view shows at most one
 // primary action, a secondary button's edge is visible against its surface, and a button waiting

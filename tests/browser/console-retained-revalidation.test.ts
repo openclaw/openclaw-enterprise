@@ -28,7 +28,7 @@ import {
   tagView,
   taggedView,
   viewTag,
-} from "./console-refocus-helpers.mjs";
+} from "./console-refocus-helpers.ts";
 import { restrict } from "../helpers/iam-grants.mjs";
 
 type Agent = Pick<AgentWire, "id" | "name" | "configurationId">;

@@ -10,7 +10,7 @@ import type { BrowserContextOptions, Locator, Page } from "playwright";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { RESOURCE_CONFLICT } from "../helpers/refusal-text.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   apiRequests,
   consoleViewports,

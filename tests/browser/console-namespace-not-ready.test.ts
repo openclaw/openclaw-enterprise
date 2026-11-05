@@ -36,8 +36,8 @@ import {
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
 import { routeInstallationProvisioning } from "./console-agents-test-support.mjs";
-import { refocus } from "./console-refocus-helpers.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { refocus } from "./console-refocus-helpers.ts";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 
 // On a first run the only Namespace is still provisioning. The Agents page and Create Agent never
 // said so, and the first sign was the Secret dialog's refusal; a deleting Namespace could be the

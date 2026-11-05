@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Page } from "playwright";
 
-import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   AGENT_READ,
   accessibleDescription,
@@ -33,7 +33,7 @@ import {
   tagView,
   taggedView,
   waitForFocusedLabel,
-} from "./console-refocus-helpers.mjs";
+} from "./console-refocus-helpers.ts";
 import { withholdPermissionSummary } from "./console-agents-test-support.mjs";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import {

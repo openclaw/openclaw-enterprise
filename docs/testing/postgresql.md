@@ -1,5 +1,7 @@
 ---
 tags: [human_verified]
+# Backfilled from the verification tag recorded in 17ff921c5.
+last_verified: "2026-11-04"
 ---
 
 # PostgreSQL tests

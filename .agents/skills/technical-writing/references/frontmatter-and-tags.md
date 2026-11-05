@@ -21,7 +21,12 @@ tags: [nolimit]
 | `tags`       | List of nonempty strings, such as `[nolimit]`. Exact, case-sensitive tag names. Omit the field or use `[]` for no tags; a scalar such as `tags: nolimit` is invalid.                                                         |
 | `kind`       | Document taxonomy value. Current templates are `reference/ci`, `reference/driver`, and `reference/driver/impl`; see the [taxonomy](../../../../docs/taxonomy.md). This selects authoring guidance, not a different renderer. |
 
-The site consumes `title`, `published`, and `searchable`; the length checker
+`last_verified` is a `YYYY-MM-DD` date string, required on pages tagged
+`human_verified`. The site build rejects missing or invalid dates on tagged
+pages and invalid dates wherever the field is present. A date alone does not
+enable the badge. Update it only after a human review.
+
+The site consumes `title`, `published`, `searchable`, `tags`, and `last_verified`; the length checker
 validates `tags`. Other fields above guide authors. A sidebar's `hidden` list
 retains routes and search entries and is separate from frontmatter.
 
@@ -30,11 +35,19 @@ retains routes and search entries and is separate from frontmatter.
 | Tag              | Effect                                                                                                                                             |
 | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `nolimit`        | Exempts the containing file from the 1,500-word review threshold and 2,500-word hard limit. The checker still reports its count and the exemption. |
-| `human_verified` | Records that a human has verified the document. Required for human-verified documents; it does not change rendering or length checks.              |
+| `human_verified` | Shows a Human verified badge below the page title. Add only after human verification; it does not change length checks.                            |
 
 Add `human_verified` only after human verification. Store it in the `tags` list,
 for example `tags: [human_verified]`, and preserve existing tags. If an approved
 length exception also applies, use `tags: [human_verified, nolimit]`.
+
+The badge uses only the containing page's tag, not tags on embedded snippets.
+It opens a short explanation by keyboard or pointer and is excluded from search
+text. It shows the `last_verified` date beside the label. Untagged pages have no
+badge. Human-verified pages can still be out of date, and later edits may not
+have been reviewed. The metadata records no reviewer or reviewed revision. See
+[human verification](../../../../docs/contributing/documentation.md#record-human-verification)
+for author guidance.
 
 No other tag currently changes site behavior. Other nonempty string tags may be
 retained as metadata; they do not create routes, filters, or search categories.

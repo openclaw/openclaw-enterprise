@@ -56,7 +56,7 @@ import {
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
 import { withholdPermissionSummary } from "./console-agents-test-support.mjs";
-import { refocus } from "./console-refocus-helpers.mjs";
+import { refocus } from "./console-refocus-helpers.ts";
 
 type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
 type LogLine = AgentRuntimeLogChunk["lines"][number];

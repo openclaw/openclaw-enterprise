@@ -8,7 +8,7 @@ import type { Locator } from "playwright";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
 
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   AGENT_CREATE_DENIED,
   AGENT_DEPLOY_NOT_INCLUDED,
