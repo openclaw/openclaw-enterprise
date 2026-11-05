@@ -2852,7 +2852,14 @@ async function prepareLane({ lane, statePath, file }) {
   }
   const runtimeArtifact = runtimeArtifactSelection(process.env);
   if (runtimeArtifact) {
-    if (!imageCacheLanes.has(name) || name === "openshell") {
+    if (
+      ![
+        "images-packaging",
+        "images-runtime-startup",
+        "images-runtime-startup-2",
+        "images-runtime-startup-3",
+      ].includes(name)
+    ) {
       throw new Error("Runtime artifacts are supported only by the ordinary image lanes.");
     }
     if (process.env.OCC_K3D_OPENCLAW_SOURCE) {

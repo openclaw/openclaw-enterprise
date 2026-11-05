@@ -567,6 +567,7 @@ async function buildImages({ preparedGit = false } = {}) {
   }
   let runtimeArtifact;
   let settled;
+  const failures = [];
   try {
     if (selection) {
       runtimeArtifact = await step("verified runtime artifact", () =>
@@ -599,15 +600,38 @@ async function buildImages({ preparedGit = false } = {}) {
             publishPostgresImage({ registry }),
           ),
     ]);
+    failures.push(
+      ...settled.filter(({ status }) => status === "rejected").map(({ reason }) => reason),
+    );
+  } catch (error) {
+    failures.push(error);
   } finally {
     if (selection) {
-      await run("docker", ["image", "rm", artifactTag]).catch(() => {});
-      await runtimeArtifact?.cleanup();
+      const cleanup = await Promise.allSettled([
+        run("docker", ["image", "rm", artifactTag]).catch((error) => {
+          // A refused load may never create the owned tag.
+          if (
+            error.result?.code !== 1 ||
+            !/No such (?:image|object):/.test(error.result?.stderr ?? "")
+          ) {
+            throw error;
+          }
+        }),
+        runtimeArtifact?.cleanup(),
+      ]);
+      failures.push(
+        ...cleanup.filter(({ status }) => status === "rejected").map(({ reason }) => reason),
+      );
     }
   }
-  const failure = settled.find(({ status }) => status === "rejected");
-  if (failure) {
-    throw failure.reason;
+  if (failures.length === 1) {
+    throw failures[0];
+  }
+  if (failures.length > 1) {
+    throw new AggregateError(
+      failures,
+      failures.map((error) => error.message ?? String(error)).join("\n"),
+    );
   }
   const [[controller, runtime, providerImage], postgres] = settled.map(({ value }) => value);
   const repository = {};

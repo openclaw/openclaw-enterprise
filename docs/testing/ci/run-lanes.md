@@ -58,7 +58,8 @@ workflow's checked-out commit. On pull requests, that is the tested merge commit
 The producer uploads an OCI image artifact; each selected consumer verifies its
 source, workflow run, archive checksum and platform before loading it. Packaging
 still builds its controller, and each lane owns its other preparation and tests.
-First Agent Smoke adds its test trust and provider layers to the verified OCI image.
+[First Agent Smoke](first-agent-smoke.md#trigger) adds runtime trust and reuses
+its WebSocket package for the provider loaded into the job's Docker engine.
 
 The shared action passes the downloaded directory in
 `OCC_CI_RUNTIME_ARTIFACT_DIRECTORY` and the producer outputs in

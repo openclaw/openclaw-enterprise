@@ -23,9 +23,11 @@ Documentation-only and recognized test-only changes skip it. CI also runs on
 `main` pushes, merge groups, and manual dispatch.
 
 In hosted CI, the job reuses the same verified runtime artifact as the four
-ordinary image lanes. It builds the test trust and provider layers from the verified local OCI image,
-then publishes the derived images to its existing local registry.
-The controller build and all installation, chat and lifecycle checks still run.
+ordinary image lanes. It adds test trust to the runtime and pushes that image
+and the controller to its existing local registry. The simulated provider uses
+the pinned Node base, copies the WebSocket package from the verified runtime,
+and loads into the job's Docker engine. All installation, chat and lifecycle
+checks still run.
 See [shared runtime images](run-lanes.md#shared-runtime-image-in-ordinary-ci) for
 artifact verification and rerun behavior.
 
