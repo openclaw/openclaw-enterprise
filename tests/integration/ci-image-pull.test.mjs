@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmod, readFile, stat, truncate, writeFile } from "node:fs/promises";
+import { chmod, open, stat, truncate, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import test from "node:test";
@@ -170,6 +170,16 @@ const reset = (request) => request.socket.destroy();
 const hang = () => {};
 const quick = { firstDelayMs: 1, attemptTimeoutMs: 1_000 };
 
+async function readManifestFile(path) {
+  // Reopen the current pathname after each download, including atomic replacement.
+  const file = await open(path, "r");
+  try {
+    return { contents: await file.readFile("utf8"), mode: (await file.stat()).mode & 0o777 };
+  } finally {
+    await file.close();
+  }
+}
+
 test("pinned manifests retry transient downloads and publish only verified private bytes", async (t) => {
   const directory = await temporaryDirectory(t, "pinned-manifest-");
   const body = "kind: Namespace\nmetadata:\n  name: pinned-manifest\n";
@@ -188,14 +198,13 @@ test("pinned manifests retry transient downloads and publish only verified priva
     destination,
   );
   assert.equal(server.requests(), 3);
-  assert.equal(await readFile(destination, "utf8"), body);
-  assert.equal((await stat(destination)).mode & 0o777, 0o600);
+  assert.deepEqual(await readManifestFile(destination), { contents: body, mode: 0o600 });
 
   // Reusing verified bytes must also restore the manifest's private mode.
   await chmod(destination, 0o644);
   await downloadPinnedArtifact({ artifact: { ...artifact, url: server.url }, directory });
   assert.equal(server.requests(), 3);
-  assert.equal((await stat(destination)).mode & 0o777, 0o600);
+  assert.deepEqual(await readManifestFile(destination), { contents: body, mode: 0o600 });
 
   // An invalid cached file is replaced only after the new bytes pass the pin.
   await writeFile(destination, "previous unverified bytes");
@@ -205,7 +214,10 @@ test("pinned manifests retry transient downloads and publish only verified priva
     /SHA256 mismatch/,
   );
   assert.equal(corrupt.requests(), 1);
-  assert.equal(await readFile(destination, "utf8"), "previous unverified bytes");
+  assert.deepEqual(await readManifestFile(destination), {
+    contents: "previous unverified bytes",
+    mode: 0o600,
+  });
 
   const denied = await flakyServer(t, [answer(403), answer(200, body)]);
   await assert.rejects(
@@ -213,7 +225,10 @@ test("pinned manifests retry transient downloads and publish only verified priva
     /HTTP 403 after 1 attempt/,
   );
   assert.equal(denied.requests(), 1);
-  assert.equal(await readFile(destination, "utf8"), "previous unverified bytes");
+  assert.deepEqual(await readManifestFile(destination), {
+    contents: "previous unverified bytes",
+    mode: 0o600,
+  });
 });
 
 test("pinned manifests bound cached files and chunked responses before verification", async (t) => {
