@@ -108,23 +108,25 @@ test(
         }),
       ScopeViolationError,
     );
-    const composed = await composeRepositoryAccess({
-      backend: {
-        id: fixture.backendId,
-        type: "github",
-        drivers: { repo: "repository-credentials" },
-        configuration: { registryPath: fixture.registryFile },
-      },
-      selection: {
-        id: "repository-credentials",
-        implementation: "github",
-        configuration: {
-          sessionDurationSeconds: 3600,
-          controlSocket: fixture.config.gateway.controlSocket,
-          publicCaPath: fixture.tls.certFile,
+    const composed = await composeRepositoryAccess(
+      {
+        backend: {
+          id: fixture.backendId,
+          type: "github",
+          drivers: { repo: "repository-credentials" },
+          configuration: { registryPath: fixture.registryFile },
+        },
+        selection: {
+          id: "repository-credentials",
+          implementation: "github",
+          configuration: { sessionDurationSeconds: 3600 },
         },
       },
-    });
+      {
+        controlSocket: fixture.config.gateway.controlSocket,
+        publicCaPath: fixture.tls.certFile,
+      },
+    );
     const driver = { policy: composed.repositoryPolicy, sender: composed.nativeRepositorySender };
     assert.deepEqual(driver.policy.resolve(selection), resolution);
     assert.throws(
