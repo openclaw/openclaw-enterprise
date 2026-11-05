@@ -2838,7 +2838,7 @@
 +}
 --- /dev/null
 +++ b/src/cli/connect-cli-access.test.ts
-@@ -0,0 +1,803 @@
+@@ -0,0 +1,834 @@
 +// Real CLI selection, native profile storage, HTTPS requests and WSS upgrades.
 +// The daemon plan is real; OS service installation, command capabilities and
 +// the remote Gateway protocol peer are fixtures.
@@ -3074,6 +3074,7 @@
 +        const claim = await acquireTestPortBlock({ offsets: [0] });
 +        const server = createServer({ cert, key });
 +        const websocket = new WebSocketServer({ server });
++        const connectAuth: Array<Record<string, unknown> | undefined> = [];
 +        const upgrades: Array<{
 +          path?: string;
 +          id?: string | string[];
@@ -3087,7 +3088,14 @@
 +          });
 +          sendMinimalGatewayConnectChallenge(socket, "access-boundary-challenge");
 +          socket.on("message", (data) => {
-+            const frame = JSON.parse(rawDataToString(data)) as { id: string; method: string };
++            const frame = JSON.parse(rawDataToString(data)) as {
++              id: string;
++              method: string;
++              params?: { auth?: Record<string, unknown> };
++            };
++            if (frame.method === "connect") {
++              connectAuth.push(frame.params?.auth);
++            }
 +            sendMinimalGatewayResponse(
 +              socket,
 +              frame.id,
@@ -3129,13 +3137,18 @@
 +            "--service",
 +          ]);
 +          expect(fixture.runtime.error).not.toHaveBeenCalled();
-+          expect(upgrades).toEqual([
-+            {
-+              path: "/selected",
-+              id: explicit ? "current-access-id" : undefined,
-+              secret: explicit ? "current-access-secret" : undefined,
-+            },
++          // Bootstrap persists the grant before a second, token-only handshake.
++          // Both TLS upgrades must preserve the selected Access boundary.
++          expect(connectAuth).toEqual([
++            { bootstrapToken: "path-bootstrap-token" },
++            { deviceToken: "path-bound-node-token" },
 +          ]);
++          const selectedUpgrade = {
++            path: "/selected",
++            id: explicit ? "current-access-id" : undefined,
++            secret: explicit ? "current-access-secret" : undefined,
++          };
++          expect(upgrades).toEqual([selectedUpgrade, selectedUpgrade]);
 +          expect(fixture.install).toHaveBeenCalledOnce();
 +          const pairedPlan = fixture.install.mock.calls[0]![0];
 +          expect(pairedPlan.programArguments).toEqual([
@@ -3375,7 +3388,16 @@
 +          expect(requests).toEqual(
 +            sharedFirst ? [] : [{ id: "current-access-id", secret: "current-access-secret" }],
 +          );
-+          expect(upgrades).toEqual([{ path: "/", id: undefined, secret: undefined }]);
++          const acceptedUpgrade = { path: "/", id: undefined, secret: undefined };
++          if (sharedFirst) {
++            expect(upgrades).toEqual([acceptedUpgrade]);
++          } else {
++            expect(connectAuth).toEqual([
++              { bootstrapToken: "service-bootstrap-token" },
++              { deviceToken: "service-node-token" },
++            ]);
++            expect(upgrades).toEqual([acceptedUpgrade, acceptedUpgrade]);
++          }
 +          expect(plan.environment?.CF_ACCESS_CLIENT_ID).toBeUndefined();
 +          expect(plan.environment?.CF_ACCESS_CLIENT_SECRET).toBeUndefined();
 +          expect(plan.environment?.OPENCLAW_GATEWAY_TOKEN).toBe(
@@ -3432,6 +3454,9 @@
 +            role: "node",
 +          });
 +          expect(plan.environment?.OPENCLAW_SERVICE_KIND).toBe("node");
++          // Initial pairing cannot satisfy assertions about a new service process.
++          connectAuth.length = 0;
++          upgrades.length = 0;
 +          await withEnvAsync(plan.environment ?? {}, async () => {
 +            // Match actual startup: the installed environment is hydrated before
 +            // Commander reaches the runner, while unrelated shared auth is eligible.
@@ -3448,15 +3473,15 @@
 +            void restarted.catch(() => undefined);
 +            try {
 +              if (stateChange === "paired" || sharedFirst) {
-+                await vi.waitFor(() => expect(connectAuth).toHaveLength(2), { timeout: 5_000 });
-+                expect(connectAuth[1]).toEqual({ deviceToken: "service-node-token" });
-+                expect(upgrades[1]).toEqual({ path: "/", id: undefined, secret: undefined });
++                await vi.waitFor(() => expect(connectAuth).toHaveLength(1), { timeout: 5_000 });
++                expect(connectAuth).toEqual([{ deviceToken: "service-node-token" }]);
++                expect(upgrades).toEqual([acceptedUpgrade]);
 +              } else {
 +                await expect(restarted).rejects.toThrow(
 +                  "Required device authentication needs a saved token",
 +                );
-+                expect(upgrades).toHaveLength(1);
-+                expect(connectAuth).toHaveLength(1);
++                expect(upgrades).toHaveLength(0);
++                expect(connectAuth).toHaveLength(0);
 +                expect(await loadNodeHostConfig()).toEqual(beforeConfig);
 +                expect(
 +                  await loadDeviceAuthToken({ deviceId: identity.deviceId, role: "node" }),
@@ -3564,12 +3589,15 @@
 +          expect(plan.environment?.CF_ACCESS_CLIENT_ID).toBeUndefined();
 +          expect(plan.environment?.CF_ACCESS_CLIENT_SECRET).toBeUndefined();
 +          expect((await loadNodeHostConfig())?.gateway?.cloudflareAccess).toEqual(access);
-+          expect(upgrades).toEqual([
-+            {
-+              id: idSource === "custom-env" ? "custom-env-id" : "file-id-before",
-+              secret: "secret-before",
-+            },
++          expect(authFrames).toEqual([
++            { bootstrapToken: "reference-bootstrap-token" },
++            { deviceToken: "rotation-node-token" },
 +          ]);
++          const initialUpgrade = {
++            id: idSource === "custom-env" ? "custom-env-id" : "file-id-before",
++            secret: "secret-before",
++          };
++          expect(upgrades).toEqual([initialUpgrade, initialUpgrade]);
 +
 +          if (idSource === "conventional-env") {
 +            // A paired service repair can retain one conventional environment
@@ -3606,6 +3634,9 @@
 +            JSON.stringify({ id: "file-id-after", secret: "secret-after" }),
 +            { mode: 0o600 },
 +          );
++          // Observe the actual restart, not the token-authenticated pairing handshake.
++          authFrames.length = 0;
++          upgrades.length = 0;
 +          await withEnvAsync({ ...plan.environment, NODE_TEST_ACCESS_ID: undefined }, async () => {
 +            // A new service process has no runtime snapshot from its installer.
 +            // Keep actual config.env hydration instead of reusing that old cache.
@@ -3619,14 +3650,14 @@
 +            );
 +            void restarted.catch(() => undefined);
 +            try {
-+              await vi.waitFor(() => expect(authFrames).toHaveLength(2), { timeout: 5_000 });
-+              expect(authFrames[1]).toEqual({ deviceToken: "rotation-node-token" });
++              await vi.waitFor(() => expect(authFrames).toHaveLength(1), { timeout: 5_000 });
++              expect(authFrames).toEqual([{ deviceToken: "rotation-node-token" }]);
 +              const expectedIds = {
 +                "conventional-env": "installed-id",
 +                file: "file-id-after",
 +                "custom-env": "custom-env-id",
 +              };
-+              expect(upgrades[1]).toEqual({ id: expectedIds[idSource], secret: "secret-after" });
++              expect(upgrades).toEqual([{ id: expectedIds[idSource], secret: "secret-after" }]);
 +              expect((await loadNodeHostConfig())?.gateway?.cloudflareAccess).toEqual(access);
 +            } finally {
 +              scope.beginClose();
@@ -3754,7 +3785,7 @@
  });
  
  async function runConnect(args: string[]) {
-@@ -57,28 +97,769 @@
+@@ -57,28 +97,772 @@
    await program.parseAsync(["connect", ...args], { from: "user" });
  }
  
@@ -4255,14 +4286,17 @@
 +          );
 +          expect(firstConnections).toBeGreaterThanOrEqual(3);
 +          expect(alternativeConnections).not.toHaveBeenCalled();
-+          expect(frames[0]?.params).toHaveProperty("auth", {
-+            bootstrapToken: "synthetic-first-bootstrap",
-+          });
-+          expect(frames.at(-1)?.params).toHaveProperty(
-+            "auth",
++          expect(frames.map((frame) => (frame.params as { auth?: unknown }).auth)).toEqual(
 +            firstOutcome === "retired hello"
-+              ? { deviceToken: "synthetic-first-candidate-token" }
-+              : { bootstrapToken: "synthetic-first-bootstrap" },
++              ? [
++                  { bootstrapToken: "synthetic-first-bootstrap" },
++                  { deviceToken: "synthetic-first-candidate-token" },
++                ]
++              : [
++                  { bootstrapToken: "synthetic-first-bootstrap" },
++                  { bootstrapToken: "synthetic-first-bootstrap" },
++                  { deviceToken: "synthetic-first-candidate-token" },
++                ],
 +          );
 +          const identity = loadOrCreateDeviceIdentity();
 +          expect(
@@ -4532,7 +4566,7 @@
          const identity = loadOrCreateDeviceIdentity();
          await storeDeviceAuthToken({
            deviceId: identity.deviceId,
-@@ -86,56 +867,67 @@
+@@ -86,56 +870,67 @@
            token: "synthetic-paired-node-token",
            scopes: [],
          });
@@ -4641,7 +4675,7 @@
        } finally {
          stop();
          await running;
-@@ -147,9 +939,732 @@
+@@ -147,9 +942,765 @@
      });
    });
  
@@ -4673,13 +4707,29 @@
 +              }
 +              frames.push(frame);
 +              if (frames.length === 1) {
-+                acceptedSocket = socket;
 +                sendMinimalGatewayResponse(socket, frame.id, {
 +                  ...buildNodeHello(),
 +                  auth: {
 +                    role: "node",
 +                    scopes: [],
 +                    method: "bootstrap-token",
++                    deviceToken: "synthetic-enrolled-node-grant",
++                  },
++                });
++              } else if (
++                frames.length === 2 &&
++                (frame.params as { auth?: { deviceToken?: string } }).auth?.deviceToken ===
++                  "synthetic-enrolled-node-grant"
++              ) {
++                // Revocation below must retire the established token-authenticated
++                // session, after the bootstrap receipt has been proved.
++                acceptedSocket = socket;
++                sendMinimalGatewayResponse(socket, frame.id, {
++                  ...buildNodeHello(),
++                  auth: {
++                    role: "node",
++                    scopes: [],
++                    method: "device-token",
 +                    deviceToken: "synthetic-enrolled-node-grant",
 +                  },
 +                });
@@ -4726,7 +4776,10 @@
 +          await vi.waitFor(() => expect(completed).toBe(true), { timeout: 5_000 });
 +          await running;
 +          expect(process.exitCode).toBe(1);
-+          expect(frames).toHaveLength(1);
++          expect(frames.map((frame) => (frame.params as { auth?: unknown }).auth)).toEqual([
++            { bootstrapToken: "synthetic-once-only-bootstrap" },
++            { deviceToken: "synthetic-enrolled-node-grant" },
++          ]);
 +          expect(
 +            await loadDeviceAuthToken({ deviceId: identity.deviceId, role: "node" }),
 +          ).toBeNull();
@@ -5058,7 +5111,9 @@
 +              });
 +            received.resolve(frame);
 +            if (automaticallyAccept) {
-+              const auth = (frame.params as { auth?: { bootstrapToken?: string } }).auth;
++              const auth = (
++                frame.params as { auth?: { bootstrapToken?: string; deviceToken?: string } }
++              ).auth;
 +              if (auth?.bootstrapToken) {
 +                socket.send(
 +                  JSON.stringify({
@@ -5073,8 +5128,10 @@
 +                  }),
 +                );
 +                socket.close(1008, "bootstrap token invalid");
-+              } else {
++              } else if (auth?.deviceToken === "synthetic-second-candidate-token") {
 +                accept();
++              } else {
++                socket.close(1008, "unexpected device token");
 +              }
 +            }
 +          });
@@ -5106,6 +5163,9 @@
 +        });
 +        expect(await loadDeviceAuthToken({ deviceId: identity.deviceId, role: "node" })).toBeNull();
 +        expect(await loadNodeHostConfig()).toMatchObject({ gateway: { port: claim.port } });
++        // The first receipt remains gated above; readiness now also needs its
++        // token-only confirmation, which must not wait for the ready callback.
++        automaticallyAccept = true;
 +        accept?.();
 +        await Promise.race([
 +          connected.promise,
@@ -5120,9 +5180,12 @@
 +        });
 +        expect(loadOrCreateDeviceIdentity().deviceId).toBe(identity.deviceId);
 +        expect(await loadNodeHostConfig()).toMatchObject({ gateway: { port: claim.port } });
++        expect(frames.map((frame) => (frame.params as { auth?: unknown }).auth)).toEqual([
++          { bootstrapToken: "synthetic-mixed-bootstrap" },
++          { deviceToken: "synthetic-second-candidate-token" },
++        ]);
 +        stop();
 +        await running;
-+        automaticallyAccept = true;
 +        replayFirst = new WebSocketServer({ host: "127.0.0.1", port: claim.port + 1 });
 +        const replayFirstConnections = vi.fn();
 +        replayFirst.on("connection", replayFirstConnections);
@@ -5135,14 +5198,14 @@
 +        running = replayProgram
 +          .parseAsync(["node", "run", "--pair-or-reconnect", code], { from: "user" })
 +          .then(() => {});
-+        await vi.waitFor(() => expect(frames).toHaveLength(3), { timeout: 5_000 });
++        await vi.waitFor(() => expect(frames).toHaveLength(4), { timeout: 5_000 });
 +        expect(replayFirstConnections).not.toHaveBeenCalled();
-+        expect(frames[1]?.params).toHaveProperty("auth", {
-+          bootstrapToken: "synthetic-mixed-bootstrap",
-+        });
-+        expect(frames[2]?.params).toHaveProperty("auth", {
-+          deviceToken: "synthetic-second-candidate-token",
-+        });
++        expect(frames.map((frame) => (frame.params as { auth?: unknown }).auth)).toEqual([
++          { bootstrapToken: "synthetic-mixed-bootstrap" },
++          { deviceToken: "synthetic-second-candidate-token" },
++          { bootstrapToken: "synthetic-mixed-bootstrap" },
++          { deviceToken: "synthetic-second-candidate-token" },
++        ]);
 +        await vi.waitFor(async () =>
 +          expect(
 +            await loadDeviceAuthToken({ deviceId: identity.deviceId, role: "node" }),
@@ -5311,15 +5374,18 @@
 +          expect.objectContaining(preparedGateway),
 +          expect.objectContaining(preparedGateway),
 +          expect.objectContaining(preparedGateway),
++          expect.objectContaining(preparedGateway),
 +        ]);
 +        const identity = loadOrCreateDeviceIdentity();
 +        expect(
 +          await loadDeviceAuthToken({ deviceId: identity.deviceId, role: "node" }),
 +        ).toMatchObject({ token: "synthetic-new-gateway-token" });
-+        expect(frames).toHaveLength(3);
-+        expect(frames[2]?.params).toHaveProperty("auth", {
-+          bootstrapToken: "synthetic-replacement-bootstrap",
-+        });
++        expect(frames.map((frame) => (frame.params as { auth?: unknown }).auth)).toEqual([
++          { bootstrapToken: "synthetic-replacement-bootstrap" },
++          { bootstrapToken: "synthetic-replacement-bootstrap" },
++          { bootstrapToken: "synthetic-replacement-bootstrap" },
++          { deviceToken: "synthetic-new-gateway-token" },
++        ]);
 +        expect(fixture.runtime.error).toHaveBeenCalledTimes(errorsBeforeSuccess);
 +
 +        // Restart the same profile with the now-consumed setup. The typed bootstrap
@@ -5336,13 +5402,14 @@
 +            ),
 +          { timeout: 5_000 },
 +        );
-+        expect(frames).toHaveLength(5);
-+        expect(frames[3]?.params).toHaveProperty("auth", {
-+          bootstrapToken: "synthetic-replacement-bootstrap",
-+        });
-+        expect(frames[4]?.params).toHaveProperty("auth", {
-+          deviceToken: "synthetic-new-gateway-token",
-+        });
++        expect(frames.map((frame) => (frame.params as { auth?: unknown }).auth)).toEqual([
++          { bootstrapToken: "synthetic-replacement-bootstrap" },
++          { bootstrapToken: "synthetic-replacement-bootstrap" },
++          { bootstrapToken: "synthetic-replacement-bootstrap" },
++          { deviceToken: "synthetic-new-gateway-token" },
++          { bootstrapToken: "synthetic-replacement-bootstrap" },
++          { deviceToken: "synthetic-new-gateway-token" },
++        ]);
 +        expect(loadOrCreateDeviceIdentity().deviceId).toBe(identity.deviceId);
 +        expect((await loadNodeHostConfig())?.gateway).toMatchObject(preparedGateway);
 +      } finally {
