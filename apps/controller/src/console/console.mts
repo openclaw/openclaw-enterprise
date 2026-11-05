@@ -1600,6 +1600,7 @@ async function loadPage({
   // Set only by Back and Forward (popstate).
   restoreHistory = null,
   openingAgent = false,
+  focusTarget: navigationFocusId,
   // Set only by the load that follows a chat-link lookup that failed (finding 1450).
   chatLinkFailure = null,
 }: {
@@ -1608,6 +1609,7 @@ async function loadPage({
   fromRefresh?: boolean;
   restoreHistory?: ((url: string) => void) | null;
   openingAgent?: boolean;
+  focusTarget?: string;
   chatLinkFailure?: keyof typeof chatLinkFailures | null;
 } = {}) {
   noteConsoleLoad();
@@ -2886,6 +2888,15 @@ async function loadPage({
         document.activeElement === document.body
       ) {
         // A deployment being reread can receive return focus, but is not a link until it settles.
+        const requestedFocus = navigationFocusId
+          ? document.getElementById(navigationFocusId)
+          : null;
+        const navigationFocus =
+          requestedFocus &&
+          shell.view.contains(requestedFocus) &&
+          requestedFocus.getClientRects().length
+            ? requestedFocus
+            : null;
         const focusTarget =
           agentReturnHref &&
           Array.from(
@@ -2893,7 +2904,11 @@ async function loadPage({
               "a[href], [data-return-focus-href]",
             ),
           ).find((item) => (item.dataset.returnFocusHref ?? item.href) === agentReturnHref);
-        (focusTarget || app.querySelector<HTMLHeadingElement>(".content h1"))?.focus({
+        (
+          navigationFocus ||
+          focusTarget ||
+          app.querySelector<HTMLHeadingElement>(".content h1")
+        )?.focus({
           preventScroll: true,
         });
       }

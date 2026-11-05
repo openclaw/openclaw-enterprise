@@ -448,8 +448,57 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
     }
   });
 
-  // A read that fails still sends the repeat the reader confirmed, and its outcome replaces the
-  // read's error (finding 1985; dropping it would bring back finding 1975's lost request).
+  test("Agent delete conflict preserves the API reason and requires readback before retry", async (t) => {
+    const fixture = await detailApp(t);
+    const namespace = await fixture.createNamespace("Delete conflict", { ready: true });
+    const agent = await fixture.createAgent(
+      namespace.id,
+      "Conflicted Agent",
+      nativeValues("conflict"),
+    );
+    const { page } = await newPage(t, fixture);
+    const requests = apiRequests(page, fixture.origin);
+    const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+    await page.route(fixture.origin + path, async (route) => {
+      if (route.request().method() === "DELETE") {
+        await route.fulfill(
+          apiErrorResponse(
+            409,
+            "RESOURCE_CONFLICT",
+            "The Agent lifecycle changed during deletion.",
+          ),
+        );
+      } else {
+        await route.continue();
+      }
+    });
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+    );
+    const remove = page.getByRole("button", { name: "Delete Agent", exact: true });
+    await remove.click();
+    await page
+      .getByRole("dialog", { name: "Delete Conflicted Agent?" })
+      .getByRole("button", { name: "Permanently delete Agent", exact: true })
+      .click();
+    const alert = page
+      .getByRole("region", { name: "Delete Agent", exact: true })
+      .getByRole("alert");
+    await alert
+      .getByText(
+        "The Agent lifecycle changed during deletion. Refresh deletion status before trying again.",
+        { exact: true },
+      )
+      .waitFor();
+    await expectReachableReason(page, remove, (await alert.textContent())?.trim());
+    assert.equal(agentDeleteRequests(requests, namespace.id, agent.id).length, 1);
+    // The real read still finds an active Agent; only that read permits a fresh attempt.
+    await page.getByRole("button", { name: "Refresh deletion status", exact: true }).click();
+    await waitForEnabled(remove);
+    assert.equal(agentDeleteRequests(requests, namespace.id, agent.id).length, 1);
+  });
 
   test("Agent deletion recovery returns a missing Agent detail to its Namespace list", async (t) => {
     const fixture = await detailApp(t);

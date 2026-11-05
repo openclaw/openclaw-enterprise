@@ -239,11 +239,12 @@ for (const action of ["Stop", "Delete"] as const) {
   });
 }
 
-// An Agent page whose Agent is being deleted shows only its deletion row, which polls the Agent.
-// A refocus recheck reads no permission answer for it (finding 2968).
+// Deletion progress polls its status, without a refocus reading Agent permission advice.
 test("a refocus reads no permission answer for an Agent page being deleted", async (t) => {
   const name = "Refocus deleting";
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, name);
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, name, {
+    recordOperations: true,
+  });
   const agent = await fixture.createAgent(namespace.id, name, nativeValues("refocus-deleting"));
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture, { browser });
@@ -258,14 +259,14 @@ test("a refocus reads no permission answer for an Agent page being deleted", asy
   await waitForEnabled(control);
   await control.click();
   await confirmAgentAction(page, `Delete ${name}?`, "Delete");
-  await page.getByRole("status").getByText("Deletion was requested").waitFor();
+  await page.getByRole("heading", { name: "Deletion queued", exact: true }).waitFor();
   const reads = () => pathRequests(requests, "GET", permissionsPath).length;
   const before = reads();
   // The recheck runs its handlers before it releases the view, so a reread would have started.
   await refocusHeld(t, page);
   await settlePageRequests(page);
   assert.equal(reads(), before);
-  await page.getByRole("status").getByText("Deletion was requested").waitFor();
+  await page.getByRole("heading", { name: "Deletion queued", exact: true }).waitFor();
 });
 
 // A Stop confirmed after another session requested deletion is answered with the deleting Agent.
@@ -426,7 +427,9 @@ test("a first Stop or Delete refused for another reason shows the API's text and
 // usable, and nothing near the row said why (finding 2955): now it is unavailable, and the row's
 // note under it names the grant, until a permission answer read later allows it.
 test("an Agents list row refusal describes the row's icon, and an unavailable icon only its reason", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Refused row actions");
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Refused row actions", {
+    recordOperations: true,
+  });
   const refusedRow = await fixture.createAgent(namespace.id, "Refused Row", nativeValues("row"));
   await fixture.seedActiveAgentRevision(namespace.id, refusedRow.id);
   const guarded = await fixture.createAgent(namespace.id, "Guarded Row", nativeValues("guard"));
@@ -496,7 +499,7 @@ test("an Agents list row refusal describes the row's icon, and an unavailable ic
   assert.equal(await stop.getAttribute("aria-disabled"), "true");
   await remove.click();
   await confirmAgentAction(page, "Delete Refused Row?", "Delete");
-  await page.getByText("Deletion requested for Refused Row.", { exact: false }).waitFor();
+  await page.getByRole("heading", { name: "Deletion queued", exact: true }).waitFor();
   assert.equal(await page.locator("[aria-describedby~='agent-row-refusal']").count(), 0);
 });
 
@@ -747,8 +750,8 @@ test("a refocus that rebuilds a taller refused row keeps its icon and note in vi
   assert.equal(await inViewport(note), true);
   assert.equal((await fixture.request("DELETE", agentPath)).status, 202);
   await refocusRow({ rebuilt: true });
-  // The rebuilt row is taller by its Deleting badge, and its icon and note stay in view.
-  await row.getByText("Deleting", { exact: true }).waitFor();
+  // The rebuilt row is taller with its progress link, and its icon and note stay in view.
+  await row.getByRole("link", { name: "View deletion progress", exact: true }).waitFor();
   assert.equal(await inViewport(icon), true);
   assert.equal(await inViewport(note), true);
 
@@ -769,40 +772,70 @@ test("a refocus that rebuilds a taller refused row keeps its icon and note in vi
   assert.equal(await scrollY(), reader);
 });
 
-// Request deletion again on an Agent already deleting passes a refusal that is not about grants,
-// such as another actor's deletion, through as written (finding 2534). A named grant denial is
-// still the console's sentence with the Agent's name.
-test("a refused Request deletion again names the Agent, not the API's denial", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Refused repeat delete");
-  const name = "Refused repeat delete";
-  const agent = await fixture.createAgent(namespace.id, name, nativeValues("repeat-delete"));
+// Failed cleanup may offer a retry, but the real DELETE must reject access revoked after
+// its last permission check. The receipt page has no Agent name; keep the raw ID out of the
+// refusal while retaining the request ID and removing the destructive action.
+test("a cleanup retry denied after its permission check explains the refusal and stops retrying", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Refused cleanup retry", {
+    recordOperations: true,
+  });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Refused cleanup retry",
+    nativeValues("retry-delete"),
+  );
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
   assert.equal((await fixture.request("DELETE", agentPath)).status, 202);
-  const member = await fixture.createNamespaceMember(MEMBER, namespace.id, AGENT_READ);
+  const member = await fixture.createNamespaceMember(MEMBER, namespace.id, [
+    ...AGENT_READ,
+    ["delete", "agent"],
+  ]);
   const { page } = await newPage(t, fixture, { browser });
-  // With no permission answer the page offers the repeat, and the API decides.
-  await withholdPermissionSummary(page, fixture, namespace.id, agent.id);
+  const requests = apiRequests(page, fixture.origin);
+  // Memory records queued work, not worker failures. Present a failed status for the UI;
+  // the real controller still owns permission checks and the retry's authorization denial.
+  await page.route(fixture.origin + agentPath + "/deletion-status", async (route) => {
+    const response = await route.fetch();
+    assert.equal(response.status(), 200);
+    const body = await response.json();
+    assert.equal(body.data.status, "queued");
+    await route.fulfill({ response, json: { ...body, data: { ...body.data, status: "failed" } } });
+  });
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id).href, member.credentials);
-  const row = page.getByRole("region", { name: "Delete Agent", exact: true });
-  const repeat = row.getByRole("button", { name: "Request deletion again", exact: true });
-  await waitForEnabled(repeat);
-  await repeat.click();
-  const refused = responseTo(page, "DELETE", `${fixture.origin}${agentPath}`);
+  const retry = page.getByRole("button", { name: "Retry cleanup", exact: true });
+  await retry.click();
+  const held = await holdRequests(t, page, fixture.origin + agentPath, {
+    method: "DELETE",
+    once: true,
+  });
   await page
-    .getByRole("dialog", { name: `Request deletion again for ${name}?` })
-    .getByRole("button", { name: "Request deletion again", exact: true })
+    .getByRole("dialog", { name: "Retry Agent cleanup?" })
+    .getByRole("button", { name: "Retry cleanup", exact: true })
     .click();
+  await held.requested;
+  revokeMemberGrant(fixture, MEMBER, ["delete", "agent"]);
+  const refused = responseTo(page, "DELETE", fixture.origin + agentPath);
+  held.release();
   const response = await refused;
   assert.equal(response.status(), 403);
+  const { error, meta } = await response.json();
+  assert.equal(error.message, callerDenied("Agent delete", `Agent ${agent.id}`));
+  const notice = page.getByRole("status");
+  await notice.getByRole("heading", { name: "Cleanup retry not allowed", exact: true }).waitFor();
+  await notice
+    .getByText(
+      `Your current access does not allow retrying cleanup. Request ID: ${meta.requestId}`,
+      { exact: true },
+    )
+    .waitFor();
+  assert.equal((await notice.textContent())?.includes(agent.id), false);
+  assert.equal(await retry.isVisible(), false);
   assert.equal(
-    (await response.json()).error.message,
-    callerDenied("Agent delete", `Agent ${agent.id}`),
+    await hasFocus(page.getByRole("button", { name: "Refresh deletion status", exact: true })),
+    true,
   );
-  const alert = row.getByRole("alert");
-  await alert.getByText(deleteRefused(name), { exact: true }).waitFor();
-  assert.equal(await row.getByText("Not authorized:").count(), 0);
-  // A grant refusal keeps the repeat unavailable, described by the alert, as for a first Delete.
-  await expectReachableReason(page, repeat, (await alert.textContent())?.trim() ?? "");
+  await settlePageRequests(page);
+  assert.equal(pathRequests(requests, "DELETE", agentPath).length, 1);
 });
 
 // A row refusal that is not about grants is kept for a refocus that rebuilds the list (finding

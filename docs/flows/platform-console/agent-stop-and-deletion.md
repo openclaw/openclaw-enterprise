@@ -97,6 +97,8 @@ reference covers worker shutdown and preservation of versions, credentials, and 
 sends a bodyless `DELETE` to the exact Agent URL. The controller requires Agent
 `delete`. A refusal stays visible on the page. The Delete control remains focusable with its
 reason and becomes available only after a newer permission read allows deletion.
+The identified refusal alert includes its request ID. A conflict preserves the API's
+reason and requires a status read before another deletion attempt.
 If the response is lost or names
 a different Agent, the Console offers a read to find out what happened without
 sending another deletion.
@@ -109,6 +111,8 @@ The receipt identifies the request; the controller still checks the signed-in
 identity and current Namespace read access. Opening this link while signed out
 preserves only that read destination through sign-in. A different person cannot
 use the receipt, and signing out clears the page and its remembered receipts.
+When Stop discovers deletion, its explicit focus handoff travels through navigation
+to **Refresh deletion status**; ordinary links keep the normal page focus behavior.
 
 The page follows queued, running and waiting work automatically. **Refresh deletion
 status** checks now. Only `deleted` confirms completion; a missing result, access
@@ -134,8 +138,11 @@ like its deployment, and reads it again when a retained list resumes.
 Refusal disables the action and explains why; in an open confirmation, it also
 disables confirmation and focuses Cancel. A stopped Agent without a selected
 version has no Stop action. An accepted Stop updates its row without polling; an
-accepted Delete opens its receipt. **View deletion progress** opens status from
-a deleting row, using the receipt only if this session requested the deletion. If the response names a different Agent, the list reports an
+accepted Delete opens its receipt. If the Console already observed Namespace access
+loss, a late accepted Delete leaves the cleared list and Search focus in place with
+a generic acknowledgement; it neither remembers nor opens the receipt.
+**View deletion progress** opens status from a deleting row, using the receipt only
+if this session requested the deletion. If the response names a different Agent, the list reports an
 unknown outcome and keeps the last observed state of both Agents. After `404`, `409`, or an
 uncertain outcome, the requested row’s actions stay disabled until **Refresh** rereads it.
 After a `403` about grants, the refused icon stays unavailable and the row's note names the grant

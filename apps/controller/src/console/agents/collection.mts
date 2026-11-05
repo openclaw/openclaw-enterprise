@@ -730,6 +730,12 @@ export function renderAgentList(context: AgentListContext) {
     try {
       const receipt = await requestAgentDeletion(context, agentRequestPath(item.id), item);
       if (context.isCurrent()) {
+        if (notReady?.missing) {
+          showOutcome({
+            notice: "Deletion request accepted. This Namespace is no longer available.",
+          });
+          return;
+        }
         context.navigate(deletionStatusPage(item, receipt));
       }
     } catch (error) {

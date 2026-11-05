@@ -25,6 +25,7 @@ interface NavigationOptions {
   loadPage(options: {
     fromNavigation: boolean;
     openingAgent?: boolean;
+    focusTarget?: string;
     restoreHistory?(url: string): void;
   }): void;
 }
@@ -202,7 +203,12 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
     history.pushState({ consolePosition: position }, "", url);
   }
 
-  function navigate(feature: string, selection = getNamespaceId(), replace = false) {
+  function navigate(
+    feature: string,
+    selection = getNamespaceId(),
+    replace = false,
+    options: { focusTarget?: string } = {},
+  ) {
     if (isLoggingOut()) {
       return;
     }
@@ -219,7 +225,7 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
       current.url.pathname === "/console/agents" &&
       Boolean(route().agentId) &&
       !route().deletion;
-    void loadPage({ fromNavigation: true, openingAgent });
+    void loadPage({ fromNavigation: true, openingAgent, ...options });
   }
 
   function traverse({

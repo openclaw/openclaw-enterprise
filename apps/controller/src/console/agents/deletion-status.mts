@@ -6,6 +6,7 @@ import { requestFailure, responseFields } from "../api-client.mjs";
 import { button, element, replaceChildrenIfChanged, setHidden, setText } from "../dom.mjs";
 import type { ConsolePageContext } from "../page-context.mjs";
 import { displayDate, GENERIC_DENIAL, link, namespacePath } from "./list.mjs";
+import { grantRefusal } from "./lifecycle-confirmation.mjs";
 
 type Deletion = AgentDeletionStatusResponse["data"];
 type StatusContext = Pick<
@@ -130,6 +131,7 @@ export function renderDeletionStatus(
   const back = link("Back to Agents", "agents", context);
   back.className = "button button--primary";
   const refresh = button("Refresh deletion status", () => void check({ manual: true }), {
+    id: "deletion-status-refresh",
     tone: "ghost",
     size: "sm",
   });
@@ -333,7 +335,7 @@ export function renderDeletionStatus(
             showFailure(cause);
           } else if (status === 403) {
             const reason =
-              serverMessage && serverMessage !== GENERIC_DENIAL
+              !grantRefusal(cause) && serverMessage && serverMessage !== GENERIC_DENIAL
                 ? serverMessage
                 : "Your current access does not allow retrying cleanup.";
             show("Cleanup retry not allowed", reason + reference);

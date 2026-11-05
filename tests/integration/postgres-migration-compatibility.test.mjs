@@ -2718,9 +2718,9 @@ test(
         // 0057 replaces the Harness validator, so reject that function replacement.
         // 0058 creates the policy table; 0059 has no DDL, so later prefixes reach custody.
         // Fail the common reduction grant after admission backfill and repository authority.
-        // Prefix 63 has only 0064's completion index left to apply; it issues no GRANT.
+        // Prefix 68 has only 0069's completion index left to apply; it issues no GRANT.
         const rollbackTag = [
-          [63, "CREATE INDEX"],
+          [68, "CREATE INDEX"],
           [58, "GRANT"],
           [57, "CREATE TABLE"],
           [56, "CREATE FUNCTION"],

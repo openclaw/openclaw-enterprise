@@ -211,8 +211,8 @@ export function createAgentLifecycle(
   const files = new Map<string, unknown>();
   const stagedWorkspaceFiles = new Map<string, Record<string, string>>();
   const deleted = new Set<string>();
-  const deletionReceiptId = "aud_00000000-0000-4000-8000-000000000001";
-  let deletionReads = 0;
+  const deletionReceipts = new Map<string, string>();
+  const deletionReads = new Map<string, number>();
   const clearRevisionOnRead = new Set<string>();
   let runtimeStatusReads = 0;
   let runtimeLogReads = 0;
@@ -511,11 +511,38 @@ export function createAgentLifecycle(
     const suffix = agentMatch[2] ?? "";
     if (suffix === "/deletion-status" && method === "GET") {
       const receiptId = url.searchParams.get("receiptId");
-      const status =
-        scenario.deletionStatus ??
-        (deleted.has(id)
-          ? ["queued", "running", "deleted"][Math.min(deletionReads++, 2)]
-          : "queued");
+      if (
+        (receiptId !== null && deletionReceipts.get(receiptId) !== id) ||
+        (!deleted.has(id) && agents.get(id)?.status !== "deleting")
+      ) {
+        return error(404);
+      }
+      const reads = deletionReads.get(id);
+      let status = scenario.deletionStatus ?? "queued";
+      if (deleted.has(id)) {
+        status = "deleted";
+      } else if (reads !== undefined) {
+        status = (["queued", "running", "deleted"] as const)[Math.min(reads, 2)]!;
+      }
+      if (reads !== undefined) {
+        deletionReads.set(id, reads + 1);
+      }
+      if (status === "deleted") {
+        // Completion changes the same Agent inventory that Back to Agents reads.
+        deleted.add(id);
+        agents.delete(id);
+        for (const [revisionId, revision] of revisions) {
+          if (revision.agentId === id) {
+            revisions.delete(revisionId);
+            deployments.delete(revisionId);
+          }
+        }
+        for (const key of files.keys()) {
+          if (key.startsWith(`${id}/`)) {
+            files.delete(key);
+          }
+        }
+      }
       if (status === "deleted" && !receiptId) {
         return error(404);
       }
@@ -564,10 +591,6 @@ export function createAgentLifecycle(
           // The API omits the field when no version is selected.
           delete saved.activeRevisionId;
         }
-        if (deleted.has(id)) {
-          agents.delete(id);
-          return error(404);
-        }
         if (clearRevisionOnRead.delete(id)) {
           saved.activeRevisionId = null;
         }
@@ -580,8 +603,9 @@ export function createAgentLifecycle(
       if (method === "DELETE") {
         saved.status = "deleting";
         saved.desiredRuntimeState = "stopped";
-        deleted.add(id);
-        deletionReads = 0;
+        const deletionReceiptId = nextId("aud");
+        deletionReceipts.set(deletionReceiptId, id);
+        deletionReads.set(id, 0);
         return response(saved, 202, undefined, { deletionReceiptId });
       }
     }

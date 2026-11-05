@@ -2222,10 +2222,10 @@ const authoredScenarios = {
       "Scroll to Delete Agent and open its confirmation dialog.",
       "Read what stays in the Namespace. Open View separate cleanup commands to copy a command without running it.",
       "Cancel once to inspect the safe exit, then reopen and confirm Permanently delete Agent.",
-      "The page marks deletion requested, removes edit/deploy controls, and keeps confirmed manual recovery available.",
-      "Click Refresh deletion status. The fixture now reports completion and the console returns to the Agent list.",
+      "Follow Deletion queued, Deleting Agent, then Agent deleted. Refresh deletion status reads progress without repeating the deletion request.",
+      "Choose Back to Agents. The completed Agent is no longer listed.",
     ],
-    gap: "The console reports deletion status but provides no detailed cleanup-progress view. Configurations and Secrets remain Namespace-owned and need separate management.",
+    gap: "The fixture simulates worker cleanup and completion; it does not run a real worker or delete runtime resources. Configurations and Secrets remain Namespace-owned and need separate management.",
   } satisfies LocalScenario,
 };
 

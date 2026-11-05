@@ -1,14 +1,6 @@
 import type { AgentRead } from "@openclaw-enterprise/contracts";
 import { requestFailure, responseFields } from "../api-client.mjs";
-import {
-  button,
-  element,
-  setHidden,
-  setText,
-  setUnavailable,
-  statusBlock,
-  requestIdLine,
-} from "../dom.mjs";
+import { button, element, setHidden, setText, setUnavailable, requestIdLine } from "../dom.mjs";
 import {
   type AgentLifecycleContext,
   DELETE_CONFIRMATION,
@@ -118,8 +110,17 @@ export function createAgentDeletion(
   function render(text?: string, tone: "info" | "danger" = "info", requestId?: string) {
     if (text) {
       feedback.replaceChildren(
-        statusBlock(tone, null, text, [], { id: "agent-deletion-error" }),
-        ...(requestId ? [requestIdLine(requestId)] : []),
+        element(
+          "div",
+          {
+            className: "status",
+            "data-tone": tone,
+            role: tone === "danger" ? "alert" : "status",
+            id: "agent-deletion-error",
+          },
+          element("p", { className: "status-body" }, text),
+          requestId ? requestIdLine(requestId) : null,
+        ),
       );
     }
     setUnavailable(
@@ -177,8 +178,11 @@ export function createAgentDeletion(
           "This Agent is no longer available for deletion. Refresh its status to check what happened.";
       } else if (error.status === 409) {
         state.needsRefresh = true;
-        text =
-          "This Agent could not be deleted in its current state. Refresh its status before trying again.";
+        text = describeFailure(cause, {
+          mutation: true,
+          conflict: "This Agent could not be deleted in its current state.",
+          next: "Refresh deletion status before trying again.",
+        });
       } else if (error.status === 400 || error.status === 429) {
         text = describeFailure(cause, { mutation: true });
       } else {

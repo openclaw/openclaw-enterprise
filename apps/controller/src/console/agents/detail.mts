@@ -1324,11 +1324,19 @@ export async function renderAgentDetail(
       deletion.section,
     ),
   );
-  function showDeleting({ receiptId }: { receiptId?: string; focus?: boolean } = {}) {
+  function showDeleting({
+    receiptId,
+    focus = false,
+  }: { receiptId?: string; focus?: boolean } = {}) {
     deleting = true;
     const target = deletionStatusPage(agent, receiptId);
     if (!sharingWrite && !draftWriteInFlight({ rereads: false })) {
-      context.navigate(target);
+      context.navigate(
+        target,
+        namespaceId,
+        false,
+        focus ? { focusTarget: "deletion-status-refresh" } : undefined,
+      );
       return;
     }
     // Another write still owns this page. Keep its navigation guard and outcome, and let the
