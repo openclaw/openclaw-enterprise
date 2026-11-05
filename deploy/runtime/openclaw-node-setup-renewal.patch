@@ -67,15 +67,15 @@
  persisted in service arguments.
  
 +For authenticated Gateway callers, `node.describe` includes
-+`deviceTokenAuthenticated`. It is `true` only while the current connection has
-+authenticated with the device token for the current pairing generation. It is
-+`false` for a bootstrap connection, a disconnected node, or a connection whose
-+pairing has changed. A live command approval reconnects a device-token session
-+so it can authenticate for the new pairing generation; the observation remains
-+`false` until that fresh connection authenticates. A connected node or a consumed
-+setup code alone does not
-+prove the node received its credential. Checking this field requires no extra
-+node command grant.
++`deviceTokenAuthenticated`. It is `true` only while the current WebSocket
++connection has authenticated with the device token for the current pairing
++generation. It is `false` for a bootstrap connection, a disconnected node, or a connection whose
++pairing has changed. HTTP watch sessions report `false`. A live command approval
++reconnects a device-token WebSocket session so it can authenticate for the new
++pairing generation; the observation remains `false` until that fresh connection
++authenticates. A connected node or a consumed setup code alone does not prove
++the node received its credential. Checking this field requires no extra node
++command grant.
 +
  For a managed foreground process, `--pair-if-needed` reuses native device-token
  storage across restarts; it does not keep a separate enrollment marker. Preserve
@@ -7263,7 +7263,7 @@
        void startup.catch(stopAfterError);
 --- a/src/gateway/node-registry-pairing.test.ts
 +++ b/src/gateway/node-registry-pairing.test.ts
-@@ -30,6 +30,88 @@
+@@ -30,6 +30,129 @@
    vi.useRealTimers();
    setActiveNodeContexts([]);
  });
@@ -7349,6 +7349,47 @@
 +    expect(client.socket.close).not.toHaveBeenCalled();
 +  },
 +);
++
++it.each(["missing", "present"])(
++  "never treats an event transport with a %s socket as WebSocket possession",
++  (socket) => {
++    let published = { identity: "identity-a", generation: "generation-a" };
++    const registry = createNodeRegistry({
++      isPairingStateCurrent: (_nodeId, binding) =>
++        binding.identity === published.identity && binding.generation === published.generation,
++    });
++    const client = makeClient("watch-connection", "watch-node");
++    const straySocket = client.socket;
++    client.isDeviceTokenAuth = true;
++    if (socket === "missing") {
++      // This is the same socketless registration used by the HTTP Watch runtime.
++      client.socket = undefined as never;
++    }
++    const session = registry.registerTransport(
++      client,
++      { pairingIdentity: "identity-a", pairingGeneration: "generation-a" },
++      { send: () => true, sendRaw: () => true },
++    );
++    expect(registry.isDeviceTokenAuthenticated(session)).toBe(false);
++    published = { ...published, generation: "generation-b" };
++    expect(
++      registry.updateSurface(
++        "watch-node",
++        { commands: [] },
++        {
++          expectedConnId: client.connId,
++          expectedPairingIdentity: "identity-a",
++          expectedPairingGeneration: "generation-a",
++          nextPairingGeneration: "generation-b",
++        },
++      ),
++    ).toBe(session);
++    expect(straySocket.close).not.toHaveBeenCalled();
++    expect(registry.isDeviceTokenAuthenticated(session)).toBe(false);
++    registry.unregister(client.connId);
++    expect(registry.isDeviceTokenAuthenticated(session)).toBe(false);
++  },
++);
  
  it.each(["current", "revoked", "unavailable"])(
    "uses the published pairing authority after a delayed read (%s)",
@@ -7376,13 +7417,13 @@
      this.mcpPolicy.retire(previousSession);
      const replacesPresence = previousSession?.lastActiveAtMs !== undefined;
      forgetNodeRunnerInventory(this, client.connId);
-@@ -680,6 +688,21 @@
+@@ -680,6 +688,22 @@
  
    get(nodeId: string): NodeSession | undefined {
      return this.getRegisteredSession(nodeId);
 +  }
 +
-+  /** Current-session proof of possession, never a persisted pairing or liveness claim. */
++  /** Current WebSocket-session possession, never a persisted pairing or liveness claim. */
 +  isDeviceTokenAuthenticated(node: NodeSession | undefined): boolean {
 +    if (!node || !this.options.isPairingStateCurrent) {
 +      return false;
@@ -7391,14 +7432,15 @@
 +    return Boolean(
 +      lease &&
 +      this.currentSessionForLease(lease) === node &&
++      !this.eventTransportsByConn.has(node.connId) &&
 +      node.client.connect.device?.id === node.nodeId &&
-+      node.client.socket.readyState === WEBSOCKET_OPEN_READY_STATE &&
++      node.client.socket?.readyState === WEBSOCKET_OPEN_READY_STATE &&
 +      isPublishedPairingCurrent(node, this.options.isPairingStateCurrent),
 +    );
    }
  
    private getRegisteredSession(nodeId: string): PairingBoundNodeSession | undefined {
-@@ -1023,6 +1046,19 @@
+@@ -1023,6 +1047,20 @@
        // Active-node leases capture the pairing generation, so a promoted live
        // session must republish its lease even when its presence is unchanged.
        this.publishActiveNodeContext();
@@ -7409,7 +7451,8 @@
 +        node.client.connect.device?.id === nodeId &&
 +        this.nodesById.get(nodeId) === node &&
 +        node.client.invalidated !== true &&
-+        node.client.socket.readyState === WEBSOCKET_OPEN_READY_STATE
++        !this.eventTransportsByConn.has(node.connId) &&
++        node.client.socket?.readyState === WEBSOCKET_OPEN_READY_STATE
 +      ) {
 +        // The old authentication lease remains bound to its admitted generation.
 +        // A fresh token handshake must establish possession for the new approval.
@@ -7428,12 +7471,16 @@
  import {
    deniesCrossDeviceManagement,
    pairedDeviceHasNonOperatorRole,
-@@ -210,7 +211,7 @@
+@@ -210,7 +211,11 @@
          ts: Date.now(),
        };
        const updatedNode = promotion.node;
 -      if (updatedNode) {
-+      if (updatedNode && updatedNode.client.socket.readyState === WEBSOCKET_OPEN_READY_STATE) {
++      if (
++        updatedNode &&
++        (!updatedNode.client.socket ||
++          updatedNode.client.socket.readyState === WEBSOCKET_OPEN_READY_STATE)
++      ) {
          refreshConnectedNodeSurfaceCaches({ context, nodeSession: updatedNode });
          const notified = await context.nodeRegistry.sendEventForPairingIdentity({
            nodeId: updatedNode.nodeId,
@@ -7451,10 +7498,11 @@
              : {}),
 --- a/src/gateway/server.node-bootstrap-reconnect.test.ts
 +++ b/src/gateway/server.node-bootstrap-reconnect.test.ts
-@@ -1,70 +1,327 @@
+@@ -1,70 +1,430 @@
  // Bootstrap retries must reuse unchanged node grants and their pairing generation.
 -import { expect, test } from "vitest";
 +import path from "node:path";
++import { GATEWAY_CLIENT_IDS } from "../../packages/gateway-protocol/src/client-info.js";
 +import { expect, test, vi } from "vitest";
 +import { createDeferred, withinTest } from "../../test/helpers/promise.js";
 +import { writeConfigFile } from "../config/config.js";
@@ -7480,6 +7528,7 @@
 -
 -installGatewayTestHooks({ scope: "suite" });
 +import { connectOk, installGatewayTestHooks, rpcReq } from "./test-helpers.js";
++import { connectWatchNode, readJson } from "./watch-node-http.test-helpers.js";
 +
 +const commands = [
 +  "dir.list",
@@ -7671,26 +7720,18 @@
 -      clientId: client.id,
 -      clientMode: client.mode,
 -      platform: client.platform,
+-    });
 +      clientId: "node-host",
 +      clientMode: "node",
 +      platform: "linux",
-     });
--    const surface = await requestNodePairing({
--      nodeId: paired.identity.deviceId,
--      platform: client.platform,
--      commands: [],
++    });
 +    const nodeId = paired.identity.deviceId;
 +    const approvedCommands = commands.slice(0, -1);
 +    const initialSurface = await requestNodePairing({
 +      nodeId,
 +      platform: "linux",
 +      commands: approvedCommands,
-     });
--    await approveNodePairing(surface.request.requestId, { callerScopes: ["operator.pairing"] });
--    const generation = await captureNodePairingGeneration(paired.identity.deviceId);
--    expect(generation).not.toBeNull();
--    const issued = await issueDeviceBootstrapToken({ profile });
--    const ws = await openTrackedWs(getStarted().port);
++    });
 +    const initialApproval = await approveNodePairing(initialSurface.request.requestId, {
 +      callerScopes: ["operator.pairing", "operator.write"],
 +    });
@@ -7760,26 +7801,7 @@
 +      },
 +      onClose,
 +    });
-     try {
--      const response = await connectReq(ws, {
--        client,
--        role: "node",
--        scopes: [],
--        bootstrapToken: issued.token,
--        skipDefaultAuth: true,
--        prePairDevice: false,
--        deviceIdentityPath: paired.identityPath,
--      });
--      expect.soft(response).toMatchObject({
--        ok: true,
--        payload: { type: "hello-ok", auth: { role: "node", scopes: [] } },
--      });
--      expect(await captureNodePairingGeneration(paired.identity.deviceId)).toEqual(generation);
--      expect(
--        (await listDevicePairing()).pending.filter(
--          (request) => request.deviceId === paired.identity.deviceId,
--        ),
--      ).toEqual([]);
++    try {
 +      node.start();
 +      await withinTest(firstReady.promise, signal);
 +      expect(await describe()).toMatchObject({
@@ -7818,10 +7840,138 @@
 +      ]);
 +      expect((await loadDeviceAuthToken(lookup))?.token).toBe(token);
 +      expect((await listNodePairing()).pending.filter((entry) => entry.nodeId === nodeId)).toEqual([]);
-     } finally {
--      ws.close();
++    } finally {
 +      permitReconnect.resolve();
 +      await node.stopAndWait();
++      observer.close();
++    }
++  });
++
++  test("describes and approves an HTTP Watch without WebSocket possession", async ({ signal }) => {
++    const paired = await pairDeviceIdentity({
++      name: "http-watch-command-approval",
++      role: "node",
++      scopes: [],
++      clientId: GATEWAY_CLIENT_IDS.WATCHOS_APP,
++      clientMode: "node",
++      platform: "watchOS 11.5.0",
++      deviceFamily: "Apple Watch",
++    });
++    const nodeId = paired.identity.deviceId;
+     const surface = await requestNodePairing({
+-      nodeId: paired.identity.deviceId,
+-      platform: client.platform,
+-      commands: [],
+-    });
+-    await approveNodePairing(surface.request.requestId, { callerScopes: ["operator.pairing"] });
+-    const generation = await captureNodePairingGeneration(paired.identity.deviceId);
+-    expect(generation).not.toBeNull();
+-    const issued = await issueDeviceBootstrapToken({ profile });
+-    const ws = await openTrackedWs(getStarted().port);
++      nodeId,
++      platform: "watchOS 11.5.0",
++      commands: ["device.info"],
++      permissions: { notifications: true },
++    });
++    const approved = await approveNodePairing(surface.request.requestId, {
++      callerScopes: ["operator.pairing", "operator.write"],
++    });
++    expect(approved && !("status" in approved)).toBe(true);
++    const token = (await getPairedDevice(nodeId))?.tokens?.node?.token;
++    expect(token).toEqual(expect.any(String));
++    const baseUrl = `http://127.0.0.1:${getStarted().port}/api/nodes/watch`;
++    const connectedResponse = await connectWatchNode({
++      baseUrl,
++      identity: paired.identity,
++      deviceToken: token!,
++      commands: ["device.info", "device.status"],
++    });
++    expect(connectedResponse.status).toBe(200);
++    const connected = await readJson(connectedResponse);
++    expect(connected.sessionToken).toEqual(expect.any(String));
++    const headers = { authorization: `Bearer ${String(connected.sessionToken)}` };
++    const observer = await openTrackedWs(getStarted().port);
++    await connectOk(observer, { scopes: ["operator.admin"] });
++    const describe = async () => {
++      const response = await rpcReq(observer, "node.describe", { nodeId });
++      expect(response.ok).toBe(true);
++      return response.payload;
++    };
++    const poll = async () => {
++      const response = await fetch(`${baseUrl}/poll`, { method: "POST", headers, signal });
++      expect(response.status).toBe(200);
++      return await readJson(response);
++    };
+     try {
+-      const response = await connectReq(ws, {
+-        client,
+-        role: "node",
+-        scopes: [],
+-        bootstrapToken: issued.token,
+-        skipDefaultAuth: true,
+-        prePairDevice: false,
+-        deviceIdentityPath: paired.identityPath,
+-      });
+-      expect.soft(response).toMatchObject({
++      expect(await describe()).toMatchObject({
++        connected: true,
++        deviceTokenAuthenticated: false,
++        commands: ["device.info"],
++      });
++      const pending = (await listNodePairing()).pending.find((entry) => entry.nodeId === nodeId);
++      expect(pending?.commands).toEqual(["device.info", "device.status"]);
++      const approval = await rpcReq(observer, "node.pair.approve", { requestId: pending!.requestId });
++      expect(approval.ok).toBe(true);
++      expect(await describe()).toMatchObject({
++        connected: true,
++        deviceTokenAuthenticated: false,
++        commands: ["device.info", "device.status"],
++      });
++      expect(await poll()).toMatchObject({
+         ok: true,
+-        payload: { type: "hello-ok", auth: { role: "node", scopes: [] } },
+-      });
+-      expect(await captureNodePairingGeneration(paired.identity.deviceId)).toEqual(generation);
+-      expect(
+-        (await listDevicePairing()).pending.filter(
+-          (request) => request.deviceId === paired.identity.deviceId,
+-        ),
+-      ).toEqual([]);
++        event: {
++          event: "node.pair.resolved",
++          payload: { nodeId, requestId: pending!.requestId, decision: "approved" },
++        },
++      });
++
++      // A real invocation after approval is an ordered delivery barrier: a
++      // duplicate approval would occupy this next poll instead of the request.
++      const invoked = rpcReq(observer, "node.invoke", {
++        nodeId,
++        command: "device.status",
++        params: {},
++        idempotencyKey: "http-watch-after-approval",
++      });
++      void invoked.catch(() => {});
++      const polled = await poll();
++      expect(polled).toMatchObject({
++        ok: true,
++        event: { event: "node.invoke.request", payload: { command: "device.status" } },
++      });
++      const event = polled.event as { payload: { id: string } };
++      const result = await fetch(`${baseUrl}/result`, {
++        method: "POST",
++        headers: { ...headers, "content-type": "application/json" },
++        body: JSON.stringify({ id: event.payload.id, ok: true, payloadJSON: '{"status":"ready"}' }),
++        signal,
++      });
++      expect(result.status).toBe(200);
++      expect(await readJson(result)).toEqual({ ok: true });
++      expect(await withinTest(invoked, signal)).toMatchObject({ ok: true });
++      expect((await listNodePairing()).pending.filter((entry) => entry.nodeId === nodeId)).toEqual([]);
+     } finally {
+-      ws.close();
++      const disconnected = await fetch(`${baseUrl}/disconnect`, { method: "POST", headers });
++      await disconnected.arrayBuffer();
 +      observer.close();
      }
    });
