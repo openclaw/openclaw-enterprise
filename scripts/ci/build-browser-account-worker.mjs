@@ -1,9 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { cp, mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { NATIVE_WORKER_PLUGIN_HELPERS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 
 const [sourcePath, output] = process.argv.slice(2);
 if (!sourcePath || !output) {
@@ -49,12 +51,33 @@ try {
     // fs-safe resolves native code from its installed package directory.
     external: ["@openclaw/fs-safe"],
   });
-  const packages = join(worker, "node_modules", "@openclaw");
-  await mkdir(packages, { recursive: true });
-  await cp(
-    await realpath(join(source, "node_modules", "@openclaw", "fs-safe")),
-    join(packages, "fs-safe"),
-    { recursive: true },
+  // Keep the native fs-safe binding and the undici implementation loaded by createRequire.
+  const fsSafe = await realpath(join(source, "node_modules", "@openclaw", "fs-safe"));
+  const fsSafeManifest = JSON.parse(await readFile(join(fsSafe, "package.json"), "utf8"));
+  const fsSafeRequire = createRequire(join(fsSafe, "package.json"));
+  const dependencies = new Map([
+    ["@openclaw/fs-safe", fsSafe],
+    ["undici", await realpath(join(source, "node_modules", "undici"))],
+  ]);
+  for (const name of Object.keys(fsSafeManifest.optionalDependencies ?? {})) {
+    try {
+      dependencies.set(name, dirname(fsSafeRequire.resolve(name)));
+    } catch (error) {
+      if (error.code !== "MODULE_NOT_FOUND") {
+        throw error;
+      }
+    }
+  }
+  for (const [name, installed] of dependencies) {
+    const target = join(worker, "node_modules", name);
+    await mkdir(dirname(target), { recursive: true });
+    await cp(installed, target, { recursive: true });
+  }
+  await writeFile(
+    join(worker, "project.cjs"),
+    'const { join } = require("node:path");\n' +
+      NATIVE_WORKER_PLUGIN_HELPERS +
+      '\nmodule.exports = () => managedMcpServers(managedPluginInstallations(join(__dirname, "catalog")));\n',
   );
   execFileSync("tar", ["-czf", resolve(output), "-C", scratch, "worker"]);
 } finally {

@@ -72,6 +72,13 @@ function recordingOpenShell() {
 
 export function selectTemplateDrivers(controller, { selectGateway = true } = {}) {
   const openShell = recordingOpenShell();
+  let transport = openShell.client;
+  const selected = new Proxy(openShell.client, {
+    get(_target, key) {
+      const method = transport[key];
+      return typeof method === "function" ? method.bind(transport) : method;
+    },
+  });
   const backend = createOpenShellBackend(
     {
       id: "openshell-test",
@@ -83,7 +90,7 @@ export function selectTemplateDrivers(controller, { selectGateway = true } = {})
         credential_refresh: "openshell-refresh",
       },
     },
-    { gatewayClient: openShell.client },
+    { gatewayClient: selected },
   );
   const gateway = new OpenShellCredentialGatewayDriver(
     {
@@ -105,5 +112,13 @@ export function selectTemplateDrivers(controller, { selectGateway = true } = {})
     createdProviders: openShell.createdProviders,
     refresh,
     transport: openShell.client,
+    async withGateway(client, operation) {
+      transport = client;
+      try {
+        return await operation();
+      } finally {
+        transport = openShell.client;
+      }
+    },
   };
 }

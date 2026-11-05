@@ -193,7 +193,6 @@ import { requireHarnessAuthMethod } from "../harness-auth-method.ts";
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
 import {
   managedInstalls,
-  managedCredentialEnvironment,
   managedSlotAcceptsSource,
   managedSlotBinding,
 } from "../../plugin/managed-catalog.ts";
@@ -256,6 +255,7 @@ import {
   PLUGIN_RUNTIME_CODEX_CONFIG_ENVIRONMENT,
   PLUGIN_RUNTIME_MANIFEST,
   PLUGIN_RUNTIME_MANIFEST_ENVIRONMENT,
+  managedPluginPackages,
   PLUGIN_RUNTIME_READY_MARKER,
   PLUGIN_RUNTIME_READY_MARKER_ENVIRONMENT,
   type CodexRepositoryBrokerNetworkPolicy,
@@ -16302,30 +16302,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     // The image supplies the releases. Both processes receive only package identities and
     // reviewed tool selections, never account credentials.
     if (dedicated && pluginRuntime?.runtime.kind === "openclaw") {
-      const { selections } = pluginRuntime.runtime;
-      const packages = [];
-      for (const install of managedInstalls) {
-        const selection = selections[install.id];
-        if (!selection || (!selection.enabled && role !== "gateway")) {
-          continue;
-        }
-        const binding = managedSlotBinding(selections, install);
-        packages.push({
-          kind: install.kind,
-          packageName: install.packageName,
-          slotId: install.slotId,
-          ...(role === "gateway" && { id: install.id }),
-          ...(selection.enabled && { releaseSha256: install.releaseSha256 }),
-          ...(binding && {
-            accounts: binding.sourceIds.map((id) => ({
-              id,
-              env: managedCredentialEnvironment(install, id),
-              ...(pluginRuntime.accountNames?.[id] && { name: pluginRuntime.accountNames[id] }),
-            })),
-            ...(install.kind === "mcp" && { toolNames: binding.toolNames }),
-          }),
-        });
-      }
+      const packages = managedPluginPackages(
+        managedInstalls,
+        pluginRuntime.runtime.selections,
+        pluginRuntime.accountNames,
+        role,
+      );
       if (packages.length > 0) {
         // Kubelet expands $(VAR) and $$ in literal env values, including inside account names.
         const value = JSON.stringify(packages).replaceAll("$", "\\u0024");

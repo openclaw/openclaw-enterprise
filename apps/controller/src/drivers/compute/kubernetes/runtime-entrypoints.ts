@@ -291,18 +291,18 @@ function verifiedPluginFile(path, expected) {
   return bytes;
 }
 
-function managedPluginInstallations() {
+function managedPluginInstallations(catalogDirectory = "/usr/local/lib/oce/plugin-catalog") {
   const selection = process.env[${JSON.stringify(MANAGED_PLUGIN_ENVIRONMENT)}];
   if (selection === undefined) return [];
   const settings = JSON.parse(selection);
-  return (Array.isArray(settings) ? settings : [settings]).map(readManagedPluginInstallation);
+  return (Array.isArray(settings) ? settings : [settings]).map((item) => readManagedPluginInstallation(item, catalogDirectory));
 }
 
-function readManagedPluginInstallation({ id, kind, packageName, releaseSha256, slotId, toolNames = [], accounts = [] }) {
+function readManagedPluginInstallation({ id, kind, packageName, releaseSha256, slotId, toolNames = [], accounts = [] }, catalogDirectory) {
   if ((kind !== "cli" && kind !== "mcp") || typeof packageName !== "string" || !/^[a-z][a-z0-9-]*$/.test(packageName)) {
     throw new Error("The managed plugin package type or name is invalid.");
   }
-  const root = "/usr/local/lib/oce/plugin-catalog/" + packageName;
+  const root = catalogDirectory + "/" + packageName;
   const release = releaseSha256 === undefined ? undefined
     : JSON.parse(verifiedPluginFile(root + "/ai.openclaw.oce/release.json", releaseSha256));
   if (release && !release.capabilities?.harness?.includes(kind)) {
@@ -5181,13 +5181,51 @@ export const COMPUTE_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypo
   agentRuntimeEntrypoint(true, true, false),
 );
 
+export const NATIVE_WORKER_PLUGIN_HELPERS = String.raw`
+${MANAGED_INSTALL_HELPERS}
+${MANAGED_PLUGIN_CREDENTIAL_HELPER}
+function managedMcpServers(installs) {
+  const mcpServers = {};
+  for (const install of installs) {
+    // A withdrawn account leaves only its own MCP definition staged with discovery disabled.
+    if (!install.mcp) continue;
+    const bytes = verifiedPluginFile(join(install.root, "mcp.json"), install.release.mcpServersSha256);
+    const manifest = JSON.parse(bytes);
+    const { accounts } = install;
+    const { server, localServer, toolNames } = install.mcp;
+    const endpoint = manifest.mcpServers[server];
+    if (endpoint?.type !== "streamable-http" || new URL(endpoint.url).protocol !== "https:") {
+      throw new Error("The managed MCP server declaration is invalid.");
+    }
+    const connections = {};
+    for (const { id, env } of accounts) {
+      const marker = process.env[env];
+      if (isManagedPluginPlaceholder(env, marker, "mcp")) {
+        connections[id] = { headers: { Authorization: "Bearer " + marker } };
+      } else {
+        delete process.env[env];
+      }
+    }
+    const active = Object.values(connections);
+    const enabled = toolNames.length > 0 && active.length > 0;
+    mcpServers[localServer] = {
+      enabled, transport: endpoint.type, url: endpoint.url,
+      ...(enabled && {
+        ...(accounts.length > 1 ? { accounts: connections } : active[0]),
+        toolFilter: { include: toolNames },
+      }),
+    };
+  }
+  return mcpServers;
+}
+`;
+
 export const NATIVE_WORKER_ENTRYPOINT = String.raw`
 const { join } = require("node:path");
 const { chmodSync, closeSync, mkdirSync, openSync, readFileSync, readSync, rmSync, writeFileSync } = require("node:fs");
 const { execFile, spawn } = require("node:child_process");
 const { createServer: readinessCreateServer } = require("node:http");
-${MANAGED_INSTALL_HELPERS}
-${MANAGED_PLUGIN_CREDENTIAL_HELPER}
+${NATIVE_WORKER_PLUGIN_HELPERS}
 ${WORKSPACE_ASSET_HELPERS}
 ${startupPhaseHelper("agent")}
 ${openClawStateMigrationHelper("Native worker", "deploy the Agent again")}
@@ -5246,7 +5284,6 @@ mkdirSync(temporary, { recursive: true, mode: 0o700 });
 chmodSync(temporary, 0o700);
 
 const pluginBins = [];
-const mcpServers = {};
 for (const install of installs) {
   const { kind, release } = install;
   if (kind === "cli" && release) {
@@ -5280,35 +5317,8 @@ for (const install of installs) {
       pluginBins.push(join(release.runtimeDirectory, "account-bin"));
     }
   }
-  // A withdrawn account leaves only its own MCP definition staged with discovery disabled.
-  if (!install.mcp) continue;
-  const bytes = verifiedPluginFile(join(install.root, "mcp.json"), release.mcpServersSha256);
-  const manifest = JSON.parse(bytes);
-  const { accounts } = install;
-  const { server, localServer, toolNames } = install.mcp;
-  const endpoint = manifest.mcpServers[server];
-  if (endpoint?.type !== "streamable-http" || new URL(endpoint.url).protocol !== "https:") {
-    throw new Error("The managed MCP server declaration is invalid.");
-  }
-  const connections = {};
-  for (const { id, env } of accounts) {
-    const marker = process.env[env];
-    if (isManagedPluginPlaceholder(env, marker, "mcp")) {
-      connections[id] = { headers: { Authorization: "Bearer " + marker } };
-    } else {
-      delete process.env[env];
-    }
-  }
-  const active = Object.values(connections);
-  const enabled = toolNames.length > 0 && active.length > 0;
-  mcpServers[localServer] = {
-    enabled, transport: endpoint.type, url: endpoint.url,
-    ...(enabled && {
-      ...(accounts.length > 1 ? { accounts: connections } : active[0]),
-      toolFilter: { include: toolNames },
-    }),
-  };
 }
+const mcpServers = managedMcpServers(installs);
 
 function nativeWorkerReady() {
   return new Promise((resolve) => {

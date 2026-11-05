@@ -171,6 +171,46 @@ the same source. Select `codex-plugin` with `catalogSource: hosted` to verify
 directory discovery. Selected runtime plugins remain unsupported; discovery
 does not prove plugin execution. The remaining qualification boundaries are below.
 
+## Call one tool with two browser accounts
+
+Prepare the [Keycloak OIDC lane](kubernetes.md#keycloak-oidc-tests) and keep its
+state file. Use Node 24, Bash, Go, OpenSSL, Docker, the pinned OpenShell CLI and
+gateway, and the supervisor and sandbox images listed above. The Docker engine
+also needs an installed Node 24 image and the following CoreDNS image:
+
+```sh
+docker pull rancher/mirrored-coredns-coredns@sha256:900f9c109f7a33545d3c811516e8376df9019147b750f5ce3e254468769176ea
+```
+
+From the Enterprise checkout, build the worker against the patched OpenClaw pin
+with its installed dependencies. Set `OPENSHELL_BIN` and `OPENSHELL_GATEWAY_BIN`
+to the matching executables. Set `OPENSHELL_DOCKER_SUPERVISOR_IMAGE` and
+`OPENSHELL_DOCKER_SANDBOX_RUNTIME_IMAGE` to the pinned images, and
+`OCC_TEST_BROWSER_ACCOUNT_NODE_IMAGE` to the installed Node image.
+
+```sh
+export OCC_TEST_BROWSER_ACCOUNT_WORKER="$run_dir/browser-account-worker.tgz"
+node scripts/ci/build-browser-account-worker.mjs "$patched_openclaw" "$OCC_TEST_BROWSER_ACCOUNT_WORKER"
+export OPENSHELL_E2E_DOCKER_SANDBOX_IMAGE="$OCC_TEST_BROWSER_ACCOUNT_NODE_IMAGE"
+export OPENSHELL_E2E_DOCKER_SANDBOX_IMAGE_PULL_POLICY=never
+bash tests/fixtures/with-browser-account-tls.sh \
+  bash "$openshell_source/e2e/with-docker-gateway.sh" \
+  node scripts/ci/run-tests.mjs run keycloak-oidc --state "$state" \
+  --results "$run_dir/browser-account-results.json" \
+  --file tests/integration/postgres-saved-oauth-connections.test.ts
+```
+
+Chromium authorizes two different Keycloak users for the same Agent plugin slot.
+The test deploys through OCC, attaches both revision-specific senders to one
+stock OpenShell Docker sandbox, and runs the patched OpenClaw same-node worker.
+It calls the single `whoami` tool once per account. An isolated HTTPS MCP
+recipient verifies each Keycloak signature and returns its subject. The named
+worker subtest compares both calls with the two browser identities.
+
+The test configures the disposable supervisor to trust the recipient's
+certificate and resolve the released hostname to that recipient's private IP.
+The worker runs directly in that sandbox. Separate suites cover Kubernetes cutover and model turns.
+
 ## Receiver fixtures and full-stack qualification
 
 `tests/integration/device-authorization-api.test.mjs` exercises real Fastify,

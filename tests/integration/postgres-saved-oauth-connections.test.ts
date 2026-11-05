@@ -13,11 +13,13 @@ import {
   CodexPluginDriver,
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { managedPluginPackages } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import {
   managedCliInstalls,
   managedCredentialEnvironment,
   managedMcpInstalls,
   managedPluginAccountSlot,
+  managedSlotBinding,
 } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
@@ -29,6 +31,8 @@ import { NativeIAMDriver, validateAuthAccountPrincipalSeed } from "../../package
 import { PostgresHumanAuthentication } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
 import { keycloakRealmAdmin, rotateKeycloakClientSecret } from "../helpers/ci-keycloak-realm.mjs";
+import { keycloakAccountMcpPackage } from "../fixtures/keycloak-account-mcp-package.mjs";
+import { verifyNativeBrowserAccountTools } from "../helpers/native-browser-account-tools.mjs";
 import { selectTemplateDrivers } from "../helpers/connection-template-drivers.mjs";
 import { connectFixtureGoogleAccount } from "../helpers/google-api-saved-account.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
@@ -228,7 +232,8 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
     enabled: true,
     publicClient: false,
     standardFlowEnabled: true,
-    defaultClientScopes: [],
+    // Keycloak's built-in basic scope places the user's sub claim in the signed access token.
+    defaultClientScopes: pluginWorkflow ? ["basic"] : [],
     directAccessGrantsEnabled: false,
     redirectUris: [redirectUri],
     attributes: {
@@ -368,12 +373,10 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
       name: kubernetesNamespaceName(namespace.id),
     }),
   });
-  const { providers, createdProviders, transport, refresh, gateway } = selectTemplateDrivers(
-    controller,
-    {
+  const { providers, createdProviders, transport, withGateway, refresh, gateway } =
+    selectTemplateDrivers(controller, {
       selectGateway: pluginWorkflow,
-    },
-  );
+    });
   const makeNamespace = async () => {
     const result = await inject("POST", "/namespaces", { name: `Accounts ${randomUUID()}` });
     assert.equal(result.statusCode, 201, result.body);
@@ -632,6 +635,7 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
     createdProviders,
     refresh,
     transport,
+    withGateway,
     gateway,
     rotateClientSecret: async (source?: string) => {
       const replacement = await rotateKeycloakClientSecret(
@@ -1040,6 +1044,7 @@ test(
       controller,
       state,
       transport,
+      withGateway,
       providers,
       gateway,
       refresh,
@@ -1068,6 +1073,10 @@ test(
     const cliAccount = cli.credentials.account!;
     const mcp = managedMcpInstalls[0]!;
     const reportAccount = mcp.credentials[mcp.slotId]!;
+    const { install: reportsInstall, files: releaseFiles } = keycloakAccountMcpPackage(
+      slackInstall,
+      issuer,
+    );
     const primary = {
       ...cli,
       id: pluginId,
@@ -1125,10 +1134,33 @@ test(
             { id: "secondary", label: "Secondary mail" },
             { id: "reports", label: "Reports" },
             { id: "unrelated", label: "Unrelated service" },
-          ].map((slot) => ({ ...slot, pluginId, releaseSha256, sources: [] }));
+          ]
+            .map((slot) => ({ ...slot, pluginId, releaseSha256, sources: [] }))
+            .concat([
+              {
+                id: reportsInstall.slotId,
+                label: "Reports",
+                pluginId: reportsInstall.id,
+                releaseSha256: reportsInstall.releaseSha256,
+                sources: [],
+              },
+            ]);
         },
-        validate() {},
+        validate(selections, sources) {
+          const binding = managedSlotBinding(selections, reportsInstall);
+          return (
+            binding &&
+            Object.fromEntries(
+              sources
+                .filter(({ id }) => binding.sourceIds.includes(id))
+                .map(({ id, name }) => [id, name]),
+            )
+          );
+        },
         connectionSlot(selections, requestedPlugin, requestedSlot) {
+          if (requestedPlugin === reportsInstall.id) {
+            return managedPluginAccountSlot(reportsInstall, selections, requestedSlot);
+          }
           if (requestedPlugin !== pluginId) {
             return undefined;
           }
@@ -1192,12 +1224,12 @@ test(
     assert.equal(codexCapabilities.json().data.driver.id, codexCatalog.id);
     assert.equal(codexCapabilities.json().data.credentialSlots, undefined);
 
-    const agent = async (name: string) => {
+    const agent = async (name: string, selectedPlugin = pluginId) => {
       const created = await owner("POST", agents, {
         name,
         executionMode: "dedicated",
         configurationId: config.json().data.id,
-        plugins: { [pluginId]: { enabled: true } },
+        plugins: { [selectedPlugin]: { enabled: true } },
       });
       assert.equal(created.statusCode, 201, created.body);
       return created.json().data.id as string;
@@ -1347,14 +1379,22 @@ test(
       connectionTemplateId: reportTemplate.json().data.id,
       selectedScopes: ["openid"],
     };
+    const reportsAgent = await agent("Two browser accounts", reportsInstall.id);
+    const reportConsent = {
+      ...reportInput,
+      connectionTemplateVersion: 1,
+      pluginId: reportsInstall.id,
+      slotId: reportsInstall.slotId,
+      releaseSha256: reportsInstall.releaseSha256,
+    };
     const report = await begin(
-      connections,
-      { ...reportInput, accountName: "Work reports" },
+      `${path(reportsAgent)}/connections`,
+      { ...reportConsent, expectedCredentialSourceIds: [], accountName: "Work reports" },
       "carol",
     );
     assert.match(
       String((await owner("GET", report.callback)).headers.location),
-      /connection=connected/,
+      /connection=attached/,
     );
     const slotAgent = await agent("Slot assignments");
     const choices = await owner("GET", `${path(slotAgent)}/plugins/capabilities`);
@@ -1400,23 +1440,19 @@ test(
 
     // Carol already owns the first grant. Connecting Alice from the occupied Reports slot
     // must preserve Carol, so the same Agent can use either provider identity.
-    const secondReport = await begin(`${path(slotAgent)}/connections`, {
-      ...reportInput,
-      connectionTemplateVersion: 1,
-      pluginId,
-      slotId: "reports",
-      releaseSha256,
+    const secondReport = await begin(`${path(reportsAgent)}/connections`, {
+      ...reportConsent,
       expectedCredentialSourceIds: [report.id],
       accountName: "Personal reports",
     });
     const added = await owner("GET", secondReport.callback);
     assert.match(String(added.headers.location), /connection=attached/);
-    assert.deepEqual((await draft(slotAgent)).plugins[pluginId].driverPolicy.credentials, {
-      account: grant.id,
-      reports: [report.id, secondReport.id],
-    });
-    assert.equal(await canUse(slotAgent, report.id), true);
-    assert.equal(await canUse(slotAgent, secondReport.id), true);
+    assert.deepEqual(
+      (await draft(reportsAgent)).plugins[reportsInstall.id].driverPolicy.credentials,
+      { [reportsInstall.slotId]: [report.id, secondReport.id] },
+    );
+    assert.equal(await canUse(reportsAgent, report.id), true);
+    assert.equal(await canUse(reportsAgent, secondReport.id), true);
     // The restriction on A stays in force. Two independently authorized Agents share the
     // standalone account. Detaching from C leaves B's operate decision and the account intact.
     const c = await agent("Third");
@@ -1464,7 +1500,7 @@ test(
     });
     assert.equal(modelRole.statusCode, 201, modelRole.body);
     const revisions = new Map<string, string>();
-    for (const id of [b, c, slotAgent]) {
+    for (const id of [b, c, reportsAgent]) {
       const agent = await state.read((v) => v.agents.findAgent(namespaceId, id));
       assert.ok(agent);
       const modelGrant = await owner("POST", base + "/iam/access-bindings", {
@@ -1479,18 +1515,26 @@ test(
         configurationId: config.json().data.id,
         harnessAuth: { method: "credential_source", sourceId: modelSourceId },
         credentialSources: [...(agent.credentialSources ?? []), { sourceId: modelSourceId }],
-        plugins: {
-          [pluginId]: {
-            enabled: true,
-            driverPolicy: {
-              releaseSha256,
-              credentials:
-                id === slotAgent
-                  ? (await draft(slotAgent)).plugins[pluginId].driverPolicy.credentials
-                  : { [id === b ? slotId : "secondary"]: shared.id },
-            },
-          },
-        },
+        plugins:
+          id === reportsAgent
+            ? {
+                [reportsInstall.id]: {
+                  enabled: true,
+                  driverPolicy: {
+                    ...(await draft(reportsAgent)).plugins[reportsInstall.id].driverPolicy,
+                    toolNames: ["whoami"],
+                  },
+                },
+              }
+            : {
+                [pluginId]: {
+                  enabled: true,
+                  driverPolicy: {
+                    releaseSha256,
+                    credentials: { [id === b ? slotId : "secondary"]: shared.id },
+                  },
+                },
+              },
       });
       assert.equal(bound.statusCode, 200, bound.body);
       const deployed = await owner("POST", path(id) + "/deploy");
@@ -1500,31 +1544,38 @@ test(
     // An admitted revision with two Reports grants must publish different, usable
     // tokens under separate placeholder keys. Keycloak's own userinfo response
     // identifies the beneficiary of each real browser authorization.
-    const multiRevisionId = revisions.get(slotAgent)!;
+    const multiRevisionId = revisions.get(reportsAgent)!;
     const multiRevision = await state.read((v) =>
-      v.revisions.findRevision(namespaceId, slotAgent, multiRevisionId),
+      v.revisions.findRevision(namespaceId, reportsAgent, multiRevisionId),
     );
     const realm = JSON.parse(
       await readFile(new URL("../fixtures/keycloak/realm-oce.json", import.meta.url), "utf8"),
     );
-    const envKeys = new Set<string>();
+    const browserAccounts: {
+      handle: string;
+      env: string;
+      profileId: string;
+      provider: string;
+      label: string;
+      expectedSubject: string;
+    }[] = [];
+    const prepareMultiAccount = async (handle: string) => {
+      const prepared = await controller.prepareRevisionAccount(
+        namespaceId,
+        reportsAgent,
+        multiRevisionId,
+        handle,
+      );
+      assert.ok(prepared?.source);
+      return prepared.source;
+    };
+    const releaseMultiAccount = (source: Awaited<ReturnType<typeof prepareMultiAccount>>) =>
+      controller.releaseRevisionAccount(namespaceId, reportsAgent, multiRevisionId, source);
     for (const [account, username] of [
       [report.id, "carol"],
       [secondReport.id, "alice"],
     ] as const) {
-      const prepared = await controller.prepareRevisionAccount(
-        namespaceId,
-        slotAgent,
-        multiRevisionId,
-        account,
-      );
-      assert.ok(prepared?.source);
-      await controller.releaseRevisionAccount(
-        namespaceId,
-        slotAgent,
-        multiRevisionId,
-        prepared.source,
-      );
+      await releaseMultiAccount(await prepareMultiAccount(account));
       const delivery = multiRevision?.credentialSources?.find(
         (source) => source.sourceId === account,
       )?.accountDelivery;
@@ -1532,9 +1583,8 @@ test(
       const sender = [...providers.values()].find(
         (p) => p.name === openShellProviderName(delivery.profileId),
       );
-      const env = managedCredentialEnvironment(slackInstall, account);
+      const env = managedCredentialEnvironment(reportsInstall, account);
       assert.ok(env);
-      envKeys.add(env);
       const saved = await owner("GET", base + "/credential-sources/" + account);
       assert.equal(saved.statusCode, 200, saved.body);
       assert.equal(
@@ -1544,8 +1594,55 @@ test(
       const expected = realm.users.find((user: { username: string }) => user.username === username);
       assert.ok(expected);
       assert.equal(await keycloakSubject(sender.credentials[env]), expected.id);
+      assert.equal(multiRevision?.plugins?.accountNames?.[account], saved.json().data.name);
+      browserAccounts.push({
+        handle: account,
+        env,
+        profileId: delivery.profileId,
+        provider: sender.name,
+        label: multiRevision!.plugins!.accountNames![account]!,
+        expectedSubject: expected.id,
+      });
     }
-    assert.equal(envKeys.size, 2, "each account in the slot has its own placeholder");
+    assert.equal(
+      new Set(browserAccounts.map(({ env }) => env)).size,
+      2,
+      "each account in the slot has its own placeholder",
+    );
+    if (process.env.OCC_TEST_BROWSER_ACCOUNT_WORKER) {
+      await t.test("stock sandbox calls the same MCP tool with each browser grant", async () => {
+        const admittedPlugins = multiRevision?.plugins;
+        assert.ok(admittedPlugins);
+        const selection = admittedPlugins.plugins[reportsInstall.id]?.driverPolicy;
+        assert.deepEqual(selection?.credentials, {
+          [reportsInstall.slotId]: browserAccounts.map(({ handle }) => handle),
+        });
+        assert.equal(selection?.releaseSha256, reportsInstall.releaseSha256);
+        assert.deepEqual(selection?.toolNames, ["whoami"]);
+        await verifyNativeBrowserAccountTools({
+          install: reportsInstall,
+          releaseFiles,
+          issuer,
+          tokenOrigin,
+          workspace: kubernetesNamespaceName(namespaceId),
+          accounts: browserAccounts,
+          selectedTools: selection!.toolNames,
+          workerConfig: managedPluginPackages(
+            [reportsInstall],
+            admittedPlugins.plugins,
+            admittedPlugins.accountNames,
+            "agent",
+          ),
+          withGateway,
+          prepare: prepareMultiAccount,
+          release: releaseMultiAccount,
+        });
+      });
+    } else {
+      t.diagnostic(
+        "The stock worker qualification runs when OCC_TEST_BROWSER_ACCOUNT_WORKER is selected.",
+      );
+    }
     const prepare = async (agentId: string) => {
       const prepared = await controller.prepareRevisionAccount(
         namespaceId,

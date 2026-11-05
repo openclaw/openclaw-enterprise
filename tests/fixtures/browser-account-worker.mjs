@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { NODE_WORKER_SUPERVISOR_LAUNCH_COMMAND } from "openclaw/src/infra/node-commands.js";
 import { startNodeHostMcpManager } from "openclaw/src/node-host/mcp.js";
 import {
@@ -12,30 +13,46 @@ import {
   testWorkerLaunchInput,
 } from "openclaw/src/node-host/node-worker-supervisor.test-support.js";
 
-const { url, bindings } = JSON.parse(await readFile(process.argv[2], "utf8"));
+const { bindings, plugins, releaseFiles } = JSON.parse(await readFile(process.argv[2], "utf8"));
 assert.equal(bindings.length, 2);
-assert.equal(new Set(bindings.map(({ expectedSubject }) => expectedSubject)).size, 2);
-const accounts = Object.fromEntries(
-  bindings.map(({ handle, env }) => {
-    const marker = process.env[env];
-    assert(
-      marker?.startsWith("openshell:resolve:env:"),
-      "The sandbox must supply an OpenShell placeholder.",
-    );
-    return [handle, { headers: { Authorization: "Bearer " + marker } }];
-  }),
+assert(
+  bindings.every(
+    ({ expectedSubject }) => typeof expectedSubject === "string" && expectedSubject.length > 0,
+  ),
 );
-const manager = await startNodeHostMcpManager({
-  reports: { transport: "streamable-http", url, accounts, toolFilter: { include: ["whoami"] } },
-});
+assert.equal(new Set(bindings.map(({ expectedSubject }) => expectedSubject)).size, 2);
+// Materialize the exact package admitted by the fixture Driver. The normal bootstrap
+// verifies both checksums before using its slot, endpoint, accounts or tool filter.
+assert.equal(plugins.length, 1);
+assert.equal(plugins[0].packageName, "test-keycloak-reports");
+const catalog = new URL("./catalog/test-keycloak-reports/", import.meta.url);
+await mkdir(new URL("ai.openclaw.oce/", catalog), { recursive: true });
+await writeFile(new URL("mcp.json", catalog), releaseFiles.manifest);
+await writeFile(new URL("ai.openclaw.oce/release.json", catalog), releaseFiles.release);
+// Render the same worker config from the admitted plugin selection and OpenShell's sandbox environment.
+process.env.OPENCLAW_MANAGED_PLUGIN_JSON = JSON.stringify(plugins);
+const project = createRequire(import.meta.url)("./project.cjs");
+const servers = project();
+const [serverName] = Object.keys(servers);
+assert.equal(Object.keys(servers).length, 1);
+const server = servers[serverName];
+assert(
+  server.enabled && server.accounts,
+  "The worker must project both browser-connected accounts.",
+);
+assert.deepEqual(
+  new Set(Object.keys(server.accounts)),
+  new Set(bindings.map(({ handle }) => handle)),
+);
+const manager = await startNodeHostMcpManager(servers);
 try {
   // Use the model-visible definition the authenticated sessions actually advertised.
   const [tool] = manager.descriptors;
   assert.equal(manager.descriptors.length, 1);
-  assert.equal(tool?.name, "reports_whoami");
+  assert.equal(tool?.name, serverName + "_whoami");
   assert.deepEqual(
     new Set(tool.parameters.properties.account.enum),
-    new Set(Object.keys(accounts)),
+    new Set(Object.keys(server.accounts)),
   );
 
   const plan = testWorkerLaunchInput("/sandbox", "browser-account-proof").descriptor;
@@ -65,7 +82,7 @@ try {
       );
       const subject = reply?.result?.content.find(({ type }) => type === "text")?.text;
       assert(
-        subject === expectedSubject,
+        !reply?.error && !reply?.result?.isError && subject === expectedSubject,
         "The recipient must return the subject of the selected browser account.",
       );
       verifiedAccounts.push({ handle, label, subject });
