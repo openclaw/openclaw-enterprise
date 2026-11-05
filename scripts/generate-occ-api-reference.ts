@@ -42,7 +42,7 @@ type Document = {
   paths: Record<string, Record<string, Operation>>;
   components?: { schemas?: Record<string, Schema> };
 };
-type Entry = { anchor: string; method: string; operation: Operation; operationId?: string; path: string; tag: string };
+type Entry = { anchor: string; method: string; operation: Operation; operationId: string | undefined; path: string; tag: string };
 type ValidEntry = Entry & { operationId: string; summary: string };
 type Group = { title: string; anchor: string; operations: Entry[] };
 type Output = { label: string; path: string; content: string };
@@ -218,9 +218,9 @@ function schemaRows(schema: Schema, document: Document, parent = ""): string[] {
     if (resolvedProperty.type === "object" && resolvedProperty.properties) {
       rows.push(...schemaRows(resolvedProperty, document, field));
     } else if (resolvedProperty.type === "array") {
-      const resolvedItems = resolveSchema(resolvedProperty.items ?? {}, document);
-      if (resolvedItems.properties) {
-        rows.push(...schemaRows(resolvedItems, document, `${field}[]`));
+      const resolvedItems = resolvedProperty.items && resolveSchema(resolvedProperty.items, document);
+      if (resolvedItems!.properties) {
+        rows.push(...schemaRows(resolvedItems!, document, `${field}[]`));
       }
     }
   }
@@ -327,8 +327,8 @@ function operationReference(path: string, method: string, operation: Operation, 
     [
       "| Status | Meaning |",
       "| --- | --- |",
-      ...Object.keys(operation.responses).map((status) => {
-        const description = operation.responses[status].description;
+      ...Object.entries(operation.responses).map(([status, response]) => {
+        const description = response.description;
         const meaning =
           description && description !== "Default Response"
             ? description
@@ -547,7 +547,13 @@ function cheatSheetEntityOrder(title: string) {
     return index;
   }
 
-  const lastSibling = cheatSheetEntities.findLastIndex((entity) => entity.tag === title);
+  let lastSibling = -1;
+  for (let i = cheatSheetEntities.length - 1; i >= 0; i--) {
+    if (cheatSheetEntities[i]?.tag === title) {
+      lastSibling = i;
+      break;
+    }
+  }
   return lastSibling === -1 ? cheatSheetEntities.length : lastSibling + 0.5;
 }
 
@@ -641,10 +647,10 @@ function cheatSheetPage(entries: Entry[]) {
   return `${sections.join("\n\n")}\n`;
 }
 
-export function generateApiReferenceOutputs(document: Document): Output[] {
+export function generateApiReferenceOutputs(document: Document): [Output, Output] {
   const entries = operationEntries(document);
   const groups = referenceGroups(entries);
-  const outputs = [
+  const outputs: [Output, Output] = [
     {
       label: "API reference",
       path: "docs/reference/api.md",
