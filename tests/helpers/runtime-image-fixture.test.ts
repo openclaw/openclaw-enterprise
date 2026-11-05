@@ -10,7 +10,7 @@ import {
   isRuntimeImageJob,
   localDockerCli,
   withRuntimeImageFixture,
-} from "./runtime-image-fixture.mjs";
+} from "./runtime-image-fixture.ts";
 import { waitFor } from "./wait-for.mjs";
 
 test("runtime image test routes only to its dedicated hosted job", () => {
