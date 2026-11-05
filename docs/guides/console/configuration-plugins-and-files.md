@@ -57,6 +57,11 @@ Configuration binds, it reads **Open draft** and opens the draft read-only. Savi
 **Deploy new version** applies saved values, including for Agents sharing this
 Configuration on their next deployment.
 
+If a number such as `1e400` exceeds JavaScript's finite range, the Console stops
+the save, keeps your draft, and shows the error under **Configuration JSON**.
+Replace the value with a number closer to zero, then select **Save Configuration**
+again.
+
 If a draft contains `security.preset`, remove that field in **Edit Configuration**.
 If you used `corporate`, set the restrictions you relied on explicitly before
 saving. For example, set `tools.fs.workspaceOnly` to

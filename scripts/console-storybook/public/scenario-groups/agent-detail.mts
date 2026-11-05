@@ -1272,6 +1272,12 @@ export function createAgentDetailScenarios({
         ],
         description:
           "Invalid JSON is reported under the editor with its line and column. The editor keeps its contents and sends no Configuration write.",
+        steps: [
+          "Check the initial syntax error, then Cancel and reopen Edit Configuration. Expand Advanced settings to restore a complete Configuration JSON draft.",
+          'Set plugins.entries.knowledge to {"enabled":true,"config":{"thresholds":[1,1e400,3]}}, preserving the rest of the document. This is valid JSON syntax, but the middle number is outside the supported range. Select Save Configuration.',
+          "Read the error under the editor: A number is too large or too small to save. Use a number closer to zero. Check that the editor has focus, its exact text is unchanged, and no Configuration write occurs.",
+          "Change only 1e400 to 2 and save again. Reopen the editor and check that thresholds is [1,2,3], with no null substituted. This is simulated UI evidence only.",
+        ],
       },
       invalidConfigurationInvisibleCharacters: {
         group: "Pages/Agent detail",
