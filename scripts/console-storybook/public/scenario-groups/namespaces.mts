@@ -48,6 +48,7 @@ type NamespaceScenario = {
   namespaceStatus?: NamespaceStatus;
   namespaceDeleteDenied?: true;
   namespaceDeleteRestricted?: true;
+  namespaceDeleteRetryStatusFailure?: true;
   namespaceDeleteOutcome?: "complete" | "blocked" | "forbidden" | "pending" | "unknown" | "stalled";
   actions?: readonly StoryAction[];
   rules?: readonly NamespaceRule[];
@@ -168,6 +169,23 @@ export const namespacesScenarios = {
     namespaceDeleteOutcome: "stalled",
     description:
       "An existing deleting Namespace keeps status and deliberate retry controls. Only the backend decides whether retry is allowed.",
+  },
+  namespaceDeleteRetryStatusFailure: {
+    group: "Pages/Namespaces",
+    name: "Delete retry status unavailable",
+    path: "/console/namespaces",
+    namespaceStatus: "deleting",
+    namespaceDeleteOutcome: "stalled",
+    namespaceDeleteRetryStatusFailure: true,
+    description:
+      "A status check fails once while the retry confirmation is open. The confirmation closes and Refresh status receives focus. Rechecking restores deliberate retry.",
+    steps: [
+      "Select Request deletion again for Engineering. Leave the confirmation open until the next background status check fails.",
+      "Check that the confirmation closes, Refresh status has focus, and Request deletion again is hidden. No deletion request is sent.",
+      "Activate Refresh status. The Namespace still shows Deleting and Request deletion again returns without sending a deletion request.",
+      "Open Request deletion again. The new confirmation stays usable through later status checks. Cancel it, or confirm a deliberate retry.",
+      "Reset the story to repeat the one-time failure. Responses are simulated; this preview does not prove Controller behavior.",
+    ],
   },
   namespacesUnavailable: {
     group: "Pages/Namespaces",
