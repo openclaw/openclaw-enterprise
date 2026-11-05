@@ -10,7 +10,12 @@ export default {
     { id: "provider", title: "External service", role: "external", pin: [945, 134, 215, 116] },
   ],
   nodes: [
-    { id: "user", title: "1   User", detail: "“Push my changes.”", pin: [20, 170, 175, 64] },
+    {
+      id: "user",
+      title: "1   User",
+      detail: "“Implement a feature and push a branch.”",
+      pin: [20, 164, 175, 76],
+    },
     {
       id: "agent",
       title: "2   Agent",

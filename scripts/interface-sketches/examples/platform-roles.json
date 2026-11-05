@@ -36,10 +36,10 @@
       "kind": "node",
       "id": "user",
       "x": 20,
-      "y": 170,
+      "y": 164,
       "w": 175,
-      "h": 64,
-      "lines": ["1 User", "“Push my changes.”"],
+      "h": 76,
+      "lines": ["1 User", "“Implement a feature", "and push a branch.”"],
       "titleLineCount": 1,
       "density": "compact",
       "role": "runtime"

@@ -1,10 +1,10 @@
 # Credential Proxy architecture
 
-Start with a user asking an Agent to push a change. OpenClaw Enterprise (OCE) runs the Agent in a sandbox. The Agent runs ordinary Git commands. OCE keeps the GitHub App signing key and the installation token outside that sandbox.
+A user asks an Agent, “Implement a feature and push a branch.” OpenClaw Enterprise (OCE) runs the Agent in a sandbox. The Agent runs ordinary Git commands. OCE keeps the GitHub App signing key and the installation token outside that sandbox.
 
 ## From the user to GitHub
 
-![A user gives the Agent a task. The Agent runs git push. The Credential Proxy asks the OCE control plane whether the Agent may push and forwards the request to GitHub only on allow.](../assets/credential-proxy/platform-roles.png)
+![A user asks the Agent to implement a feature and push a branch. The Agent runs git push. The Credential Proxy asks the OCE control plane whether the Agent may push and forwards the request to GitHub only on allow.](../assets/credential-proxy/platform-roles.png)
 
 The task tells the Agent what to do. An operator’s grant determines whether it may do it. The Credential Proxy checks the request against that grant through the control plane. If OCE denies the push, the proxy stops it. If OCE allows it, the proxy adds the credential and GitHub applies its own repository rules.
 
