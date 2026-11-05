@@ -3,7 +3,14 @@ import { STATUS_CODES } from "node:http";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-type Entry = { anchor: string; method: string; operation: unknown; operationId: unknown; path: string; tag: unknown };
+type Entry = {
+  anchor: string;
+  method: string;
+  operation: unknown;
+  operationId: unknown;
+  path: string;
+  tag: unknown;
+};
 type ValidEntry = Entry & { operationId: string; summary: string };
 type Group = { title: unknown; anchor: string; operations: Entry[] };
 type Output = { label: string; path: string; content: string };
@@ -12,16 +19,36 @@ function hasFields(value: unknown): value is Record<string, unknown> {
   return (typeof value === "object" && value !== null) || typeof value === "function";
 }
 function fields(value: unknown): Record<string, unknown> {
-  if (value == null) throw new TypeError("Cannot read nullish value");
+  if (value == null) {
+    throw new TypeError("Cannot read nullish value");
+  }
   const boxed: unknown = Object(value);
-  if (!hasFields(boxed)) throw new TypeError("Expected object");
+  if (!hasFields(boxed)) {
+    throw new TypeError("Expected object");
+  }
   return boxed;
 }
-function field(value: unknown, key: string): unknown { return fields(value)[key]; }
-function optionalField(value: unknown, key: string): unknown { return value == null ? undefined : field(value, key); }
-function entries(value: unknown): [string, unknown][] { return Object.entries(fields(value)); }
-function array(value: unknown): unknown[] { if (!Array.isArray(value)) throw new TypeError("Expected array"); return value; }
-function text(value: unknown): string { if (typeof value !== "string") throw new TypeError("Expected string"); return value; }
+function field(value: unknown, key: string): unknown {
+  return fields(value)[key];
+}
+function optionalField(value: unknown, key: string): unknown {
+  return value == null ? undefined : field(value, key);
+}
+function entries(value: unknown): [string, unknown][] {
+  return Object.entries(fields(value));
+}
+function array(value: unknown): unknown[] {
+  if (!Array.isArray(value)) {
+    throw new TypeError("Expected array");
+  }
+  return value;
+}
+function text(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new TypeError("Expected string");
+  }
+  return value;
+}
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const documentPath = new URL("../packages/contracts/openapi/occ-api.openapi.json", import.meta.url);
@@ -93,24 +120,45 @@ function schemaType(schema: unknown, document: unknown): unknown {
   const ref = field(schema, "$ref");
   if (ref) {
     const name = text(ref).split("/").at(-1);
-    return optionalField(optionalField(optionalField(optionalField(document, "components"), "schemas"), name ?? ""), "title") ?? name;
+    return (
+      optionalField(
+        optionalField(optionalField(optionalField(document, "components"), "schemas"), name ?? ""),
+        "title",
+      ) ?? name
+    );
   }
-  if (Object.hasOwn(fields(schema), "const")) return JSON.stringify(field(schema, "const"));
+  if (Object.hasOwn(fields(schema), "const")) {
+    return JSON.stringify(field(schema, "const"));
+  }
   const values = field(schema, "enum");
-  if (values) return array(values).map((value) => JSON.stringify(value)).join(" or ");
+  if (values) {
+    return array(values)
+      .map((value) => JSON.stringify(value))
+      .join(" or ");
+  }
   const anyOf = field(schema, "anyOf");
-  if (anyOf) return array(anyOf).map((value) => schemaType(value, document)).join(" or ");
+  if (anyOf) {
+    return array(anyOf)
+      .map((value) => schemaType(value, document))
+      .join(" or ");
+  }
   const type = field(schema, "type");
-  if (type === "array") return `array<${schemaType(field(schema, "items") ?? {}, document)}>`;
+  if (type === "array") {
+    return `array<${schemaType(field(schema, "items") ?? {}, document)}>`;
+  }
   const additional = field(schema, "additionalProperties");
-  if (type === "object" && additional && typeof additional === "object") return `object<string, ${schemaType(additional, document)}>`;
+  if (type === "object" && additional && typeof additional === "object") {
+    return `object<string, ${schemaType(additional, document)}>`;
+  }
   const format = field(schema, "format");
-  return format ? `${type} (${format})` : type ?? "any";
+  return format ? `${type} (${format})` : (type ?? "any");
 }
 
 function resolveSchema(schema: unknown, document: unknown): unknown {
   const ref = optionalField(schema, "$ref");
-  if (!ref || !text(ref).startsWith("#/")) return schema;
+  if (!ref || !text(ref).startsWith("#/")) {
+    return schema;
+  }
   let value: unknown = document;
   for (const segment of text(ref).slice(2).split("/")) {
     value = optionalField(value, segment.replaceAll("~1", "/").replaceAll("~0", "~"));
@@ -120,16 +168,31 @@ function resolveSchema(schema: unknown, document: unknown): unknown {
 
 function schemaConstraints(schema: unknown) {
   const constraints: string[] = [];
-  for (const [key, label] of [["minLength", "min length"], ["maxLength", "max length"], ["minimum", "minimum"], ["maximum", "maximum"], ["minItems", "min items"], ["maxItems", "max items"]] as const) {
+  for (const [key, label] of [
+    ["minLength", "min length"],
+    ["maxLength", "max length"],
+    ["minimum", "minimum"],
+    ["maximum", "maximum"],
+    ["minItems", "min items"],
+    ["maxItems", "max items"],
+  ] as const) {
     const value = field(schema, key);
-    if (value !== undefined) constraints.push(`${label}: ${value}`);
+    if (value !== undefined) {
+      constraints.push(`${label}: ${value}`);
+    }
   }
   const pattern = field(schema, "pattern");
-  if (pattern) constraints.push(`pattern: \`${text(pattern).replaceAll("|", "\\|")}\``);
+  if (pattern) {
+    constraints.push(`pattern: \`${text(pattern).replaceAll("|", "\\|")}\``);
+  }
   const defaultValue = field(schema, "default");
-  if (defaultValue !== undefined) constraints.push(`default: ${JSON.stringify(defaultValue)}`);
+  if (defaultValue !== undefined) {
+    constraints.push(`default: ${JSON.stringify(defaultValue)}`);
+  }
   const description = field(schema, "description");
-  if (description) constraints.push(text(description).replaceAll("|", "\\|"));
+  if (description) {
+    constraints.push(text(description).replaceAll("|", "\\|"));
+  }
   return constraints.join("; ") || "—";
 }
 
@@ -140,14 +203,23 @@ function schemaRows(schema: unknown, document: unknown, parent = ""): string[] {
     const resolvedProperty = resolveSchema(property, document);
     const fieldName = parent ? `${parent}.${name}` : name;
     const required = optionalField(resolvedSchema, "required");
-    const isRequired = required == null ? false : typeof required === "string" ? required.includes(name) : array(required).includes(name);
-    rows.push(`| \`${fieldName}\` | \`${schemaType(property, document)}\` | ${isRequired ? "Yes" : "No"} | ${schemaConstraints(resolvedProperty)} |`);
+    const isRequired =
+      required == null
+        ? false
+        : typeof required === "string"
+          ? required.includes(name)
+          : array(required).includes(name);
+    rows.push(
+      `| \`${fieldName}\` | \`${schemaType(property, document)}\` | ${isRequired ? "Yes" : "No"} | ${schemaConstraints(resolvedProperty)} |`,
+    );
     const type = field(resolvedProperty, "type");
     if (type === "object" && field(resolvedProperty, "properties")) {
       rows.push(...schemaRows(resolvedProperty, document, fieldName));
     } else if (type === "array") {
       const items = resolveSchema(field(resolvedProperty, "items"), document);
-      if (field(items, "properties")) rows.push(...schemaRows(items, document, `${fieldName}[]`));
+      if (field(items, "properties")) {
+        rows.push(...schemaRows(items, document, `${fieldName}[]`));
+      }
     }
   }
   return rows;
@@ -155,8 +227,12 @@ function schemaRows(schema: unknown, document: unknown, parent = ""): string[] {
 
 function schemaTable(schema: unknown, document: unknown) {
   const rows = schemaRows(resolveSchema(schema, document), document);
-  if (!rows.length) return `Schema: \`${schemaType(schema, document)}\`.`;
-  return ["| Field | Type | Required | Constraints |", "| --- | --- | --- | --- |", ...rows].join("\n");
+  if (!rows.length) {
+    return `Schema: \`${schemaType(schema, document)}\`.`;
+  }
+  return ["| Field | Type | Required | Constraints |", "| --- | --- | --- | --- |", ...rows].join(
+    "\n",
+  );
 }
 
 const permissionScopeQualifiers: Record<string, string> = {
@@ -172,15 +248,25 @@ const permissionScopeQualifiers: Record<string, string> = {
 };
 
 function renderedExamples(content: unknown, contentType: string) {
-  return entries(field(content, "examples") ?? {}).map(([, example]) => [
-    field(example, "summary") ?? "Example",
-    contentType === "text/plain" ? "```text" : "```json",
-    contentType === "text/plain" ? field(example, "value") : JSON.stringify(field(example, "value"), null, 2),
-    "```",
-  ].join("\n"));
+  return entries(field(content, "examples") ?? {}).map(([, example]) =>
+    [
+      field(example, "summary") ?? "Example",
+      contentType === "text/plain" ? "```text" : "```json",
+      contentType === "text/plain"
+        ? field(example, "value")
+        : JSON.stringify(field(example, "value"), null, 2),
+      "```",
+    ].join("\n"),
+  );
 }
 
-function operationReference(path: string, method: string, operation: unknown, document: unknown, { headingLevel = 2 }: { headingLevel?: number } = {}) {
+function operationReference(
+  path: string,
+  method: string,
+  operation: unknown,
+  document: unknown,
+  { headingLevel = 2 }: { headingLevel?: number } = {},
+) {
   const childHeading = "#".repeat(Math.min(headingLevel + 1, 6));
   const sections: unknown[] = [
     `${"#".repeat(headingLevel)} \`${method.toUpperCase()} ${path}\``,
@@ -191,51 +277,113 @@ function operationReference(path: string, method: string, operation: unknown, do
   ];
   const permissions = field(operation, "x-openclaw-permissions");
   if (optionalField(permissions, "length")) {
-    sections.push(["| Action | Resource | Scope |", "| --- | --- | --- |", ...array(permissions).map((permission) => {
-      const condition = field(permission, "condition");
-      const qualifier = permissionScopeQualifiers[String(condition)] ?? "";
-      return `| \`${field(permission, "action")}\` | \`${field(permission, "resourceKind")}\` | \`${field(permission, "scope")}\`${qualifier} |`;
-    })].join("\n"));
+    sections.push(
+      [
+        "| Action | Resource | Scope |",
+        "| --- | --- | --- |",
+        ...array(permissions).map((permission) => {
+          const condition = field(permission, "condition");
+          const qualifier = permissionScopeQualifiers[String(condition)] ?? "";
+          return `| \`${field(permission, "action")}\` | \`${field(permission, "resourceKind")}\` | \`${field(permission, "scope")}\`${qualifier} |`;
+        }),
+      ].join("\n"),
+    );
   }
   const parameters = field(operation, "parameters");
   if (optionalField(parameters, "length")) {
-    sections.push(`${childHeading} Parameters`, ["| Name | In | Type | Required | Constraints | Example |", "| --- | --- | --- | --- | --- | --- |", ...array(parameters).map((parameter) => {
-      const schema = field(parameter, "schema");
-      const value = optionalField(optionalField(field(parameter, "examples"), "example"), "value");
-      return `| ${[`\`${field(parameter, "name")}\``, field(parameter, "in"), `\`${schemaType(schema, document)}\``, field(parameter, "required") ? "Yes" : "No", schemaConstraints(schema), JSON.stringify(value)?.replaceAll("|", "\\|") ?? "—"].join(" | ")} |`;
-    })].join("\n"));
+    sections.push(
+      `${childHeading} Parameters`,
+      [
+        "| Name | In | Type | Required | Constraints | Example |",
+        "| --- | --- | --- | --- | --- | --- |",
+        ...array(parameters).map((parameter) => {
+          const schema = field(parameter, "schema");
+          const value = optionalField(
+            optionalField(field(parameter, "examples"), "example"),
+            "value",
+          );
+          return `| ${[`\`${field(parameter, "name")}\``, field(parameter, "in"), `\`${schemaType(schema, document)}\``, field(parameter, "required") ? "Yes" : "No", schemaConstraints(schema), JSON.stringify(value)?.replaceAll("|", "\\|") ?? "—"].join(" | ")} |`;
+        }),
+      ].join("\n"),
+    );
   }
   const requestBody = field(operation, "requestBody");
   if (requestBody) {
-    sections.push(`${childHeading} Request body`, `**Required:** ${field(requestBody, "required") ? "Yes" : "No"}`);
+    sections.push(
+      `${childHeading} Request body`,
+      `**Required:** ${field(requestBody, "required") ? "Yes" : "No"}`,
+    );
     for (const [contentType, content] of entries(field(requestBody, "content") ?? {})) {
-      sections.push(`**Content type:** \`${contentType}\``, schemaTable(field(content, "schema"), document), ...renderedExamples(content, contentType));
+      sections.push(
+        `**Content type:** \`${contentType}\``,
+        schemaTable(field(content, "schema"), document),
+        ...renderedExamples(content, contentType),
+      );
     }
   }
   const responses = entries(field(operation, "responses"));
-  sections.push(`${childHeading} Responses`, ["| Status | Meaning |", "| --- | --- |", ...responses.map(([status, response]) => {
-    const description = field(response, "description");
-    const meaning = description && description !== "Default Response" ? description : STATUS_CODES[status] ?? description;
-    return `| \`${status}\` | ${meaning == null ? undefined : text(meaning).replaceAll("|", "\\|")} |`;
-  })].join("\n"));
+  sections.push(
+    `${childHeading} Responses`,
+    [
+      "| Status | Meaning |",
+      "| --- | --- |",
+      ...responses.map(([status, response]) => {
+        const description = field(response, "description");
+        const meaning =
+          description && description !== "Default Response"
+            ? description
+            : (STATUS_CODES[status] ?? description);
+        return `| \`${status}\` | ${meaning == null ? undefined : text(meaning).replaceAll("|", "\\|")} |`;
+      }),
+    ].join("\n"),
+  );
   for (const [status, response] of responses) {
-    if (!status.startsWith("2")) continue;
+    if (!status.startsWith("2")) {
+      continue;
+    }
     for (const [contentType, content] of entries(field(response, "content") ?? {})) {
-      sections.push(`**\`${status}\` response body:** \`${contentType}\``, schemaTable(field(content, "schema"), document), ...renderedExamples(content, contentType));
+      sections.push(
+        `**\`${status}\` response body:** \`${contentType}\``,
+        schemaTable(field(content, "schema"), document),
+        ...renderedExamples(content, contentType),
+      );
     }
   }
   return sections.join("\n\n");
 }
 
 function operationRows(operations: Entry[]) {
-  return ["| Operation | Summary |", "| --- | --- |", ...operations.map(({ anchor, method, operation, path }) => `| [\`${method.toUpperCase()} ${path}\`](#${anchor}) | ${field(operation, "summary") ?? "No summary."} |`)].join("\n");
+  return [
+    "| Operation | Summary |",
+    "| --- | --- |",
+    ...operations.map(
+      ({ anchor, method, operation, path }) =>
+        `| [\`${method.toUpperCase()} ${path}\`](#${anchor}) | ${field(operation, "summary") ?? "No summary."} |`,
+    ),
+  ].join("\n");
 }
 
 function errorSchema(document: unknown, operationList: Entry[]) {
-  const schemas = operationList.flatMap(({ operation }) => entries(field(operation, "responses")))
-    .filter(([status, response]) => !status.startsWith("2") && optionalField(optionalField(optionalField(response, "content"), "application/json"), "schema"))
+  const schemas = operationList
+    .flatMap(({ operation }) => entries(field(operation, "responses")))
+    .filter(
+      ([status, response]) =>
+        !status.startsWith("2") &&
+        optionalField(
+          optionalField(optionalField(response, "content"), "application/json"),
+          "schema",
+        ),
+    )
     .map(([, response]) => field(field(field(response, "content"), "application/json"), "schema"));
-  const detailed = schemas.filter((schema) => optionalField(optionalField(optionalField(optionalField(resolveSchema(schema, document), "properties"), "error"), "properties"), "details"));
+  const detailed = schemas.filter((schema) =>
+    optionalField(
+      optionalField(
+        optionalField(optionalField(resolveSchema(schema, document), "properties"), "error"),
+        "properties",
+      ),
+      "details",
+    ),
+  );
   return detailed.find((schema) => field(schema, "$ref")) ?? detailed[0] ?? schemas[0];
 }
 
@@ -274,10 +422,18 @@ function introduction(document: unknown) {
 }
 
 function operationEntries(document: unknown): Entry[] {
-  return entries(field(document, "paths")).flatMap(([path, operations]) => entries(operations)
-    .filter(([method]) => httpMethods.has(method))
-    .map(([method, operation]) => ({ anchor: operationAnchor(path, method), method, operation,
-      operationId: field(operation, "operationId"), path, tag: optionalField(field(operation, "tags"), "0") ?? "Untagged" })));
+  return entries(field(document, "paths")).flatMap(([path, operations]) =>
+    entries(operations)
+      .filter(([method]) => httpMethods.has(method))
+      .map(([method, operation]) => ({
+        anchor: operationAnchor(path, method),
+        method,
+        operation,
+        operationId: field(operation, "operationId"),
+        path,
+        tag: optionalField(field(operation, "tags"), "0") ?? "Untagged",
+      })),
+  );
 }
 
 function referenceGroups(entries: Entry[]): Group[] {
