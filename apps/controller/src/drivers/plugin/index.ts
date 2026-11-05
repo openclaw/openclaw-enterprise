@@ -322,8 +322,12 @@ function sameDriver(left: PluginDriverIdentity, right: PluginDriverIdentity): bo
   return left.id === right.id && left.implementation === right.implementation;
 }
 
-function ensureHarness(context: PluginDriverContext, mode: "embedded" | "dedicated"): void {
-  if (context.harness.mode !== mode) {
+function ensureHarness(
+  context: PluginDriverContext,
+  harnessId: string,
+  mode: "embedded" | "dedicated",
+): void {
+  if (context.harness.id !== harnessId || context.harness.mode !== mode) {
     throw notImplemented(
       "plugin-harness-mismatch",
       "The selected Plugin Driver does not match the Harness.",
@@ -392,6 +396,7 @@ function splitOpenClawSelections(selections: PluginDesiredState) {
 }
 
 export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDriver {
+  readonly harnessId = "openclaw" as const;
   readonly discoveryCredential = "none" as const;
   readonly credentials = managedPluginCredentials;
   static readonly configurationSchema = EMPTY_CONFIGURATION_SCHEMA;
@@ -440,7 +445,7 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
     if (packages.length > 0) {
       return this.catalog(packages.map((pkg) => pkg.entry));
     }
-    ensureHarness(context, "embedded");
+    ensureHarness(context, this.harnessId, "embedded");
     return this.catalog(OCC_CATALOG);
   }
 
@@ -534,6 +539,7 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
 }
 
 export class CodexPluginDriver extends BundledPluginDriverBase implements PluginDriver {
+  readonly harnessId = "codex" as const;
   static readonly configurationSchema = CODEX_CONFIGURATION_SCHEMA;
   // TODO: gate all_actions/write_actions on enforceable session constraints before this draft ships.
   // A permissive native session can bypass app-level review despite translation.
@@ -668,7 +674,7 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
   }
 
   async listCatalog(context: PluginDriverContext): Promise<readonly PluginCatalogEntry[]> {
-    ensureHarness(context, "dedicated");
+    ensureHarness(context, this.harnessId, "dedicated");
     if (this.catalogSource === "openai-curated") {
       return this.catalog(OPENAI_CURATED_CATALOG);
     }

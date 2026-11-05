@@ -542,23 +542,31 @@
       "idx": 68,
       "version": "7",
       "when": 1787000000068,
-      "tag": "0068_connection_templates",
+      "tag": "0068_agent_plugin_driver",
       "breakpoints": true,
-      "sha256": "a52bca963dc8fc3928403984a53320094d8616377a31e75e915f61832dabf0bc"
+      "sha256": "4ae7aeabcbdccad1f4aafef523e992740e467c055f7f7a9ab9a1f5adb202341c"
     },
     {
       "idx": 69,
       "version": "7",
       "when": 1787000000069,
-      "tag": "0069_saved_connections",
+      "tag": "0069_connection_templates",
       "breakpoints": true,
-      "sha256": "6c895702e254f0c4633a1645d7c368017ef36a90b58fe582267e9b8829d5cfe6"
+      "sha256": "a52bca963dc8fc3928403984a53320094d8616377a31e75e915f61832dabf0bc"
     },
     {
       "idx": 70,
       "version": "7",
       "when": 1787000000070,
-      "tag": "0070_connection_attachment_intent",
+      "tag": "0070_saved_connections",
+      "breakpoints": true,
+      "sha256": "6c895702e254f0c4633a1645d7c368017ef36a90b58fe582267e9b8829d5cfe6"
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1787000000071,
+      "tag": "0071_connection_attachment_intent",
       "breakpoints": true,
       "sha256": "d9183942881b3e91e627fd366e003edc34d0dfc38b7ad166220b8d68ca856408"
     }
@@ -574,8 +582,18 @@
     "ownerOnly": {
       "owner": "occ_migrator",
       "privileges": [
-        ["occ_migrator", "occ_migrator", "CREATE", false],
-        ["occ_migrator", "occ_migrator", "USAGE", false]
+        [
+          "occ_migrator",
+          "occ_migrator",
+          "CREATE",
+          false
+        ],
+        [
+          "occ_migrator",
+          "occ_migrator",
+          "USAGE",
+          false
+        ]
       ],
       "objects": 0,
       "defaultPrivileges": 0,
@@ -605,17 +623,21 @@
       "362e3a713a7754ca1cacff0de8393ccb98c4cb8409618993f489b2ee3407202a",
       "62dca7efd114c9dc85c49785d90c746c9ba7efcfc5ffa3467a54eb11a14d228d"
     ],
-    "b68da4f8af53b6b75eb9085adcfdeabd9f6b6831ad0b3b3df03354964ec2ff02": [
-      "e596d09c791367cf055baf432f07c6b20e4ec8ac9c8d6a19b6fbafb22c89411e",
-      "35a3ed692feb9b5ae97d16567f9161992820bca48e3ac2c5116a9f9ba201b79f"
+    "8fc3e20bcb36ad9b2afe8ab96077139b12b50c825dd18ff323603d0e0540b250": [
+      "e667773ff50cc16fe4ca002923d2f4080f3a05ec9956c55fbe93468c9bd195a7",
+      "3770b2c4b812f3c57c23efb5dba782cf9dead7c2624b3466f0f22f27e141a15b"
     ],
-    "e0e96f31aa8bc4085d5b49dbe0dc40778c88cc7a863bf28a99991a727c720a86": [
-      "03f249f878b92bac06e998b7191075084222dce6a763cfbf7f0aa06fa68c4d0d",
-      "b2026db490a519fc750a3015e1edccb40d9e248ca9689eb1eee9a2b1356e945b"
+    "3a56d867e008519976c2a08edd76fac8e12e05c76564e5afbd3e60150a052a43": [
+      "bcea97bfa9f86af8356eaa83b607ccb77c62fd7424c5fef34d9a400c906dad2a",
+      "8d8613acc91e520413c5dee45dcc907111c9774edd3cca26d0d81ae3a4676150"
     ],
-    "3133bf481e2e898cc8b584eb2f222af2c560dd7a8b47fb8344f9ffd78685a327": [
-      "0fe2bb81543a7595c1bfe10b780ffe83357679feb436bdadc25a7920da8f0a35",
-      "5c28289da2e6f81df8d5fd1eaa0a7c1ffe7f1fc99a5b5a65f0716a526854ee82"
+    "72b94a3b0a99b524f6d7b315d3626fa6878f8331e992cce73fe20058d824daca": [
+      "54fc14d0516e6d9ed616e83bea20aec9beef63b33aecff56c71943e52bc7f9d4",
+      "849bfc54c6698996800f8fbf2f3a18eb9e1cddff5ddcf15bdfe29ab6db851ed1"
+    ],
+    "ee6adda29a15409c7e1463f054871bfb3b30870608b8994a776f889c76fa6454": [
+      "d708d05e5ee67cbb3fffc1977aa7f490997350bcf6dc23102023fe1b346d7733",
+      "741e0823bde6cca039afcf51cf11c3e69bc76506f13692afb0400bee27c25d9a"
     ]
   },
   "catalogs": {
@@ -624,7 +646,7 @@
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
-    "completed": "3133bf481e2e898cc8b584eb2f222af2c560dd7a8b47fb8344f9ffd78685a327",
+    "completed": "ee6adda29a15409c7e1463f054871bfb3b30870608b8994a776f889c76fa6454",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
     "agentProvisioning": "baac9e369ace8610f96948c1a930e6387431b1d0a33cefa3893765e52f8f7a52",
     "backendCompleted": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",
@@ -662,9 +684,10 @@
     "preSelectedRepositorySet": "15676f224ccd3cbd54e1d541db393b12297e3b2aa8e8eb70b192b5350c4c3c59",
     "preAgentDeployIntent": "fd7ca52d240d5431c76167a39aa5187cd3631d6dceee959b260f7c82cc1edf40",
     "preAgentCredentialSourceLimit": "8706a0299f3ff74eb7c2b5861a746ded4ce6484ca8df4e617a8fd2e5061bb998",
-    "preConnectionTemplates": "c74762d7f4d45b4215f42fcc8cf9e43d01fae03dbb80522d84c4e17370a2f7c3",
-    "preSavedConnections": "b68da4f8af53b6b75eb9085adcfdeabd9f6b6831ad0b3b3df03354964ec2ff02",
-    "preConnectionAttachmentIntent": "e0e96f31aa8bc4085d5b49dbe0dc40778c88cc7a863bf28a99991a727c720a86"
+    "preAgentPluginDriver": "c74762d7f4d45b4215f42fcc8cf9e43d01fae03dbb80522d84c4e17370a2f7c3",
+    "preConnectionTemplates": "8fc3e20bcb36ad9b2afe8ab96077139b12b50c825dd18ff323603d0e0540b250",
+    "preSavedConnections": "3a56d867e008519976c2a08edd76fac8e12e05c76564e5afbd3e60150a052a43",
+    "preConnectionAttachmentIntent": "72b94a3b0a99b524f6d7b315d3626fa6878f8331e992cce73fe20058d824daca"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",
@@ -673,7 +696,7 @@
   "catalogEvidence": {
     "postgres": "18.6",
     "drizzleOrm": "0.45.4",
-    "method": "Historical catalogs retain their recorded qualification. The completed catalog and application-role privileges were measured on PostgreSQL 17.11 and 18.6 after stock Drizzle execution, full logical restore, and upgrade from a restored 51-migration prefix."
+    "method": "Historical catalogs retain their recorded qualification. The completed catalog and logical restore were measured on PostgreSQL 18.6 after stock Drizzle execution with occ_migrator and effective occ_app privileges."
   },
   "compatibleLineages": {
     "providerCompleted": {

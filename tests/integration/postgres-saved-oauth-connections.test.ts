@@ -6,7 +6,10 @@ import type { AgentPluginCredentialSlot, PluginDriver } from "@openclaw-enterpri
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { assertWorkerAccountRelease } from "../helpers/worker-account-release.mjs";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
-import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import {
+  CodexPluginDriver,
+  OCCPluginDriver,
+} from "../../apps/controller/src/drivers/plugin/index.ts";
 import {
   managedCliInstalls,
   managedMcpInstalls,
@@ -1022,6 +1025,7 @@ test(
     // issuer, recipient, binding and delivery logic. No bundled multi-MCP package is assumed.
     const plugin: PluginDriver = {
       id: "keycloak-plugin-driver",
+      harnessId: "openclaw",
       capability: "plugin",
       implementation: "keycloak-fixture",
       policyCapabilities: new OCCPluginDriver().policyCapabilities,
@@ -1075,14 +1079,34 @@ test(
         },
       },
     };
-    controller.registerDriver(plugin);
-    controller.selectDriver("plugin", plugin.id);
+    const codexCatalog = new CodexPluginDriver({ catalogSource: "openai-curated" });
+    // Register Codex first: saved OpenClaw slots must never depend on catalog order.
+    controller.installPluginDrivers([codexCatalog, plugin]);
     const config = await owner("POST", `${base}/configurations`, {
       kind: "agent",
       values: createHarnessConfiguration("openclaw", "gpt-5.1"),
     });
     assert.equal(config.statusCode, 201, config.body);
     const agents = `${base}/agents`;
+    const codexConfig = await owner("POST", `${base}/configurations`, {
+      kind: "agent",
+      values: createHarnessConfiguration("codex", "gpt-5.1"),
+    });
+    assert.equal(codexConfig.statusCode, 201, codexConfig.body);
+    const codexDraft = await owner("POST", agents, {
+      name: "Codex catalog isolation",
+      executionMode: "dedicated",
+      configurationId: codexConfig.json().data.id,
+    });
+    assert.equal(codexDraft.statusCode, 201, codexDraft.body);
+    const codexCapabilities = await owner(
+      "GET",
+      `${agents}/${codexDraft.json().data.id}/plugins/capabilities`,
+    );
+    assert.equal(codexCapabilities.statusCode, 200, codexCapabilities.body);
+    assert.equal(codexCapabilities.json().data.driver.id, codexCatalog.id);
+    assert.equal(codexCapabilities.json().data.credentialSlots, undefined);
+
     const agent = async (name: string) => {
       const created = await owner("POST", agents, {
         name,
@@ -1175,6 +1199,50 @@ test(
         .data.map((row: { credentialSourceId: string }) => row.credentialSourceId)
         .sort(),
       [grant.id, first.id, competing.id, denied.id].sort(),
+    );
+    // Consent belongs to the reviewed OpenClaw slot. A changed draft must not attach
+    // that account through a different Harness catalog when the browser returns.
+    const changingConfig = await owner("POST", `${base}/configurations`, {
+      kind: "agent",
+      values: createHarnessConfiguration("openclaw", "gpt-5.1"),
+    });
+    assert.equal(changingConfig.statusCode, 201, changingConfig.body);
+    const changingAgent = await owner("POST", agents, {
+      name: "Consent catalog change",
+      executionMode: "dedicated",
+      configurationId: changingConfig.json().data.id,
+      plugins: { [pluginId]: { enabled: true } },
+    });
+    assert.equal(changingAgent.statusCode, 201, changingAgent.body);
+    const changingId = changingAgent.json().data.id;
+    const changingConsent = await begin(`${path(changingId)}/connections`, {
+      ...input,
+      connectionTemplateVersion: 2,
+      pluginId,
+      slotId,
+      releaseSha256,
+      expectedCredentialSourceId: null,
+    });
+    const changedConfig = await owner(
+      "PATCH",
+      `${base}/configurations/${changingConfig.json().data.id}`,
+      { values: createHarnessConfiguration("codex", "gpt-5.1") },
+    );
+    assert.equal(changedConfig.statusCode, 200, changedConfig.body);
+    const returned = await owner("GET", changingConsent.callback);
+    assert.equal(returned.statusCode, 303, returned.body);
+    const returnedLocation = new URL(String(returned.headers.location), publicOrigin);
+    assert.equal(returnedLocation.pathname, `/console/agents/${changingId}`);
+    assert.equal(returnedLocation.searchParams.get("connection"), "saved");
+    assert.deepEqual(await attached(changingId), []);
+    assert.equal(await canUse(changingId, changingConsent.id), false);
+    assert.ok(
+      (await owner("GET", connections))
+        .json()
+        .data.some(
+          (row: { credentialSourceId: string }) => row.credentialSourceId === changingConsent.id,
+        ),
+      "the completed account stays available to its owner",
     );
     const reportTemplate = await inject("POST", "/connection-templates", {
       mode: "mcp_discovery",
@@ -1461,7 +1529,10 @@ test(
       id: "google-slot-fixture",
       credentials: new OCCPluginDriver().credentials,
     });
-    controller.selectDriver("plugin", "google-slot-fixture");
+    controller.installPluginDrivers([
+      codexCatalog,
+      controller.selectDriver("plugin", "google-slot-fixture"),
+    ]);
     const google = await connectFixtureGoogleAccount(t, owner, namespaceId, [
       gmailRead,
       "https://www.googleapis.com/auth/calendar.readonly",
@@ -1615,59 +1686,6 @@ test(
     const workerTemplateInput: Record<string, unknown> = { ...workerGoogle.templateInput };
     delete workerTemplateInput.namespaceId;
     const slackAccount = await connectFixtureSlackAccount(t, owner, namespaceId);
-    const workerAgent = await owner("POST", agents, {
-      name: "Worker release ordering",
-      executionMode: "dedicated",
-      configurationId: config.json().data.id,
-      plugins: { [cli.id]: { enabled: true }, [slackInstall.id]: { enabled: true } },
-    });
-    assert.equal(workerAgent.statusCode, 201, workerAgent.body);
-    const workerAgentId = workerAgent.json().data.id;
-    const workerAccount = await owner(
-      "POST",
-      path(workerAgentId) + "/connections/" + workerGoogle.credentialSourceId,
-    );
-    assert.equal(workerAccount.statusCode, 204, workerAccount.body);
-    const workerSlack = await owner(
-      "POST",
-      path(workerAgentId) + "/connections/" + slackAccount.sourceId,
-    );
-    assert.equal(workerSlack.statusCode, 204, workerSlack.body);
-    const workerModelGrant = await owner("POST", base + "/iam/access-bindings", {
-      subjectKind: "identity",
-      subjectId: workerAgent.json().data.servicePrincipalId,
-      roleId: modelRole.json().data.id,
-      resourceKind: "credential_source",
-      resourceId: modelSourceId,
-    });
-    assert.equal(workerModelGrant.statusCode, 201, workerModelGrant.body);
-    const workerBinding = await owner("PATCH", path(workerAgentId), {
-      configurationId: config.json().data.id,
-      harnessAuth: { method: "credential_source", sourceId: modelSourceId },
-      // Keep the account that will become unavailable first in the admitted list.
-      credentialSources: [
-        { sourceId: workerGoogle.credentialSourceId },
-        { sourceId: slackAccount.sourceId },
-        { sourceId: modelSourceId },
-      ],
-      plugins: {
-        [slackInstall.id]: {
-          enabled: true,
-          driverPolicy: {
-            releaseSha256: slackInstall.releaseSha256,
-            credentials: { account: slackAccount.sourceId },
-          },
-        },
-        [cli.id]: {
-          enabled: true,
-          driverPolicy: {
-            releaseSha256: cli.releaseSha256,
-            credentials: { account: workerGoogle.credentialSourceId },
-          },
-        },
-      },
-    });
-    assert.equal(workerBinding.statusCode, 200, workerBinding.body);
     await assertWorkerAccountRelease(t, {
       controller,
       state,
@@ -1677,9 +1695,72 @@ test(
       gateway,
       refresh,
       preparedTokens,
-      plugin: new OCCPluginDriver(),
+      pluginDrivers: [codexCatalog, new OCCPluginDriver()],
       namespaceId,
-      agentId: workerAgentId,
+      async createAgent() {
+        const workerAgent = await owner("POST", agents, {
+          name: "Worker release ordering",
+          executionMode: "dedicated",
+          configurationId: config.json().data.id,
+          plugins: { [cli.id]: { enabled: true }, [slackInstall.id]: { enabled: true } },
+        });
+        assert.equal(workerAgent.statusCode, 201, workerAgent.body);
+        const workerAgentId = workerAgent.json().data.id;
+        const workerAccount = await owner(
+          "POST",
+          path(workerAgentId) + "/connections/" + workerGoogle.credentialSourceId,
+        );
+        assert.equal(workerAccount.statusCode, 204, workerAccount.body);
+        const workerSlack = await owner(
+          "POST",
+          path(workerAgentId) + "/connections/" + slackAccount.sourceId,
+        );
+        assert.equal(workerSlack.statusCode, 204, workerSlack.body);
+        const workerModelGrant = await owner("POST", base + "/iam/access-bindings", {
+          subjectKind: "identity",
+          subjectId: workerAgent.json().data.servicePrincipalId,
+          roleId: modelRole.json().data.id,
+          resourceKind: "credential_source",
+          resourceId: modelSourceId,
+        });
+        assert.equal(workerModelGrant.statusCode, 201, workerModelGrant.body);
+        const workerBinding = await owner("PATCH", path(workerAgentId), {
+          configurationId: config.json().data.id,
+          harnessAuth: { method: "credential_source", sourceId: modelSourceId },
+          // Keep the account that will become unavailable first in the admitted list.
+          credentialSources: [
+            { sourceId: workerGoogle.credentialSourceId },
+            { sourceId: slackAccount.sourceId },
+            { sourceId: modelSourceId },
+          ],
+          plugins: {
+            [slackInstall.id]: {
+              enabled: true,
+              driverPolicy: {
+                releaseSha256: slackInstall.releaseSha256,
+                credentials: { account: slackAccount.sourceId },
+              },
+            },
+            [cli.id]: {
+              enabled: true,
+              driverPolicy: {
+                releaseSha256: cli.releaseSha256,
+                credentials: { account: workerGoogle.credentialSourceId },
+              },
+            },
+          },
+        });
+        assert.equal(workerBinding.statusCode, 200, workerBinding.body);
+        return workerAgentId;
+      },
+      async changeDraftHarness(agentId: string) {
+        const changed = await owner("PATCH", `${base}/configurations/${config.json().data.id}`, {
+          values: createHarnessConfiguration("codex", "gpt-5.1"),
+        });
+        assert.equal(changed.statusCode, 200, changed.body);
+        const capabilities = await owner("GET", `${path(agentId)}/plugins/capabilities`);
+        assert.equal(capabilities.statusCode, 400, capabilities.body);
+      },
       sourceId: workerGoogle.credentialSourceId,
       expectedToken: workerGoogle.accessToken,
       transport,

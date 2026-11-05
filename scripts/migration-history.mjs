@@ -155,12 +155,15 @@ function catalogAtMigrationCount(count, completedCount) {
     return "preAgentCredentialSourceLimit";
   }
   if (count === 67 && completedCount > 67) {
-    return "preConnectionTemplates";
+    return "preAgentPluginDriver";
   }
   if (count === 68 && completedCount > 68) {
-    return "preSavedConnections";
+    return "preConnectionTemplates";
   }
   if (count === 69 && completedCount > 69) {
+    return "preSavedConnections";
+  }
+  if (count === 70 && completedCount > 70) {
     return "preConnectionAttachmentIntent";
   }
   if (count === completedCount) {

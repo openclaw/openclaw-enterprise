@@ -13770,103 +13770,124 @@
                               "required": ["executionModes"],
                               "type": "object"
                             },
-                            "pluginDiscovery": {
-                              "additionalProperties": false,
-                              "properties": {
-                                "credential": {
-                                  "anyOf": [
-                                    { "const": "required", "type": "string" },
-                                    { "const": "none", "type": "string" }
-                                  ]
-                                }
-                              },
-                              "required": ["credential"],
-                              "type": "object"
-                            },
-                            "pluginPolicies": {
-                              "additionalProperties": false,
-                              "properties": {
-                                "approvers": {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "agent": { "type": "boolean" },
-                                    "plugin": { "type": "boolean" },
-                                    "tools": { "type": "boolean" }
+                            "pluginCatalogs": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "harnessId": {
+                                    "anyOf": [
+                                      { "const": "openclaw", "type": "string" },
+                                      { "const": "codex", "type": "string" }
+                                    ]
                                   },
-                                  "required": ["agent", "plugin", "tools"],
-                                  "type": "object"
-                                },
-                                "driver": { "$ref": "#/components/schemas/def-1" },
-                                "driverPolicySchema": {
-                                  "additionalProperties": {},
-                                  "type": "object"
-                                },
-                                "policyScopeByPlugin": {
-                                  "additionalProperties": {
-                                    "const": "enablement_only",
-                                    "type": "string"
-                                  },
-                                  "type": "object"
-                                },
-                                "toolDefaults": {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "approval": {
-                                      "items": {
+                                  "pluginDiscovery": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "credential": {
                                         "anyOf": [
-                                          { "const": "provider_default", "type": "string" },
-                                          { "const": "all_actions", "type": "string" },
-                                          { "const": "write_actions", "type": "string" },
+                                          { "const": "required", "type": "string" },
                                           { "const": "none", "type": "string" }
                                         ]
-                                      },
-                                      "type": "array"
+                                      }
                                     },
-                                    "enabled": { "type": "boolean" },
-                                    "reviewer": {
-                                      "items": {
-                                        "anyOf": [
-                                          { "const": "human", "type": "string" },
-                                          { "const": "auto", "type": "string" }
-                                        ]
-                                      },
-                                      "type": "array"
-                                    }
+                                    "required": ["credential"],
+                                    "type": "object"
                                   },
-                                  "required": ["enabled", "approval", "reviewer"],
-                                  "type": "object"
+                                  "pluginPolicies": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "approvers": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "agent": { "type": "boolean" },
+                                          "plugin": { "type": "boolean" },
+                                          "tools": { "type": "boolean" }
+                                        },
+                                        "required": ["agent", "plugin", "tools"],
+                                        "type": "object"
+                                      },
+                                      "driver": { "$ref": "#/components/schemas/def-1" },
+                                      "driverPolicySchema": {
+                                        "additionalProperties": {},
+                                        "type": "object"
+                                      },
+                                      "policyScopeByPlugin": {
+                                        "additionalProperties": {
+                                          "const": "enablement_only",
+                                          "type": "string"
+                                        },
+                                        "type": "object"
+                                      },
+                                      "toolDefaults": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "approval": {
+                                            "items": {
+                                              "anyOf": [
+                                                { "const": "provider_default", "type": "string" },
+                                                { "const": "all_actions", "type": "string" },
+                                                { "const": "write_actions", "type": "string" },
+                                                { "const": "none", "type": "string" }
+                                              ]
+                                            },
+                                            "type": "array"
+                                          },
+                                          "enabled": { "type": "boolean" },
+                                          "reviewer": {
+                                            "items": {
+                                              "anyOf": [
+                                                { "const": "human", "type": "string" },
+                                                { "const": "auto", "type": "string" }
+                                              ]
+                                            },
+                                            "type": "array"
+                                          }
+                                        },
+                                        "required": ["enabled", "approval", "reviewer"],
+                                        "type": "object"
+                                      },
+                                      "tools": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "approval": {
+                                            "items": {
+                                              "anyOf": [
+                                                { "const": "provider_default", "type": "string" },
+                                                { "const": "all_actions", "type": "string" },
+                                                { "const": "write_actions", "type": "string" },
+                                                { "const": "none", "type": "string" }
+                                              ]
+                                            },
+                                            "type": "array"
+                                          },
+                                          "enabled": { "type": "boolean" },
+                                          "reviewer": {
+                                            "items": {
+                                              "anyOf": [
+                                                { "const": "human", "type": "string" },
+                                                { "const": "auto", "type": "string" }
+                                              ]
+                                            },
+                                            "type": "array"
+                                          }
+                                        },
+                                        "required": ["enabled", "approval", "reviewer"],
+                                        "type": "object"
+                                      }
+                                    },
+                                    "required": [
+                                      "driver",
+                                      "toolDefaults",
+                                      "tools",
+                                      "driverPolicySchema"
+                                    ],
+                                    "type": "object"
+                                  }
                                 },
-                                "tools": {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "approval": {
-                                      "items": {
-                                        "anyOf": [
-                                          { "const": "provider_default", "type": "string" },
-                                          { "const": "all_actions", "type": "string" },
-                                          { "const": "write_actions", "type": "string" },
-                                          { "const": "none", "type": "string" }
-                                        ]
-                                      },
-                                      "type": "array"
-                                    },
-                                    "enabled": { "type": "boolean" },
-                                    "reviewer": {
-                                      "items": {
-                                        "anyOf": [
-                                          { "const": "human", "type": "string" },
-                                          { "const": "auto", "type": "string" }
-                                        ]
-                                      },
-                                      "type": "array"
-                                    }
-                                  },
-                                  "required": ["enabled", "approval", "reviewer"],
-                                  "type": "object"
-                                }
+                                "required": ["harnessId", "pluginPolicies"],
+                                "type": "object"
                               },
-                              "required": ["driver", "toolDefaults", "tools", "driverPolicySchema"],
-                              "type": "object"
+                              "type": "array"
                             }
                           },
                           "type": "object"
@@ -14173,103 +14194,124 @@
                               "required": ["executionModes"],
                               "type": "object"
                             },
-                            "pluginDiscovery": {
-                              "additionalProperties": false,
-                              "properties": {
-                                "credential": {
-                                  "anyOf": [
-                                    { "const": "required", "type": "string" },
-                                    { "const": "none", "type": "string" }
-                                  ]
-                                }
-                              },
-                              "required": ["credential"],
-                              "type": "object"
-                            },
-                            "pluginPolicies": {
-                              "additionalProperties": false,
-                              "properties": {
-                                "approvers": {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "agent": { "type": "boolean" },
-                                    "plugin": { "type": "boolean" },
-                                    "tools": { "type": "boolean" }
+                            "pluginCatalogs": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "harnessId": {
+                                    "anyOf": [
+                                      { "const": "openclaw", "type": "string" },
+                                      { "const": "codex", "type": "string" }
+                                    ]
                                   },
-                                  "required": ["agent", "plugin", "tools"],
-                                  "type": "object"
-                                },
-                                "driver": { "$ref": "#/components/schemas/def-1" },
-                                "driverPolicySchema": {
-                                  "additionalProperties": {},
-                                  "type": "object"
-                                },
-                                "policyScopeByPlugin": {
-                                  "additionalProperties": {
-                                    "const": "enablement_only",
-                                    "type": "string"
-                                  },
-                                  "type": "object"
-                                },
-                                "toolDefaults": {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "approval": {
-                                      "items": {
+                                  "pluginDiscovery": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "credential": {
                                         "anyOf": [
-                                          { "const": "provider_default", "type": "string" },
-                                          { "const": "all_actions", "type": "string" },
-                                          { "const": "write_actions", "type": "string" },
+                                          { "const": "required", "type": "string" },
                                           { "const": "none", "type": "string" }
                                         ]
-                                      },
-                                      "type": "array"
+                                      }
                                     },
-                                    "enabled": { "type": "boolean" },
-                                    "reviewer": {
-                                      "items": {
-                                        "anyOf": [
-                                          { "const": "human", "type": "string" },
-                                          { "const": "auto", "type": "string" }
-                                        ]
-                                      },
-                                      "type": "array"
-                                    }
+                                    "required": ["credential"],
+                                    "type": "object"
                                   },
-                                  "required": ["enabled", "approval", "reviewer"],
-                                  "type": "object"
+                                  "pluginPolicies": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "approvers": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "agent": { "type": "boolean" },
+                                          "plugin": { "type": "boolean" },
+                                          "tools": { "type": "boolean" }
+                                        },
+                                        "required": ["agent", "plugin", "tools"],
+                                        "type": "object"
+                                      },
+                                      "driver": { "$ref": "#/components/schemas/def-1" },
+                                      "driverPolicySchema": {
+                                        "additionalProperties": {},
+                                        "type": "object"
+                                      },
+                                      "policyScopeByPlugin": {
+                                        "additionalProperties": {
+                                          "const": "enablement_only",
+                                          "type": "string"
+                                        },
+                                        "type": "object"
+                                      },
+                                      "toolDefaults": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "approval": {
+                                            "items": {
+                                              "anyOf": [
+                                                { "const": "provider_default", "type": "string" },
+                                                { "const": "all_actions", "type": "string" },
+                                                { "const": "write_actions", "type": "string" },
+                                                { "const": "none", "type": "string" }
+                                              ]
+                                            },
+                                            "type": "array"
+                                          },
+                                          "enabled": { "type": "boolean" },
+                                          "reviewer": {
+                                            "items": {
+                                              "anyOf": [
+                                                { "const": "human", "type": "string" },
+                                                { "const": "auto", "type": "string" }
+                                              ]
+                                            },
+                                            "type": "array"
+                                          }
+                                        },
+                                        "required": ["enabled", "approval", "reviewer"],
+                                        "type": "object"
+                                      },
+                                      "tools": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "approval": {
+                                            "items": {
+                                              "anyOf": [
+                                                { "const": "provider_default", "type": "string" },
+                                                { "const": "all_actions", "type": "string" },
+                                                { "const": "write_actions", "type": "string" },
+                                                { "const": "none", "type": "string" }
+                                              ]
+                                            },
+                                            "type": "array"
+                                          },
+                                          "enabled": { "type": "boolean" },
+                                          "reviewer": {
+                                            "items": {
+                                              "anyOf": [
+                                                { "const": "human", "type": "string" },
+                                                { "const": "auto", "type": "string" }
+                                              ]
+                                            },
+                                            "type": "array"
+                                          }
+                                        },
+                                        "required": ["enabled", "approval", "reviewer"],
+                                        "type": "object"
+                                      }
+                                    },
+                                    "required": [
+                                      "driver",
+                                      "toolDefaults",
+                                      "tools",
+                                      "driverPolicySchema"
+                                    ],
+                                    "type": "object"
+                                  }
                                 },
-                                "tools": {
-                                  "additionalProperties": false,
-                                  "properties": {
-                                    "approval": {
-                                      "items": {
-                                        "anyOf": [
-                                          { "const": "provider_default", "type": "string" },
-                                          { "const": "all_actions", "type": "string" },
-                                          { "const": "write_actions", "type": "string" },
-                                          { "const": "none", "type": "string" }
-                                        ]
-                                      },
-                                      "type": "array"
-                                    },
-                                    "enabled": { "type": "boolean" },
-                                    "reviewer": {
-                                      "items": {
-                                        "anyOf": [
-                                          { "const": "human", "type": "string" },
-                                          { "const": "auto", "type": "string" }
-                                        ]
-                                      },
-                                      "type": "array"
-                                    }
-                                  },
-                                  "required": ["enabled", "approval", "reviewer"],
-                                  "type": "object"
-                                }
+                                "required": ["harnessId", "pluginPolicies"],
+                                "type": "object"
                               },
-                              "required": ["driver", "toolDefaults", "tools", "driverPolicySchema"],
-                              "type": "object"
+                              "type": "array"
                             }
                           },
                           "type": "object"
@@ -15590,7 +15632,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "data": {
-                      "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources.",
+                      "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources.",
                       "items": {
                         "anyOf": [
                           {
@@ -15773,6 +15815,7 @@
                                 "type": "string"
                               },
                               "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
+                              "pluginDriver": { "$ref": "#/components/schemas/def-1" },
                               "plugins": { "$ref": "#/components/schemas/def-6" },
                               "repositoryAccess": {
                                 "additionalProperties": false,
@@ -15975,7 +16018,7 @@
                             "type": "object"
                           }
                         ],
-                        "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources."
+                        "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources."
                       },
                       "type": "array"
                     },
@@ -16562,6 +16605,7 @@
                           "type": "string"
                         },
                         "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
+                        "pluginDriver": { "$ref": "#/components/schemas/def-1" },
                         "plugins": { "$ref": "#/components/schemas/def-6" },
                         "repositoryAccess": {
                           "additionalProperties": false,
@@ -17673,6 +17717,7 @@
                 "example": {
                   "summary": "Example request",
                   "value": {
+                    "harnessId": "codex",
                     "secretRef": {
                       "id": "sec_123e4567-e89b-42d3-a456-426614174000",
                       "kind": "secret",
@@ -17704,17 +17749,30 @@
                         "type": "object"
                       },
                       "cursor": { "maxLength": 8192, "minLength": 1, "type": "string" },
+                      "harnessId": {
+                        "anyOf": [
+                          { "const": "openclaw", "type": "string" },
+                          { "const": "codex", "type": "string" }
+                        ]
+                      },
                       "q": { "maxLength": 1024, "type": "string" }
                     },
-                    "required": ["credentialSource"],
+                    "required": ["harnessId", "credentialSource"],
                     "type": "object"
                   },
                   {
                     "additionalProperties": false,
                     "properties": {
                       "cursor": { "maxLength": 8192, "minLength": 1, "type": "string" },
+                      "harnessId": {
+                        "anyOf": [
+                          { "const": "openclaw", "type": "string" },
+                          { "const": "codex", "type": "string" }
+                        ]
+                      },
                       "q": { "maxLength": 1024, "type": "string" }
                     },
+                    "required": ["harnessId"],
                     "type": "object"
                   },
                   {
@@ -17728,15 +17786,27 @@
                         "writeOnly": true
                       },
                       "cursor": { "maxLength": 8192, "minLength": 1, "type": "string" },
+                      "harnessId": {
+                        "anyOf": [
+                          { "const": "openclaw", "type": "string" },
+                          { "const": "codex", "type": "string" }
+                        ]
+                      },
                       "q": { "maxLength": 1024, "type": "string" }
                     },
-                    "required": ["accessToken"],
+                    "required": ["harnessId", "accessToken"],
                     "type": "object"
                   },
                   {
                     "additionalProperties": false,
                     "properties": {
                       "cursor": { "maxLength": 8192, "minLength": 1, "type": "string" },
+                      "harnessId": {
+                        "anyOf": [
+                          { "const": "openclaw", "type": "string" },
+                          { "const": "codex", "type": "string" }
+                        ]
+                      },
                       "q": { "maxLength": 1024, "type": "string" },
                       "secretRef": {
                         "additionalProperties": false,
@@ -17756,7 +17826,7 @@
                         "type": "object"
                       }
                     },
-                    "required": ["secretRef"],
+                    "required": ["harnessId", "secretRef"],
                     "type": "object"
                   }
                 ]
@@ -18038,6 +18108,7 @@
                 "example": {
                   "summary": "Example request",
                   "value": {
+                    "harnessId": "codex",
                     "pluginId": "documentation",
                     "secretRef": {
                       "id": "sec_123e4567-e89b-42d3-a456-426614174000",
@@ -18069,17 +18140,29 @@
                         "required": ["kind", "namespaceId", "id"],
                         "type": "object"
                       },
+                      "harnessId": {
+                        "anyOf": [
+                          { "const": "openclaw", "type": "string" },
+                          { "const": "codex", "type": "string" }
+                        ]
+                      },
                       "pluginId": { "maxLength": 256, "minLength": 1, "type": "string" }
                     },
-                    "required": ["credentialSource", "pluginId"],
+                    "required": ["harnessId", "pluginId", "credentialSource"],
                     "type": "object"
                   },
                   {
                     "additionalProperties": false,
                     "properties": {
+                      "harnessId": {
+                        "anyOf": [
+                          { "const": "openclaw", "type": "string" },
+                          { "const": "codex", "type": "string" }
+                        ]
+                      },
                       "pluginId": { "maxLength": 256, "minLength": 1, "type": "string" }
                     },
-                    "required": ["pluginId"],
+                    "required": ["harnessId", "pluginId"],
                     "type": "object"
                   },
                   {
@@ -18092,14 +18175,26 @@
                         "type": "string",
                         "writeOnly": true
                       },
+                      "harnessId": {
+                        "anyOf": [
+                          { "const": "openclaw", "type": "string" },
+                          { "const": "codex", "type": "string" }
+                        ]
+                      },
                       "pluginId": { "maxLength": 256, "minLength": 1, "type": "string" }
                     },
-                    "required": ["accessToken", "pluginId"],
+                    "required": ["harnessId", "pluginId", "accessToken"],
                     "type": "object"
                   },
                   {
                     "additionalProperties": false,
                     "properties": {
+                      "harnessId": {
+                        "anyOf": [
+                          { "const": "openclaw", "type": "string" },
+                          { "const": "codex", "type": "string" }
+                        ]
+                      },
                       "pluginId": { "maxLength": 256, "minLength": 1, "type": "string" },
                       "secretRef": {
                         "additionalProperties": false,
@@ -18119,7 +18214,7 @@
                         "type": "object"
                       }
                     },
-                    "required": ["secretRef", "pluginId"],
+                    "required": ["harnessId", "pluginId", "secretRef"],
                     "type": "object"
                   }
                 ]
@@ -20399,6 +20494,7 @@
                           "type": "string"
                         },
                         "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
+                        "pluginDriver": { "$ref": "#/components/schemas/def-1" },
                         "plugins": { "$ref": "#/components/schemas/def-6" },
                         "repositoryAccess": {
                           "additionalProperties": false,
@@ -20834,6 +20930,7 @@
                               "type": "string"
                             },
                             "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
+                            "pluginDriver": { "$ref": "#/components/schemas/def-1" },
                             "plugins": { "$ref": "#/components/schemas/def-6" },
                             "repositoryAccess": {
                               "additionalProperties": false,
@@ -21036,7 +21133,7 @@
                           "type": "object"
                         }
                       ],
-                      "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources."
+                      "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits pluginDriver, plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources."
                     },
                     "meta": {
                       "additionalProperties": false,
@@ -21663,6 +21760,7 @@
                           "type": "string"
                         },
                         "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
+                        "pluginDriver": { "$ref": "#/components/schemas/def-1" },
                         "plugins": { "$ref": "#/components/schemas/def-6" },
                         "repositoryAccess": {
                           "additionalProperties": false,
@@ -32751,6 +32849,7 @@
                           "type": "string"
                         },
                         "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
+                        "pluginDriver": { "$ref": "#/components/schemas/def-1" },
                         "plugins": { "$ref": "#/components/schemas/def-6" },
                         "repositoryAccess": {
                           "additionalProperties": false,
@@ -33467,6 +33566,7 @@
                           "type": "string"
                         },
                         "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
+                        "pluginDriver": { "$ref": "#/components/schemas/def-1" },
                         "plugins": { "$ref": "#/components/schemas/def-6" },
                         "repositoryAccess": {
                           "additionalProperties": false,

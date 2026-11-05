@@ -16,7 +16,7 @@ import { managedPluginGuardVersion } from "../../apps/controller/src/drivers/plu
  * supervisor propagation are separate proofs; this check verifies the production caller ordering.
  */
 export async function assertWorkerAccountRelease(t, input) {
-  const { controller, state, pool, namespaceId, agentId, sourceId } = input;
+  const { controller, state, pool, namespaceId, sourceId } = input;
   const tenant = await state.read((view) => view.namespaces.findNamespace(namespaceId));
   assert.ok(tenant);
   const sandboxDriver = createProviderSandboxDriver({ id: "openshell-sandbox" }).driver;
@@ -31,7 +31,7 @@ export async function assertWorkerAccountRelease(t, input) {
     tenant,
     sandboxDriver,
     credentialGatewayDriver: input.gateway,
-    revisionOverrides: { namespaceId, agentId },
+    revisionOverrides: { namespaceId },
     async provisionHarness(context) {
       const membership = context.requirements.credentialAttachments.map(({ ref }) => ref);
       if (providerMembership) {
@@ -54,10 +54,10 @@ export async function assertWorkerAccountRelease(t, input) {
       fixture.observePods([pod]);
     },
   });
-  controller.registerDriver(input.plugin);
-  controller.selectDriver("plugin", input.plugin.id);
+  controller.installPluginDrivers(input.pluginDrivers);
   controller.registerDriver(fixture.driver);
   controller.selectDriver("compute", fixture.driver.id);
+  const agentId = await input.createAgent();
   // Admit through the real Kubernetes Driver, preserving the same transport state for dispatch.
   const revision = await controller.deployAgent(
     input.principal.id,
@@ -154,7 +154,7 @@ export async function assertWorkerAccountRelease(t, input) {
     sandbox: { id: sandboxDriver.id, configuration: {} },
     credential_gateway: { id: input.gateway.id, configuration: {} },
     credential_refresh: { id: input.refresh.id, configuration: {} },
-    plugin: { id: input.plugin.id, configuration: {} },
+    plugin: input.pluginDrivers.map(({ id }) => ({ id, configuration: {} })),
   });
   const workerEvents = [];
   const workerPool = new pg.Pool({ connectionString: process.env.OCC_TEST_DATABASE_URL, max: 6 });
@@ -172,7 +172,7 @@ export async function assertWorkerAccountRelease(t, input) {
       credentialGatewayDriver: input.gateway,
       credentialRefreshDriver: input.refresh,
       tokenService: input.preparedTokens,
-      pluginDriver: input.plugin,
+      pluginDrivers: input.pluginDrivers,
     },
     pollIntervalMs: 15,
     emit(event) {
@@ -256,6 +256,10 @@ export async function assertWorkerAccountRelease(t, input) {
     (await state.read((view) => view.agents.findAgent(namespaceId, agentId))).activeRevisionId,
     revision.id,
   );
+  // Editing the draft does not reinterpret an already admitted OpenClaw revision as Codex.
+  // Every subsequent account refresh must still use the frozen Plugin Driver and Harness.
+  await input.changeDraftHarness(agentId);
+  assert.equal(revision.harness.id, "openclaw");
   const advanceMaintenance = async () => {
     const next = await pool.query(
       "UPDATE occ.controller_work SET available_at=clock_timestamp() WHERE revision_id=$1 AND state='queued' AND idempotency_key LIKE $2 RETURNING idempotency_key",

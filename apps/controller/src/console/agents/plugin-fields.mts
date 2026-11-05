@@ -63,7 +63,7 @@ export interface PluginFieldsOptions {
   input: HTMLTextAreaElement;
   catalog?: PluginFieldCatalog | null;
   capabilities?:
-    | (NonNullable<InstallationCapabilities["pluginPolicies"]> & {
+    | (NonNullable<InstallationCapabilities["pluginCatalogs"]>[number]["pluginPolicies"] & {
         credentialSlots?: readonly AgentPluginCredentialSlot[];
       })
     | null;

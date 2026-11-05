@@ -1,5 +1,6 @@
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
+import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import test from "node:test";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
@@ -55,8 +56,14 @@ test(
   async (t) => {
     const f = await setupStandingWorkerDatabase(t, import.meta.url);
     try {
+      const plugin = new OCCPluginDriver();
       const { credentials, driver, sender, owner, modelSourceId, revision, execution } =
-        await setupStandingWorkerAuthority(t, f);
+        await setupStandingWorkerAuthority(t, f, {
+          plugins: {
+            driver: { id: plugin.id, implementation: plugin.implementation },
+            plugins: { "occ-plugin:diffs": { enabled: true } },
+          },
+        });
       type Delivered = Extract<RepositoryCredentialRuntimeBinding, { kind: "new" }>;
       const deliveries: Delivered[] = [];
       type WorkerEvent = {
@@ -131,14 +138,17 @@ test(
           created = false;
         },
       };
-      const start = () =>
+      const start = (pluginInstalled = true) =>
         f.start(compute, {
           emit: (e?: WorkerEvent) => {
             if (e) {
               events.push(e);
             }
           },
-          transformDrivers: standingDrivers({ driver, sender }),
+          transformDrivers: (drivers: { installation: { drivers: object } }) => ({
+            ...standingDrivers({ driver, sender })(drivers),
+            pluginDrivers: pluginInstalled ? [plugin] : [],
+          }),
         });
       await start();
       await f.work(revision, "succeeded");
@@ -177,7 +187,8 @@ test(
         // Only advance queue due time. Keep the real approval, session, execution and
         // model source unchanged; restart creates a fresh worker and database pool.
         await f.advanceMaintenance(revision);
-        await start();
+        // The second restart also drops the admitted plugin. It must still supervise Git.
+        await start(state === "running");
         await waitFor("pending Git evidence observation", async () =>
           events.find(
             (e) => e.revisionId === revision.id && e.code === "REPOSITORY_EXECUTION_UNVERIFIED",

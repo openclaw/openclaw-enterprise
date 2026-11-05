@@ -954,12 +954,11 @@ test("Runtime-auth Presets are refused before anything is saved where Compute re
   });
 });
 
-test("Create Agent browses the curated plugin catalog without a discovery credential", async (t) => {
+test("Create Agent browses the Codex catalog and discards its selections when switching to OpenClaw", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const driver = new CodexPluginDriver({ catalogSource: "openai-curated" });
-  fixture.controller.registerDriver(driver);
-  fixture.controller.selectDriver("plugin", driver.id);
+  fixture.controller.installPluginDrivers([new OCCPluginDriver(), driver]);
   const namespace = await fixture.createNamespace("Curated plugin browsing", { ready: true });
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
@@ -985,7 +984,7 @@ test("Create Agent browses the curated plugin catalog without a discovery creden
   await linear.waitFor();
   assert.deepEqual(
     pathRequests(requests, "POST", catalogPath).map(({ body }) => body),
-    [{}],
+    [{ harnessId: "codex" }],
   );
   await linear.click();
   await dialog.getByRole("button", { name: "Add Linear", exact: true }).click();
@@ -994,8 +993,47 @@ test("Create Agent browses the curated plugin catalog without a discovery creden
   });
   assert.deepEqual(
     pathRequests(requests, "POST", `${catalogPath}/details`).map(({ body }) => body),
-    [{ pluginId: "plugin_asdk_app_69a089a326dc8191b32a3f2553f5be2c" }],
+    [{ harnessId: "codex", pluginId: "plugin_asdk_app_69a089a326dc8191b32a3f2553f5be2c" }],
   );
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  await dialog
+    .getByText("To install Google Workspace, open Plugins on a saved dedicated OpenClaw Agent", {
+      exact: false,
+    })
+    .waitFor();
+  assert.equal(await dialog.getByRole("button", { name: "Load plugins" }).isDisabled(), true);
+  assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), {});
+  assert.equal(await linear.count(), 0);
+});
+
+test("Create Agent clears approvers when the selected Harness has no plugin catalog", async (t) => {
+  const fixture = await createConsoleAppFixture(t, {
+    defaultPresets: [],
+    filesystemConfiguration: true,
+  });
+  await fixture.bootstrap();
+  fixture.controller.installPluginDrivers([new CodexPluginDriver()]);
+  const namespace = await fixture.createNamespace("Single catalog", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name", { exact: true }).fill("OpenClaw without plugins");
+  const harness = page.getByLabel("Harness", { exact: true });
+  await harness.selectOption("codex");
+  await openAdvancedSettings(page);
+  const approvers = page.getByLabel("Default plugin approvers mode");
+  await approvers.selectOption("chosen");
+  const people = page.getByRole("combobox", { name: "Default plugin approvers people" });
+  await people.fill("UOTHER123");
+  await people.press("Enter");
+  await page.locator('.slack-directory-chip[data-value="UOTHER123"]').waitFor();
+  await harness.selectOption("openclaw");
+  await approvers.waitFor({ state: "hidden" });
+  await enterManualModel(page, "single-catalog-model-key", "gpt-4.1");
+  const response = await submitCreateAgent(page, fixture, namespace.id, { status: 201 });
+  assert.equal(Object.hasOwn(response.request().postDataJSON(), "pluginApprovers"), false);
 });
 
 test("Create Agent discovers hosted plugins with a transient PAT through the selected Driver", async (t) => {
@@ -1224,7 +1262,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
     pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/plugins`).map(
       ({ body }) => body,
     ),
-    [{ accessToken: "at-browser-plugin-one" }],
+    [{ harnessId: "codex", accessToken: "at-browser-plugin-one" }],
   );
   const setup = dialog.locator(".plugin-access-help");
   const setupDisclosure = setup.locator("summary");
@@ -1457,7 +1495,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
     catalogRequests()
       .slice(beforeTyping)
       .map((request) => request.body),
-    [{ accessToken: "at-browser-plugin-one", q: "linear" }],
+    [{ harnessId: "codex", accessToken: "at-browser-plugin-one", q: "linear" }],
   );
   assert.equal(
     await dialog.getByRole("button", { name: "Previous page", exact: true }).isDisabled(),
@@ -1642,8 +1680,12 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
     (request) =>
       request.path.endsWith("/agents/plugins") || request.path.endsWith("/agents/plugins/details"),
   );
-  assert.deepEqual(selectedRequests.at(-2)?.body, { secretRef: firstSecret.ref });
+  assert.deepEqual(selectedRequests.at(-2)?.body, {
+    harnessId: "codex",
+    secretRef: firstSecret.ref,
+  });
   assert.deepEqual(selectedRequests.at(-1)?.body, {
+    harnessId: "codex",
     secretRef: firstSecret.ref,
     pluginId: "remote-calendar",
   });
@@ -1658,7 +1700,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   assert.equal(await calendar.count(), 0);
   assert.deepEqual(
     requests.filter((request) => request.path.endsWith("/agents/plugins")).at(-1)?.body,
-    { secretRef: secondSecret.ref },
+    { harnessId: "codex", secretRef: secondSecret.ref },
   );
   await closePluginDialog();
   assert.equal(

@@ -6,6 +6,11 @@ bundled Diffs plugin on an embedded OpenClaw Agent running on Kubernetes. Dedica
 Codex Agents use a different catalog and approval policy; see
 [plugin support](../../reference/agent-plugins.md#current-support).
 
+If an existing selection belongs to a different or unknown Driver, save an empty
+plugin map first. Then select the plugins offered for the Agent's Harness and
+deploy a new version. This also lets you correct an older embedded OpenClaw Agent
+whose selections belonged to the Codex Driver.
+
 ## Use the console
 
 Open **Agents**, select the Agent, then open **Create new version** → **Plugins**.
@@ -102,7 +107,7 @@ OPENCLAW_CONFIG_PATH="$OPENCLAW_NODE_STATE_DIR/openclaw.json" openclaw config ge
   Installation. The examples also use Node.js and a protected service-key file.
 - Choose an Agent configured for embedded OpenClaw on Kubernetes and an
   Installation that explicitly selects the bundled OpenClaw Plugin Driver
-  (`drivers.plugin.id: occ-plugin`); no Plugin Driver is selected by default.
+  (an `occ-plugin` entry under `drivers.plugin`); no Plugin Driver is selected by default.
   See [Driver selection](../../reference/drivers/plugin-bundled.md#selection-and-catalogs).
   SSH Compute rejects Agents with plugin selections or an Agent default plugin
   approver policy.

@@ -407,8 +407,8 @@ export const requestExamples = {
     authMethod: "api_key",
     apiKey: "replace-with-your-authorized-model-key",
   },
-  discoverAgentPlugins: { secretRef },
-  discoverAgentPluginDetails: { secretRef, pluginId: plugin.id },
+  discoverAgentPlugins: { harnessId: "codex", secretRef },
+  discoverAgentPluginDetails: { harnessId: "codex", secretRef, pluginId: plugin.id },
   discoverSavedAgentPlugins: {},
   discoverSavedAgentPluginDetails: { pluginId: plugin.id },
   lookupChannelDirectory: {
