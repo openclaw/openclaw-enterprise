@@ -21,10 +21,6 @@
   ],
   "files": [
     {
-      "path": "tests/integration/production-network-access.test.mjs",
-      "expectedTests": ["production Helm policies enforce workload network access levels"]
-    },
-    {
       "path": "tests/integration/postgres-platform-state-kubernetes.test.mjs",
       "expectedTests": [
         "real OCC subprocesses retain Installation, Namespace, Agent, IAM, audit, and work after restart",
@@ -46,8 +42,5 @@
         "Helm install preserves the initialization Job when release history is absent"
       ]
     }
-  ],
-  "serialFiles": {
-    "tests/integration/production-network-access.test.mjs": "Temporarily adds Kubernetes API Service backends; cleanup must finish before other cluster tests."
-  }
+  ]
 }
