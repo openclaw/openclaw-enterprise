@@ -101,7 +101,8 @@ reason and becomes available only after a newer permission read allows deletion.
 The identified refusal alert keeps its request ID when a permission reread confirms denial.
 Permission-only advice clears after a positive reread, including after canceling confirmation
 without a write. Later permission loss replaces active-readback retry advice with the current
-access reason. A conflict preserves the API's
+access reason. The shared feedback renderer applies that precedence even when the active
+Agent readback arrives after the permission denial. A conflict preserves the API's
 reason and requires a status read before another deletion attempt.
 If the response is lost or names
 a different Agent, the Console offers a read to find out what happened without

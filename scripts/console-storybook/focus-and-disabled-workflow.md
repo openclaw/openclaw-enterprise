@@ -164,3 +164,7 @@ In **Components / Deletion / Outcome unknown**, choose **Refresh deletion status
 then move to another window and back. The active Agent readback initially permits
 a retry; the later negative permission answer must replace that advice with the
 current access reason and leave Delete unavailable.
+
+Reload **Outcome unknown** and reverse those actions: refocus before refreshing
+the Agent status. The same permission notice must remain after the active readback;
+neither ordering may suggest retrying while access is denied.

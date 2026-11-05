@@ -109,8 +109,20 @@ export function createAgentDeletion(
   }
 
   function render(text?: string, tone: "info" | "danger" = "info", requestId?: string) {
+    // Apply the same precedence whether permission or Agent readback arrives last.
+    // Preserve failure diagnostics, but never offer a retry while access is denied.
+    const showPermission =
+      state.forbidden && state.used && (text ? tone === "info" : feedbackKind !== "error");
+    if (showPermission) {
+      text = permissionNotice;
+      tone = "info";
+      requestId = undefined;
+    }
     if (text) {
       feedbackKind = tone === "danger" ? "error" : "status";
+      if (showPermission) {
+        feedbackKind = "permission";
+      }
       feedback.replaceChildren(
         element(
           "div",
@@ -281,13 +293,7 @@ export function createAgentDeletion(
       feedbackKind = undefined;
       feedback.replaceChildren();
     }
-    // Permission loss replaces retry advice, but preserves a failed write's diagnostics.
-    if (state.forbidden && state.used && feedbackKind !== "error") {
-      render(permissionNotice);
-      feedbackKind = "permission";
-    } else {
-      render();
-    }
+    render();
   }
 
   actions.append(remove, refresh);

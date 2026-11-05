@@ -198,7 +198,11 @@ for (const action of ["Stop", "Delete"] as const) {
 }
 
 // Cancellation and active readback permit another attempt only while the current grant allows it.
-for (const outcome of ["canceled confirmation", "interrupted write"] as const) {
+for (const outcome of [
+  "canceled confirmation",
+  "active readback before permission loss",
+  "permission loss before active readback",
+] as const) {
   test(`a re-grant clears Delete permission advice after ${outcome}`, async (t) => {
     const { fixture, namespace } = await createReadyConsoleNamespace(t, "Canceled deletion");
     const agent = await fixture.createAgent(
@@ -228,7 +232,7 @@ for (const outcome of ["canceled confirmation", "interrupted write"] as const) {
       await page.getByRole("dialog").getByRole("button", { name: "Cancel", exact: true }).click();
     } else {
       // Interrupt transport before the write reaches the controller. A real Agent read then
-      // confirms it remains active; that readback must not override later permission loss.
+      // confirms it remains active; either ordering with permission loss must keep access advice.
       await page.route(
         `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`,
         (route) =>
@@ -239,17 +243,24 @@ for (const outcome of ["canceled confirmation", "interrupted write"] as const) {
         .getByRole("alert")
         .getByText(/Outcome unknown/)
         .waitFor();
-      await row.getByRole("button", { name: "Refresh deletion status", exact: true }).click();
-      await row
-        .getByRole("status")
-        .getByText(/The Agent is still active/)
-        .waitFor();
-      await waitForEnabled(control);
+      if (outcome === "active readback before permission loss") {
+        await row.getByRole("button", { name: "Refresh deletion status", exact: true }).click();
+        await row
+          .getByRole("status")
+          .getByText(/The Agent is still active/)
+          .waitFor();
+        await waitForEnabled(control);
+      }
     }
     const restore = revokeMemberGrant(fixture, MEMBER, ["delete", "agent"]);
     const denied = responseTo(page, "GET", permissionsUrl);
     await refocus(page);
     assert.equal((await (await denied).json()).data.delete, false);
+    if (outcome === "permission loss before active readback") {
+      // The same active response must honor a denial already learned by refocus.
+      await settlePageRequests(page);
+      await row.getByRole("button", { name: "Refresh deletion status", exact: true }).click();
+    }
     await row
       .getByRole("status")
       .getByText(/Your access does not include/)
@@ -264,7 +275,7 @@ for (const outcome of ["canceled confirmation", "interrupted write"] as const) {
     assert.equal(await control.getAttribute("aria-describedby"), null);
     assert.equal(
       requests.filter((request) => request.method === "DELETE").length,
-      outcome === "interrupted write" ? 1 : 0,
+      outcome === "canceled confirmation" ? 0 : 1,
     );
   });
 }

@@ -1753,6 +1753,7 @@ const authoredScenarios = {
       "Deletion may have started. Refresh deletion status checks this Agent without sending another deletion request.",
     steps: [
       "Choose Refresh deletion status: the Agent remains active and allows another attempt. Refocus the window: the next permission read denies delete, replacing retry advice with the current access reason.",
+      "Reload this story and reverse the order: refocus first, then Refresh deletion status. The same permission notice must replace Outcome unknown, without offering a retry.",
       "After refocus, Tab to Delete Agent. It takes focus and looks unavailable, described by the current permission notice; Enter, Space or a click sends nothing.",
     ],
   } satisfies LocalScenario,
