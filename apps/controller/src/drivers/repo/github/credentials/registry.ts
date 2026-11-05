@@ -541,19 +541,14 @@ export function createGitHubRepositoryDeliveryResolver(
     const state = revision.repositoryCredentials;
     const binding = state?.bindings[0];
     if (state?.bindings.length && state.bindings.every((b) => b.profile === "github-repository")) {
-      const grant = resolveSelectedRepositoryGrant(
-        registry,
-        revision.namespaceId,
-        revision.id,
-        state.bindings,
-      );
+      const scope = resolveSelectedRepositoryScope(registry, revision.namespaceId, state.bindings);
       return Object.freeze({
         binding: state.bindings[0]!,
         delivery: Object.freeze({
           scope: "github-repository" as const,
-          installationId: grant.installationId,
-          repositories: grant.repositories,
-          permissions: grant.permissions,
+          installationId: registry.githubInstallationId,
+          repositories: scope.repositories,
+          permissions: scope.permissions,
         }),
       });
     }
