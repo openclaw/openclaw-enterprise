@@ -70,8 +70,9 @@ export async function verifyOpenShellPushNegotiation(t, environment) {
       const headers = { ...incoming.headers, "content-length": String(body.length) };
       delete headers["transfer-encoding"];
       const forwarded = request(
-        new URL(incoming.url, upstream.origin),
+        upstream.origin,
         {
+          path: incoming.url,
           method: incoming.method,
           headers,
           ca: upstream.tls.cert,
