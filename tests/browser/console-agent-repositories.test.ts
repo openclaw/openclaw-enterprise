@@ -1,5 +1,10 @@
 /// <reference lib="es2024.promise" />
 
+import {
+  enterManualModel,
+  submitCreateAgent,
+  createAgentThroughForm,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -29,14 +34,11 @@ import {
   repositoryCheckbox,
   statusTone,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import {
   agentPostRequests,
   configurationPostRequests,
   createRepositoryLaunchFixture,
-  enterManualModel,
-  submitCreateAgent,
-  createAgentThroughForm,
 } from "./console-agents-test-support.mjs";
 import {
   AGENT_SAVE_DENIED,

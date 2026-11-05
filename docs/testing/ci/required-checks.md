@@ -1,6 +1,8 @@
 ---
 kind: reference/ci
 tags: [human_verified]
+# Backfilled from the verification tag recorded in 17ff921c5.
+last_verified: "2026-11-04"
 ---
 
 # CI required checks
@@ -43,9 +45,10 @@ shown in GitHub Actions and links to their test manifests. Runtime image metadat
 tests use real Docker containers with lightweight fixture images; they do not
 run a complete Agent or call a model provider.
 
-CI Impact selects coverage; Suite Audit checks ownership; Static Checks runs
-workspace, lint, format, OpenAPI and docs checks. Affected Packages reports impact;
-`CI Required` aggregates required results. Manual Native Container Verification calls the
+CI Impact selects coverage. Suite Audit and Static Checks is one job that runs
+in every mode: it lints workflows, audits suite ownership, and runs workspace,
+lint, format, OpenAPI, documentation checks, and the documentation build.
+Affected Packages reports impact; `CI Required` aggregates required results. Manual Native Container Verification calls the
 [native image workflow](../../../.github/workflows/container-check.yml). The [CI flow](../../flows/github-actions-testing.md)
 explains these jobs; the PR-controlled workflow is not independent trusted enforcement.
 

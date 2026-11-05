@@ -103,6 +103,10 @@ recipient before release.
 | v6        | Bundled OpenShell preview: observe the request hook per start; this does not prove the hook cannot later be disabled.                                                                                                                         |
 | v7        | Exact dispatch plus verified policy reduction v2; can retain independently admitted routes and the same recipient when Git is removed.                                                                                                        |
 
+Observed OpenShell Git routes keep the original launch acknowledgment during credential
+rotation. They reopen only after the model provider observation matches the new
+shared provider environment; stale or incomplete observations leave the route pending.
+
 A lost authorization reply records possible use. Do not retry the exchange.
 Stock OpenShell lacks v7 qualification. For isolation and release requirements,
 see the [Driver contract](credential-proxy.md#delivery-profiles) and
@@ -350,10 +354,12 @@ checkout, readable only by its owner. Local dependency installation can select
 it through `NPM_CONFIG_USERCONFIG`; image builds accept it as the ephemeral
 BuildKit secret `id=npmrc`, not as a build argument or copied source file.
 
-The Dockerfile runs `pnpm install --frozen-lockfile --prod --ignore-scripts` and
-mounts the npmrc only for that installation. `.dockerignore` excludes npmrc
-files. Registry tokens must not enter source, image layers, lockfiles, Helm
-values, startup YAML, logs, or runtime Pods.
+The controller image mounts npmrc only for `pnpm install --frozen-lockfile --prod --ignore-scripts`.
+`.dockerignore` excludes npmrc files. Keep registry tokens out of source, image
+layers, lockfiles, Helm values, startup YAML, logs, and runtime Pods.
+
+For image builds that also need to download pnpm from a mirror, follow the
+[registry mirror procedure](../../guides/deploy/production-installation.md#build-through-a-package-registry-mirror).
 
 ## Loading, updates, and startup failures
 

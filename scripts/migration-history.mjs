@@ -151,6 +151,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 65 && completedCount > 65) {
     return "preAgentDeployIntent";
   }
+  if (count === 66 && completedCount > 66) {
+    return "preAgentCredentialSourceLimit";
+  }
   if (count === completedCount) {
     return "completed";
   }
