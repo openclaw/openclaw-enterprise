@@ -9,6 +9,8 @@ import { button, element, field, validateFields } from "./dom.mjs";
 import type { ConsolePageContext } from "./page-context.mjs";
 
 type Context = Pick<ConsolePageContext, "request" | "isCurrent">;
+const installationWide = "installation-wide";
+
 type PublicClient = Omit<OAuthClient, "credentialRefreshDriverId">;
 
 function option(value: string, label: string) {
@@ -26,7 +28,11 @@ function failure(cause: unknown, operation: string) {
   return `Could not confirm ${operation}. Refresh the catalog before trying again.`;
 }
 
-export function renderConnectionTemplates(context: Context, namespaces: readonly Namespace[]) {
+export function renderConnectionTemplates(
+  context: Context,
+  namespaces: readonly Namespace[],
+  currentNamespace: string | null,
+) {
   const section = element("section", { className: "card" });
   const catalog = element("div");
   const notice = element("p", { className: "hint", role: "status" });
@@ -120,14 +126,18 @@ export function renderConnectionTemplates(context: Context, namespaces: readonly
     });
     const scope = element(
       "select",
-      { disabled: !!template },
-      option("", "Installation-wide"),
+      { disabled: !!template, required: true },
+      element("option", { value: "", disabled: true }, "Choose availability"),
+      option(installationWide, "Installation-wide"),
       ...namespaces.map((item) => option(item.id, `Namespace · ${item.name}`)),
     );
     if (template?.namespaceId && !namespaces.some((item) => item.id === template.namespaceId)) {
       scope.append(option(template.namespaceId, template.namespaceId));
     }
-    scope.value = template?.namespaceId ?? "";
+    scope.value = template
+      ? (template.namespaceId ?? installationWide)
+      : (namespaces.find((item) => item.id === currentNamespace)?.id ?? "");
+    const selectedNamespaceId = () => (scope.value === installationWide ? undefined : scope.value);
     const mode = element(
       "select",
       { id: "connection-template-mode" },
@@ -160,13 +170,6 @@ export function renderConnectionTemplates(context: Context, namespaces: readonly
       pattern: "/.*",
       value: version?.recipient.path ?? "/**",
     });
-    const access = element(
-      "select",
-      {},
-      option("read-only", "Read only"),
-      option("full", "Read and write"),
-    );
-    access.value = version?.recipient.access ?? "read-only";
     const manual = element(
       "fieldset",
       { className: "connection-template-fields" },
@@ -178,7 +181,6 @@ export function renderConnectionTemplates(context: Context, namespaces: readonly
       field({ label: "Destination host", control: host }),
       field({ label: "Port", control: port }),
       field({ label: "Path", control: path }),
-      field({ label: "Destination access", control: access }),
     );
     const server = element("input", {
       id: "connection-template-server",
@@ -199,8 +201,27 @@ export function renderConnectionTemplates(context: Context, namespaces: readonly
       authorityField,
       observation,
     );
-    const scopes = element("textarea", { rows: 2 });
+    const scopeLimit = element(
+      "select",
+      { id: "connection-template-scope-limit" },
+      option("restricted", "Limit to approved scopes"),
+      option("unrestricted", "No template limit"),
+    );
+    scopeLimit.value = version?.scopes.length === 0 ? "unrestricted" : "restricted";
+    const scopes = element("textarea", { rows: 2, "data-trim": "" });
     scopes.value = version?.scopes.join("\n") ?? "";
+    const approvedScopes = field({
+      label: "Approved OAuth scopes",
+      control: scopes,
+      help: "Enter at least one scope. Separate scopes with spaces or new lines.",
+    });
+    function showScopeLimit() {
+      const limited = scopeLimit.value === "restricted";
+      scopes.required = limited;
+      approvedScopes.hidden = scopes.disabled = !limited;
+    }
+    scopeLimit.addEventListener("change", showScopeLimit);
+    showScopeLimit();
     const parameters = element("textarea", { rows: 2 });
     parameters.value = Object.entries(version?.authorizationParameters ?? {})
       .map(([key, value]) => `${key}=${value}`)
@@ -226,6 +247,11 @@ export function renderConnectionTemplates(context: Context, namespaces: readonly
       "details",
       {},
       element("summary", {}, "Register a new OAuth client"),
+      element(
+        "p",
+        { className: "hint" },
+        "Create the OAuth client with the provider first, then enter the client details it issued.",
+      ),
       redirectUri
         ? field({
             label: "Redirect URI",
@@ -253,10 +279,11 @@ export function renderConnectionTemplates(context: Context, namespaces: readonly
       manual,
       remote,
       field({
-        label: "Approved OAuth scopes",
-        control: scopes,
-        help: "Enter the scopes to request, separated by spaces or new lines.",
+        label: "OAuth scope limit",
+        control: scopeLimit,
+        help: "Choose which scopes this template allows people to request when connecting an account. With no template limit, the provider and the consent request determine the scopes.",
       }),
+      approvedScopes,
       field({
         label: "Authorization parameters (optional)",
         control: parameters,
@@ -307,6 +334,7 @@ export function renderConnectionTemplates(context: Context, namespaces: readonly
           oauth?.issuer === item.issuer &&
           oauth.tokenUrl === item.tokenUrl &&
           (!oauth.revocationUrl || item.revocationUrl === oauth.revocationUrl) &&
+          scope.value !== "" &&
           (!item.namespaceId || item.namespaceId === scope.value),
       );
       client.replaceChildren(
@@ -377,7 +405,7 @@ export function renderConnectionTemplates(context: Context, namespaces: readonly
         observed = result;
         renderDiscovery();
         status.textContent = result.issuer
-          ? "Review the discovered settings and choose the scopes to approve."
+          ? "Review the discovered settings and choose an OAuth scope limit."
           : "Choose an advertised authorization server to continue.";
       } catch (cause) {
         if (epoch === discoveryEpoch && dialog.open) {
@@ -401,7 +429,7 @@ export function renderConnectionTemplates(context: Context, namespaces: readonly
       }
     });
     async function registerClient() {
-      if (busy) {
+      if (busy || !validateFields([scope])) {
         return;
       }
       const oauth = provider();
@@ -420,7 +448,7 @@ export function renderConnectionTemplates(context: Context, namespaces: readonly
           expectedStatus: 201,
           body: {
             displayName: clientName.value.trim(),
-            ...(scope.value && { namespaceId: scope.value }),
+            namespaceId: selectedNamespaceId(),
             issuer: oauth.issuer,
             tokenUrl: oauth.tokenUrl,
             ...(oauth.revocationUrl && { revocationUrl: oauth.revocationUrl }),
@@ -437,7 +465,7 @@ export function renderConnectionTemplates(context: Context, namespaces: readonly
           created.issuer !== oauth.issuer ||
           created.tokenUrl !== oauth.tokenUrl ||
           created.clientId !== clientId.value.trim() ||
-          (created.namespaceId ?? "") !== scope.value
+          created.namespaceId !== selectedNamespaceId()
         ) {
           throw Error("Unconfirmed OAuth client");
         }
@@ -460,7 +488,9 @@ export function renderConnectionTemplates(context: Context, namespaces: readonly
       if (
         busy ||
         !validateFields([
+          scope,
           name,
+          scopes,
           ...(mode.value === "manual"
             ? [issuer, authorizationUrl, tokenUrl, revocationUrl, host, port, path]
             : [server]),
@@ -481,10 +511,11 @@ export function renderConnectionTemplates(context: Context, namespaces: readonly
         }
         authorizationParameters[line.slice(0, split)] = line.slice(split + 1);
       }
-      const approved = [...new Set(scopes.value.trim().split(/\s+/).filter(Boolean))];
+      const approved =
+        scopeLimit.value === "restricted" ? [...new Set(scopes.value.trim().split(/\s+/))] : [];
       const body = {
         displayName: name.value.trim(),
-        ...(!template && scope.value && { namespaceId: scope.value }),
+        ...(!template && { namespaceId: selectedNamespaceId() }),
         ...(client.value && { oauthClientId: client.value }),
         scopes: approved,
         authorizationParameters,
@@ -499,7 +530,6 @@ export function renderConnectionTemplates(context: Context, namespaces: readonly
                 host: host.value.trim(),
                 port: Number(port.value),
                 path: path.value.trim(),
-                access: access.value,
               },
             }
           : { mode: "mcp_discovery", serverUrl: server.value.trim(), issuer: observed!.issuer }),

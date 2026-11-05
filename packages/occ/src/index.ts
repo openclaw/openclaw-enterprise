@@ -1031,7 +1031,6 @@ type TemplateInput = ApprovedTemplateSettings &
           readonly host: string;
           readonly port?: number;
           readonly path?: string;
-          readonly access?: "read-only" | "full";
         };
       }
     | { readonly mode: "mcp_discovery"; readonly serverUrl: string; readonly issuer: string }
@@ -4491,7 +4490,7 @@ export class OpenClawController {
     };
     let values: ConnectionTemplateValues;
     if (input.mode === "manual") {
-      const { host, port = 443, path = "/**", access = "full" } = input.recipient;
+      const { host, port = 443, path = "/**" } = input.recipient;
       if (
         !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(
           host,
@@ -4511,7 +4510,7 @@ export class OpenClawController {
         authorizationUrl: input.authorizationUrl,
         tokenUrl: input.tokenUrl,
         ...(input.revocationUrl && { revocationUrl: input.revocationUrl }),
-        recipient: { host, port, path, access },
+        recipient: { host, port, path },
       };
     } else {
       const observed = await discover(input.serverUrl, input.issuer);
@@ -4522,13 +4521,17 @@ export class OpenClawController {
         );
       }
       const offered = [...observed.requestedScopes, ...(observed.resourceScopes ?? [])];
-      const allowed = offered.length ? offered : (observed.supportedScopes ?? []);
+      const allowed = new Set(offered.length ? offered : observed.supportedScopes);
+      const supported = observed.supportedScopes && new Set(observed.supportedScopes);
+      const approved = new Set(settings.scopes);
+      if (approved.size && observed.requestedScopes.some((scope) => !approved.has(scope))) {
+        throw new ConnectionTemplateValidationError(
+          "scopes",
+          "Include the scopes required by the MCP server or choose no template limit.",
+        );
+      }
       if (
-        settings.scopes.some(
-          (scope) =>
-            !allowed.includes(scope) ||
-            (observed.supportedScopes && !observed.supportedScopes.includes(scope)),
-        )
+        settings.scopes.some((scope) => !allowed.has(scope) || (supported && !supported.has(scope)))
       ) {
         throw new ConnectionTemplateValidationError(
           "scopes",
@@ -4547,7 +4550,6 @@ export class OpenClawController {
           host: server.hostname,
           port: Number(server.port || 443),
           path: server.pathname,
-          access: "full",
         },
         mcp: { serverUrl: observed.serverUrl, resource: observed.resource },
         observed,

@@ -13,7 +13,7 @@ export const connectionTemplateScenarios = {
     group: "Pages/Credentials",
     name: "OAuth connection templates",
     steps: [
-      "Open Secrets, then Connection templates. Create a template and choose Installation-wide or a specific Namespace under Template availability. Select an OAuth client or expand Register a new OAuth client.",
+      "Open Secrets, then Connection templates. Create a template. Check its current Namespace under Template availability, or choose Installation-wide to share it across Namespaces. Choose a scope limit. Select an existing OAuth client or enter credentials issued by the provider.",
     ],
     path: "/console/credentials/connection-templates",
     oauthCatalog: "ready",
@@ -36,6 +36,28 @@ export const connectionTemplateScenarios = {
     actions: openTemplate,
     description:
       "Enter the authorization server and recipient, then associate a compatible OAuth client or save a draft.",
+  },
+  credentialsTemplateWithoutNamespace: {
+    group: "Pages/Credentials",
+    name: "Choose template availability",
+    path: "/console/credentials/connection-templates",
+    oauthCatalog: "ready",
+    emptyNamespaces: true,
+    actions: openTemplate,
+    description:
+      "An administrator without a current Namespace must choose availability before saving a template or registering its OAuth client.",
+  },
+  credentialsWithoutScopeLimit: {
+    group: "Pages/Credentials",
+    name: "No template scope limit",
+    path: "/console/credentials/connection-templates",
+    oauthCatalog: "ready",
+    actions: [
+      ...openTemplate,
+      { selector: "#connection-template-scope-limit", value: "unrestricted" },
+    ],
+    description:
+      "The administrator explicitly removes the template's scope limit. The provider and the consent request determine which scopes the account grants.",
   },
   credentialsMcpDiscovery: {
     group: "Pages/Credentials",
@@ -61,6 +83,7 @@ export const connectionTemplateScenarios = {
     name: string;
     path: "/console/secrets" | "/console/credentials/connection-templates";
     actions?: StoryAction[];
+    emptyNamespaces?: true;
     oauthCatalog?: "ready" | "error";
     readOnlyPermissionSummary?: true;
     description: string;

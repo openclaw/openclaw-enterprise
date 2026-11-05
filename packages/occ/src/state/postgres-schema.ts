@@ -2426,7 +2426,6 @@ export const oauthConnectionTemplateVersions = occSchema.table(
     recipientHost: collatedText("recipient_host").notNull(),
     recipientPort: integer("recipient_port").notNull(),
     recipientPath: collatedText("recipient_path").notNull(),
-    recipientAccess: collatedText("recipient_access").notNull().default("full"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
   (table) => [
@@ -2449,10 +2448,9 @@ export const oauthConnectionTemplateVersions = occSchema.table(
     ),
     check(
       "oauth_connection_template_versions_scopes_valid",
-      sql`cardinality(${table.scopes}) BETWEEN 1 AND 32
-    AND array_position(${table.scopes}, NULL) IS NULL
+      sql`array_position(${table.scopes}, NULL) IS NULL
 
-    AND array_to_string(${table.scopes}, ' ') ~ '^[!#-[\\]-~]+( [!#-[\\]-~]+)*$'`,
+    AND (cardinality(${table.scopes}) = 0 OR array_to_string(${table.scopes}, ' ') ~ '^[!#-[\\]-~]+( [!#-[\\]-~]+)*$')`,
     ),
     check(
       "oauth_connection_template_versions_parameters_object",
@@ -2463,7 +2461,6 @@ export const oauthConnectionTemplateVersions = occSchema.table(
       sql`${table.recipientHost} ~ '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$'
     AND length(${table.recipientHost}) <= 253
     AND ${table.recipientPort} BETWEEN 1 AND 65535
-    AND ${table.recipientAccess} IN ('read-only', 'full')
     AND ${table.recipientPath} ~ '^/[!-~]*$' AND length(${table.recipientPath}) <= 512`,
     ),
     check(

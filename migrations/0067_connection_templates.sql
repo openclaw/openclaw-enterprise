@@ -59,7 +59,6 @@ CREATE TABLE occ.oauth_connection_template_versions (
   recipient_host text COLLATE "C" NOT NULL,
   recipient_port integer NOT NULL,
   recipient_path text COLLATE "C" NOT NULL,
-  recipient_access text COLLATE "C" NOT NULL DEFAULT 'full',
 
   created_at timestamptz NOT NULL,
   PRIMARY KEY (template_id, version),
@@ -70,10 +69,9 @@ CREATE TABLE occ.oauth_connection_template_versions (
     AND length(authorization_url) <= 2048 AND length(token_url) <= 2048
   ),
   CONSTRAINT oauth_connection_template_versions_scopes_valid CHECK (
-    cardinality(scopes) BETWEEN 1 AND 32
-    AND array_position(scopes, NULL) IS NULL
+    array_position(scopes, NULL) IS NULL
     -- RFC 6749 scope tokens: printable ASCII except space, double quote, and backslash.
-    AND array_to_string(scopes, ' ') ~ '^[!#-[\]-~]+( [!#-[\]-~]+)*$'
+    AND (cardinality(scopes) = 0 OR array_to_string(scopes, ' ') ~ '^[!#-[\]-~]+( [!#-[\]-~]+)*$')
   ),
   CONSTRAINT oauth_connection_template_versions_parameters_object CHECK (
     jsonb_typeof(authorization_parameters) = 'object'
@@ -83,7 +81,6 @@ CREATE TABLE occ.oauth_connection_template_versions (
     recipient_host ~ '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$'
     AND length(recipient_host) <= 253
     AND recipient_port BETWEEN 1 AND 65535
-    AND recipient_access IN ('read-only', 'full')
     AND recipient_path ~ '^/[!-~]*$' AND length(recipient_path) <= 512
   ),
   CONSTRAINT oauth_connection_template_versions_discovery CHECK (

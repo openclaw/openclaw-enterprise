@@ -12,7 +12,7 @@ type Row = Record<string, unknown>;
 
 const versionColumns = `v.template_id, v.version, v.oauth_client_id, v.issuer, v.mode, v.observed_metadata, v.revocation_url,
   v.authorization_url, v.token_url, v.scopes, v.authorization_parameters, v.recipient_host,
-  v.recipient_port, v.recipient_path, v.recipient_access, v.created_at AS version_created_at`;
+  v.recipient_port, v.recipient_path, v.created_at AS version_created_at`;
 
 function invalid(): never {
   throw new DependencyUnavailableError("Persisted connection template state is invalid.");
@@ -35,10 +35,8 @@ function integer(row: Row, key: string): number {
 
 function versionFromRow(row: Row): OAuthConnectionTemplateVersion {
   const scopes = row.scopes;
-  const access = row.recipient_access;
   const parameters = row.authorization_parameters;
   if (
-    (access !== "full" && access !== "read-only") ||
     !Array.isArray(scopes) ||
     !scopes.every((scope) => typeof scope === "string") ||
     typeof parameters !== "object" ||
@@ -74,7 +72,6 @@ function versionFromRow(row: Row): OAuthConnectionTemplateVersion {
       host: text(row, "recipient_host"),
       port: integer(row, "recipient_port"),
       path: text(row, "recipient_path"),
-      access,
     },
     createdAt: timestamp(row, "version_created_at"),
   };
@@ -113,8 +110,8 @@ async function insertVersion(
   await client.query(
     `INSERT INTO occ.oauth_connection_template_versions
      (template_id, version, oauth_client_id, issuer, mode, authorization_url, token_url, revocation_url, scopes,
-      authorization_parameters, recipient_host, recipient_port, recipient_path, recipient_access, observed_metadata, created_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+      authorization_parameters, recipient_host, recipient_port, recipient_path, observed_metadata, created_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
     [
       version.templateId,
       version.version,
@@ -129,7 +126,6 @@ async function insertVersion(
       version.recipient.host,
       version.recipient.port,
       version.recipient.path,
-      version.recipient.access,
       version.observed ?? null,
       version.createdAt,
     ],
