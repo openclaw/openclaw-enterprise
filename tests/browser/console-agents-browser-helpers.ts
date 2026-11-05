@@ -1,4 +1,5 @@
 import { Check } from "typebox/value";
+import { ConfigurationValues, JsonValue } from "../../packages/contracts/src/api/common.ts";
 import { AgentDeploymentStatusSchema } from "../../packages/contracts/src/api/resources.ts";
 import {
   deploymentErrorForWork,
@@ -24,6 +25,7 @@ import type {
 } from "playwright";
 import type {
   Permission,
+  OpenClawConfigurationDocument,
   Secret,
   Agent,
   AgentRevision,
@@ -1501,13 +1503,23 @@ export async function countInvalidEvents(page: Page) {
   return () => page.evaluate(() => globalThis.invalidEvents);
 }
 
+// Rejection fixtures may have invalid native settings, but must still contain JSON values.
+export function assertConfigurationValues(
+  values: unknown,
+): asserts values is OpenClawConfigurationDocument {
+  assert.ok(
+    Check({ SafeJsonValue: JsonValue }, ConfigurationValues, values),
+    "Expected native Configuration JSON values",
+  );
+}
+
 // A Configuration row as a release before a save rule stored it: save refuses `values` with
 // `reason`, and the row is then written through the Configuration Driver, as an older release
 // left it. `configurationDriver` is the fixture's test Configuration Driver.
 export async function storeRefusedConfiguration(
   fixture: Pick<Fixture, "request">,
   configurationDriver: ReturnType<
-    typeof import("../helpers/configuration-driver.mjs").createTestConfigurationDriver
+    typeof import("../helpers/configuration-driver.ts").createTestConfigurationDriver
   >,
   agent: Pick<Agent, "namespaceId" | "configurationId">,
   values: Record<string, unknown>,
@@ -1517,11 +1529,12 @@ export async function storeRefusedConfiguration(
   const refusedSave = await fixture.request("PATCH", configurationPath, { body: { values } });
   assert.equal(refusedSave.status, 400, JSON.stringify(refusedSave.body));
   assert.equal(refusalMessage(refusedSave.body), reason);
-  const stored: unknown = configurationDriver.stored({
+  const stored = configurationDriver.stored({
     namespaceId: agent.namespaceId,
     id: agent.configurationId,
   });
-  assert.ok(isRecord(stored));
+  assert.ok(stored, "Expected the stored Configuration");
+  assertConfigurationValues(values);
   await configurationDriver.update({ ...stored, values });
 }
 
