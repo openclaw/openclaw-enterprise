@@ -1,0 +1,51 @@
+---
+rfc: ../rfcs/0030-openshell-credential-service/index.md
+---
+
+# Move outbound credential lifecycles to OpenShell
+
+- **ID:** RFC-0030
+- **Delivery status:** Planned
+- **Owners:** OCE control plane and OpenShell credential service maintainers
+- **Source baseline:** OCE `34783672`, [saved OAuth contracts at `951243de`](https://github.com/openclaw/openclaw-enterprise/blob/951243de054a0df79a2bead51f7c6df5c7149455/specs/rfcs/0027-agent-oauth-connections/contracts.md#browser-authorization), and [OpenShell issuer proposal](https://github.com/NVIDIA/OpenShell/pull/5139).
+
+Migrate each OCE-managed outbound provider credential through its real caller, including model and Harness requests. Start with GitHub to connect the services. Prioritize OAuth connections that must renew while their users are offline. Migrate static values after active credentials. Platform bootstrap, database and TLS credentials, and OCE sign-in have separate owners.
+
+## Connect the control planes with one GitHub grant
+
+Port the existing repository-scoped App exchange and response checks to the OpenShell issuer library. In the first connected deployment, enroll the App key at the separate service. The trusted sender asks the OpenClaw Control Plane (OCC) to authorize the execution and resolve a credential for its actual request. OCC may request issuance on a permitted miss. Only the service can sign. Prove one private repository operation through the installed sender, a denial before minting, and loss of a mint reply before expanding the repository matrix. [GitHub implementation and installed acceptance](../rfcs/0030-openshell-credential-service/github-integration.md)
+
+## Enroll and renew a saved OAuth connection
+
+Preserve the consent and per-Agent grants in [RFC-0027](../rfcs/0027-agent-oauth-connections/index.md). Trusted enrollment handles the browser redirect, state, PKCE verifier, or provider-specific device flow. Keep registration details, token endpoint, client authentication and provider response fields in the enrollment or issuer adapter. OCC keeps stable connection, provider, subject and consent references. The shared Driver contract can identify a grant, report status and resolve authorized output. Put protocol-specific enrollment on a typed adapter. Keep the store location of refresh tokens and the renewal schedule private to the lifecycle owner. A renewal worker can renew its grant without an Agent identity or permission to read a token for delivery.
+
+For a browser grant, bind the attempt to the initiating session, Namespace, connection and pinned client registration, including its issuer, redirect, state and PKCE verifier. One enrollment adapter claims the attempt and redeems the code. Verify the returned account identity against the provider registration and any preselected account, then transfer the first token set directly to the issuer over an authenticated control-plane channel. Record the issuer's durable acknowledgment for that grant and version before OCC marks it usable. If either reply is lost, look up the original attempt. Keep delivery closed while the exchange or import is uncertain. Require fresh consent if custody cannot be recovered. Replaying the authorization code can lose the grant.
+
+The local owner in [the saved OAuth implementation proposal](https://github.com/openclaw/openclaw-enterprise/pull/4671) can deliver its slice independently. For each existing connection, fence new renewals at the old owner, drain or reconcile in-flight work, and transfer the last confirmed version. Keep delivery closed during transfer. After durable acknowledgment, OCC conditionally replaces the expected owner, reference and generation with the accepted issuer reference and new generation. Allow renewal and delivery at the new owner only after this switch. On a lost reply, read the committed owner and reconcile the same transfer. Never fall back to the old owner. Verify that it rejects subsequent renewals. If transfer is unsupported, reconnect with new consent and retire the original grant separately.
+
+Use an OAuth provider that invalidates each refresh token on use. With zero Agents attached, renew once, restart the service, and renew again with the saved successor. Attach two Agents and verify both make authorized calls with the resulting access token. Withdraw one Agent and verify the other continues. Disconnect the saved connection and verify both Agents lose use after any cached approval expires. Separately revoke consent at the provider and verify the connection requests reauthorization. Drop a response after a rotating refresh token is consumed. Neither a second worker nor a restart may submit the spent token again or publish stale output.
+
+## Migrate the other credential families
+
+| Family                                     | Required proof through the supported caller                                                                                                                                                                                                          |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Machine OAuth                              | Acquire an access token with client credentials, renew before expiry, and make an authorized request after the old token expires. Reject a changed issuer or client binding.                                                                         |
+| Device-authorized model or Harness account | Complete the supported device login, preserve account identity across renewal, and obtain a real model response after expiry. Keep the refresh token in issuer custody. Verify denial or cancellation leaves the connection unusable.                |
+| Provider-specific strategies               | Qualify each configured strategy's issue, renew and retire operations against its provider. For service-managed personal access tokens, verify provider replacement and revocation where supported. Treat manually supplied tokens as static values. |
+| Static provider values                     | Replace a managed API key in the versioned `CredentialStore`. Assert that an authorized sender uses the new version on its next OCC resolution, a stale concurrent replacement fails, and no refresh or mint runs.                                   |
+
+For static keys, the service is the authority for the managed value. OCC retains the scoped reference. Bind writes to the expected version and original operation ID so a lost reply cannot create another version. End cached reuse at the earliest of the store’s freshness limit, the OCC authorization deadline and any credential or grant expiry. Retire the gateway copy after its last caller moves. Preserve a source Secret still used elsewhere. When replacing a key requires revocation at the provider, the operator must do that separately. The issuer may use its supported storage backend. The choice of backend does not change which service owns replacement. [Versioned store contract](https://github.com/NVIDIA/OpenShell/blob/e7f04cbf5846ce3083bf4f8e479b68e2341cb216/rfc/0023-credential-issuer-service/README.md#credentialstore-contract)
+
+## Retire each previous owner
+
+Check every [registered source type](../../docs/reference/drivers/openshell-credential-gateway.md#source-type-catalog) and caller. Include protected inference, direct Harness key or token mounts, [ServiceAccount-issued personal access tokens](../../docs/reference/service-accounts.md), native Git and the operator’s [plugin discovery flow](../../docs/flows/credential-source-refresh.md). Transfer each credential-bearing caller to authorized resolution or explicitly disable that path before retiring its owner. Credential-free requests need no issuer call.
+
+OpenShell leaves per-workload subject-token exchange on the request path. Keep workload authentication separate from maintenance of a reusable provider grant. Document the authenticated caller and exchanging component before introducing that flow on another sender. [Upstream scope](https://github.com/NVIDIA/OpenShell/blob/e7f04cbf5846ce3083bf4f8e479b68e2341cb216/rfc/0023-credential-issuer-service/README.md#non-goals)
+
+Remove a worker key mount, refresh schedule or provider adapter only after its last caller moves, its old writes are fenced, and outstanding attempts and revocations settle. Update the affected references, guides and flows as each family ships. Record installed sender, service and provider results per family. GitHub acceptance closes the GitHub milestone. Completion requires the remaining active lifecycles and static store adoption to pass their own checks.
+
+## Manual Notes
+
+## Changelog
+
+- 2026-11-05: Planned the migration by credential family against OCE `34783672`.
