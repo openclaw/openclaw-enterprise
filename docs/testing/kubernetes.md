@@ -15,8 +15,7 @@ Use disposable local k3d with enforcing NetworkPolicies. Fixtures exclude real g
 Install k3d, kubectl, Helm, `certutil`, and Chromium with sandbox support.
 Use a disposable container engine with image-build capacity. The
 Keycloak cases need free, bindable loopback port 443 and must not run beside
-the standalone Keycloak lane. From the root of a trusted repository checkout,
-install the dependencies and build the CLI before running:
+the standalone Keycloak lane. Run these commands from the trusted checkout root:
 
 ```sh
 pnpm install --frozen-lockfile
