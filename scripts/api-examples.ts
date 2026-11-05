@@ -415,7 +415,15 @@ export const requestExamples = {
 // Values below are data members. The generator adds the common meta envelope.
 export const responseExamples = {
   listAgentPluginConnectionTemplates: [
-    { id: connectionTemplateId, displayName: "Engineering account", version: 1 },
+    {
+      id: connectionTemplateId,
+      displayName: "Engineering account",
+      version: 1,
+      mode: "manual",
+      scopes: ["profile"],
+      requiredScopes: [],
+      offeredScopes: [],
+    },
   ],
   startAgentPluginConnection: {
     credentialSourceId: source.id,

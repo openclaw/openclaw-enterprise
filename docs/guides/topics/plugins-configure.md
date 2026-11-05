@@ -28,10 +28,7 @@ returns to the Agent draft, where the picker shows the saved account. Deploy
 the draft when ready. The action requires permission to update the Agent and
 create credentials in its Namespace.
 
-If the slot or your permissions change during consent, the account stays
-saved. Open the draft again and attach the saved account when you have access.
-To switch Google accounts, clear the old binding and detach its source before
-connecting the new account. Each Google source uses the same worker placeholder.
+The picker shows accounts from issuers accepted by the slot. If the account needs consent for this server, select **Authorize for this server**. To connect a new account, save the enabled plugin, choose a compatible connection template, then review the permissions before selecting **Connect and attach**. Required MCP scopes are already selected. On a template with no scope limit, you can enter additional scopes or use provider defaults if the server requires none. The provider asks which account to authorize. After consent, the Console returns to the Agent draft. You can replace an existing binding this way.
 
 The picker lists compatible sources attached to the Agent. Other sources can stay attached with their own authority. OpenShell requires distinct placeholder names and refuses another credential on a host covered by the Google request guard. The caller needs
 `read` and `operate` on the source, and the Agent needs `operate`. If the
