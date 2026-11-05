@@ -26,6 +26,7 @@ import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
+  persistedDeploymentError,
   accessBindingPostRequests,
   accessibleDescription,
   AGENT_READ,
@@ -48,7 +49,6 @@ import {
   nonAuthWriteRequests,
   operateDeniedSecretOption,
   pathRequests,
-  persistedDeploymentError,
   recordLayoutShifts,
   revealNativeConfiguration,
   revokeMemberGrant,
@@ -62,7 +62,8 @@ import {
   waitForChosenVersion,
   waitForEnabled,
   waitForInputValue,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+
 import {
   settledFetches,
   trackSettledFetches,

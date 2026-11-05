@@ -41,7 +41,7 @@ import {
   waitForEnabled,
   waitForInputValue,
   writeRequests,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
 import {
   ACCESS_TAB_UNAVAILABLE,

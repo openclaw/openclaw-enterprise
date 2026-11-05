@@ -18,9 +18,9 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.m
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
+  deploymentStatusResponse,
   authorizationDenials,
   apiRequests,
-  deploymentStatusResponse,
   detailUrl,
   draftActions,
   expectDeployHeld,
@@ -45,7 +45,8 @@ import {
   versionOption,
   waitForChosenVersion,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+
 import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import {

@@ -68,7 +68,7 @@ import {
   settlePageRequests,
   waitForEnabled,
   waitForInputValue,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import { trackSettledFetches, waitForSettledFetches } from "./console-fetch-accounting.ts";
 import { normalizeProvisioningConfiguration } from "../../packages/occ/src/agent-provisioning.ts";
 import { resolveConfiguredHarnessId } from "../../packages/occ/src/index.ts";
