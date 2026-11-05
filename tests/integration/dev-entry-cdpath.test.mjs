@@ -4,7 +4,7 @@ import { copyFile, mkdir, readFile, realpath, rm, writeFile } from "node:fs/prom
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { writeCommand } from "../helpers/fake-commands.mjs";
+import { writeCommand } from "../helpers/fake-commands.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repository = fileURLToPath(new URL("../../", import.meta.url));
