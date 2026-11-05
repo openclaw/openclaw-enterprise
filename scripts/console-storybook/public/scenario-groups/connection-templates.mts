@@ -28,7 +28,7 @@ export const connectionTemplateScenarios = {
     description:
       "Register provider-issued OAuth clients for the availability and endpoints of a saved connection template.",
     steps: [
-      "Open Credentials → OAuth clients → Register OAuth client. Select a saved connection template, or create one and return to the registration. Enter the client details issued for the displayed redirect URI.",
+      "Open Credentials → OAuth clients → Register OAuth client. Choose a saved connection template from the list or use Create connection template. Save the template to return to registration. Enter the client details issued for the displayed redirect URI.",
     ],
   },
   credentialsRegisterOAuthClient: {
@@ -39,6 +39,13 @@ export const connectionTemplateScenarios = {
     actions: [click("Register OAuth client")],
     description:
       "Choose a saved template or create one. Its availability and OAuth endpoints determine where OCE can use the registration.",
+  },
+  credentialsRegisterWithoutTemplates: {
+    group: "Pages/Credentials",
+    name: "Register with no connection templates",
+    path: "/console/credentials/oauth-clients",
+    actions: [click("Register OAuth client")],
+    description: "An administrator with no saved templates starts with Create connection template.",
   },
   credentialsRegisterFromMcp: {
     group: "Pages/Credentials",

@@ -10,7 +10,6 @@ import {
   type PublicClient,
 } from "./oauth-client-registration.mjs";
 import { openConnectionTemplateEditor } from "./connection-templates.mjs";
-import { googleOAuthProvider } from "./oauth-providers.mjs";
 
 type Context = Pick<ConsolePageContext, "request" | "isCurrent">;
 
@@ -91,13 +90,12 @@ export function renderOAuthClients(
       templates,
       namespaces,
       redirectUri,
-      createTemplate(google, selectCreated) {
+      createTemplate(selectCreated) {
         openConnectionTemplateEditor(context, {
           parent: section,
           namespaces,
           currentNamespace,
           clients,
-          preset: google ? googleOAuthProvider : undefined,
           onSaved(saved) {
             templates.push(saved);
             selectCreated(saved);
