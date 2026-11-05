@@ -12,7 +12,7 @@ The Installation must select the [OpenClaw Plugin Driver](../../reference/driver
 
 1. Choose a tar or gzip-compressed tar package of up to 16 MiB. For a marketplace archive, also enter the name of the entry it contains.
 2. Select **Preview package**. Review the skills, hosted MCP servers and excluded components. **Publish to Namespace** makes that release available to Agents in the same Namespace.
-3. Open **Configure plugins**, add the published release and choose the hosted servers to use. You can leave a server off and use the skills. To enable a server, create a connection from its template with an existing token Secret, attach it to the Agent, then select the account and allowed tools.
+3. Open **Configure plugins**, add the published release and choose the hosted servers to use. You can leave a server off and use the skills. To enable a server, the Installation administrator must include `/usr/local/bin/node` in the [OpenShell Credential Gateway’s `toolBinaries`](../../reference/drivers/openshell-credential-gateway.md). Create a connection from the server template with an existing token Secret, attach it to the Agent, then select the account and allowed tools.
 4. Choose **Save plugin selections**, then **Deploy new version**. To upgrade, publish the changed package, replace the old release in the draft and deploy again. To remove its skills and tools, remove the selection and deploy.
 
 ## Use the console

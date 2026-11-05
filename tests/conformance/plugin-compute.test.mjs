@@ -5659,6 +5659,34 @@ test("Kubernetes plugin-free Codex gateway receives explicit Agent approvers", (
   }
 });
 
+test("Kubernetes reuses an immutable plugin chunk only for the same parent and content", async () => {
+  const { loadYaml } = createRequire(
+    new URL("../../apps/controller/package.json", import.meta.url),
+  )("@kubernetes/client-node");
+  const driver = createKubernetesComputeDriver(kubernetesOptions());
+  const namespace = { name: "oce-plugin-compute", plane: "control" };
+  const ownership = { namespaceId: tenant.id, agentId: agent.id, revisionId: revision().id };
+  const desired = driver.manifest("v1", "ConfigMap", "plugin-runtime-rev-0", ownership, namespace);
+  const owner = { apiVersion: "v1", kind: "ConfigMap", name: "plugin-runtime-rev", uid: "parent" };
+  desired.metadata.ownerReferences = [owner];
+  desired.immutable = true;
+  desired.data = { content: Buffer.from("selected package bytes").toString("base64") };
+  const observed = structuredClone(desired);
+  driver.apiClients = Promise.resolve({
+    core: {
+      // The real SDK's deserializer returns model instances, as it does for an API read.
+      readNamespacedConfigMap: async () => loadYaml(JSON.stringify(observed)),
+    },
+  });
+  const reconcile = () => driver.reconcile(desired, ownership, namespace);
+  await reconcile();
+  observed.metadata.ownerReferences[0].uid = "replaced-parent";
+  await assert.rejects(reconcile(), /Refusing invalid immutable Kubernetes ConfigMap/);
+  observed.metadata.ownerReferences[0].uid = owner.uid;
+  observed.data.content = Buffer.from("other package bytes").toString("base64");
+  await assert.rejects(reconcile(), /Refusing invalid immutable Kubernetes ConfigMap/);
+});
+
 test("Gateway init verifies every projected chunk before publishing the selected skill files", (t) => {
   const root = mkdtempSync(join(tmpdir(), "oce-imported-plugin-init-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));

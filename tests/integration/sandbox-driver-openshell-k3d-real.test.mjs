@@ -6,6 +6,7 @@ import { normalizeOpenAiBaseUrl } from "../../apps/controller/src/drivers/openai
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import {
   failureSecrets,
+  isCredentialLine,
   maskPrivateKeyLines,
   newestMatchingLogLines,
   redactLogLine,
@@ -1941,23 +1942,32 @@ function createIntegrationSandboxDriverFactory(
   return createDriver;
 }
 
-function withFirstPrepareRevisionFailureDiagnostic(computeDriver) {
-  let reported = false;
+function withRevisionFailureDiagnostics(computeDriver, secrets) {
+  const reported = new Map();
   return new Proxy(computeDriver, {
     get(target, property) {
-      if (property === "prepareRevision") {
-        return async (...args) => {
+      if (property === "prepareRevision" || property === "activateRevision") {
+        return async (revision, ...args) => {
           try {
-            return await target.prepareRevision(...args);
+            return await target[property](revision, ...args);
           } catch (error) {
-            if (!reported) {
-              reported = true;
-              const message =
-                error.message ===
-                "The OpenShell compatibility proof is waiting for the Gateway node setup projection."
-                  ? "OpenShell integration: waiting for the Gateway node setup projection; Compute will retry."
-                  : `OpenShell integration: initial Compute prepareRevision retry: ${error.message}`;
-              process.stderr.write(`${message}\n`);
+            const stage = `${revision.id} ${property}`;
+            const messages = reported.get(stage) ?? new Set();
+            const detail = [error, error.cause]
+              .filter(Boolean)
+              .map((cause) => {
+                const firstLine = String(cause.message ?? cause.name).split("\n")[0];
+                return isCredentialLine(firstLine)
+                  ? "[redacted]"
+                  : redactLogLine(firstLine, secrets, 400);
+              })
+              .join(" / ");
+            // A first 503 is expected as Envoy warms up. Preserve a later distinct failure
+            // for this revision and stage without repeating diagnostics on every poll.
+            if (!messages.has(detail) && messages.size < 4) {
+              messages.add(detail);
+              reported.set(stage, messages);
+              process.stderr.write(`OpenShell integration: ${stage} retry: ${detail}\n`);
             }
             throw error;
           }
@@ -2198,6 +2208,10 @@ async function prepareProductionInstallation(
   // An HTTPS upstream signed by a CA nothing trusts. A tool source bound to it, and later the
   // model route, must refuse it before a request or credential reaches it.
   const untrustedTls = harnessId === "codex" ? await startUntrustedTlsObserver(context) : undefined;
+  if (importedMcp) {
+    // Installation operators enable bearer-token accounts for specific executables.
+    configuration.drivers.credential_gateway.configuration.toolBinaries = ["/usr/local/bin/node"];
+  }
   if (tokenEcho !== undefined) {
     // Startup defaults allow the control port; the adjacent port needs an Agent-owned addition.
     configuration.sandboxNetworkPolicyCeiling = [
@@ -2292,14 +2306,19 @@ async function prepareProductionInstallation(
       createOpenShellBackend: createSandboxDriver.createBackend,
       createSandboxDriver,
     });
-    // A worker retry intentionally exposes only DEPENDENCY_UNAVAILABLE. Preserve the first
-    // underlying Compute failure so a real-runtime regression is actionable rather than a timeout.
+    // The worker maps dependency errors to a single retry code. Capture the underlying stage.
     return {
       workerDrivers: loaded,
       diagnosticWorkerDrivers: {
         ...loaded,
         computeDriver: withUnauthorizedTokenSourceDiagnostic(
-          withFirstPrepareRevisionFailureDiagnostic(loaded.computeDriver),
+          withRevisionFailureDiagnostics(
+            loaded.computeDriver,
+            failureSecrets([
+              process.env,
+              { GATEWAY_API_KEY: workspaceGateway.apiKey, PROBE_TOKEN: importedMcp?.token },
+            ]),
+          ),
           tokenSources,
         ),
       },
@@ -2632,6 +2651,14 @@ async function prepareProductionInstallation(
     assert.equal(toolBinding.status, 201, JSON.stringify(toolBinding.error));
     toolSource.bindingId = toolBinding.data.id;
   }
+  // Normal first deployment can publish and select a release while this Agent is still a draft.
+  const initialImport = pluginImportOnly
+    ? await stageInitialImportedPlugin(
+        context,
+        { request, namespaceId, agent: agent.data, sourceRoleId: sourceRole.data.id },
+        importedMcp,
+      )
+    : undefined;
   const deployed = await request(
     "POST",
     `/namespaces/${namespaceId}/agents/${agent.data.id}/deploy`,
@@ -2941,6 +2968,7 @@ async function prepareProductionInstallation(
     modelSecretId: modelSecret.data.id,
     sourceRoleId: sourceRole.data.id,
     importedMcp,
+    initialImport,
     controllerUrl,
     // This is the existing authenticated Envoy route, including the host TLS relay.
     gatewayAdminUrl: `wss://${workspaceGatewayHostname(workspaceGateway)}:${workspaceGateway.routing.endpointPort}/namespaces/${namespaceId}/agents/${agent.data.id}`,
@@ -7362,23 +7390,105 @@ function nativePluginWorkflow(topology) {
     assert.equal(saved.digest, preview.digest);
     return saved;
   }
-  async function deploy(configuration) {
-    await request("PATCH", agent, {
+  function save(configuration) {
+    return request("PATCH", agent, {
       configurationId: topology.agent.configurationId,
       ...configuration,
     });
+  }
+  async function deploy(configuration) {
+    await save(configuration);
     const revision = await request("POST", `${agent}/deploy`, undefined, 202);
     assert.equal(revision.gatewayManagedMode, true);
     assert.equal(revision.harness.id, "openclaw");
-    await waitFor(`native plugin revision ${revision.id}`, async () => {
-      const deployment = await request("GET", `${agent}/deployments/${revision.id}`);
-      assert.notEqual(deployment.status, "failed", JSON.stringify(deployment.error));
-      return (await request("GET", agent)).activeRevisionId === revision.id || undefined;
-    });
+    try {
+      await waitFor(`native plugin revision ${revision.id}`, async () => {
+        const deployment = await request("GET", `${agent}/deployments/${revision.id}`);
+        assert.notEqual(deployment.status, "failed", JSON.stringify(deployment.error));
+        return (await request("GET", agent)).activeRevisionId === revision.id || undefined;
+      });
+    } catch (error) {
+      const worker = await topology.diagnoseRevision(revision.id);
+      const detail = await withinDiagnosticDeadline(
+        () => replacementActivationDiagnostic(topology, revision, worker),
+        { timedOut: "\nReplacement diagnostic timed out." },
+      );
+      if (error instanceof Error) {
+        error.message += detail;
+      }
+      throw error;
+    }
     topology.harnessPod = await waitForProviderHarnessPod(topology.placement, revision);
     return revision;
   }
-  return { namespace, request, publish, deploy };
+  return { namespace, request, publish, save, deploy };
+}
+
+async function createImportedMcpAccount(topology, { request, namespace }, release, secretRef) {
+  const source = await request(
+    "POST",
+    namespace + "/credential-sources",
+    {
+      name: "MCP probe " + release.digest.slice(0, 12),
+      type: "bearer-token",
+      importedPluginTemplate: { releaseSha256: release.digest, serverName: "probe" },
+      secrets: { token: secretRef },
+    },
+    201,
+  );
+  await request(
+    "POST",
+    namespace + "/iam/access-bindings",
+    {
+      subjectKind: "identity",
+      subjectId: topology.agent.servicePrincipalId,
+      roleId: topology.sourceRoleId,
+      resourceKind: "credential_source",
+      resourceId: source.id,
+    },
+    201,
+  );
+  return source;
+}
+
+function selectImportedMcpTools(release, source, toolNames) {
+  return {
+    ["occ-import:" + release.digest]: {
+      enabled: true,
+      driverPolicy: {
+        releaseSha256: release.digest,
+        servers: { probe: { sourceId: source.id, toolNames } },
+      },
+    },
+  };
+}
+
+async function stageInitialImportedPlugin(context, topology, provider) {
+  const workflow = nativePluginWorkflow(topology);
+  const marker = `PLUGIN_FIRST_${randomUUID()}`;
+  const release = await workflow.publish(
+    await importedPluginPackage(context, marker, provider ? { mcpUrl: provider.url } : {}),
+  );
+  assert.deepEqual(release.skills, ["import-probe"]);
+  if (!provider) {
+    await workflow.save({ plugins: { ["occ-import:" + release.digest]: { enabled: true } } });
+    return { marker, release };
+  }
+  assert.deepEqual(release.mcpServers, [
+    { name: "probe", url: provider.url, bearerEnv: "PROBE_BEARER" },
+  ]);
+  const secret = await workflow.request(
+    "POST",
+    workflow.namespace + "/secrets",
+    { name: "mcp-probe", value: provider.token },
+    201,
+  );
+  const source = await createImportedMcpAccount(topology, workflow, release, secret.ref);
+  await workflow.save({
+    credentialSources: [...topology.agent.credentialSources, { sourceId: source.id }],
+    plugins: selectImportedMcpTools(release, source, ["get_allowed"]),
+  });
+  return { source, secretRef: secret.ref };
 }
 
 async function assertImportedNativeSkill(context, topology) {
@@ -7489,10 +7599,9 @@ async function assertImportedNativeSkill(context, topology) {
   assert.ok(!status.skills.some((entry) => entry.name === slug));
   await worker("test", "!", "-e", join(workspaceSkills, slug));
 
-  const first = `PLUGIN_FIRST_${randomUUID()}`;
+  const first = topology.initialImport.marker;
+  const v1 = "occ-import:" + topology.initialImport.release.digest;
   const second = `PLUGIN_SECOND_${randomUUID()}`;
-  const v1 = await publish(first);
-  await deploy({ [v1]: { enabled: true } });
   const v2 = await publish(second);
   assert.notEqual(v2, v1);
   // Publishing v2 leaves v1 active until the Agent owner selects and deploys the new digest.
@@ -7559,61 +7668,9 @@ async function assertImportedNativeSkill(context, topology) {
 }
 
 async function assertImportedNativeMcp(context, topology, provider) {
-  const { request, namespace, publish, deploy } = nativePluginWorkflow(topology);
-  const release = await publish(
-    await importedPluginPackage(context, randomUUID(), { mcpUrl: provider.url }),
-  );
-  assert.deepEqual(release.mcpServers, [
-    { name: "probe", url: provider.url, bearerEnv: "PROBE_BEARER" },
-  ]);
-  const secret = await request(
-    "POST",
-    namespace + "/secrets",
-    { name: "mcp-probe", value: provider.token },
-    201,
-  );
-  async function createAccount(release) {
-    const source = await request(
-      "POST",
-      namespace + "/credential-sources",
-      {
-        name: "MCP probe " + release.digest.slice(0, 12),
-        type: "bearer-token",
-        importedPluginTemplate: { releaseSha256: release.digest, serverName: "probe" },
-        secrets: { token: secret.ref },
-      },
-      201,
-    );
-    await request(
-      "POST",
-      namespace + "/iam/access-bindings",
-      {
-        subjectKind: "identity",
-        subjectId: topology.agent.servicePrincipalId,
-        roleId: topology.sourceRoleId,
-        resourceKind: "credential_source",
-        resourceId: source.id,
-      },
-      201,
-    );
-    return source;
-  }
-  function selectTools(release, source, toolNames) {
-    return {
-      ["occ-import:" + release.digest]: {
-        enabled: true,
-        driverPolicy: {
-          releaseSha256: release.digest,
-          servers: { probe: { sourceId: source.id, toolNames } },
-        },
-      },
-    };
-  }
-  const source = await createAccount(release);
-  await deploy({
-    credentialSources: [...topology.agent.credentialSources, { sourceId: source.id }],
-    plugins: selectTools(release, source, ["get_allowed"]),
-  });
+  const workflow = nativePluginWorkflow(topology);
+  const { request, namespace, publish, deploy } = workflow;
+  const { source, secretRef } = topology.initialImport;
   let client = await connectGatewayOperator(context, topology, "http://127.0.0.1");
   async function turn(message, expectedCall, expectedResult) {
     const key = "agent:main:imported-mcp-" + randomUUID();
@@ -7652,9 +7709,15 @@ async function assertImportedNativeMcp(context, topology, provider) {
       );
     });
   }
+  // Native OpenClaw can expose a deferred MCP tool through dispatch_action by its catalog ID.
+  // Both forms require the exact invocation's result and an authenticated provider-side receipt.
+  function callsMcpTool(call, name) {
+    const target = call.name === "dispatch_action" ? call.arguments?.id : call.name;
+    return typeof target === "string" && target.endsWith(name);
+  }
   await turn(
     "Use the configured MCP get_allowed tool. Return its result.",
-    (call) => call.name.endsWith("get_allowed"),
+    (call) => callsMcpTool(call, "get_allowed"),
     (text) => text.includes(provider.marker),
   );
   assert.ok(
@@ -7722,7 +7785,7 @@ async function assertImportedNativeMcp(context, topology, provider) {
   const replacement = await publish(
     await importedPluginPackage(context, randomUUID(), { mcpUrl: provider.url }),
   );
-  const nextSource = await createAccount(replacement);
+  const nextSource = await createImportedMcpAccount(topology, workflow, replacement, secretRef);
   const credentialSources = [
     ...topology.agent.credentialSources,
     { sourceId: source.id },
@@ -7731,7 +7794,7 @@ async function assertImportedNativeMcp(context, topology, provider) {
   await client.stopAndWait();
   const cutover = await deploy({
     credentialSources,
-    plugins: selectTools(replacement, nextSource, ["get_denied"]),
+    plugins: selectImportedMcpTools(replacement, nextSource, ["get_denied"]),
   });
   async function assertProviders(revision, expectNewSource) {
     const sandbox = await waitForSandbox(topology.placement, revision);
@@ -7752,7 +7815,7 @@ async function assertImportedNativeMcp(context, topology, provider) {
   client = await connectGatewayOperator(context, topology, "http://127.0.0.1");
   await turn(
     "Use the configured MCP get_denied tool. Return its result.",
-    (call) => call.name.endsWith("get_denied"),
+    (call) => callsMcpTool(call, "get_denied"),
     (text) => text.includes(provider.marker),
   );
   assert.ok(
@@ -7764,7 +7827,7 @@ async function assertImportedNativeMcp(context, topology, provider) {
   await client.stopAndWait();
   const disabled = await deploy({
     credentialSources,
-    plugins: selectTools(replacement, nextSource, []),
+    plugins: selectImportedMcpTools(replacement, nextSource, []),
   });
   await assertProviders(disabled, false);
   const saved = await request("GET", namespace + "/agents/" + topology.agent.id);

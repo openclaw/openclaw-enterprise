@@ -17171,6 +17171,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             !isDeepStrictEqual(
               existing.metadata.ownerReferences,
               desired.metadata.ownerReferences,
+              // The Kubernetes client deserializes wire references into V1OwnerReference instances.
+              { skipPrototype: true },
             )) ||
           Object.entries(annotations).some(
             ([name, value]) => existing.metadata.annotations?.[name] !== value,
