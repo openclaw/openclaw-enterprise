@@ -5,7 +5,8 @@ import type {
   OAuthConnectionTemplateVersion,
 } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError } from "../errors.ts";
-import type { StoredOAuthClient, ConnectionTemplateRepository } from "./platform-state.ts";
+import type { StoredOAuthClient } from "../ports/oauth-client.ts";
+import type { ConnectionTemplateRepository } from "./platform-state.ts";
 import type { PostgresQueryClient } from "./postgres-work-queue.ts";
 
 type Row = Record<string, unknown>;

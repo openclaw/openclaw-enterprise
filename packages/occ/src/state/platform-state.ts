@@ -12,6 +12,7 @@ import type {
   EgressInstallation,
   EgressMaterialEvidence,
 } from "@openclaw-enterprise/contracts";
+import type { StoredOAuthClient } from "../ports/oauth-client.ts";
 import type { CredentialPolicyReductionState } from "../ports/credential-policy-reduction.ts";
 import { validateSandboxNetworkGrants } from "@openclaw-enterprise/contracts";
 import { RepositoryTransactionLifetime } from "../ports/transaction.ts";
@@ -32,7 +33,6 @@ import {
   validRepositoryRevisionState,
 } from "./repository-credential-state.ts";
 import type {
-  OAuthClient,
   ConnectionTemplate,
   OAuthConnectionTemplateVersion,
   AccessBinding,
@@ -357,11 +357,6 @@ export interface ConfigurationRepository extends ConfigurationReadRepository {
     secretBindings?: SecretBindings,
   ): Promise<Readonly<ConfigurationOwnership> | undefined>;
   deleteConfiguration(namespaceId: string, configurationId: string): Promise<boolean>;
-}
-
-/** Private registration ownership. Only the selected Secret Driver can resolve the material. */
-export interface StoredOAuthClient extends OAuthClient {
-  readonly secretDriverId?: string;
 }
 
 export interface ConnectionTemplateReadRepository {
