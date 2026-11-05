@@ -9,7 +9,7 @@ import type { JsonValue } from "../../credentials/json-value.ts";
 import type { ServiceLimits } from "../../credentials/service-contracts.ts";
 import { allowsReceivePackInput } from "../../credentials/receive-pack.ts";
 import { allowsPushRef } from "../../credentials/client-contracts.ts";
-import { draftMergeRequestRequest, refuseGitLabQuickActions } from "../client.ts";
+import { draftMergeRequestRequest, refuseGitLabQuickActions } from "../request-policy.ts";
 import type { GitLabTokenProfile } from "./types.ts";
 
 export interface GitLabRoute {

@@ -15,9 +15,6 @@
   },
   "files": [
     {
-      "path": "tests/integration/gitlab-repository-live.test.mjs"
-    },
-    {
       "path": "tests/integration/gitlab-repository-agent.test.mjs"
     }
   ]

@@ -61,19 +61,19 @@ Do not implement a separate broker or silently fall back to native GitHub sessio
 
 ## Delivery record
 
-No product implementation is composed yet. The provider core landed on `feat/gitlab-repository-credentials`:
+The provider core and Installation-native selection are implemented on `feat/gitlab-repository-credentials-compose`:
 
 - Fixed `https://gitlab.com` origin, canonical project path, profile-scoped operations, draft merge-request creation, and possibly-sent write semantics.
 - Conformance coverage and an opt-in live GitLab.com read/write case.
-- OCE composition, the Repo Driver wiring, the protected sender, Console options, mixed-provider admission, and audit persistence remain for the next milestone, tracked in the composition pull request.
+- OCE composition, Repo Driver wiring, mixed-provider admission, and the native sender startup path are covered. The Installation-deployed Agent proof, final-send authority after withdrawal or reassignment, and audit persistence remain for the next milestone.
 
 ### Composition milestone
 
 - [ ] `gitlab/credentials/routes.ts`: API and git route allowlist; deny merge, approval, admin, and pipeline control before upstream I/O.
 - [ ] `gitlab/credentials/grants.ts` and `driver.ts`: grant resolution and the `RepositoryBackend` acquire/retire lifecycle.
 - [ ] `gitlab/credentials/factory.ts`: the driver factory over the fixed `gitlab.com` upstream.
-- [ ] `gitlab-token` kind in repository-credential composition and the `platform.ts` GitLab branch.
-- [ ] Protected sender session flow, Installation selection, Console options, and the mixed-provider refusal.
+- [x] `gitlab-token` kind in repository-credential composition and the `platform.ts` GitLab branch.
+- [x] Native sender session flow, Installation selection, Console options, and the mixed-provider refusal.
 - [ ] Composed proof: allowed effects, forbidden operation refused before GitLab receives it, withdrawal, and uncertain-write recovery.
 
 ## Manual Notes
@@ -87,3 +87,4 @@ No product implementation is composed yet. The provider core landed on `feat/git
 - 2026-10-26: Added explicit single-provider scope, audit evidence, and no-retry/operator reconciliation requirements for uncertain merge-request creation from PR head `b6c6aa510e138fee7d8a1a0367faea0b9b4a1a29`.
 - 2026-11-02: Renumbered from RFC-0024 to RFC-0029 after `main` assigned 0024-0026.
 - 2026-11-05: Renumbered from RFC-0029 to RFC-0030 after `main` assigned RFC-0029.
+- 2026-11-05: Composed GitLab Installation-native startup, removed the unused direct HTTP client, and added stored-material compatibility coverage; live Agent delivery and current-grant authority remain open.

@@ -479,8 +479,9 @@ function installationRepositoryConfiguration(input: unknown, mode: "development"
 }
 
 /** Select one delivery route at the integration edge before binding its transport. */
-function selectGitHubRepositoryDelivery(
+function selectRepositoryDelivery(
   repository: ReturnType<typeof installationRepositoryConfiguration>,
+  backendType: "github" | "gitlab",
   input: {
     externalProxy: boolean;
     bundledProxy: boolean;
@@ -497,11 +498,20 @@ function selectGitHubRepositoryDelivery(
   const external = input.externalProxy && !!prepared && !transport;
   if (
     nativeSender &&
-    (!prepared || input.sandbox || input.bundledProxy || input.externalProxy || transport)
+    ((!prepared && backendType !== "gitlab") ||
+      input.sandbox ||
+      input.bundledProxy ||
+      input.externalProxy ||
+      transport)
   ) {
     throw new Error(
-      "repository.nativeSender requires prepared GitHub custody without a Sandbox or Credential Proxy; protected Git cannot fall back to native delivery.",
+      backendType === "gitlab"
+        ? "repository.nativeSender requires direct GitLab delivery without a Sandbox or Credential Proxy."
+        : "repository.nativeSender requires prepared GitHub custody without a Sandbox or Credential Proxy; protected Git cannot fall back to native delivery.",
     );
+  }
+  if (backendType === "gitlab" && !nativeSender) {
+    throw new Error("GitLab repository delivery requires repository.nativeSender.");
   }
   if (!nativeSender && !external && !(transport && input.bundledProxy)) {
     throw new Error(
@@ -1000,14 +1010,18 @@ export async function loadInstallationConfiguration(options: {
   );
   const sshCompute = computePackage === undefined && computeSelection.id === "compute-ssh";
   const kubernetesCompute = computePackage === undefined && !sshCompute;
-  const repositoryDeliveryMode = selectGitHubRepositoryDelivery(repositoryConfiguration, {
-    externalProxy: packageProxyId !== undefined,
-    bundledProxy: proxySelection !== undefined,
-    sandbox: sandboxSelection !== undefined,
-    bundledSandbox: sandboxSelection !== undefined && sandboxSelection.package === undefined,
-    openShellBackend: openShellBackend !== undefined,
-    kubernetes: kubernetesCompute,
-  });
+  const repositoryDeliveryMode = selectRepositoryDelivery(
+    repositoryConfiguration,
+    repositoryBackendType,
+    {
+      externalProxy: packageProxyId !== undefined,
+      bundledProxy: proxySelection !== undefined,
+      sandbox: sandboxSelection !== undefined,
+      bundledSandbox: sandboxSelection !== undefined && sandboxSelection.package === undefined,
+      openShellBackend: openShellBackend !== undefined,
+      kubernetes: kubernetesCompute,
+    },
+  );
   if (sshCompute && sandboxSelection !== undefined) {
     throw new Error(
       "drivers.sandbox is unsupported with compute-ssh; it requires the bundled Kubernetes Compute Driver.",

@@ -87,7 +87,7 @@ It does not establish CI test coverage or staging installation readiness.
 
 `gitlab-repository-live` is an opt-in runner lane with an authorized disposable
 project, protected PAT file, numeric project ID, and source branch as required inputs.
-See [GitLab client checks](repository-credentials.md#gitlab-client-checks).
+See [GitLab provider checks](repository-credentials.md#gitlab-provider-checks).
 Its [manifest](../../scripts/ci/test-suites/gitlab-repository-live.json) registers
-client and Agent-session coverage; it is not dispatched by ordinary PR CI or
+composed Agent-session coverage; it is not dispatched by ordinary PR CI or
 Full Integration. The conformance files run in `checks-baseline-1`.

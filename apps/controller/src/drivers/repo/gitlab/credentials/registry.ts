@@ -3,7 +3,7 @@ import type {
   RepositoryApprovalScope,
   RepositoryBindingRequest,
 } from "@openclaw-enterprise/contracts";
-import { normalizeGitLabProjectPath, type GitLabProfile } from "../client.ts";
+import { normalizeGitLabProjectPath, type GitLabProfile } from "../request-policy.ts";
 import { normalizePushRefAllowlist } from "../../credentials/client-contracts.ts";
 import { createGitLabGrantIdentity } from "./grants.ts";
 

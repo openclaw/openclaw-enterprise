@@ -4,7 +4,7 @@ import type {
 } from "../../credentials/backend-contracts.ts";
 import type { ServiceLimits } from "../../credentials/service-contracts.ts";
 import type { GitLabTokenConfiguration } from "./config.ts";
-import type { GitLabProfile } from "../client.ts";
+import type { GitLabProfile } from "../request-policy.ts";
 
 /** Internal route profiles; only the three public access profiles reach callers. */
 export type GitLabTokenProfile =

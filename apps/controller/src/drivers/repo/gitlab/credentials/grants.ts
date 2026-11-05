@@ -3,7 +3,7 @@ import type { ResolvedGrant } from "../../credentials/backend-contracts.ts";
 import type { RepositoryCredentialBoundSessionInput } from "../../credentials/service-contracts.ts";
 import { sameBinding } from "../../credentials/grant-identity.ts";
 import type { GitLabTokenConfiguration } from "./config.ts";
-import type { GitLabProfile } from "../client.ts";
+import type { GitLabProfile } from "../request-policy.ts";
 
 export interface GitLabGrantPolicy {
   readonly authority: "gitlab-token";

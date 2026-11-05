@@ -2,7 +2,7 @@ import {
   hasControlCharacter,
   normalizePushRefAllowlist,
 } from "../../credentials/client-contracts.ts";
-import { normalizeGitLabProjectPath } from "../client.ts";
+import { normalizeGitLabProjectPath } from "../request-policy.ts";
 
 /**
  * Development-only static GitLab token authority. It mirrors the GitHub static-token
