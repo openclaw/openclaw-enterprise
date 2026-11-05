@@ -30,7 +30,7 @@ DECLARE
 BEGIN
   IF jsonb_typeof(snapshots) IS DISTINCT FROM 'array'
     OR jsonb_array_length(snapshots) = 0
-    OR jsonb_array_length(snapshots) > 8 THEN
+    OR jsonb_array_length(snapshots) > 64 THEN
     RETURN false;
   END IF;
   FOR entry IN SELECT value FROM jsonb_array_elements(snapshots) LOOP

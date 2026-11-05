@@ -13,11 +13,10 @@ and supported controls before saving nonempty selections. Startup runs
 
 ## Current support
 
-On dedicated OpenClaw with Kubernetes, enable one managed package with `plugins[id].enabled`.
+Dedicated OpenClaw on Kubernetes supports both packages together (`plugins[id].enabled`).
 [Google Workspace](../../apps/controller/plugins/oce-google-workspace/plugin.json) installs a Gateway skill and [worker CLI](connection-templates.md#use-a-saved-account-in-an-agent-plugin).
-MCP releases pin endpoints and credential slots. `tools/list` discovers tools.
-Agent selections govern worker, Gateway and OpenShell access.
-[Slack](../guides/topics/plugins-configure.md#configure-slack-search)
+[Slack](../guides/topics/plugins-configure.md#configure-slack-search) discovers tools through `tools/list`.
+Agent selections govern worker, Gateway and OpenShell access. Workers advertise 128 MCP tools at most.
 
 Embedded OpenClaw supports the bundled Diffs plugin and its `diffs` tool, with
 plugin/tool enablement and `provider_default` or `none` approval. Both use the

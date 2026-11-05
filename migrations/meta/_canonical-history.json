@@ -534,25 +534,33 @@
       "idx": 67,
       "version": "7",
       "when": 1787000000067,
-      "tag": "0067_connection_templates",
+      "tag": "0067_agent_credential_source_limit",
       "breakpoints": true,
-      "sha256": "a52bca963dc8fc3928403984a53320094d8616377a31e75e915f61832dabf0bc"
+      "sha256": "f4f49b8e2c1a7b5a499a0274eb9be49bcd80d8d8be7a7e49aaef2f6f67d209e1"
     },
     {
       "idx": 68,
       "version": "7",
       "when": 1787000000068,
-      "tag": "0068_saved_connections",
+      "tag": "0068_connection_templates",
       "breakpoints": true,
-      "sha256": "6c895702e254f0c4633a1645d7c368017ef36a90b58fe582267e9b8829d5cfe6"
+      "sha256": "a52bca963dc8fc3928403984a53320094d8616377a31e75e915f61832dabf0bc"
     },
     {
       "idx": 69,
       "version": "7",
       "when": 1787000000069,
-      "tag": "0069_connection_attachment_intent",
+      "tag": "0069_saved_connections",
       "breakpoints": true,
-      "sha256": "ee2aa7599ec1f451665b572381f50cf1445f070b3c4fdb4fcb9938804622532e"
+      "sha256": "6c895702e254f0c4633a1645d7c368017ef36a90b58fe582267e9b8829d5cfe6"
+    },
+    {
+      "idx": 70,
+      "version": "7",
+      "when": 1787000000070,
+      "tag": "0070_connection_attachment_intent",
+      "breakpoints": true,
+      "sha256": "d9183942881b3e91e627fd366e003edc34d0dfc38b7ad166220b8d68ca856408"
     }
   ],
   "initialSchemaStates": {
@@ -566,18 +574,8 @@
     "ownerOnly": {
       "owner": "occ_migrator",
       "privileges": [
-        [
-          "occ_migrator",
-          "occ_migrator",
-          "CREATE",
-          false
-        ],
-        [
-          "occ_migrator",
-          "occ_migrator",
-          "USAGE",
-          false
-        ]
+        ["occ_migrator", "occ_migrator", "CREATE", false],
+        ["occ_migrator", "occ_migrator", "USAGE", false]
       ],
       "objects": 0,
       "defaultPrivileges": 0,
@@ -603,17 +601,21 @@
       "e4f1ce2a27d8561664fd107679c962b7c67060c658869bf3faa3fc47ce384a0b",
       "048eb30e1c7db94dde5c3ab7731b940b9acbfbed0b41dd20cfc705aebf2850ae"
     ],
-    "7e6c9efbce80af0c0d11ff6449ebac31c21add5bf8f08f6ea66de7c3e32e8be0": [
-      "ee3718f20fc713f7e181cba675f4750db9b646bd760e6371c34b3b5bea57de10",
-      "84a2cdf971a040c2d31ef35d9beee88668db65f5ac7817141e1f6ba38f3c65a9"
+    "c74762d7f4d45b4215f42fcc8cf9e43d01fae03dbb80522d84c4e17370a2f7c3": [
+      "362e3a713a7754ca1cacff0de8393ccb98c4cb8409618993f489b2ee3407202a",
+      "62dca7efd114c9dc85c49785d90c746c9ba7efcfc5ffa3467a54eb11a14d228d"
     ],
-    "dccadba96cac7dc41e345aee7a93883451c397e1736fbe5a20ff87e17e43a9a7": [
-      "2e732d396ceec6557fe7f5fa0ff12e543dbf246f01f7f827ea50b4b60bc523c9",
-      "908b48d7fd1c3b84ec351bfb71bfb75a9ab9c85582730c7e7462503d0cbce32b"
+    "b68da4f8af53b6b75eb9085adcfdeabd9f6b6831ad0b3b3df03354964ec2ff02": [
+      "e596d09c791367cf055baf432f07c6b20e4ec8ac9c8d6a19b6fbafb22c89411e",
+      "35a3ed692feb9b5ae97d16567f9161992820bca48e3ac2c5116a9f9ba201b79f"
     ],
-    "5e0862e15fdc75ef8cb0acb6a8dcb6d4247df1093802b7666c86cf9775131a66": [
-      "42551b59b65f9e0af05c2346100201f6ad957b5c92355979a1ad0176e31d68e4",
-      "2b27acecd5b1414cd4deb7b68208af0ef472cef1f664cb3689cc7727ff9040c1"
+    "e0e96f31aa8bc4085d5b49dbe0dc40778c88cc7a863bf28a99991a727c720a86": [
+      "03f249f878b92bac06e998b7191075084222dce6a763cfbf7f0aa06fa68c4d0d",
+      "b2026db490a519fc750a3015e1edccb40d9e248ca9689eb1eee9a2b1356e945b"
+    ],
+    "3133bf481e2e898cc8b584eb2f222af2c560dd7a8b47fb8344f9ffd78685a327": [
+      "0fe2bb81543a7595c1bfe10b780ffe83357679feb436bdadc25a7920da8f0a35",
+      "5c28289da2e6f81df8d5fd1eaa0a7c1ffe7f1fc99a5b5a65f0716a526854ee82"
     ]
   },
   "catalogs": {
@@ -622,7 +624,7 @@
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
-    "completed": "5e0862e15fdc75ef8cb0acb6a8dcb6d4247df1093802b7666c86cf9775131a66",
+    "completed": "3133bf481e2e898cc8b584eb2f222af2c560dd7a8b47fb8344f9ffd78685a327",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
     "agentProvisioning": "baac9e369ace8610f96948c1a930e6387431b1d0a33cefa3893765e52f8f7a52",
     "backendCompleted": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",
@@ -659,9 +661,10 @@
     "preGatewayManagedMode": "ead0bf1743197edac2cd369f4822fec0d9686d4c215b8f6dcc16745c9addf155",
     "preSelectedRepositorySet": "15676f224ccd3cbd54e1d541db393b12297e3b2aa8e8eb70b192b5350c4c3c59",
     "preAgentDeployIntent": "fd7ca52d240d5431c76167a39aa5187cd3631d6dceee959b260f7c82cc1edf40",
-    "preConnectionTemplates": "8706a0299f3ff74eb7c2b5861a746ded4ce6484ca8df4e617a8fd2e5061bb998",
-    "preSavedConnections": "7e6c9efbce80af0c0d11ff6449ebac31c21add5bf8f08f6ea66de7c3e32e8be0",
-    "preConnectionAttachmentIntent": "dccadba96cac7dc41e345aee7a93883451c397e1736fbe5a20ff87e17e43a9a7"
+    "preAgentCredentialSourceLimit": "8706a0299f3ff74eb7c2b5861a746ded4ce6484ca8df4e617a8fd2e5061bb998",
+    "preConnectionTemplates": "c74762d7f4d45b4215f42fcc8cf9e43d01fae03dbb80522d84c4e17370a2f7c3",
+    "preSavedConnections": "b68da4f8af53b6b75eb9085adcfdeabd9f6b6831ad0b3b3df03354964ec2ff02",
+    "preConnectionAttachmentIntent": "e0e96f31aa8bc4085d5b49dbe0dc40778c88cc7a863bf28a99991a727c720a86"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

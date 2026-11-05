@@ -52,16 +52,19 @@ Cluster hosting does not select the Agent model provider.
 
 ### Production installation sequence
 
-For a custom Helm installation, follow these pages in order in the same operator shell:
+For a custom Helm installation, follow these pages in order:
 
 1. [Select images and install the control plane](deploy/production-installation.md).
    Generate configuration from an
    [installation profile](deploy/installation-profiles.md) (recommended) or copy
    the manual YAML examples, then create system Secrets, prepare the fresh
-   bootstrap PVC, install the chart, and authenticate to the production API.
+   bootstrap PVC, and [install the chart once](deploy/production-installation.md#install-the-control-plane)
+   with `occ installation install`. Keep the bootstrap key in the installation shell.
+   Use it there to authenticate to the production API.
 2. [Prepare Namespaces and deploy Agents](deploy/production-agents.md).
    Grant tenant RoleBindings, choose embedded OpenClaw or dedicated Codex,
-   provision exact-Agent credentials, and deploy a saved version.
+   and grant access to the model Secret. Switch to the [Namespace service key in a separate shell](deploy/production-agents.md#prepare-transport-credentials-and-deploy)
+   before deploying the reviewed Configuration with `occ agent deploy-first`.
 3. [Verify the production workload](deploy/production-agents.md#verify-production-workloads).
    Confirm the selected version and require a real model response. The guide
    offers a TUI and an HTTP check using the optional loopback password on

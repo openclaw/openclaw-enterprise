@@ -34,7 +34,7 @@ import {
   settledView,
   statusTone,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import {
   callerDenied,

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
@@ -87,7 +88,7 @@ export function selectTemplateDrivers(controller, { selectGateway = true } = {})
     { gatewayClient: openShell.client },
   );
   const gateway = new OpenShellCredentialGatewayDriver(
-    { binaries: ["/app/bin/codex"], toolBinaries: ["/usr/local/bin/gog"] },
+    { binaries: ["/app/bin/codex"], toolBinaries: [managedGoogleInstall.binaryPath] },
     { id: "openshell-credentials", backend },
   );
   const refresh = new OpenShellCredentialRefreshDriver(
@@ -101,6 +102,7 @@ export function selectTemplateDrivers(controller, { selectGateway = true } = {})
   controller.registerDriver(refresh);
   controller.selectDriver("credential_refresh", refresh.id);
   return {
+    gateway,
     providers: openShell.providers,
     createdProviders: openShell.createdProviders,
     refresh,

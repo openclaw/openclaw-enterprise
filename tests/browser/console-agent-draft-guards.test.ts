@@ -22,6 +22,7 @@ import { createConsoleRepositoryLaunchFixture } from "../helpers/console-reposit
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
+  routeFailedDeployment,
   accessBindingPostRequests,
   AGENT_READ,
   apiRequests,
@@ -39,7 +40,6 @@ import {
   pathRequests,
   recordFocusTrail,
   repositoryCheckbox,
-  routeFailedDeployment,
   secretOptionLabel,
   selectSecret,
   setSlackSelection,
@@ -49,7 +49,8 @@ import {
   waitForEnabled,
   waitForInputValue,
   writeRequests,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+
 import {
   createRepositoryLaunchFixture,
   withholdPermissionSummary,

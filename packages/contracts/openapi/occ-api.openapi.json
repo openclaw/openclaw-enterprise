@@ -15633,7 +15633,7 @@
                                   "required": ["sourceId"],
                                   "type": "object"
                                 },
-                                "maxItems": 8,
+                                "maxItems": 64,
                                 "type": "array",
                                 "uniqueItems": true
                               },
@@ -16134,7 +16134,7 @@
                       "required": ["sourceId"],
                       "type": "object"
                     },
-                    "maxItems": 8,
+                    "maxItems": 64,
                     "type": "array",
                     "uniqueItems": true
                   },
@@ -16425,7 +16425,7 @@
                             "required": ["sourceId"],
                             "type": "object"
                           },
-                          "maxItems": 8,
+                          "maxItems": 64,
                           "type": "array",
                           "uniqueItems": true
                         },
@@ -20262,7 +20262,7 @@
                             "required": ["sourceId"],
                             "type": "object"
                           },
-                          "maxItems": 8,
+                          "maxItems": 64,
                           "type": "array",
                           "uniqueItems": true
                         },
@@ -20694,7 +20694,7 @@
                                 "required": ["sourceId"],
                                 "type": "object"
                               },
-                              "maxItems": 8,
+                              "maxItems": 64,
                               "type": "array",
                               "uniqueItems": true
                             },
@@ -21210,7 +21210,7 @@
                       "required": ["sourceId"],
                       "type": "object"
                     },
-                    "maxItems": 8,
+                    "maxItems": 64,
                     "type": "array",
                     "uniqueItems": true
                   },
@@ -21526,7 +21526,7 @@
                             "required": ["sourceId"],
                             "type": "object"
                           },
-                          "maxItems": 8,
+                          "maxItems": 64,
                           "type": "array",
                           "uniqueItems": true
                         },
@@ -23066,7 +23066,7 @@
                             "required": ["sourceId"],
                             "type": "object"
                           },
-                          "maxItems": 8,
+                          "maxItems": 64,
                           "type": "array",
                           "uniqueItems": true
                         },
@@ -29994,7 +29994,7 @@
                                 "required": ["sourceId"],
                                 "type": "object"
                               },
-                              "maxItems": 8,
+                              "maxItems": 64,
                               "type": "array",
                               "uniqueItems": true
                             },
@@ -32614,7 +32614,7 @@
                             "required": ["sourceId"],
                             "type": "object"
                           },
-                          "maxItems": 8,
+                          "maxItems": 64,
                           "type": "array",
                           "uniqueItems": true
                         },
@@ -33330,7 +33330,7 @@
                             "required": ["sourceId"],
                             "type": "object"
                           },
-                          "maxItems": 8,
+                          "maxItems": 64,
                           "type": "array",
                           "uniqueItems": true
                         },

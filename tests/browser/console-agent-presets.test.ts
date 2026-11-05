@@ -47,7 +47,7 @@ import {
   backendFixtures,
 } from "../helpers/console-app.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
-import { consoleStorage } from "../helpers/console-storage.mjs";
+import { consoleStorage } from "../helpers/console-storage.ts";
 import {
   apiRequests,
   consoleViewports,
@@ -66,11 +66,10 @@ import {
   secretPostRequests,
   selectSecret,
   settlePageRequests,
-  trackSettledFetches,
   waitForEnabled,
   waitForInputValue,
-  waitForSettledFetches,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+import { trackSettledFetches, waitForSettledFetches } from "./console-fetch-accounting.ts";
 import { normalizeProvisioningConfiguration } from "../../packages/occ/src/agent-provisioning.ts";
 import { resolveConfiguredHarnessId } from "../../packages/occ/src/index.ts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";

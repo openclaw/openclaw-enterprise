@@ -1,3 +1,66 @@
+import { Check } from "typebox/value";
+import { AgentDeploymentStatusSchema } from "../../packages/contracts/src/api/resources.ts";
+import {
+  deploymentErrorForWork,
+  deploymentProgressForWork,
+} from "../../packages/occ/src/state/controller-work.ts";
+
+import type {
+  AgentRevisionWire,
+  AgentDeploymentStatusWire,
+  AgentDeploymentStatusResponse,
+} from "../../packages/contracts/src/api/resources.ts";
+
+import type { TestContext } from "node:test";
+import type {
+  APIResponse,
+  Browser,
+  BrowserContext,
+  ElementHandle,
+  Locator,
+  Page,
+  Request,
+  Route,
+} from "playwright";
+import type {
+  Permission,
+  Secret,
+  Agent,
+  AgentRevision,
+  Namespace,
+} from "../../packages/contracts/src/index.ts";
+import type { createConsoleAppFixture } from "../helpers/console-app.mjs";
+
+type Fixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
+type PageFixture =
+  | (Pick<Fixture, "registerCleanupBeforeAppClose"> & { sharedByFile?: false })
+  | { sharedByFile: true };
+type LoginFixture = Pick<Fixture, "origin" | "credentials"> & { sharedByFile?: boolean };
+type Credentials = Pick<LoginFixture["credentials"], "email" | "password">;
+type Grant = readonly [Permission["action"], Permission["resourceKind"]];
+type RequestRecord = { method: string; path: string; body: unknown };
+type Scope = Page | Locator;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function refusalMessage(body: unknown): string {
+  assert.ok(isRecord(body) && isRecord(body.error) && typeof body.error.message === "string");
+  return body.error.message;
+}
+type FocusFrames = { trail: string[]; loadingShown: boolean; stopped: boolean; frames: number };
+type LayoutShift = {
+  value: number;
+  sources: { node: string; text: string | undefined; from: number[]; to: number[] }[];
+};
+
+// Test-only globals installed and read in the browser context.
+declare global {
+  var layoutShiftCapture: { shifts: LayoutShift[]; failure: string | null } | undefined;
+  var focusFrames: FocusFrames;
+  var unavailableActivations: string[];
+  var invalidEvents: string[];
+}
+
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -6,6 +69,11 @@ import { after } from "node:test";
 
 import { chromium, request as playwrightRequest } from "playwright";
 
+import { AgentCallerPermissionsResponse } from "../../packages/contracts/src/api/resources.ts";
+
+import { waitForIdleFetches } from "./console-fetch-accounting.ts";
+import { fulfillPatchedJson } from "./console-patched-response.ts";
+
 import { watchBrowserContext } from "../helpers/browser-failure-diagnostics.mjs";
 import { keepRequestInterceptionEnabled } from "../helpers/browser-request-interception.mjs";
 import { memberRole } from "../helpers/console-app.mjs";
@@ -13,10 +81,6 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import { restrict } from "../helpers/iam-grants.mjs";
 import { SECRET_OPERATE_DENIED } from "../helpers/refusal-text.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
-import {
-  deploymentErrorForWork,
-  deploymentProgressForWork,
-} from "../../packages/occ/src/state/controller-work.ts";
 
 // Shared with the API tests, which drive the same fixture without a browser.
 export { authorizationDenials, grantMember } from "../helpers/console-app.mjs";
@@ -24,8 +88,8 @@ export { authorizationDenials, grantMember } from "../helpers/console-app.mjs";
 // What a member who writes Agents holds in one Namespace (the ux-audit-1018 member-write
 // persona), for fixture.createNamespaceMember. It has no Installation access, so it cannot read
 // or write IAM policy.
-/** @type {readonly (readonly [import("../../packages/contracts/src/index.ts").Permission["action"], import("../../packages/contracts/src/index.ts").Permission["resourceKind"]])[]} */
-export const MEMBER_WRITE = [
+
+export const MEMBER_WRITE: readonly Grant[] = [
   ["read", "namespace"],
   ["read", "agent"],
   ["update", "agent"],
@@ -45,11 +109,9 @@ export const MEMBER_WRITE = [
 /**
  * MEMBER_WRITE without each [action, resourceKind] grant in `grants`, which it must hold: the
  * member-write persona missing exactly those grants.
- * @param {...(typeof MEMBER_WRITE)[number]} grants
- * @returns {typeof MEMBER_WRITE}
  */
-export function memberWriteWithout(...grants) {
-  const held = ([action, resourceKind]) =>
+export function memberWriteWithout(...grants: Grant[]) {
+  const held = ([action, resourceKind]: Grant) =>
     grants.some((grant) => grant[0] === action && grant[1] === resourceKind);
   const kept = MEMBER_WRITE.filter((grant) => !held(grant));
   assert.equal(kept.length, MEMBER_WRITE.length - grants.length, "MEMBER_WRITE holds each grant");
@@ -58,8 +120,8 @@ export function memberWriteWithout(...grants) {
 
 // What a member who reads an Agent holds in one Namespace: the Namespace, the Agent, its
 // versions and its Configuration. Tests add the grants their persona needs to it.
-/** @type {typeof MEMBER_WRITE} */
-export const AGENT_READ = [
+
+export const AGENT_READ: typeof MEMBER_WRITE = [
   ["read", "namespace"],
   ["read", "agent"],
   ["read", "agent_revision"],
@@ -75,7 +137,7 @@ export const CHANNEL_SECRETS_SAVED_DEPLOY = `${CHANNEL_SECRETS_SAVED} Deploy the
  * Removes one [action, resourceKind] grant from member `label`'s Role, which must hold it.
  * Returns a function that restores the grants the Role held before.
  */
-export function revokeMemberGrant(fixture, label, grant) {
+export function revokeMemberGrant(fixture: Fixture, label: string, grant: Grant) {
   return revokeRoleGrant(memberRole(fixture, label), label, grant);
 }
 
@@ -84,7 +146,7 @@ export function revokeMemberGrant(fixture, label, grant) {
  * seeds for its administrator account, which `login` signs in by default. Returns a restore
  * function, as revokeMemberGrant does.
  */
-export function revokeAdministratorGrant(fixture, grant) {
+export function revokeAdministratorGrant(fixture: Fixture, grant: Grant) {
   const role = fixture.policy.roles.find(({ name }) => name === "Installation administrator");
   assert.ok(role, "the fixture's administrator has a Role");
   return revokeRoleGrant(role, "the administrator", grant);
@@ -95,7 +157,13 @@ export function revokeAdministratorGrant(fixture, grant) {
  * administrator grants Installation administration while that account is signed in. Returns a
  * function that removes that binding again, as another administrator revokes it.
  */
-export function grantInstallationAdministration(fixture, principal) {
+export function grantInstallationAdministration(fixture: Fixture, principal: unknown) {
+  assert.ok(
+    principal !== null &&
+      typeof principal === "object" &&
+      "id" in principal &&
+      typeof principal.id === "string",
+  );
   const role = fixture.policy.roles.find(({ name }) => name === "Installation administrator");
   assert.ok(role, "the fixture's administrator has a Role");
   const binding = fixture.policy.bindings.find(({ roleId }) => roleId === role.id);
@@ -111,7 +179,11 @@ export function grantInstallationAdministration(fixture, principal) {
   };
 }
 
-function revokeRoleGrant(role, holder, [action, resourceKind]) {
+function revokeRoleGrant(
+  role: Fixture["policy"]["roles"][number],
+  holder: string,
+  [action, resourceKind]: Grant,
+) {
   const before = role.permissions;
   role.permissions = before.filter(
     (grant) => grant.action !== action || grant.resourceKind !== resourceKind,
@@ -127,9 +199,20 @@ function revokeRoleGrant(role, holder, [action, resourceKind]) {
 }
 
 // Secret operate on exactly `secretIds`, as an administrator grants it per Secret: one Role
-// holding Secret operate, bound to `principal` once for each Secret. `revoke(secretId)` removes
+// holding Secret operate, bound to `principal` once for each Secret. `revoke(secretId: string)` removes
 // that Secret's binding.
-export function grantSecretOperate(fixture, namespaceId, principal, secretIds) {
+export function grantSecretOperate(
+  fixture: Fixture,
+  namespaceId: string,
+  principal: unknown,
+  secretIds: string[],
+) {
+  assert.ok(
+    principal !== null &&
+      typeof principal === "object" &&
+      "id" in principal &&
+      typeof principal.id === "string",
+  );
   const roleId = `secret-operate-${principal.id}`;
   if (!fixture.policy.roles.some(({ id }) => id === roleId)) {
     fixture.policy.roles.push({
@@ -150,7 +233,7 @@ export function grantSecretOperate(fixture, namespaceId, principal, secretIds) {
     });
   }
   return {
-    revoke(secretId) {
+    revoke(secretId: string) {
       const index = fixture.policy.bindings.findIndex(({ id }) => id === `${roleId}-${secretId}`);
       assert.notEqual(index, -1, `Secret operate on ${secretId} is granted`);
       fixture.policy.bindings.splice(index, 1);
@@ -158,23 +241,12 @@ export function grantSecretOperate(fixture, namespaceId, principal, secretIds) {
   };
 }
 
-// The in-memory fixture has no worker records. A test that supplies a failed deployment
-// record builds its error with the API's own code, so the console shows the exact code,
-// message and data that the API and occ return for that failure.
-export function persistedDeploymentError(code, data) {
-  return deploymentErrorForWork({
-    state: "failed_permanent",
-    reasonCode: code,
-    ...(data === undefined ? {} : { resultData: data }),
-  });
-}
-
 // The caller-permissions answer is advisory. Report Configuration update as granted, as a page
 // that read the answer before a revocation would, so the Configuration editor opens and what a
 // test sees is the API's refusal (finding 2421).
-export async function grantStaleConfigurationUpdate(page) {
+export async function grantStaleConfigurationUpdate(page: Page) {
   await page.route(/\/agents\/[^/]+\/permissions$/, (route) =>
-    fulfillPatchedJson(route, (body) => ({
+    fulfillPatchedJson(route, AgentCallerPermissionsResponse, (body) => ({
       ...body,
       data: {
         ...body.data,
@@ -186,26 +258,12 @@ export async function grantStaleConfigurationUpdate(page) {
   );
 }
 
-// Answers a routed request with the real API's answer, its JSON body replaced by what `patch`
-// returns for it (`patch` may change the body it is given and return it). Status and headers
-// stay the server's.
-/**
- * @param {import("playwright").Route} route
- * @param {(body: any) => unknown} patch
- */
-export async function fulfillPatchedJson(route, patch) {
-  const response = await route.fetch();
-  const body = await response.json();
-  await route.fulfill({ response, json: patch(body) });
-}
-
-export function apiRequests(page, origin) {
-  /** @type {{ method: string, path: string, body: unknown }[]} */
-  const requests = [];
+export function apiRequests(page: Page, origin: string) {
+  const requests: RequestRecord[] = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
     if (url.origin === origin) {
-      let body;
+      let body: unknown;
       try {
         body = request.postDataJSON();
       } catch {
@@ -219,7 +277,7 @@ export function apiRequests(page, origin) {
 
 // Screenshots stay only in OCC_TEST_CONSOLE_ARTIFACT_DIR. Without it each test gets a
 // directory that is removed when the test ends, because local runs share one TMPDIR.
-async function artifactDirectory(t) {
+async function artifactDirectory(t: TestContext) {
   const configured = process.env.OCC_TEST_CONSOLE_ARTIFACT_DIR;
   if (configured !== undefined && configured.length > 0) {
     t.diagnostic(`console Agent browser artifacts: ${configured}`);
@@ -230,7 +288,7 @@ async function artifactDirectory(t) {
   return directory;
 }
 
-async function launchBrowser(options = {}) {
+async function launchBrowser(options: { args?: string[] } = {}) {
   const browserExecutable =
     process.env.OCC_TEST_BROWSER_EXECUTABLE === undefined ||
     process.env.OCC_TEST_BROWSER_EXECUTABLE.length === 0
@@ -250,7 +308,7 @@ async function launchBrowser(options = {}) {
 // browser of their own. Each test still gets its own context (cookies, storage, viewport,
 // routes); this only saves the launch and close, about 0.2 CPU-s a test. A failed launch, or a
 // browser that has crashed or disconnected, is launched again for the next caller.
-let sharedLaunch;
+let sharedLaunch: Promise<Browser> | undefined;
 after(async () => {
   await (await sharedLaunch?.catch(() => null))?.close();
 });
@@ -294,8 +352,15 @@ export function fileBrowser() {
   return sharedBrowser;
 }
 
-/** @returns {Promise<{ page: import("playwright").Page, artifacts: string }>} */
-export async function newPage(t, fixture, options = {}) {
+export async function newPage(
+  t: TestContext,
+  fixture: PageFixture,
+  options: {
+    args?: string[];
+    browser?: () => Promise<Browser>;
+    context?: Parameters<Browser["newContext"]>[0];
+  } = {},
+) {
   const artifacts = await artifactDirectory(t);
   assert.ok(
     options.browser === undefined || options.args === undefined,
@@ -305,17 +370,19 @@ export async function newPage(t, fixture, options = {}) {
   const browser = shared
     ? await (options.browser ?? sharedBrowser)()
     : await launchBrowser(options);
-  let context;
-  let diagnostics;
+  const resources: {
+    context?: BrowserContext;
+    diagnostics?: Awaited<ReturnType<typeof watchBrowserContext>>;
+  } = {};
   // A file app (fileConsoleApp) outlives the test, so its pages close when the test ends.
   const registerCleanup = fixture.sharedByFile
-    ? (cleanup) => t.after(cleanup)
+    ? (cleanup: () => Promise<void>) => t.after(cleanup)
     : fixture.registerCleanupBeforeAppClose;
   registerCleanup(async () => {
     let cleanupError;
     try {
-      await diagnostics?.capture();
-      await context?.close();
+      await resources.diagnostics?.capture();
+      await resources.context?.close();
     } catch (error) {
       cleanupError ??= error;
     } finally {
@@ -331,8 +398,9 @@ export async function newPage(t, fixture, options = {}) {
       throw cleanupError;
     }
   });
-  context = await browser.newContext(options.context);
-  diagnostics = await watchBrowserContext(t, context);
+  const context = await browser.newContext(options.context);
+  resources.context = context;
+  resources.diagnostics = await watchBrowserContext(t, context);
   await keepRequestInterceptionEnabled(context);
   const page = await context.newPage();
   page.setDefaultTimeout(10_000);
@@ -340,6 +408,17 @@ export async function newPage(t, fixture, options = {}) {
 }
 
 const signedInPath = /\/console\/(agents|backends|namespaces|settings|secrets)/;
+
+function assertCredentials(credentials: unknown): asserts credentials is Credentials {
+  assert.ok(
+    credentials !== null &&
+      typeof credentials === "object" &&
+      "email" in credentials &&
+      typeof credentials.email === "string" &&
+      "password" in credentials &&
+      typeof credentials.password === "string",
+  );
+}
 
 // Signs the page in and opens `path`. A fresh tab (still on about:blank) signs in with the same
 // Better Auth password request the form sends, made in the page's own browser context so the
@@ -351,20 +430,21 @@ const signedInPath = /\/console\/(agents|backends|namespaces|settings|secrets)/;
 // keeps that tab's session storage and history across the sign-in. So does a fixture served
 // over TLS or under another host name, whose cookies are what such a test checks. Tests about
 // the sign-in page itself use the form directly or loginThroughForm.
-/** @param {string | URL} [path] */
+
 export async function login(
-  page,
-  fixture,
-  path = "/console/agents",
-  credentials = fixture.credentials,
+  page: Page,
+  fixture: LoginFixture,
+  path: string | URL = "/console/agents",
+  credentials: unknown = fixture.credentials,
 ) {
+  assertCredentials(credentials);
   const origin = new URL(fixture.origin);
   if (
     page.url() !== "about:blank" ||
     origin.protocol !== "http:" ||
     origin.hostname !== "127.0.0.1"
   ) {
-    await loginThroughForm(page, fixture, path, credentials);
+    await loginForm(page, fixture, path, credentials);
     return;
   }
   if (fixture.sharedByFile && credentials === fixture.credentials) {
@@ -373,7 +453,8 @@ export async function login(
     // page, which waitForURL below cannot tell apart from the console. This test fails and says
     // so; the next one signs in again, so one such test fails at most one other.
     const session = await page.request.get(new URL("/api/auth/session", origin).href);
-    if ((await session.json().catch(() => null))?.data?.authenticated !== true) {
+    const body: unknown = await session.json().catch(() => null);
+    if (!(isRecord(body) && isRecord(body.data) && body.data.authenticated === true)) {
       fileSessions.delete(fixture);
       assert.fail(
         "an earlier test ended the file's shared session; a test that ends sessions needs its own app",
@@ -393,9 +474,12 @@ export async function login(
 // The administrator's session cookies for a file app (fileConsoleApp): one password sign-in for
 // the whole file, which each test's fresh tab then loads like a saved sign-in state. The tests
 // that share it must not end the session (see fileConsoleApp); login() checks it is still live.
-const fileSessions = new WeakMap();
+const fileSessions = new WeakMap<
+  LoginFixture,
+  Promise<Awaited<ReturnType<BrowserContext["storageState"]>>["cookies"]>
+>();
 
-function fileSessionCookies(fixture) {
+function fileSessionCookies(fixture: LoginFixture) {
   let cookies = fileSessions.get(fixture);
   if (cookies === undefined) {
     cookies = (async () => {
@@ -425,10 +509,20 @@ function fileSessionCookies(fixture) {
 // Signs in through the console's sign-in form, the way a person does: open `path`, which shows
 // the sign-in page, and submit the email and password.
 export async function loginThroughForm(
-  page,
-  fixture,
-  path = "/console/agents",
-  credentials = fixture.credentials,
+  page: Page,
+  fixture: LoginFixture,
+  path: string | URL = "/console/agents",
+  credentials: unknown = fixture.credentials,
+) {
+  assertCredentials(credentials);
+  await loginForm(page, fixture, path, credentials);
+}
+
+async function loginForm(
+  page: Page,
+  fixture: LoginFixture,
+  path: string | URL,
+  credentials: Credentials,
 ) {
   await page.goto(new URL(path, fixture.origin).href);
   await page.getByLabel("Email", { exact: true }).fill(credentials.email);
@@ -439,20 +533,20 @@ export async function loginThroughForm(
 
 // Every request that is not a GET: the writes a "nothing was written" check expects none of.
 // The console's CSP limits fetches to its own origin, so apiRequests sees every API write.
-/** @param {ReturnType<typeof apiRequests>} requests */
-export function writeRequests(requests) {
+
+export function writeRequests(requests: RequestRecord[]) {
   return requests.filter((request) => request.method !== "GET");
 }
 
 // writeRequests without the sign-in and sign-out requests (/api/auth/sign-*).
-/** @param {ReturnType<typeof apiRequests>} requests */
-export function nonAuthWriteRequests(requests) {
+
+export function nonAuthWriteRequests(requests: RequestRecord[]) {
   return writeRequests(requests).filter((request) => !request.path.startsWith("/api/auth/sign-"));
 }
 
 // Whether a Secret value control hides what is typed: a password input, or the masked
 // multiline box every Create Secret form uses where the browser supports masking (finding 2339).
-export async function isMaskedSecretValue(control) {
+export async function isMaskedSecretValue(control: Locator) {
   return control.evaluate(
     (node) =>
       node.getAttribute("type") === "password" ||
@@ -460,11 +554,18 @@ export async function isMaskedSecretValue(control) {
   );
 }
 
-export function secretOptionLabel(secret) {
+export function secretOptionLabel(secret: Pick<Secret, "name"> | null | undefined) {
+  assert.ok(secret);
   return secret.name;
 }
 
-export async function selectSecret(scope, label, secret, options = {}) {
+export async function selectSecret(
+  scope: Scope,
+  label: string,
+  secret: Pick<Secret, "name"> | null | undefined,
+  options: { query?: string } = {},
+) {
+  assert.ok(secret);
   const field = scope.getByLabel(label, { exact: true });
   await field.fill(options.query ?? secret.name);
   await scope.getByRole("option", { name: secretOptionLabel(secret), exact: true }).click();
@@ -472,13 +573,13 @@ export async function selectSecret(scope, label, secret, options = {}) {
 
 // Lists `secret` in the Secret field `label` and returns its option, which carries the reason in
 // its accessible name when the caller may read the Secret but not operate it (finding 2453).
-/**
- * @param {import("playwright").Page | import("playwright").Locator} scope
- * @param {string} label
- * @param {{ name: string }} secret
- * @returns {Promise<import("playwright").Locator>}
- */
-export async function operateDeniedSecretOption(scope, label, secret) {
+
+export async function operateDeniedSecretOption(
+  scope: Scope,
+  label: string,
+  secret: Pick<Secret, "name"> | null | undefined,
+) {
+  assert.ok(secret);
   await scope.getByLabel(label, { exact: true }).fill(secret.name);
   const option = scope.getByRole("option", {
     name: `${secretOptionLabel(secret)} ${SECRET_OPERATE_DENIED}`,
@@ -491,13 +592,8 @@ export async function operateDeniedSecretOption(scope, label, secret) {
 
 // Lists the Secret field `label`'s inline Create new Secret action and returns it, checking that
 // it is disabled with `reason` in its accessible name.
-/**
- * @param {import("playwright").Page | import("playwright").Locator} scope
- * @param {string} label
- * @param {string} reason
- * @returns {Promise<import("playwright").Locator>}
- */
-export async function deniedCreateSecretOption(scope, label, reason) {
+
+export async function deniedCreateSecretOption(scope: Scope, label: string, reason: string) {
   await scope.getByLabel(label, { exact: true }).fill("no matching Secret");
   const option = scope.getByRole("option", {
     name: `Create new Secret... ${reason}`,
@@ -510,7 +606,7 @@ export async function deniedCreateSecretOption(scope, label, reason) {
 
 // Expires every session the app holds, as time passing would: the API then refuses each one.
 // Better Auth's memory adapter stores session expiry as Date values.
-export function expireSessions(fixture) {
+export function expireSessions(fixture: { memoryDatabase: { session: { expiresAt?: Date }[] } }) {
   for (const session of fixture.memoryDatabase.session) {
     session.expiresAt = new Date(Date.now() - 1000);
   }
@@ -523,7 +619,7 @@ export function expireSessions(fixture) {
 // page for 300 ms: keep that where a timer could still show the text, such as the loading
 // timers that run while a test holds a session or admission read. The settled check waits for
 // page frames, so it hangs on a page whose clock is paused (page.clock.pauseAt).
-export async function expectNoText(page, pattern, settled) {
+export async function expectNoText(page: Page, pattern: string | RegExp, settled?: () => unknown) {
   if (settled === undefined) {
     await assert.rejects(
       page.getByText(pattern).waitFor({ state: "visible", timeout: 300 }),
@@ -540,14 +636,21 @@ export async function expectNoText(page, pattern, settled) {
   );
 }
 
-export async function revealNativeConfiguration(page, label) {
+export async function revealNativeConfiguration(page: Page, label: string) {
   await page.getByText(label).click();
 }
 
-export function detailUrl(fixture, namespaceId, agentId, revision, tab) {
+export function detailUrl(
+  fixture: Pick<Fixture, "origin">,
+  namespaceId: string,
+  agentId: string,
+  revision?: unknown,
+  tab?: string,
+) {
   const url = new URL(`/console/agents/${agentId}`, fixture.origin);
   url.searchParams.set("namespace", namespaceId);
   if (revision !== undefined) {
+    assert.ok(typeof revision === "string");
     url.searchParams.set("revision", revision);
   }
   if (tab !== undefined) {
@@ -556,26 +659,29 @@ export function detailUrl(fixture, namespaceId, agentId, revision, tab) {
   return url;
 }
 
-/** @param {ReturnType<typeof apiRequests>} requests */
-export function pathRequests(requests, method, path) {
+export function pathRequests(
+  requests: RequestRecord[],
+  method: string | undefined,
+  path: string | undefined,
+) {
   return requests.filter((request) => request.method === method && request.path === path);
 }
 
-export function secretPostRequests(requests, namespaceId) {
+export function secretPostRequests(requests: RequestRecord[], namespaceId: string) {
   return pathRequests(requests, "POST", `/namespaces/${namespaceId}/secrets`);
 }
 
-export function accessBindingPostRequests(requests, namespaceId) {
+export function accessBindingPostRequests(requests: RequestRecord[], namespaceId: string) {
   return pathRequests(requests, "POST", `/namespaces/${namespaceId}/iam/access-bindings`);
 }
 
 // A bound Secret picker reads "Bound Secret" until its Namespace Secret list loads, and every
 // render (page load, save, reload) starts that load again. Read such a picker only through this.
-export async function waitForInputValue(locator, expected, timeoutMs = 10_000) {
+export async function waitForInputValue(locator: Locator, expected: string, timeoutMs = 10_000) {
   const deadline = Date.now() + timeoutMs;
   let value = await locator.inputValue();
   while (value !== expected && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
     value = await locator.inputValue();
   }
   assert.equal(
@@ -589,7 +695,11 @@ export async function waitForInputValue(locator, expected, timeoutMs = 10_000) {
 // reads, and a picker's Secret list can load before the view is shown (findings 2034, 2626). A
 // test that measures layout waits through this, not waitForInputValue alone: a hidden field
 // measures 0 x 0.
-export async function waitForShownInputValue(locator, expected, timeoutMs = 10_000) {
+export async function waitForShownInputValue(
+  locator: Locator,
+  expected: string,
+  timeoutMs = 10_000,
+) {
   await waitForInputValue(locator, expected, timeoutMs);
   await locator.waitFor({ state: "visible", timeout: timeoutMs });
 }
@@ -598,7 +708,7 @@ export async function waitForShownInputValue(locator, expected, timeoutMs = 10_0
 // after the text a test waits for (finding 2116). A test that expects a control to be usable
 // waits through this; one isEnabled() read can see the earlier state. A check that a control is
 // disabled at a given moment still reads isDisabled() once.
-export async function waitForEnabled(locator, timeoutMs = 10_000) {
+export async function waitForEnabled(locator: Locator, timeoutMs = 10_000) {
   const deadline = Date.now() + timeoutMs;
   await locator.waitFor({ state: "attached", timeout: timeoutMs });
   await waitForCondition(
@@ -612,105 +722,14 @@ export async function waitForEnabled(locator, timeoutMs = 10_000) {
 // page fetches a static asset and this waits for the response. Chromium reports requests in
 // the order the page starts them, so any request started before the sentinel (synchronously,
 // from a microtask or from a zero-delay timer) is already in the apiRequests() log.
-export async function settlePageRequests(page) {
+export async function settlePageRequests(page: Page) {
   await page.evaluate(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
     const response = await fetch(`/console/favicon-16.png?request-sentinel=${Date.now()}`, {
       cache: "no-store",
     });
     await response.arrayBuffer();
   });
-}
-
-// Test-only page hook: counts, per URL path, the page's fetches that have settled, meaning the
-// fetch rejected or the page finished reading the response body. It also counts fetches still
-// in flight, in all and per path; for that count a response without a body ends its fetch at
-// once. Install it before the page loads. A count observed by waitForSettledFetches() or
-// waitForIdleFetches() is read in a later task, so the page's own continuation of that fetch
-// (for example dropping a stale response, or finishing the view's read bookkeeping) has
-// already run.
-export async function trackSettledFetches(page) {
-  await page.addInitScript(() => {
-    const settled = new Map();
-    const pending = new Map();
-    let inFlight = 0;
-    const pathOf = (input) =>
-      new URL(input instanceof Request ? input.url : String(input), globalThis.location.href)
-        .pathname;
-    const record = (input) => {
-      const path = pathOf(input);
-      settled.set(path, (settled.get(path) ?? 0) + 1);
-    };
-    const pageFetch = globalThis.fetch;
-    globalThis.fetch = async (input, init) => {
-      const path = pathOf(input);
-      inFlight += 1;
-      pending.set(path, (pending.get(path) ?? 0) + 1);
-      let open = true;
-      const finish = () => {
-        if (open) {
-          open = false;
-          inFlight -= 1;
-          pending.set(path, pending.get(path) - 1);
-        }
-      };
-      let response;
-      try {
-        response = await pageFetch(input, init);
-      } catch (error) {
-        record(input);
-        finish();
-        throw error;
-      }
-      if (response.body === null) {
-        finish();
-      }
-      for (const method of ["arrayBuffer", "blob", "json", "text"]) {
-        const read = response[method].bind(response);
-        response[method] = async () => {
-          try {
-            return await read();
-          } finally {
-            record(input);
-            finish();
-          }
-        };
-      }
-      return response;
-    };
-    globalThis.settledFetchCount = (path) => settled.get(path) ?? 0;
-    // With `except`, fetches to that path (one a test holds, say) are not counted.
-    globalThis.inFlightFetchCount = (except) =>
-      inFlight - (except === undefined ? 0 : (pending.get(except) ?? 0));
-  });
-}
-
-/**
- * @param {import("playwright").Page} page
- * @param {string} path
- */
-export async function settledFetches(page, path) {
-  /** @type {unknown} */
-  const count = await page.evaluate((target) => globalThis.settledFetchCount(target), path);
-  assert.ok(typeof count === "number", "Settled fetch instrumentation returns a numeric count");
-  return count;
-}
-
-export async function waitForSettledFetches(page, path, count) {
-  await page.waitForFunction(
-    ([target, expected]) => globalThis.settledFetchCount(target) >= expected,
-    [path, count],
-  );
-}
-
-// Waits until no fetch the page has started is still in flight (see trackSettledFetches). The
-// console retains a view, or an Agent tab, for a later return only if none of its reads were
-// still pending when the reader left it; otherwise the return rebuilds it. Call this before
-// leaving a view whose DOM a test later expects to be reused. It checks one moment: a read the
-// page starts later (after a timer) is not covered, so wait for the view's content first. With
-// `except`, fetches to that URL path (a read the test holds) do not count.
-export async function waitForIdleFetches(page, { except } = {}) {
-  await page.waitForFunction((path) => globalThis.inFlightFetchCount(path) === 0, except);
 }
 
 // Expires every session (expireSessions) once the page has no read in flight, so the test
@@ -722,13 +741,21 @@ export async function waitForIdleFetches(page, { except } = {}) {
 // expireSessions stays right when the next step opens a private page with page.goto(): that
 // abandons every read in flight and finds the expiry wherever the page was. A reload is not
 // enough: after a late 401 the page is /console/login, and a reload of it is a plain sign-in.
-export async function expireSessionsWhenSettled(page, fixture, { except } = {}) {
+export async function expireSessionsWhenSettled(
+  page: Page,
+  fixture: { memoryDatabase: { session: { expiresAt?: Date }[] } },
+  { except }: { except?: string } = {},
+) {
   await waitForIdleFetches(page, { except });
   expireSessions(fixture);
 }
 
 // Polls `predicate` until it is truthy; on timeout, `message` alone is the failure.
-export async function waitForCondition(predicate, message, timeoutMs = 5_000) {
+export async function waitForCondition(
+  predicate: () => unknown,
+  message: string,
+  timeoutMs = 5_000,
+) {
   try {
     await waitUntil(message, predicate, { timeoutMs, intervalMs: 50 });
   } catch (error) {
@@ -745,18 +772,48 @@ export async function waitForCondition(predicate, message, timeoutMs = 5_000) {
 // A Preset the product ships in deploy/presets, by file name without ".json" ("default-codex",
 // "standard-codex"): for createConsoleAppFixture's defaultPresets or a Preset create. Each call
 // reads the file again, so callers never share one object.
-export async function shippedPreset(name) {
-  return JSON.parse(
+export async function shippedPreset(name: string) {
+  const preset: unknown = JSON.parse(
     await readFile(new URL(`../../deploy/presets/${name}.json`, import.meta.url), "utf8"),
   );
+  return preset;
 }
 
-export function nativeValues(marker, options = {}) {
+type HarnessConfiguration = ReturnType<typeof createHarnessConfiguration>;
+type NativeValues<Channels> = Omit<HarnessConfiguration, "plugins"> & {
+  channels: Channels;
+  plugins: Omit<NonNullable<HarnessConfiguration["plugins"]>, "entries"> & {
+    entries: Partial<NonNullable<HarnessConfiguration["plugins"]>["entries"]> & {
+      knowledge: { enabled: boolean; config: Record<string, string | number[]> };
+    };
+  };
+};
+export function nativeValues<Channels extends Record<string, unknown>>(
+  marker: string,
+  options: { harnessId?: string; providerModel?: string; channels: Channels },
+): NativeValues<Channels>;
+export function nativeValues(
+  marker: string,
+  options?: { harnessId?: string; providerModel?: string; channels?: undefined },
+): NativeValues<Record<string, never>>;
+export function nativeValues<Channels extends Record<string, unknown>>(
+  marker: string,
+  options: { harnessId?: string; providerModel?: string; channels?: Channels | undefined },
+): NativeValues<Partial<Channels>>;
+export function nativeValues(
+  marker: string,
+  options: {
+    harnessId?: string;
+    providerModel?: string;
+    channels?: Record<string, unknown> | undefined;
+  } = {},
+) {
   const harnessId = options.harnessId ?? "openclaw";
   const providerModel = options.providerModel ?? (harnessId === "codex" ? "gpt-5.1" : "gpt-4.1");
   const base = createHarnessConfiguration(harnessId, providerModel);
-  const basePlugins = base.plugins ?? {};
-  const basePluginEntries = basePlugins.entries ?? {};
+  const knowledgeConfig: Record<string, string | number[]> = { marker, thresholds: [1, 2, 3] };
+  const basePlugins = base.plugins;
+  const basePluginEntries = basePlugins?.entries ?? {};
   return {
     ...base,
     channels: options.channels ?? {},
@@ -766,7 +823,7 @@ export function nativeValues(marker, options = {}) {
         ...basePluginEntries,
         knowledge: {
           enabled: true,
-          config: { marker, thresholds: [1, 2, 3] },
+          config: knowledgeConfig,
         },
       },
     },
@@ -774,7 +831,7 @@ export function nativeValues(marker, options = {}) {
 }
 
 // Exercise the visible chip control rather than writing its hidden serialized value.
-export async function setSlackSelection(input, value) {
+export async function setSlackSelection(input: Locator, value: string) {
   const field = input.locator("..").locator("..");
   const remove = field.locator(".slack-directory-chip button");
   while (await remove.count()) {
@@ -789,7 +846,7 @@ export async function setSlackSelection(input, value) {
   }
 }
 
-export async function slackSelectionValue(input) {
+export async function slackSelectionValue(input: Locator) {
   return input
     .locator("..")
     .locator("..")
@@ -797,8 +854,7 @@ export async function slackSelectionValue(input) {
     .evaluateAll((chips) => chips.map((chip) => chip.getAttribute("title")).join(", "));
 }
 
-/** @param {import("playwright").Page} page @param {string} name */
-export function repositoryCheckbox(page, name) {
+export function repositoryCheckbox(page: Page, name: string) {
   return page
     .locator("#repository-results .repository-result-row")
     .filter({ has: page.getByText(name, { exact: true }) })
@@ -816,17 +872,11 @@ export function repositoryCheckbox(page, name) {
 // the page's request fails rather than being sent again. With `loseResponse` as well, the page's
 // request fails on release although the server applied it. With `fulfill`, the held request
 // gets that response.
-/**
- * @param {import("node:test").TestContext} t
- * @param {import("playwright").Page} page
- * @param {Parameters<import("playwright").Page["route"]>[0]} url
- * @param {{ once?: boolean, method?: string, afterServer?: boolean, loseResponse?: boolean, fulfill?: Parameters<import("playwright").Route["fulfill"]>[0] | null, timeout?: number }} [options]
- * @returns {Promise<{ requested: Promise<import("playwright").APIResponse | undefined>, release: () => void, wasRequested: () => boolean }>}
- */
+
 export async function holdRequests(
-  t,
-  page,
-  url,
+  t: TestContext,
+  page: Page,
+  url: Parameters<Page["route"]>[0],
   {
     once = false,
     method,
@@ -834,28 +884,29 @@ export async function holdRequests(
     loseResponse = false,
     fulfill = null,
     timeout = 10_000,
+  }: {
+    once?: boolean;
+    method?: string;
+    afterServer?: boolean;
+    loseResponse?: boolean;
+    fulfill?: Parameters<Route["fulfill"]>[0] | null;
+    timeout?: number;
   } = {},
 ) {
   if (loseResponse && !afterServer) {
     throw new Error("loseResponse needs afterServer: only a server answer can be lost");
   }
-  let release;
-  const held = new Promise((resolve) => {
-    release = resolve;
-  });
-  let markRequested;
-  let failRequested;
-  let timer;
-  const requested = new Promise((resolve, reject) => {
-    markRequested = (response) => {
-      clearTimeout(timer);
-      resolve(response);
-    };
-    failRequested = (error = new Error(`No ${url} request was held`)) => {
-      clearTimeout(timer);
-      reject(error);
-    };
-  });
+  const { promise: held, resolve: release } = Promise.withResolvers<void>();
+  const { promise: requested, resolve, reject } = Promise.withResolvers<APIResponse | undefined>();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const markRequested = (response: APIResponse | undefined) => {
+    clearTimeout(timer);
+    resolve(response);
+  };
+  const failRequested = (error: unknown = new Error(`No ${url} request was held`)) => {
+    clearTimeout(timer);
+    reject(error);
+  };
   requested.catch(() => {});
   let taken = false;
   await page.route(url, async (route) => {
@@ -864,7 +915,7 @@ export async function holdRequests(
       return;
     }
     taken = true;
-    let response = null;
+    let response: APIResponse | null = null;
     if (afterServer) {
       try {
         response = await route.fetch();
@@ -882,9 +933,11 @@ export async function holdRequests(
       await route.abort("failed").catch(() => {});
       return;
     }
-    await (response || fulfill ? route.fulfill(fulfill ?? { response }) : route.continue()).catch(
-      () => {},
-    );
+    await (
+      response || fulfill
+        ? route.fulfill(fulfill ?? (response ? { response } : {}))
+        : route.continue()
+    ).catch(() => {});
   });
   t.after(() => {
     clearTimeout(timer);
@@ -906,37 +959,91 @@ export async function holdRequests(
 // Records layout shifts from the first paint, naming the elements that moved. Install it with
 // page.addInitScript() before a full load, so no recent input excuses a shift.
 export function recordLayoutShifts() {
-  globalThis.__layoutShifts = [];
-  new globalThis.PerformanceObserver((list) => {
-    for (const entry of list.getEntries()) {
-      if (!entry.hadRecentInput) {
-        globalThis.__layoutShifts.push({
-          value: entry.value,
-          sources: entry.sources.map((source) => ({
-            node: `${source.node?.nodeName}.${source.node?.className}`,
-            text: source.node?.textContent?.slice(0, 40),
-            from: [source.previousRect.y, source.previousRect.height],
-            to: [source.currentRect.y, source.currentRect.height],
-          })),
-        });
+  const capture: NonNullable<typeof globalThis.layoutShiftCapture> = { shifts: [], failure: null };
+  globalThis.layoutShiftCapture = capture;
+  const recordFailure = (error: unknown) => {
+    capture.failure ??=
+      error instanceof Error ? error.message : "Unknown layout-shift capture failure";
+  };
+  const recordEntries: PerformanceObserverCallback = (list) => {
+    try {
+      for (const entry of list.getEntries()) {
+        if (
+          !("hadRecentInput" in entry) ||
+          typeof entry.hadRecentInput !== "boolean" ||
+          !("value" in entry) ||
+          typeof entry.value !== "number" ||
+          !("sources" in entry) ||
+          !Array.isArray(entry.sources)
+        ) {
+          throw new Error("Expected a layout-shift entry");
+        }
+        if (!entry.hadRecentInput) {
+          capture.shifts.push({
+            value: entry.value,
+            sources: entry.sources.map((source: unknown) => {
+              if (
+                source === null ||
+                typeof source !== "object" ||
+                !("node" in source) ||
+                !(
+                  source.node === null ||
+                  source.node === undefined ||
+                  source.node instanceof Node
+                ) ||
+                !("previousRect" in source) ||
+                !(source.previousRect instanceof DOMRectReadOnly) ||
+                !("currentRect" in source) ||
+                !(source.currentRect instanceof DOMRectReadOnly)
+              ) {
+                throw new Error("Expected a layout-shift source");
+              }
+              return {
+                node: `${source.node?.nodeName}.${source.node instanceof Element ? source.node.className : undefined}`,
+                text: source.node?.textContent?.slice(0, 40),
+                from: [source.previousRect.y, source.previousRect.height],
+                to: [source.currentRect.y, source.currentRect.height],
+              };
+            }),
+          });
+        }
       }
+    } catch (error) {
+      recordFailure(error);
     }
-  }).observe({ type: "layout-shift", buffered: true });
+  };
+  try {
+    new globalThis.PerformanceObserver(recordEntries).observe({
+      type: "layout-shift",
+      buffered: true,
+    });
+  } catch (error) {
+    recordFailure(error);
+  }
 }
 
-// Returns the layout shifts recorded since the last call, and their total.
-export async function takeLayoutShifts(page) {
-  /** @type {{ value: number, sources: { node: string, text?: string, from: number[], to: number[] }[] }[]} */
-  const shifts = await page.evaluate(() => globalThis.__layoutShifts.splice(0));
+// Returns the layout shifts recorded since the last call, and their total. A capture failure
+// remains fatal on every drain so an incomplete sample cannot pass as a stable layout.
+export async function takeLayoutShifts(page: Page) {
+  const shifts = await page.evaluate(() => {
+    const capture = globalThis.layoutShiftCapture;
+    if (capture === undefined) {
+      throw new Error("Layout-shift recording was not installed; call recordLayoutShifts first");
+    }
+    if (capture.failure !== null) {
+      throw new Error(`Layout-shift capture failed: ${capture.failure}`);
+    }
+    return capture.shifts.splice(0);
+  });
   return { shift: shifts.reduce((sum, entry) => sum + entry.value, 0), shifts };
 }
 
 // Resolves after the page has painted twice more and run a task after that, so work that has
 // already settled has rendered and any layout shift from it has been reported.
-export const nextFrames = (page) =>
+export const nextFrames = (page: Page) =>
   page.evaluate(
     () =>
-      new Promise((resolve) => {
+      new Promise<void>((resolve) => {
         globalThis.requestAnimationFrame(() =>
           globalThis.requestAnimationFrame(() => setTimeout(resolve)),
         );
@@ -950,33 +1057,33 @@ export const nextFrames = (page) =>
 // shows one of `loadingTexts`; `frames` counts sampled frames. With `until` (a regular
 // expression source), recording stops at the first entry it matches, so the trail ends there and
 // `stopped` turns true.
-/**
- * @param {import("playwright").Page} page
- * @param {string[]} [loadingTexts]
- * @param {{ until?: string | null }} [options]
- */
-export const recordFocusTrail = (page, loadingTexts = [], { until = null } = {}) =>
+
+export const recordFocusTrail = (
+  page: Page,
+  loadingTexts: string[] = [],
+  { until = null }: { until?: string | null } = {},
+) =>
   page.evaluate(
     ({ loadingTexts, until }) => {
-      const ids = new WeakMap();
+      const ids = new WeakMap<Element, number>();
       let next = 0;
-      const state = { trail: [], loadingShown: false, stopped: false, frames: 0 };
-      const record = (node) => {
+      const state: FocusFrames = { trail: [], loadingShown: false, stopped: false, frames: 0 };
+      const record = (node: Element | null) => {
         if (node && node !== globalThis.document.body && !ids.has(node)) {
           ids.set(node, ++next);
         }
         const entry =
           !node || node === globalThis.document.body
             ? "BODY"
-            : `${node.tagName}#${ids.get(node)}: ${node.textContent.trim()}`;
+            : `${node.tagName}#${ids.get(node)}: ${(node.textContent ?? "").trim()}`;
         if (state.trail.at(-1) !== entry) {
           state.trail.push(entry);
           state.stopped ||= until !== null && new RegExp(until).test(entry);
         }
       };
-      const focused = (event) => {
+      const focused = (event: FocusEvent) => {
         if (!state.stopped) {
-          record(event.target);
+          record(event.target instanceof Element ? event.target : null);
         }
       };
       const sample = () => {
@@ -998,11 +1105,8 @@ export const recordFocusTrail = (page, loadingTexts = [], { until = null } = {})
   );
 
 // Stops the focus trail recordFocusTrail() started and returns it.
-/**
- * @param {import("playwright").Page} page
- * @returns {Promise<{ trail: string[], frames: number, loadingShown: boolean, stopped: boolean }>}
- */
-export const stopFocusTrail = (page) =>
+
+export const stopFocusTrail = (page: Page) =>
   page.evaluate(() => {
     globalThis.focusFrames.stopped = true;
     return globalThis.focusFrames;
@@ -1012,7 +1116,7 @@ export const stopFocusTrail = (page) =>
 export const settledView = '.content [aria-live="polite"][aria-busy="false"]:not([inert])';
 
 // Whether the whole of an element is inside the window, so the reader sees it without scrolling.
-export const inViewport = (locator) =>
+export const inViewport = (locator: Locator) =>
   locator.evaluate((node) => {
     const { top, bottom } = node.getBoundingClientRect();
     return top >= 0 && bottom <= globalThis.innerHeight;
@@ -1022,76 +1126,17 @@ export const inViewport = (locator) =>
 export const consoleViewports = Object.freeze([
   Object.freeze({ width: 1440, height: 900 }),
   Object.freeze({ width: 390, height: 844 }),
-]);
-
-// The getAgentDeployment response for an admitted revision when the fixture has no worker. A
-// running record with `nextAttemptAt` is a started deploy whose work waits for its next attempt:
-// it stays running between attempts (finding 2456).
-/**
- * @param {{ id: string, namespaceId: string, agentId: string, createdAt?: string }} revision
- * @param {{
- *   status: import("../../packages/contracts/src/api/resources.ts").AgentDeploymentStatusWire["status"],
- *   error?: import("../../packages/contracts/src/api/resources.ts").AgentDeploymentStatusWire["error"] | undefined,
- *   attempt?: Parameters<typeof deploymentProgressForWork>[1],
- *   nextAttemptAt?: string | undefined,
- *   warnings?: import("../../packages/contracts/src/api/resources.ts").AgentDeploymentStatusWire["warnings"] | undefined,
- * }} options
- * @returns {{ json: import("../../packages/contracts/src/api/resources.ts").AgentDeploymentStatusResponse }}
- */
-export function deploymentStatusResponse(
-  { id: deploymentId, namespaceId, agentId, createdAt },
-  { status, error = null, attempt, nextAttemptAt, warnings = [] },
-) {
-  const waiting = status === "queued" || nextAttemptAt !== undefined;
-  const progress =
-    status === "queued" || status === "running"
-      ? deploymentProgressForWork(
-          {
-            state: waiting ? "queued" : "claimed",
-            availableAt: new Date(nextAttemptAt ?? createdAt),
-          },
-          attempt,
-        )
-      : null;
-  return {
-    json: {
-      data: {
-        deploymentId,
-        namespaceId,
-        agentId,
-        status,
-        cleanup: null,
-        error,
-        warnings,
-        progress,
-      },
-      meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
-    },
-  };
-}
-
-// Answers the browser's read of one deployment with a failed record that carries the API's own
-// error for `code`, so the Agent page shows that version's recovery card.
-export async function routeFailedDeployment(
-  page,
-  fixture,
-  { namespaceId, agentId, deploymentId, code = "DEPENDENCY_UNAVAILABLE" },
-) {
-  const error = persistedDeploymentError(code);
-  const response = deploymentStatusResponse(
-    { id: deploymentId, namespaceId, agentId },
-    { status: "failed", error },
-  );
-  await page.route(
-    `${fixture.origin}/namespaces/${namespaceId}/agents/${agentId}/deployments/${deploymentId}`,
-    (route) => route.fulfill(response),
-  );
-  return error;
-}
+] as const);
 
 // One readable version per history page: the first page lists the newest readable version.
 // `olderRead`, when given, is told of each older-page request and answers when it resolves.
-export function routeOneVersionPerPage(page, fixture, namespace, agent, olderRead) {
+export function routeOneVersionPerPage(
+  page: Page,
+  fixture: Pick<Fixture, "origin">,
+  namespace: Pick<Namespace, "id">,
+  agent: Pick<Agent, "id">,
+  olderRead?: () => unknown,
+) {
   const revisionsPath = `/namespaces/${namespace.id}/agents/${agent.id}/revisions`;
   return page.route(
     (url) => url.origin === fixture.origin && url.pathname === revisionsPath,
@@ -1101,7 +1146,8 @@ export function routeOneVersionPerPage(page, fixture, namespace, agent, olderRea
         await olderRead?.();
       }
       const response = await route.fetch({ url: `${fixture.origin}${revisionsPath}` });
-      const body = await response.json();
+      const body: unknown = await response.json();
+      assert.ok(isRecord(body) && Array.isArray(body.data) && isRecord(body.meta));
       await route.fulfill({
         response,
         json: {
@@ -1115,26 +1161,20 @@ export function routeOneVersionPerPage(page, fixture, namespace, agent, olderRea
 }
 
 // The Agent page's "Viewing version" chooser in `scope`, a page or a locator.
-/**
- * @param {import("playwright").Page | import("playwright").Locator} scope
- * @returns {import("playwright").Locator}
- */
-export const versionChooser = (scope) => scope.getByLabel("Viewing version", { exact: true });
+
+export const versionChooser = (scope: Scope) =>
+  scope.getByLabel("Viewing version", { exact: true });
 
 // Version `n`'s chooser label: "vN" alone or "vN · <outcome>".
-const versionName = (n) => new RegExp(`^v${n}(?: ·|$)`);
+const versionName = (n: number) => new RegExp(`^v${n}(?: ·|$)`);
 
 // Version `n`'s option in the chooser.
-/**
- * @param {import("playwright").Page | import("playwright").Locator} scope
- * @param {number} n
- * @returns {import("playwright").Locator}
- */
-export const versionOption = (scope, n) =>
+
+export const versionOption = (scope: Scope, n: number) =>
   versionChooser(scope).getByRole("option", { name: versionName(n) });
 
 // Waits until the chooser has a selected version, or until version `n` is the selected one.
-export function waitForChosenVersion(scope, n) {
+export function waitForChosenVersion(scope: Scope, n?: number) {
   const chosen =
     n === undefined
       ? versionChooser(scope).locator("option:checked")
@@ -1147,7 +1187,11 @@ export function waitForChosenVersion(scope, n) {
 // Denies AgentRevision read on one version, as an administrator's per-version restriction does.
 // State reads the policy on each request, so it applies from the next read on. Its id is
 // `deny-read-<revision id>`: console-next-steps looks it up to deny only once.
-export function denyRevisionRead(fixture, namespace, revision) {
+export function denyRevisionRead(
+  fixture: Pick<Fixture, "policy">,
+  namespace: Pick<Namespace, "id">,
+  revision: Pick<AgentRevision, "id">,
+) {
   restrict(fixture.policy, "read", "agent_revision", {
     id: `deny-read-${revision.id}`,
     namespaceId: namespace.id,
@@ -1156,31 +1200,36 @@ export function denyRevisionRead(fixture, namespace, revision) {
 }
 
 // The Stop Agent button in its row on the Agent page.
-/** @param {import("playwright").Page} page */
-export const stopAgentButton = (page) =>
+
+export const stopAgentButton = (page: Page) =>
   page
     .getByRole("region", { name: "Stop Agent", exact: true })
     .getByRole("button", { name: "Stop Agent", exact: true });
 
 // WCAG 2 contrast between two sRGB colours given as [r, g, b] in 0-255.
-function contrastRatio(a, b) {
-  const luminance = (rgb) => {
+function contrastRatio(a: number[], b: number[]) {
+  const luminance = (rgb: number[]) => {
     const [r, g, bl] = rgb.map((value) => {
       const channel = value / 255;
       return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
     });
+    assert.ok(r !== undefined && g !== undefined && bl !== undefined);
     return 0.2126 * r + 0.7152 * g + 0.0722 * bl;
   };
   const [light, dark] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  assert.ok(light !== undefined && dark !== undefined);
   return (light + 0.05) / (dark + 0.05);
 }
 
 // A control's top edge, its own fill and the surface painted behind it: every translucent
 // background up to the first opaque one, composited over it (or over white).
-const controlEdge = (locator) =>
+const controlEdge = (locator: Locator) =>
   locator.evaluate((node) => {
-    const rgba = (value) => {
-      const [r, g, b, a = 1] = value.match(/[\d.]+/g).map(Number);
+    const rgba = (value: string) => {
+      const [r, g, b, a = 1] = (value.match(/[\d.]+/g) ?? []).map(Number);
+      if (r === undefined || g === undefined || b === undefined) {
+        throw new Error("Expected RGB channels");
+      }
       return { rgb: [r, g, b], a };
     };
     const layers = [];
@@ -1193,7 +1242,13 @@ const controlEdge = (locator) =>
     }
     let surface = [255, 255, 255];
     for (const layer of layers.reverse()) {
-      surface = surface.map((value, index) => layer.rgb[index] * layer.a + value * (1 - layer.a));
+      surface = surface.map((value, index) => {
+        const channel = layer.rgb[index];
+        if (channel === undefined) {
+          throw new Error("Expected RGB channel");
+        }
+        return channel * layer.a + value * (1 - layer.a);
+      });
     }
     const style = globalThis.getComputedStyle(node);
     return {
@@ -1207,18 +1262,26 @@ const controlEdge = (locator) =>
 // A secondary control on a light surface is marked by its edge alone, so the edge needs 3:1
 // against both its fill (as painted over the surface) and the surface behind it (WCAG 1.4.11).
 // `opaqueFill` also requires the control to paint its own fill.
-export async function assertControlEdge(locator, label, { opaqueFill = false } = {}) {
+export async function assertControlEdge(
+  locator: Locator,
+  label: string,
+  { opaqueFill = false } = {},
+) {
   const { edge, width, fill, surface } = await controlEdge(locator);
   assert.equal(width, "1px", `${label}: edge width`);
   assert.equal(edge.a, 1, `${label}: the edge is opaque`);
   if (opaqueFill) {
     assert.equal(fill.a, 1, `${label}: the fill is opaque`);
   }
-  const painted = fill.rgb.map((value, index) => value * fill.a + surface[index] * (1 - fill.a));
+  const painted = fill.rgb.map((value, index) => {
+    const channel = surface[index];
+    assert.ok(channel !== undefined);
+    return value * fill.a + channel * (1 - fill.a);
+  });
   for (const [against, colour] of [
     ["fill", painted],
     ["surface", surface],
-  ]) {
+  ] as const) {
     const ratio = contrastRatio(edge.rgb, colour);
     assert.ok(
       ratio >= 3,
@@ -1229,25 +1292,38 @@ export async function assertControlEdge(locator, label, { opaqueFill = false } =
 
 // A status line's look and announcement: its class, tone and role, and with `text` its text, all
 // read at one moment (finding 2006).
-export function statusTone(locator, { text = false } = {}) {
-  return locator.evaluate(
-    (node, withText) => ({
-      className: node.className,
-      tone: node.dataset.tone ?? null,
+type StatusTone = {
+  className: string;
+  tone: string | null;
+  role: string | null;
+};
+export function statusTone(
+  locator: Locator,
+  options: { text: true },
+): Promise<StatusTone & { text: string }>;
+export function statusTone(locator: Locator, options?: { text?: false }): Promise<StatusTone>;
+export function statusTone(
+  locator: Locator,
+  options: { text?: boolean },
+): Promise<StatusTone & { text?: string }>;
+export function statusTone(locator: Locator, { text = false }: { text?: boolean } = {}) {
+  return locator.evaluate((node, withText) => {
+    return {
+      className: node.getAttribute("class") ?? "",
+      tone: node.getAttribute("data-tone") ?? null,
       role: node.getAttribute("role"),
-      ...(withText ? { text: node.textContent } : {}),
-    }),
-    text,
-  );
+      ...(withText ? { text: node.textContent ?? "" } : {}),
+    };
+  }, text);
 }
 
 // A long resource ID as the console shortens it in text: its first 12 and last 6 characters.
-export const shortId = (id) => `${id.slice(0, 12)}…${id.slice(-6)}`;
+export const shortId = (id: string) => `${id.slice(0, 12)}…${id.slice(-6)}`;
 
 // A control's accessible description from aria-describedby: the text of each element it names,
 // in order (finding D749). A referenced ID that renders nothing adds nothing.
-/** @param {import("playwright").Locator} locator */
-export function accessibleDescription(locator) {
+
+export function accessibleDescription(locator: Locator) {
   return locator.evaluate((node) =>
     (node.getAttribute("aria-describedby") ?? "")
       .split(/\s+/)
@@ -1259,7 +1335,7 @@ export function accessibleDescription(locator) {
 }
 
 // Whether a reload or tab close would ask first: the console cancels beforeunload.
-export function asksBeforeUnload(page) {
+export function asksBeforeUnload(page: Page) {
   return page.evaluate(() => {
     const event = new Event("beforeunload", { cancelable: true });
     globalThis.dispatchEvent(event);
@@ -1271,7 +1347,12 @@ export function asksBeforeUnload(page) {
 // it is in flight (finding 2181). It holds the next `method` request to `url`, which `start`
 // sends, until the page is shown to ask; then it lets the answer through, waits for `settled`
 // and checks the page no longer asks. The real server answers the write; only its answer waits.
-export async function expectWriteAsksBeforeUnload(t, page, url, { method, start, settled }) {
+export async function expectWriteAsksBeforeUnload(
+  t: TestContext,
+  page: Page,
+  url: Parameters<Page["route"]>[0],
+  { method, start, settled }: { method: string; start: () => unknown; settled: () => unknown },
+) {
   assert.equal(await asksBeforeUnload(page), false, "the page asked before the write started");
   const held = await holdRequests(t, page, url, {
     method,
@@ -1287,13 +1368,13 @@ export async function expectWriteAsksBeforeUnload(t, page, url, { method, start,
 }
 
 // Whether the locator's element holds focus.
-export function hasFocus(locator) {
-  return locator.evaluate((node) => node === globalThis.document.activeElement);
+export function hasFocus(locator: Pick<ElementHandle<HTMLElement | SVGElement>, "evaluate">) {
+  return locator.evaluate((node: Element) => node === globalThis.document.activeElement);
 }
 
 // The ID of the element that holds focus in the page: "" for one without an ID, null when nothing
 // does.
-export function focusedId(page) {
+export function focusedId(page: Page) {
   return page.evaluate(() => globalThis.document.activeElement?.id ?? null);
 }
 
@@ -1303,10 +1384,17 @@ export function focusedId(page) {
 // select or text field) an arrow key or typing does nothing. Nothing runs: no handler changes its
 // reason or moves focus, no form submits, no checkbox flips, no select or field changes its value,
 // and nothing is written.
-export async function expectReachableReason(page, control, reason) {
+export async function expectReachableReason(
+  page: Page,
+  control: Locator,
+  reason: string | null | undefined,
+) {
   await control.waitFor();
   await page.evaluate(() => {
-    globalThis.document.activeElement?.blur();
+    const active = globalThis.document.activeElement;
+    if (active instanceof HTMLElement || active instanceof SVGElement) {
+      active.blur();
+    }
     globalThis.unavailableActivations = [];
     for (const type of ["submit", "change", "input"]) {
       globalThis.document.addEventListener(
@@ -1324,19 +1412,20 @@ export async function expectReachableReason(page, control, reason) {
   const state = () =>
     control.evaluate((node) => ({
       focused: node === globalThis.document.activeElement,
-      disabled: node.disabled,
+      disabled: "disabled" in node ? node.disabled : undefined,
       ariaDisabled: node.getAttribute("aria-disabled"),
-      checked: node.type === "checkbox" ? node.checked : null,
-      value: node.value,
+      checked: node instanceof HTMLInputElement && node.type === "checkbox" ? node.checked : null,
+      value: "value" in node ? node.value : undefined,
     }));
   const before = await state();
   assert.deepEqual(before, { ...before, focused: true, disabled: false, ariaDisabled: "true" });
   assert.equal(await accessibleDescription(control), reason);
   const editable = await control.evaluate(
-    (node) => node.localName === "select" || (node.localName === "input" && node.type === "text"),
+    (node) =>
+      node.localName === "select" || (node instanceof HTMLInputElement && node.type === "text"),
   );
-  const writes = [];
-  const onRequest = (request) => {
+  const writes: string[] = [];
+  const onRequest = (request: Request) => {
     if (!["GET", "HEAD"].includes(request.method())) {
       writes.push(`${request.method()} ${request.url()}`);
     }
@@ -1364,17 +1453,24 @@ export async function expectReachableReason(page, control, reason) {
 // dialog's close event fires a task later, so this is the reader who has already moved on, for
 // example to a field they type in (finding 2862). Resolves after the dialog's own close handlers
 // ran, with whether `elsewhere` still holds focus.
-export async function focusKeptOverClose(close, elsewhere) {
+export async function focusKeptOverClose(close: Locator, elsewhere: Locator) {
   const target = await elsewhere.elementHandle();
+  assert.ok(target);
   try {
     return await close.evaluate(
       (control, node) =>
-        new Promise((resolve) => {
-          control
-            .closest("dialog")
-            .addEventListener("close", () => resolve(globalThis.document.activeElement === node), {
+        new Promise<boolean>((resolve) => {
+          const dialog = control.closest("dialog");
+          if (!dialog || !(control instanceof HTMLElement)) {
+            throw new Error("Expected a dialog close control");
+          }
+          dialog.addEventListener(
+            "close",
+            () => resolve(globalThis.document.activeElement === node),
+            {
               once: true,
-            });
+            },
+          );
           control.click();
           node.focus();
         }),
@@ -1389,12 +1485,16 @@ export async function focusKeptOverClose(close, elsewhere) {
 // whenever it would show its bubble (a submit without novalidate, or reportValidity); the
 // console's check reads `validity` and fires none. Install it before the page loads; the
 // returned function reads the targets so far.
-export async function countInvalidEvents(page) {
+export async function countInvalidEvents(page: Page) {
   await page.addInitScript(() => {
     globalThis.invalidEvents = [];
     globalThis.document.addEventListener(
       "invalid",
-      (event) => globalThis.invalidEvents.push(event.target.id || event.target.tagName),
+      (event) => {
+        if (event.target instanceof Element) {
+          globalThis.invalidEvents.push(event.target.id || event.target.tagName);
+        }
+      },
       true,
     );
   });
@@ -1405,58 +1505,69 @@ export async function countInvalidEvents(page) {
 // `reason`, and the row is then written through the Configuration Driver, as an older release
 // left it. `configurationDriver` is the fixture's test Configuration Driver.
 export async function storeRefusedConfiguration(
-  fixture,
-  configurationDriver,
-  agent,
-  values,
-  reason,
+  fixture: Pick<Fixture, "request">,
+  configurationDriver: ReturnType<
+    typeof import("../helpers/configuration-driver.mjs").createTestConfigurationDriver
+  >,
+  agent: Pick<Agent, "namespaceId" | "configurationId">,
+  values: Record<string, unknown>,
+  reason: string,
 ) {
   const configurationPath = `/namespaces/${agent.namespaceId}/configurations/${agent.configurationId}`;
   const refusedSave = await fixture.request("PATCH", configurationPath, { body: { values } });
   assert.equal(refusedSave.status, 400, JSON.stringify(refusedSave.body));
-  assert.equal(refusedSave.body.error.message, reason);
-  const stored = configurationDriver.stored({
+  assert.equal(refusalMessage(refusedSave.body), reason);
+  const stored: unknown = configurationDriver.stored({
     namespaceId: agent.namespaceId,
     id: agent.configurationId,
   });
-  assert.ok(stored);
+  assert.ok(isRecord(stored));
   await configurationDriver.update({ ...stored, values });
 }
 
-/**
- * @param {import("playwright").Page} page
- * @returns {import("playwright").Locator}
- */
-export const draftActions = (page) => page.locator(".agent-draft-actions");
-export const draftDeployButton = (card) =>
+export const draftActions = (page: Page) => page.locator(".agent-draft-actions");
+export const draftDeployButton = (card: Locator) =>
   card.getByRole("button", { name: "Deploy new version", exact: true });
-export const draftFirstStep = (card) =>
+export const draftFirstStep = (card: Locator) =>
   card.getByRole("listitem").first().locator(".checklist-detail");
 
 // Agent detail holds Deploy for a stored draft deploy admission refuses: the draft card shows
 // deploy's exact refusal, Deploy is disabled, nothing says ready, and the first step opens with
 // `step` (the step text up to and including its " · " separator).
-export async function expectDeployHeld(card, reason, step, message) {
+export async function expectDeployHeld(
+  card: Locator,
+  reason: string,
+  step: string,
+  message: string = "",
+) {
   await card.getByText(reason, { exact: true }).waitFor();
   assert.equal(await draftDeployButton(card).isDisabled(), true, message);
   assert.equal(await card.getByText("Ready to deploy.").count(), 0, message);
-  assert.ok((await draftFirstStep(card).textContent()).startsWith(step), message);
+  assert.ok(((await draftFirstStep(card).textContent()) ?? "").startsWith(step), message);
 }
 
 // Deploy admission refuses the stored draft with the exact text the page shows, before any
 // revision.
-export async function expectDeployRefused(fixture, agent, reason) {
+export async function expectDeployRefused(
+  fixture: Pick<Fixture, "request">,
+  agent: Pick<Agent, "namespaceId" | "id">,
+  reason: string | null | undefined,
+) {
   const refusedDeploy = await fixture.request(
     "POST",
     `/namespaces/${agent.namespaceId}/agents/${agent.id}/deploy`,
   );
   assert.equal(refusedDeploy.status, 400, JSON.stringify(refusedDeploy.body));
-  assert.equal(refusedDeploy.body.error.message, reason, JSON.stringify(refusedDeploy.body));
+  assert.equal(refusalMessage(refusedDeploy.body), reason, JSON.stringify(refusedDeploy.body));
 }
 
 // Following the held step in the Configuration editor: saving `values` makes the draft ready,
 // with Deploy enabled and the first step saved.
-export async function saveConfigurationUntilReady(page, card, values) {
+export async function saveConfigurationUntilReady(
+  page: Page,
+  card: Locator,
+  values: Record<string, unknown>,
+) {
   const edit = page.getByRole("button", { name: "Edit Configuration", exact: true });
   await edit.scrollIntoViewIfNeeded();
   await edit.click();
@@ -1464,15 +1575,114 @@ export async function saveConfigurationUntilReady(page, card, values) {
   await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
   await card.getByText("Ready to deploy.", { exact: true }).waitFor();
   assert.equal(await draftDeployButton(card).isDisabled(), false);
-  assert.match(await draftFirstStep(card).textContent(), /^Saved · Configuration /);
+  assert.match((await draftFirstStep(card).textContent()) ?? "", /^Saved · Configuration /);
 }
 
 // The page fits the viewport: no horizontal scroll.
-export async function expectNoHorizontalScroll(page) {
+export async function expectNoHorizontalScroll(page: Page) {
   assert.equal(
     await page.evaluate(
       () => globalThis.document.documentElement.scrollWidth <= globalThis.innerWidth,
     ),
     true,
   );
+}
+
+// The in-memory fixture has no worker records. A test that supplies a failed deployment
+// record builds its error with the API's own code, so the console shows the exact code,
+// message and data that the API and occ return for that failure.
+export function persistedDeploymentError(
+  code: NonNullable<Parameters<typeof deploymentErrorForWork>[0]["reasonCode"]>,
+  data?: Parameters<typeof deploymentErrorForWork>[0]["resultData"],
+) {
+  const error = deploymentErrorForWork({
+    state: "failed_permanent",
+    reasonCode: code,
+    ...(data === undefined ? {} : { resultData: data }),
+  });
+  assert.ok(error);
+  assert.ok(Check(AgentDeploymentStatusSchema.properties.error, error));
+  return error;
+}
+
+// The getAgentDeployment response for an admitted revision when the fixture has no worker. A
+// running record with `nextAttemptAt` is a started deploy whose work waits for its next attempt:
+// it stays running between attempts (finding 2456).
+export function deploymentStatusResponse(
+  {
+    id: deploymentId,
+    namespaceId,
+    agentId,
+    createdAt,
+  }: Pick<AgentRevisionWire, "id" | "namespaceId" | "agentId"> & {
+    createdAt?: AgentRevisionWire["createdAt"] | undefined;
+  },
+  {
+    status,
+    error = null,
+    attempt,
+    nextAttemptAt,
+    warnings = [],
+  }: {
+    status: AgentDeploymentStatusWire["status"];
+    error?: AgentDeploymentStatusWire["error"] | undefined;
+    attempt?: Parameters<typeof deploymentProgressForWork>[1];
+    nextAttemptAt?: string | undefined;
+    warnings?: AgentDeploymentStatusWire["warnings"] | undefined;
+  },
+): { json: AgentDeploymentStatusResponse } {
+  const waiting = status === "queued" || nextAttemptAt !== undefined;
+  let progress: AgentDeploymentStatusWire["progress"] = null;
+  if (status === "queued" || status === "running") {
+    const availableAt = nextAttemptAt ?? createdAt;
+    assert.ok(
+      availableAt !== undefined,
+      "A pending deployment needs its revision or next-attempt timestamp",
+    );
+    progress = deploymentProgressForWork(
+      { state: waiting ? "queued" : "claimed", availableAt: new Date(availableAt) },
+      attempt,
+    );
+  }
+  return {
+    json: {
+      data: {
+        deploymentId,
+        namespaceId,
+        agentId,
+        status,
+        cleanup: null,
+        error,
+        warnings,
+        progress,
+      },
+      meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
+    },
+  };
+}
+
+// Answers the browser's read of one deployment with a failed record that carries the API's own
+// error for `code`, so the Agent page shows that version's recovery card.
+export async function routeFailedDeployment(
+  page: Page,
+  fixture: Pick<Fixture, "origin">,
+  {
+    namespaceId,
+    agentId,
+    deploymentId,
+    code = "DEPENDENCY_UNAVAILABLE",
+  }: Pick<AgentDeploymentStatusWire, "namespaceId" | "agentId" | "deploymentId"> & {
+    code?: Parameters<typeof persistedDeploymentError>[0] | undefined;
+  },
+) {
+  const error = persistedDeploymentError(code);
+  const response = deploymentStatusResponse(
+    { id: deploymentId, namespaceId, agentId },
+    { status: "failed", error },
+  );
+  await page.route(
+    `${fixture.origin}/namespaces/${namespaceId}/agents/${agentId}/deployments/${deploymentId}`,
+    (route) => route.fulfill(response),
+  );
+  return error;
 }

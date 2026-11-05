@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
 import type { AgentPluginCredentialSlot, PluginDriver } from "@openclaw-enterprise/contracts";
+import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { assertWorkerAccountRelease } from "../helpers/worker-account-release.mjs";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import {
@@ -221,10 +223,10 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
   Object.assign(computeDriver, {
     resolveSandboxNamespace: async (namespace: { id: string }) => ({
       ...namespace,
-      name: `oce-${namespace.id.slice(3, 11)}`,
+      name: kubernetesNamespaceName(namespace.id),
     }),
   });
-  const { providers, transport, refresh } = selectTemplateDrivers(controller, {
+  const { providers, transport, refresh, gateway } = selectTemplateDrivers(controller, {
     selectGateway: pluginWorkflow,
   });
   const makeNamespace = async () => {
@@ -483,6 +485,7 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
     providers,
     refresh,
     transport,
+    gateway,
     rotateClientSecret: async (source: string) => {
       const replacement = await rotateKeycloakClientSecret(
         issuer!,
@@ -854,6 +857,11 @@ test(
       state,
       transport,
       providers,
+      gateway,
+      refresh,
+      preparedTokens,
+      secretDriver,
+      principal,
       rotateClientSecret,
       setOptionalScopeVisible,
       pool,
@@ -1493,5 +1501,60 @@ test(
       (await state.read((v) => v.revisions.findRevision(namespaceId, googleAgent, revisionId)))?.id,
       revisionId,
     );
+    // This Agent's first revision uses real Kubernetes admission; earlier fixture deployments
+    // intentionally omit runtime registration and cannot be adopted as historical native launches.
+    const workerAgent = await owner("POST", agents, {
+      name: "Worker release ordering",
+      executionMode: "dedicated",
+      configurationId: config.json().data.id,
+      plugins: { [cli.id]: { enabled: true } },
+    });
+    assert.equal(workerAgent.statusCode, 201, workerAgent.body);
+    const workerAgentId = workerAgent.json().data.id;
+    const workerAccount = await owner(
+      "POST",
+      path(workerAgentId) + "/connections/" + google.credentialSourceId,
+    );
+    assert.equal(workerAccount.statusCode, 204, workerAccount.body);
+    const workerModelGrant = await owner("POST", base + "/iam/access-bindings", {
+      subjectKind: "identity",
+      subjectId: workerAgent.json().data.servicePrincipalId,
+      roleId: modelRole.json().data.id,
+      resourceKind: "credential_source",
+      resourceId: modelSourceId,
+    });
+    assert.equal(workerModelGrant.statusCode, 201, workerModelGrant.body);
+    const workerBinding = await owner("PATCH", path(workerAgentId), {
+      configurationId: config.json().data.id,
+      harnessAuth: { method: "credential_source", sourceId: modelSourceId },
+      credentialSources: [{ sourceId: google.credentialSourceId }, { sourceId: modelSourceId }],
+      plugins: {
+        [cli.id]: {
+          enabled: true,
+          driverPolicy: {
+            releaseSha256: cli.releaseSha256,
+            credentials: { account: google.credentialSourceId },
+          },
+        },
+      },
+    });
+    assert.equal(workerBinding.statusCode, 200, workerBinding.body);
+    await assertWorkerAccountRelease(t, {
+      controller,
+      state,
+      pool,
+      principal,
+      secretDriver,
+      gateway,
+      refresh,
+      preparedTokens,
+      plugin: new OCCPluginDriver(),
+      namespaceId,
+      agentId: workerAgentId,
+      sourceId: google.credentialSourceId,
+      expectedToken: google.accessToken,
+      transport,
+      providers,
+    });
   },
 );

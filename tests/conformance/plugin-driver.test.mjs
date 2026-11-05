@@ -7,7 +7,10 @@ import {
   CodexPluginDriver,
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import {
+  managedMcpCredentialBindings,
+  managedMcpInstalls,
+} from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import {
   codexCatalogEntries,
   codexOpenClawConfiguration,
@@ -184,7 +187,7 @@ test("OpenClaw Plugin Driver lists the vetted Diffs catalog entry", async () => 
   });
 });
 
-test("dedicated OpenClaw admits one managed package and validates Slack's reviewed account binding", async () => {
+test("dedicated OpenClaw admits Google and Slack together and validates Slack's reviewed account binding", async () => {
   const driver = new OCCPluginDriver();
   const dedicated = context("dedicated");
   const [google, slack] = await driver.listCatalog({
@@ -200,7 +203,10 @@ test("dedicated OpenClaw admits one managed package and validates Slack's review
     releaseSha256: managedMcpInstalls.find(({ id }) => id === slack.id).releaseSha256,
     credentials: { account: "cs_slack" },
   };
-  const selections = { [slack.id]: { enabled: true, driverPolicy: slackPolicy } };
+  const selections = {
+    [google.id]: { enabled: true },
+    [slack.id]: { enabled: true, driverPolicy: slackPolicy },
+  };
   driver.validatePolicies(selections);
   assert.throws(
     () =>
@@ -255,22 +261,91 @@ test("dedicated OpenClaw admits one managed package and validates Slack's review
     () => driver.credentials.validate(selections, [{ ...broaderRestSource, id: source.id }]),
     /Select a ready Slack account/,
   );
+  const mixedPlacement = { ...selections, ...occSelection() };
+  driver.validatePolicies(mixedPlacement);
   assert.throws(
     () =>
-      driver.validatePolicies({ [google.id]: { enabled: true }, [slack.id]: { enabled: true } }),
-    /must be the only plugin selected/,
-  );
-  driver.validatePolicies({ [google.id]: { enabled: true } });
-  assert.throws(
-    () => driver.validatePolicies({ ...occSelection(), [google.id]: { enabled: true } }),
-    /must be the only plugin selected/,
+      driver.validatePlacement(
+        mixedPlacement,
+        { id: "openclaw", mode: "dedicated" },
+        "occ/kubernetes",
+      ),
+    /Select occ-plugin:diffs on an embedded OpenClaw Agent. Use a dedicated OpenClaw Agent for Google Workspace, Slack/,
   );
   assert.throws(
     () =>
       driver.validatePolicies({
-        [google.id]: { enabled: true, credentialSourceId: "src_personal" },
+        ...selections,
+        ...occSelection({ tools: { unknown: { enabled: true } } }),
       }),
-    /optional credential slot/,
+    { name: "PluginPolicyValidationError" },
+  );
+  assert.throws(
+    () =>
+      driver.validatePolicies({
+        ...selections,
+        [slack.id]: { enabled: true, credentialSourceId: "src_personal" },
+      }),
+    /Slack package supports enablement and an optional credential slot/,
+  );
+});
+
+test("managed MCP bindings preserve both servers' credentials and require unambiguous runtime names", () => {
+  const [first] = managedMcpInstalls;
+  const second = {
+    ...first,
+    id: "occ-plugin:team@1.0.0",
+    runtimeName: "team",
+    server: first.server + "_team",
+    url: "https://team.example.test/mcp",
+    endpoint: { ...first.endpoint, host: "team.example.test" },
+    credentialEnvironment: "TEAM_MCP_TOKEN",
+  };
+  const installs = [first, second];
+  const select = (install, sourceId, tool) => ({
+    enabled: true,
+    driverPolicy: {
+      releaseSha256: install.releaseSha256,
+      credentials: { [install.slotId]: sourceId },
+      toolNames: [tool],
+    },
+  });
+  const selections = {
+    [first.id]: select(first, "cs_first", "team_read"),
+    [second.id]: select(second, "cs_second", "write"),
+  };
+  assert.deepEqual(
+    managedMcpCredentialBindings(selections, installs).map(({ install, sourceId, toolNames }) => [
+      install.id,
+      sourceId,
+      toolNames,
+    ]),
+    [
+      [first.id, "cs_first", ["team_read"]],
+      [second.id, "cs_second", ["write"]],
+    ],
+  );
+  assert.throws(
+    () =>
+      managedMcpCredentialBindings(
+        {
+          ...selections,
+          [second.id]: select(second, "cs_second", "READ"),
+        },
+        installs,
+      ),
+    /same Gateway name/,
+  );
+  assert.throws(
+    () =>
+      managedMcpCredentialBindings(
+        {
+          [first.id]: { enabled: true },
+          [second.id]: { enabled: true },
+        },
+        [first, { ...second, server: first.server }],
+      ),
+    /same worker server name/,
   );
 });
 

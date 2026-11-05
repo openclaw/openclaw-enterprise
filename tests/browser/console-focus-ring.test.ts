@@ -17,7 +17,7 @@ import {
   repositoryCheckbox,
   selectSecret,
   settledView,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import { createRepositoryLaunchFixture } from "./console-agents-test-support.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 

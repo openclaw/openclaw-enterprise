@@ -34,6 +34,7 @@ import {
   normalizeConnectionDestinations,
   validateConnectionTemplateAuthorization,
   ConnectionTemplateValidationError,
+  MAX_AGENT_CREDENTIAL_SOURCES,
   assertExecutionAdmission,
   assertExecutionReleaseAllowed,
   credentialFreeMetadataGrant,
@@ -1250,7 +1251,6 @@ const CONNECTION_SESSION_TTL_MS = 10 * 60 * 1000;
 const PENDING_CONNECTION: unique symbol = Symbol("pending-connection");
 const CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES =
   "Credential source Secrets cannot cross Namespaces.";
-const MAX_AGENT_CREDENTIAL_SOURCES = 8;
 /** Overall deadline for one runtime status or log request, Driver calls included. */
 const RUNTIME_LOG_REQUEST_TIMEOUT_MS = 10_000;
 // Bounds the Sandbox Driver's Harness record read that runs beside Compute diagnostics.
@@ -5465,7 +5465,9 @@ export class OpenClawController {
       const bindings = agent.credentialSources ?? [];
       if (!bindings.some(({ sourceId }) => sourceId === credentialSourceId)) {
         if (bindings.length >= MAX_AGENT_CREDENTIAL_SOURCES) {
-          throw new ResourceStateConflictError("The Agent already lists eight credential sources.");
+          throw new ResourceStateConflictError(
+            `The Agent already lists ${MAX_AGENT_CREDENTIAL_SOURCES} credential sources.`,
+          );
         }
         const resultingSources = [...bindings, { sourceId: credentialSourceId }];
         const delegated = new Set(
@@ -12640,7 +12642,7 @@ export class OpenClawController {
             if (!bindings.some((b) => b.sourceId === sourceId)) {
               if (bindings.length >= MAX_AGENT_CREDENTIAL_SOURCES) {
                 throw new ResourceStateConflictError(
-                  "The Agent already lists eight credential sources.",
+                  `The Agent already lists ${MAX_AGENT_CREDENTIAL_SOURCES} credential sources.`,
                 );
               }
               resultingSources = [...bindings, { sourceId }];
