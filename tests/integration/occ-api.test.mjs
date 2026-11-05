@@ -11561,6 +11561,37 @@ test("deploying Slack freezes the Agent's discovered tool selection and keeps it
   assert.match(forbidden.body.error.message, /CredentialSource operate/);
   assert.equal(tokenReads, 0);
   assert.deepEqual(upstream, []);
+  // The editor loses source access while the external Configuration Driver resolves the
+  // pre-dispatch placement. Their grant must be checked again before the peer sees a bearer.
+  const editorSource = {
+    id: "editor-slack",
+    namespaceId: namespace.id,
+    subjectKind: "identity",
+    subjectId: editor.principal.id,
+    roleId,
+    resourceKind: "credential_source",
+    resourceId: source.data.id,
+  };
+  state.bindings.push(editorSource);
+  const { configurationDriver } = controller.fixture;
+  const readConfiguration = configurationDriver.read;
+  beforeTokenUse = () => {
+    configurationDriver.read = async (...args) => {
+      const saved = await readConfiguration.apply(configurationDriver, args);
+      configurationDriver.read = readConfiguration;
+      assert.equal(state.bindings.pop(), editorSource);
+      return saved;
+    };
+  };
+  const revoked = await controller.request("POST", `${agentPath}/plugins/details`, {
+    body: discovery,
+    session: editor.session,
+  });
+  assertApiError(revoked, 403, "FORBIDDEN");
+  assert.equal(tokenReads, 1);
+  assert.deepEqual(upstream, []);
+  beforeTokenUse = () => {};
+  tokenReads = 0;
   state.bindings.pop();
 
   const agentBinding = state.bindings.pop();

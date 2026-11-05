@@ -8777,50 +8777,41 @@ export class OpenClawController {
     namespaceId: string,
     agentId: string,
   ) {
-    const resource = { kind: "agent" as const, id: agentId, namespaceId };
-    await this.authorize(principalId, "read", resource);
-    await this.authorize(principalId, "update", resource);
-    return this.read(async (state) => {
-      const namespace = await this.exactNamespace(state, namespaceId);
-      const agent = await state.agents.findAgent(namespace.id, agentId);
-      if (agent === undefined) {
-        throw new ScopeViolationError(
-          "The Agent does not belong to the exact Installation and Namespace.",
-        );
-      }
-      if (agent.status !== "active") {
-        throw new AgentDeletingError();
-      }
-      const { driver } = await this.savedPluginTarget(state, agent);
-      const sources: CredentialSource[] = [];
-      if (driver.credentials && agent.executionMode === "dedicated") {
-        for (const { sourceId } of agent.credentialSources ?? []) {
-          const ref = { kind: "credential_source" as const, namespaceId, id: sourceId };
-          if (
-            (await this.canRead(principalId, ref)) &&
-            (await this.authorizationDecision(principalId, "operate", ref)).decision.allowed &&
-            (await this.authorizationDecision(agent.servicePrincipalId, "operate", ref)).decision
-              .allowed
-          ) {
-            const source = await state.credentialSources.findCredentialSource(
-              namespaceId,
-              sourceId,
-            );
-            if (source?.state === "ready") {
-              sources.push(source);
+    return this.withSavedPluginTarget(
+      principalId,
+      namespaceId,
+      agentId,
+      async ({ state, agent, driver }) => {
+        const sources: CredentialSource[] = [];
+        if (driver.credentials && agent.executionMode === "dedicated") {
+          for (const { sourceId } of agent.credentialSources ?? []) {
+            const ref = { kind: "credential_source" as const, namespaceId, id: sourceId };
+            if (
+              (await this.canRead(principalId, ref)) &&
+              (await this.authorizationDecision(principalId, "operate", ref)).decision.allowed &&
+              (await this.authorizationDecision(agent.servicePrincipalId, "operate", ref)).decision
+                .allowed
+            ) {
+              const source = await state.credentialSources.findCredentialSource(
+                namespaceId,
+                sourceId,
+              );
+              if (source?.state === "ready") {
+                sources.push(source);
+              }
             }
           }
         }
-      }
-      return immutableCopy({
-        driver: { id: driver.id, implementation: driver.implementation },
-        ...driver.policyCapabilities,
-        ...(driver.credentials && agent.executionMode === "dedicated"
-          ? { credentialSlots: driver.credentials.choices(sources) }
-          : {}),
-        discoveryCredential: driver.discoveryCredential ?? "required",
-      });
-    });
+        return immutableCopy({
+          driver: { id: driver.id, implementation: driver.implementation },
+          ...driver.policyCapabilities,
+          ...(driver.credentials && agent.executionMode === "dedicated"
+            ? { credentialSlots: driver.credentials.choices(sources) }
+            : {}),
+          discoveryCredential: driver.discoveryCredential ?? "required",
+        });
+      },
+    );
   }
 
   async discoverSavedAgentPlugins(
@@ -8935,25 +8926,68 @@ export class OpenClawController {
     return entry;
   }
 
-  private async savedPluginTarget(state: PlatformReadView, agent: Readonly<Agent>) {
-    const metadata = await state.configurations.findConfiguration(
-      agent.namespaceId,
-      agent.configurationId,
-    );
-    if (metadata === undefined) {
-      throw new ScopeViolationError("The Agent Configuration is unavailable in its Namespace.");
-    }
-    const configuration = await this.savedConfigurationReader(metadata)();
-    const harness = {
-      id: resolveConfiguredHarnessId(
-        configuration.values,
-        this.modelPolicyAgent(agent.executionMode),
-      ),
-      mode: agent.executionMode,
+  private async withSavedPluginTarget<T>(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    use: (target: {
+      state: PlatformReadView;
+      namespace: Readonly<Namespace>;
+      agent: Readonly<Agent>;
+      driver: PluginDriver;
+      harness: Pick<RevisionHarnessDescriptor, "id" | "mode">;
+    }) => Promise<T>,
+  ): Promise<T> {
+    const resource = { kind: "agent" as const, id: agentId, namespaceId };
+    const authorizeAgent = async () => {
+      await this.authorize(principalId, "read", resource);
+      await this.authorize(principalId, "update", resource);
     };
-    const driver = this.pluginDriver(harness.id);
-    this.pluginOwner(driver, agent);
-    return { driver, harness };
+    const readMetadata = async (state: PlatformReadView) => {
+      const namespace = await this.exactNamespace(state, namespaceId);
+      const agent = await state.agents.findAgent(namespace.id, agentId);
+      if (!agent) {
+        throw new ScopeViolationError(
+          "The Agent does not belong to the exact Installation and Namespace.",
+        );
+      }
+      if (agent.status !== "active") {
+        throw new AgentDeletingError();
+      }
+      const metadata = await state.configurations.findConfiguration(
+        namespace.id,
+        agent.configurationId,
+      );
+      if (!metadata) {
+        throw new ScopeViolationError("The Agent Configuration is unavailable in its Namespace.");
+      }
+      return { namespace, agent, metadata };
+    };
+    await authorizeAgent();
+    const { metadata } = await this.read(readMetadata);
+    // A Configuration Driver may read Kubernetes. Release the database connection first.
+    const configuration = await this.savedConfigurationReader(metadata)();
+    await authorizeAgent();
+    return this.read(async (state) => {
+      const current = await readMetadata(state);
+      if (
+        current.metadata.id !== metadata.id ||
+        current.metadata.generation !== metadata.generation
+      ) {
+        throw new ResourceStateConflictError("The Agent Configuration changed. Refresh and retry.");
+      }
+      const { agent, namespace } = current;
+      const harness = {
+        id: resolveConfiguredHarnessId(
+          configuration.values,
+          this.modelPolicyAgent(agent.executionMode),
+        ),
+        mode: agent.executionMode,
+      };
+      const driver = this.pluginDriver(harness.id);
+      this.pluginOwner(driver, agent);
+      return use({ state, namespace, agent, driver, harness });
+    });
   }
 
   private async discoverManagedMcpTools(
@@ -8965,44 +8999,43 @@ export class OpenClawController {
     readTools: ManagedMcpToolReader,
     signal?: AbortSignal,
   ): Promise<PluginCatalogEntry> {
-    const agentRef = { kind: "agent" as const, id: agentId, namespaceId };
     const sourceRef = { kind: "credential_source" as const, id: connection.sourceId, namespaceId };
     const currentTarget = async () => {
-      await this.authorize(principalId, "read", agentRef);
-      await this.authorize(principalId, "update", agentRef);
       await this.authorize(principalId, "operate", sourceRef);
-      return this.read(async (state) => {
-        const namespace = await this.exactNamespace(state, namespaceId);
-        const agent = await state.agents.findAgent(namespace.id, agentId);
-        if (!agent) {
-          throw new ScopeViolationError(
-            "The Agent does not belong to the exact Installation and Namespace.",
+      const target = await this.withSavedPluginTarget(
+        principalId,
+        namespaceId,
+        agentId,
+        async ({ state, namespace, agent, driver, harness }) => {
+          const source = await state.credentialSources.findCredentialSource(
+            namespace.id,
+            sourceRef.id,
           );
-        }
-        if (agent.status !== "active") {
-          throw new AgentDeletingError();
-        }
-        const { driver, harness } = await this.savedPluginTarget(state, agent);
-        this.validatePluginPlacement(driver, { [pluginId]: { enabled: true } }, harness);
-        await this.authorize(agent.servicePrincipalId, "operate", sourceRef);
-        const source = await state.credentialSources.findCredentialSource(
-          namespace.id,
-          sourceRef.id,
-        );
-        const target =
-          namespace.status === "ready" &&
-          source?.state === "ready" &&
-          agent.credentialSources?.some(({ sourceId }) => sourceId === sourceRef.id)
-            ? driver.credentials?.mcpToolDiscovery?.(pluginId, connection.slot, source)
-            : undefined;
-        const secretRef = source?.secrets.token;
-        if (!target || !secretRef) {
-          throw new ResourceStateConflictError(
-            "Choose a ready, compatible credential source from this Agent's saved credentials.",
-          );
-        }
-        return { driver, harness, source, secretRef, ...target };
-      });
+          const target =
+            namespace.status === "ready" &&
+            source?.state === "ready" &&
+            agent.credentialSources?.some(({ sourceId }) => sourceId === sourceRef.id)
+              ? driver.credentials?.mcpToolDiscovery?.(pluginId, connection.slot, source)
+              : undefined;
+          const secretRef = source?.secrets.token;
+          if (!target || !secretRef) {
+            throw new ResourceStateConflictError(
+              "Choose a ready, compatible credential source from this Agent's saved credentials.",
+            );
+          }
+          return {
+            driver,
+            harness,
+            source,
+            secretRef,
+            servicePrincipalId: agent.servicePrincipalId,
+            ...target,
+          };
+        },
+      );
+      await this.authorize(principalId, "operate", sourceRef);
+      await this.authorize(target.servicePrincipalId, "operate", sourceRef);
+      return target;
     };
 
     const target = await currentTarget();
@@ -9010,6 +9043,8 @@ export class OpenClawController {
     if (!entry || entry.id !== pluginId) {
       throw new PluginDiscoveryError("invalid_response");
     }
+    const selection = { [entry.id]: { enabled: true } };
+    this.validatePluginPlacement(target.driver, selection, target.harness);
     await this.authorize(principalId, "operate", sourceRef);
     const validateCurrent = async () => {
       const current = await currentTarget();
@@ -9018,6 +9053,7 @@ export class OpenClawController {
           "The Agent's plugin credential or catalog changed. Refresh and retry.",
         );
       }
+      this.validatePluginPlacement(current.driver, selection, current.harness);
     };
     const result = await this.invokePluginDiscovery(
       target.driver,
@@ -9092,68 +9128,64 @@ export class OpenClawController {
     agentId: string,
     credentialSource?: CredentialSourceReference,
   ) {
-    const resource = { kind: "agent" as const, id: agentId, namespaceId };
-    await this.authorize(principalId, "read", resource);
-    await this.authorize(principalId, "update", resource);
-    return this.read(async (state) => {
-      const namespace = await this.exactNamespace(state, namespaceId);
-      if (credentialSource !== undefined && namespace.status !== "ready") {
-        throw new NamespaceNotReadyError();
-      }
-      const agent = await state.agents.findAgent(namespace.id, agentId);
-      if (agent === undefined) {
-        throw new ScopeViolationError(
-          "The Agent does not belong to the exact Installation and Namespace.",
-        );
-      }
-      if (agent.status !== "active") {
-        throw new AgentDeletingError();
-      }
-      const target = await this.savedPluginTarget(state, agent);
-      if (agent.executionMode !== "dedicated") {
-        throw new NotImplementedError(
-          "agent_plugins.saved_discovery",
-          "Saved plugin discovery requires a dedicated Agent.",
-        );
-      }
-      if (credentialSource !== undefined || target.driver.discoveryCredential === "none") {
-        return {
-          ...target,
-          source: undefined,
-          credential: credentialSource ? { credentialSource } : {},
-        };
-      }
-      const binding = this.harnessAuthBinding(agent.harnessAuth);
-      if (binding?.method === "credential_source") {
-        const reference = { kind: "credential_source" as const, namespaceId, id: binding.sourceId };
-        await this.authorize(principalId, "operate", reference);
-        await this.authorize(agent.servicePrincipalId, "operate", reference);
-        const source = await state.credentialSources.findCredentialSource(
-          namespaceId,
-          binding.sourceId,
-        );
-        if (source?.state !== "ready") {
-          throw new ScopeViolationError("The Agent's plugin credential source is unavailable.");
+    return this.withSavedPluginTarget(
+      principalId,
+      namespaceId,
+      agentId,
+      async ({ state, namespace, agent, driver, harness }) => {
+        if (credentialSource !== undefined && namespace.status !== "ready") {
+          throw new NamespaceNotReadyError();
         }
-        return { ...target, source, credential: { credentialSource: reference } };
-      }
-      if (binding?.method !== "codex_pat" || !isSecretHarnessAuth(binding)) {
-        throw new NotImplementedError(
-          "agent_plugins.saved_discovery",
-          "Stored plugin discovery requires a dedicated Agent with a Service Accounts Secret.",
-        );
-      }
-      if (binding.source.namespaceId !== namespace.id) {
-        throw new ScopeViolationError("The Agent's plugin credential crosses Namespaces.");
-      }
-      await this.authorize(principalId, "operate", binding.source);
-      await this.authorize(agent.servicePrincipalId, "operate", binding.source);
-      const secret = await state.secrets.findSecret(namespace.id, binding.source.id);
-      if (secret === undefined) {
-        throw new ScopeViolationError("The Agent's plugin credential is unavailable.");
-      }
-      return { ...target, source: secret, credential: { secretRef: binding.source } };
-    });
+        const target = { driver, harness };
+        if (agent.executionMode !== "dedicated") {
+          throw new NotImplementedError(
+            "agent_plugins.saved_discovery",
+            "Saved plugin discovery requires a dedicated Agent.",
+          );
+        }
+        if (credentialSource !== undefined || target.driver.discoveryCredential === "none") {
+          return {
+            ...target,
+            source: undefined,
+            credential: credentialSource ? { credentialSource } : {},
+          };
+        }
+        const binding = this.harnessAuthBinding(agent.harnessAuth);
+        if (binding?.method === "credential_source") {
+          const reference = {
+            kind: "credential_source" as const,
+            namespaceId,
+            id: binding.sourceId,
+          };
+          await this.authorize(principalId, "operate", reference);
+          await this.authorize(agent.servicePrincipalId, "operate", reference);
+          const source = await state.credentialSources.findCredentialSource(
+            namespaceId,
+            binding.sourceId,
+          );
+          if (source?.state !== "ready") {
+            throw new ScopeViolationError("The Agent's plugin credential source is unavailable.");
+          }
+          return { ...target, source, credential: { credentialSource: reference } };
+        }
+        if (binding?.method !== "codex_pat" || !isSecretHarnessAuth(binding)) {
+          throw new NotImplementedError(
+            "agent_plugins.saved_discovery",
+            "Stored plugin discovery requires a dedicated Agent with a Service Accounts Secret.",
+          );
+        }
+        if (binding.source.namespaceId !== namespace.id) {
+          throw new ScopeViolationError("The Agent's plugin credential crosses Namespaces.");
+        }
+        await this.authorize(principalId, "operate", binding.source);
+        await this.authorize(agent.servicePrincipalId, "operate", binding.source);
+        const secret = await state.secrets.findSecret(namespace.id, binding.source.id);
+        if (secret === undefined) {
+          throw new ScopeViolationError("The Agent's plugin credential is unavailable.");
+        }
+        return { ...target, source: secret, credential: { secretRef: binding.source } };
+      },
+    );
   }
 
   async discoverConfigurations(
