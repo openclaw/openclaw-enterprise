@@ -6,12 +6,9 @@ import {
 } from "@openclaw/gateway-client";
 import { setTimeout as delay } from "node:timers/promises";
 import { TransientDependencyError } from "@openclaw-enterprise/occ";
-import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
+import { asRecord, isNonEmptyString, isWorkspaceNodeDeviceId } from "@openclaw-enterprise/utils";
 
-/** Device identifiers accepted by the persisted workspace-node binding. */
-export function isWorkspaceNodeDeviceId(value: unknown): value is string {
-  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value);
-}
+export { isWorkspaceNodeDeviceId } from "@openclaw-enterprise/utils";
 
 export interface NodeSetup {
   readonly setupId: string;

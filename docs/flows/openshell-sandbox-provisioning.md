@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-11-05
-last_updated_session: authoring-run/bbe8db1d-f7e2-4322-80db-fbdf882659e2
+last_updated_session: authoring-run/0428fede-167f-4783-a06f-00eb40ffa23c
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -221,6 +221,13 @@ After login, `agentRuntimeEntrypoint` calls
 Clean exit permits verifier WebSocket startup; failure triggers group TERM/KILL.
 Provider Gateway readiness checks transport, not HMAC plugin status.
 
+`harnessRuntimeCredentials` reads the exact projected setup Secret through the
+Compute context. `packages/utils/src/workspace-node-setup.ts:validateWorkspaceNodeSetupSecret`
+checks its Namespace and Agent labels, encoding, expiry, endpoint and TLS pin,
+then returns a frozen setup envelope. This shared package export performs no
+Secret lookup. OpenShell maps its validation errors to
+`OpenShellSandboxConfigurationFailure` and keeps provider credentials private.
+
 `oce-codex-runtime`/`oce-openclaw-runtime` provide read-only setup and Gateway CA.
 Only Codex accepts `runtime.json`/`config.toml`. Validated setup, including
 `bootstrapToken`, becomes `node-setup.json`. TLS-pinned setup requires `wss://`
@@ -397,6 +404,8 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 12:54: Extract shared setup validation while preserving OpenShell provisioning. (authoring-run/0428fede-167f-4783-a06f-00eb40ffa23c - f1295c81f3ac79f51af2b93b61013e0a8e5c0394)
 
 - 2026-11-05 02:27: Enable `push.negotiate`. (authoring-run/bbe8db1d-f7e2-4322-80db-fbdf882659e2 - b4c30b3593105309904715c7dfff29c987dbb885)
 

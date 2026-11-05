@@ -96,6 +96,7 @@
     "tests/conformance/audit.test.mjs",
     "tests/conformance/compute-lifecycle-hooks.test.mjs",
     "tests/conformance/utils.test.mjs",
+    "tests/conformance/workspace-node-setup.test.ts",
     "tests/conformance/console-api-client.test.ts",
     "tests/conformance/console-carry.test.ts",
     "tests/conformance/console-namespace-name.test.ts",
@@ -301,6 +302,9 @@
     },
     {
       "path": "tests/conformance/utils.test.mjs"
+    },
+    {
+      "path": "tests/conformance/workspace-node-setup.test.ts"
     },
     {
       "path": "tests/conformance/workspace-files-configuration.test.mjs"
