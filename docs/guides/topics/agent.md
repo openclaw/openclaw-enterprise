@@ -32,6 +32,8 @@ calls the model and runs tools. If you are new to OpenClaw Enterprise,
   inspect what changed.
 - [Workspace files](workspace-files.md): edit the running Agent's instructions
   and identity files.
+- [Repository development](repository-development.md): prepare pinned tools, install
+  development dependencies, and verify code changes.
 - [Plugins](plugins.md): add selected tools and decide which actions require
   approval.
 - [Troubleshoot](agent-troubleshoot.md): investigate deployment, model access,
