@@ -322,6 +322,9 @@ export async function composeProduction(
         recordOperations: true,
         backends: installation.backend,
         defaultPresets: config.drivers.defaultPresets ?? [],
+        ...(config.drivers.namedWorkspace && {
+          retainedNamespaceId: config.drivers.namedWorkspace.namespaceId,
+        }),
         bundledPresetVersions: config.drivers.bundledPresetVersions ?? [],
         refreshBundledDefaultPresets: config.drivers.installation.presets?.includeDefaults === true,
         loggingLevel: config.drivers.installation.logging.level,
@@ -372,6 +375,7 @@ export async function composeProduction(
       config.logger === undefined
         ? undefined
         : (warning) => emitOccLogEvent(config.logger!, warning),
+      config.drivers.namedWorkspace?.namespaceId,
     );
 
     let workspaceFilesAccess = config.workspaceFilesAccess;

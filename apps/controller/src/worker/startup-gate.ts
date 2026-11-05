@@ -1,3 +1,4 @@
+import { numericErrorStatus } from "@openclaw-enterprise/utils";
 import { setTimeout as delay } from "node:timers/promises";
 
 export type StartupDependencyStatus = "ready" | "pending" | "identity-unavailable" | "forbidden";
@@ -25,16 +26,18 @@ export async function waitForStartupDependency(options: {
       status = await options.dependency.check(options.signal);
       if (status === "ready") {
         await options.verifyIdentity();
-        const age = await options.workAge();
-        if (age === "unknown") {
-          status = "work-age-unknown";
-        } else if (age === "old") {
-          status = "work-too-old";
-        }
       }
-    } catch {
+    } catch (error) {
       options.signal.throwIfAborted();
-      status = "identity-unavailable";
+      status = numericErrorStatus(error) === 403 ? "forbidden" : "identity-unavailable";
+    }
+    if (status === "ready") {
+      const age = await options.workAge().catch(() => "unknown" as const);
+      if (age === "unknown") {
+        status = "work-age-unknown";
+      } else if (age === "old") {
+        status = "work-too-old";
+      }
     }
     options.signal.throwIfAborted();
     if (status !== previous) {

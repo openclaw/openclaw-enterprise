@@ -787,6 +787,8 @@ export interface ControllerOptions {
   readonly recordOperations?: boolean;
   readonly backends?: readonly BackendDefinition[];
   readonly defaultPresets?: readonly Pick<Preset, "name" | "template">[];
+  /** A Namespace required for this Installation to operate; logical deletion is refused. */
+  readonly retainedNamespaceId?: string;
   /**
    * Every shipped version of the bundled default Presets, current and superseded, loaded
    * whether or not `presets.includeDefaults` seeds them. Startup refreshes Namespace copies
@@ -2064,6 +2066,7 @@ export class OpenClawController {
   private pluginRegistrations: readonly RegisteredDriver[] = [];
   private readonly backends: readonly BackendDefinition[];
   private readonly defaultPresets: readonly Pick<Preset, "name" | "template">[];
+  private readonly retainedNamespaceId: string | undefined;
   private readonly bundledPresetVersions: readonly BundledPresetVersion[];
   private readonly refreshBundledDefaultPresets: boolean;
   private readonly loggingLevel: LoggingLevel;
@@ -2106,6 +2109,7 @@ export class OpenClawController {
     this.shouldRecordOperations = options.recordOperations ?? true;
     this.backends = validateBackendDefinitions(options.backends ?? []);
     this.defaultPresets = immutableCopy(options.defaultPresets ?? []);
+    this.retainedNamespaceId = options.retainedNamespaceId;
     const presetNames = new Set<string>();
     for (const preset of this.defaultPresets) {
       if (!isName(preset.name) || presetNames.has(preset.name)) {
@@ -4932,7 +4936,10 @@ export class OpenClawController {
    */
   async initializeDefaultPresets(
     principalId: string,
-    options: { readonly skipRefusedRefresh?: DefaultPresetRefreshSkip } = {},
+    options: {
+      readonly skipRefusedRefresh?: DefaultPresetRefreshSkip;
+      readonly namespaceId?: string;
+    } = {},
   ): Promise<readonly SkippedDefaultPreset[]> {
     const skipped: SkippedDefaultPreset[] = [];
     if (this.defaultPresets.length === 0) {
@@ -4944,11 +4951,14 @@ export class OpenClawController {
         kind: "installation",
         id: this.installation.id,
       });
-      const namespaces = [...(await state.namespaces.listNamespaces())].sort((a, b) =>
-        a.id.localeCompare(b.id),
-      );
-      for (const namespace of namespaces) {
-        const current = await state.namespaces.lockNamespace(namespace.id);
+      const namespaceIds =
+        options.namespaceId === undefined
+          ? (await state.namespaces.listNamespaces())
+              .map((namespace) => namespace.id)
+              .sort((a, b) => a.localeCompare(b))
+          : [options.namespaceId];
+      for (const namespaceId of namespaceIds) {
+        const current = await state.namespaces.lockNamespace(namespaceId);
         if (current && ["provisioning", "ready"].includes(current.status)) {
           await this.ensureNamespaceDefaultPresets(state, principalId, current, {
             skip,
@@ -11874,6 +11884,11 @@ export class OpenClawController {
         id: namespaceId,
         namespaceId,
       });
+      if (namespace.id === this.retainedNamespaceId) {
+        throw new ResourceStateConflictError(
+          "This Namespace is retained because the Installation requires it to operate.",
+        );
+      }
       // Keep in-flight teardown idempotent. The original caller can explicitly
       // retry terminal work after repairing the dependency or permission failure.
       // Another authorized caller can take over only once the initiating actor

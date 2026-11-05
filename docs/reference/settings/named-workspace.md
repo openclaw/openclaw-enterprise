@@ -2,7 +2,7 @@
 
 `namedWorkspace.stage: runtime` in Helm attaches an already bootstrapped,
 single-namespace installation. It reuses its initialized database without running
-initialization or migrations. It does not convert a divergent database history
+database initialization or migrations. It does not convert a divergent database history
 or adopt resources.
 Supply exactly `stage`, `installationId`, `namespaceId`, `uid`, and `startupCycle`.
 The chart passes this object as `OCC_NAMED_WORKSPACE`. The disabled default uses
@@ -16,6 +16,14 @@ the original physical UID, derived name, ownership, restricted Pod Security and
 private gateway membership on exact-name GETs. API startup and `/readyz` repeat
 these checks. Missing, forbidden or replaced Namespaces fail closed; no binding
 write repairs them. Configuration and Secret Drivers use the same exact binding.
+These UID checks are observations, not atomic guards on later writes. Replacing
+the physical Namespace and regranting access between a check and a write can
+allow that write into the replacement. Tenant RoleBindings grant Secret authority
+throughout the physical Namespace, not only over resources owned by OCC.
+
+The bound logical Namespace must remain available for the Installation to operate.
+Deleting it through the API returns HTTP 409 before changing its state or queuing
+deletion. Default preset initialization applies only to that Namespace.
 
 Named runtime requires bundled single-cluster Kubernetes and OpenShell Sandbox,
 with existing private routing identities. OpenShell may select only its Sandbox
@@ -27,10 +35,10 @@ profile; configuring both fails.
 Attachment has two operational stages: start the API with workers stopped, then
 enable one worker after verifying its dependencies. For initial attachment set
 `worker.replicaCount: 0`, `startupCycle: independent`,
-`api.clients: []`, and disable Slack, native admin and Git integrations. The chart
-renders one Recreate API, no initialization hooks or initialization ServiceAccount,
-exact-name
-Namespace GET for both API and worker, and only API tenant/configuration
+`api.clients: []`, and disable Slack, native admin and Git integrations. Keep
+`api.channelDirectoryProxyUrl` empty, even when `slackProxy.enabled: false`.
+The chart renders one Recreate API, no initialization hooks or initialization
+ServiceAccount, exact-name Namespace GET for both API and worker, and only API tenant/configuration
 RoleBindings. The worker ServiceAccount and narrow cluster binding remain at zero
 replicas. The chart retains the private Gateway, EnvoyProxy, certificates, TLS
 issuers, SecurityPolicy and Envoy NetworkPolicies within the existing release.
@@ -51,6 +59,10 @@ then adds worker tenant and configuration RoleBindings.
 
 `startupCycle: gateway-readiness` explicitly selects the worker startup gate. It
 requires a direct HTTPS OpenShell endpoint with bearer-file or mTLS authentication.
+The Helm chart projects only mTLS credentials from
+`backend.openshell.clientSecretName` into `/etc/openclaw/openshell`; it does not
+provide a bearer-token file mount. Bearer-file authentication requires that file
+to be supplied separately to the worker.
 The worker checks logical and physical identity, public Health, then authenticated
 `GetCurrentUser` before recovery or claims. The identity read must return a nonempty
 subject and `oidc` or `cloudflare_access` for bearer authentication, or `mtls` for
@@ -61,6 +73,8 @@ Missing identity, forbidden access, pending readiness
 and unknown original work age keep it closed. A positively old age is reported,
 then normal original deadline and lease rules apply. Every process restart closes
 the gate; it never renews leases, resets attempts or changes original timestamps.
+Permission failures report `forbidden`; a failed work-age read reports
+`work-age-unknown`.
 `independent` has no startup gate and must not be used for a gateway with that cycle.
 The Git transport startup cycle is unsupported by this Git-disabled contract.
 

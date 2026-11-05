@@ -172,6 +172,11 @@ test("named runtime Helm install and upgrade preserve identity and Git-disabled 
     { "egressAuthority.enabled": "true" },
     { "repositoryCredentials.enabled": "true" },
     { "slackProxy.enabled": "true" },
+    // An external directory still enables Slack authority without the chart-managed proxy.
+    {
+      "slackProxy.enabled": "false",
+      "api.channelDirectoryProxyUrl": "http://192.0.2.20:8080",
+    },
     { "publicGithubRead.enabled": "true" },
     { "gatewayRouting.sandbox.enabled": "true" },
     { "backend.chatgpt.enabled": "true" },
@@ -190,7 +195,7 @@ test("named runtime Helm install and upgrade preserve identity and Git-disabled 
     }
     await assert.rejects(
       renderProductionChart(values),
-      /namedWorkspace/,
+      { stderr: /namedWorkspace/ },
       JSON.stringify(overrides),
     );
   }

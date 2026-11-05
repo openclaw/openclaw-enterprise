@@ -6,6 +6,8 @@ import { createRequire } from "node:module";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { createPostgresControllerAuth } from "../../apps/controller/src/auth/index.ts";
+import { signInToControllerApp, authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { DEVELOPMENT_HARNESS_DESCRIPTOR } from "../../apps/controller/src/composition/production-harness.ts";
 import { composeProduction } from "../../apps/controller/src/composition/production.ts";
@@ -38,8 +40,30 @@ test(
     });
     const fixture = await setup(t);
     const state = new PostgresPlatformState(fixture.observerPool);
+    const migrator = new Pool({ connectionString: process.env.OCC_MIGRATION_DATABASE_URL });
+    t.after(() => migrator.end());
     const installation = await state.loadInstallation();
     assert.ok(installation);
+    const authSecret = "synthetic-auth-secret-at-least-32-bytes";
+    const credentials = {
+      email: `named-admin-${randomUUID()}@example.invalid`,
+      password: "named-admin-password-12345",
+    };
+    const auth = await createPostgresControllerAuth({
+      pool: fixture.observerPool,
+      installationId: installation.id,
+      mode: "production",
+      secret: authSecret,
+      baseURL: "http://127.0.0.1:3000",
+    });
+    const account = await auth.createAccount({ ...credentials, name: "Named administrator" });
+    const iamState = await state.loadNativeIAMState();
+    const adminRole = iamState.roles.find((role) =>
+      role.permissions.some((p) => p.action === "administer" && p.resourceKind === "installation"),
+    );
+    assert.ok(adminRole);
+    const accountSeed = auth.principalSeed(account, { roleId: adminRole.id });
+    await state.appendNativeIAMPrincipal(accountSeed);
     // Fresh bootstrap leaves logical provisioning; no ready-to-provisioning reset.
     const freshNamespace = {
       ...fixture.namespace,
@@ -209,6 +233,12 @@ test(
       return runtime;
     };
     const runtime = await load();
+    // Give this persisted human the same unrestricted administrator binding as bootstrap.
+    // Account provisioning normally narrows additional accounts to the Installation itself.
+    await migrator.query(
+      "UPDATE occ.iam_access_bindings SET resource_kind = NULL, resource_id = NULL WHERE identity_subject_id = $1",
+      [accountSeed.principal.id],
+    );
     assert.equal(runtime.startupDependency, undefined);
     assert.equal(runtime.proxyDriver, undefined);
     assert.equal(runtime.repositoryOwner, undefined);
@@ -255,7 +285,7 @@ test(
         mode: "production",
         host: "127.0.0.1",
         databaseUrl: process.env.OCC_TEST_DATABASE_URL!,
-        authSecret: "synthetic-auth-secret-at-least-32-bytes",
+        authSecret,
         authBaseURL: "http://127.0.0.1:3000",
         drivers,
         ...overrides,
@@ -293,9 +323,61 @@ test(
     }
     physicalLogicalId = selected.namespaceId;
     namespaceName = `oce-${hash(selected.namespaceId, 15)}`;
-    const api = await compose();
+    let api = await compose();
     t.after(() => api.close());
     assert.equal((await api.inject({ method: "GET", url: "/readyz" })).statusCode, 200);
+    // An authorized deletion must not strand the API-only installation in deleting.
+    const session = await signInToControllerApp(api, credentials, {
+      origin: "http://127.0.0.1:3000",
+    });
+    const beforeDelete = await fixture.observerPool.query(
+      "SELECT row_to_json(w) AS work FROM occ.controller_work w WHERE namespace_id = $1",
+      [selected.namespaceId],
+    );
+    const deletion = await api.inject({
+      method: "DELETE",
+      url: `/namespaces/${selected.namespaceId}`,
+      headers: authenticatedHeaders(session),
+    });
+    assert.equal(deletion.statusCode, 409, deletion.body);
+    assert.match(deletion.body, /retained/);
+    assert.equal(
+      (await state.read((view) => view.namespaces.findNamespace(selected.namespaceId)))?.status,
+      "ready",
+    );
+    assert.deepEqual(
+      (
+        await fixture.observerPool.query(
+          "SELECT row_to_json(w) AS work FROM occ.controller_work w WHERE namespace_id = $1",
+          [selected.namespaceId],
+        )
+      ).rows,
+      beforeDelete.rows,
+    );
+    await api.close();
+    api = await compose();
+    assert.equal((await api.inject({ method: "GET", url: "/readyz" })).statusCode, 200);
+
+    // An API-only restart seeds defaults only in its selected logical Namespace.
+    const neighborPresets = await state.read((view) => view.presets.listPresets(freshNamespace.id));
+    const presetPath = join(tls.directory, "named-default.json");
+    await writeFile(presetPath, JSON.stringify({ name: "named-default", template: { agent: {} } }));
+    Object.assign(configuration, { presets: { files: [presetPath] } });
+    const defaultsApi = await compose(await load());
+    try {
+      assert.deepEqual(
+        await state.read((view) => view.presets.listPresets(freshNamespace.id)),
+        neighborPresets,
+      );
+      assert.ok(
+        (await state.read((view) => view.presets.listPresets(selected.namespaceId))).some(
+          (preset) => preset.name === "named-default",
+        ),
+      );
+    } finally {
+      await defaultsApi.close();
+    }
+    Reflect.deleteProperty(configuration, "presets");
     assert.ok(reads.includes(`GET /api/v1/namespaces/${namespaceName}`));
     assert.deepEqual(unexpected, []);
     // Exhaust one direct peer's budget without time-dependent refill. Queries
@@ -577,6 +659,36 @@ test(
       async () => events.some((e) => e.status === "pending") || undefined,
     );
     assert.deepEqual(await snapshot(), before, "expired claim is not recovered while gated");
+    // Revoking Namespace reads after startup must report access denial without touching work.
+    namespaceStatus = 403;
+    await waitFor(
+      "forbidden Namespace read keeps the gate closed",
+      async () => events.some((event) => event.status === "forbidden") || undefined,
+    );
+    assert.deepEqual(await snapshot(), before);
+    namespaceStatus = 200;
+    await waitFor(
+      "Namespace permission recovery returns to pending dependency",
+      async () => events.at(-1)?.status === "pending" || undefined,
+    );
+    // A database permission failure in the age read is not an identity failure.
+    await migrator.query("REVOKE SELECT ON occ.controller_work FROM occ_app");
+    try {
+      healthCode = 0;
+      await waitFor(
+        "unreadable work age keeps the gate closed",
+        async () => events.some((event) => event.status === "work-age-unknown") || undefined,
+      );
+    } finally {
+      healthCode = 14;
+      await migrator.query("GRANT SELECT ON occ.controller_work TO occ_app");
+    }
+    await waitFor(
+      "age-read recovery returns to pending dependency",
+      async () => events.at(-1)?.status === "pending" || undefined,
+    );
+    assert.deepEqual(await snapshot(), before);
+
     assert.equal((await queue.findWork(initialKey))?.attemptCount, 0);
     assert.equal((await queue.findWork(initialKey))?.state, "queued");
     await worker.stop();
@@ -630,8 +742,6 @@ test(
 
     // Fault-inject unknown age through the migrator; the application cannot alter it.
     // Positive old work with an expired final lease receives normal recovery disposition.
-    const migrator = new Pool({ connectionString: process.env.OCC_MIGRATION_DATABASE_URL });
-    t.after(() => migrator.end());
     for (const age of ["infinity", "2000-01-01T00:00:00Z"]) {
       const key = `named-age-${randomUUID()}`;
       await queue.enqueue({

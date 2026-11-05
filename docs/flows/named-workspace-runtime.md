@@ -1,7 +1,7 @@
 ---
 created: "2026-10-23"
-updated: "2026-10-26"
-last_updated_session: "authoring-run/ae36f43b-7d02-4085-a886-ef6421011637"
+updated: "2026-11-05"
+last_updated_session: "authoring-run/4ab091ce-0b1a-47e9-9b6c-7333d0cb7dcc"
 ---
 
 # Named workspace runtime flow
@@ -51,6 +51,9 @@ exactly five fields and rejects bootstrap stage. Composition rejects coexistence
 with the closed diagnostic binding and rejects repository or credential-provider
 authority. The bundled OpenShell Backend can select only its Sandbox member;
 there is no need to select a Credential Gateway merely to attach.
+`deploy/helm/openclaw-enterprise/templates/_helpers.tpl` also rejects an external
+`api.channelDirectoryProxyUrl` when the chart-managed Slack proxy is disabled,
+matching the runtime composition restriction.
 
 ### 2. Verify existing identities
 
@@ -63,11 +66,24 @@ performs exact-name authenticated GET and verifies the original UID, ownership,
 private gateway membership, restricted Pod Security and active physical lifecycle.
 Configuration and Secret Drivers receive the same immutable binding. No failed
 check creates, relabels or adopts a replacement Namespace.
+The check and subsequent writes are separate Kubernetes requests. The UID check
+does not prevent replacement and access regrant between requests; tenant Secret
+permissions also cover the whole physical Namespace. See the
+[attachment limits](../reference/settings/named-workspace.md) before granting access.
 
 `apps/controller/src/composition/production.ts:composeProduction` performs these
 checks before serving; `/readyz` repeats them. The API therefore withdraws
 readiness if the Namespace identity changes. Its read-only attachment needs no
 Git credential issuer or Credential Proxy. Authentication and IAM retain their ordinary owners.
+
+Composition passes the bound Namespace as `ControllerOptions.retainedNamespaceId`.
+`packages/occ/src/index.ts:OpenClawController.deleteNamespace` authorizes the
+request and locks the Namespace, then raises `ResourceStateConflictError` for
+that retained ID before changing durable state or queuing deletion. The API
+returns HTTP 409, preserving the Namespace that the Installation requires.
+`apps/controller/src/composition/installation-config.ts:initializeInstallationPresets`
+also passes the bound ID to `initializeDefaultPresets`, limiting default preset
+initialization to that Namespace.
 
 Each API replica limits `/readyz` to a burst of ten requests per direct peer IP,
 refilling one request per second. Excess requests return HTTP 429 with `Retry-After`
@@ -93,9 +109,11 @@ The gate distinguishes unavailable identity, forbidden access and pending
 readiness. Missing identity-read capability and permissive `local_dev` responses
 keep it closed. RPCs retain deadlines and abort cancellation. The worker repeats
 logical and physical identity checks before and after both gateway reads succeed.
+Permission failures during those checks report `forbidden`.
 
 `packages/occ/src/state/postgres-work-queue.ts:startupWorkAge` reads original
-queued and claimed timestamps in the bound logical Namespace on the database clock. Unknown age keeps the gate
+queued and claimed timestamps in the bound logical Namespace on the database clock.
+Unknown age or a failed age read reports `work-age-unknown` and keeps the gate
 closed. Positive old age emits `work-too-old` and proceeds to the ordinary
 [worker recovery and deadline rules](controller-worker.md), without resetting
 attempts, age or leases. Every process restart closes the gate. Independent
@@ -137,6 +155,7 @@ GitHub sign-in, browser behavior, supplier compatibility or model execution.
 
 ## Changelog
 
+- 2026-11-05 11:55: Retain the bound Namespace, scope preset initialization, distinguish startup failures, reject external Slack directory configuration, and document attachment limits. (authoring-run/4ab091ce-0b1a-47e9-9b6c-7333d0cb7dcc - 86d9decc43ddb6a66125c9221e9e5265f6266269)
 - 2026-10-26 18:27: Scope worker recovery, claims and exposure withdrawals to the bound Namespace. (authoring-run/ae36f43b-7d02-4085-a886-ef6421011637 - 993ba4674bed65cf6a31410760cea1ee1d53189d)
 - 2026-10-23 15:12: Require an authenticated identity read after public Health. (named-workspace-gateway-identity-20261023 - 5c7ffab23c3a7ebbc96e81b37722ad8e634ee1da)
 - 2026-10-23 01:13: Bound readiness requests before dependency checks. (named-workspace-readiness-rate-limit-20261023 - 70a74c6bb1eaba6acb7536101889cbf79b26c7ef)

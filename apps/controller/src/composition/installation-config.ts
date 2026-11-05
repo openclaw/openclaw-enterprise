@@ -279,6 +279,7 @@ export async function initializeInstallationPresets(
   identities: readonly Identity[],
   defaults: readonly Pick<Preset, "name" | "template">[],
   onWarning?: (event: Readonly<Record<string, unknown>>) => void,
+  namespaceId?: string,
 ): Promise<void> {
   if (defaults.length === 0) {
     return;
@@ -302,7 +303,10 @@ export async function initializeInstallationPresets(
     for (const principalId of administrators) {
       let skipped: readonly SkippedDefaultPreset[];
       try {
-        skipped = await controller.initializeDefaultPresets(principalId, { skipRefusedRefresh });
+        skipped = await controller.initializeDefaultPresets(principalId, {
+          skipRefusedRefresh,
+          ...(namespaceId === undefined ? {} : { namespaceId }),
+        });
       } catch (error) {
         // An administrator whose grant stops at the Installation (for example the admin Role
         // bound to the installation resource only) cannot create Presets in a Namespace. Each
