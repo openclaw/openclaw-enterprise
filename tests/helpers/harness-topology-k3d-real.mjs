@@ -18,6 +18,7 @@ import {
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { attachPostgresToK3d } from "./k3d-postgres-network.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { sessionEvidenceScript } from "./normal-agent-tools.mjs";
 import {
   assertGatewayModelTurn,
   createKubernetesInstallationConfiguration,
@@ -5674,6 +5675,14 @@ async function assertDedicatedToEmbeddedCutover(context, topology) {
 }
 
 async function assertLegacyModelSecretBindingDenied(topology) {
+  const configurationPath = `/namespaces/${topology.agent.namespaceId}/configurations/${topology.agent.configurationId}`;
+  const configurationBefore = await topology.request("GET", configurationPath);
+  assert.equal(configurationBefore.status, 200);
+  const agentBefore = await storedAgent(
+    topology.observerPool,
+    topology.agent.namespaceId,
+    topology.agent.id,
+  );
   const value = `dedicated-denied-secret-${randomUUID()}`;
   const secret = await createApiSecret(
     topology.request,
@@ -5698,25 +5707,45 @@ async function assertLegacyModelSecretBindingDenied(topology) {
     `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}/revisions`,
   );
   assert.equal(revisionsBefore.status, 200, JSON.stringify(revisionsBefore.error));
-  const bound = await topology.request(
+  // Both subjects have Secret operate; rejection must come from the reserved
+  // model destination, before any draft or runtime credential can change.
+  const bound = await expectApiFailureWithoutSecret(
+    topology.request,
     "PATCH",
-    `/namespaces/${topology.agent.namespaceId}/configurations/${topology.agent.configurationId}`,
+    configurationPath,
     {
-      values: nativeConfiguration("codex"),
+      values: configurationBefore.data.values,
       secretBindings: { OPENAI_API_KEY: secretBinding(secret.ref) },
     },
+    secretApiProtectedValues(topology, [value]),
+    "legacy model binding denial",
   );
-  assert.equal(bound.status, 404, "Configuration cannot select model authentication");
-  assertNoSecretMaterial(bound, [value, process.env.OPENAI_API_KEY], "legacy model binding denial");
+  assert.equal(bound.status, 400, "Configuration cannot select model authentication");
+  assert.equal(bound.error?.code, "INVALID_REQUEST");
+  assert.deepEqual(bound.error?.details, [
+    { path: "/secretBindings/OPENAI_API_KEY", code: "INVALID_VALUE" },
+  ]);
+  const configurationAfter = await topology.request("GET", configurationPath);
+  assert.equal(configurationAfter.status, 200);
+  assert.deepEqual(
+    configurationAfter.data,
+    configurationBefore.data,
+    "reserved model binding denial must not change the saved Configuration",
+  );
   const revisionsAfter = await topology.request(
     "GET",
     `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}/revisions`,
   );
   assert.equal(revisionsAfter.status, 200, JSON.stringify(revisionsAfter.error));
   assert.deepEqual(
-    revisionsAfter.data.map(({ id }) => id),
-    revisionsBefore.data.map(({ id }) => id),
+    revisionsAfter.data,
+    revisionsBefore.data,
     "dedicated model Secret binding denial must happen before revision mutation",
+  );
+  assert.deepEqual(
+    await storedAgent(topology.observerPool, topology.agent.namespaceId, topology.agent.id),
+    agentBefore,
+    "reserved model binding denial must retain the persisted Agent and active revision",
   );
   const gateway = await resource(
     "pod",
@@ -5726,6 +5755,13 @@ async function assertLegacyModelSecretBindingDenied(topology) {
   const harness = await resource("pod", topology.harnessPod.metadata.name, topology.placement);
   assert.equal(gateway.metadata.uid, topology.gatewayPod.metadata.uid);
   assert.equal(harness.metadata.uid, topology.harnessPod.metadata.uid);
+  await assertOpenAiKeyProjectedFromSecret(topology, harness);
+  assert.equal(
+    (await inspectWorkloadEnvironment(topology.gatewayPlacement, gateway.metadata.name))
+      .OPENAI_API_KEY,
+    false,
+    "the dedicated Gateway must not receive a model credential after the rejected binding",
+  );
 }
 
 async function assertDedicatedWorkspaceRuntime(context, topology, claim, privateClaim) {
@@ -5922,32 +5958,107 @@ async function assertDedicatedWorkspaceRuntime(context, topology, claim, private
       completedModelRequests: 0,
       sourceContainsMarker: null,
       historyAvailable: false,
-      memoryToolDisabled: false,
       memoryStatusAvailable: false,
       operatorSearchAvailable: false,
     };
-    try {
-      await waitFor("native Memory retrieval from the Harness workspace", async () => {
-        evidence.modelRequests += 1;
-        let answer;
-        try {
-          answer = await requestDedicatedAgentTurn(
-            topology,
+    // The canonical observer also expands attested Code Mode nested-tool records.
+    // chat.history's top-level toolResult rows alone do not cover that supported path.
+    const readMemoryTrace = async () => {
+      try {
+        return JSON.parse(
+          await kubectl(
+            "exec",
+            gatewayPod,
+            "--namespace",
+            topology.gatewayPlacement,
+            "--",
+            "node",
+            "-e",
+            sessionEvidenceScript,
             memorySession,
-            `Use memory_search to find the confirmation for ${memoryKey}. Return its source path and snippet. Do not use shell or file tools, edit files, or rebuild the index.`,
-          );
-        } catch (error) {
-          if (error?.expected === 200 && Number.isInteger(error.actual)) {
-            evidence.rejectedModelHttpStatus = error.actual;
-          }
-          evidence.modelRequestAborted = ["TimeoutError", "AbortError"].includes(error?.name);
-          // A rejected response can contain model text. Keep only the failure phase.
-          // eslint-disable-next-line preserve-caught-error -- Raw provider responses must not enter artifacts.
-          throw new Error("Memory model request failed before a retrieval result was available.");
+            memoryKey,
+            "memory_search",
+            memoryValue,
+          ),
+        );
+      } catch {
+        // Do not retain subprocess arguments, source markers, or transcript text in an error.
+        throw new Error("Native Memory transcript observation failed.");
+      }
+    };
+    const observeMemoryTrace = (trace) => {
+      evidence.historyAvailable = trace.exists === true;
+      evidence.memoryToolInGatewayPrompt =
+        trace.promptToolNames?.includes("memory_search") === true;
+      evidence.assistantMessages = trace.diagnostics?.roleCounts?.assistant ?? 0;
+      evidence.memoryToolCalls = trace.calls?.length ?? 0;
+      evidence.memoryToolResults = trace.results?.length ?? 0;
+      evidence.memoryToolResultContainsMarker =
+        trace.results?.some((result) => result.matchesResult) === true;
+      evidence.memoryToolReportedError = trace.results?.some((result) => result.isError) === true;
+      evidence.assistantReportedUnavailable =
+        trace.diagnostics?.finalAssistantDiagnostics?.mentionsUnavailable === true;
+    };
+    let memoryTrace;
+    try {
+      // Discover and call once. Retrying model turns hides missing tool exposure and cannot
+      // turn a guessed answer or an operator search into native Memory integration proof.
+      evidence.modelRequests += 1;
+      let answer;
+      try {
+        answer = await requestDedicatedAgentTurn(
+          topology,
+          memorySession,
+          `Use the actual advertised OpenClaw memory_search tool to find the confirmation for ${memoryKey}. The tool may be under the openclaw namespace; if it is not yet visible, discover it with your native tool discovery or Code Mode catalog, then invoke memory_search with that query. Return the source path and snippet from that tool's result, including the confirmation. Do not answer from the catalog, use shell or file tools, edit files, rebuild the index, request escalation, or delegate.`,
+        );
+      } catch (error) {
+        if (error?.expected === 200 && Number.isInteger(error.actual)) {
+          evidence.rejectedModelHttpStatus = error.actual;
         }
-        evidence.completedModelRequests += 1;
-        return answer.includes(memoryValue) ? answer : undefined;
-      });
+        evidence.modelRequestAborted = ["TimeoutError", "AbortError"].includes(error?.name);
+        // eslint-disable-next-line preserve-caught-error -- Raw provider responses must not enter artifacts.
+        throw new Error("Memory model request failed before a retrieval result was available.");
+      }
+      evidence.completedModelRequests += 1;
+      evidence.answerContainsMarker = answer.includes(memoryValue);
+      try {
+        const rollouts = (await codexRollouts(topology)).filter(({ text }) =>
+          text.includes(memoryKey),
+        );
+        evidence.nativeToolInventoryAvailable = true;
+        evidence.nativeMemoryToolOffered =
+          rollouts.length === 1 && rollouts[0].dynamicTools.includes("memory_search");
+      } catch {
+        throw new Error("Native Memory tool inventory observation failed.");
+      }
+      assert.equal(
+        evidence.nativeMemoryToolOffered,
+        true,
+        "the exact native thread must advertise Memory search",
+      );
+      assert.equal(
+        evidence.answerContainsMarker,
+        true,
+        "the model must return the unseen Memory confirmation",
+      );
+      memoryTrace = await waitFor(
+        "the exact native Memory call and matching result",
+        async () => {
+          const trace = await readMemoryTrace();
+          observeMemoryTrace(trace);
+          return (trace.results ?? []).some(
+            (result) =>
+              !result.isError &&
+              result.matchesResult &&
+              (trace.calls ?? []).some(
+                (call) => call.id === result.toolCallId && result.seq > call.seq,
+              ),
+          )
+            ? trace
+            : undefined;
+        },
+        10_000,
+      );
     } catch (error) {
       // Observe the failed run before an operator read can trigger normal index catch-up.
       // Never retain prompts, answers, tool output, file contents, or provider error text.
@@ -5977,39 +6088,7 @@ async function assertDedicatedWorkspaceRuntime(context, topology, claim, private
               evidence.sourceContainsMarker = source.exists && source.tail.includes(memoryValue);
             }),
             observe("history", async () => {
-              const history = await gatewayCall(
-                topology,
-                "chat.history",
-                { sessionKey: memorySession, limit: 100 },
-                10_000,
-              );
-              const messages = history.messages ?? [];
-              const results = messages.filter(
-                (message) => message.role === "toolResult" && message.toolName === "memory_search",
-              );
-              evidence.historyAvailable = true;
-              evidence.assistantMessages = messages.filter(
-                ({ role }) => role === "assistant",
-              ).length;
-              evidence.memoryToolCalls = messages
-                .flatMap((message) => (Array.isArray(message.content) ? message.content : []))
-                .filter((part) => part.type === "toolCall" && part.name === "memory_search").length;
-              evidence.memoryToolResults = results.length;
-              evidence.memoryToolResultContainsMarker = results.some((message) =>
-                messageText(message).includes(memoryValue),
-              );
-              evidence.memoryToolReportedError = results.some(
-                (message) => message.isError === true,
-              );
-              for (const message of results) {
-                try {
-                  const result = JSON.parse(messageText(message));
-                  evidence.memoryToolDisabled ||= result.disabled === true;
-                  evidence.memoryToolReportedError ||= Boolean(result.error);
-                } catch {
-                  // Non-JSON results remain counted without copying their text to evidence.
-                }
-              }
+              observeMemoryTrace(await readMemoryTrace());
             }),
           ]);
           await Promise.all([
@@ -6038,18 +6117,10 @@ async function assertDedicatedWorkspaceRuntime(context, topology, claim, private
       );
       throw error;
     }
-    const memoryHistory = await gatewayCall(topology, "chat.history", {
-      sessionKey: memorySession,
-      limit: 100,
-    });
+    assert.ok(memoryTrace.calls.length > 0, "the model must invoke the real Memory tool");
     assert.ok(
-      memoryHistory.messages.some(
-        (message) =>
-          message.role === "toolResult" &&
-          message.toolName === "memory_search" &&
-          messageText(message).includes(memoryValue),
-      ),
-      "the actual Memory tool result must contain the unprompted Harness marker",
+      memoryTrace.results.some((result) => !result.isError && result.matchesResult),
+      "the actual native Memory tool result must contain the unprompted Harness marker",
     );
     process.stderr.write(
       "k3d dedicated: native Memory FTS retrieved the unprompted Harness marker.\n",
