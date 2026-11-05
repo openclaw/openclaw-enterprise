@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
 updated: "2026-11-05"
-last_updated_session: authoring-run/f65a98dd-79e1-45e2-a740-b7e73c1d9dd3
+last_updated_session: authoring-run/59690b44-bb41-4790-af17-a75ac75d5ea7
 ---
 
 # Agent repository credential flow
@@ -289,19 +289,19 @@ fresh installation tokens under the same grant until the version deadline.
 
 ### 6. Maintain, recover and retire ownership
 
-The [worker](../../apps/controller/src/worker.mjs) passes only the selected `ProtectedRepositoryGitAuthority`
-to the [sender binder](../../apps/controller/src/composition/repository-credentials/transport.ts).
-The worker retains maintenance and shutdown. Missing authority or mismatched Drivers stop
-binding before route-store or sender calls.
-Bundled OpenShell connects its route store before binding; a bare Sandbox runs without Git.
+The [worker](../../apps/controller/src/worker.mjs) passes the selected `ProtectedRepositoryGitAuthority`
+to the [sender binder](../../apps/controller/src/composition/repository-credentials/transport.ts),
+retaining maintenance and shutdown. Missing authority or mismatched Drivers prevent
+route-store and sender calls. Bundled OpenShell connects its route store first;
+a bare Sandbox runs without Git.
 
-If an external binding provides `reconcile`, the worker calls it serially with a 25-second abort
-signal and a one-second delay between calls.
-Close aborts and joins. Independent readback settles the original OCC delivery without
-reinstalling or restoring withdrawn access.
+The worker serially calls an external binding’s `reconcile` with a 25-second abort
+signal and one-second intervals; closing aborts and joins it. Independent readback
+settles delivery without reinstalling or restoring withdrawn access.
 
-The worker commits activation and next maintenance together, preserving the actor. Maintenance uses
-30 seconds, the native sender interval or a shorter Compute interval. After restart, the worker invalidates missing known sessions without reminting. Users can deploy during cleanup.
+Activation and maintenance commit atomically, preserving the actor.
+Maintenance uses 30 seconds, the native sender interval or a shorter Compute interval.
+Restart invalidates missing known sessions without reminting; cleanup permits deployment.
 
 [Preview, save and deploy](../../packages/occ/src/index.ts) require explicit repository policy
 permission and current scope for standing approval.
@@ -322,10 +322,10 @@ maintenance accepts only these two failure codes. Otherwise the
 version is retired like any failed repository version
 ([reference](../reference/repository-credentials/prepared-native-git.md#deployment-and-the-first-token)).
 
-If standing Git evidence is missing, the worker keeps Git closed and observes the existing
-Harness without preparing or activating it. It checks again within five seconds, rechecking
-model authority, withdrawal, stop and replacement each pass. Harness readiness is not Git
-authority. See the [standing worker integration test](../../tests/integration/postgres-standing-session-worker.test.ts).
+Without standing Git evidence, the worker keeps Git closed and observes the Harness without
+preparing or activating it. Within five seconds it rechecks model authority, withdrawal,
+stop and replacement. Harness readiness cannot authorize Git
+([test](../../tests/integration/postgres-standing-session-worker.test.ts)).
 
 `apps/controller/src/worker.ts:ControllerWorker.processRepositoryCleanup` consumes
 owner-bound Work without admission or material delivery. Terminal-runtime Work fences
@@ -343,11 +343,16 @@ through `recoverPendingCredentialWithdrawals`, preserving outstanding work and m
 holds. The v7 reducer observes stored operations without reapplying.
 See [tests](../../tests/integration/postgres-standing-expiry-authority.test.ts).
 
-`ControllerWorker.processAgentDeletion` retires Compute and queues cleanup without waiting
-for sessions. Cleanup uses its version key for dispatch and audits.
-`PostgresWorkQueue.completeAgentDeletion` calls `occ.finalize_agent_deletion` under the claim
-to detach attempts, delete live rows and audit deletion atomically. Attempts and cleanup
-survive without fabricated disposal. Unresolved provisioning effects defer completion
+`apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts:subtractExpiredOpenShellGit`
+checks retained profiles between supervisor reports, including recovery.
+`apps/controller/src/drivers/sandbox/openshell-gateway-client.ts:GrpcOpenShellGatewayClient.getProviderProfile`
+verifies profile identity and defaults omitted protobuf endpoint/credential lists to empty.
+Files-only profiles can pass; missing profiles, GitHub endpoints and `GITHUB_TOKEN` prevent retention.
+
+`ControllerWorker.processAgentDeletion` retires Compute and queues version-keyed cleanup
+without waiting for sessions. Under the claim, `PostgresWorkQueue.completeAgentDeletion`
+calls `occ.finalize_agent_deletion` to atomically detach attempts, delete live rows and audit
+deletion. Attempts and cleanup survive without fabricated disposal. Unresolved provisioning effects defer completion
 without consuming retries.
 
 Compute retirement waits for owned Pods to stop before removing material. It preserves Secrets
@@ -393,6 +398,8 @@ denied before reaching the provider, and chat continues.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 11:58: Trace files-only profile verification. (authoring-run/59690b44-bb41-4790-af17-a75ac75d5ea7 - bc8ce0445c880b5cc69f5514efe13c1633589796)
 
 - 2026-11-05 01:05: Trace Git-only branch-pattern authorization. (authoring-run/f65a98dd-79e1-45e2-a740-b7e73c1d9dd3 - dde29ac47a)
 
