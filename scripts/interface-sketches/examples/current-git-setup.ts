@@ -119,7 +119,7 @@ export default {
     },
     {
       id: "supervisor",
-      title: "Supervisor",
+      title: "Credential Proxy",
       detail: "Loads the policy and\nprovider generation",
       group: "openshell",
       pin: [10, 425, 240, 75],

@@ -1,9 +1,8 @@
 import type { Diagram } from "../diagram.ts";
 
 export default {
-  title: "01 Protected Git request",
-  subtitle:
-    "OpenShell · request authorization before the supervisor adds credentials · setup in 01b",
+  title: "01 What happens when the Agent runs git push?",
+  subtitle: "Request path in the OpenShell reference implementation · token setup is shown in 01b",
   layout: { board: [1180, 640] },
   groups: [
     {
@@ -14,7 +13,7 @@ export default {
     },
     {
       id: "openshell",
-      title: "OpenShell data plane",
+      title: "Execution environment",
       role: "runtime",
       pin: [720, 80, 440, 270],
     },
@@ -36,8 +35,8 @@ export default {
     { id: "agent", title: "Agent", group: "sandbox", pin: [70, 30, 180, 40] },
     {
       id: "supervisor",
-      title: "OpenShell supervisor",
-      detail: "Intercepts GitHub HTTPS requests",
+      title: "Credential Proxy",
+      detail: "Holds the outgoing GitHub request",
       group: "openshell",
       pin: [60, 165, 320, 55],
     },
@@ -51,7 +50,7 @@ export default {
     {
       id: "owner",
       title: "Repository Git authority",
-      detail: "Checks the current grant through\nthe authority for the selected scope",
+      detail: "Checks the Agent’s grant for\nthis repository and operation",
       group: "worker",
       pin: [30, 325, 340, 75],
     },
@@ -67,19 +66,19 @@ export default {
     {
       from: "agent",
       to: "supervisor",
-      label: "Attempt git push",
+      label: "1  git push",
       pin: { from: "bottom", to: "top", label: [955, 223] },
     },
     {
       from: "supervisor",
       to: "adapter",
-      label: "EvaluateHttpRequest\nwith the attempted request",
+      label: "2  Ask about this request\nEvaluateHttpRequest",
       pin: { from: "left", to: "right", label: [477, 248] },
     },
     {
       from: "adapter",
       to: "owner",
-      label: "Check the grant",
+      label: "3  Check the grant",
       pin: {
         from: "left",
         to: "left",
@@ -93,7 +92,7 @@ export default {
     {
       from: "adapter",
       to: "supervisor",
-      label: "Return allow or deny",
+      label: "4  Return allow or deny",
       pin: {
         from: "bottom",
         to: "bottom",
@@ -107,7 +106,7 @@ export default {
     {
       from: "supervisor",
       to: "github",
-      label: "If allowed, add the\ninstalled token and send",
+      label: "5  On allow, add the\ntoken and send",
       kind: "conditional",
       pin: {
         from: "right",

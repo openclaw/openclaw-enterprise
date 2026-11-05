@@ -66,21 +66,13 @@ export const evidenceCatalog: readonly EvidenceDiagram[] = [
     claims: [
       {
         description:
-          "The installed Driver exposes a repository Git method binding; this does not identify a runtime sender.",
-        pointer: {
-          kind: "edge",
-          from: "authority",
-          to: "proxy",
-          label:
-            "Worker binds the Git authority\nCredentialProxyDriver.bindRepositoryGit(authority)",
-          edgeKind: "setup",
-        },
+          "On the Git path the proxy adapter calls the worker authority to authorize the operation.",
+        pointer: { kind: "edge", from: "proxy", to: "authority", label: "May this Agent push?" },
         required: [
-          gitBinding,
           coupling(
-            "apps/controller/src/composition/repository-credentials/transport.ts#bindRepositoryGitTransport",
+            `${git}#protectedOpenShellGitOwner`,
             "calls",
-            `${installed}#InstalledDriver.requireRepositoryGitTransport`,
+            `${gitContract}#RepositoryGitAuthority.authorize`,
           ),
         ],
       },
@@ -95,7 +87,7 @@ export const evidenceCatalog: readonly EvidenceDiagram[] = [
       {
         description:
           "The Git adapter has named calls to the explicit Git and installation authorities. The selected-repository authority uses an inline type outside the extractor’s scope.",
-        pointer: { kind: "edge", from: "adapter", to: "owner", label: "Check the grant" },
+        pointer: { kind: "edge", from: "adapter", to: "owner", label: "3  Check the grant" },
         required: [
           coupling(
             `${git}#protectedOpenShellGitOwner`,

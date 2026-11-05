@@ -7,7 +7,7 @@ export default {
   layout: { board: [1180, 640] },
   groups: [
     { id: "oce", title: "OCE worker · control plane", role: "control", pin: [20, 80, 435, 430] },
-    { id: "runtime", title: "OpenShell data plane", role: "runtime", pin: [730, 80, 430, 345] },
+    { id: "runtime", title: "Execution environment", role: "runtime", pin: [730, 80, 430, 345] },
     {
       id: "sandbox",
       title: "Sandbox",
@@ -21,7 +21,7 @@ export default {
     { id: "agent", title: "Agent", group: "sandbox", pin: [40, 32, 235, 40] },
     {
       id: "sender",
-      title: "OpenShell supervisor",
+      title: "Credential Proxy",
       detail: "Check local allowlist on every request",
       group: "runtime",
       pin: [40, 146, 350, 58],
@@ -144,7 +144,7 @@ export default {
     },
   ],
   notes: [
-    "OCE derives the credential from the execution binding. The supervisor cannot name an arbitrary Secret.",
-    "Open question: how does the supervisor prove which version it installed after a cold pull? The final authorization needs that evidence.",
+    "OCE derives the credential from the execution binding. The proxy cannot name an arbitrary Secret.",
+    "Open question: how does the proxy prove which version it installed after a cold pull? The final authorization needs that evidence.",
   ],
 } satisfies Diagram;

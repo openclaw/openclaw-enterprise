@@ -6,7 +6,7 @@ See the [Credential Proxy architecture diagrams](../../docs/design/credential-pr
 
 ## Which parts are backed by code?
 
-The pictures are authored in TypeScript. A separate [claim catalog](evidence.ts) connects selected boxes and arrows to relationships that the TypeScript compiler can resolve in OCE source. The graph is extracted from code independently of the claims. Diagram 00 describes a contract, 1 and 1b trace the OpenShell Git path, 2 describes a conditional composition, and 3 is a proposal. None is a deployment inventory.
+The pictures are authored in TypeScript. A separate [claim catalog](evidence.ts) connects selected boxes and arrows to relationships that the TypeScript compiler can resolve in OCE source. The graph is extracted from code independently of the claims. Diagram 00 follows a user’s task from the Agent to the provider, 1 and 1b trace the OpenShell Git path, 2 describes a conditional composition, and 3 is a proposal. None is a deployment inventory.
 
 From this directory, after installing dependencies:
 
@@ -50,7 +50,7 @@ export default {
     { id: "runtime", title: "OpenShell", role: "runtime" },
   ],
   nodes: [
-    { id: "sender", group: "runtime", title: "Supervisor", detail: "Intercepts the request" },
+    { id: "sender", group: "runtime", title: "Credential Proxy", detail: "Intercepts the request" },
     { id: "adapter", group: "worker", title: "Git transport adapter" },
   ],
   edges: [{ from: "sender", to: "adapter", label: "EvaluateHttpRequest" }],

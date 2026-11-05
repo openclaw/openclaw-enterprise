@@ -217,7 +217,7 @@
       "y": 500,
       "w": 240,
       "h": 75,
-      "lines": ["Supervisor", "Loads the policy and", "provider generation"],
+      "lines": ["Credential Proxy", "Loads the policy and", "provider generation"],
       "titleLineCount": 1,
       "density": "compact",
       "role": "runtime"

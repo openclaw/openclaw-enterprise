@@ -1,11 +1,11 @@
 {
-  "title": "01 Protected Git request",
+  "title": "01 What happens when the Agent runs git push?",
   "width": 1180,
   "height": 640,
   "items": [
     {
       "kind": "text",
-      "text": "01 Protected Git request",
+      "text": "01 What happens when the Agent runs git push?",
       "x": 20,
       "y": 33,
       "size": 28,
@@ -13,7 +13,7 @@
     },
     {
       "kind": "text",
-      "text": "OpenShell · request authorization before the supervisor adds credentials · setup in 01b",
+      "text": "Request path in the OpenShell reference implementation · token setup is shown in 01b",
       "x": 20,
       "y": 55,
       "size": 16,
@@ -31,7 +31,7 @@
     { "kind": "box", "id": "openshell", "x": 720, "y": 80, "w": 440, "h": 270, "role": "runtime" },
     {
       "kind": "text",
-      "text": "OpenShell data plane",
+      "text": "Execution environment",
       "x": 732,
       "y": 98,
       "size": 16,
@@ -60,7 +60,7 @@
       "y": 245,
       "w": 320,
       "h": 55,
-      "lines": ["OpenShell supervisor", "Intercepts GitHub HTTPS requests"],
+      "lines": ["Credential Proxy", "Holds the outgoing GitHub request"],
       "titleLineCount": 1,
       "density": "compact",
       "role": "runtime"
@@ -90,8 +90,8 @@
       "h": 75,
       "lines": [
         "Repository Git authority",
-        "Checks the current grant through",
-        "the authority for the selected scope"
+        "Checks the Agent’s grant for",
+        "this repository and operation"
       ],
       "titleLineCount": 1,
       "density": "compact",
@@ -120,7 +120,7 @@
     },
     {
       "kind": "text",
-      "text": "Attempt git push",
+      "text": "1  git push",
       "x": 955,
       "y": 223,
       "size": 14,
@@ -139,7 +139,7 @@
     },
     {
       "kind": "text",
-      "text": "EvaluateHttpRequest\nwith the attempted request",
+      "text": "2  Ask about this request\nEvaluateHttpRequest",
       "x": 477,
       "y": 248,
       "size": 14,
@@ -160,7 +160,7 @@
     },
     {
       "kind": "text",
-      "text": "Check the grant",
+      "text": "3  Check the grant",
       "x": 43,
       "y": 366,
       "size": 14,
@@ -181,7 +181,7 @@
     },
     {
       "kind": "text",
-      "text": "Return allow or deny",
+      "text": "4  Return allow or deny",
       "x": 477,
       "y": 325,
       "size": 14,
@@ -202,7 +202,7 @@
     },
     {
       "kind": "text",
-      "text": "If allowed, add the\ninstalled token and send",
+      "text": "5  On allow, add the\ntoken and send",
       "x": 976,
       "y": 367,
       "size": 14,
