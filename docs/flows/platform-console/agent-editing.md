@@ -112,13 +112,13 @@ number closer to zero and retry.
 
 `detail.mts:saveConfiguration` rereads Agent and Configuration before PATCHing
 `{ values, expectedGeneration }`, preserving `secretBindings`. Changed IDs,
-stale generations, or racing `409`s require **Reload draft**. Responses must
+stale generations, or concurrent-save conflicts require **Reload draft**. Responses must
 confirm Configuration/Namespace identity, newer generation, and submitted
 values/bindings. Reload before retrying unknown outcomes.
 Focus on **Save Configuration** moves to **Checking Configuration…**, then
-**Edit Configuration** on success unless focus moved. Conflicts keep local text,
-selection, and scroll. Preserve editor focus or the user's new focus. Otherwise,
-focus **Reload draft** and reveal the refusal.
+**Edit Configuration** on success unless focus moved. Conflicts retain local text. If focus moved,
+preserve focus, selection, and scroll. Otherwise, focus **Reload draft** and reveal
+the refusal.
 
 **Enable gateway password access** and **Collaboration and safety**
 (`agents/gateway-safety.mts`) stage edits; **Cancel** discards them. Password access
