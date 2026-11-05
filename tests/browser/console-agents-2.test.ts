@@ -2752,6 +2752,15 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const pluginDriver = new CodexPluginDriver();
+  // Keep optional catalog prefetch local while exercising the real Agent creation conflict.
+  t.mock.method(
+    pluginDriver,
+    "discoverCatalog",
+    async (): ReturnType<typeof pluginDriver.discoverCatalog> => ({
+      plugins: [],
+      nextCursor: null,
+    }),
+  );
   fixture.controller.registerDriver(pluginDriver);
   fixture.controller.selectDriver("plugin", pluginDriver.id);
   const namespace = await fixture.createNamespace("Partial save retry", { ready: true });
