@@ -4,8 +4,6 @@ import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/driv
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import { OpenShellProviderAlreadyExistsError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 
-const clientWorkspace = "oce-oauth-clients";
-
 /** Records the OpenShell RPCs the Drivers send; never mints or substitutes credentials. */
 function recordingOpenShell() {
   const providers = new Map();
@@ -81,10 +79,7 @@ export function selectTemplateDrivers(controller, { selectGateway = true } = {})
     { binaries: ["/app/bin/codex"], toolBinaries: ["/usr/local/bin/gog"] },
     { id: "openshell-credentials", backend },
   );
-  const refresh = new OpenShellCredentialRefreshDriver(
-    { clientWorkspace },
-    { id: "openshell-refresh", backend },
-  );
+  const refresh = new OpenShellCredentialRefreshDriver({}, { id: "openshell-refresh", backend });
   if (selectGateway) {
     controller.registerDriver(gateway);
     controller.selectDriver("credential_gateway", gateway.id);
