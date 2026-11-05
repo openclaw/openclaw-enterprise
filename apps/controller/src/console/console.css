@@ -3349,7 +3349,7 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   padding-block: var(--space-3);
   border-block-start: 1px solid var(--color-border);
 }
-.connection-template-row > button {
+.connection-template-row > .resource-row-actions {
   margin-inline-start: auto;
 }
 .dialog--drawer {

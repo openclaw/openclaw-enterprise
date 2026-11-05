@@ -1,6 +1,7 @@
 import type { ConnectionTemplate, Namespace } from "@openclaw-enterprise/contracts";
 import { refusedAsNonAdministrator } from "./api-client.mjs";
 import { button, element } from "./dom.mjs";
+import { oauthDeleteButton } from "./oauth-deletion.mjs";
 import type { ConsolePageContext } from "./page-context.mjs";
 import {
   availabilityLabel,
@@ -67,6 +68,11 @@ export function renderOAuthClients(
             element("h3", {}, item.displayName),
             element("p", {}, item.issuer),
             element("p", { className: "hint" }, scope + " · " + auth[item.tokenEndpointAuthMethod]),
+            element(
+              "div",
+              { className: "resource-row-actions" },
+              oauthDeleteButton(context, "OAuth client", item, scope, refresh, create),
+            ),
           ),
         );
       }

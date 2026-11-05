@@ -31,6 +31,29 @@ export const connectionTemplateScenarios = {
       "Open Credentials → OAuth clients. Switch the header Namespace to see its clients alongside Installation-wide clients. Choose Register OAuth client. Choose a saved connection template from the list or use Create connection template. Save the template to return to registration. Enter the client details issued for the displayed redirect URI.",
     ],
   },
+  credentialsDeleteTemplate: {
+    group: "Pages/Credentials",
+    name: "Delete connection template",
+    path: "/console/credentials/connection-templates",
+    oauthCatalog: "ready",
+    actions: [
+      { selector: 'button[aria-label="Delete Google OAuth (Installation-wide)"]', click: true },
+    ],
+    description:
+      "Review the name and availability before deleting the template. Its OAuth clients stay registered.",
+  },
+  credentialsReferencedClient: {
+    group: "Pages/Credentials",
+    name: "OAuth client in use",
+    path: "/console/credentials/oauth-clients",
+    oauthCatalog: "ready",
+    actions: [
+      { selector: 'button[aria-label^="Delete Support service ("]', click: true },
+      click("Delete OAuth client"),
+    ],
+    description:
+      "A saved version of the Support MCP template references this client. Close the message to return to the client list.",
+  },
   credentialsRegisterOAuthClient: {
     group: "Pages/Credentials",
     name: "Register OAuth client",
