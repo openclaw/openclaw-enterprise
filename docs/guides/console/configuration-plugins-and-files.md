@@ -97,6 +97,11 @@ access. Existing
 selections and **Plugin selections JSON** remain editable when browsing is
 unavailable.
 
+If **Plugin selections JSON** contains a number too large in magnitude to save,
+such as `1e400`, the Console keeps the draft and asks you to correct it before
+saving or editing it in the picker. You can still browse the catalog if it is
+available. The Plugin Driver still validates its own policy fields when you save.
+
 An open Slack approver search keeps its query and results when you return to the
 browser tab and still have Agent access. Moving to another Console control closes
 the results; focus the search field to open them again. Switching Agent tabs and
