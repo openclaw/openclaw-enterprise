@@ -6,6 +6,10 @@ published: false
 
 The templates use release `oce`, OpenShell release `openshell-gateway`, namespace `oce-system`, GatewayClass `eg`, and Envoy namespace `envoy-gateway-system`. Keep these names; they match the staged policies.
 
+Exclude other install, upgrade and Job writers. Use a local chart and the matching CLI. Keep the new
+`$RUN_DIR/install-receipt` directory for [read-only handoff](production-handoff.md#resume-an-installation-in-progress).
+After an interrupted install, reconcile that receipt before any further writes.
+
 For CoreDNS, read the Kubernetes DNS zone below. For other DNS servers, get `CLUSTER_DOMAIN` from your cluster administrator. Confirm this DNS suffix before continuing.
 
 ```bash
@@ -62,7 +66,7 @@ CREATE SCHEMA drizzle AUTHORIZATION occ_migrator;
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 ```
 
-Create `occ-database` from protected `migration-url` and `application-url` files for the same database. Use `sslmode=verify-full&sslrootcert=/etc/openclaw/database-ca/ca.pem`; mount the CA as `occ-database-ca`, key `ca.pem`. Bootstrap, API and worker use the application login. Verify both roles from the approved network, using protected libpq service entries with the verifier host’s CA path:
+Prepare protected `migration-url` and `application-url` files for the same database. Use `sslmode=verify-full&sslrootcert=/etc/openclaw/database-ca/ca.pem` in both URLs. Bootstrap, API and worker use the application login. Verify both roles from the approved network, using protected libpq service entries with the verifier host’s CA path:
 
 ```bash
 for role in occ_migrator occ_app; do
@@ -73,7 +77,61 @@ done
 
 Expect the target database, login and `t` for each connection.
 
-Provision distinct OCE authentication and [private-routing credentials](workspace-routing.md#configure-private-routing), plus OpenShell client TLS. Create `occ-private-gateway-key` with key `occ` in `oce-system` before installing OCC. Prepare the bootstrap PVC once with UID/GID 1000 and mode 0700. Follow [system Secret and bootstrap preparation](production-installation.md#provision-system-secrets-and-install) using namespace `oce-system` and your selected storage class.
+Set `OCC_SECRET_DIR` to a private directory outside the checkout. Put the two
+database URL files and the approved PostgreSQL CA bundle (`database-ca.pem`) there.
+Use one raw URL per file. For this fresh installation, generate separate random
+32-byte secrets in hex for `auth-secret` (OCC sessions) and `routing-key`
+(private routing). Store each value without a trailing newline. Keep the files
+mode 0600 and retain the keys for redeployment.
+
+Create the bootstrap claim and Secrets from the matching checkout with jq, yq v4,
+and Node.js 24.22.1 or newer. The OpenShell chart’s PKI job supplies
+`openshell-client-tls`. Check that it exists before creating the OCC inputs.
+
+```bash
+: "${OCC_SECRET_DIR:?Set OCC_SECRET_DIR to the protected input directory}"
+for input in application-url migration-url database-ca.pem auth-secret routing-key; do
+  path="$OCC_SECRET_DIR/$input"
+  if [[ ! -f "$path" || ! -r "$path" || ! -s "$path" ]]; then
+    printf 'Missing, unreadable or empty input: %s\n' "$input" >&2
+    exit 1
+  fi
+done
+
+platform_kube=(kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" -n "$PLATFORM_NS")
+"${platform_kube[@]}" get secret openshell-client-tls -o name
+bootstrap_claim=$(jq -er '.bootstrap.password.claimName' "$RUN_DIR/values.json")
+bootstrap_image=$(jq -er '.images.controller' "$RUN_DIR/values.json")
+BOOTSTRAP_CLAIM="$bootstrap_claim" yq e '
+  .metadata.namespace = strenv(PLATFORM_NS) |
+  .metadata.name = strenv(BOOTSTRAP_CLAIM) |
+  .spec.storageClassName = strenv(STORAGE_CLASS)
+' deploy/examples/production/bootstrap-pvc.yaml > "$RUN_DIR/bootstrap-pvc.yaml"
+"${platform_kube[@]}" create -f "$RUN_DIR/bootstrap-pvc.yaml"
+"${platform_kube[@]}" create secret generic occ-database \
+  --from-file="application-url=$OCC_SECRET_DIR/application-url" \
+  --from-file="migration-url=$OCC_SECRET_DIR/migration-url"
+"${platform_kube[@]}" create secret generic occ-database-ca \
+  --from-file="ca.pem=$OCC_SECRET_DIR/database-ca.pem"
+"${platform_kube[@]}" create secret generic occ-auth \
+  --from-file="secret=$OCC_SECRET_DIR/auth-secret"
+"${platform_kube[@]}" create secret generic occ-private-gateway-key \
+  --from-file="occ=$OCC_SECRET_DIR/routing-key"
+```
+
+Prepare the fresh claim on the `oce-role=control` pool, where the OCC
+initialization Job runs. If cluster policy forbids the preparation Pod or you
+cannot verify its network isolation, skip the helper. Have the storage
+administrator set the root of the same fresh volume to UID/GID 1000 and mode 0700.
+
+```bash
+scripts/prepare-bootstrap-volume --kubeconfig "$KUBECONFIG" --context "$CONTEXT" \
+  --namespace "$PLATFORM_NS" --claim "$bootstrap_claim" --image "$bootstrap_image" \
+  --node-selector oce-role=control
+```
+
+Continue after the helper reports the claim prepared or the storage
+administrator confirms the root is ready.
 
 ```bash
 # Allow the initialization hook to reach the DNS Service VIP.
@@ -87,7 +145,10 @@ jq -n --arg ns "$PLATFORM_NS" --arg ip "$dns_ip" '{
   kubectl --context "$CONTEXT" create -f -
 kubectl -n "$PLATFORM_NS" create secret generic occ-installation-startup \
   --from-file="installation.yaml=$RUN_DIR/installation.json"
-helm install oce "${OCE_CHART:?}" -n "$PLATFORM_NS" -f "$RUN_DIR/values.json" --wait --timeout 5m
+occ installation install --release oce --chart "${OCE_CHART:?}" \
+  --kubeconfig "${KUBECONFIG:?}" --context "$CONTEXT" \
+  --kube-namespace "$PLATFORM_NS" --values "$RUN_DIR/values.json" \
+  --receipt "$RUN_DIR/install-receipt" --wait-timeout 5m
 kubectl -n "$PLATFORM_NS" rollout status deploy/openclaw-enterprise-api
 # Pin the Envoy data plane through its supported resource field.
 kubectl -n "$PLATFORM_NS" patch envoyproxy oce-agent-gateways --type=merge \

@@ -10,11 +10,27 @@
     "erasableSyntaxOnly": true,
     "tsBuildInfoFile": "../.build/tests/tsconfig.tsbuildinfo",
     "paths": {
-      "@openclaw-enterprise/contracts": ["../packages/contracts/src/index.ts"]
-    }
+      "@openclaw-enterprise/contracts": ["../packages/contracts/src/index.ts"],
+      "/console/agents/plugin-fields.mjs": [
+        "../apps/controller/src/console/agents/plugin-fields.mts"
+      ],
+      "/console/default-codex-preset.mjs": [
+        "../scripts/console-storybook/default-codex-preset.d.mts"
+      ],
+      "/console/standard-codex-preset.mjs": [
+        "../scripts/console-storybook/standard-codex-preset.d.mts"
+      ],
+      "/console/standard-openclaw-preset.mjs": [
+        "../scripts/console-storybook/standard-openclaw-preset.d.mts"
+      ],
+      "/console/swe-preset.mjs": ["../scripts/console-storybook/swe-preset.d.mts"]
+    },
+    "resolveJsonModule": true
   },
   "include": [
     "**/*.test.ts",
+    "browser/console-agent-detail-cases.mts",
+    "browser/console-agent-detail-deployment.ts",
     "../scripts/verify-console-release.ts",
     "../deploy/runtime/google/install-gog.mts",
     "../scripts/console-storybook/*.stories.ts",
@@ -41,7 +57,8 @@
     "fixtures/repository-credentials/module-guard.ts",
     "fixtures/repository-credentials/installation-module-guard.ts",
     "fixtures/repository-credentials/planning.ts",
-    "helpers/protected-static-secret-read.ts"
+    "helpers/protected-static-secret-read.ts",
+    "../scripts/observe-worker-terminations.ts"
   ],
   "references": [
     {

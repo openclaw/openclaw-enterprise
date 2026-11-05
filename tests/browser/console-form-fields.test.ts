@@ -1,3 +1,8 @@
+import {
+  openAdvancedSettings,
+  openCreateSecretDialog,
+  waitForCreateFormReads,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import type { Locator, Page } from "playwright";
@@ -25,12 +30,7 @@ import {
   nonAuthWriteRequests,
   shippedPreset,
 } from "./console-agents-browser-helpers.mjs";
-import {
-  openAdvancedSettings,
-  openCreateSecretDialog,
-  routeInstallationWithoutProvisioning,
-  waitForCreateFormReads,
-} from "./console-agents-test-support.mjs";
+import { routeInstallationWithoutProvisioning } from "./console-agents-test-support.mjs";
 
 // Form fields share one pattern (UX plan C3): a label, the control, its error, then its help.
 // The console checks required fields itself, so the browser's transient bubble never shows; it

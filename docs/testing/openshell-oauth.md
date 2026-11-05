@@ -1,3 +1,7 @@
+---
+tags: [human_verified]
+---
+
 # Test experimental OpenShell OAuth
 
 Verify the [experimental Codex OAuth source](../reference/drivers/openshell-credential-gateway.md#experimental-codex-oauth-poc)

@@ -1,3 +1,7 @@
+---
+tags: [human_verified]
+---
+
 # Docker, image, and Helm tests
 
 ## Overview
@@ -108,6 +112,7 @@ OCC_TEST_PRODUCTION_IMAGE="$CONTROLLER_IMAGE" OCC_TEST_RUNTIME_IMAGE="$RUNTIME_I
     tests/integration/runtime-image-startup.test.mjs \
     tests/integration/runtime-image-gateway-workspace.test.mjs \
     tests/integration/runtime-image-startup-probe.test.mjs \
+    tests/integration/runtime-image-codex-readiness.test.ts \
     tests/integration/runtime-image-startup-termination.test.mjs \
     tests/integration/runtime-image-gateway-unclean-restart.test.mjs \
     tests/integration/runtime-image-gateway-retained-state.test.mjs \
@@ -174,6 +179,16 @@ The lane requires all four images and fails on skipped cases. It checks protocol
 compatibility, not cluster behavior or a live Agent workflow.
 
 ## Runtime image startup test environment
+
+The Codex readiness case runs a real app-server with no model credentials or
+external network. It exercises the standalone healthcheck and the generated
+resident HTTP listener before login/model startup. Both preserve the ordinary
+client's identity, omit per-poll notifications at production INFO logging, and
+reject incomplete RPCs, including disconnects before the result. This is local
+HTTP/protocol component proof, not full Agent startup or cluster routing.
+The existing Codex startup-probe case additionally checks repeated HTTP readiness
+after the complete wrapper starts the packaged server; only its upstream model
+provider is substituted by the fixture.
 
 The runtime suite above uses task-owned Docker containers. In CI it requires the
 reviewed `OCC_TEST_CODEX_SECCOMP_PROFILE`. If running inside a container against

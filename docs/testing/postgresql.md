@@ -1,3 +1,7 @@
+---
+tags: [human_verified]
+---
+
 # PostgreSQL tests
 
 ## Overview
@@ -46,7 +50,7 @@ file database: the suite copies it. The suite rejects a standalone
 `node scripts/ci/cleanup.mjs --state /printed/run/directory/state.json` and
 retain the state if cleanup fails. The `postgres`, `postgres-platform`, and
 `postgres-auth` lanes use the same prepare, run, and cleanup pattern; see
-[CI lanes](ci.md#manual-full-integration-lanes).
+[CI lanes](ci/full-integration.md#scenarios).
 
 <a id="postgresql"></a>
 

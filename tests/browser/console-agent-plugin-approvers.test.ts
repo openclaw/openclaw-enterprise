@@ -1,3 +1,8 @@
+import {
+  enterManualModel,
+  openAdvancedSettings,
+  submitCreateAgent,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -30,12 +35,7 @@ import {
   statusTone,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
-import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
-import {
-  enterManualModel,
-  openAdvancedSettings,
-  submitCreateAgent,
-} from "./console-agents-test-support.mjs";
+import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import {
   callerDenied,
   refusedNamed,

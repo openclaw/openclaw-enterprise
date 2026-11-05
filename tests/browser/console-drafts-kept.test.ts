@@ -1,3 +1,11 @@
+import {
+  createModelCredentialSecret,
+  enterManualModel,
+  submitCreateAgent,
+  createAgentThroughForm,
+  waitForCreateFormReads,
+  LIVE_BUTTON,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
@@ -31,19 +39,13 @@ import {
   writeRequests,
 } from "./console-agents-browser-helpers.mjs";
 import {
-  LIVE_BUTTON,
   configurationPostRequests,
-  createModelCredentialSecret,
   createRepositoryLaunchFixture,
-  enterManualModel,
   routeInstallationProvisioning,
   raceAgentName,
   routeInstallationWithoutProvisioning,
-  submitCreateAgent,
-  createAgentThroughForm,
   routeProvisioningJob,
   provisioningJob,
-  waitForCreateFormReads,
 } from "./console-agents-test-support.mjs";
 import {
   AGENT_CREATE_RESTRICTED,

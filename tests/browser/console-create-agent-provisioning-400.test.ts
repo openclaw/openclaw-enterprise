@@ -1,3 +1,12 @@
+import {
+  assertAgentNameTaken,
+  createModelCredentialSecret,
+  enterManualModel,
+  openAdvancedSettings,
+  runProvisioningPolls,
+  waitForProvisioningFailure,
+  submitCreateAgent,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -52,21 +61,14 @@ import {
 import {
   agentPostRequests,
   agentProvisionPostRequests,
-  assertAgentNameTaken,
   configurationPostRequests,
-  createModelCredentialSecret,
-  enterManualModel,
   nativeSandboxDriver,
-  openAdvancedSettings,
   routeInstallationProvisioning,
   routeInstallationWithoutProvisioning,
-  runProvisioningPolls,
-  waitForProvisioningFailure,
-  submitCreateAgent,
   routeProvisioningJob,
   provisioningJob,
 } from "./console-agents-test-support.mjs";
-import { createRuntimeAuthFixture as rawRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
+import { createRuntimeAuthFixture as rawRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import { createReadyConsoleNamespace as rawReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 import {
   AGENT_NAME_CONFLICT,

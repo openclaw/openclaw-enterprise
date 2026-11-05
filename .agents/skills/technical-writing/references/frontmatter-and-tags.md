@@ -13,13 +13,13 @@ tags: [nolimit]
 
 ## Page fields
 
-| Field        | Values and behavior                                                                                                                                                                                         |
-| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `title`      | String. Overrides the site page and browser title; otherwise the renderer uses the first H1. Keep the H1 consistent. Sidebar labels belong in `docs/docs.json`.                                             |
-| `published`  | Boolean; omitted means published. `false` excludes the page from site pages and navigation. Use it for Markdown snippets and repository-only history. It does not exempt the file from length checks.       |
-| `searchable` | Boolean; omitted means searchable. `false` retains the page route but excludes its content from the site search index and emits `noindex`. It does not control access.                                      |
-| `tags`       | List of nonempty strings, such as `[nolimit]`. Exact, case-sensitive tag names. Omit the field or use `[]` for no tags; a scalar such as `tags: nolimit` is invalid.                                        |
-| `kind`       | Document taxonomy value. Current templates are `reference/driver` and `reference/driver/impl`; see the [taxonomy](../../../../docs/taxonomy.md). This selects authoring guidance, not a different renderer. |
+| Field        | Values and behavior                                                                                                                                                                                                          |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `title`      | String. Overrides the site page and browser title; otherwise the renderer uses the first H1. Keep the H1 consistent. Sidebar labels belong in `docs/docs.json`.                                                              |
+| `published`  | Boolean; omitted means published. `false` excludes the page from site pages and navigation. Use it for Markdown snippets and repository-only history. It does not exempt the file from length checks.                        |
+| `searchable` | Boolean; omitted means searchable. `false` retains the page route but excludes its content from the site search index and emits `noindex`. It does not control access.                                                       |
+| `tags`       | List of nonempty strings, such as `[nolimit]`. Exact, case-sensitive tag names. Omit the field or use `[]` for no tags; a scalar such as `tags: nolimit` is invalid.                                                         |
+| `kind`       | Document taxonomy value. Current templates are `reference/ci`, `reference/driver`, and `reference/driver/impl`; see the [taxonomy](../../../../docs/taxonomy.md). This selects authoring guidance, not a different renderer. |
 
 The site consumes `title`, `published`, and `searchable`; the length checker
 validates `tags`. Other fields above guide authors. A sidebar's `hidden` list
