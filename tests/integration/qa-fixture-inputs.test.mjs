@@ -611,6 +611,88 @@ test("the QA command runner records a failed image build step as redacted eviden
   );
 });
 
+// Real children distinguish an elapsed command deadline from an ordinary signal exit.
+// Neither private output nor argv may escape through the added timing diagnostics.
+test("QA command failures distinguish deadlines from signal exits without disclosing output", async (t) => {
+  const { runQaCommand } = await import("../helpers/qa-installation.mjs");
+  const directory = await temporaryDirectory(t, "qa-command-timeout-");
+  const f = {
+    directory,
+    stateDirectory: join(directory, "state"),
+    env: { PATH: process.env.PATH },
+  };
+  for (const scenario of [
+    {
+      name: "deadline",
+      command: process.execPath,
+      args: [
+        "-e",
+        "process.on('SIGTERM', () => process.exit(0)); console.error('private-timeout-canary'); setInterval(() => {}, 1000)",
+      ],
+      timeout: 1000,
+      timedOut: true,
+      // A graceful zero exit (or signal before the handler starts) cannot hide a timeout.
+      allowExitCodes: [0, null],
+    },
+    {
+      name: "signal",
+      command: "/bin/sh",
+      args: ["-c", "echo private-timeout-canary >&2; kill -PIPE $$"],
+      timeout: 5000,
+      timedOut: false,
+      signal: "SIGPIPE",
+    },
+  ]) {
+    await t.test(scenario.name, async () => {
+      await assert.rejects(
+        runQaCommand(f, scenario.command, scenario.args, {
+          timeout: scenario.timeout,
+          allowExitCodes: scenario.allowExitCodes,
+          privateFailureOutput: true,
+        }),
+        (error) => {
+          assert.equal(error.timedOut, scenario.timedOut);
+          assert.equal(error.timeoutMs, scenario.timeout);
+          assert.ok(Number.isInteger(error.elapsedMs) && error.elapsedMs >= 0);
+          assert.ok(
+            error.message.includes(`after ${error.elapsedMs} ms (limit ${scenario.timeout} ms)`),
+          );
+          if (scenario.timedOut) {
+            assert.ok(error.elapsedMs >= scenario.timeout);
+            assert.match(error.message, /timed out/);
+          } else {
+            assert.equal(error.signal, scenario.signal);
+            assert.doesNotMatch(error.message, /timed out/);
+          }
+          assert.doesNotMatch(
+            JSON.stringify(error),
+            /private-timeout-canary|process\.on|kill -PIPE/,
+          );
+          assert.doesNotMatch(error.message, /private-timeout-canary|process\.on|kill -PIPE/);
+          assert.equal(error.stdout, undefined);
+          assert.equal(error.stderr, undefined);
+          assert.equal(error.cmd, undefined);
+          return true;
+        },
+      );
+    });
+  }
+  // Explicitly allowed ordinary exits still succeed; timeout classification must not
+  // turn a supported nonzero exit into a failure when no deadline fired.
+  assert.equal(
+    await runQaCommand(
+      f,
+      process.execPath,
+      ["-e", "process.stdout.write('allowed'); process.exit(7)"],
+      {
+        timeout: 5000,
+        allowExitCodes: [7],
+      },
+    ),
+    "allowed",
+  );
+});
+
 // Finding 2026: a key whose BEGIN line falls before the failed step's last 200 lines, with no END
 // line, must lose every body line, not only the lines the tail still shows its BEGIN for.
 test("an image build step's unterminated private key is masked past the evidence window", async () => {
@@ -3490,4 +3572,65 @@ test("an automatically reviewed Calendar read runs again once, only after a revi
     await assert.rejects(read(f, []), (error) => error === other);
     assert.equal(f.turns.length, 1);
   });
+});
+
+test("QA model failure evidence preserves the failure and its admitted revision", async () => {
+  const { createNativePluginAssertions } = await import("../helpers/plugin-driver-real.mjs");
+  const secret = `qa-log-secret-${randomUUID()}`;
+  registerQaSecret(secret);
+  const agent = { namespaceId: "namespace", id: "agent", revision: { id: "original" } };
+  const reads = [];
+  const evidence = [];
+  const failure = new Error("original model assertion");
+  const native = createNativePluginAssertions({
+    // These pages stand in for OCC's already-redacted response. This verifies
+    // the QA collector's additional redaction, not the runtime log API.
+    async readRuntimeLogs(target) {
+      reads.push(target);
+      if (target.source === "agent") {
+        throw new Error("log source unavailable");
+      }
+      return {
+        records: [{ type: "line", level: "error", message: `failure ${secret}`, private: secret }],
+      };
+    },
+    async recordRuntimeLogs(record) {
+      evidence.push(record);
+    },
+  });
+  assert.equal(await native.withRuntimeFailureLogs(agent, async () => "passed"), "passed");
+  assert.deepEqual(reads, [], "successful assertions do not collect failure evidence");
+  await assert.rejects(
+    native.withRuntimeFailureLogs(agent, async () => {
+      agent.revision = { id: "replacement" };
+      throw failure;
+    }),
+    (error) => error === failure,
+  );
+  assert.deepEqual(reads, [
+    { namespaceId: "namespace", agentId: "agent", revisionId: "original", source: "gateway" },
+    { namespaceId: "namespace", agentId: "agent", revisionId: "original", source: "agent" },
+  ]);
+  assert.equal(evidence.length, 1);
+  assert.equal(evidence[0].revisionId, "original");
+  assert.match(evidence[0].sources[0].lines[0], /failure/);
+  assert.equal(JSON.stringify(evidence).includes(secret), false);
+  assert.equal(JSON.stringify(evidence).includes("private"), false);
+  assert.deepEqual(evidence[0].sources[1], { source: "agent", unavailable: true });
+
+  // Failure to save diagnostics must not replace the original model assertion.
+  const unavailable = createNativePluginAssertions({
+    async readRuntimeLogs() {
+      throw new Error("logs unavailable");
+    },
+    async recordRuntimeLogs() {
+      throw new Error("artifact write failed");
+    },
+  });
+  await assert.rejects(
+    unavailable.withRuntimeFailureLogs(agent, async () => {
+      throw failure;
+    }),
+    (error) => error === failure,
+  );
 });

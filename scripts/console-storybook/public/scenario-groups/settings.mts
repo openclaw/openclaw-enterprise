@@ -1,3 +1,4 @@
+import type { StoryAction } from "../../story-action.mts";
 import type { DriverConfigurationDescriptor } from "@openclaw-enterprise/contracts";
 import type { ErrorCode } from "../../../../packages/contracts/src/api/common.ts";
 
@@ -10,6 +11,7 @@ type SettingsRule =
   | { path: "/api/auth/sign-out"; method: "POST"; status: number };
 
 type SettingsScenario = {
+  actions?: StoryAction[];
   group: "Pages/Settings";
   name: string;
   path: "/console/settings";
@@ -20,7 +22,6 @@ type SettingsScenario = {
   installationValuesUnavailable?: true;
   readOnlyPermissionSummary?: true;
   sessionUser?: { id: string; name: string; email: string };
-  actions?: readonly { selector: string; click: true }[];
   rules?: readonly SettingsRule[];
 };
 

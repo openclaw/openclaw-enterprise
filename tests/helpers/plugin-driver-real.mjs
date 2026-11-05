@@ -1522,6 +1522,62 @@ export function createNativePluginAssertions({
     });
   }
 
+  async function captureRuntimeFailureLogs(logTarget, secrets = []) {
+    if (readRuntimeLogs && recordRuntimeLogs && logTarget.revisionId) {
+      // OCC authorizes and redacts each exact revision read. Apply the existing QA
+      // redactor again for fixture secrets before writing the public evidence artifact.
+      try {
+        for (const value of secrets) {
+          if (typeof value === "string" && value) {
+            registerQaSecret(value);
+          }
+        }
+        const sources = [];
+        for (const source of ["gateway", "agent"]) {
+          // Stay within OCC's two log reads/second per principal and Agent.
+          await delay(500);
+          try {
+            const page = await readRuntimeLogs({ ...logTarget, source });
+            const lines = page.records.map((record) => {
+              if (record.type === "line") {
+                const { type, time, level, message, fields } = record;
+                return JSON.stringify({ type, time, level, message, fields });
+              }
+              const { type, time, reason, count } = record;
+              return JSON.stringify({ type, time, reason, count });
+            });
+            sources.push({
+              source,
+              lines: redactedQaTail(lines.join("\n"), process.env, {
+                lines: 80,
+                lineChars: 900,
+              }),
+            });
+          } catch {
+            sources.push({ source, unavailable: true });
+          }
+        }
+        await recordRuntimeLogs({ ...logTarget, sources });
+      } catch {
+        // Diagnostic reads/writes must never replace the original turn failure.
+      }
+    }
+  }
+
+  async function withRuntimeFailureLogs(agent, action) {
+    const logTarget = {
+      namespaceId: agent.namespaceId,
+      agentId: agent.id,
+      revisionId: agent.revision?.id,
+    };
+    try {
+      return await action();
+    } catch (error) {
+      await captureRuntimeFailureLogs(logTarget);
+      throw error;
+    }
+  }
+
   async function normalGatewayTurn({
     agent,
     gatewayPassword,
@@ -1675,45 +1731,7 @@ export function createNativePluginAssertions({
       }
       return content;
     } catch (error) {
-      if (readRuntimeLogs && recordRuntimeLogs && logTarget.revisionId) {
-        // OCC authorizes and redacts each exact revision read. Apply the existing QA
-        // redactor again for fixture secrets before writing the public evidence artifact.
-        try {
-          for (const value of [password, ...secrets]) {
-            if (typeof value === "string" && value) {
-              registerQaSecret(value);
-            }
-          }
-          const sources = [];
-          for (const source of ["gateway", "agent"]) {
-            // Stay within OCC's two log reads/second per principal and Agent.
-            await delay(500);
-            try {
-              const page = await readRuntimeLogs({ ...logTarget, source });
-              const lines = page.records.map((record) => {
-                if (record.type === "line") {
-                  const { type, time, level, message, fields } = record;
-                  return JSON.stringify({ type, time, level, message, fields });
-                }
-                const { type, time, reason, count } = record;
-                return JSON.stringify({ type, time, reason, count });
-              });
-              sources.push({
-                source,
-                lines: redactedQaTail(lines.join("\n"), process.env, {
-                  lines: 80,
-                  lineChars: 900,
-                }),
-              });
-            } catch {
-              sources.push({ source, unavailable: true });
-            }
-          }
-          await recordRuntimeLogs({ ...logTarget, sources });
-        } catch {
-          // Diagnostic reads/writes must never replace the original turn failure.
-        }
-      }
+      await captureRuntimeFailureLogs(logTarget, [password, ...secrets]);
       throw error;
     } finally {
       abort.abort();
@@ -2248,6 +2266,7 @@ export function createNativePluginAssertions({
 
   return {
     normalGatewayTurn,
+    withRuntimeFailureLogs,
     readCodexSessionBinding,
     readCodexThreadMetadata,
     assertSessionToolCallEvidence,

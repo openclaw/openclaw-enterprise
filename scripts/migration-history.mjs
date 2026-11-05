@@ -157,6 +157,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 67 && completedCount > 67) {
     return "preAgentPluginDriver";
   }
+  if (count === 68 && completedCount > 68) {
+    return "preConnectionTemplates";
+  }
   if (count === completedCount) {
     return "completed";
   }
@@ -268,7 +271,7 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 63) {
     return "preGatewayManagedMode";
   }
-  if (count === 68) {
+  if (count === 69) {
     return "preNamespaceLifecycle";
   }
   refuse("an incomplete or unsupported development history is installed");

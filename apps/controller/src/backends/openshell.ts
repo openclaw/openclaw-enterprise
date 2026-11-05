@@ -12,6 +12,7 @@ import {
   GrpcOpenShellGatewayClient,
   type OpenShellGatewayClient,
   type OpenShellGatewayClientOptions,
+  type OpenShellProviderResponse,
 } from "../drivers/sandbox/openshell-gateway-client.ts";
 
 const DEFAULT_GATEWAY_PORT = 8080;
@@ -249,9 +250,21 @@ export function openShellWorkspaceName(namespace: Readonly<Namespace>): string {
   return name;
 }
 
+export const MANAGED_BY_LABEL = "app.kubernetes.io/managed-by";
+export const MANAGED_BY = "openclaw-enterprise";
+export const SOURCE_ID_LABEL = "openclaw.dev/credential-source-id";
+
 /** One OpenShell provider per OCC credential source, named without exposing the source ID. */
 export function openShellProviderName(sourceId: string): string {
   return `oce-cs-${sha256Hex(sourceId, 24)}`;
+}
+
+export function openShellOwnedBy(provider: OpenShellProviderResponse, sourceId: string): boolean {
+  return (
+    provider.labels[MANAGED_BY_LABEL] === MANAGED_BY &&
+    provider.labels[SOURCE_ID_LABEL] === sourceId &&
+    provider.type === openShellProviderName(sourceId)
+  );
 }
 
 export function isOpenShellProviderName(value: string): boolean {
