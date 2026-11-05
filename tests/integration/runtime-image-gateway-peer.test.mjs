@@ -20,6 +20,79 @@ import {
   runGatewaySmoke,
 } from "../helpers/runtime-image-startup.mjs";
 
+// Only emit known diagnostic fields and values; fixture output and runtime logs are untrusted.
+const diagnosticPhases = new Set([
+  "initial-ready",
+  "peer2-switch",
+  "replacement-request",
+  "third-request-entry",
+  "identity-check",
+  "credential-check",
+  "native-ready",
+  "wrapper-ready",
+  "peer3-switch",
+  "peer3-response",
+  "deadline",
+]);
+const startupPhases = new Set([
+  "codex-login",
+  "egress-enrollment",
+  "gateway-respawn",
+  "model-probe",
+  "native-spawn",
+  "node-setup",
+  "peer-bridge-record",
+  "peer-status-changed",
+  "peer-status-restored",
+  "peer-verification-changed",
+  "plugin-install",
+  "runtime-assets",
+  "supervisor-spawn",
+  "workspace-baseline",
+  "workspace-node",
+  "workspace-node-changed",
+]);
+
+function emitPeerDiagnostics(t, fixtureOutput, containerOutput) {
+  for (const entry of jsonLogEntries(fixtureOutput)) {
+    if (entry?.event !== "stale-peer-diagnostic" || !diagnosticPhases.has(entry.phase)) {
+      continue;
+    }
+    const record = { phase: entry.phase };
+    if (Number.isFinite(entry.elapsedMs) && entry.elapsedMs >= 0) {
+      record.elapsedMs = entry.elapsedMs;
+    }
+    if (Number.isSafeInteger(entry.ordinal) && entry.ordinal >= 0) {
+      record.ordinal = entry.ordinal;
+    }
+    if (diagnosticPhases.has(entry.lastPhase) || entry.lastPhase === "initial") {
+      record.lastPhase = entry.lastPhase;
+    }
+    for (const field of ["singleProcess", "sameIdentity", "sameCredential", "ready"]) {
+      if (typeof entry[field] === "boolean") {
+        record[field] = entry[field];
+      }
+    }
+    t.diagnostic(`stale peer: ${JSON.stringify(record)}`);
+  }
+  for (const entry of jsonLogEntries(containerOutput)) {
+    if (entry?.event !== "runtime.startup_phase" || !startupPhases.has(entry.phase)) {
+      continue;
+    }
+    if (!["ok", "failed", "started"].includes(entry.outcome)) {
+      continue;
+    }
+    const record = { phase: entry.phase, outcome: entry.outcome };
+    if (Number.isFinite(entry.ms) && entry.ms >= 0) {
+      record.ms = entry.ms;
+    }
+    if (Number.isFinite(entry.sinceStartMs) && entry.sinceStartMs >= 0) {
+      record.sinceStartMs = entry.sinceStartMs;
+    }
+    t.diagnostic(`wrapper phase: ${JSON.stringify(record)}`);
+  }
+}
+
 // The dedicated Gateway's Harness peer scenarios on the real runtime image: an
 // in-place OpenClaw respawn for a changed peer, and an exit when OpenClaw crashes
 // during a peer status outage or a replacement peer changes. Split from
@@ -258,10 +331,16 @@ describe("runtime image Gateway Harness peer", { concurrency: 2 }, () => {
       failure = error;
     }
     assert.ok(failure, `the container should exit for ${scenario}`);
+    if (scenario === "stale-replacement") {
+      const logs = await runDocker(["logs", containerName]).catch((error) => error);
+      emitPeerDiagnostics(t, commandOutput(failure), commandOutput(logs));
+    }
     if (!(failure.stdout ?? "").includes(`"phase":"${expectedPhase}"`)) {
       const logs = await runDocker(["logs", containerName]).catch((error) => error);
       assert.fail(
-        `Expected ${expectedPhase} was not observed.\n${failureTail(commandOutput(failure), 4096)}\n${failureTail(commandOutput(logs), 8192)}`,
+        scenario === "stale-replacement"
+          ? `Expected ${expectedPhase} was not observed; see allowlisted diagnostics above.`
+          : `Expected ${expectedPhase} was not observed.\n${failureTail(commandOutput(failure), 4096)}\n${failureTail(commandOutput(logs), 8192)}`,
       );
     }
     // The fixture fails on its own only when the wrapper outlives its deadline;

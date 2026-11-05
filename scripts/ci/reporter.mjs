@@ -57,6 +57,7 @@ const postTestAsyncActivityPrefix =
 // Tests publish timings with t.diagnostic(`${measurementPrefix}${JSON}`). Only the
 // allowlisted shape below is retained in ordinary results.
 const measurementPrefix = "openclaw-ci-measurement ";
+const openShellStageMeasurementKind = "openshell-stage";
 const openShellSandboxMeasurementKind = "openshell-sandbox-phase";
 const openShellSandboxStages = new Set([
   "installation",
@@ -92,6 +93,40 @@ function parseMeasurement(message) {
 function safeMeasurement(value) {
   if (isRecord(value) && value.kind === openShellGitRetentionKind) {
     return projectOpenShellGitRetention(value);
+  }
+  if (isRecord(value) && value.kind === openShellStageMeasurementKind) {
+    if (
+      ![
+        "installation",
+        "initial-model",
+        "filesystem-network",
+        "network-policy",
+        "credential-route",
+        "replacement",
+        "untrusted-upstream",
+        "tool-outage",
+        "model-outage",
+        "gateway-outage",
+        "oauth-refresh",
+        "non-model-source",
+        "credential-absence",
+        "credential-withdrawal",
+        "embedded-refusal",
+        "native-policy",
+      ].includes(value.stage) ||
+      !["passed", "failed"].includes(value.outcome) ||
+      !Number.isInteger(value.elapsedMs) ||
+      value.elapsedMs < 0 ||
+      value.elapsedMs > 7_200_000
+    ) {
+      return undefined;
+    }
+    return {
+      kind: value.kind,
+      stage: value.stage,
+      outcome: value.outcome,
+      elapsedMs: value.elapsedMs,
+    };
   }
   if (isRecord(value) && value.kind === openShellSandboxMeasurementKind) {
     if (
@@ -1315,6 +1350,7 @@ export default async function* jsonLinesReporter(source) {
       // records and extra fields must not reappear in a failed file's raw tail.
       if (
         typeof event.data.file === "string" &&
+        value?.kind !== openShellStageMeasurementKind &&
         value?.kind !== openShellSandboxMeasurementKind &&
         !retentionReceipt
       ) {

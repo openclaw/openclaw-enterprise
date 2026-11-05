@@ -447,6 +447,8 @@ export class OpenShellGitRuntime {
             !!this.configuration.observedHookPreviewWorkspace)) ||
       !revision.egressPlan?.driver ||
       !isDeepStrictEqual(revision.egressPlan.repositoryGit, state) ||
+      typeof revision.egressPlan.execution?.executionId !== "string" ||
+      revision.egressPlan.execution.executionId.trim().length === 0 ||
       (binding.profile !== "git-write" &&
         binding.profile !== githubInstallationProfile &&
         binding.profile !== "github-repository")
@@ -584,10 +586,7 @@ export class OpenShellGitRuntime {
       throw new Error("OpenShell prepared Git requires a live admitted GitHub binding.");
     }
     const scope = this.scope(revision);
-    const executionId = revision.egressPlan?.execution?.executionId;
-    if (!executionId) {
-      throw new Error(missingAdmittedGitScope);
-    }
+    const admittedExecutionId = revision.egressPlan!.execution.executionId;
     const legacyPreview = revision.executionAdmission?.version === 6;
     const mandatory =
       revision.egressPlan?.repositoryGitAuthorization === "online-request" &&
@@ -665,7 +664,7 @@ export class OpenShellGitRuntime {
           scope.delivery,
           true,
         );
-        const bindingId = executionId;
+        const bindingId = admittedExecutionId;
         const route = {
           revisionId: revision.id,
           namespaceId: revision.namespaceId,

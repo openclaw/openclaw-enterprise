@@ -16,7 +16,7 @@
     "cli:test": "go test ./...",
     "format:fix": "bun fmt --no-script \"{apps,packages,scripts,tests}/**/*.{ts,mts,mjs,cjs,json,html,css}\" \"*.{ts,mjs,cjs,json,yaml,yml,md}\" \"docs/**/*.md\" \"!docs/reference/api.md\" \".github/**/*.yml\"",
     "format:check": "bun fmt --no-script --check \"{apps,packages,scripts,tests}/**/*.{ts,mts,mjs,cjs,json,html,css}\" \"*.{ts,mjs,cjs,json,yaml,yml,md}\" \"docs/**/*.md\" \"!docs/reference/api.md\" \".github/**/*.yml\"",
-    "contributors:update": "node scripts/update-contributors.mjs",
+    "contributors:update": "node scripts/update-contributors.ts",
     "hooks:install": "node scripts/install-git-hooks.mjs",
     "prepare": "node scripts/install-git-hooks.mjs --if-git-present",
     "check:workspace": "node scripts/verify-workspace-boundary.mjs",

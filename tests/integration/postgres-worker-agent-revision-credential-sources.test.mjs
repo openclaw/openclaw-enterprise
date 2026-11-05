@@ -2958,6 +2958,11 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
       t,
       async ({ revision, evaluate, peer, maintenance: controls }) => {
         const { fixture: f, agent, world, events, stopped, restart } = controls;
+        assert.equal(revision.executionAdmission.version, 5);
+        assert.equal(revision.executionAdmission.mode, "protected");
+        assert.equal(revision.egressPlan.repositoryGitAuthorization, "online-request");
+        assert.deepEqual(revision.egressPlan.repositoryGit, revision.repositoryCredentials);
+        assert.equal(revision.repositoryCredentials.standingApprovalId, undefined);
         const [{ sessionId }] = await repositoryAttempts(f, revision);
         const deadlineWallMs = revision.repositoryCredentials.deadlineWallMs;
         let originRequests = 0;
@@ -3020,6 +3025,19 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
           attempts.map((a) => [a.phase, a.sessionId]),
           [["disposed", sessionId]],
         );
+        const originalAdmission = attempts[0].admissionId;
+        assert.ok(originalAdmission);
+        const assertOriginalSession = async () => {
+          assert.deepEqual(
+            (await repositoryAttempts(f, revision)).map(({ admissionId, sessionId, phase }) => [
+              admissionId,
+              sessionId,
+              phase,
+            ]),
+            [[originalAdmission, sessionId, "disposed"]],
+            "settlement never creates a second durable admission",
+          );
+        };
         await advanceCleanupRetries(f, revision);
         await nextExpiry("REPOSITORY_CLEANUP_PENDING");
         assert.equal(
@@ -3052,6 +3070,7 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
             [1, 1],
             "no replay or replacement",
           );
+          await assertOriginalSession();
           return;
         }
         await nextExpiry("REPOSITORY_ACCESS_WITHDRAWN");
@@ -3086,6 +3105,7 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
           [1, 1],
           "no replay or replacement Git material",
         );
+        await assertOriginalSession();
         // Losing the evidence for safe retention on the next ordinary maintenance retires this revision.
         if (platformProfile) {
           assert.deepEqual(

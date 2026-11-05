@@ -426,6 +426,8 @@ async function repositoryGitJourney(
   const work = { ...revision, idempotencyKey: queued.rows[0].idempotency_key };
   assert.equal(revision.repositoryCredentials!.bindings.length, narrowProfile || standing ? 1 : 2);
   assert.equal(revision.executionAdmission.version, 5);
+  assert.equal(revision.executionAdmission.mode, "protected");
+  assert.deepEqual(revision.egressPlan!.repositoryGit, revision.repositoryCredentials);
   assert.equal(revision.egressPlan!.repositoryGitAuthorization, "online-request");
   Object.assign(state, {
     revisionId: revision.id,
@@ -1196,13 +1198,36 @@ async function repositoryGitJourney(
       repositorySet.slice(0, 2).map(({ repositoryId }) => Number(repositoryId)),
     );
     assert.deepEqual(peer.gh.issuesOfTokens[0].permissions, repositorySetPermissions);
-    wrongIdentity = true;
+    const heldSyntheticValue = state.installed!;
+    const liveOriginBefore = peer.originCalls();
     assert.equal(
-      (await evaluate(probe)).decision,
-      2,
-      "a different supervisor cannot use the token",
+      (
+        (await peer.exchange(() => evaluate(probe), heldSyntheticValue, false)) as {
+          status: number;
+        }
+      ).status,
+      200,
+      "the admitted signed request delivers an ordinary Git advertisement",
     );
-    wrongIdentity = false;
+    const liveOriginDelta = peer.originCalls() - liveOriginBefore;
+    assert.ok(liveOriginDelta > 0, "the verified HTTPS Git origin received the request");
+    const foreignOriginBefore = peer.originCalls();
+    wrongIdentity = true;
+    try {
+      await peer.exchange(
+        async () => {
+          const refused = await evaluate(probe);
+          assert.equal(refused.decision, 2, "a fresh matching foreign Sandbox is refused");
+          return refused;
+        },
+        heldSyntheticValue,
+        false,
+      );
+    } finally {
+      wrongIdentity = false;
+    }
+    const foreignOriginDelta = peer.originCalls() - foreignOriginBefore;
+    assert.equal(foreignOriginDelta, 0, "foreign authority never reaches the Git origin");
     for (const [query, decision] of [
       ['query { repository(owner: "fixture", name: "repository") { name } }', 1],
       ['mutation { addStar(input: {starrableId: "repository"}) { starrable { id } } }', 1],
@@ -1392,6 +1417,15 @@ async function repositoryGitJourney(
     if (askModel) {
       assert.equal((await evaluate(removedMemberProbe)).decision, 1);
     }
+    const readRetainedRoute = async () => {
+      const { rows } = await f.observerPool.query<{
+        binding_id: string;
+      }>("SELECT binding_id FROM occ.credential_deliveries WHERE revision_id=$1", [revision.id]);
+      assert.equal(rows.length, 1, "the exact old revision retains one committed route");
+      return rows[0]!;
+    };
+    const originalRoute = await readRetainedRoute();
+    const writesBeforeReplacement = wire.world.writes;
     await f.controller.updateAgent(f.actor.id, {
       namespaceId: f.namespace.id,
       agentId: agent.id,
@@ -1478,9 +1512,38 @@ async function repositoryGitJourney(
     assert.deepEqual(stopped, [], "Git subtraction preserves this running Agent");
     assert.deepEqual([wire.world.detaches.length, wire.world.writes], [1, 1]);
     assert.equal(peer.gh.issuesOfTokens.length, 1);
-    const trafficAfterReduction = peer.originCalls() + peer.gh.trace.length;
-    assert.equal((await evaluate(removedMemberProbe)).decision, 2);
-    assert.equal(peer.originCalls() + peer.gh.trace.length, trafficAfterReduction);
+    const retainedRoute = await readRetainedRoute();
+    assert.equal(retainedRoute.binding_id, originalRoute.binding_id);
+    assert.equal(wire.world.writes, writesBeforeReplacement, "replacement writes no credentials");
+    // This is an independent origin control, not an authority decision. The original
+    // credential may already have been retired by ordinary lifecycle maintenance.
+    const heldControl = await peer.send(heldSyntheticValue, false);
+    const heldControlValid = heldControl.status === 200;
+    assert.ok(heldControlValid || heldControl.status === 401 || heldControl.status === 403);
+    const originBeforeReductionProbe = peer.originCalls();
+    const providerBeforeReductionProbe = peer.gh.trace.length;
+    // Use the real replacement listener after expiry recovery. Do not invoke prepare()
+    // again: that would introduce a second live-route transition into the retention proof.
+    await peer.exchange(
+      async () => {
+        const refused = await evaluate(removedMemberProbe);
+        assert.equal(refused.decision, 2, "the replacement listener refuses the retained binding");
+        return refused;
+      },
+      heldSyntheticValue,
+      false,
+    );
+    const reducedOriginDelta = peer.originCalls() - originBeforeReductionProbe;
+    assert.equal(reducedOriginDelta, 0, "post-reduction refusal never reaches the Git origin");
+    assert.equal(peer.gh.trace.length, providerBeforeReductionProbe);
+    t.diagnostic(
+      `Authority counts: live=${liveOriginDelta}, foreign=${foreignOriginDelta}, postReduction=${reducedOriginDelta}, newWrites=${wire.world.writes - writesBeforeReplacement}, originalBinding=1, independentHeldValid=${Number(heldControlValid)}`,
+    );
+    if (!heldControlValid) {
+      t.diagnostic(
+        "Limit: independent held synthetic credential was already refused by the origin",
+      );
+    }
     if (askModel) {
       await askModel("after");
     }

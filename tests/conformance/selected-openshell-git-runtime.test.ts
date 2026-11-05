@@ -745,6 +745,77 @@ test("bundled live Git refuses historical v5 installation scope before any effec
   assert.deepEqual([f.calls.providerWrites, f.calls.material, f.calls.rotate], [0, 0, 0]);
 });
 
+// Preserve the admission checks on the supported selected-repository workflow.
+test("Git preparation refuses missing admission or plan identity before gateway calls", async (t) => {
+  for (const invalid of [
+    "no-plan",
+    "no-admission",
+    "no-execution",
+    "empty-id",
+    "whitespace-id",
+    "non-string-id",
+    "snapshot",
+  ]) {
+    const { f, store, revision, noCredentials } = await selectedV5(t);
+    let admittedId: unknown = revision.egressPlan!.execution.executionId;
+    if (invalid === "empty-id") {
+      admittedId = "";
+    }
+    if (invalid === "whitespace-id") {
+      admittedId = " ";
+    }
+    if (invalid === "non-string-id") {
+      admittedId = 7;
+    }
+    const candidate = {
+      ...revision,
+      executionAdmission: invalid === "no-admission" ? undefined : revision.executionAdmission,
+      egressPlan:
+        invalid === "no-plan"
+          ? undefined
+          : {
+              ...revision.egressPlan!,
+              repositoryGit: invalid === "snapshot" ? undefined : revision.repositoryCredentials,
+              execution: invalid === "no-execution" ? undefined : { executionId: admittedId },
+            },
+    } as unknown as AgentRevision;
+    let gatewayCalls = 0;
+    f.faults.gatewayCall = () => {
+      gatewayCalls += 1;
+    };
+    await assert.rejects(
+      f.runtime.prepare(
+        candidate,
+        fixtureClient(f),
+        f.sandbox.workspace,
+        f.sandbox.name,
+        t.signal,
+        "/sandbox/enterprise",
+        ["openai"],
+      ),
+      /requires one explicitly admitted GitHub binding/,
+      invalid,
+    );
+    assert.equal(gatewayCalls, 0, invalid);
+    assert.equal(f.calls.providerWrites, 0, invalid);
+    assert.equal(store.rows.size, 0, invalid);
+    noCredentials();
+  }
+});
+
+test("a fresh Git route uses the execution ID admitted before gateway reads", async (t) => {
+  const { f, store, revision, executionId, prepare } = await selectedV5(t);
+  const execution = revision.egressPlan!.execution as { executionId: string };
+  f.faults.gatewayCall = (method) => {
+    if (method === "getSandbox") {
+      execution.executionId = "changed-during-gateway-read";
+    }
+  };
+  await prepare();
+  assert.notEqual(execution.executionId, executionId, "the gateway read changed the input");
+  assert.equal(store.rows.get(revision.id)?.bindingId, executionId);
+});
+
 test("selected v5 retries classified reads before reservation, then prepares the exact execution once", async (t) => {
   await t.test("surviving same-name Sandbox without a stored route is refused once", async (t) => {
     const { f, store, revision, prepare, noCredentials } = await selectedV5(t);

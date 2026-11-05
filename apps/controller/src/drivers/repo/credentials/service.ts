@@ -211,13 +211,10 @@ export function createCredentialService(
       throw new Error("INVALID_ADMISSION");
     }
     const admittedInput = snapshotSessionInput(input);
-    if (isBoundInput(admittedInput) !== (factory.resolveBound !== undefined)) {
+    if (isBoundInput(admittedInput) !== "createPrepared" in factory) {
       throw new Error("INVALID_BINDING");
     }
-    if (
-      isBoundInput(admittedInput) &&
-      (admittedInput.preparedOnly !== true || !("createPrepared" in factory))
-    ) {
+    if (isBoundInput(admittedInput) && admittedInput.preparedOnly !== true) {
       throw new Error("INVALID_ADMISSION");
     }
     const profile = admittedInput.profile ?? policy.defaultProfile;
@@ -251,8 +248,11 @@ export function createCredentialService(
       try {
         let resolved: ResolvedGrant;
         if (isBoundInput(admittedInput)) {
-          resolved = factory.resolveBound!(admittedInput);
-        } else if ("resolve" in factory) {
+          if (!("createPrepared" in factory)) {
+            throw new Error("INVALID_BINDING");
+          }
+          resolved = factory.resolveBound(admittedInput);
+        } else if (!("createPrepared" in factory)) {
           resolved = factory.resolve(profile);
         } else {
           throw new Error("INVALID_BINDING");

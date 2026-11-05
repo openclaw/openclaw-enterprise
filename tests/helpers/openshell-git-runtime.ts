@@ -75,6 +75,9 @@ type Owner = {
   authorizeOnlineRequest: Parameters<OpenShellGitRuntime["start"]>[0]["authorizeOnlineRequest"];
 };
 interface World {
+  revision: AgentRevision;
+  resolveDelivery: ReturnType<typeof createGitHubRepositoryDeliveryResolver>;
+  runtime: OpenShellGitRuntime;
   sandbox: {
     id: string;
     name: string;
@@ -139,7 +142,7 @@ export function openShellGitRuntimeFixture({
   store,
   audience = "test-audience",
   world,
-  resolveDelivery = createGitHubRepositoryDeliveryResolver(registry),
+  resolveDelivery = world?.resolveDelivery ?? createGitHubRepositoryDeliveryResolver(registry),
   onEvent,
 }: {
   store?: ReturnType<typeof routeStore>;
@@ -148,17 +151,18 @@ export function openShellGitRuntimeFixture({
   resolveDelivery?: ReturnType<typeof createGitHubRepositoryDeliveryResolver>;
   onEvent?: (event: Readonly<Record<string, unknown>>) => void;
 } = {}) {
-  const revision = Object.freeze({
-    id: "rev-one",
-    namespaceId: "namespace-a",
-    agentId: "agent-one",
-    harness: { id: "codex", mode: "dedicated" },
-    repositoryCredentials: {
-      driver: { id: "repo-driver", implementation: "github" },
-      deadlineWallMs: Date.now() + 3_600_000,
-      bindings: [admitted],
-    },
-  }) as unknown as AgentRevision;
+  const revision = (world?.revision ??
+    Object.freeze({
+      id: "rev-one",
+      namespaceId: "namespace-a",
+      agentId: "agent-one",
+      harness: { id: "codex", mode: "dedicated" },
+      repositoryCredentials: {
+        driver: { id: "repo-driver", implementation: "github" },
+        deadlineWallMs: Date.now() + 3_600_000,
+        bindings: [admitted],
+      },
+    })) as unknown as AgentRevision;
   // `world` shares the gateway, supervisor, faults and owner of an earlier fixture: the state a
   // restarted worker process finds (finding 2128).
   const sandbox = world?.sandbox ?? {
@@ -411,7 +415,7 @@ export function openShellGitRuntimeFixture({
   };
   const events: Readonly<Record<string, unknown>>[] = [];
   const runtime = new OpenShellGitRuntime(
-    {
+    world?.runtime.configuration ?? {
       registrationName: "oce-prepared-git",
       authority: {
         host: "127.0.0.1",
@@ -492,6 +496,7 @@ export function openShellGitRuntimeFixture({
   const denials = () => events.filter((event) => event.event === "worker.openshell-git-denied");
   return Object.assign(f, {
     runtime,
+    resolveDelivery,
     client,
     provider,
     store,

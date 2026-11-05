@@ -59,6 +59,7 @@
     "tests/integration/production-image-upgrade.test.mjs",
     "tests/integration/production-upgrade-chart-inputs.test.ts",
     "tests/conformance/test-files.test.mjs",
+    "tests/conformance/update-contributors.test.mjs",
     "tests/conformance/socket-directory.test.mjs",
     "tests/conformance/temporary-directory.test.mjs",
     "tests/integration/production-controller-security.test.mjs",
@@ -172,6 +173,9 @@
     },
     {
       "path": "tests/conformance/contracts.test.mjs"
+    },
+    {
+      "path": "tests/conformance/update-contributors.test.mjs"
     },
     {
       "path": "tests/docs/docs-length.test.mjs"
@@ -648,7 +652,9 @@
         "selected released v5 unsent cancellation: committed reply lost",
         "selected released v5 unsent cancellation: replacement holder",
         "selected route readiness separates no material, access refusal, and replacement",
-        "Git preparation refuses broad or noncanonical workspace trust before provider writes"
+        "Git preparation refuses broad or noncanonical workspace trust before provider writes",
+        "Git preparation refuses missing admission or plan identity before gateway calls",
+        "a fresh Git route uses the execution ID admitted before gateway reads"
       ]
     },
     {

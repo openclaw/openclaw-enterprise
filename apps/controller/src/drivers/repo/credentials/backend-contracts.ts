@@ -175,8 +175,6 @@ export interface ResolvedGrant {
 export interface RepositoryBackendFactory {
   parseAuthentication(head: RequestHead, authorization: string): string | Denied;
   resolve(profile: string): ResolvedGrant;
-  /** Presence selects registry-bound admission; it never falls back to resolve. */
-  resolveBound?(input: RepositoryCredentialBoundSessionInput): ResolvedGrant;
   create(
     input: Readonly<{ authority: AuthorityIdentity; custody: DriverCustody; clock: Clock }>,
   ): RepositoryBackend;
@@ -202,19 +200,14 @@ export interface PreparedRepositoryBackend {
   >;
 }
 
-export interface PreparedRepositoryBackendFactory extends Omit<RepositoryBackendFactory, "create"> {
+/** Bound selection without a profile resolver; construction remains a separate capability. */
+export interface BoundPreparedRepositoryBackendFactory extends Omit<
+  RepositoryBackendFactory,
+  "resolve" | "create"
+> {
+  resolveBound(input: RepositoryCredentialBoundSessionInput): ResolvedGrant;
   createPrepared(authority: AuthorityIdentity, selection: ResolvedGrant): PreparedRepositoryBackend;
 }
 
-/** Bound selection without a profile resolver; construction remains a separate capability. */
-export interface BoundPreparedRepositoryBackendFactory extends Omit<
-  PreparedRepositoryBackendFactory,
-  "resolve"
-> {
-  resolveBound(input: RepositoryCredentialBoundSessionInput): ResolvedGrant;
-}
-
 export type RepositoryServiceFactory =
-  | RepositoryBackendFactory
-  | PreparedRepositoryBackendFactory
-  | BoundPreparedRepositoryBackendFactory;
+  RepositoryBackendFactory | BoundPreparedRepositoryBackendFactory;
