@@ -410,6 +410,12 @@ export const createAgentFormScenarios = {
     ],
     description:
       "Invalid JSON is reported once, under the field, with its line and column. Nothing is saved.",
+    steps: [
+      "Check the initial syntax error, then select Reset template and confirm discarding the edited launch settings. Expand Advanced settings and keep the restored Configuration JSON.",
+      'Set plugins.entries.knowledge to {"enabled":true,"config":{"thresholds":[1,1e400,3]}}, preserving the other entries and model settings. This is valid JSON syntax with an out-of-range number. Select Create Agent.',
+      "Read the error under the editor: A number is too large or too small to save. Use a number closer to zero. Check that Configuration JSON has focus, its exact text is unchanged, and neither an Agent nor a Configuration is written.",
+      "If the form shows a model list, select Enter model ID manually. Change Model ID and leave the field. Check that the range error focuses Configuration JSON and the rejected draft is not rewritten. Restore the original Model ID, change only 1e400 to 2, and select Create Agent. Inspect the created Agent's Configuration for [1,2,3]. All saves and deployment state in this story are simulated.",
+    ],
   },
   createPluginsUnavailable: {
     group: "Pages/Create Agent",

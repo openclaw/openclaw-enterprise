@@ -41,12 +41,16 @@ runs:
       shell: bash
       env:
         JOB_TIMEOUT_MINUTES: ${{ inputs.job-timeout-minutes }}
+        QA_TIMING: ${{ inputs.lane == 'qa-matrix' }}
       run: |
         if [[ ! "$JOB_TIMEOUT_MINUTES" =~ ^[1-9][0-9]{0,3}$ ]] || (( JOB_TIMEOUT_MINUTES <= 5 )); then
           echo "::error::job-timeout-minutes must be the calling job's timeout-minutes, above 5." >&2
           exit 1
         fi
         printf 'ms=%s\n' "$(( $(date +%s%3N) + (JOB_TIMEOUT_MINUTES - 5) * 60000 ))" >> "$GITHUB_OUTPUT"
+        if [[ "$QA_TIMING" == true ]]; then
+          node scripts/ci/qa-phase-timing.ts entry 2>/dev/null >> "$GITHUB_OUTPUT" || true
+        fi
     - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
       with:
         node-version: ${{ inputs.node-version }}
@@ -267,7 +271,16 @@ runs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y libnss3-tools
         fi
+    # The QA caller has already set up Node. All observers use this runner's
+    # monotonic clock and leave the lane and cleanup commands in their own steps.
+    - name: Mark QA run start
+      id: qa-run-start
+      if: inputs.lane == 'qa-matrix'
+      continue-on-error: true
+      shell: bash
+      run: node scripts/ci/qa-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
     - name: Run lane
+      id: run-lane
       shell: bash
       env:
         # Each file's timeout is CI_RUNNER_TEST_TIMEOUT_MS (60 minutes when unset), cut to what
@@ -309,10 +322,23 @@ runs:
       continue-on-error: true
       shell: bash
       run: tail -n 120 "$RUNNER_TEMP/memory/${{ inputs.lane }}.log" || true
+    - name: Mark QA cleanup start
+      id: qa-cleanup-start
+      if: always() && inputs.lane == 'qa-matrix'
+      continue-on-error: true
+      shell: bash
+      run: node scripts/ci/qa-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
     - name: Cleanup lane
+      id: cleanup-lane
       if: always()
       shell: bash
       run: node scripts/ci/cleanup.mjs --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json"
+    - name: Mark QA cleanup end
+      id: qa-cleanup-end
+      if: always() && inputs.lane == 'qa-matrix'
+      continue-on-error: true
+      shell: bash
+      run: node scripts/ci/qa-phase-timing.ts mark 2>/dev/null >> "$GITHUB_OUTPUT"
     - name: Export image cleanup reconciliation
       id: image_reconciliation
       if: always() && inputs.lane == 'images-packaging'
@@ -386,3 +412,16 @@ runs:
         path: ${{ runner.temp }}/results/${{ inputs.lane }}.json
         if-no-files-found: ignore
         retention-days: 7
+    - name: Summarize QA phase timing
+      if: always() && inputs.lane == 'qa-matrix'
+      continue-on-error: true
+      shell: bash
+      env:
+        QA_ENTRY_NS: ${{ steps.deadline.outputs.qa-start-ns }}
+        QA_RUN_NS: ${{ steps.qa-run-start.outputs.ns }}
+        QA_CLEANUP_NS: ${{ steps.qa-cleanup-start.outputs.ns }}
+        QA_CLEANUP_END_NS: ${{ steps.qa-cleanup-end.outputs.ns }}
+        QA_RUN_OUTCOME: ${{ steps.run-lane.outcome }}
+        QA_CLEANUP_OUTCOME: ${{ steps.cleanup-lane.outcome }}
+        QA_SELECTION: ${{ inputs.test-file == '' && 'full' || 'focused' }}
+      run: node scripts/ci/qa-phase-timing.ts summarize 2>/dev/null

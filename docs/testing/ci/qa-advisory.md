@@ -224,6 +224,13 @@ Missing, filtered, or interrupted tests are not passes.
 | OpenShell tests                                     | `qa-advisory-<test-file-basename>-openshell` (omit `.test.mjs` or `.test.ts`) |
 | Local installation tests                            | `qa-advisory-local-installation-dev-up-k3d`                                   |
 
+Startup command failures report elapsed time, the configured limit, and the observed
+exit code or signal. `timed out` means the command deadline fired; a following
+`SIGPIPE` can result from timeout teardown closing the output pipes. It does not
+by itself identify a spontaneous CLI crash. Command arguments and protected output
+remain private; the existing redacted failure detail is unchanged. The startup
+limit remains 1,100,000 ms.
+
 Artifacts expire after seven days. Each OpenShell job reports `scope: focused`
 because it runs one file; complete advisory OpenShell coverage requires all five
 to pass.

@@ -1,4 +1,10 @@
 import { Check } from "typebox/value";
+import {
+  ConfigurationValues,
+  CreatePresetBody,
+  JsonValue,
+} from "../../packages/contracts/src/api/common.ts";
+import { validatePresetTemplate } from "../../packages/contracts/src/index.ts";
 import { AgentDeploymentStatusSchema } from "../../packages/contracts/src/api/resources.ts";
 import {
   deploymentErrorForWork,
@@ -24,6 +30,7 @@ import type {
 } from "playwright";
 import type {
   Permission,
+  OpenClawConfigurationDocument,
   Secret,
   Agent,
   AgentRevision,
@@ -769,13 +776,19 @@ export async function waitForCondition(
   }
 }
 
-// A Preset the product ships in deploy/presets, by file name without ".json" ("default-codex",
-// "standard-codex"): for createConsoleAppFixture's defaultPresets or a Preset create. Each call
-// reads the file again, so callers never share one object.
+// Read a fresh shipped draft by file name without ".json". The wire shape and template
+// syntax are checked; concrete launch fields and credential admission remain downstream.
 export async function shippedPreset(name: string) {
   const preset: unknown = JSON.parse(
     await readFile(new URL(`../../deploy/presets/${name}.json`, import.meta.url), "utf8"),
   );
+  assert.ok(
+    Check({ SafeJsonValue: JsonValue }, CreatePresetBody, preset),
+    `Expected shipped Preset ${name} to match the create wire shape`,
+  );
+  // Discard the validator's broader return type: tokenized approvers are valid drafts but
+  // need not satisfy the concrete Agent approver schema until rendered.
+  validatePresetTemplate(preset.template);
   return preset;
 }
 
@@ -1501,13 +1514,23 @@ export async function countInvalidEvents(page: Page) {
   return () => page.evaluate(() => globalThis.invalidEvents);
 }
 
+// Rejection fixtures may have invalid native settings, but must still contain JSON values.
+export function assertConfigurationValues(
+  values: unknown,
+): asserts values is OpenClawConfigurationDocument {
+  assert.ok(
+    Check({ SafeJsonValue: JsonValue }, ConfigurationValues, values),
+    "Expected native Configuration JSON values",
+  );
+}
+
 // A Configuration row as a release before a save rule stored it: save refuses `values` with
 // `reason`, and the row is then written through the Configuration Driver, as an older release
 // left it. `configurationDriver` is the fixture's test Configuration Driver.
 export async function storeRefusedConfiguration(
   fixture: Pick<Fixture, "request">,
   configurationDriver: ReturnType<
-    typeof import("../helpers/configuration-driver.mjs").createTestConfigurationDriver
+    typeof import("../helpers/configuration-driver.ts").createTestConfigurationDriver
   >,
   agent: Pick<Agent, "namespaceId" | "configurationId">,
   values: Record<string, unknown>,
@@ -1517,11 +1540,12 @@ export async function storeRefusedConfiguration(
   const refusedSave = await fixture.request("PATCH", configurationPath, { body: { values } });
   assert.equal(refusedSave.status, 400, JSON.stringify(refusedSave.body));
   assert.equal(refusalMessage(refusedSave.body), reason);
-  const stored: unknown = configurationDriver.stored({
+  const stored = configurationDriver.stored({
     namespaceId: agent.namespaceId,
     id: agent.configurationId,
   });
-  assert.ok(isRecord(stored));
+  assert.ok(stored, "Expected the stored Configuration");
+  assertConfigurationValues(values);
   await configurationDriver.update({ ...stored, values });
 }
 

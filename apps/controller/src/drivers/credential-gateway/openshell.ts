@@ -48,6 +48,10 @@ import { exactDnsName, validateOpenAiSourceBaseUrl } from "../credential-source-
 import { normalizeOpenAiBaseUrl } from "../openai-endpoint.ts";
 
 import {
+  MANAGED_BY_LABEL,
+  MANAGED_BY,
+  SOURCE_ID_LABEL,
+  openShellOwnedBy,
   openShellProviderName,
   openShellWorkspaceName,
   type OpenShellGateway,
@@ -59,7 +63,6 @@ import {
   OpenShellProviderAlreadyExistsError,
   type OpenShellGatewayClient,
   type OpenShellProviderProfile,
-  type OpenShellProviderResponse,
 } from "../sandbox/openshell-gateway-client.ts";
 
 import {
@@ -92,9 +95,6 @@ export interface OpenShellCredentialGatewaySelection {
 
 class OpenShellCredentialGatewayFailure extends Error {}
 
-const MANAGED_BY_LABEL = "app.kubernetes.io/managed-by";
-const MANAGED_BY = "openclaw-enterprise";
-const SOURCE_ID_LABEL = "openclaw.dev/credential-source-id";
 const NAMESPACE_ID_LABEL = "openclaw.dev/namespace-id";
 const PROFILE_DIGEST_ANNOTATION = "openclaw.dev/profile-digest";
 const OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1";
@@ -841,14 +841,6 @@ function findSourceType(types: readonly OpenShellSourceType[], type: string): Op
   return found;
 }
 
-function ownedBy(provider: OpenShellProviderResponse, sourceId: string): boolean {
-  return (
-    provider.labels[MANAGED_BY_LABEL] === MANAGED_BY &&
-    provider.labels[SOURCE_ID_LABEL] === sourceId &&
-    provider.type === openShellProviderName(sourceId)
-  );
-}
-
 /**
  * A host and any explicit port for a refusal: never credentials or a path, and short enough
  * for the 256-character cap.
@@ -1048,7 +1040,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     const credentials = providerCredentials(type, input);
     const name = openShellProviderName(context.source.id);
     const existing = await client.getProvider(workspace, name, context.signal);
-    if (existing !== undefined && !ownedBy(existing, context.source.id)) {
+    if (existing !== undefined && !openShellOwnedBy(existing, context.source.id)) {
       throw new ScopeViolationError(
         "An OpenShell provider with this source's name is not owned by the source.",
       );
@@ -1086,7 +1078,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       }
       // Replay after an uncertain create adopts only this exact source's provider.
       const existing = await client.getProvider(workspace, name, context.signal);
-      if (existing === undefined || !ownedBy(existing, context.source.id)) {
+      if (existing === undefined || !openShellOwnedBy(existing, context.source.id)) {
         throw new ScopeViolationError(
           "An OpenShell provider with this source's name is not owned by the source.",
         );
@@ -1117,7 +1109,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     if (existing === undefined) {
       return { state: "absent" };
     }
-    if (!ownedBy(existing, context.source.id)) {
+    if (!openShellOwnedBy(existing, context.source.id)) {
       throw new ScopeViolationError(
         "An OpenShell provider with this source's name is not owned by the source.",
       );
@@ -1153,7 +1145,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     if (provider === undefined) {
       return { state: "absent" };
     }
-    if (!ownedBy(provider, context.source.id)) {
+    if (!openShellOwnedBy(provider, context.source.id)) {
       return { state: "failed", reason: "The OpenShell provider is not owned by this source." };
     }
     if (context.source.type === CODEX_OAUTH_TYPE && !provider.config[CODEX_ACCOUNT_CONFIG]) {
@@ -1169,7 +1161,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     const client = this.client(context);
     const existing = await client.getProvider(workspace, name, context.signal);
     if (existing !== undefined) {
-      if (!ownedBy(existing, context.source.id)) {
+      if (!openShellOwnedBy(existing, context.source.id)) {
         throw new ScopeViolationError(
           "An OpenShell provider with this source's name is not owned by the source.",
         );
@@ -1302,7 +1294,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       }
       const name = openShellProviderName(source.id);
       const provider = await client.getProvider(workspace, name, context.signal);
-      if (provider === undefined || !ownedBy(provider, source.id)) {
+      if (provider === undefined || !openShellOwnedBy(provider, source.id)) {
         throw new OpenShellCredentialGatewayFailure(
           "The OpenShell provider for a bound credential source is unavailable.",
         );

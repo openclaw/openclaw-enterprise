@@ -1,6 +1,9 @@
 import { PluginPackageInspectionError } from "@openclaw-enterprise/contracts";
 import type { FastifyError, FastifyReply } from "fastify";
-import { PresetValidationError } from "@openclaw-enterprise/contracts";
+import {
+  ConnectionTemplateValidationError,
+  PresetValidationError,
+} from "@openclaw-enterprise/contracts";
 import { UNTRUSTED_ORIGIN_MESSAGE } from "../admission/admission-verifier.ts";
 import {
   AgentCredentialSourceBindingError,
@@ -781,6 +784,11 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
       capped(error.message),
       pointerDetail(`/${error.group}`, error.field),
     );
+  }
+  if (error instanceof ConnectionTemplateValidationError) {
+    return failure(400, "INVALID_REQUEST", error.message, [
+      { path: `/${error.field}`, code: "INVALID_VALUE" },
+    ]);
   }
   if (error instanceof CredentialGatewayNotConfiguredError) {
     return failure(409, "CREDENTIAL_GATEWAY_NOT_CONFIGURED", error.message);
