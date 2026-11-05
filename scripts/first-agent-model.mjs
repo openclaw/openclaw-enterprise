@@ -61,25 +61,29 @@ export function firstAgentPriorPatPolicy(values, record, revisionId, priorRevisi
 }
 
 /**
- * The nonce probe accepts only an assistant message whose text is the nonce,
- * with surrounding whitespace ignored. An echoed user prompt, a tool message,
- * or a message with no role is not a verified model answer.
+ * Accept a nonce-only assistant answer with simple model formatting. Extra
+ * explanation, echoed prompts, and other roles do not verify a model answer.
  */
 export function firstAgentAssistantNonce(message, nonce) {
-  if (message?.role !== "assistant" || typeof nonce !== "string" || nonce === "") {
+  if (
+    message?.role !== "assistant" ||
+    typeof message.content !== "string" ||
+    typeof nonce !== "string" ||
+    nonce === ""
+  ) {
     return false;
   }
-  const content = message.content;
-  const text =
-    typeof content === "string"
-      ? content
-      : Array.isArray(content)
-        ? content
-            .map((part) => (typeof part?.text === "string" ? part.text : part?.text?.value))
-            .filter((part) => typeof part === "string")
-            .join("")
-        : "";
-  return text.trim() === nonce;
+  let answer = message.content.trim();
+  if (answer.endsWith(".")) {
+    answer = answer.slice(0, -1).trimEnd();
+  }
+  const fence = /^```[a-z\d_-]{0,32}\r?\n([\s\S]*?)\r?\n```$/i.exec(answer);
+  if (fence !== null) {
+    answer = fence[1].trim();
+  } else if (["'", '"', "`"].includes(answer[0]) && answer.endsWith(answer[0])) {
+    answer = answer.slice(1, -1).trim();
+  }
+  return answer === nonce;
 }
 
 export function firstAgentPriorPatPolicyWarning(revisionId) {

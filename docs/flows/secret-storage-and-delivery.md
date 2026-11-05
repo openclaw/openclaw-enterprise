@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: "2026-10-29"
-last_updated_session: "authoring-run/d5feb6ab-c39d-4b0f-9af9-d6aec0acfb42"
+updated: "2026-11-05"
+last_updated_session: "01a12074-7896-7f63-99fe-9f42e9041d02"
 ---
 
 # Secret Storage and Gateway Delivery Flow
@@ -198,6 +198,14 @@ Agent revision ConfigMap mount, and a Running, Ready Gateway Pod before it sends
 prompt. It requires the OpenAI key in the Gateway container only for embedded
 OpenClaw; dedicated Codex keeps the key in its Codex Pod or Sandbox. Kubernetes Compute owns any experimental two-cluster placement; this
 local helper does not infer physical placement from the Agent execution mode.
+`scripts/first-agent-model.mjs:verifyFirstAgentModel` then runs the generated
+probe inside that Gateway. It first requires an unauthenticated request to be
+refused. The authenticated answer must have the assistant role and contain only
+the fresh nonce. Surrounding whitespace, simple quotes or backticks, a code
+fence, and one trailing period are accepted. A prompt echo, extra explanation,
+or another role fails verification. A custom prompt still requires a separate
+assistant answer after the nonce check.
+
 The tool retains installation resources on exit.
 
 <span id="4-render-only-the-exact-gateways-projection"></span>
@@ -319,6 +327,8 @@ credential at its issuer.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 22:10: Describe assistant-only nonce verification and accepted model formatting. (PR #3467 - e03647a7c8e6099b17689ab3b713d1ec37985b94)
 
 - 2026-11-01: A Secret create refused as not sent runs no cleanup read and keeps its `503`. (fix-3108, finding 3108)
 

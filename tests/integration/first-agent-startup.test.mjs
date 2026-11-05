@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { cp, mkdtemp, mkdir, open, readFile, realpath, rm, writeFile } from "node:fs/promises";
@@ -9,7 +9,6 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 
 import {
-  firstAgentAssistantNonce,
   firstAgentModelProbeSource,
   firstAgentPriorPatPolicy,
   firstAgentPriorPatPolicyWarning,
@@ -625,35 +624,113 @@ test("first-Agent does not take the next flag as the prompt or harness", () => {
   assert.doesNotMatch(kept.stderr, /--prompt requires text/);
 });
 
-test("the first-agent nonce probe accepts only an assistant message that is the nonce", () => {
+// Execute the exact program sent to the Gateway. The local HTTP fixture supplies
+// responses; the production serialized probe owns authentication and verification.
+test("the first-agent nonce probe accepts cosmetic formatting only on assistant answers", async (t) => {
   const nonce = "FIRST_AGENT_example";
-  const echoed = `Reply with exactly this nonce and no other text: ${nonce}`;
-  assert.equal(
-    firstAgentAssistantNonce({ role: "assistant", content: `  ${nonce}\n` }, nonce),
-    true,
-  );
-  assert.equal(
-    firstAgentAssistantNonce(
-      { role: "assistant", content: [{ text: nonce }, { text: { value: "" } }] },
-      nonce,
-    ),
-    true,
-  );
-  assert.equal(firstAgentAssistantNonce({ role: "assistant", content: echoed }, nonce), false);
-  assert.equal(firstAgentAssistantNonce({ role: "user", content: nonce }, nonce), false);
-  assert.equal(firstAgentAssistantNonce({ role: "tool", content: nonce }, nonce), false);
-  assert.equal(firstAgentAssistantNonce({ content: nonce }, nonce), false);
-  assert.equal(firstAgentAssistantNonce({ role: "assistant", content: "hello" }, nonce), false);
-
-  const source = firstAgentModelProbeSource({
-    nonce,
-    prompt: undefined,
-    expectProviderKey: true,
+  const password = randomUUID();
+  const providerKey = randomUUID();
+  const prompt = "Say the gateway is ready in one short sentence.";
+  const message = (content, role = "assistant") => ({ role, content });
+  let row;
+  let requests;
+  const server = createServer(async (request, response) => {
+    if (request.url !== "/v1/chat/completions" || request.method !== "POST") {
+      response.writeHead(404).end();
+      return;
+    }
+    const authorized = request.headers.authorization === `Bearer ${password}`;
+    requests.push(authorized);
+    if (!authorized) {
+      response.writeHead(401).end();
+      return;
+    }
+    let body = "";
+    for await (const chunk of request) {
+      body += chunk;
+    }
+    const content = JSON.parse(body).messages[0].content;
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(
+      JSON.stringify({
+        choices: [{ message: content === prompt ? row.customAnswer : row.answer }],
+      }),
+    );
   });
-  assert.match(source, /function firstAgentAssistantNonce/);
-  assert.match(
-    source,
-    /firstAgentAssistantNonce\(\{ role: proof\.role, content: proof\.text \}, nonce\)/,
-  );
-  assert.doesNotMatch(source, /proof\.text\.includes\(nonce\)/);
+  // The shipped probe deliberately targets the Gateway's fixed loopback port.
+  // Do not rewrite its source or replace fetch to make this test pass.
+  await listen(t, server, "127.0.0.1", { port: 8080 });
+  const accepted = [
+    ["plain", nonce],
+    ["whitespace", `  ${nonce}\n`],
+    ["period", `${nonce}.`],
+    ["double quotes", `"${nonce}"`],
+    ["single quotes", `'${nonce}'`],
+    ["inline code", "`" + nonce + "`"],
+    ["code fence", "```\n" + nonce + "\n```"],
+    ["text fence CRLF", "```text\r\n" + nonce + "\r\n```"],
+    ["quoted with period", `"${nonce}".`],
+    ["content parts", [{ text: nonce }, { text: { value: "" } }]],
+  ].map(([name, content]) => ({ name, answer: message(content), expected: { nonce } }));
+  const rejected = [
+    ["echoed prompt", message(`Reply with exactly this nonce and no other text: ${nonce}`)],
+    ["extra explanation", message(`${nonce} is the nonce`)],
+    ["repeated nonce", message(`${nonce} ${nonce}`)],
+    ["two periods", message(`${nonce}..`)],
+    ["unbalanced quotes", message(`"${nonce}`)],
+    ["fenced explanation", message("```\n" + nonce + " extra\n```")],
+    ["stale nonce", message("FIRST_AGENT_old")],
+    ["user", message(nonce, "user")],
+    ["tool with quotes", message(`"${nonce}"`, "tool")],
+    ["missing role", { content: nonce }],
+  ].map(([name, answer]) => ({ name, answer, expected: { error: "nonce" } }));
+  const custom = [
+    {
+      name: "custom assistant answer",
+      customAnswer: message("The gateway is ready."),
+      expected: { nonce, response: "The gateway is ready." },
+    },
+    {
+      name: "custom tool answer",
+      customAnswer: message("The gateway is ready.", "tool"),
+      expected: { error: "response_format" },
+    },
+  ].map((entry) => ({ ...entry, prompt, answer: message(nonce) }));
+  for (const scenario of [...accepted, ...rejected, ...custom]) {
+    await t.test(scenario.name, async (t) => {
+      row = scenario;
+      requests = [];
+      const env = {
+        ...process.env,
+        OPENCLAW_GATEWAY_PASSWORD: password,
+        OPENAI_API_KEY: providerKey,
+      };
+      delete env.NODE_TEST_CONTEXT;
+      const child = spawn(process.execPath, ["--input-type=module", "-"], {
+        env,
+        stdio: ["pipe", "pipe", "pipe"],
+        timeout: 10_000,
+      });
+      const closed = once(child, "close");
+      let output = "";
+      let diagnostic = "";
+      child.stdout.on("data", (chunk) => {
+        output += chunk;
+      });
+      child.stderr.on("data", (chunk) => {
+        diagnostic += chunk;
+      });
+      child.stdin.end(
+        firstAgentModelProbeSource({ nonce, prompt: scenario.prompt, expectProviderKey: true }),
+      );
+      const [status, signal] = await closed;
+      assert.equal(status, 0, `${signal ?? ""} ${diagnostic}`);
+      assert.deepEqual(JSON.parse(output), scenario.expected);
+      assert.deepEqual(
+        requests,
+        scenario.prompt === undefined ? [false, true] : [false, true, true],
+      );
+      t.diagnostic(`actual generated probe: ${output}`);
+    });
+  }
 });
