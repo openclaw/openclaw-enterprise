@@ -1,17 +1,16 @@
 ---
 created: "2026-09-18"
 updated: "2026-11-05"
-last_updated_session: authoring-run/69db70f5-508f-488f-9329-f7df994260ec
+last_updated_session: authoring-run/507ebdda-c10f-4840-acd7-1667d5919fab
 ---
 
 # Agent repository credential flow
 
 ## Overview
 
-Deployment freezes repository grants.
-Compute-owned dedicated Codex uses prepared native sessions without a Sandbox Driver. On the
-[OpenShell path](../reference/repository-credentials/protected-openshell-git.md), the sandbox gets a placeholder.
-The worker delivers the credential to the provider and checks signed requests against the live grant.
+Compute-owned dedicated Codex uses prepared native sessions without a Sandbox Driver;
+[OpenShell sandboxes](../reference/repository-credentials/protected-openshell-git.md) receive placeholders.
+Workers deliver credentials to providers, checking signed requests against live grants.
 See [enrollment and mandatory hooks](../guides/repository-credentials/openshell-enrollment.md),
 [service forwarding and retirement](repository-credentials.md) and [runtime qualification](../testing/repository-credentials.md).
 
@@ -127,10 +126,13 @@ can supply several repositories. Omitted updates preserve selections; `[]` clear
 ### 2. Freeze a deployable version
 
 `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
-selects the Backend's GitHub policy. Its Backend ID must match the registry.
+selects the Backend's GitHub policy with a registry-matched Backend ID.
 `packages/occ/src/index.ts:OpenClawController.forInstallation` binds that owner
-and rejects missing or mismatched ownership for configured repository access.
+and rejects missing or mismatched repository ownership.
 Startup rejects `drivers.repo` in every mode before worker or attempt creation.
+
+OpenShell parsing and chart constraints belong to
+`apps/controller/src/drivers/egress-proxy/openshell-configuration.ts`.
 
 Bundled deploy calls `resolveBindings` in `OpenClawController.admitRepositoryCredentials`;
 a deselected policy fails. Programmatic controllers call `RepositoryPolicyDriver.resolve`.
@@ -391,6 +393,8 @@ denied before reaching the provider, and chat continues.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 11:46: Document OpenShell configuration ownership. (authoring-run/507ebdda-c10f-4840-acd7-1667d5919fab - f960b469e2c6dfb6653fd72ba1c1a39b97a9bcf0)
 
 - 2026-11-05 11:20: Trace the selected repository policy in Worker validation. (authoring-run/69db70f5-508f-488f-9329-f7df994260ec - 66bc76b266fe0ba0e35498bbe6d7abe2e74ac0e5)
 
