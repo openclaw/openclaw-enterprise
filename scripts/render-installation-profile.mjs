@@ -23,7 +23,7 @@ import { imageReferenceProblem } from "../packages/occ/src/image-reference.ts";
 import {
   preparedRepositoryBackend,
   preparedRepositoryInstallation,
-} from "./lib/prepared-repository-installation.mjs";
+} from "./lib/prepared-repository-installation.ts";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");

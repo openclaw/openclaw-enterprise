@@ -15,7 +15,7 @@ import {
   REPOSITORY_REGISTRY_PATH,
   preparedRepositoryBackend,
   preparedRepositoryInstallation,
-} from "../../scripts/lib/prepared-repository-installation.mjs";
+} from "../../scripts/lib/prepared-repository-installation.ts";
 import { verifyNativeRepositoryJourney } from "./repository-native-journey.mjs";
 import { createGitHubAppRepositoryObserver } from "./github-app-observer.mjs";
 import {
