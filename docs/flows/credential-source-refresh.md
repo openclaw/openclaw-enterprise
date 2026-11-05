@@ -320,7 +320,7 @@ detached reads. Clearing bytes cannot revoke a token.
   reach `token_url`; check its NetworkPolicy and trust of the issuer's CA.
 - `reauthorize` requires new authorization: replace Secret-backed material with
   `PATCH`; for device-authorized sources, sign in again and rebind the Agent.
-- `tests/integration/sandbox-driver-openshell-k3d-real.test.mjs` proves minting,
+- `tests/helpers/openshell-sandbox-workflows.mjs` proves minting,
   background re-minting, forced rotation, reauthorization, a failed update, and deletion against
   a real Keycloak. `tests/conformance/credential-source-occ.test.mjs` covers OCC
   ordering and cleanup.

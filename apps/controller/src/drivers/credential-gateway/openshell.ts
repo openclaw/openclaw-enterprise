@@ -22,7 +22,7 @@ import {
   ScopeViolationError,
   StoredCredentialSourceConfigError,
 } from "@openclaw-enterprise/occ";
-import { asRecord, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
+import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { isAbsolute } from "node:path";
 import { verifyManagedPluginRegistration } from "../sandbox/openshell-plugin-policy.ts";
 import { managedMcpProviderEndpoint } from "../sandbox/openshell-managed-mcp-policy.ts";
@@ -45,6 +45,11 @@ import { exactDnsName, validateOpenAiSourceBaseUrl } from "../credential-source-
 import { normalizeOpenAiBaseUrl } from "../openai-endpoint.ts";
 
 import {
+  ensureOpenShellProviderProfile,
+  MANAGED_BY_LABEL,
+  MANAGED_BY,
+  SOURCE_ID_LABEL,
+  openShellOwnedBy,
   openShellProviderName,
   openShellWorkspaceName,
   type OpenShellGateway,
@@ -56,7 +61,6 @@ import {
   OpenShellProviderAlreadyExistsError,
   type OpenShellGatewayClient,
   type OpenShellProviderProfile,
-  type OpenShellProviderResponse,
 } from "../sandbox/openshell-gateway-client.ts";
 
 import {
@@ -89,11 +93,7 @@ export interface OpenShellCredentialGatewaySelection {
 
 class OpenShellCredentialGatewayFailure extends Error {}
 
-const MANAGED_BY_LABEL = "app.kubernetes.io/managed-by";
-const MANAGED_BY = "openclaw-enterprise";
-const SOURCE_ID_LABEL = "openclaw.dev/credential-source-id";
 const NAMESPACE_ID_LABEL = "openclaw.dev/namespace-id";
-const PROFILE_DIGEST_ANNOTATION = "openclaw.dev/profile-digest";
 const OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const OPENAI_AUTHORIZED_BASE_URL_CONFIG = "authorized_base_url";
 
@@ -830,14 +830,6 @@ function findSourceType(types: readonly OpenShellSourceType[], type: string): Op
   return found;
 }
 
-function ownedBy(provider: OpenShellProviderResponse, sourceId: string): boolean {
-  return (
-    provider.labels[MANAGED_BY_LABEL] === MANAGED_BY &&
-    provider.labels[SOURCE_ID_LABEL] === sourceId &&
-    provider.type === openShellProviderName(sourceId)
-  );
-}
-
 /**
  * A host and any explicit port for a refusal: never credentials or a path, and short enough
  * for the 256-character cap.
@@ -1022,7 +1014,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     const credentials = providerCredentials(type, input);
     const name = openShellProviderName(context.source.id);
     const existing = await client.getProvider(workspace, name, context.signal);
-    if (existing !== undefined && !ownedBy(existing, context.source.id)) {
+    if (existing !== undefined && !openShellOwnedBy(existing, context.source.id)) {
       throw new ScopeViolationError(
         "An OpenShell provider with this source's name is not owned by the source.",
       );
@@ -1059,7 +1051,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       }
       // Replay after an uncertain create adopts only this exact source's provider.
       const existing = await client.getProvider(workspace, name, context.signal);
-      if (existing === undefined || !ownedBy(existing, context.source.id)) {
+      if (existing === undefined || !openShellOwnedBy(existing, context.source.id)) {
         throw new ScopeViolationError(
           "An OpenShell provider with this source's name is not owned by the source.",
         );
@@ -1090,7 +1082,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     if (existing === undefined) {
       return { state: "absent" };
     }
-    if (!ownedBy(existing, context.source.id)) {
+    if (!openShellOwnedBy(existing, context.source.id)) {
       throw new ScopeViolationError(
         "An OpenShell provider with this source's name is not owned by the source.",
       );
@@ -1125,7 +1117,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     if (provider === undefined) {
       return { state: "absent" };
     }
-    if (!ownedBy(provider, context.source.id)) {
+    if (!openShellOwnedBy(provider, context.source.id)) {
       return { state: "failed", reason: "The OpenShell provider is not owned by this source." };
     }
     if (context.source.type === CODEX_OAUTH_TYPE && !provider.config[CODEX_ACCOUNT_CONFIG]) {
@@ -1141,7 +1133,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     const client = this.client(context);
     const existing = await client.getProvider(workspace, name, context.signal);
     if (existing !== undefined) {
-      if (!ownedBy(existing, context.source.id)) {
+      if (!openShellOwnedBy(existing, context.source.id)) {
         throw new ScopeViolationError(
           "An OpenShell provider with this source's name is not owned by the source.",
         );
@@ -1259,7 +1251,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       }
       const name = openShellProviderName(source.id);
       const provider = await client.getProvider(workspace, name, context.signal);
-      if (provider === undefined || !ownedBy(provider, source.id)) {
+      if (provider === undefined || !openShellOwnedBy(provider, source.id)) {
         throw new OpenShellCredentialGatewayFailure(
           "The OpenShell provider for a bound credential source is unavailable.",
         );
@@ -1429,31 +1421,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     signal: AbortSignal,
   ): Promise<void> {
     const base = type.profile(sourceId, config, this.options, gateway, this.modelProvider);
-    const digest = sha256Hex(JSON.stringify(base));
-    const profile: OpenShellProviderProfile = {
-      ...base,
-      annotations: { [PROFILE_DIGEST_ANNOTATION]: digest },
-    };
-    const existing = await client.getProviderProfile(workspace, base.id, signal);
-    if (existing?.annotations[PROFILE_DIGEST_ANNOTATION] === digest) {
-      return;
-    }
-    try {
-      if (existing === undefined) {
-        await client.importProviderProfile(workspace, profile, signal);
-      } else {
-        await client.updateProviderProfile(workspace, profile, existing.resourceVersion, signal);
-      }
-    } catch (error) {
-      // A concurrent writer with the same configuration (another deployment, or a replay)
-      // already stored this exact profile.
-      const current = await client
-        .getProviderProfile(workspace, base.id, signal)
-        .catch(() => undefined);
-      if (current?.annotations[PROFILE_DIGEST_ANNOTATION] !== digest) {
-        throw error;
-      }
-    }
+    await ensureOpenShellProviderProfile(client, workspace, base, signal);
   }
 }
 

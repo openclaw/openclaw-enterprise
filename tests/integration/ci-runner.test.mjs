@@ -886,7 +886,6 @@ import { selectQaMatrix } from ${JSON.stringify(qaSelectionHelper)};
 test("QA inputs", async () => {
   assert.equal(process.env.OCC_TEST_QA_OPENAI_MODEL, "selected-openai-model");
   assert.equal(process.env.OCC_TEST_QA_CODEX_MODEL, "selected-codex-model");
-  assert.equal(process.env.OCC_TEST_CODEX_CALENDAR_PROMPT, "selected calendar read");
   assert.equal(process.env.OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE, undefined);
   assert.equal(process.env.QA_REPOSITORY_FIXTURE, "isolated");
   assert.equal(process.env.OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY, "selected-app-input");
@@ -895,7 +894,7 @@ test("QA inputs", async () => {
   assert.ok(!selection.requiredEnv.includes("OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE"));
   assert.equal(process.env.OCC_TEST_QA_INSTALLATION, "compose");
   assert.equal(process.env.OCC_TEST_QA_PRESET, "Codex");
-  assert.equal(process.env.OCC_TEST_QA_SCENARIOS, "model-ui,calendar,git-write");
+  assert.equal(process.env.OCC_TEST_QA_SCENARIOS, "console-secrets,git-write");
   await writeFile(join(process.env.OCC_TEST_QA_ARTIFACTS, "matrix.json"), JSON.stringify({ outcome: "inputs received" }));
 });
 `,
@@ -923,13 +922,12 @@ test("QA inputs", async () => {
       ...Object.fromEntries(lane.requiredEnv.map((name) => [name, "fixture-input"])),
       OCC_TEST_QA_OPENAI_MODEL: "selected-openai-model",
       OCC_TEST_QA_CODEX_MODEL: "selected-codex-model",
-      OCC_TEST_CODEX_CALENDAR_PROMPT: "selected calendar read",
       OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY: "selected-app-input",
       QA_REPOSITORY_FIXTURE: "isolated",
       OCC_TEST_QA_ARTIFACTS: artifacts,
       OCC_TEST_QA_INSTALLATION: "compose",
       OCC_TEST_QA_PRESET: "Codex",
-      OCC_TEST_QA_SCENARIOS: "model-ui,calendar,git-write",
+      OCC_TEST_QA_SCENARIOS: "console-secrets,git-write",
     },
   );
   assert.equal(result.status, 0, result.stderr);
@@ -3171,10 +3169,11 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
     outcome: "failed",
     elapsedMs: 1_234,
   };
-  const phaseDiagnostic = `openclaw-ci-measurement ${JSON.stringify({
-    ...failedPhase,
-    detail: "fixture-opaque-phase-detail",
-  })}`;
+  const failedStage = { ...failedPhase, kind: "openshell-stage" };
+  const phaseDiagnostics = [failedPhase, failedStage].map(
+    (measurement) =>
+      `openclaw-ci-measurement ${JSON.stringify({ ...measurement, detail: "fixture-opaque-phase-detail" })}`,
+  );
   await writeFile(
     join(root, "tests/integration/details.test.mjs"),
     [
@@ -3186,7 +3185,7 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
       "  console.error(`credential ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);",
       '  console.log("Authorization: Bearer abcdefghijklmnop0123");',
       '  t.diagnostic("phase timings 1234 ms");',
-      `  t.diagnostic(${JSON.stringify(phaseDiagnostic)});`,
+      `  for (const message of ${JSON.stringify(phaseDiagnostics)}) t.diagnostic(message);`,
       '  assert.fail(`password="fixture,\\nprivate-tail" phase=after ${"stage line\\n".repeat(80)}decisive line ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);',
       "});",
       "",
@@ -3225,7 +3224,7 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
   assert.equal(result.status, 1);
   const summary = JSON.parse(await readFile(resultsPath, "utf8"));
   assert.equal(summary.files[0].status, "failed");
-  assert.deepEqual(summary.files[0].measurements, [failedPhase]);
+  assert.deepEqual(summary.files[0].measurements, [failedPhase, failedStage]);
   const failed = summary.files[0].tests.find(({ name }) => name === "long failure");
   // Results and the job log keep the short message only.
   assert.match(failed.error.message, /\.\.\. \[truncated\]$/);
@@ -5240,6 +5239,19 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       'test("measures", (t) => {',
       ...[
         measurement({
+          kind: "openshell-stage",
+          stage: "oauth-refresh",
+          outcome: "passed",
+          elapsedMs: 123,
+          transcript: "secretauthvalue-transcript",
+        }),
+        measurement({
+          kind: "openshell-stage",
+          stage: "secretauthvalue-stage",
+          outcome: "passed",
+          elapsedMs: 123,
+        }),
+        measurement({
           kind: "local-first-agent-command",
           phase: "setup",
           stage: "runtime-build",
@@ -5443,6 +5455,7 @@ test("run records only allowlisted measurements from test diagnostics", async (t
   const summary = JSON.parse(artifact);
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(summary.files[0].measurements, [
+    { kind: "openshell-stage", stage: "oauth-refresh", outcome: "passed", elapsedMs: 123 },
     {
       kind: "local-first-agent-command",
       phase: "setup",

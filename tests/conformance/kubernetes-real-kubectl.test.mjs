@@ -29,8 +29,8 @@ import {
 } from "../helpers/kubernetes-real.mjs";
 import { refusingPort } from "../helpers/available-port.mjs";
 import { listen } from "../helpers/listen.mjs";
-import { withEnvironment } from "../helpers/environment.mjs";
-import { commandPath, prependPath, writeCommand } from "../helpers/fake-commands.mjs";
+import { withEnvironment } from "../helpers/environment.ts";
+import { commandPath, prependPath, writeCommand } from "../helpers/fake-commands.ts";
 import { readJsonLines } from "../helpers/json-lines.mjs";
 import {
   createOpenShellKubernetesFixture,
