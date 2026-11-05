@@ -301,7 +301,16 @@ export async function createConsoleAppFixture(t, options = {}) {
   // CUA fault-injection keeps Better Auth on the trusted browser origin.
   const authBaseURL = options.authBaseURL ?? origin;
   const authMode = options.authMode ?? "development";
-  const memoryDatabase = { user: [], account: [], session: [], verification: [], apikey: [] };
+  // Better Auth owns the rows; test consumers only read or change their expiry.
+  /** @type {{ expiresAt: Date }[]} */
+  const sessionRows = [];
+  const memoryDatabase = {
+    user: [],
+    account: [],
+    session: sessionRows,
+    verification: [],
+    apikey: [],
+  };
   const auth = createControllerAuth({
     installationId,
     mode: authMode,
@@ -566,6 +575,11 @@ export async function createConsoleAppFixture(t, options = {}) {
     browserArgs.push(ingress.browserArg);
   }
 
+  /**
+   * @param {string} method
+   * @param {string} path
+   * @param {{headers?: Record<string, string>, body?: unknown, timeout?: number}} [options]
+   */
   async function rawRequest(method, path, { headers = {}, body, timeout = 5000 } = {}) {
     const response = await fetch(`${transportOrigin}${path}`, {
       method,
@@ -944,6 +958,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     withIamOutage,
     rawRequest,
     request,
+    fixtureResponse,
     signIn,
     bootstrap,
     createNamespace,
