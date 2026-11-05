@@ -274,8 +274,9 @@ function networkEgressModeApplied(
     !admission.error &&
     isNonEmptyString(admission.instance_id) &&
     admission.policy_version === status.version &&
-    admission.policy_hash === status.policyHash &&
+    isNonEmptyString(admission.policy_hash) &&
     config?.configuration_admitted === true &&
+    config.policy_source === 1 &&
     config.configuration_instance_id === admission.instance_id &&
     config.version === admission.policy_version &&
     config.policy_hash === admission.policy_hash &&

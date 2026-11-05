@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-11-05"
-last_updated_session: "authoring-run/2b54c1e7-77a6-45ab-9919-fbe2b81bfa21"
+last_updated_session: "authoring-run/05c80cbe-653c-4d0b-9ff8-d32ceee19711"
 ---
 
 # Agent sandbox policy flow
@@ -144,10 +144,11 @@ snapshot, not changed Installation settings. Existing omitted values stay restri
 
 `apps/controller/src/drivers/sandbox/openshell.ts:sandboxSpec` and
 `apps/controller/src/drivers/egress-proxy/openshell.ts:openShellEgressConfiguration`
-compile public mode into `allow_unconfigured_public_tcp`. Managed routes and
-artifact grants remain independent. The proxy compares the complete configuration
-before wiring. Readiness and live application require an applied-mode acknowledgment
-matching the loaded policy hash/version and effective configuration.
+compile `allow_unconfigured_public_tcp`; managed routes and artifact grants stay
+independent. The proxy compares configuration before wiring.
+`apps/controller/src/drivers/sandbox/openshell.ts:networkEgressModeApplied` requires
+the loaded source version and matching nonempty effective hash, instance and
+generations. Provider composition changes hashes; global overrides fail.
 
 Initial acceptance can precede networking startup. A missing applied bit or
 pending generation yields `TransientDependencyError`; Compute returns incomplete
@@ -287,6 +288,8 @@ the policy read, only the network policy card states it; the suggestions card is
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-05 22:38: Separate source/effective policy identities. (authoring-run/05c80cbe-653c-4d0b-9ff8-d32ceee19711 - 2d0558130154d1a7420f5c04ba88da31537a24cc)
 
 - 2026-11-05 20:34: Trace the accompanying revision-bound public egress mode through Installation selection, admission, storage and Driver compilation. (authoring-run/2b54c1e7-77a6-45ab-9919-fbe2b81bfa21 - a1c1f0cbd82b151d88442370feba0ce95ea9a6d9)
 

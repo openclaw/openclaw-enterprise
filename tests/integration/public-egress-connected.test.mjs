@@ -428,13 +428,15 @@ test(
         "require the supervisor's actual applied bit",
       );
       assert.equal(config.configuration_admitted, true);
+      assert.equal(config.policy_source, 1, "the effective policy must derive from the Sandbox");
       assert.equal(config.configuration_instance_id, admission.instance_id);
       assert.equal(config.version, admission.policy_version);
       assert.equal(config.policy_hash, admission.policy_hash);
       assert.equal(config.config_revision, admission.config_revision);
       assert.equal(config.provider_env_revision, admission.provider_env_revision);
       assert.equal(policy.active_version, admission.policy_version);
-      assert.equal(policy.revision.policy_hash, admission.policy_hash);
+      // Provider composition can change the effective hash without changing the source version.
+      assert.ok(policy.revision.policy_hash);
       assert.equal(
         config.policy.allow_unconfigured_public_tcp ?? false,
         admission.applied_allow_unconfigured_public_tcp,

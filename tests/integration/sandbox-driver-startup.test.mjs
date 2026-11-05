@@ -2509,6 +2509,7 @@ test("OpenShell requires matching applied network egress evidence before accepti
       let admission = accepted;
       const configuration = {
         configuration_admitted: true,
+        policy_source: 1,
         configuration_instance_id: "supervisor-one",
         version: 3,
         policy_hash: "policy-one",
@@ -2521,7 +2522,8 @@ test("OpenShell requires matching applied network egress evidence before accepti
         state: "POLICY_STATUS_LOADED",
         version: 3,
         activeVersion: 3,
-        policyHash: "policy-one",
+        // Provider composition gives the effective policy a different hash from its source.
+        policyHash: "source-policy",
         policy: { allow_unconfigured_public_tcp: mode === "public" },
       };
       gateway.createSandbox = async (request) => {
@@ -2599,6 +2601,14 @@ test("OpenShell requires matching applied network egress evidence before accepti
         await assert.rejects(provision(), awaitingAppliedMode);
         effective = { ...configuration, policy: { allow_unconfigured_public_tcp: false } };
         await assert.rejects(provision(), /has not confirmed active public network egress/);
+        // A global override can retain the source version without applying its policy.
+        effective = { ...configuration, policy_source: 2 };
+        await assert.rejects(provision(), rejectedAppliedMode);
+        // Matching empty hashes cannot attest any effective policy.
+        admission = { ...accepted, policy_hash: "" };
+        effective = { ...configuration, policy_hash: "" };
+        await assert.rejects(provision(), rejectedAppliedMode);
+        admission = accepted;
         effective = configuration;
       } else {
         admission = { ...accepted, applied_allow_unconfigured_public_tcp: true };
@@ -2614,7 +2624,7 @@ test("OpenShell requires matching applied network egress evidence before accepti
       if (mode === "public") {
         for (const [label, change, expected] of [
           ["stale loaded policy version", { version: 2, activeVersion: 2 }, awaitingAppliedMode],
-          ["stale loaded policy hash", { policyHash: "policy-old" }, rejectedAppliedMode],
+          ["missing source policy hash", { policyHash: "" }, rejectedAppliedMode],
         ]) {
           await t.test(label, async () => {
             status = { ...loaded, ...change };
@@ -2662,7 +2672,7 @@ test("OpenShell requires matching applied network egress evidence before accepti
             ...loaded,
             version: 4,
             activeVersion: 4,
-            policyHash: "policy-two",
+            policyHash: "source-policy-two",
             policy: candidate,
           };
           const currentAdmission = {
@@ -2683,7 +2693,7 @@ test("OpenShell requires matching applied network egress evidence before accepti
             ["missing applied mode", { applied_allow_unconfigured_public_tcp: undefined }, {}],
             ["false applied mode", { applied_allow_unconfigured_public_tcp: false }, {}],
             ["stale status version", {}, { version: 3, activeVersion: 3 }],
-            ["stale status hash", {}, { policyHash: "policy-one" }],
+            ["stale effective hash", { policy_hash: "policy-one" }, {}],
           ]) {
             await t.test(label, async () => {
               admission = { ...currentAdmission, ...acknowledgement };
