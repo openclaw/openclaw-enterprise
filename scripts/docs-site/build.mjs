@@ -10,7 +10,7 @@ import {
   parseFrontmatter,
   resolveDocsFragment,
 } from "./vendor/docs-markdown.mjs";
-import { createGithubAnchorReader, githubHeadingVisibleText } from "./github-anchors.mjs";
+import { createGithubAnchorReader, githubHeadingVisibleText } from "./github-anchors.ts";
 import { publicMarkdown } from "./public-markdown.mjs";
 
 const { values } = parseArgs({

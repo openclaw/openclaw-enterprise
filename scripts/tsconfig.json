@@ -35,6 +35,7 @@
     "ci/**/*.ts",
     "lib/**/*.ts",
     "docs-site/compute-matrix.ts",
+    "docs-site/github-anchors.ts",
     "docs-site/serve.ts",
     "docs-site/preview-build.ts",
     "module-boundaries/*.ts",
