@@ -1571,6 +1571,122 @@ test("an image upgrade can select curated Codex while preserving both plugin reg
   );
   assert.deepEqual(installed.drivers.plugin, candidatePluginDrivers);
 });
+// Existing installations can retain the former single-registration shape. Only
+// an explicit candidate may convert it, without changing the selected Driver.
+test("an image upgrade can explicitly wrap an existing plugin registration", async (t) => {
+  for (const selection of ["occ-plugin", "codex-plugin", "curated-codex"]) {
+    await t.test(selection, async (subtest) => {
+      const id = selection === "curated-codex" ? "codex-plugin" : selection;
+      const pluginDrivers = {
+        id,
+        configuration:
+          id === "codex-plugin"
+            ? {
+                catalogSource: "hosted",
+                codexExecutable: "/usr/bin/codex",
+                codexHome: "/var/lib/codex",
+              }
+            : {},
+      };
+      const candidatePluginDrivers = [structuredClone(pluginDrivers)];
+      if (selection === "curated-codex") {
+        candidatePluginDrivers[0].configuration.catalogSource = "openai-curated";
+      }
+      const f = await fixture(subtest, {
+        candidates: true,
+        controllerOnly: true,
+        pluginDrivers,
+        candidatePluginDrivers,
+      });
+      await f.run();
+      const state = await f.state();
+      const installed = loadYaml(
+        Buffer.from(state.secret.data["installation.yaml"], "base64").toString(),
+      );
+      assert.deepEqual(installed.drivers.plugin, candidatePluginDrivers);
+      assert.equal(state.version, 2);
+    });
+  }
+});
+
+test("wrapping a plugin registration preserves protected settings", async (t) => {
+  for (const change of [
+    "executable",
+    "home",
+    "driver",
+    "extra-driver",
+    "configuration-shape",
+    "registration-shape",
+    "duplicate-driver",
+    "unrelated-setting",
+    "unknown-installed-driver",
+    "installed-extra-field",
+    "installed-missing-configuration",
+    "installed-configuration-shape",
+  ]) {
+    await t.test(change, async (subtest) => {
+      const pluginDrivers = {
+        id: "codex-plugin",
+        configuration: {
+          catalogSource: "hosted",
+          codexExecutable: "/usr/bin/codex",
+          codexHome: "/var/lib/codex",
+        },
+      };
+      // Invalid installed registrations must not become accepted through wrapping.
+      if (change === "unknown-installed-driver") {
+        pluginDrivers.id = "unknown-plugin";
+      }
+      if (change === "installed-extra-field") {
+        pluginDrivers.extra = true;
+      }
+      if (change === "installed-missing-configuration") {
+        delete pluginDrivers.configuration;
+      }
+      if (change === "installed-configuration-shape") {
+        pluginDrivers.configuration = [];
+      }
+      const candidatePluginDrivers = [structuredClone(pluginDrivers)];
+      const candidate = candidatePluginDrivers[0];
+      if (change === "executable") {
+        candidate.configuration.codexExecutable = "/other/codex";
+      }
+      if (change === "home") {
+        candidate.configuration.codexHome = "/other/home";
+      }
+      if (change === "driver") {
+        candidate.id = "occ-plugin";
+      }
+      if (change === "extra-driver") {
+        candidatePluginDrivers.push({ id: "occ-plugin", configuration: {} });
+      }
+      if (change === "configuration-shape") {
+        candidate.configuration = [];
+      }
+      if (change === "registration-shape") {
+        candidatePluginDrivers[0] = "codex-plugin";
+      }
+      if (change === "duplicate-driver") {
+        candidatePluginDrivers.push(structuredClone(candidate));
+      }
+      const f = await fixture(subtest, {
+        candidates: true,
+        controllerOnly: true,
+        pluginDrivers,
+        candidatePluginDrivers,
+      });
+      if (change === "unrelated-setting") {
+        const path = join(f.directory, "candidate-installation.json");
+        const installation = JSON.parse(await readFile(path, "utf8"));
+        installation.name = "Different installation";
+        await writeFile(path, JSON.stringify(installation));
+      }
+      await assert.rejects(f.run(), /candidate Installation changes a protected setting/);
+      assert.deepEqual(await f.events(), []);
+    });
+  }
+});
+
 registerDispatchRestoreTests(fixture, injectedFault);
 
 test("resume reads an accepted Secret write before Helm and preserves its other data", async (t) => {

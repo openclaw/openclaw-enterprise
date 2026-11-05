@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-11-04"
-last_updated_session: "authoring-run/78fd39fa-cf99-4b8c-b120-4e344700140d"
+updated: "2026-11-05"
+last_updated_session: "authoring-run/156a9693-7ea1-4555-a5b7-b4c840568cd5"
 ---
 
 # Production image upgrade flow
@@ -77,7 +77,11 @@ as ordered YAML mappings, including images. Validate both candidates before
 protected-setting projections. `scripts/upgrade-production-images:matches_yaml`
 compares checked conversions and exits on unusable inputs or unwritable
 evidence with `Cannot compare upgrade YAML`. Only the Slack directory proxy and
-curated Codex PluginDriver selection may change before image selection. Broker
+curated Codex PluginDriver selection may change before image selection. An explicit
+candidate may also wrap the installed single plugin registration in an array.
+The comparison preserves configuration, except for the curated
+catalog choice; it does not rewrite the baseline. Startup checks still validate
+the candidate against the selected controller. Broker
 checks compare references, not ConfigMap or Secret contents.
 
 Runtime upgrades require a complete authorized inventory and baseline versions.
@@ -324,6 +328,8 @@ saved mapping, exact-name reuse requires a Namespace without Agents or Secrets.
 
 ## Changelog
 
+- 2026-11-05 11:09: Allow an explicit canonical plugin registration candidate while preserving protected settings. (authoring-run/156a9693-7ea1-4555-a5b7-b4c840568cd5 - 717e8bf2a3ef3fa4d4fa7e53cc6927500533ddbd)
+
 - 2026-11-04 07:28: Validate Console inputs. (authoring-run/78fd39fa-cf99-4b8c-b120-4e344700140d - 2f8d396865b850963bb928beb0399970de430761)
 - 2026-11-04 07:14: Validate YAML comparisons. (authoring-run/47f197fd-9f98-4dfb-8162-36589ab6194e - e122eaced28cdaff6cbf9d78e0fab4d038f9c380)
 
@@ -357,8 +363,5 @@ saved mapping, exact-name reuse requires a Namespace without Agents or Secrets.
 - 2026-10-20 01:48: Preserve field diagnostics before quiescence. (authoring-run/9d1ff825-b9f4-492a-9420-1e316d820e28 - e7e5f3321cb0a8471d74964eba56ddd069a4e4c5)
 - 2026-10-19 22:34: Document that pending repository cleanup does not block upgrade preparation. (authoring-run/d59b973b-1f0b-46bb-b16f-d67bd24ed6d3 - 57acafe81482a890b02ae530793246f2c2e7be79)
 - 2026-10-18: The initialization hook checks the Installation before migration.
-- 2026-10-12 15:14: Record bootstrap Job grants required by the two-cluster upgrade preflight alongside the fixture correction. (authoring-run/ebb1c629-97b2-4b9a-aa67-a5e750346031 - 9578f6f7aaff9b8545346f43043cbc5b9bcf674e)
-- 2026-10-10 03:30: Say that the worker's next preparation of an existing version applies the new controller's Pod templates and rolls changed Pods once. (fix-990-991)
-- 2026-10-10 02:10: Require complete successful API responses before publishing the split-layout export bundle. (authoring-run/35b00357-b0c6-459f-aec1-b4fb63620dff - 0886f47d05fdeb2fa4359f4840fb77378d643bac)
 
 [Production image upgrade flow documentation history](coordinated-production-upgrade/history.md) preserves the older dated entries.
