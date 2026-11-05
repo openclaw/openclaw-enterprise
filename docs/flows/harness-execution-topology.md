@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
 updated: 2026-11-05
-last_updated_session: authoring-run/5c90599f-4f7f-4ec9-bf5d-2724c7156128
+last_updated_session: authoring-run/8ada01a4-a895-405d-90d4-886b09a30cc4
 ---
 
 # Harness Execution Topology Flow
@@ -101,10 +101,12 @@ validation. See the [SSH flow](pr-24-ssh-compute.md).
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.prepareRevision`
 
+[Session observation](../reference/drivers/kubernetes-compute/managed-native-configuration.md#session-observation) defaults off.
+
 `prepareRevisionWorkloads` calls `validateExecutionOrWithdrawPublicGithubRead`;
 `validateRevisionExecution` refuses provider changes or removal before Secret
-reads or execution updates. Refusal requires a new deployment. `runtimeAdmission`
-separately reads saved launch facts for cleanup and public-reader withdrawal.
+reads or execution updates. Changes require redeployment. `runtimeAdmission`
+reads saved launch facts for cleanup and public-reader withdrawal.
 
 Kubernetes calls `prepareHarnessAuth` once per resolved source, delivering selected
 fields, including ChatGPT account tokens, from canonical tenant storage to versioned
@@ -354,6 +356,8 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 09:48: Disable observation. (authoring-run/8ada01a4-a895-405d-90d4-886b09a30cc4 - a383313636fc348a2325c0b1f6e05ae80327fd30)
 
 - 2026-11-05 13:08: Trace safe temporary SQLite staging before node startup. (authoring-run/5c90599f-4f7f-4ec9-bf5d-2724c7156128 - 894a5b6698049c41fba27f5c2c0764e86b4c0632)
 

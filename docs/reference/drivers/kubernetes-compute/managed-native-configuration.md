@@ -30,6 +30,14 @@ Edits stay outside OCE Configuration and AgentRevisions; see
 the [native admin feature boundary](../../agent-native-admin.md#native-authority-and-drift)
 and [deployment procedure](../../../guides/deploy/native-admin.md).
 
+## Session observation
+
+Kubernetes defaults `gateway.controlUi.sessionObserver` to `false` for embedded
+OpenClaw, dedicated OpenClaw, and dedicated Codex Gateways. Explicit settings are
+preserved. To enable live session assessments, set this field to `true` in the
+Agent Configuration and deploy a new version. Assessments require a working
+utility model.
+
 ## Configuration OpenClaw refuses at startup
 
 When an embedded or dedicated Gateway starts, OpenClaw checks every setting. This

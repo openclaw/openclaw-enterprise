@@ -13451,6 +13451,11 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       throw new GatewaySettingFailure("gateway", "must be an object");
     }
     const gateway = (gatewayRecord ?? {}) as Record<string, OpenClawConfigurationValue>;
+    const controlUiRecord = asRecord(gateway.controlUi);
+    if (gateway.controlUi !== undefined && controlUiRecord === undefined) {
+      throw new GatewaySettingFailure("gateway.controlUi", "must be an object");
+    }
+    const controlUi = (controlUiRecord ?? {}) as Record<string, OpenClawConfigurationValue>;
     validateRoutableNativeListener(
       configuration,
       (setting, requirement) => new GatewaySettingFailure(setting, requirement),
@@ -13644,6 +13649,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         // Omitted and auto resolve to loopback unless OpenClaw detects a container,
         // and containerd on cgroup v2 leaves no marker it recognizes (finding 996).
         bind: gateway.bind === "custom" ? "custom" : "lan",
+        controlUi: { sessionObserver: false, ...controlUi },
         trustedProxies: [...this.options.network.gatewayTrustedProxyCidrs],
         allowRealIpFallback: true,
         auth: {

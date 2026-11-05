@@ -1534,6 +1534,38 @@ function dedicatedFirstDeployFixture({
   };
 }
 
+test("Gateway configuration defaults session observation off and preserves explicit settings", async () => {
+  for (const id of ["openclaw", "codex"]) {
+    for (const controlUi of [
+      undefined,
+      { enabled: true },
+      { enabled: true, sessionObserver: true },
+      { enabled: true, sessionObserver: false },
+    ]) {
+      const fixture = dedicatedFirstDeployFixture({
+        revision: {
+          harness: { id, version: "1.0.0", mode: id === "openclaw" ? "embedded" : "dedicated" },
+          configuration: createHarnessConfiguration(id, "gpt-5"),
+          plugins: undefined,
+        },
+      });
+      if (controlUi !== undefined) {
+        fixture.revision.configuration.gateway.controlUi = controlUi;
+      }
+      const original = structuredClone(fixture.revision.configuration);
+
+      // Inspect the deployed document: both Harnesses must opt in to background assessments.
+      await fixture.prepare();
+      const snapshot = [...fixture.objects.values()].find(
+        (object) => object.kind === "ConfigMap" && object.data?.["openclaw.json"] !== undefined,
+      );
+      const rendered = JSON.parse(snapshot.data["openclaw.json"]);
+      assert.deepEqual(rendered.gateway.controlUi, { sessionObserver: false, ...controlUi });
+      assert.deepEqual(fixture.revision.configuration, original);
+    }
+  }
+});
+
 test("shared providers render OpenClaw adapters and refuse unsupported Codex protocols", async () => {
   for (const protocol of ["openai-responses", "openai-completions"]) {
     const configuration = createHarnessConfiguration("openclaw", "gpt-5");
