@@ -569,6 +569,22 @@
       "tag": "0071_connection_attachment_intent",
       "breakpoints": true,
       "sha256": "d9183942881b3e91e627fd366e003edc34d0dfc38b7ad166220b8d68ca856408"
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1787000000072,
+      "tag": "0072_codex_connection_template",
+      "breakpoints": true,
+      "sha256": "252d99535902156bc4a11d38f4bc5cc14b02eec5ec5fc56ae56d35dd88eb7f85"
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1787000000073,
+      "tag": "0073_saved_device_authorizations",
+      "breakpoints": true,
+      "sha256": "e90f93eeaad58dfc7de5ba081a4c37392a2206f4e084fb3a370d9276ed5424b5"
     }
   ],
   "initialSchemaStates": {
@@ -638,6 +654,10 @@
     "ee6adda29a15409c7e1463f054871bfb3b30870608b8994a776f889c76fa6454": [
       "d708d05e5ee67cbb3fffc1977aa7f490997350bcf6dc23102023fe1b346d7733",
       "741e0823bde6cca039afcf51cf11c3e69bc76506f13692afb0400bee27c25d9a"
+    ],
+    "6b050391dfc3f5bdf1964a818706bac81ce86625310ba38da572e02f3bef87c5": [
+      "0899a2f429bfafab8bd5cf80b476b529d5acc402aca6af36ef7b44b719bf53cf",
+      "d5e846b6b218e5f8accdfa7968aa72bbde4b75bda6e6714538986d4e359a83ad"
     ]
   },
   "catalogs": {
@@ -646,7 +666,7 @@
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
-    "completed": "ee6adda29a15409c7e1463f054871bfb3b30870608b8994a776f889c76fa6454",
+    "completed": "6b050391dfc3f5bdf1964a818706bac81ce86625310ba38da572e02f3bef87c5",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
     "agentProvisioning": "baac9e369ace8610f96948c1a930e6387431b1d0a33cefa3893765e52f8f7a52",
     "backendCompleted": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",
@@ -687,7 +707,8 @@
     "preAgentPluginDriver": "c74762d7f4d45b4215f42fcc8cf9e43d01fae03dbb80522d84c4e17370a2f7c3",
     "preConnectionTemplates": "8fc3e20bcb36ad9b2afe8ab96077139b12b50c825dd18ff323603d0e0540b250",
     "preSavedConnections": "3a56d867e008519976c2a08edd76fac8e12e05c76564e5afbd3e60150a052a43",
-    "preConnectionAttachmentIntent": "72b94a3b0a99b524f6d7b315d3626fa6878f8331e992cce73fe20058d824daca"
+    "preConnectionAttachmentIntent": "72b94a3b0a99b524f6d7b315d3626fa6878f8331e992cce73fe20058d824daca",
+    "preCodexSavedAccounts": "ee6adda29a15409c7e1463f054871bfb3b30870608b8994a776f889c76fa6454"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

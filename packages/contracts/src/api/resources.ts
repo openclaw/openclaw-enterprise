@@ -34,6 +34,7 @@ import {
   RequestId,
   ResourceKindSchema,
   SecretBindings,
+  CodexDeviceSessionId,
   SecretId,
   SecretReference,
   ServiceAccountCredentialSchema,
@@ -81,20 +82,27 @@ const RuntimeFailureCauseSchema = Type.Object(
   },
 );
 
+const deviceAuthorization = {
+  source: Type.Optional(CredentialSourceReference),
+  status: Type.Union([Type.Literal("pending"), Type.Literal("ready")]),
+  verificationUrl: Type.String({ format: "uri" }),
+  userCode: Type.String(),
+  expiresAt: Timestamp,
+  intervalSeconds: Type.Integer({ minimum: 1 }),
+};
+
 export const AgentDeviceAuthorizationResponse = Type.Object(
   {
-    data: Type.Object(
-      {
-        session: SecretReference,
-        source: Type.Optional(CredentialSourceReference),
-        status: Type.Union([Type.Literal("pending"), Type.Literal("ready")]),
-        verificationUrl: Type.String({ format: "uri" }),
-        userCode: Type.String(),
-        expiresAt: Timestamp,
-        intervalSeconds: Type.Integer({ minimum: 1 }),
-      },
-      { additionalProperties: false },
-    ),
+    data: Type.Union([
+      Type.Object(
+        { sessionId: CodexDeviceSessionId, ...deviceAuthorization },
+        { additionalProperties: false },
+      ),
+      Type.Object(
+        { session: SecretReference, ...deviceAuthorization },
+        { additionalProperties: false },
+      ),
+    ]),
     meta: Meta,
   },
   { additionalProperties: false },

@@ -1,3 +1,9 @@
+import {
+  builtInCodexConnection,
+  CODEX_HARNESS_OAUTH_CLIENT_ID,
+  CODEX_HARNESS_TEMPLATE_ID,
+} from "@openclaw-enterprise/contracts";
+import type { SavedDeviceSession } from "../device-authorization.ts";
 import { accountDeliveryProfileId } from "../account-delivery.ts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import {
@@ -450,6 +456,20 @@ export interface SavedConnectionReadRepository {
 }
 
 export interface SavedConnectionRepository extends SavedConnectionReadRepository {
+  createDeviceSession(session: SavedDeviceSession): Promise<void>;
+  lockDeviceSession(id: string): Promise<Readonly<SavedDeviceSession> | undefined>;
+  updateDeviceSession(
+    id: string,
+    phase: SavedDeviceSession["phase"],
+    privateState: string | null,
+    nextPollAt: string,
+    expiresAt: string,
+  ): Promise<void>;
+  deleteDeviceSession(id: string): Promise<void>;
+  expiredDeviceSessions(
+    at: string,
+    limit: number,
+  ): Promise<readonly Readonly<SavedDeviceSession>[]>;
   registerDeliveryProfile(
     namespaceId: string,
     sourceId: string,
@@ -940,7 +960,22 @@ export async function assertRevisionAuthAvailable(
 ): Promise<void> {
   const snapshots: CredentialSourceSnapshot[] = [...(revision.credentialSources ?? [])];
   if (revision.harnessAuth?.method === "credential_source") {
-    snapshots.push(revision.harnessAuth);
+    const model = revision.harnessAuth;
+    const listed = snapshots.find((snapshot) => snapshot.sourceId === model.sourceId);
+    if (listed?.accountDelivery) {
+      if (
+        model.sourceType !== "codex-oauth" ||
+        model.loginMode !== "chatgptAuthTokens" ||
+        model.sourceType !== listed.sourceType ||
+        model.credentialGatewayId !== listed.credentialGatewayId
+      ) {
+        throw new ScopeViolationError(
+          "The Harness binding does not match its admitted account sender.",
+        );
+      }
+    } else {
+      snapshots.push(model);
+    }
   } else {
     await assertHarnessAuthAvailable(
       state,
@@ -981,7 +1016,14 @@ export async function assertRevisionAuthAvailable(
       );
       if (
         source.ownerCapability !== "credential_refresh" ||
-        source.type !== "oauth2-refresh-token" ||
+        (source.type === "codex-oauth"
+          ? snapshot.sourceType !== "codex-oauth" ||
+            !account?.codexAccount ||
+            revision.harness.id !== "codex" ||
+            revision.harness.mode !== "dedicated" ||
+            revision.harnessAuth.method !== "credential_source" ||
+            revision.harnessAuth.sourceId !== source.id
+          : source.type !== "oauth2-refresh-token" || snapshot.sourceType === "codex-oauth") ||
         source.driverId !== delivery.refreshDriverId ||
         !account ||
         account.revocationRequestedBy ||
@@ -1350,6 +1392,7 @@ interface PlatformSnapshot {
   readonly connectionTokenCustody: Map<string, Readonly<ConnectionTokenCustody>>;
   readonly savedConnections: Map<string, Readonly<SavedConnection>>;
   readonly connectionProfiles: Map<string, readonly ConnectionDeliveryProfile[]>;
+  readonly deviceSessions: Map<string, Readonly<SavedDeviceSession>>;
   readonly connectionSessions: Map<string, Readonly<ConnectionSession>>;
   readonly presets: Map<string, Readonly<Preset>>;
   readonly secrets: Map<string, Readonly<Secret>>;
@@ -1478,6 +1521,7 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     connectionTokenCustody: new Map(snapshot.connectionTokenCustody),
     savedConnections: new Map(snapshot.savedConnections),
     connectionProfiles: new Map(snapshot.connectionProfiles),
+    deviceSessions: new Map(snapshot.deviceSessions),
     connectionSessions: new Map(snapshot.connectionSessions),
     presets: new Map(Array.from(snapshot.presets, ([key, preset]) => [key, storedCopy(preset)])),
     secrets: new Map(Array.from(snapshot.secrets, ([key, secret]) => [key, storedCopy(secret)])),
@@ -1846,7 +1890,12 @@ function assertCredentialSource(source: CredentialSource): void {
     ) ||
     !isPlainRecord(secretInputs) ||
     (source.ownerCapability !== "credential_gateway" &&
-      (source.ownerCapability !== "credential_proxy" || source.egress === undefined)) ||
+      !(source.ownerCapability === "credential_proxy" && source.egress !== undefined) &&
+      !(
+        source.ownerCapability === "credential_refresh" &&
+        source.egress === undefined &&
+        ["oauth2-refresh-token", "codex-oauth"].includes(source.type)
+      )) ||
     typeof source.driverId !== "string" ||
     source.driverId.length < 1 ||
     source.driverId.length > 200 ||
@@ -1895,6 +1944,13 @@ function repositories(
       }
       const saved = immutableCopy(installation);
       snapshot.installation = saved;
+      const { client, template } = builtInCodexConnection(installation.createdAt);
+      snapshot.clientRegistrations.set(client.id, immutableCopy(client));
+      snapshot.connectionTemplates.set(template.id, immutableCopy(template));
+      snapshot.oauthConnectionTemplateVersions.set(
+        versionKey(template.id, 1),
+        immutableCopy(template.current),
+      );
       return saved;
     },
     // In-memory State has no human accounts, and its units are serialized.
@@ -2115,7 +2171,7 @@ function repositories(
       ).length,
     hasOtherConnectionIssuer: async (issuer) =>
       [...snapshot.oauthConnectionTemplateVersions.values()].some(
-        (version) => version.issuer !== issuer,
+        (version) => version.templateId !== CODEX_HARNESS_TEMPLATE_ID && version.issuer !== issuer,
       ),
     listConnectionTemplates: async () =>
       Object.freeze(
@@ -2179,6 +2235,7 @@ function repositories(
         snapshot.clientRegistrations.has(registration.id) ||
         Array.from(snapshot.clientRegistrations.values()).some(
           (existing) =>
+            existing.id !== CODEX_HARNESS_OAUTH_CLIENT_ID &&
             existing.namespaceId === registration.namespaceId &&
             existing.issuer === registration.issuer &&
             existing.clientId === registration.clientId,
@@ -2252,9 +2309,11 @@ function repositories(
         return false;
       }
       if (
-        [...snapshot.savedConnections.values(), ...snapshot.connectionSessions.values()].some(
-          (connection) => connection.connectionTemplateId === templateId,
-        )
+        [
+          ...snapshot.savedConnections.values(),
+          ...snapshot.connectionSessions.values(),
+          ...snapshot.deviceSessions.values(),
+        ].some((connection) => connection.connectionTemplateId === templateId)
       ) {
         throw new ResourceStateConflictError("The connection template is in use.");
       }
@@ -2268,7 +2327,9 @@ function repositories(
     },
   };
 
-  const assertConnectionScope = (record: SavedConnection | ConnectionSession): void => {
+  const assertConnectionScope = (
+    record: SavedConnection | ConnectionSession | SavedDeviceSession,
+  ): void => {
     const { namespaceId, credentialSourceId, connectionTemplateId, connectionTemplateVersion } =
       record;
     const template = snapshot.connectionTemplates.get(connectionTemplateId);
@@ -2286,6 +2347,31 @@ function repositories(
     }
   };
   const savedConnections: SavedConnectionRepository = {
+    createDeviceSession: async (session) => {
+      assertConnectionScope(session);
+      if (snapshot.deviceSessions.has(session.id)) {
+        throw new ResourceConflictError("The device login already exists.");
+      }
+      snapshot.deviceSessions.set(session.id, immutableCopy(session));
+    },
+    lockDeviceSession: async (id) => snapshot.deviceSessions.get(id),
+    updateDeviceSession: async (id, phase, privateState, nextPollAt, expiresAt) => {
+      const session = snapshot.deviceSessions.get(id);
+      if (session) {
+        snapshot.deviceSessions.set(
+          id,
+          immutableCopy({ ...session, phase, privateState, nextPollAt, expiresAt }),
+        );
+      }
+    },
+    deleteDeviceSession: async (id) => {
+      snapshot.deviceSessions.delete(id);
+    },
+    expiredDeviceSessions: async (at, limit) =>
+      [...snapshot.deviceSessions.values()]
+        .filter((session) => session.expiresAt <= at)
+        .sort((left, right) => left.expiresAt.localeCompare(right.expiresAt))
+        .slice(0, limit),
     listDeliveryProfiles: async (namespaceId, sourceId) =>
       snapshot.connectionProfiles.get(agentKey(namespaceId, sourceId)) ?? [],
     registerDeliveryProfile: async (namespaceId, sourceId, profile) => {
@@ -3217,6 +3303,14 @@ function repositories(
       snapshot.connectionTokenCustody.delete(key);
       snapshot.savedConnections.delete(key);
       snapshot.connectionProfiles.delete(key);
+      for (const session of snapshot.deviceSessions.values()) {
+        if (
+          session.credentialSourceId === credentialSourceId &&
+          session.namespaceId === namespaceId
+        ) {
+          snapshot.deviceSessions.delete(session.id);
+        }
+      }
       for (const [hash, session] of snapshot.connectionSessions) {
         if (
           session.namespaceId === namespaceId &&
@@ -4601,6 +4695,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     connectionTokenCustody: new Map(),
     savedConnections: new Map(),
     connectionProfiles: new Map(),
+    deviceSessions: new Map(),
     connectionSessions: new Map(),
     presets: new Map(),
     secrets: new Map(),

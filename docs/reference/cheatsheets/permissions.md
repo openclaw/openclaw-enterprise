@@ -76,14 +76,8 @@ operation was not authorized.`
 
 ## Additional checks
 
-- [Experimental personal Codex login](../../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login)
-  (device login) requires Namespace `agent:create`, or exact `agent:read` and
-  `agent:update` for an existing Agent. Start also requires `secret:create` and
-  `credential_source:create`, which no Namespace Role can grant, so only an
-  Installation administrator can start it. Polling and closure require the initiating actor
-  and exact session `secret:operate`; source use requires exact
-  `credential_source:operate`. The session holds only an opaque Gateway handle.
-  Saved-Agent discovery also checks the Agent principal's source grant.
+- [Personal Codex login](../../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login)
+  requires `credential_source:create` in the Namespace. Signing in from Agent creation also requires `agent:create`; an existing Agent requires `agent:read` and `agent:update`. Poll and cancellation bind the initiating actor and browser session to the same scope. Selecting a saved account requires `credential_source:operate` on that source. Hosted catalog access for a saved Agent also checks its service principal's source grant.
 
 - [Channel directory lookup](../api.md#post-namespacesnamespaceidchanneldirectorylookup)
   requires `agent:create` in the Namespace, or `agent:update` or

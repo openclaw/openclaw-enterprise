@@ -1,3 +1,4 @@
+import { CODEX_HARNESS_TEMPLATE_ID } from "@openclaw-enterprise/contracts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
 import type {
   OAuthClient,
@@ -93,7 +94,9 @@ function registrationFromRow(row: Row): Readonly<OAuthClient> {
     ...(row.revocation_url === null ? {} : { revocationUrl: text(row, "revocation_url") }),
     tokenEndpointAuthMethod:
       row.token_endpoint_auth_method as OAuthClient["tokenEndpointAuthMethod"],
-    credentialRefreshDriverId: text(row, "credential_refresh_driver_id"),
+    ...(row.credential_refresh_driver_id !== null && {
+      credentialRefreshDriverId: text(row, "credential_refresh_driver_id"),
+    }),
     createdAt: timestamp(row, "created_at"),
   });
 }
@@ -157,8 +160,8 @@ export function postgresConnectionTemplates(
     hasOtherConnectionIssuer: async (issuer) =>
       (
         await client.query(
-          "SELECT 1 FROM occ.oauth_connection_template_versions WHERE issuer <> $1 LIMIT 1",
-          [issuer],
+          "SELECT 1 FROM occ.oauth_connection_template_versions WHERE issuer <> $1 AND template_id <> $2 LIMIT 1",
+          [issuer, CODEX_HARNESS_TEMPLATE_ID],
         )
       ).rows.length > 0,
     listConnectionTemplates: async () => Object.freeze(await selectTemplates("", [])),

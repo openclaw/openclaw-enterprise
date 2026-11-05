@@ -51,7 +51,9 @@ export function renderOAuthClients(
         return;
       }
       clients = data;
-      templates = saved.filter((item) => availableInNamespace(item, currentNamespace));
+      templates = saved.filter(
+        (item) => !item.builtIn && availableInNamespace(item, currentNamespace),
+      );
       const visibleClients = data.filter((item) => availableInNamespace(item, currentNamespace));
       redirectUri = meta?.redirectUri;
       const auth = {
@@ -71,7 +73,9 @@ export function renderOAuthClients(
             element(
               "div",
               { className: "resource-row-actions" },
-              oauthDeleteButton(context, "OAuth client", item, scope, refresh, create),
+              item.builtIn
+                ? element("span", { className: "hint" }, "Built-in public client")
+                : oauthDeleteButton(context, "OAuth client", item, scope, refresh, create),
             ),
           ),
         );

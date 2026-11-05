@@ -525,7 +525,7 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
     }),
     validate() {},
     credentials: () => Object.freeze({ access_token: CODEX_ACCESS_TOKEN_ENV }),
-    profile: (sourceId, _config, options) => ({
+    profile: (sourceId, config, options) => ({
       id: openShellProviderName(sourceId),
       displayName: "Codex OAuth (Experimental)",
       category: "PROVIDER_PROFILE_CATEGORY_INFERENCE" as const,
@@ -533,19 +533,22 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
         {
           name: "access_token",
           envVars: [CODEX_ACCESS_TOKEN_ENV],
-          required: true,
+          required: config.oauth_owner !== "token_service",
+          ...(config.oauth_owner === "token_service" && { stablePlaceholder: true }),
           authStyle: "bearer",
           headerName: "authorization",
-          refresh: {
-            strategy: "PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_REFRESH_TOKEN",
-            tokenUrl: CODEX_OAUTH_TOKEN_URL,
-            scopes: [],
-            refreshBeforeSeconds: 300,
-            material: [
-              { name: "client_id", required: true, secret: false },
-              { name: "refresh_token", required: true, secret: true },
-            ],
-          },
+          ...(config.oauth_owner !== "token_service" && {
+            refresh: {
+              strategy: "PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_REFRESH_TOKEN",
+              tokenUrl: CODEX_OAUTH_TOKEN_URL,
+              scopes: [],
+              refreshBeforeSeconds: 300,
+              material: [
+                { name: "client_id", required: true, secret: false },
+                { name: "refresh_token", required: true, secret: true },
+              ],
+            },
+          }),
         },
       ],
       endpoints: [
@@ -1220,7 +1223,9 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     if (
       source.driverId !== this.id ||
       source.namespaceId !== context.namespace.id ||
-      (source.type !== "oauth2-refresh-token" && source.type !== "bearer-token") ||
+      (source.type !== "oauth2-refresh-token" &&
+        source.type !== "bearer-token" &&
+        source.type !== CODEX_OAUTH_TYPE) ||
       source.config.oauth_owner !== "token_service"
     ) {
       throw new ScopeViolationError(
@@ -1245,8 +1250,11 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     ) {
       throw new ScopeViolationError("The OpenShell provider belongs to a different source.");
     }
-    const names = credentialEnvironmentNames(source.config);
-    if (!validPluginCredentialNames(names)) {
+    const names =
+      source.type === CODEX_OAUTH_TYPE
+        ? [CODEX_ACCESS_TOKEN_ENV]
+        : credentialEnvironmentNames(source.config);
+    if (source.type !== CODEX_OAUTH_TYPE && !validPluginCredentialNames(names)) {
       throw new StoredCredentialSourceConfigError("env_var");
     }
     if (prepare || token) {
@@ -1662,7 +1670,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
           ...(source.type === CODEX_OAUTH_TYPE
             ? {
                 externalChatgptAuth: {
-                  ...codexAccountMetadata(provider.config),
+                  ...codexAccountMetadata(account ? source.config : provider.config),
                   accessTokenPlaceholder: `openshell:resolve:env:${CODEX_ACCESS_TOKEN_ENV}`,
                 },
               }

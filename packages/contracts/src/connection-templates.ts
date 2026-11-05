@@ -1,3 +1,5 @@
+import type { ExternalChatgptAuth } from "./drivers/credential-gateway/index.ts";
+
 /** RFC 6749 section 3.3 scope-token grammar shared by the API and token exchange. */
 export const oauthScopeTokenPattern = /^[\x21\x23-\x5b\x5d-\x7e]+$/u;
 export function isOAuthScopeToken(value: unknown): value is string {
@@ -15,6 +17,7 @@ export type OAuthClientAuthMethod = "none" | "client_secret_basic" | "client_sec
 
 /** A client may send its credentials only to its explicitly approved provider endpoints. */
 export interface OAuthClient {
+  readonly builtIn?: true;
   readonly id: string;
   readonly namespaceId?: string;
   readonly displayName: string;
@@ -23,8 +26,8 @@ export interface OAuthClient {
   readonly revocationUrl?: string;
   readonly clientId: string;
   readonly tokenEndpointAuthMethod: OAuthClientAuthMethod;
-  /** Installation Driver that owns this client registration and its private material. */
-  readonly credentialRefreshDriverId: string;
+  /** Selected Driver for an operator registration. The native public client has no private registration to manage. */
+  readonly credentialRefreshDriverId?: string;
   readonly createdAt: string;
 }
 
@@ -66,6 +69,7 @@ export interface OAuthConnectionTemplateVersion extends ConnectionTemplateValues
 }
 
 export interface ConnectionTemplate {
+  readonly builtIn?: true;
   readonly id: string;
   readonly namespaceId?: string;
   readonly displayName: string;
@@ -248,6 +252,8 @@ function sameParameters(
 
 /** One connected credential source: who consented in this Namespace and which template version they approved. */
 export interface SavedConnection {
+  /** Provider-derived account identity used by the trusted Harness handoff. */
+  readonly codexAccount?: Omit<ExternalChatgptAuth, "accessTokenPlaceholder">;
   readonly namespaceId: string;
   readonly credentialSourceId: string;
   /** Revocation survives process restarts until the worker retires the grant. */

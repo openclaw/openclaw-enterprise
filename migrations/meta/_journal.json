@@ -498,6 +498,20 @@
       "when": 1787000000071,
       "tag": "0071_connection_attachment_intent",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1787000000072,
+      "tag": "0072_codex_connection_template",
+      "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1787000000073,
+      "tag": "0073_saved_device_authorizations",
+      "breakpoints": true
     }
   ]
 }

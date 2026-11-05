@@ -3,6 +3,7 @@ import { NAMESPACE_UNAVAILABLE } from "./agents/access-reasons.mjs";
 import { button, element, requestIdLine, setUnavailable } from "./dom.mjs";
 import {
   connectionTemplatesPage,
+  connectedAccountsPage,
   oauthClientsPage,
   type createNavigation,
   type pages,
@@ -595,8 +596,10 @@ export function createShell({
         navigate(name);
       });
     }
-    const credentialAdministration =
-      feature === connectionTemplatesPage || feature === oauthClientsPage;
+    const credentialSection =
+      feature === connectedAccountsPage ||
+      feature === connectionTemplatesPage ||
+      feature === oauthClientsPage;
     const icons = { agents: "◇", secrets: "⚿", namespaces: "▤" };
     for (const name of ["agents", "secrets", "namespaces"] as const) {
       const link = element(
@@ -604,7 +607,7 @@ export function createShell({
         {
           href: pageUrl(name),
           "data-nav": name,
-          ...(feature === name || (credentialAdministration && name === "secrets")
+          ...(feature === name || (credentialSection && name === "secrets")
             ? { "aria-current": "page" }
             : {}),
         },
@@ -673,7 +676,7 @@ export function createShell({
     const main = element("main", { className: "content", id: "main" });
     const selected = namespaces.find((item) => item.id === namespaceId);
     const scope =
-      credentialAdministration || ["agents", "secrets"].includes(feature)
+      credentialSection || ["agents", "secrets"].includes(feature)
         ? `Namespace · ${selected?.name ?? (session && !namespaceAdmissionPending ? "No available selection" : "Checking access")}`
         : feature === "settings"
           ? "Your account"
@@ -735,17 +738,21 @@ export function createShell({
         );
     const view = element("div", { "aria-live": "polite", "aria-busy": "true" });
     main.append(header);
-    if (feature === "secrets" || credentialAdministration) {
+    if (feature === "secrets" || credentialSection) {
       const sections = element("nav", {
         className: "credential-tabs",
         "aria-label": "Credential sections",
       });
       for (const [name, label] of [
         ["secrets", "Secrets"],
+        [connectedAccountsPage, "Connected accounts"],
         [connectionTemplatesPage, "Connection templates"],
         [oauthClientsPage, "OAuth clients"],
       ] as const) {
-        if (name !== "secrets" && !state.installationAdmin) {
+        if (
+          (name === connectionTemplatesPage || name === oauthClientsPage) &&
+          !state.installationAdmin
+        ) {
           continue;
         }
         const link = element(

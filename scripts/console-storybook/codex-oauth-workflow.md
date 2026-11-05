@@ -8,6 +8,8 @@ provider login, credential-service persistence, refresh rotation, or runtime tok
 
 ## Create an Agent
 
+Open **Pages → Credentials → Connected Accounts** to see a saved personal ChatGPT account. Open **Pages → Create Agent → Saved Codex Account** and confirm that the same account is selected. Use **Connect another account** to start a fresh device sign-in.
+
 1. Open **Pages/Create Agent → ChatGPT OAuth before sign-in (Experimental)**. Confirm the
    provider is OpenAI, the harness is Codex, and authentication is **ChatGPT OAuth (Experimental)**. Confirm the Experimental
    notice explains that sign-in, plugins, deployment, and recovery may have limitations.

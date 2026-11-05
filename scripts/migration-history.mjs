@@ -166,6 +166,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 70 && completedCount > 70) {
     return "preConnectionAttachmentIntent";
   }
+  if (count === 71 && completedCount > 71) {
+    return "preCodexSavedAccounts";
+  }
   if (count === completedCount) {
     return "completed";
   }

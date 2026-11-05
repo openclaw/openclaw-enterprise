@@ -11,6 +11,38 @@ import { waitFor } from "./wait-for.mjs";
 import pg from "pg";
 import { managedPluginGuardVersion } from "../../apps/controller/src/drivers/plugin/managed-request-policies.ts";
 
+function accountWorker(fixture, sandboxDriver, input, emit) {
+  const drivers = createBackendWorkerDrivers(fixture.driver, [], {
+    secretDriver: input.secretDriver,
+  });
+  Object.assign(drivers.installation.drivers, {
+    sandbox: { id: sandboxDriver.id, configuration: {} },
+    credential_gateway: { id: input.gateway.id, configuration: {} },
+    credential_refresh: { id: input.refresh.id, configuration: {} },
+    plugin: (input.pluginDrivers ?? []).map(({ id }) => ({ id, configuration: {} })),
+  });
+  const workerPool = new pg.Pool({ connectionString: process.env.OCC_TEST_DATABASE_URL, max: 6 });
+  return createControllerWorker({
+    pool: workerPool,
+    drivers: {
+      ...drivers,
+      installation: {
+        ...drivers.installation,
+        backend: [],
+        logging: { level: "info" },
+        runtime: { nativeWorkerSupport: "custom-image" },
+      },
+      sandboxDriver: fixture.sandbox,
+      credentialGatewayDriver: input.gateway,
+      credentialRefreshDriver: input.refresh,
+      tokenService: input.preparedTokens,
+      pluginDrivers: input.pluginDrivers,
+    },
+    pollIntervalMs: 15,
+    emit,
+  });
+}
+
 /** Real queued Worker, controller release and Kubernetes Compute; external transports are controlled.
  * The Sandbox emits its supported policy-pending error here. Native policy validation and live
  * supervisor propagation are separate proofs; this check verifies the production caller ordering.
@@ -151,38 +183,8 @@ export async function assertWorkerAccountRelease(t, input) {
       return { state: "PROVIDER_READINESS_STATE_READY" };
     },
   });
-  const drivers = createBackendWorkerDrivers(fixture.driver, [], {
-    secretDriver: input.secretDriver,
-  });
-  Object.assign(drivers.installation.drivers, {
-    sandbox: { id: sandboxDriver.id, configuration: {} },
-    credential_gateway: { id: input.gateway.id, configuration: {} },
-    credential_refresh: { id: input.refresh.id, configuration: {} },
-    plugin: input.pluginDrivers.map(({ id }) => ({ id, configuration: {} })),
-  });
   const workerEvents = [];
-  const workerPool = new pg.Pool({ connectionString: process.env.OCC_TEST_DATABASE_URL, max: 6 });
-  const worker = createControllerWorker({
-    pool: workerPool,
-    drivers: {
-      ...drivers,
-      installation: {
-        ...drivers.installation,
-        backend: [],
-        logging: { level: "info" },
-        runtime: { nativeWorkerSupport: "custom-image" },
-      },
-      sandboxDriver: fixture.sandbox,
-      credentialGatewayDriver: input.gateway,
-      credentialRefreshDriver: input.refresh,
-      tokenService: input.preparedTokens,
-      pluginDrivers: input.pluginDrivers,
-    },
-    pollIntervalMs: 15,
-    emit(event) {
-      workerEvents.push(event);
-    },
-  });
+  const worker = accountWorker(fixture, sandboxDriver, input, (event) => workerEvents.push(event));
   t.after(async () => {
     pendingPolicy.resolve();
     confirmWithdrawal.resolve();
@@ -362,4 +364,94 @@ export async function assertWorkerAccountRelease(t, input) {
     "an unconfirmed withdrawal remains fail closed",
   );
   await worker.stop();
+}
+
+// Exercise the Worker, Kubernetes Compute and OpenShell Gateway together. External Kubernetes
+// and OpenShell transports are controlled; this verifies the material handed to the Sandbox.
+export async function assertCodexWorkerRelease(t, input) {
+  const { controller, state, namespaceId, agentId, providers, gateway, transport, principal } =
+    input;
+  const tenant = await state.read((view) => view.namespaces.findNamespace(namespaceId));
+  const sandboxDriver = createProviderSandboxDriver({ id: "openshell-sandbox" }).driver;
+  const fixture = providerEndpointFixture({
+    tenant,
+    sandboxDriver,
+    credentialGatewayDriver: gateway,
+    revisionOverrides: { namespaceId, agentId },
+  });
+  controller.registerDriver(fixture.driver);
+  controller.selectDriver("compute", fixture.driver.id);
+  const revision = await controller.deployAgent(
+    principal.id,
+    { namespaceId, agentId },
+    resolveApprovedHarness,
+  );
+  Object.assign(fixture.revision, revision);
+  Object.assign(fixture.clients, {
+    version: {
+      async getCode() {
+        return { gitVersion: "v1.35.0" };
+      },
+    },
+  });
+  fixture.setSetupAvailable(true);
+  Object.assign(transport, {
+    async getSandboxProviderStatus() {
+      return { state: "PROVIDER_READINESS_STATE_READY" };
+    },
+  });
+  const events = [];
+  const worker = accountWorker(fixture, sandboxDriver, input, (event) => {
+    if (event.revisionId === revision.id) {
+      events.push(event);
+    }
+  });
+  t.after(() => worker.stop());
+  await state.transactWithQueue(async (_unit, queue) => {
+    await queue.enqueue({
+      idempotencyKey: `agent_revision:${revision.id}:reconcile`,
+      namespaceId,
+      agentId,
+      revisionId: revision.id,
+      actorId: principal.id,
+      availableAt: new Date(0),
+    });
+  });
+  await worker.start();
+  const result = await waitFor(
+    () =>
+      "the Codex Sandbox provision with its prepared account: " + JSON.stringify(events.slice(-5)),
+    async () => {
+      const observed = fixture.provisions.find(
+        ({ revision: candidate }) => candidate.id === revision.id,
+      );
+      if (observed) {
+        return observed;
+      }
+      const { rows } = await input.pool.query(
+        "SELECT state,reason_code FROM occ.controller_work WHERE revision_id=$1",
+        [revision.id],
+      );
+      assert.notEqual(rows[0]?.state, "failed", String(rows[0]?.reason_code));
+    },
+  );
+  const attachment = result.requirements.credentialAttachments.find(
+    ({ sourceId }) => sourceId === input.sourceId,
+  );
+  assert.ok(attachment);
+  assert.equal(attachment.externalChatgptAuth.accountId, input.accountId);
+  assert.equal(
+    attachment.externalChatgptAuth.accessTokenPlaceholder,
+    "openshell:resolve:env:CODEX_ACCESS_TOKEN",
+  );
+  const receiver = [...providers.values()].find(({ name }) => name === attachment.ref);
+  await waitFor("the authorized model token in the revision receiver", () =>
+    receiver?.credentials.CODEX_ACCESS_TOKEN === input.accessToken ? true : undefined,
+  );
+  assert.ok(
+    !JSON.stringify(result.requirements).includes(input.accessToken),
+    "the Sandbox receives the placeholder and account identity only",
+  );
+  await worker.stop();
+  return revision;
 }

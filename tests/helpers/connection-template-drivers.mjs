@@ -72,7 +72,7 @@ function recordingOpenShell() {
   return { client, providers, createdProviders };
 }
 
-export function selectTemplateDrivers(controller, { selectGateway = true } = {}) {
+export function createTemplateDrivers() {
   const openShell = recordingOpenShell();
   const backend = createOpenShellBackend(
     {
@@ -98,17 +98,26 @@ export function selectTemplateDrivers(controller, { selectGateway = true } = {})
     { clientWorkspace },
     { id: "openshell-refresh", backend },
   );
-  if (selectGateway) {
-    controller.registerDriver(gateway);
-    controller.selectDriver("credential_gateway", gateway.id);
-  }
-  controller.registerDriver(refresh);
-  controller.selectDriver("credential_refresh", refresh.id);
   return {
+    backend,
     gateway,
     providers: openShell.providers,
     createdProviders: openShell.createdProviders,
     refresh,
     transport: openShell.client,
   };
+}
+
+export function selectTemplateDrivers(
+  controller,
+  { selectGateway = true, drivers = createTemplateDrivers() } = {},
+) {
+  const { gateway, refresh } = drivers;
+  if (selectGateway) {
+    controller.registerDriver(gateway);
+    controller.selectDriver("credential_gateway", gateway.id);
+  }
+  controller.registerDriver(refresh);
+  controller.selectDriver("credential_refresh", refresh.id);
+  return drivers;
 }

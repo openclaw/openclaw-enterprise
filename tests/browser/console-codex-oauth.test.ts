@@ -41,6 +41,17 @@ import {
   DEVICE_LOGIN_NOT_CONFIGURED,
 } from "../helpers/refusal-text.mjs";
 
+import { OAuthConnectionTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
+import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
+import { refreshPinnedOAuthGrant } from "../../apps/controller/src/drivers/credential-refresh/oauth-token-endpoint.ts";
+import { installCodexDeviceIssuer } from "../helpers/codex-device-issuer.mjs";
+import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import {
+  createTemplateDrivers,
+  selectTemplateDrivers,
+} from "../helpers/connection-template-drivers.mjs";
+import { openShellSandbox } from "../helpers/openshell-sandbox.mjs";
+
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -124,6 +135,90 @@ async function signInReady(page: Page, advanceApiClock: (ms: number) => void) {
     )
     .waitFor();
 }
+
+test("a personal ChatGPT account connected in Credentials can be assigned to two Codex Agents", async (t) => {
+  const secretDriver = createTestSecretDriver();
+  const drivers = createTemplateDrivers();
+  const { fixture, namespace } = await createUntypedReadyConsoleNamespace(t, "Personal accounts", {
+    secretDriver,
+    credentialGatewayDriver: drivers.gateway,
+    ...openShellSandbox(t, {}, {}, { backend: drivers.backend, id: "openshell-sandbox" }),
+    preparedTokens: new TokenService(
+      new OAuthConnectionTokens(secretDriver, refreshPinnedOAuthGrant),
+    ),
+    agentProvisioning: true,
+  });
+  selectTemplateDrivers(fixture.controller, { drivers });
+  // Only the upstream issuer and the OpenShell transport are fixtures. The browser exercises
+  // device consent, the saved-account list, Agent creation and its persisted source binding.
+  const issuer = installCodexDeviceIssuer(t);
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/credentials/connected-accounts?namespace=${namespace.id}`);
+  await page.getByText("No saved ChatGPT accounts are available in this Namespace.").waitFor();
+  await page.getByRole("button", { name: "Sign in with OAuth" }).click();
+  const account = page
+    .getByRole("listitem")
+    .filter({ hasText: `plus · …${issuer.accountId.slice(-8)}` });
+  await account.waitFor();
+  await page.goto(fixture.origin + `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Authentication method").selectOption("credential_source");
+  const accountPicker = page.getByLabel("Saved ChatGPT account");
+  const sourceId = (
+    await accountPicker.selectOption({ label: `plus · …${issuer.accountId.slice(-8)}` })
+  )[0];
+  assert.ok(sourceId);
+  await page.getByLabel("Agent name", { exact: true }).fill("Saved Codex account");
+  await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
+  await submitCreateAgent(page, fixture, namespace.id, { status: 201 });
+  await page.getByRole("heading", { name: "Saved Codex account", exact: true }).waitFor();
+  const agentId = new URL(page.url()).pathname.split("/").at(-1);
+  const saved = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agentId}`);
+  assert.equal(sourceAuth(jsonObject(saved.data).harnessAuth).sourceId, sourceId);
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
+  await page.getByText("This Agent uses the selected account.", { exact: true }).waitFor();
+  assert.equal(await page.getByLabel("Saved ChatGPT account").inputValue(), sourceId);
+  // Give a second Agent access from its Credentials tab. Reusing the account goes through
+  // the same update route as a new sign-in without exchanging a second provider grant.
+  const second = agentIdentity(
+    await fixture.createAgent(
+      namespace.id,
+      "Another Codex Agent",
+      nativeValues("second-codex", { harnessId: "codex" }),
+      { executionMode: "dedicated" },
+    ),
+  );
+  const secondPath = `/namespaces/${namespace.id}/agents/${second.id}`;
+  await page.goto(
+    fixture.origin +
+      `/console/agents/${second.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+  );
+  await page.getByLabel("Authentication source").selectOption("credential_source");
+  await page.getByLabel("Saved ChatGPT account").selectOption(sourceId);
+  const updated = page.waitForResponse(
+    (r) => new URL(r.url()).pathname === secondPath && r.request().method() === "PATCH",
+  );
+  await page.getByRole("button", { name: "Save authentication source", exact: true }).click();
+  assert.equal((await updated).status(), 200);
+  assert.equal(
+    sourceAuth(jsonObject((await fixture.request("GET", secondPath)).data).harnessAuth).sourceId,
+    sourceId,
+  );
+  assert.equal(
+    requests.filter(({ method, path }) => method === "POST" && path.endsWith("/access-bindings"))
+      .length,
+    0,
+    "Saving a personal model account grants Agent access in the same transaction",
+  );
+  assert.equal(issuer.exchanges, 1);
+  assert.equal(
+    requests.filter(
+      ({ method, path }) => method === "POST" && path.endsWith("/device-authorizations"),
+    ).length,
+    1,
+  );
+});
 
 test("Codex OAuth console saves a credential source and reuses it for plugin editing", async (t) => {
   let apiClockAheadMs = 0;

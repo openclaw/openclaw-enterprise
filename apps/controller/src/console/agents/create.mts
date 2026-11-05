@@ -1264,7 +1264,7 @@ function renderAgentForm(
   const oauthLogin = createDeviceLogin({
     context,
     initial: draft.oauthLogin,
-    hint: "Sign in for this dedicated Codex Agent. The same saved login supports plugin browsing before deployment and when editing later versions.",
+    hint: "Choose a saved ChatGPT account or sign in to connect another. Creating the Agent grants it access to the selected account.",
     onChange(source) {
       if (authMethod.value === "credential_source") {
         modelCredentialSource = source;
@@ -4073,7 +4073,8 @@ function renderAgentForm(
         (boundSource?.kind === "secret" ? boundSource : undefined);
       const modelSecret = credential && "ref" in credential ? credential.ref : credential;
       const modelGrant: CredentialReference | undefined =
-        harnessAuth.method === "credential_source"
+        harnessAuth.method === "credential_source" &&
+        !oauthLogin.isPersonalAccount(harnessAuth.sourceId)
           ? { kind: "credential_source", namespaceId, id: harnessAuth.sourceId }
           : modelSecret?.kind === "secret"
             ? modelSecret

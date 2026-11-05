@@ -183,6 +183,11 @@ Records the Namespace, consenting principal, approved template version and revoc
 - `created_at`
 - `revocation_requested_by`
 - `revoked_at`
+- `codex_account` records provider-returned ChatGPT identity for a native Codex connection.
+
+### `saved_device_sessions`
+
+Stores a temporary Codex sign-in attempt. It binds the initiating actor and browser session to the Namespace, optional Agent, source and template version. The row records the device authorization, expiry, poll state and single-use exchange claim. The Token Service owns the saved tokens.
 
 ### `saved_connection_profiles`
 

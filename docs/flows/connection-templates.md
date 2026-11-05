@@ -56,3 +56,9 @@ If a template changes to an incompatible recipient or allows no operation the ac
 For a saved Google account, the Credential Gateway configures one OpenShell provider. It includes a host, port and path only when the current template and a reviewed Google Workspace operation both allow it, and the account has the scope for that operation. The Sandbox Driver checks those routes and the Installation’s approved executables. Each executable uses the same request guard.
 
 An Agent network grant and a template edit can both change the running Sandbox policy. The Sandbox Driver reads the current policy before applying either change. A template edit preserves the Agent’s network grants. Applying a grant preserves the account’s current request guard. If the changes overlap in a way that would bypass the guard, the Driver refuses the update.
+
+## Sign in to ChatGPT for a Codex Harness
+
+The **ChatGPT for Codex** template uses OpenAI's public client. The Refresh Driver requests a device code. OCC stores the pending attempt in a private device-session row, bound to the initiating browser. When that browser polls after approval, the Driver exchanges the provider's code and hands the tokens to the Token Service. OCC then records the user's saved connection and the ChatGPT identity returned by the exchange.
+
+Saving a dedicated Codex Agent with this connection records access for its service principal. During deployment the worker resolves the admitted account for that Agent. The Gateway receives a prepared access token and the Harness receives a placeholder and the account identity. Detaching one Agent withdraws its delivery independently of other Agents that use the same account. See [Codex credential storage](../reference/drivers/kubernetes-compute/codex-oauth-storage.md).

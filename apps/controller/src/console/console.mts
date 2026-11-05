@@ -11,6 +11,7 @@ import type {
   TabNavigation,
 } from "./page-context.mjs";
 import { renderOAuthClients } from "./oauth-clients.mjs";
+import { renderConnectedAccounts } from "./connected-accounts.mjs";
 import { renderConnectionTemplates } from "./connection-templates.mjs";
 import { renderInstallationConfigurations } from "./driver-configurations.mjs";
 import {
@@ -44,6 +45,7 @@ import {
 import { createViewLifetime } from "./view-lifetime.mjs";
 import {
   connectionTemplatesPage,
+  connectedAccountsPage,
   oauthClientsPage,
   createNavigation,
   pages,
@@ -529,7 +531,7 @@ async function rereadNamespacesAfterAdministration() {
   setNamespaces(readable);
   const current = route();
   if (
-    ["agents", "secrets"].includes(current.feature) &&
+    ["agents", "secrets", connectedAccountsPage].includes(current.feature) &&
     !namespaces.some((item) => item.id === namespaceId)
   ) {
     clearRetainedViewsForNamespace(namespaceId);
@@ -2026,7 +2028,7 @@ async function loadPage({
     const namespacePath =
       selectedNamespace === null ? null : `/namespaces/${encodeURIComponent(selectedNamespace)}`;
     const scopedNamespaceUnavailable =
-      ["agents", "secrets"].includes(current.feature) &&
+      ["agents", "secrets", connectedAccountsPage].includes(current.feature) &&
       (namespacePath === null || !namespaces.some((item) => item.id === selectedNamespace));
     if (current.namespace !== null && (!held || shownFeature === current.feature)) {
       // Namespace admission is done, so the header selector, when the shown page has one, is
@@ -2685,6 +2687,11 @@ async function loadPage({
         // under the wrong tab.
         markMountedRoute(route());
       }
+      return;
+    }
+    if (current.feature === connectedAccountsPage && selectedNamespace !== null) {
+      viewState.reusable = false;
+      renderConnectedAccounts({ ...agentContext, namespaceId: selectedNamespace });
       return;
     }
     const items = firstItems;

@@ -1,5 +1,7 @@
 export const connectionTemplatesPage = "credentials/connection-templates";
 
+export const connectedAccountsPage = "credentials/connected-accounts";
+
 export const oauthClientsPage = "credentials/oauth-clients";
 
 export const pages = Object.freeze({
@@ -7,6 +9,7 @@ export const pages = Object.freeze({
   secrets: "Credentials",
   [connectionTemplatesPage]: "Credentials",
   [oauthClientsPage]: "Credentials",
+  [connectedAccountsPage]: "Credentials",
   backends: "Backends",
   namespaces: "Namespaces",
   settings: "Settings",

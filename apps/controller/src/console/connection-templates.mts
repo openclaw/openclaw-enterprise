@@ -222,8 +222,19 @@ export function renderConnectionTemplates(
             element(
               "div",
               { className: "resource-row-actions" },
-              button(`Edit ${template.displayName}`, () => edit(template), { size: "sm" }),
-              oauthDeleteButton(context, "connection template", template, scope, refresh, create),
+              ...(template.builtIn
+                ? [element("span", { className: "hint" }, "Built-in device sign-in")]
+                : [
+                    button(`Edit ${template.displayName}`, () => edit(template), { size: "sm" }),
+                    oauthDeleteButton(
+                      context,
+                      "connection template",
+                      template,
+                      scope,
+                      refresh,
+                      create,
+                    ),
+                  ]),
             ),
           ),
         );
@@ -488,6 +499,7 @@ export function openConnectionTemplateEditor(
     const oauth = provider();
     const compatible = clients.filter(
       (item) =>
+        !item.builtIn &&
         oauth?.issuer === item.issuer &&
         oauth.tokenUrl === item.tokenUrl &&
         (!oauth.revocationUrl || item.revocationUrl === oauth.revocationUrl) &&

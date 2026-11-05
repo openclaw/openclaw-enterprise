@@ -967,6 +967,7 @@
       "def-15": {
         "additionalProperties": false,
         "properties": {
+          "builtIn": { "const": true, "type": "boolean" },
           "createdAt": { "type": "string" },
           "current": { "$ref": "#/components/schemas/def-14" },
           "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
@@ -16860,11 +16861,7 @@
                       "data": {
                         "expiresAt": "2026-10-01T12:15:00.000Z",
                         "intervalSeconds": 5,
-                        "session": {
-                          "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-                          "kind": "secret",
-                          "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-                        },
+                        "sessionId": "cda_2ef976da-2aa8-42e6-bd50-b2d1be6bbb21",
                         "status": "pending",
                         "userCode": "ABCD-EFGH",
                         "verificationUrl": "https://auth.example.com/device"
@@ -16877,66 +16874,119 @@
                   "additionalProperties": false,
                   "properties": {
                     "data": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "expiresAt": {
-                          "format": "date-time",
-                          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
-                          "type": "string"
-                        },
-                        "intervalSeconds": { "minimum": 1, "type": "integer" },
-                        "session": {
+                      "anyOf": [
+                        {
                           "additionalProperties": false,
-                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
                           "properties": {
-                            "id": {
-                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "expiresAt": {
+                              "format": "date-time",
+                              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
                               "type": "string"
                             },
-                            "kind": { "const": "secret", "type": "string" },
-                            "namespaceId": {
-                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                              "type": "string"
-                            }
-                          },
-                          "required": ["kind", "namespaceId", "id"],
-                          "type": "object"
-                        },
-                        "source": {
-                          "additionalProperties": false,
-                          "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
-                          "properties": {
-                            "id": {
-                              "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "intervalSeconds": { "minimum": 1, "type": "integer" },
+                            "sessionId": {
+                              "pattern": "^cda_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
-                            "kind": { "const": "credential_source", "type": "string" },
-                            "namespaceId": {
-                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                              "type": "string"
-                            }
+                            "source": {
+                              "additionalProperties": false,
+                              "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                              "properties": {
+                                "id": {
+                                  "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "kind": { "const": "credential_source", "type": "string" },
+                                "namespaceId": {
+                                  "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["kind", "namespaceId", "id"],
+                              "type": "object"
+                            },
+                            "status": {
+                              "anyOf": [
+                                { "const": "pending", "type": "string" },
+                                { "const": "ready", "type": "string" }
+                              ]
+                            },
+                            "userCode": { "type": "string" },
+                            "verificationUrl": { "format": "uri", "type": "string" }
                           },
-                          "required": ["kind", "namespaceId", "id"],
+                          "required": [
+                            "sessionId",
+                            "status",
+                            "verificationUrl",
+                            "userCode",
+                            "expiresAt",
+                            "intervalSeconds"
+                          ],
                           "type": "object"
                         },
-                        "status": {
-                          "anyOf": [
-                            { "const": "pending", "type": "string" },
-                            { "const": "ready", "type": "string" }
-                          ]
-                        },
-                        "userCode": { "type": "string" },
-                        "verificationUrl": { "format": "uri", "type": "string" }
-                      },
-                      "required": [
-                        "session",
-                        "status",
-                        "verificationUrl",
-                        "userCode",
-                        "expiresAt",
-                        "intervalSeconds"
-                      ],
-                      "type": "object"
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "expiresAt": {
+                              "format": "date-time",
+                              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                              "type": "string"
+                            },
+                            "intervalSeconds": { "minimum": 1, "type": "integer" },
+                            "session": {
+                              "additionalProperties": false,
+                              "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                              "properties": {
+                                "id": {
+                                  "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "kind": { "const": "secret", "type": "string" },
+                                "namespaceId": {
+                                  "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["kind", "namespaceId", "id"],
+                              "type": "object"
+                            },
+                            "source": {
+                              "additionalProperties": false,
+                              "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                              "properties": {
+                                "id": {
+                                  "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "kind": { "const": "credential_source", "type": "string" },
+                                "namespaceId": {
+                                  "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["kind", "namespaceId", "id"],
+                              "type": "object"
+                            },
+                            "status": {
+                              "anyOf": [
+                                { "const": "pending", "type": "string" },
+                                { "const": "ready", "type": "string" }
+                              ]
+                            },
+                            "userCode": { "type": "string" },
+                            "verificationUrl": { "format": "uri", "type": "string" }
+                          },
+                          "required": [
+                            "session",
+                            "status",
+                            "verificationUrl",
+                            "userCode",
+                            "expiresAt",
+                            "intervalSeconds"
+                          ],
+                          "type": "object"
+                        }
+                      ]
                     },
                     "meta": {
                       "additionalProperties": false,
@@ -17060,7 +17110,7 @@
         ]
       }
     },
-    "/namespaces/{namespaceId}/agents/device-authorizations/{secretId}": {
+    "/namespaces/{namespaceId}/agents/device-authorizations/{sessionId}": {
       "delete": {
         "description": "Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the requested Secret.",
         "operationId": "cancelAgentDeviceAuthorization",
@@ -17084,15 +17134,23 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "sec_123e4567-e89b-42d3-a456-426614174000"
+                "value": "cda_2ef976da-2aa8-42e6-bd50-b2d1be6bbb21"
               }
             },
             "in": "path",
-            "name": "secretId",
+            "name": "sessionId",
             "required": true,
             "schema": {
-              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-              "type": "string"
+              "anyOf": [
+                {
+                  "pattern": "^cda_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                {
+                  "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                }
+              ]
             }
           }
         ],
@@ -17181,7 +17239,7 @@
         ]
       }
     },
-    "/namespaces/{namespaceId}/agents/device-authorizations/{secretId}/poll": {
+    "/namespaces/{namespaceId}/agents/device-authorizations/{sessionId}/poll": {
       "post": {
         "description": "Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the requested Secret.",
         "operationId": "pollAgentDeviceAuthorization",
@@ -17205,15 +17263,23 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "sec_123e4567-e89b-42d3-a456-426614174000"
+                "value": "cda_2ef976da-2aa8-42e6-bd50-b2d1be6bbb21"
               }
             },
             "in": "path",
-            "name": "secretId",
+            "name": "sessionId",
             "required": true,
             "schema": {
-              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-              "type": "string"
+              "anyOf": [
+                {
+                  "pattern": "^cda_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                {
+                  "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                }
+              ]
             }
           }
         ],
@@ -17237,11 +17303,7 @@
                       "data": {
                         "expiresAt": "2026-10-01T12:15:00.000Z",
                         "intervalSeconds": 5,
-                        "session": {
-                          "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-                          "kind": "secret",
-                          "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-                        },
+                        "sessionId": "cda_2ef976da-2aa8-42e6-bd50-b2d1be6bbb21",
                         "status": "pending",
                         "userCode": "ABCD-EFGH",
                         "verificationUrl": "https://auth.example.com/device"
@@ -17254,66 +17316,119 @@
                   "additionalProperties": false,
                   "properties": {
                     "data": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "expiresAt": {
-                          "format": "date-time",
-                          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
-                          "type": "string"
-                        },
-                        "intervalSeconds": { "minimum": 1, "type": "integer" },
-                        "session": {
+                      "anyOf": [
+                        {
                           "additionalProperties": false,
-                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
                           "properties": {
-                            "id": {
-                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "expiresAt": {
+                              "format": "date-time",
+                              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
                               "type": "string"
                             },
-                            "kind": { "const": "secret", "type": "string" },
-                            "namespaceId": {
-                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                              "type": "string"
-                            }
-                          },
-                          "required": ["kind", "namespaceId", "id"],
-                          "type": "object"
-                        },
-                        "source": {
-                          "additionalProperties": false,
-                          "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
-                          "properties": {
-                            "id": {
-                              "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "intervalSeconds": { "minimum": 1, "type": "integer" },
+                            "sessionId": {
+                              "pattern": "^cda_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
-                            "kind": { "const": "credential_source", "type": "string" },
-                            "namespaceId": {
-                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                              "type": "string"
-                            }
+                            "source": {
+                              "additionalProperties": false,
+                              "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                              "properties": {
+                                "id": {
+                                  "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "kind": { "const": "credential_source", "type": "string" },
+                                "namespaceId": {
+                                  "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["kind", "namespaceId", "id"],
+                              "type": "object"
+                            },
+                            "status": {
+                              "anyOf": [
+                                { "const": "pending", "type": "string" },
+                                { "const": "ready", "type": "string" }
+                              ]
+                            },
+                            "userCode": { "type": "string" },
+                            "verificationUrl": { "format": "uri", "type": "string" }
                           },
-                          "required": ["kind", "namespaceId", "id"],
+                          "required": [
+                            "sessionId",
+                            "status",
+                            "verificationUrl",
+                            "userCode",
+                            "expiresAt",
+                            "intervalSeconds"
+                          ],
                           "type": "object"
                         },
-                        "status": {
-                          "anyOf": [
-                            { "const": "pending", "type": "string" },
-                            { "const": "ready", "type": "string" }
-                          ]
-                        },
-                        "userCode": { "type": "string" },
-                        "verificationUrl": { "format": "uri", "type": "string" }
-                      },
-                      "required": [
-                        "session",
-                        "status",
-                        "verificationUrl",
-                        "userCode",
-                        "expiresAt",
-                        "intervalSeconds"
-                      ],
-                      "type": "object"
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "expiresAt": {
+                              "format": "date-time",
+                              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                              "type": "string"
+                            },
+                            "intervalSeconds": { "minimum": 1, "type": "integer" },
+                            "session": {
+                              "additionalProperties": false,
+                              "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                              "properties": {
+                                "id": {
+                                  "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "kind": { "const": "secret", "type": "string" },
+                                "namespaceId": {
+                                  "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["kind", "namespaceId", "id"],
+                              "type": "object"
+                            },
+                            "source": {
+                              "additionalProperties": false,
+                              "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                              "properties": {
+                                "id": {
+                                  "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "kind": { "const": "credential_source", "type": "string" },
+                                "namespaceId": {
+                                  "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["kind", "namespaceId", "id"],
+                              "type": "object"
+                            },
+                            "status": {
+                              "anyOf": [
+                                { "const": "pending", "type": "string" },
+                                { "const": "ready", "type": "string" }
+                              ]
+                            },
+                            "userCode": { "type": "string" },
+                            "verificationUrl": { "format": "uri", "type": "string" }
+                          },
+                          "required": [
+                            "session",
+                            "status",
+                            "verificationUrl",
+                            "userCode",
+                            "expiresAt",
+                            "intervalSeconds"
+                          ],
+                          "type": "object"
+                        }
+                      ]
                     },
                     "meta": {
                       "additionalProperties": false,
@@ -26214,11 +26329,7 @@
                       "data": {
                         "expiresAt": "2026-10-01T12:15:00.000Z",
                         "intervalSeconds": 5,
-                        "session": {
-                          "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-                          "kind": "secret",
-                          "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-                        },
+                        "sessionId": "cda_2ef976da-2aa8-42e6-bd50-b2d1be6bbb21",
                         "status": "pending",
                         "userCode": "ABCD-EFGH",
                         "verificationUrl": "https://auth.example.com/device"
@@ -26231,66 +26342,119 @@
                   "additionalProperties": false,
                   "properties": {
                     "data": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "expiresAt": {
-                          "format": "date-time",
-                          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
-                          "type": "string"
-                        },
-                        "intervalSeconds": { "minimum": 1, "type": "integer" },
-                        "session": {
+                      "anyOf": [
+                        {
                           "additionalProperties": false,
-                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
                           "properties": {
-                            "id": {
-                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "expiresAt": {
+                              "format": "date-time",
+                              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
                               "type": "string"
                             },
-                            "kind": { "const": "secret", "type": "string" },
-                            "namespaceId": {
-                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                              "type": "string"
-                            }
-                          },
-                          "required": ["kind", "namespaceId", "id"],
-                          "type": "object"
-                        },
-                        "source": {
-                          "additionalProperties": false,
-                          "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
-                          "properties": {
-                            "id": {
-                              "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "intervalSeconds": { "minimum": 1, "type": "integer" },
+                            "sessionId": {
+                              "pattern": "^cda_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
-                            "kind": { "const": "credential_source", "type": "string" },
-                            "namespaceId": {
-                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                              "type": "string"
-                            }
+                            "source": {
+                              "additionalProperties": false,
+                              "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                              "properties": {
+                                "id": {
+                                  "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "kind": { "const": "credential_source", "type": "string" },
+                                "namespaceId": {
+                                  "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["kind", "namespaceId", "id"],
+                              "type": "object"
+                            },
+                            "status": {
+                              "anyOf": [
+                                { "const": "pending", "type": "string" },
+                                { "const": "ready", "type": "string" }
+                              ]
+                            },
+                            "userCode": { "type": "string" },
+                            "verificationUrl": { "format": "uri", "type": "string" }
                           },
-                          "required": ["kind", "namespaceId", "id"],
+                          "required": [
+                            "sessionId",
+                            "status",
+                            "verificationUrl",
+                            "userCode",
+                            "expiresAt",
+                            "intervalSeconds"
+                          ],
                           "type": "object"
                         },
-                        "status": {
-                          "anyOf": [
-                            { "const": "pending", "type": "string" },
-                            { "const": "ready", "type": "string" }
-                          ]
-                        },
-                        "userCode": { "type": "string" },
-                        "verificationUrl": { "format": "uri", "type": "string" }
-                      },
-                      "required": [
-                        "session",
-                        "status",
-                        "verificationUrl",
-                        "userCode",
-                        "expiresAt",
-                        "intervalSeconds"
-                      ],
-                      "type": "object"
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "expiresAt": {
+                              "format": "date-time",
+                              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                              "type": "string"
+                            },
+                            "intervalSeconds": { "minimum": 1, "type": "integer" },
+                            "session": {
+                              "additionalProperties": false,
+                              "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                              "properties": {
+                                "id": {
+                                  "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "kind": { "const": "secret", "type": "string" },
+                                "namespaceId": {
+                                  "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["kind", "namespaceId", "id"],
+                              "type": "object"
+                            },
+                            "source": {
+                              "additionalProperties": false,
+                              "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                              "properties": {
+                                "id": {
+                                  "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "kind": { "const": "credential_source", "type": "string" },
+                                "namespaceId": {
+                                  "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["kind", "namespaceId", "id"],
+                              "type": "object"
+                            },
+                            "status": {
+                              "anyOf": [
+                                { "const": "pending", "type": "string" },
+                                { "const": "ready", "type": "string" }
+                              ]
+                            },
+                            "userCode": { "type": "string" },
+                            "verificationUrl": { "format": "uri", "type": "string" }
+                          },
+                          "required": [
+                            "session",
+                            "status",
+                            "verificationUrl",
+                            "userCode",
+                            "expiresAt",
+                            "intervalSeconds"
+                          ],
+                          "type": "object"
+                        }
+                      ]
                     },
                     "meta": {
                       "additionalProperties": false,
@@ -26415,7 +26579,7 @@
         ]
       }
     },
-    "/namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{secretId}": {
+    "/namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{sessionId}": {
       "delete": {
         "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires operate permission on the requested Secret.",
         "operationId": "cancelSavedAgentDeviceAuthorization",
@@ -26454,15 +26618,23 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "sec_123e4567-e89b-42d3-a456-426614174000"
+                "value": "cda_2ef976da-2aa8-42e6-bd50-b2d1be6bbb21"
               }
             },
             "in": "path",
-            "name": "secretId",
+            "name": "sessionId",
             "required": true,
             "schema": {
-              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-              "type": "string"
+              "anyOf": [
+                {
+                  "pattern": "^cda_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                {
+                  "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                }
+              ]
             }
           }
         ],
@@ -26552,7 +26724,7 @@
         ]
       }
     },
-    "/namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{secretId}/poll": {
+    "/namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{sessionId}/poll": {
       "post": {
         "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires operate permission on the requested Secret.",
         "operationId": "pollSavedAgentDeviceAuthorization",
@@ -26591,15 +26763,23 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
-                "value": "sec_123e4567-e89b-42d3-a456-426614174000"
+                "value": "cda_2ef976da-2aa8-42e6-bd50-b2d1be6bbb21"
               }
             },
             "in": "path",
-            "name": "secretId",
+            "name": "sessionId",
             "required": true,
             "schema": {
-              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-              "type": "string"
+              "anyOf": [
+                {
+                  "pattern": "^cda_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                },
+                {
+                  "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string"
+                }
+              ]
             }
           }
         ],
@@ -26623,11 +26803,7 @@
                       "data": {
                         "expiresAt": "2026-10-01T12:15:00.000Z",
                         "intervalSeconds": 5,
-                        "session": {
-                          "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-                          "kind": "secret",
-                          "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-                        },
+                        "sessionId": "cda_2ef976da-2aa8-42e6-bd50-b2d1be6bbb21",
                         "status": "pending",
                         "userCode": "ABCD-EFGH",
                         "verificationUrl": "https://auth.example.com/device"
@@ -26640,66 +26816,119 @@
                   "additionalProperties": false,
                   "properties": {
                     "data": {
-                      "additionalProperties": false,
-                      "properties": {
-                        "expiresAt": {
-                          "format": "date-time",
-                          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
-                          "type": "string"
-                        },
-                        "intervalSeconds": { "minimum": 1, "type": "integer" },
-                        "session": {
+                      "anyOf": [
+                        {
                           "additionalProperties": false,
-                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
                           "properties": {
-                            "id": {
-                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "expiresAt": {
+                              "format": "date-time",
+                              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
                               "type": "string"
                             },
-                            "kind": { "const": "secret", "type": "string" },
-                            "namespaceId": {
-                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                              "type": "string"
-                            }
-                          },
-                          "required": ["kind", "namespaceId", "id"],
-                          "type": "object"
-                        },
-                        "source": {
-                          "additionalProperties": false,
-                          "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
-                          "properties": {
-                            "id": {
-                              "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "intervalSeconds": { "minimum": 1, "type": "integer" },
+                            "sessionId": {
+                              "pattern": "^cda_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
-                            "kind": { "const": "credential_source", "type": "string" },
-                            "namespaceId": {
-                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                              "type": "string"
-                            }
+                            "source": {
+                              "additionalProperties": false,
+                              "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                              "properties": {
+                                "id": {
+                                  "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "kind": { "const": "credential_source", "type": "string" },
+                                "namespaceId": {
+                                  "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["kind", "namespaceId", "id"],
+                              "type": "object"
+                            },
+                            "status": {
+                              "anyOf": [
+                                { "const": "pending", "type": "string" },
+                                { "const": "ready", "type": "string" }
+                              ]
+                            },
+                            "userCode": { "type": "string" },
+                            "verificationUrl": { "format": "uri", "type": "string" }
                           },
-                          "required": ["kind", "namespaceId", "id"],
+                          "required": [
+                            "sessionId",
+                            "status",
+                            "verificationUrl",
+                            "userCode",
+                            "expiresAt",
+                            "intervalSeconds"
+                          ],
                           "type": "object"
                         },
-                        "status": {
-                          "anyOf": [
-                            { "const": "pending", "type": "string" },
-                            { "const": "ready", "type": "string" }
-                          ]
-                        },
-                        "userCode": { "type": "string" },
-                        "verificationUrl": { "format": "uri", "type": "string" }
-                      },
-                      "required": [
-                        "session",
-                        "status",
-                        "verificationUrl",
-                        "userCode",
-                        "expiresAt",
-                        "intervalSeconds"
-                      ],
-                      "type": "object"
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "expiresAt": {
+                              "format": "date-time",
+                              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                              "type": "string"
+                            },
+                            "intervalSeconds": { "minimum": 1, "type": "integer" },
+                            "session": {
+                              "additionalProperties": false,
+                              "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                              "properties": {
+                                "id": {
+                                  "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "kind": { "const": "secret", "type": "string" },
+                                "namespaceId": {
+                                  "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["kind", "namespaceId", "id"],
+                              "type": "object"
+                            },
+                            "source": {
+                              "additionalProperties": false,
+                              "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                              "properties": {
+                                "id": {
+                                  "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "kind": { "const": "credential_source", "type": "string" },
+                                "namespaceId": {
+                                  "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["kind", "namespaceId", "id"],
+                              "type": "object"
+                            },
+                            "status": {
+                              "anyOf": [
+                                { "const": "pending", "type": "string" },
+                                { "const": "ready", "type": "string" }
+                              ]
+                            },
+                            "userCode": { "type": "string" },
+                            "verificationUrl": { "format": "uri", "type": "string" }
+                          },
+                          "required": [
+                            "session",
+                            "status",
+                            "verificationUrl",
+                            "userCode",
+                            "expiresAt",
+                            "intervalSeconds"
+                          ],
+                          "type": "object"
+                        }
+                      ]
                     },
                     "meta": {
                       "additionalProperties": false,
@@ -35880,6 +36109,18 @@
             "examples": {
               "example": {
                 "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "codex-harness"
+              }
+            },
+            "in": "query",
+            "name": "purpose",
+            "required": false,
+            "schema": { "const": "codex-harness", "type": "string" }
+          },
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
                 "value": "ns_123e4567-e89b-42d3-a456-426614174000"
               }
             },
@@ -35937,6 +36178,7 @@
                       "items": {
                         "additionalProperties": false,
                         "properties": {
+                          "accountLabel": { "type": "string" },
                           "clientId": { "type": "string" },
                           "connectionTemplateId": {
                             "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -36070,7 +36312,7 @@
             "description": "A required dependency is unavailable."
           }
         },
-        "summary": "List completed connections the caller can read in this Namespace",
+        "summary": "List completed connections, optionally limited to usable Codex Harness accounts",
         "tags": ["Connections"],
         "x-openclaw-permissions": [
           { "action": "read", "resourceKind": "namespace", "scope": "requested" },
@@ -36282,6 +36524,713 @@
         "tags": ["Connections"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "credential_source", "scope": "namespace" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/connections/device-authorizations": {
+      "post": {
+        "description": "Requires create permission for Agent resources in the requested Namespace. Requires create permission for Secret resources in the requested Namespace.",
+        "operationId": "startNamespaceDeviceAuthorization",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "ns_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": { "example": { "summary": "Example request", "value": {} } },
+              "schema": { "additionalProperties": false, "properties": {}, "type": "object" }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "expiresAt": "2026-10-01T12:15:00.000Z",
+                        "intervalSeconds": 5,
+                        "sessionId": "cda_2ef976da-2aa8-42e6-bd50-b2d1be6bbb21",
+                        "status": "pending",
+                        "userCode": "ABCD-EFGH",
+                        "verificationUrl": "https://auth.example.com/device"
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "expiresAt": {
+                              "format": "date-time",
+                              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                              "type": "string"
+                            },
+                            "intervalSeconds": { "minimum": 1, "type": "integer" },
+                            "sessionId": {
+                              "pattern": "^cda_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "source": {
+                              "additionalProperties": false,
+                              "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                              "properties": {
+                                "id": {
+                                  "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "kind": { "const": "credential_source", "type": "string" },
+                                "namespaceId": {
+                                  "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["kind", "namespaceId", "id"],
+                              "type": "object"
+                            },
+                            "status": {
+                              "anyOf": [
+                                { "const": "pending", "type": "string" },
+                                { "const": "ready", "type": "string" }
+                              ]
+                            },
+                            "userCode": { "type": "string" },
+                            "verificationUrl": { "format": "uri", "type": "string" }
+                          },
+                          "required": [
+                            "sessionId",
+                            "status",
+                            "verificationUrl",
+                            "userCode",
+                            "expiresAt",
+                            "intervalSeconds"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "expiresAt": {
+                              "format": "date-time",
+                              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                              "type": "string"
+                            },
+                            "intervalSeconds": { "minimum": 1, "type": "integer" },
+                            "session": {
+                              "additionalProperties": false,
+                              "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                              "properties": {
+                                "id": {
+                                  "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "kind": { "const": "secret", "type": "string" },
+                                "namespaceId": {
+                                  "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["kind", "namespaceId", "id"],
+                              "type": "object"
+                            },
+                            "source": {
+                              "additionalProperties": false,
+                              "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                              "properties": {
+                                "id": {
+                                  "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "kind": { "const": "credential_source", "type": "string" },
+                                "namespaceId": {
+                                  "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["kind", "namespaceId", "id"],
+                              "type": "object"
+                            },
+                            "status": {
+                              "anyOf": [
+                                { "const": "pending", "type": "string" },
+                                { "const": "ready", "type": "string" }
+                              ]
+                            },
+                            "userCode": { "type": "string" },
+                            "verificationUrl": { "format": "uri", "type": "string" }
+                          },
+                          "required": [
+                            "session",
+                            "status",
+                            "verificationUrl",
+                            "userCode",
+                            "expiresAt",
+                            "intervalSeconds"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested operation conflicts with the current resource state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request body exceeds the permitted size."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request content type is not supported."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "501": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_IMPLEMENTED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The selected Driver does not support this operation."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "Start ChatGPT device sign-in for a saved Codex account",
+        "tags": ["Connections"],
+        "x-openclaw-permissions": [
+          { "action": "create", "resourceKind": "agent", "scope": "namespace" },
+          { "action": "create", "resourceKind": "secret", "scope": "namespace" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/connections/device-authorizations/{sessionId}": {
+      "delete": {
+        "description": "Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the requested Secret.",
+        "operationId": "cancelNamespaceDeviceAuthorization",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "ns_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "cda_2ef976da-2aa8-42e6-bd50-b2d1be6bbb21"
+              }
+            },
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "pattern": "^cda_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": { "description": "No Content" },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested operation conflicts with the current resource state."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "Cancel an unfinished ChatGPT device sign-in",
+        "tags": ["Connections"],
+        "x-openclaw-permissions": [
+          { "action": "create", "resourceKind": "agent", "scope": "namespace" },
+          { "action": "operate", "resourceKind": "secret", "scope": "requested" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/connections/device-authorizations/{sessionId}/poll": {
+      "post": {
+        "description": "Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the requested Secret.",
+        "operationId": "pollNamespaceDeviceAuthorization",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "ns_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "cda_2ef976da-2aa8-42e6-bd50-b2d1be6bbb21"
+              }
+            },
+            "in": "path",
+            "name": "sessionId",
+            "required": true,
+            "schema": {
+              "pattern": "^cda_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": { "example": { "summary": "Example request", "value": {} } },
+              "schema": { "additionalProperties": false, "properties": {}, "type": "object" }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "expiresAt": "2026-10-01T12:15:00.000Z",
+                        "intervalSeconds": 5,
+                        "sessionId": "cda_2ef976da-2aa8-42e6-bd50-b2d1be6bbb21",
+                        "status": "pending",
+                        "userCode": "ABCD-EFGH",
+                        "verificationUrl": "https://auth.example.com/device"
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "expiresAt": {
+                              "format": "date-time",
+                              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                              "type": "string"
+                            },
+                            "intervalSeconds": { "minimum": 1, "type": "integer" },
+                            "sessionId": {
+                              "pattern": "^cda_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "source": {
+                              "additionalProperties": false,
+                              "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                              "properties": {
+                                "id": {
+                                  "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "kind": { "const": "credential_source", "type": "string" },
+                                "namespaceId": {
+                                  "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["kind", "namespaceId", "id"],
+                              "type": "object"
+                            },
+                            "status": {
+                              "anyOf": [
+                                { "const": "pending", "type": "string" },
+                                { "const": "ready", "type": "string" }
+                              ]
+                            },
+                            "userCode": { "type": "string" },
+                            "verificationUrl": { "format": "uri", "type": "string" }
+                          },
+                          "required": [
+                            "sessionId",
+                            "status",
+                            "verificationUrl",
+                            "userCode",
+                            "expiresAt",
+                            "intervalSeconds"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "expiresAt": {
+                              "format": "date-time",
+                              "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                              "type": "string"
+                            },
+                            "intervalSeconds": { "minimum": 1, "type": "integer" },
+                            "session": {
+                              "additionalProperties": false,
+                              "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                              "properties": {
+                                "id": {
+                                  "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "kind": { "const": "secret", "type": "string" },
+                                "namespaceId": {
+                                  "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["kind", "namespaceId", "id"],
+                              "type": "object"
+                            },
+                            "source": {
+                              "additionalProperties": false,
+                              "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                              "properties": {
+                                "id": {
+                                  "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "kind": { "const": "credential_source", "type": "string" },
+                                "namespaceId": {
+                                  "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["kind", "namespaceId", "id"],
+                              "type": "object"
+                            },
+                            "status": {
+                              "anyOf": [
+                                { "const": "pending", "type": "string" },
+                                { "const": "ready", "type": "string" }
+                              ]
+                            },
+                            "userCode": { "type": "string" },
+                            "verificationUrl": { "format": "uri", "type": "string" }
+                          },
+                          "required": [
+                            "session",
+                            "status",
+                            "verificationUrl",
+                            "userCode",
+                            "expiresAt",
+                            "intervalSeconds"
+                          ],
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested operation conflicts with the current resource state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request body exceeds the permitted size."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request content type is not supported."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "501": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_IMPLEMENTED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The selected Driver does not support this operation."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "Check a ChatGPT device sign-in and save the approved account",
+        "tags": ["Connections"],
+        "x-openclaw-permissions": [
+          { "action": "create", "resourceKind": "agent", "scope": "namespace" },
+          { "action": "operate", "resourceKind": "secret", "scope": "requested" }
         ]
       }
     },
@@ -43858,6 +44807,7 @@
                       "items": {
                         "additionalProperties": false,
                         "properties": {
+                          "builtIn": { "const": true, "type": "boolean" },
                           "clientId": { "maxLength": 256, "minLength": 1, "type": "string" },
                           "createdAt": { "type": "string" },
                           "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
@@ -44071,6 +45021,7 @@
                     "data": {
                       "additionalProperties": false,
                       "properties": {
+                        "builtIn": { "const": true, "type": "boolean" },
                         "clientId": { "maxLength": 256, "minLength": 1, "type": "string" },
                         "createdAt": { "type": "string" },
                         "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
@@ -44399,6 +45350,7 @@
                     "data": {
                       "additionalProperties": false,
                       "properties": {
+                        "builtIn": { "const": true, "type": "boolean" },
                         "clientId": { "maxLength": 256, "minLength": 1, "type": "string" },
                         "createdAt": { "type": "string" },
                         "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },

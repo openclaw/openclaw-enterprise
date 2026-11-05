@@ -60,3 +60,21 @@ export function deviceAuthorizationSession(value: string): DeviceAuthorizationSe
   }
   return record as unknown as DeviceAuthorizationSession;
 }
+
+/** A device consent attempt held only by the control plane. The public ID is a lookup handle. */
+export interface SavedDeviceSession {
+  readonly id: string;
+  readonly namespaceId: string;
+  readonly credentialSourceId: string;
+  readonly actorId: string;
+  readonly browserSessionId: string;
+  /** Distinguish Namespace enrollment, Create Agent, and one exact saved Agent. */
+  readonly origin: string;
+  readonly connectionTemplateId: string;
+  readonly connectionTemplateVersion: number;
+  readonly authorization: DeviceAuthorizationSession["authorization"];
+  readonly expiresAt: string;
+  readonly nextPollAt: string;
+  readonly phase: "pending" | "polling" | "ready" | "cancelled";
+  readonly privateState: string | null;
+}

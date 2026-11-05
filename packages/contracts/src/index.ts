@@ -641,11 +641,12 @@ export function revisionCredentialSource(
     return credentialSourceMatchesSnapshot(source, snapshot) ? source : undefined;
   }
   const delivery = snapshot?.accountDelivery;
+  const savedType = snapshot?.sourceType === "codex-oauth" ? "codex-oauth" : "oauth2-refresh-token";
   if (
     !delivery ||
     source.id !== snapshot.sourceId ||
     source.driverId !== delivery.refreshDriverId ||
-    source.type !== "oauth2-refresh-token"
+    source.type !== savedType
   ) {
     return undefined;
   }
@@ -1618,3 +1619,11 @@ export type {
   RepositoryGitOnlineDecision,
   RepositoryGitSendPermit,
 } from "./protected-repository-git.ts";
+
+export {
+  builtInCodexConnection,
+  codexDeviceAuthorization,
+  CODEX_HARNESS_TEMPLATE_ID,
+  CODEX_HARNESS_OAUTH_CLIENT_ID,
+  CODEX_PUBLIC_CLIENT_ID,
+} from "./codex-connection.ts";

@@ -1,5 +1,5 @@
 import type { CredentialSourceContext } from "../credential-gateway/index.ts";
-import type { OAuthConnectionGrant } from "../../prepared-token.ts";
+import type { OAuthConnectionGrant, OAuthConnectionRegistration } from "../../prepared-token.ts";
 import type { Driver } from "../index.ts";
 
 export interface CredentialRefreshInput {
@@ -26,6 +26,22 @@ export interface CredentialRefreshStatus {
  */
 export interface CredentialRefreshDriver extends Driver {
   readonly capability: "credential_refresh";
+  /** A device flow that saves a personal account under a built-in template and Token Service custody. */
+  readonly deviceConnection?: {
+    readonly harnessId: string;
+    readonly sourceType: string;
+    readonly templateId: string;
+    start(
+      context: CredentialSourceContext,
+      registration: OAuthConnectionRegistration,
+    ): Promise<CredentialSourceDeviceAuthorization>;
+    poll(
+      context: CredentialSourceContext,
+      privateState: string,
+      registration: OAuthConnectionRegistration,
+      acceptGrant: (grant: OAuthConnectionGrant) => Promise<void>,
+    ): Promise<CredentialSourceDeviceAuthorizationResult>;
+  };
   /** Owns the private device exchange; OCC retains only an opaque login handle. */
   startDeviceAuthorization?(
     context: CredentialSourceContext,

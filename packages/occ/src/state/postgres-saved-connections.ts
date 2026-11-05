@@ -1,3 +1,4 @@
+import type { SavedDeviceSession } from "../device-authorization.ts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
 import type { SavedConnection, Secret, ConnectionSession } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError } from "../errors.ts";
@@ -37,6 +38,9 @@ function connectionFromRow(row: Row): Readonly<SavedConnection> {
     issuer: text(row, "issuer"),
     destinations: row.destinations as SavedConnection["destinations"],
     ...(row.resource == null ? {} : { resource: text(row, "resource") }),
+    ...(row.codex_account == null
+      ? {}
+      : { codexAccount: row.codex_account as NonNullable<SavedConnection["codexAccount"]> }),
     requestedScopes: row.requested_scopes as string[],
     grantedScopes: row.granted_scopes as string[],
     ...(row.revocation_requested_by === null
@@ -47,6 +51,24 @@ function connectionFromRow(row: Row): Readonly<SavedConnection> {
     connectionTemplateVersion: integer(row, "connection_template_version"),
     createdAt: timestamp(row, "created_at"),
   });
+}
+
+function deviceSessionFromRow(row: Row): SavedDeviceSession {
+  return {
+    id: text(row, "id"),
+    namespaceId: text(row, "namespace_id"),
+    credentialSourceId: text(row, "credential_source_id"),
+    actorId: text(row, "actor_id"),
+    browserSessionId: text(row, "browser_session_id"),
+    origin: text(row, "origin"),
+    connectionTemplateId: text(row, "connection_template_id"),
+    connectionTemplateVersion: integer(row, "connection_template_version"),
+    authorization: row.device_authorization as SavedDeviceSession["authorization"],
+    expiresAt: timestamp(row, "expires_at"),
+    nextPollAt: timestamp(row, "next_poll_at"),
+    phase: text(row, "phase") as SavedDeviceSession["phase"],
+    privateState: row.private_state === null ? null : text(row, "private_state"),
+  };
 }
 
 function sessionFromRow(row: Row): Readonly<ConnectionSession> {
@@ -243,8 +265,8 @@ export function postgresSavedConnections(
         `INSERT INTO occ.saved_connections
          (namespace_id, credential_source_id, owner_principal_id,
           connection_template_id, connection_template_version, created_at,
-          oauth_client_id,client_id,issuer,destinations,resource,requested_scopes,granted_scopes,token_url,mcp_server_url)
-         VALUES ($1, $2, $3, $4, $5, $6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,$15)`,
+          oauth_client_id,client_id,issuer,destinations,resource,requested_scopes,granted_scopes,token_url,mcp_server_url,codex_account)
+         VALUES ($1, $2, $3, $4, $5, $6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,$15,$16::jsonb)`,
         [
           connection.namespaceId,
           connection.credentialSourceId,
@@ -261,6 +283,7 @@ export function postgresSavedConnections(
           connection.grantedScopes,
           connection.tokenUrl,
           connection.mcpServerUrl ?? null,
+          connection.codexAccount ? JSON.stringify(connection.codexAccount) : null,
         ],
       );
       return immutableCopy(connection);
@@ -271,6 +294,52 @@ export function postgresSavedConnections(
         [namespaceId, credentialSourceId],
       );
       return deleted.rowCount === 1;
+    },
+    createDeviceSession: async (session) => {
+      await client.query(
+        `INSERT INTO occ.saved_device_sessions
+           (id,namespace_id,credential_source_id,actor_id,browser_session_id,origin,connection_template_id,
+            connection_template_version,device_authorization,expires_at,next_poll_at,phase,private_state)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13)`,
+        [
+          session.id,
+          session.namespaceId,
+          session.credentialSourceId,
+          session.actorId,
+          session.browserSessionId,
+          session.origin,
+          session.connectionTemplateId,
+          session.connectionTemplateVersion,
+          JSON.stringify(session.authorization),
+          session.expiresAt,
+          session.nextPollAt,
+          session.phase,
+          session.privateState,
+        ],
+      );
+    },
+    lockDeviceSession: async (id) => {
+      const { rows } = await client.query(
+        "SELECT * FROM occ.saved_device_sessions WHERE id=$1 FOR UPDATE",
+        [id],
+      );
+      return rows[0] === undefined ? undefined : deviceSessionFromRow(rows[0] as Row);
+    },
+    updateDeviceSession: async (id, phase, privateState, nextPollAt, expiresAt) => {
+      await client.query(
+        "UPDATE occ.saved_device_sessions SET phase=$2,private_state=$3,next_poll_at=$4,expires_at=$5 WHERE id=$1",
+        [id, phase, privateState, nextPollAt, expiresAt],
+      );
+    },
+    deleteDeviceSession: async (id) => {
+      await client.query("DELETE FROM occ.saved_device_sessions WHERE id=$1", [id]);
+    },
+    expiredDeviceSessions: async (at, limit) => {
+      const { rows } = await client.query(
+        "SELECT * FROM occ.saved_device_sessions WHERE expires_at <= $1 ORDER BY expires_at,id LIMIT $2 FOR UPDATE SKIP LOCKED",
+        [at, limit],
+      );
+      return rows.map((row) => deviceSessionFromRow(row as Row));
     },
     createConnectionSession: async (session) => {
       await requireInitialized();

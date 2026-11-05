@@ -1,6 +1,6 @@
 ---
 status: Proposed
-implementation_status: Not implemented
+implementation_status: Partially implemented
 author: stevenlee-oai
 ---
 
@@ -8,6 +8,7 @@ author: stevenlee-oai
 
 - **ID:** RFC-0030
 - **Created:** 2026-11-05
+- **RFC and implementation PR:** [#4794](https://github.com/openclaw/openclaw-enterprise/pull/4794)
 - **Implementation plan:** [TASK-0051](../plans/0051-codex-saved-accounts.md)
 
 ## Decision for review

@@ -74,6 +74,7 @@ type CreateAgentScenario = {
   noDefaultPreset?: true;
   oauthExpired?: true;
   oauthPending?: true;
+  savedCodexAccount?: true;
   observabilityDenied?: true;
   provisionedDeploymentStopped?: true;
   provisioningCancelledByStop?: true;
@@ -2329,6 +2330,18 @@ export const createAgentProvisioningScenarios = {
     ],
     description:
       "Service Accounts authentication is available with the Codex harness and uses the same fixed OpenAI model list. Switching to OpenClaw selects API-key authentication and clears the credential and model selection.",
+  },
+  createWithSavedCodexAccount: {
+    group: "Pages/Create Agent",
+    name: "Use a saved ChatGPT account",
+    path: create,
+    credentialSourceTypes: deviceLoginSourceTypes,
+    savedCodexAccount: true,
+    actions: [
+      ...oauthForm,
+      { selector: "#saved-codex-account", value: "cs_00000000-0000-4000-8000-000000000080" },
+    ],
+    description: "The Agent can use the selected account without starting another device sign-in.",
   },
   createOAuth: {
     group: "Pages/Create Agent",

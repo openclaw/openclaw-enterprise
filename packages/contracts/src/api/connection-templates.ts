@@ -123,6 +123,7 @@ const Observed = Type.Object(
 );
 const publicClient = Type.Object(
   {
+    builtIn: Type.Optional(Type.Literal(true)),
     ...registration,
     namespaceId: Type.Optional(NamespaceId),
     issuer: HttpsUrl,
@@ -154,6 +155,7 @@ export const OAuthConnectionTemplateVersionSchema = Type.Object(
 );
 export const ConnectionTemplateSchema = Type.Object(
   {
+    builtIn: Type.Optional(Type.Literal(true)),
     ...create,
     id: ConnectionTemplateId,
     current: Type.Ref("OAuthConnectionTemplateVersion"),

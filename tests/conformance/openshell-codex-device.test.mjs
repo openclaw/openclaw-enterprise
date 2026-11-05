@@ -1,3 +1,8 @@
+import {
+  CODEX_PUBLIC_CLIENT_ID,
+  codexDeviceAuthorization,
+} from "../../packages/contracts/src/index.ts";
+import { refreshPinnedOAuthGrant } from "../../apps/controller/src/drivers/credential-refresh/oauth-token-endpoint.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
@@ -76,6 +81,33 @@ test("Codex device authorization never follows issuer redirects", async (t) => {
 function jwt(payload) {
   return `${Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url")}.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.synthetic`;
 }
+
+test("native refresh withholds a different user's token for the same ChatGPT workspace", async (t) => {
+  const grant = {
+    tokenUrl: codexDeviceAuthorization.tokenUrl,
+    clientId: CODEX_PUBLIC_CLIENT_ID,
+    tokenEndpointAuthMethod: "none",
+    refreshToken: "test-refresh",
+    grantedScopes: [],
+    codexAccount: { accountId: "shared-workspace", planType: "business", userId: "enrolled-user" },
+  };
+  const identity = { chatgpt_account_id: grant.codexAccount.accountId };
+  t.mock.method(globalThis, "fetch", async () =>
+    Response.json({
+      access_token: jwt({
+        exp: Math.floor(Date.now() / 1000) + 600,
+        "https://api.openai.com/auth": identity,
+      }),
+    }),
+  );
+  // The ID token may be the only place the provider identifies the user. A later
+  // explicit user claim, however, cannot change which seat the connection represents.
+  assert.ok((await refreshPinnedOAuthGrant(grant, t.signal)).accessToken);
+  identity.chatgpt_user_id = "other-user";
+  await assert.rejects(refreshPinnedOAuthGrant(grant, t.signal), {
+    code: "account_identity_changed",
+  });
+});
 
 function fixture(t, { invalidIdToken = false, failRotation = false, pollResponse } = {}) {
   const providers = new Map();

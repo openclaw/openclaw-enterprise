@@ -2003,6 +2003,7 @@ test(
       [68, "preConnectionTemplates"],
       [69, "preSavedConnections"],
       [70, "preConnectionAttachmentIntent"],
+      [71, "preCodexSavedAccounts"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2012,6 +2013,17 @@ test(
           // 0060 requires an execution admission on every revision written after it.
           executionAdmission: prefix >= 62,
         });
+        // An operator can already have registered the same public client ID with a different endpoint.
+        const operatorClientId = `ccr_${randomUUID()}`;
+        if (history === "preCodexSavedAccounts") {
+          await db.app.query(
+            `INSERT INTO occ.oauth_clients (id,display_name,issuer,client_id,token_url,
+              token_endpoint_auth_method,credential_refresh_driver_id,created_at)
+              VALUES ($1,'Operator client','https://auth.openai.com','app_EMoamEEZ73f0CkXaXp7hrann',
+                'https://accounts.example.test/token','none','operator-refresh',now())`,
+            [operatorClientId],
+          );
+        }
         const assertSourceOwners =
           prefix === 59
             ? await retainGatewaySourcesAcrossProxyAdmission(db.app, db.migrator, namespaceId)
@@ -2068,6 +2080,27 @@ test(
           } finally {
             await db.app.query("ROLLBACK");
           }
+        }
+        if (history === "preCodexSavedAccounts") {
+          const registrations = await db.app.query(
+            `SELECT (id = $1) AS operator_owned, token_url, credential_refresh_driver_id
+              FROM occ.oauth_clients WHERE issuer = 'https://auth.openai.com'
+                AND client_id = 'app_EMoamEEZ73f0CkXaXp7hrann'
+              ORDER BY operator_owned DESC`,
+            [operatorClientId],
+          );
+          assert.deepEqual(registrations.rows, [
+            {
+              operator_owned: true,
+              token_url: "https://accounts.example.test/token",
+              credential_refresh_driver_id: "operator-refresh",
+            },
+            {
+              operator_owned: false,
+              token_url: "https://auth.openai.com/oauth/token",
+              credential_refresh_driver_id: null,
+            },
+          ]);
         }
         if (history === "preConnectionAttachmentIntent") {
           // The application records which gateway profile an account created. The account FK

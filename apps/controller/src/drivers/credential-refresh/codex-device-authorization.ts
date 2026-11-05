@@ -1,14 +1,23 @@
 import type {
   CredentialSourceDeviceAuthorization,
+  OAuthConnectionRegistration,
+  CredentialRefreshDriver,
   ExternalChatgptAuth,
+} from "@openclaw-enterprise/contracts";
+import {
+  CODEX_HARNESS_TEMPLATE_ID,
+  CODEX_HARNESS_OAUTH_CLIENT_ID,
+  CODEX_PUBLIC_CLIENT_ID,
+  codexDeviceAuthorization,
+  isOAuthScopeToken,
 } from "@openclaw-enterprise/contracts";
 import { randomUUID } from "node:crypto";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { DeviceAuthorizationStartError } from "@openclaw-enterprise/occ";
 
 export const CODEX_OAUTH_TYPE = "codex-oauth";
-export const CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
-export const CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token";
+export const CODEX_OAUTH_CLIENT_ID = CODEX_PUBLIC_CLIENT_ID;
+export const CODEX_OAUTH_TOKEN_URL = codexDeviceAuthorization.tokenUrl;
 export const CODEX_ACCESS_TOKEN_ENV = "CODEX_ACCESS_TOKEN";
 // Login-time metadata is separate from rotating credentials. The PoC does not
 // update this snapshot on refresh; account/plan changes require reconnecting.
@@ -19,6 +28,9 @@ type AccountMetadata = Omit<ExternalChatgptAuth, "accessTokenPlaceholder"> & {
 };
 
 interface DeviceTokens {
+  readonly accessToken: string;
+  readonly grantedScopes: readonly string[];
+  readonly emailVerified: boolean;
   readonly refreshToken: string;
   readonly account: AccountMetadata;
 }
@@ -82,7 +94,7 @@ export async function startCodexDeviceAuthorization(
 ): Promise<CredentialSourceDeviceAuthorization> {
   let reply: Response;
   try {
-    reply = await fetch("https://auth.openai.com/api/accounts/deviceauth/usercode", {
+    reply = await fetch(codexDeviceAuthorization.userCodeUrl, {
       method: "POST",
       redirect: "error",
       headers: { "Content-Type": "application/json" },
@@ -102,7 +114,7 @@ export async function startCodexDeviceAuthorization(
     const userCode = required(response.user_code);
     const interval = Number(response.interval ?? 5);
     return {
-      verificationUrl: "https://auth.openai.com/codex/device",
+      verificationUrl: codexDeviceAuthorization.verificationUrl,
       userCode,
       expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
       intervalSeconds: Number.isFinite(interval) ? Math.max(1, interval) : 5,
@@ -142,7 +154,7 @@ export async function pollCodexDeviceAuthorization(
   });
   let response: Response;
   try {
-    response = await fetch("https://auth.openai.com/api/accounts/deviceauth/token", {
+    response = await fetch(codexDeviceAuthorization.pollUrl, {
       method: "POST",
       redirect: "error",
       headers: { "Content-Type": "application/json" },
@@ -180,7 +192,7 @@ export async function pollCodexDeviceAuthorization(
         client_id: CODEX_OAUTH_CLIENT_ID,
         code: required(authorization.authorization_code),
         code_verifier: required(authorization.code_verifier),
-        redirect_uri: "https://auth.openai.com/deviceauth/callback",
+        redirect_uri: codexDeviceAuthorization.redirectUri,
       }),
       signal,
     }),
@@ -203,6 +215,9 @@ export async function pollCodexDeviceAuthorization(
     throw new Error("Codex OAuth returned an expired access token or no expiry.");
   }
   return {
+    accessToken,
+    grantedScopes: typeof token.scope === "string" ? token.scope.split(" ").filter(Boolean) : [],
+    emailVerified: identityClaims.email_verified === true,
     refreshToken: required(token.refresh_token),
     account: {
       accountId,
@@ -216,6 +231,27 @@ export async function pollCodexDeviceAuthorization(
   };
 }
 
+/** Read only tokens obtained from the native issuer by the Token Service. */
+export function codexRefreshExpiry(accessToken: string, account: AccountMetadata): string {
+  const access = claims(accessToken);
+  const identity = asRecord(access["https://api.openai.com/auth"]);
+  const userId = identity?.chatgpt_user_id ?? identity?.user_id;
+  const expiry = Number(access.exp) * 1000;
+  if (
+    identity?.chatgpt_account_id !== account.accountId ||
+    (account.userId !== undefined && userId !== undefined && userId !== account.userId) ||
+    (account.accountUserId !== undefined &&
+      identity.chatgpt_account_user_id !== account.accountUserId) ||
+    (identity.chatgpt_plan_type !== undefined && identity.chatgpt_plan_type !== account.planType) ||
+    (identity.chatgpt_account_is_fedramp === true) !== (account.isFedramp === true) ||
+    !Number.isFinite(expiry) ||
+    expiry <= Date.now()
+  ) {
+    throw new Error("The refreshed ChatGPT token does not match the enrolled account.");
+  }
+  return new Date(expiry).toISOString();
+}
+
 export function codexAccountMetadata(config: Readonly<Record<string, string>>): AccountMetadata {
   const value = asRecord(JSON.parse(required(config[CODEX_ACCOUNT_CONFIG])));
   if (!value || !isNonEmptyString(value.accountId) || !isNonEmptyString(value.planType)) {
@@ -223,3 +259,60 @@ export function codexAccountMetadata(config: Readonly<Record<string, string>>): 
   }
   return value as unknown as AccountMetadata;
 }
+
+function requireCodexRegistration(registration: OAuthConnectionRegistration): void {
+  if (
+    registration.issuer !== codexDeviceAuthorization.issuer ||
+    registration.tokenUrl !== CODEX_OAUTH_TOKEN_URL ||
+    registration.oauthClientId !== CODEX_HARNESS_OAUTH_CLIENT_ID ||
+    registration.clientId !== CODEX_PUBLIC_CLIENT_ID ||
+    registration.tokenEndpointAuthMethod !== "none" ||
+    registration.resource !== undefined
+  ) {
+    throw new Error("The connection template does not select the Codex public client.");
+  }
+}
+
+export const codexDeviceConnection: NonNullable<CredentialRefreshDriver["deviceConnection"]> = {
+  harnessId: "codex",
+  sourceType: CODEX_OAUTH_TYPE,
+  templateId: CODEX_HARNESS_TEMPLATE_ID,
+  async start(context, registration) {
+    requireCodexRegistration(registration);
+    return startCodexDeviceAuthorization(context.source.id, context.signal);
+  },
+  async poll(context, privateState, registration, acceptGrant) {
+    requireCodexRegistration(registration);
+    const tokens = await pollCodexDeviceAuthorization(
+      codexDeviceAuthorizationState(context.source.id, privateState),
+      context.signal,
+    );
+    if (!tokens) {
+      return { status: "pending" };
+    }
+    const { email, ...account } = tokens.account;
+    if (
+      !tokens.grantedScopes.every(isOAuthScopeToken) ||
+      Object.values(account).some(
+        (value) => typeof value === "string" && (value.length > 8192 || /\p{Cc}/u.test(value)),
+      )
+    ) {
+      throw new Error("The provider returned invalid account metadata.");
+    }
+    await acceptGrant({
+      ...registration,
+      requestedScopes: [],
+      grantedScopes: tokens.grantedScopes,
+      codexAccount: {
+        ...account,
+        ...(tokens.emailVerified && email && email.length <= 320 && !/\p{Cc}/u.test(email)
+          ? { email }
+          : {}),
+      },
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+      expiresAt: codexRefreshExpiry(tokens.accessToken, account),
+    });
+    return { status: "ready" };
+  },
+};

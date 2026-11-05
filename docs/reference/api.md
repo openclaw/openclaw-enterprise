@@ -83,7 +83,7 @@ the paths.
 | --- | --- |
 | [Authentication](#authentication) | 27 operations |
 | [Backends](#backends) | 1 operation |
-| [Connections](#connections) | 19 operations |
+| [Connections](#connections) | 22 operations |
 | [Installation](#installation) | 5 operations |
 | [Namespaces](#namespaces) | 6 operations |
 | [Agents](#agents) | 50 operations |
@@ -1724,8 +1724,11 @@ Example response
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/connections/{credentialSourceId}`](#post-namespacesnamespaceidagentsagentidconnectionscredentialsourceid) | Attach a completed account and grant this Agent access to its source |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/plugins/{pluginId}/credentials/{slotId}/connection-templates`](#get-namespacesnamespaceidagentsagentidpluginspluginidcredentialsslotidconnectiontemplates) | List compatible OAuth templates for a saved Agent plugin slot |
 | [`GET /namespaces/{namespaceId}/connection-templates`](#get-namespacesnamespaceidconnectiontemplates) | List connection templates the caller may connect in this Namespace |
-| [`GET /namespaces/{namespaceId}/connections`](#get-namespacesnamespaceidconnections) | List completed connections the caller can read in this Namespace |
+| [`GET /namespaces/{namespaceId}/connections`](#get-namespacesnamespaceidconnections) | List completed connections, optionally limited to usable Codex Harness accounts |
 | [`POST /namespaces/{namespaceId}/connections`](#post-namespacesnamespaceidconnections) | Start consent for a reusable account in this Namespace |
+| [`POST /namespaces/{namespaceId}/connections/device-authorizations`](#post-namespacesnamespaceidconnectionsdeviceauthorizations) | Start ChatGPT device sign-in for a saved Codex account |
+| [`DELETE /namespaces/{namespaceId}/connections/device-authorizations/{sessionId}`](#delete-namespacesnamespaceidconnectionsdeviceauthorizationssessionid) | Cancel an unfinished ChatGPT device sign-in |
+| [`POST /namespaces/{namespaceId}/connections/device-authorizations/{sessionId}/poll`](#post-namespacesnamespaceidconnectionsdeviceauthorizationssessionidpoll) | Check a ChatGPT device sign-in and save the approved account |
 | [`DELETE /namespaces/{namespaceId}/connections/{credentialSourceId}`](#delete-namespacesnamespaceidconnectionscredentialsourceid) | Disconnect a saved account and retire its OAuth grant |
 | [`GET /oauth-clients`](#get-oauthclients) | List registered OAuth clients |
 | [`POST /oauth-clients`](#post-oauthclients) | Register an OAuth client from a connection template |
@@ -1764,6 +1767,7 @@ List all Installation-wide and Namespace-scoped connection templates
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `array<OAuth connection template>` | Yes | — |
+| `data[].builtIn` | `true` | No | — |
 | `data[].createdAt` | `string` | Yes | — |
 | `data[].current` | `OAuth connection template version` | Yes | — |
 | `data[].current.authorizationParameters` | `object<string, string>` | Yes | — |
@@ -1917,6 +1921,7 @@ Example request
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `OAuth connection template` | Yes | — |
+| `data.builtIn` | `true` | No | — |
 | `data.createdAt` | `string` | Yes | — |
 | `data.current` | `OAuth connection template version` | Yes | — |
 | `data.current.authorizationParameters` | `object<string, string>` | Yes | — |
@@ -2159,6 +2164,7 @@ Get one connection template
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `OAuth connection template` | Yes | — |
+| `data.builtIn` | `true` | No | — |
 | `data.createdAt` | `string` | Yes | — |
 | `data.current` | `OAuth connection template version` | Yes | — |
 | `data.current.authorizationParameters` | `object<string, string>` | Yes | — |
@@ -2290,6 +2296,7 @@ Example request
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `OAuth connection template` | Yes | — |
+| `data.builtIn` | `true` | No | — |
 | `data.createdAt` | `string` | Yes | — |
 | `data.current` | `OAuth connection template version` | Yes | — |
 | `data.current.authorizationParameters` | `object<string, string>` | Yes | — |
@@ -2669,6 +2676,7 @@ List connection templates the caller may connect in this Namespace
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `array<OAuth connection template>` | Yes | — |
+| `data[].builtIn` | `true` | No | — |
 | `data[].createdAt` | `string` | Yes | — |
 | `data[].current` | `OAuth connection template version` | Yes | — |
 | `data[].current.authorizationParameters` | `object<string, string>` | Yes | — |
@@ -2760,7 +2768,7 @@ Example response
 
 <span id="get-namespacesnamespaceidconnections"></span>
 
-List completed connections the caller can read in this Namespace
+List completed connections, optionally limited to usable Codex Harness accounts
 
 **Operation ID:** `listNamespaceConnections`
 
@@ -2775,6 +2783,7 @@ List completed connections the caller can read in this Namespace
 
 | Name | In | Type | Required | Constraints | Example |
 | --- | --- | --- | --- | --- | --- |
+| `purpose` | query | `"codex-harness"` | No | — | "codex-harness" |
 | `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 
 ##### Responses
@@ -2794,6 +2803,7 @@ List completed connections the caller can read in this Namespace
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `array<object>` | Yes | — |
+| `data[].accountLabel` | `string` | No | — |
 | `data[].clientId` | `string` | Yes | — |
 | `data[].connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].connectionTemplateVersion` | `integer` | Yes | minimum: 1 |
@@ -2940,6 +2950,192 @@ Example response
 }
 ```
 
+#### `POST /namespaces/{namespaceId}/connections/device-authorizations`
+
+<span id="post-namespacesnamespaceidconnectionsdeviceauthorizations"></span>
+
+Start ChatGPT device sign-in for a saved Codex account
+
+**Operation ID:** `startNamespaceDeviceAuthorization`
+
+**Permissions:** Requires create permission for Agent resources in the requested Namespace. Requires create permission for Secret resources in the requested Namespace.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `create` | `agent` | `namespace` |
+| `create` | `secret` | `namespace` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+Schema: `object`.
+
+Example request
+```json
+{}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `501` | The selected Driver does not support this operation. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object or object` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "expiresAt": "2026-10-01T12:15:00.000Z",
+    "intervalSeconds": 5,
+    "sessionId": "cda_2ef976da-2aa8-42e6-bd50-b2d1be6bbb21",
+    "status": "pending",
+    "userCode": "ABCD-EFGH",
+    "verificationUrl": "https://auth.example.com/device"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `DELETE /namespaces/{namespaceId}/connections/device-authorizations/{sessionId}`
+
+<span id="delete-namespacesnamespaceidconnectionsdeviceauthorizationssessionid"></span>
+
+Cancel an unfinished ChatGPT device sign-in
+
+**Operation ID:** `cancelNamespaceDeviceAuthorization`
+
+**Permissions:** Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the requested Secret.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `create` | `agent` | `namespace` |
+| `operate` | `secret` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `sessionId` | path | `string` | Yes | pattern: `^cda_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "cda_2ef976da-2aa8-42e6-bd50-b2d1be6bbb21" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `204` | No Content |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+#### `POST /namespaces/{namespaceId}/connections/device-authorizations/{sessionId}/poll`
+
+<span id="post-namespacesnamespaceidconnectionsdeviceauthorizationssessionidpoll"></span>
+
+Check a ChatGPT device sign-in and save the approved account
+
+**Operation ID:** `pollNamespaceDeviceAuthorization`
+
+**Permissions:** Requires create permission for Agent resources in the requested Namespace. Requires operate permission on the requested Secret.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `create` | `agent` | `namespace` |
+| `operate` | `secret` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `sessionId` | path | `string` | Yes | pattern: `^cda_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "cda_2ef976da-2aa8-42e6-bd50-b2d1be6bbb21" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+Schema: `object`.
+
+Example request
+```json
+{}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `500` | The platform request could not be completed. |
+| `501` | The selected Driver does not support this operation. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object or object` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "expiresAt": "2026-10-01T12:15:00.000Z",
+    "intervalSeconds": 5,
+    "sessionId": "cda_2ef976da-2aa8-42e6-bd50-b2d1be6bbb21",
+    "status": "pending",
+    "userCode": "ABCD-EFGH",
+    "verificationUrl": "https://auth.example.com/device"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
 #### `DELETE /namespaces/{namespaceId}/connections/{credentialSourceId}`
 
 <span id="delete-namespacesnamespaceidconnectionscredentialsourceid"></span>
@@ -3005,6 +3201,7 @@ List registered OAuth clients
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `array<object>` | Yes | — |
+| `data[].builtIn` | `true` | No | — |
 | `data[].clientId` | `string` | Yes | min length: 1; max length: 256 |
 | `data[].createdAt` | `string` | Yes | — |
 | `data[].displayName` | `string` | Yes | min length: 1; max length: 200 |
@@ -3109,6 +3306,7 @@ Example request
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
+| `data.builtIn` | `true` | No | — |
 | `data.clientId` | `string` | Yes | min length: 1; max length: 256 |
 | `data.createdAt` | `string` | Yes | — |
 | `data.displayName` | `string` | Yes | min length: 1; max length: 200 |
@@ -3230,6 +3428,7 @@ Example request
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
+| `data.builtIn` | `true` | No | — |
 | `data.clientId` | `string` | Yes | min length: 1; max length: 256 |
 | `data.createdAt` | `string` | Yes | — |
 | `data.displayName` | `string` | Yes | min length: 1; max length: 200 |
@@ -4125,8 +4324,8 @@ Example response
 | [`GET /namespaces/{namespaceId}/agents`](#get-namespacesnamespaceidagents) | List authorized Agents in one exact Namespace |
 | [`POST /namespaces/{namespaceId}/agents`](#post-namespacesnamespaceidagents) | Create a Namespace-owned Agent |
 | [`POST /namespaces/{namespaceId}/agents/device-authorizations`](#post-namespacesnamespaceidagentsdeviceauthorizations) | Experimental: Start a private device login for Agent configuration |
-| [`DELETE /namespaces/{namespaceId}/agents/device-authorizations/{secretId}`](#delete-namespacesnamespaceidagentsdeviceauthorizationssecretid) | Experimental: Discard a local device login without upstream revocation |
-| [`POST /namespaces/{namespaceId}/agents/device-authorizations/{secretId}/poll`](#post-namespacesnamespaceidagentsdeviceauthorizationssecretidpoll) | Experimental: Complete device login without returning credential material |
+| [`DELETE /namespaces/{namespaceId}/agents/device-authorizations/{sessionId}`](#delete-namespacesnamespaceidagentsdeviceauthorizationssessionid) | Experimental: Discard a local device login without upstream revocation |
+| [`POST /namespaces/{namespaceId}/agents/device-authorizations/{sessionId}/poll`](#post-namespacesnamespaceidagentsdeviceauthorizationssessionidpoll) | Experimental: Complete device login without returning credential material |
 | [`POST /namespaces/{namespaceId}/agents/models`](#post-namespacesnamespaceidagentsmodels) | List provider models for Agent creation without storing the supplied credential |
 | [`POST /namespaces/{namespaceId}/agents/plugins`](#post-namespacesnamespaceidagentsplugins) | List or search available plugins for Agent creation using the selected Driver |
 | [`POST /namespaces/{namespaceId}/agents/plugins/details`](#post-namespacesnamespaceidagentspluginsdetails) | Read plugin details using the selected Driver |
@@ -4144,8 +4343,8 @@ Example response
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/deploy-first`](#post-namespacesnamespaceidagentsagentiddeployfirst) | Admit the first deployment of an exact reviewed Configuration; requires Configuration read |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/deploy-first/{key}/{expectedConfigurationId}/{expectedGeneration}`](#get-namespacesnamespaceidagentsagentiddeployfirstkeyexpectedconfigurationidexpectedgeneration) | Read an exact first-deployment receipt; null does not prove failure; requires Configuration read |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/device-authorizations`](#post-namespacesnamespaceidagentsagentiddeviceauthorizations) | Experimental: Start a private device login for Agent configuration |
-| [`DELETE /namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{secretId}`](#delete-namespacesnamespaceidagentsagentiddeviceauthorizationssecretid) | Experimental: Discard a local device login without upstream revocation |
-| [`POST /namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{secretId}/poll`](#post-namespacesnamespaceidagentsagentiddeviceauthorizationssecretidpoll) | Experimental: Complete device login without returning credential material |
+| [`DELETE /namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{sessionId}`](#delete-namespacesnamespaceidagentsagentiddeviceauthorizationssessionid) | Experimental: Discard a local device login without upstream revocation |
+| [`POST /namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{sessionId}/poll`](#post-namespacesnamespaceidagentsagentiddeviceauthorizationssessionidpoll) | Experimental: Complete device login without returning credential material |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/driver-configurations`](#get-namespacesnamespaceidagentsagentiddriverconfigurations) | Discover authorized Agent Driver configuration contributions |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/harness-status`](#get-namespacesnamespaceidagentsagentidharnessstatus) | Read the Sandbox Driver's record of a running Agent's dedicated Harness Sandbox |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/native-admin`](#get-namespacesnamespaceidagentsagentidnativeadmin) | Resolve native admin UI launch availability for one Agent |
@@ -4475,20 +4674,7 @@ Example request
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `object` | Yes | — |
-| `data.expiresAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
-| `data.intervalSeconds` | `integer` | Yes | minimum: 1 |
-| `data.session` | `object` | Yes | Exact OCC Secret reference. Shape: `{ "kind": "secret", "namespaceId": "ns_...", "id": "sec_..." }`. |
-| `data.session.id` | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.session.kind` | `"secret"` | Yes | — |
-| `data.session.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.source` | `object` | No | Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`. |
-| `data.source.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.source.kind` | `"credential_source"` | Yes | — |
-| `data.source.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.status` | `"pending" or "ready"` | Yes | — |
-| `data.userCode` | `string` | Yes | — |
-| `data.verificationUrl` | `string (uri)` | Yes | — |
+| `data` | `object or object` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -4498,11 +4684,7 @@ Example response
   "data": {
     "expiresAt": "2026-10-01T12:15:00.000Z",
     "intervalSeconds": 5,
-    "session": {
-      "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-      "kind": "secret",
-      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-    },
+    "sessionId": "cda_2ef976da-2aa8-42e6-bd50-b2d1be6bbb21",
     "status": "pending",
     "userCode": "ABCD-EFGH",
     "verificationUrl": "https://auth.example.com/device"
@@ -4513,9 +4695,9 @@ Example response
 }
 ```
 
-#### `DELETE /namespaces/{namespaceId}/agents/device-authorizations/{secretId}`
+#### `DELETE /namespaces/{namespaceId}/agents/device-authorizations/{sessionId}`
 
-<span id="delete-namespacesnamespaceidagentsdeviceauthorizationssecretid"></span>
+<span id="delete-namespacesnamespaceidagentsdeviceauthorizationssessionid"></span>
 
 Experimental: Discard a local device login without upstream revocation
 
@@ -4533,7 +4715,7 @@ Experimental: Discard a local device login without upstream revocation
 | Name | In | Type | Required | Constraints | Example |
 | --- | --- | --- | --- | --- | --- |
 | `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
-| `secretId` | path | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "sec_123e4567-e89b-42d3-a456-426614174000" |
+| `sessionId` | path | `string or string` | Yes | — | "cda_2ef976da-2aa8-42e6-bd50-b2d1be6bbb21" |
 
 ##### Responses
 
@@ -4549,9 +4731,9 @@ Experimental: Discard a local device login without upstream revocation
 | `501` | The selected Driver does not support this operation. |
 | `503` | A required dependency is unavailable. |
 
-#### `POST /namespaces/{namespaceId}/agents/device-authorizations/{secretId}/poll`
+#### `POST /namespaces/{namespaceId}/agents/device-authorizations/{sessionId}/poll`
 
-<span id="post-namespacesnamespaceidagentsdeviceauthorizationssecretidpoll"></span>
+<span id="post-namespacesnamespaceidagentsdeviceauthorizationssessionidpoll"></span>
 
 Experimental: Complete device login without returning credential material
 
@@ -4569,7 +4751,7 @@ Experimental: Complete device login without returning credential material
 | Name | In | Type | Required | Constraints | Example |
 | --- | --- | --- | --- | --- | --- |
 | `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
-| `secretId` | path | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "sec_123e4567-e89b-42d3-a456-426614174000" |
+| `sessionId` | path | `string or string` | Yes | — | "cda_2ef976da-2aa8-42e6-bd50-b2d1be6bbb21" |
 
 ##### Request body
 
@@ -4604,20 +4786,7 @@ Example request
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `object` | Yes | — |
-| `data.expiresAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
-| `data.intervalSeconds` | `integer` | Yes | minimum: 1 |
-| `data.session` | `object` | Yes | Exact OCC Secret reference. Shape: `{ "kind": "secret", "namespaceId": "ns_...", "id": "sec_..." }`. |
-| `data.session.id` | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.session.kind` | `"secret"` | Yes | — |
-| `data.session.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.source` | `object` | No | Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`. |
-| `data.source.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.source.kind` | `"credential_source"` | Yes | — |
-| `data.source.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.status` | `"pending" or "ready"` | Yes | — |
-| `data.userCode` | `string` | Yes | — |
-| `data.verificationUrl` | `string (uri)` | Yes | — |
+| `data` | `object or object` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -4627,11 +4796,7 @@ Example response
   "data": {
     "expiresAt": "2026-10-01T12:15:00.000Z",
     "intervalSeconds": 5,
-    "session": {
-      "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-      "kind": "secret",
-      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-    },
+    "sessionId": "cda_2ef976da-2aa8-42e6-bd50-b2d1be6bbb21",
     "status": "pending",
     "userCode": "ABCD-EFGH",
     "verificationUrl": "https://auth.example.com/device"
@@ -6431,20 +6596,7 @@ Example request
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `object` | Yes | — |
-| `data.expiresAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
-| `data.intervalSeconds` | `integer` | Yes | minimum: 1 |
-| `data.session` | `object` | Yes | Exact OCC Secret reference. Shape: `{ "kind": "secret", "namespaceId": "ns_...", "id": "sec_..." }`. |
-| `data.session.id` | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.session.kind` | `"secret"` | Yes | — |
-| `data.session.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.source` | `object` | No | Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`. |
-| `data.source.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.source.kind` | `"credential_source"` | Yes | — |
-| `data.source.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.status` | `"pending" or "ready"` | Yes | — |
-| `data.userCode` | `string` | Yes | — |
-| `data.verificationUrl` | `string (uri)` | Yes | — |
+| `data` | `object or object` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -6454,11 +6606,7 @@ Example response
   "data": {
     "expiresAt": "2026-10-01T12:15:00.000Z",
     "intervalSeconds": 5,
-    "session": {
-      "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-      "kind": "secret",
-      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-    },
+    "sessionId": "cda_2ef976da-2aa8-42e6-bd50-b2d1be6bbb21",
     "status": "pending",
     "userCode": "ABCD-EFGH",
     "verificationUrl": "https://auth.example.com/device"
@@ -6469,9 +6617,9 @@ Example response
 }
 ```
 
-#### `DELETE /namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{secretId}`
+#### `DELETE /namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{sessionId}`
 
-<span id="delete-namespacesnamespaceidagentsagentiddeviceauthorizationssecretid"></span>
+<span id="delete-namespacesnamespaceidagentsagentiddeviceauthorizationssessionid"></span>
 
 Experimental: Discard a local device login without upstream revocation
 
@@ -6491,7 +6639,7 @@ Experimental: Discard a local device login without upstream revocation
 | --- | --- | --- | --- | --- | --- |
 | `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 | `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
-| `secretId` | path | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "sec_123e4567-e89b-42d3-a456-426614174000" |
+| `sessionId` | path | `string or string` | Yes | — | "cda_2ef976da-2aa8-42e6-bd50-b2d1be6bbb21" |
 
 ##### Responses
 
@@ -6507,9 +6655,9 @@ Experimental: Discard a local device login without upstream revocation
 | `501` | The selected Driver does not support this operation. |
 | `503` | A required dependency is unavailable. |
 
-#### `POST /namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{secretId}/poll`
+#### `POST /namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{sessionId}/poll`
 
-<span id="post-namespacesnamespaceidagentsagentiddeviceauthorizationssecretidpoll"></span>
+<span id="post-namespacesnamespaceidagentsagentiddeviceauthorizationssessionidpoll"></span>
 
 Experimental: Complete device login without returning credential material
 
@@ -6529,7 +6677,7 @@ Experimental: Complete device login without returning credential material
 | --- | --- | --- | --- | --- | --- |
 | `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
 | `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
-| `secretId` | path | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "sec_123e4567-e89b-42d3-a456-426614174000" |
+| `sessionId` | path | `string or string` | Yes | — | "cda_2ef976da-2aa8-42e6-bd50-b2d1be6bbb21" |
 
 ##### Request body
 
@@ -6564,20 +6712,7 @@ Example request
 
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
-| `data` | `object` | Yes | — |
-| `data.expiresAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
-| `data.intervalSeconds` | `integer` | Yes | minimum: 1 |
-| `data.session` | `object` | Yes | Exact OCC Secret reference. Shape: `{ "kind": "secret", "namespaceId": "ns_...", "id": "sec_..." }`. |
-| `data.session.id` | `string` | Yes | pattern: `^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.session.kind` | `"secret"` | Yes | — |
-| `data.session.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.source` | `object` | No | Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`. |
-| `data.source.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.source.kind` | `"credential_source"` | Yes | — |
-| `data.source.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.status` | `"pending" or "ready"` | Yes | — |
-| `data.userCode` | `string` | Yes | — |
-| `data.verificationUrl` | `string (uri)` | Yes | — |
+| `data` | `object or object` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -6587,11 +6722,7 @@ Example response
   "data": {
     "expiresAt": "2026-10-01T12:15:00.000Z",
     "intervalSeconds": 5,
-    "session": {
-      "id": "sec_123e4567-e89b-42d3-a456-426614174000",
-      "kind": "secret",
-      "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
-    },
+    "sessionId": "cda_2ef976da-2aa8-42e6-bd50-b2d1be6bbb21",
     "status": "pending",
     "userCode": "ABCD-EFGH",
     "verificationUrl": "https://auth.example.com/device"

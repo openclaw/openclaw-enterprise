@@ -39,7 +39,7 @@ export function createTestSecretDriver(options = {}) {
 
   const driver = {
     id: options.id ?? "secret-test",
-    capability: "secret",
+    capability: /** @type {const} */ ("secret"),
     implementation: "test-passive-secret-storage",
     calls,
     setResolveOverride(next) {

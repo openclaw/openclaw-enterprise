@@ -2,38 +2,82 @@ import type {
   CredentialSourceDeviceAuthorization,
   CredentialSourceReference,
   InstallationCapabilities,
-  SecretReference,
 } from "@openclaw-enterprise/contracts";
 import { requestFailure, responseFields } from "../api-client.mjs";
-import { button, element, setUnavailable } from "../dom.mjs";
+import { button, element, field, setUnavailable } from "../dom.mjs";
 import type { AgentAccessContext } from "./credential-access.mjs";
-import { askAdministratorTo, notIncluded } from "./access-reasons.mjs";
 import { message, namespacePath } from "./list.mjs";
 
 // The Console retains the public challenge and reference, never the provider's private state.
 type DeviceChallenge = Pick<
   CredentialSourceDeviceAuthorization,
   "verificationUrl" | "userCode" | "expiresAt" | "intervalSeconds"
-> & { session: SecretReference } & (
+> & { sessionId: string; personalAccount?: true } & (
     { status: "pending" } | { status: "ready"; source: CredentialSourceReference }
   );
 
 // Without a confirmed session reference, the Console can neither poll nor cancel that start.
 // Keep this outcome in the form draft so restoring it does not offer a duplicate sign-in.
-export type DeviceLogin = DeviceChallenge | { status: "start_unconfirmed" };
+export type DeviceLogin =
+  | DeviceChallenge
+  | { status: "start_unconfirmed" }
+  | { status: "saved"; source: CredentialSourceReference };
+
+interface SavedCodexAccount {
+  label: string;
+  source: CredentialSourceReference;
+}
+
+export async function savedCodexAccounts(
+  context: AgentAccessContext,
+): Promise<SavedCodexAccount[]> {
+  const rows = await context.request(
+    `${namespacePath(context.namespaceId)}/connections?purpose=codex-harness`,
+    // The picker reports its read failure in place. Preserve an in-flight device login's tab.
+    { showsOutcome: true },
+  );
+  if (!Array.isArray(rows)) {
+    throw new Error("Invalid saved ChatGPT accounts");
+  }
+  return rows.map((row: unknown) => {
+    const { namespaceId, credentialSourceId, accountLabel } = responseFields(row);
+    if (namespaceId !== context.namespaceId || typeof credentialSourceId !== "string") {
+      throw new Error("Invalid saved ChatGPT account");
+    }
+    return {
+      label:
+        typeof accountLabel === "string" && accountLabel
+          ? accountLabel
+          : `ChatGPT account · ${credentialSourceId.slice(-8)}`,
+      source: { kind: "credential_source", namespaceId, id: credentialSourceId },
+    };
+  });
+}
 
 function readLogin(
   value: unknown,
   namespaceId: string,
   expectedSessionId: string | undefined,
+  allowSecretSession: boolean,
 ): DeviceChallenge {
-  const { status, userCode, intervalSeconds, expiresAt, verificationUrl, session, source } =
-    responseFields(value);
-  const { kind, id, namespaceId: sessionNamespace } = responseFields(session);
+  const {
+    status,
+    userCode,
+    intervalSeconds,
+    expiresAt,
+    verificationUrl,
+    sessionId,
+    session,
+    source,
+  } = responseFields(value);
+  const legacy = responseFields(session);
+  const id =
+    sessionId ??
+    (allowSecretSession && legacy.kind === "secret" && legacy.namespaceId === namespaceId
+      ? legacy.id
+      : undefined);
   if (
-    kind !== "secret" ||
     typeof id !== "string" ||
-    sessionNamespace !== namespaceId ||
     (expectedSessionId !== undefined && id !== expectedSessionId) ||
     typeof userCode !== "string" ||
     typeof intervalSeconds !== "number" ||
@@ -45,10 +89,15 @@ function readLogin(
   ) {
     throw new Error("Invalid device authorization response");
   }
-  const challenge = { userCode, verificationUrl, intervalSeconds, expiresAt };
-  const reference: SecretReference = { kind, id, namespaceId };
+  const challenge = {
+    userCode,
+    verificationUrl,
+    intervalSeconds,
+    expiresAt,
+    ...(typeof sessionId === "string" && { personalAccount: true as const }),
+  };
   if (status === "pending") {
-    return { ...challenge, session: reference, status };
+    return { ...challenge, sessionId: id, status };
   }
   const credential = responseFields(source);
   if (
@@ -61,7 +110,7 @@ function readLogin(
   }
   return {
     ...challenge,
-    session: reference,
+    sessionId: id,
     status,
     source: { kind: credential.kind, id: credential.id, namespaceId },
   };
@@ -81,34 +130,23 @@ export function deviceLoginOffered(capabilities: InstallationCapabilities | unde
 const NOT_OFFERED =
   "ChatGPT sign-in needs a Credential Gateway that offers ChatGPT device login and a Credential Refresh Driver, and this Installation's Drivers do not offer it. Choose another authentication method.";
 
-// What each device-authorization request checks (packages/occ/src/index.ts), so a 403 names it
-// (finding 2577). Every start creates a Secret and a credential source, and Namespace Roles cannot
-// grant create, so only an Installation administrator can start one. Create Agent's requests also
-// check Agent create; Agent detail's check Agent read and update on that Agent. Poll and cancel
-// check Secret operate on the login's Secret, and poll operate on its credential source too.
 type DeviceLoginStep = "start" | "poll" | "cancel";
-const START_REMEDY =
-  "which only an Installation administrator holds: choose another authentication method, or ask one to set up this sign-in.";
 
 function deviceLoginDenied(step: DeviceLoginStep, agentScoped: boolean) {
   if (step === "start") {
     return agentScoped
-      ? `Your access does not include starting a device login for this Agent. It needs Agent read and update on it, plus Secret create and credential source create in this Namespace, ${START_REMEDY}`
-      : `Your access does not include starting a device login in this Namespace. It needs Agent create, Secret create and credential source create here, ${START_REMEDY}`;
+      ? "Connecting an account here requires permission to update this Agent and create credentials in its Namespace."
+      : "Connecting an account requires permission to create credentials in this Namespace.";
   }
-  const task = step === "poll" ? "finishing this device login" : "cancelling this device login";
-  const login =
-    step === "poll"
-      ? "Secret operate on the login's Secret and credential source operate on its credential source"
-      : "Secret operate on the login's Secret";
-  return agentScoped
-    ? notIncluded(task, `Agent read and update on this Agent, plus ${login}`)
-    : `Your access does not include ${task}. It needs Agent create in this Namespace, which only an Installation administrator holds, plus ${login}. ${askAdministratorTo("check your access")}`;
+  const task = step === "poll" ? "finish" : "cancel";
+  return `You cannot ${task} this sign-in. Use the Console account that started it or ask an administrator to check your access.`;
 }
 
 export function createDeviceLogin({
   context,
   agentId,
+  currentSourceId,
+  namespaceLogin = false,
   initial,
   onChange,
   onStartSettled,
@@ -116,13 +154,15 @@ export function createDeviceLogin({
 }: {
   context: AgentAccessContext;
   agentId?: string | undefined;
+  currentSourceId?: string | undefined;
+  namespaceLogin?: boolean;
   initial?: DeviceLogin | null | undefined;
   onChange?(source: CredentialSourceReference | null): void;
   // Called once a start's outcome is settled, so a form no longer shown can record it.
   onStartSettled?(): void;
   hint: string;
 }) {
-  const base = `${namespacePath(context.namespaceId)}/agents${agentId ? `/${encodeURIComponent(agentId)}` : ""}/device-authorizations`;
+  const base = `${namespacePath(context.namespaceId)}/${namespaceLogin ? "connections" : `agents${agentId ? `/${encodeURIComponent(agentId)}` : ""}`}/device-authorizations`;
   let login = initial ?? null;
   let active = true;
   let disabled = false;
@@ -147,6 +187,60 @@ export function createDeviceLogin({
   );
   const start = button("Sign in with OAuth", () => void begin());
   const cancel = button("Cancel login", () => void discard());
+  const choices = element("select", { id: "saved-codex-account" });
+  const choiceField = field({ label: "Saved ChatGPT account", control: choices });
+  const listStatus = element("p", { className: "hint", "aria-live": "polite" });
+  let accounts: readonly SavedCodexAccount[] | undefined;
+  let listing = false;
+
+  async function loadAccounts() {
+    if (namespaceLogin || listing || accounts !== undefined) {
+      return;
+    }
+    listing = true;
+    try {
+      const result = await savedCodexAccounts(context);
+      if (!context.isCurrent()) {
+        return;
+      }
+      accounts = result;
+      choices.replaceChildren(
+        element("option", { value: "" }, "Choose a saved account"),
+        ...accounts.map(({ source, label }) => element("option", { value: source.id }, label)),
+      );
+      listStatus.textContent = "";
+      if (login?.status === "saved") {
+        const selectedId = login.source.id;
+        const valid = accounts.find(({ source }) => source.id === selectedId);
+        if (!valid) {
+          login = null;
+        }
+        onChange?.(valid?.source ?? null);
+      }
+    } catch (cause) {
+      if (context.isCurrent()) {
+        accounts = [];
+        if (requestFailure(cause).status === 401) {
+          context.onExpired();
+        } else {
+          listStatus.textContent =
+            "Saved ChatGPT accounts could not be loaded. Refresh to try again.";
+        }
+      }
+    } finally {
+      listing = false;
+      update();
+    }
+  }
+  choices.addEventListener("change", () => {
+    if (busy || disabled || !active || (login && login.status !== "saved")) {
+      return;
+    }
+    const selected = accounts?.find(({ source }) => source.id === choices.value);
+    login = selected ? { status: "saved", source: selected.source } : null;
+    onChange?.(selected?.source ?? null);
+    update();
+  });
   const section = element(
     "div",
     { className: "device-login form-field" },
@@ -157,6 +251,8 @@ export function createDeviceLogin({
       "ChatGPT sign-in, plugin access, deployment, and credential recovery may not work as expected.",
     ),
     element("p", { className: "hint" }, hint),
+    choiceField,
+    listStatus,
     instructions,
     status,
     element("div", { className: "form-actions" }, start, cancel),
@@ -164,7 +260,14 @@ export function createDeviceLogin({
 
   function update() {
     clearTimeout(timer);
-    const challenge = login && "session" in login ? login : null;
+    const challenge = login && "sessionId" in login ? login : null;
+    choiceField.hidden =
+      namespaceLogin || !accounts?.length || !!challenge || login?.status === "start_unconfirmed";
+    choices.disabled = disabled || busy;
+    const boundAccount = !login && accounts?.find(({ source }) => source.id === currentSourceId);
+    choices.value =
+      login?.status === "saved" ? login.source.id : boundAccount ? boundAccount.source.id : "";
+    listStatus.hidden = namespaceLogin || Boolean(challenge) || !listStatus.textContent;
     const unconfirmed = login?.status === "start_unconfirmed";
     // Sign in and Cancel login replace each other in place. Pressing one hides it, so focus moves
     // to the one shown instead of falling to the page (finding 2992, as 1905).
@@ -179,8 +282,18 @@ export function createDeviceLogin({
       signIn.removeAttribute("href");
     }
     start.hidden = Boolean(challenge);
+    start.textContent =
+      login?.status === "saved" || boundAccount ? "Connect another account" : "Sign in with OAuth";
     cancel.hidden = !challenge;
-    cancel.textContent = challenge?.status === "ready" ? "Clear selection" : "Cancel login";
+    cancel.textContent =
+      challenge?.status === "ready"
+        ? namespaceLogin
+          ? "Done"
+          : "Clear selection"
+        : "Cancel login";
+    const idleStatus = boundAccount
+      ? "This Agent uses the selected account."
+      : "Sign in to connect your ChatGPT account.";
     status.textContent =
       error ||
       (busy
@@ -188,10 +301,14 @@ export function createDeviceLogin({
         : unconfirmed
           ? "Sign-in may have started, but the Console could not confirm it. Do not start another sign-in until an Installation administrator investigates the pending attempt."
           : challenge?.status === "ready"
-            ? "ChatGPT login ready. Clearing this selection leaves the saved credential source available."
+            ? namespaceLogin
+              ? "Your ChatGPT account is connected."
+              : "ChatGPT login ready. Clearing this selection leaves the saved credential source available."
             : challenge
               ? "Waiting for you to complete sign-in in the other tab…"
-              : (refusal ?? "Sign in to connect your ChatGPT account."));
+              : login?.status === "saved"
+                ? "This Agent will use the selected account when you save."
+                : (refusal ?? idleStatus));
     const left = [start, cancel].find((control) => control === focused && control.hidden);
     if (active && left) {
       const shown = left === start ? cancel : start;
@@ -214,8 +331,11 @@ export function createDeviceLogin({
   }
 
   function accept(result: unknown) {
-    const sessionId = login?.status === "pending" ? login.session.id : undefined;
-    login = readLogin(result, context.namespaceId, sessionId);
+    const sessionId = login?.status === "pending" ? login.sessionId : undefined;
+    login = readLogin(result, context.namespaceId, sessionId, !namespaceLogin);
+    if (login.status === "ready") {
+      accounts = undefined;
+    }
     error = "";
     onChange?.(login.status === "ready" ? login.source : null);
   }
@@ -241,12 +361,16 @@ export function createDeviceLogin({
   }
 
   async function begin() {
-    if (busy || disabled || login || refusal !== null || !active) {
+    if (busy || disabled || (login && login.status !== "saved") || refusal !== null || !active) {
       return;
     }
     // Navigation captures the draft before aborting the view's requests. Retain the
     // attempt now, because a committed start may lose its response when the view leaves.
+    const replacingSavedAccount = login?.status === "saved";
     login = { status: "start_unconfirmed" };
+    if (replacingSavedAccount) {
+      onChange?.(null);
+    }
     busy = true;
     error = "";
     update();
@@ -257,7 +381,7 @@ export function createDeviceLogin({
     try {
       const result = await context.request(base, {
         method: "POST",
-        body: { harnessId: "codex" },
+        body: namespaceLogin ? {} : { harnessId: "codex" },
         keepsTab: true,
       });
       if (settles()) {
@@ -308,7 +432,7 @@ export function createDeviceLogin({
     error = "";
     update();
     try {
-      const result = await context.request(`${base}/${encodeURIComponent(login.session.id)}/poll`, {
+      const result = await context.request(`${base}/${encodeURIComponent(login.sessionId)}/poll`, {
         method: "POST",
         body: {},
         showsOutcome: true,
@@ -327,7 +451,7 @@ export function createDeviceLogin({
   }
 
   async function discard() {
-    if (busy || disabled || !login || login.status === "start_unconfirmed") {
+    if (busy || disabled || !login || !("sessionId" in login)) {
       return;
     }
     // Withdraw the source before the request so a concurrent save cannot submit it.
@@ -338,7 +462,7 @@ export function createDeviceLogin({
     error = "";
     update();
     try {
-      await context.request(`${base}/${encodeURIComponent(discarded.session.id)}`, {
+      await context.request(`${base}/${encodeURIComponent(discarded.sessionId)}`, {
         method: "DELETE",
         expectedStatus: 204,
         showsOutcome: true,
@@ -359,11 +483,27 @@ export function createDeviceLogin({
   return {
     section,
     capture: () => login,
+    // OCC grants access to a personal account in the same transaction as the Agent save.
+    // Other credential sources still need the separate IAM grant.
+    isPersonalAccount(sourceId: string) {
+      return (
+        (login?.status === "saved" ||
+          (login?.status === "ready" && login.personalAccount === true)) &&
+        login.source.id === sourceId
+      );
+    },
     get source() {
+      if (login?.status === "saved") {
+        const selected = login.source;
+        return accounts?.some(({ source }) => source.id === selected.id) ? selected : null;
+      }
       return login?.status === "ready" ? login.source : null;
     },
     setActive(value: boolean) {
       active = value;
+      if (active && (!login || login.status === "saved")) {
+        void loadAccounts();
+      }
       update();
     },
     setDisabled(value: boolean) {

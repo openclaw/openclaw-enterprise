@@ -100,71 +100,20 @@ inactive history alone does not retain the source indefinitely.
 
 ## Use a personal Codex login
 
-Codex OAuth login is **Experimental**. It requires dedicated Codex and a selected
-Credential Refresh Driver for device login, a paired Credential Gateway for
-access-token retrieval and external-token attachments, and Sandbox token injection. The OpenShell PoC requires
-the [upstream gateway API and alias-enabled supervisor](../../reference/drivers/openshell-credential-gateway.md#experimental-codex-oauth-poc).
-There is no installation opt-in flag.
+A personal ChatGPT connection belongs to the user who approves device sign-in in a Namespace. They can grant multiple dedicated Codex Agents access to that account.
 
-The initial Codex exchange runs in the OCE API Pods. If sign-in reports
-`auth.openai.com` unreachable, check API Pod HTTPS egress to that issuer (Helm
-`api.modelDiscoveryCidrs`) and retry. OpenShell's gateway needs its own issuer
-access for subsequent refresh.
+1. In **Credentials → Connected accounts**, choose **Sign in with OAuth**. Open the verification link and enter the code. Use the ChatGPT account and workspace you want the Agent to use.
+2. Return to the same OCE browser session and finish the login. The account appears in the Namespace. You can also start sign-in while configuring a Codex Agent.
+3. In the Agent's Harness configuration, choose **ChatGPT OAuth (Experimental)** and select the saved account. Save the Agent and deploy. To share the account with another Agent, repeat this step for that Agent.
+4. To withdraw access, remove that Agent's binding and detach the connection. OCE queues cleanup for its running Sandbox. Other Agents can continue to use the account.
 
-1. Choose **ChatGPT OAuth (Experimental)** when creating an Agent. Open the
-   verification link, enter the displayed code, and complete sign-in.
-2. Search and select plugins using the resulting credential source, then create
-   and deploy the Agent. The Console grants the Agent service principal exact
-   source `operate` permission. Deployment still requires a successful native
-   model probe.
-3. For later plugin edits, use the saved source. OCE asks the Credential Gateway
-   for a usable access token; the token service owns refresh. Another device login
-   is needed only when replacing or recovering the connection.
-4. To replace the connection, sign in from the credential editor, save the new
-   source, and deploy. Saving a draft does not change the running version.
-
-Starting requires Agent-create, Secret-create and credential-source-create in the
-Namespace, plus `operate` on the resulting session Secret and source. For an
-existing Agent, exact Agent `read`/`update` replaces Agent-create. Only the actor
-who started a session can poll or close it. Source use has its own exact
-`credential_source:operate` authorization; it is not tied to the login session.
-
-The session Secret binds an opaque login handle to the actor, scope, and source.
-The Refresh Driver hands exchanged credentials to the external service. A pending session uses
-the provider deadline; a completed session closes after 24 hours on its next
-access. **Close login** discards the handle without revoking the source or
-interrupting a deployed Agent. Failed and abandoned sources remain visible in
-credential-source management; delete unused sources separately and remove their
-unreferenced session Secrets.
-
-If sign-in is unavailable, check the selected Gateway and Refresh capabilities. For a
-`503 DEPENDENCY_UNAVAILABLE`, check connectivity from OCC to that Gateway and its
-upstream provider. The paired Refresh Driver owns the provider exchange; OCC keeps only the
-opaque session handle. See [storage and limits](../../reference/drivers/kubernetes-compute/codex-oauth-storage.md).
+Creating a connection requires permission to create credential sources in the Namespace. Selecting an existing one requires permission to configure the Agent and operate the source. Older Gateway-managed logins can still run. To make one reusable, sign in again so OCE can record the owner.
 
 ### Recover an interrupted Codex sign-in
 
-If the Console says **Sign-in may have started**, do not start again. The Console
-did not receive a usable session reference, so it cannot poll or cancel that
-attempt. Give an administrator the time, Namespace, Agent ID if already saved,
-and OCC request ID if available. Do not share the device code or Secret value.
+Use the original browser session to check or cancel a pending login. If the code expires, start a new sign-in. Closing the completed login leaves the saved account available. When troubleshooting, give the administrator the time, Namespace and request ID. Keep the device code private.
 
-Using [approved audit access](../topics/audit-log.md#access-and-limitations), look
-for a successful `openclaw.agents.device_authorization.start` for that actor and
-request with `details.phase: "session_pending"`. OCC commits this event with the
-session Secret, before sending the reply. It confirms that OCC saved the session,
-not that sign-in completed, and does not include the session ID.
-
-The `source_registering` and `source_ready` phases confirm only source registration;
-they can exist even when provider login fails before OCC saves a session. A missing
-`session_pending` event does not rule out a partial start. Do not guess the session
-from a name or timestamp, or start again while the outcome is unknown.
-
-If the Console says **Cancel this login and sign in again** while checking a known
-session, choose **Cancel login**. Start a new sign-in only after cancellation
-succeeds. Cancelling discards the session without revoking the Credential Source.
-OCC does not repeat an exchange whose outcome is uncertain. A **Service unavailable**
-message alone does not tell you whether OCC reached that exchange.
+The API needs HTTPS access to the OpenAI issuer for the device exchange. The Token Service needs access to its token endpoint for renewal. The selected Compute, Credential Gateway and Sandbox must also support external ChatGPT authentication. See [Codex credential storage and launch limits](../../reference/drivers/kubernetes-compute/codex-oauth-storage.md).
 
 ## Preserve administrator recovery
 
