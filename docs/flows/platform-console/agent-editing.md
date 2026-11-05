@@ -107,12 +107,12 @@ Secret the caller may not `operate`, or counts one the caller may neither `read`
 nor `operate`; that reason names no Secret (finding D756). After deployment, versions omitted from the newest page appear unreadable without
 an audited read (finding D758).
 
-**Edit Configuration** rereads Agent and Configuration, then PATCHes
+**Edit Configuration** rereads Agent and Configuration, PATCHes
 `{ values, expectedGeneration }`, preserving `secretBindings`. Changed IDs or stale
-generations (including `409`) require **Reload draft**.
+generations (including a racing save's `409`) require **Reload draft**.
 Responses must confirm Configuration/Namespace identity, newer generation, and sent
-values/bindings; otherwise the outcome is unknown: reload before retrying.
-Disabled **Save Configuration** transfers its focus to **Checking Configuration…**;
+values/bindings; otherwise outcome is unknown: reload before retrying.
+Focused, disabled **Save Configuration** transfers focus to **Checking Configuration…**;
 success focuses **Edit Configuration** unless focus moved.
 
 **Enable gateway password access** and **Collaboration and safety**
@@ -120,7 +120,8 @@ success focuses **Edit Configuration** unless focus moved.
 
 Saves retain scroll, focus and admitted snapshots; rejected edits stay. Unsaved edits block deployment; pending saves block tab/version changes.
 `apps/controller/src/console/navigation.mts:traverse` restores the pending editor's
-address after refused Back/Forward without reloading if the history step cannot be used.
+address without reloading for detected missing/equal markers or too-far/unsupported steps.
+Overflowed markers are untracked.
 A refused write lists required grants without guessing which; a refused preflight read names read
 access, a Workspace file save Agent `operate`. Without Agent `update`, Configuration `read` or
 bound-source grants (`operate`, and `read` on a Harness ServiceAccount; the note names both),

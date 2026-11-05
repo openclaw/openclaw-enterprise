@@ -744,7 +744,10 @@ test("a pending plugin save blocks navigation to the deletion controls", async (
   await page.getByRole("button", { name: "Delete Agent", exact: true }).waitFor();
 });
 
-async function backDuringConfigurationSave(t: TestContext, syntheticOffset?: number) {
+async function backDuringConfigurationSave(
+  t: TestContext,
+  syntheticMarker?: number | "maximum-safe-position",
+) {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = resource(await fixture.createNamespace("Save and Back", { ready: true }));
@@ -756,10 +759,11 @@ async function backDuringConfigurationSave(t: TestContext, syntheticOffset?: num
   await page.getByRole("tab", { name: "Channels" }).click();
   await page.getByRole("tab", { name: "Channels", selected: true }).waitFor();
   const channelsUrl = page.url();
-  if (syntheticOffset !== undefined) {
+  if (syntheticMarker !== undefined) {
     // Controlled corruption, not a product-created marker: the next normal position minus
     // this destination is -offset. 2**32 wraps to zero; 100 cannot fit this history stack.
-    await page.evaluate((offset) => {
+    // The maximum safe position instead makes the fallback's next marker overflow.
+    await page.evaluate((marker) => {
       const state: unknown = history.state;
       if (
         typeof state !== "object" ||
@@ -770,8 +774,12 @@ async function backDuringConfigurationSave(t: TestContext, syntheticOffset?: num
       ) {
         throw new Error("Expected a marked Channels entry");
       }
-      history.replaceState({ ...state, consolePosition: state.consolePosition + 1 + offset }, "");
-    }, syntheticOffset);
+      const consolePosition =
+        marker === "maximum-safe-position"
+          ? Number.MAX_SAFE_INTEGER
+          : state.consolePosition + 1 + marker;
+      history.replaceState({ ...state, consolePosition }, "");
+    }, syntheticMarker);
   }
   await page.getByRole("tab", { name: "Configuration" }).click();
   await page.getByRole("button", { name: "Edit Configuration" }).click();
@@ -797,7 +805,7 @@ async function backDuringConfigurationSave(t: TestContext, syntheticOffset?: num
   await page.getByRole("button", { name: "Save Configuration" }).click();
   await held.requested;
   try {
-    if (syntheticOffset !== undefined) {
+    if (syntheticMarker !== undefined) {
       assert.ok(await page.evaluate(() => history.length < 100));
     }
     // Listen before Back: a reload request must fail the test directly, not as a later
@@ -811,9 +819,14 @@ async function backDuringConfigurationSave(t: TestContext, syntheticOffset?: num
       await page.waitForURL(configurationUrl);
       return "restored";
     })();
-    await page.goBack();
+    // Trigger native Back without making Playwright wait for a document load first.
+    await page.evaluate(() => history.back());
     assert.equal(await Promise.race([documentRequested.promise, restored]), "restored");
     assert.equal(await originalEditor.evaluate((node) => node.isConnected), true);
+    if (syntheticMarker === "maximum-safe-position") {
+      const state: unknown = await page.evaluate(() => history.state);
+      assert.equal(record(state).consolePosition, null);
+    }
     assert.equal(
       await editor.evaluate((node) => {
         if (!(node instanceof HTMLTextAreaElement)) {
@@ -836,6 +849,13 @@ async function backDuringConfigurationSave(t: TestContext, syntheticOffset?: num
   await page.goForward();
   await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
   assert.equal(page.url(), configurationUrl);
+  if (syntheticMarker === "maximum-safe-position") {
+    // Forward returned to the untracked fallback entry; ordinary navigation starts at one.
+    await page.getByRole("tab", { name: "Channels" }).click();
+    await page.getByRole("tab", { name: "Channels", selected: true }).waitFor();
+    const state: unknown = await page.evaluate(() => history.state);
+    assert.equal(record(state).consolePosition, 1);
+  }
   await settlePageRequests(page);
   assert.deepEqual(documentRequests, []);
   assert.equal(pathRequests(requests, "PATCH", path).length, 1);
@@ -851,6 +871,10 @@ test("Back during a Configuration save survives a synthetic marker that wraps to
 
 test("Back during a Configuration save survives a synthetic marker outside the history stack", async (t) => {
   await backDuringConfigurationSave(t, 100);
+});
+
+test("Back during a Configuration save leaves an overflowing synthetic marker untracked", async (t) => {
+  await backDuringConfigurationSave(t, "maximum-safe-position");
 });
 
 test("Back refused by unsaved repository changes preserves the previous Agent tab", async (t) => {

@@ -12,6 +12,7 @@ Back and Forward after it completes, use these tests in `tests/browser/console-d
 - `Back during a Configuration save preserves the previous Agent tab`
 - `Back during a Configuration save survives a synthetic marker that wraps to zero`
 - `Back during a Configuration save survives a synthetic marker outside the history stack`
+- `Back during a Configuration save leaves an overflowing synthetic marker untracked`
 
 At both widths, open **Pages / Agent detail / Agent unavailable** (`agentMissing`).
 Confirm the heading is **Agent details** and the panel says **Resource unavailable**,

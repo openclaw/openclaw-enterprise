@@ -178,7 +178,8 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
   }
 
   function pushUrl(url: string) {
-    position = (position ?? 0) + 1;
+    const next = (position ?? 0) + 1;
+    position = Number.isSafeInteger(next) ? next : null;
     history.pushState({ consolePosition: position }, "", url);
   }
 
