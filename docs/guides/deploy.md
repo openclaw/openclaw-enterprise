@@ -6,6 +6,10 @@ path below and keep its operator shell and protected files for the next step.
 Run repository commands from the matching release checkout's root. Starting OCC
 needs no model credential; an Agent needs one to send a model request.
 
+OCE's OpenShell integration is not production-qualified. Review its
+[remaining qualification work](../reference/drivers/openshell-sandbox.md#remaining-qualification-work)
+before choosing an OpenShell installation path.
+
 | Task                                                     | Start here                                                           | Continue with                                                                                                       |
 | -------------------------------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | Try OCE on your machine                                  | [Local Setup](quickstart.md)                                         | [Deploy an Agent](quickstart.md#deploy-an-agent)                                                                    |
