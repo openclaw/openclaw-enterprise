@@ -870,7 +870,7 @@ test("Dedicated credential refresh preserves its enrolled workspace node", async
       };
     },
     async observeSetup() {
-      return { deviceId: "workspace-node", connected: true };
+      return { deviceId: "workspace-node", connected: true, delivery: "confirmed" };
     },
     async isConnected() {
       return true;
@@ -1001,7 +1001,7 @@ for (const mode of ["embedded", "dedicated"]) {
               };
             },
             async observeSetup() {
-              return { deviceId: "plugin-node", connected: true };
+              return { deviceId: "plugin-node", connected: true, delivery: "confirmed" };
             },
             async isConnected() {
               return true;
