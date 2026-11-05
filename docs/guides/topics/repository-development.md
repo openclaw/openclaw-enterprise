@@ -61,7 +61,6 @@ corepack --version
 git --version
 gh --version
 df -h "$OCE_WORKSPACE"
-umask 077
 OCE_TOOLS=$(mktemp -d "$OCE_WORKSPACE/oce-devtools.XXXXXXXX")
 mkdir -p "$OCE_TOOLS/bin" "$OCE_TOOLS/bun" "$OCE_TOOLS/cache/corepack" \
   "$OCE_TOOLS/cache/npm" "$OCE_TOOLS/cache/pnpm"
