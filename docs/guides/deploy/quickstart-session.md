@@ -76,11 +76,13 @@ jq -jr --arg key "$key" '.data[$key] | @base64d' "$change/secret-before.json" > 
 cp "$change/live-values.json" "$VALUES_FILE"
 helm --kubeconfig "$KUBECONFIG" --kube-context "$CONTEXT" -n "$PLATFORM_NS" \
   upgrade "$RELEASE" "$OCE_CHART" -f "$VALUES_FILE" --wait
+# Restart even if the restored Helm checksum already matched the Pod template.
+kube -n "$PLATFORM_NS" rollout restart deployment/openclaw-enterprise-api deployment/openclaw-enterprise-worker
 kube -n "$PLATFORM_NS" rollout status deployment/openclaw-enterprise-api
 kube -n "$PLATFORM_NS" rollout status deployment/openclaw-enterprise-worker
 ```
 
-Stop on any failed check. The UID/resourceVersion patch rejects a change after the recovery read. Preserve the evidence if recovery fails and inspect before retrying. See [Installation startup rejection](production-installation-changes.md) for the startup-check limits and logs.
+The explicit restart replaces Pods that may have loaded the candidate before Helm changed the template. Wait for both fresh rollouts; pre-existing ready Pods do not prove recovery. Stop on any failed check. The UID/resourceVersion patch rejects a change after the recovery read. Preserve the evidence if recovery fails and inspect before retrying. See [Installation startup rejection](production-installation-changes.md) for the startup-check limits and logs.
 
 ## Where setup supplies the session
 
