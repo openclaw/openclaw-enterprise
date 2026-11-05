@@ -113,7 +113,7 @@ function clearSecretInputs(dialog: HTMLDialogElement) {
 }
 
 // The API's Secret value rule (SecretValue in packages/contracts/src/api/common.ts): nonempty
-// UTF-8 without NUL, at most 65,536 UTF-8 bytes. tests/conformance/console-namespace-name.test.mjs
+// UTF-8 without NUL, at most 65,536 UTF-8 bytes. tests/conformance/console-namespace-name.test.ts
 // keeps the two equal.
 export const SECRET_VALUE_MAX_BYTES = 65536;
 

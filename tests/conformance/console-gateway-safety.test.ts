@@ -14,7 +14,9 @@ import {
 // write, so the JSON round-trips: a toggle never drops a neighbouring setting or leaves an empty
 // object behind, and an unset setting shows the value the Gateway actually gets.
 const [steering, applyPatch] = GATEWAY_SAFETY_SETTINGS;
-const effective = (values) =>
+assert.ok(steering);
+assert.ok(applyPatch);
+const effective = (values: Parameters<typeof gatewaySafetyValue>[0]) =>
   GATEWAY_SAFETY_SETTINGS.map((setting) => gatewaySafetyValue(values, setting));
 
 test("an unset setting shows the value deployment admission or OpenClaw gives it", () => {
@@ -39,7 +41,7 @@ test("the steering help says what the Gateway does with another participant's me
   for (const [fallback, expected] of [
     ["queue", queued],
     ["reject", refused],
-  ]) {
+  ] as const) {
     const help = steering.help({
       messages: { queue: { collaborativeSteeringFallback: fallback } },
     });
