@@ -5,6 +5,7 @@ import ipaddress
 import json
 import os
 import subprocess
+import sys
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--tenant", required=True)
@@ -65,7 +66,8 @@ def api_edges():
                 backends.append({"to": [{"ipBlock": {"cidr": f"{ip}/{ip.max_prefixlen}"}}],
                                  "ports": [port(target)]})
     if not backends:
-        raise ValueError("No ready Kubernetes API endpoint was found")
+        print("No ready Kubernetes API endpoint was found; rendering only the API Service grant. "
+              "Check endpoint readiness before retrying reconciliation.", file=sys.stderr)
     return [{"to": [{"ipBlock": {"cidr": service["clusterIP"] + "/32"}}],
              "ports": [port(443)]}] + backends
 

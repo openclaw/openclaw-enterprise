@@ -96,10 +96,11 @@ OCC_TEST_KUBERNETES_IMAGE=oce-fixture:local \
   node --test tests/integration/production-network-access.test.mjs
 ```
 
-Checks cover workload isolation, namespace ownership, Git-enabled management DNS/API/Git
-connectivity, denied destinations and ports, and grant withdrawal. An owned API EndpointSlice
-uses TLS-preserving proxies to verify endpoint withdrawal; cleanup removes the slice before
-its proxies. No database or model credentials are required.
+Checks cover isolation, management DNS/API/Git TCP reachability, denied ports and
+destinations, and grant withdrawal. TLS-preserving API proxies verify withdrawal;
+a controlled discovery snapshot tests removal of the last backend. The file runs
+alone and confirms slice and namespace cleanup before sibling tests start. No
+database or model credentials are required.
 
 ## Kubernetes model turns and Secrets
 

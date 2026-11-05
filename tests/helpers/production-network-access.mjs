@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { symlink } from "node:fs/promises";
+import { symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { temporaryDirectory } from "./temporary-directory.ts";
 import { randomUUID } from "node:crypto";
@@ -132,9 +132,40 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
           preconditions: { uid: apiEndpointSlice.metadata.uid },
         },
       );
+      await waitFor(
+        "owned API EndpointSlice removed",
+        async () =>
+          (
+            await kubectl(
+              "get",
+              "endpointslice",
+              apiEndpointSlice.metadata.name,
+              "-n",
+              "default",
+              "--ignore-not-found",
+              "-o",
+              "name",
+            )
+          ).trim() === "",
+      );
     }
     if (ownedNamespaces.length) {
       await kubectl("delete", "namespace", ...ownedNamespaces, "--wait=false");
+      await waitFor(
+        "fixture namespaces removed",
+        async () =>
+          (
+            await kubectl(
+              "get",
+              "namespace",
+              ...ownedNamespaces,
+              "--ignore-not-found",
+              "-o",
+              "name",
+            )
+          ).trim() === "",
+        120_000,
+      );
     }
   });
   // Claim the public quickstart's fixed namespaces first. Never adopt an existing installation.
@@ -279,7 +310,7 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
     }),
   );
 
-  const probe = async (source, names) =>
+  const probe = async (source, names, tcpOnly = []) =>
     JSON.parse(
       await kubectl(
         "exec",
@@ -290,7 +321,18 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
         "node",
         "-e",
         probeCode,
-        JSON.stringify(Object.fromEntries(names.map((name) => [name, targets[name]]))),
+        JSON.stringify(
+          Object.fromEntries(
+            names.map((name) => [
+              name,
+              // Denial means no TCP connection. A later TLS failure must never hide
+              // a policy that accidentally allowed the connection through.
+              tcpOnly.includes(name) && targets[name].ca
+                ? { host: targets[name].host, port: targets[name].port }
+                : targets[name],
+            ]),
+          ),
+        ),
       ),
     );
   let envoyEnabled = false;
@@ -324,7 +366,7 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
   );
   const runDir = await temporaryDirectory(t, "oce-network-");
   await symlink(join(quickstart, "kubernetes"), join(runDir, "kubernetes"));
-  const runNetworkHelper = (command, tenant) =>
+  const runNetworkHelper = (command, tenant, path = process.env.PATH) =>
     execute(
       "bash",
       [
@@ -339,6 +381,7 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
       {
         env: {
           ...process.env,
+          PATH: path,
           RUN_DIR: runDir,
           KUBECONFIG: selection.kubeconfigPath,
           CONTEXT: selection.kubernetesContext,
@@ -359,6 +402,7 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
     spec,
   });
   let managementTenants;
+  let ownedApiDiscoveryPath;
   return {
     async installOpenShellManagement(tenantIndex) {
       if (!managementTenants) {
@@ -608,6 +652,71 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
       await apply([apiEndpointSlice]);
       await runNetworkHelper("repository_network", managementTenants[0]);
     },
+    async useOwnedManagementApiDiscovery() {
+      // Keep native API discovery untouched. Only this renderer subprocess sees
+      // the acknowledged proxy slice as its complete discovery snapshot; every
+      // other query and all writes still reach kubectl and the real API server.
+      const directory = await temporaryDirectory(t, "oce-api-discovery-");
+      const binary = (await execute("sh", ["-c", "command -v kubectl"])).stdout.trim();
+      assert.ok(binary.startsWith("/"), "kubectl must resolve to an absolute path");
+      const query = kubectlArguments(selection, [
+        "-n",
+        "default",
+        "get",
+        "endpointslices",
+        "-l",
+        "kubernetes.io/service-name=kubernetes",
+        "-o",
+        "json",
+      ]);
+      await writeFile(
+        join(directory, "kubectl"),
+        `#!/usr/bin/env python3
+import json
+import os
+import subprocess
+import sys
+binary = ${JSON.stringify(binary)}
+arguments = sys.argv[1:]
+if arguments != ${JSON.stringify(query)}:
+    os.execv(binary, [binary] + arguments)
+result = subprocess.run([binary] + arguments, capture_output=True)
+sys.stderr.buffer.write(result.stderr)
+if result.returncode:
+    sys.stdout.buffer.write(result.stdout)
+    sys.exit(result.returncode)
+payload = json.loads(result.stdout)
+selected = [item for item in payload["items"]
+    if item["metadata"]["name"] == ${JSON.stringify(apiEndpointSlice.metadata.name)}
+    and item["metadata"]["namespace"] == "default"
+    and item["metadata"]["uid"] == ${JSON.stringify(apiEndpointSlice.metadata.uid)}]
+if len(selected) != 1:
+    sys.exit("Expected exactly the acknowledged API fixture slice")
+payload["items"] = selected
+print(json.dumps(payload))
+`,
+        { mode: 0o700 },
+      );
+      ownedApiDiscoveryPath = `${directory}:${process.env.PATH}`;
+      for (const endpoint of apiEndpointSlice.endpoints) {
+        endpoint.conditions.ready = true;
+      }
+      await apply([apiEndpointSlice]);
+      await runNetworkHelper("repository_network", managementTenants[0], ownedApiDiscoveryPath);
+    },
+    async withdrawAllManagementApiEndpoints() {
+      assert.ok(ownedApiDiscoveryPath, "select the owned API discovery snapshot first");
+      for (const endpoint of apiEndpointSlice.endpoints) {
+        endpoint.conditions.ready = false;
+      }
+      await apply([apiEndpointSlice]);
+      const result = await runNetworkHelper(
+        "repository_network",
+        managementTenants[0],
+        ownedApiDiscoveryPath,
+      );
+      assert.match(result.stderr, /No ready Kubernetes API endpoint/);
+    },
     async confirmManagementPortControls() {
       // Change only destination ingress. A successful connection from each caller
       // proves that its preceding 8081 denial was not caused by source egress.
@@ -781,7 +890,7 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
       await waitFor(
         `${source}: allow ${allow}; deny ${deny}`,
         async () => {
-          last = await probe(source, names);
+          last = await probe(source, names, deny);
           for (const name of names) {
             assert.ok(
               last[name] === "connected" || deniedErrors.has(last[name]),

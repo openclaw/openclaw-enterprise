@@ -176,6 +176,20 @@ test(
               allow: allowed.filter((name) => name !== "withdrawnManagementApi"),
               deny: [...denied, "withdrawnManagementApi"],
             });
+            // A controlled discovery snapshot contains only the acknowledged
+            // proxy slice; the native cluster API endpoints remain unchanged.
+            await access.useOwnedManagementApiDiscovery();
+            await access.verify({
+              source: "management",
+              allow: allowed.filter((name) => name !== "kubernetesApi"),
+              deny: denied,
+            });
+            await access.withdrawAllManagementApiEndpoints();
+            await access.verify({
+              source: "management",
+              allow: ["dns", "dnsTcp", "managementGit", "managementGitService"],
+              deny: [...denied, "managementApi", "withdrawnManagementApi"],
+            });
           },
         );
 

@@ -16,7 +16,6 @@
   "fileConcurrency": 2,
   "parallelFiles": [
     "tests/integration/postgres-platform-state-kubernetes.test.mjs",
-    "tests/integration/production-network-access.test.mjs",
     "tests/integration/kubernetes-compute-provisioning-real.test.mjs",
     "tests/integration/production-install-retained-job-k3d.test.mjs"
   ],
@@ -47,5 +46,8 @@
         "Helm install preserves the initialization Job when release history is absent"
       ]
     }
-  ]
+  ],
+  "serialFiles": {
+    "tests/integration/production-network-access.test.mjs": "Temporarily adds Kubernetes API Service backends; cleanup must finish before other cluster tests."
+  }
 }
