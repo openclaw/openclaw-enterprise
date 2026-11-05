@@ -131,6 +131,40 @@ export function createAgentDetailScenarios({
   currentVersion: string;
   candidateVersion: string;
 }) {
+  const configurationConflictDraft = {
+    group: "Pages/Agent detail",
+    path: draft,
+    configurationChangedElsewhere: {
+      values: {
+        gateway: { bind: "loopback" },
+        agents: { defaults: { model: "codex/gpt-5.1" } },
+      },
+    },
+    actions: [
+      click("Edit Configuration"),
+      {
+        selector: "#configuration-json",
+        value: JSON.stringify(
+          {
+            gateway: { mode: "local", bind: "lan" },
+            agents: {
+              defaults: {
+                model: "codex/gpt-4.1",
+                models: { "codex/gpt-4.1": { agentRuntime: { id: "codex" } } },
+              },
+            },
+            channels: {},
+          },
+          null,
+          2,
+        ),
+      },
+    ],
+  } satisfies Pick<
+    AgentDetailScenario,
+    "group" | "path" | "configurationChangedElsewhere" | "actions"
+  >;
+
   const runtimeLogsPage = {
     group: "Pages/Agent detail",
     path: `${candidateVersion}&tab=logs`,
@@ -1287,34 +1321,10 @@ export function createAgentDetailScenarios({
         ],
       },
       configurationChangedElsewhereMerged: {
-        group: "Pages/Agent detail",
+        ...configurationConflictDraft,
         name: "Configuration edits merged over another browser's save",
-        path: draft,
-        configurationChangedElsewhere: {
-          values: {
-            gateway: { bind: "loopback" },
-            agents: { defaults: { model: "codex/gpt-5.1" } },
-          },
-        },
         actions: [
-          click("Edit Configuration"),
-          {
-            selector: "#configuration-json",
-            value: JSON.stringify(
-              {
-                gateway: { mode: "local", bind: "lan" },
-                agents: {
-                  defaults: {
-                    model: "codex/gpt-4.1",
-                    models: { "codex/gpt-4.1": { agentRuntime: { id: "codex" } } },
-                  },
-                },
-                channels: {},
-              },
-              null,
-              2,
-            ),
-          },
+          ...configurationConflictDraft.actions,
           click("Save Configuration"),
           click("Reload draft"),
         ],
@@ -1323,6 +1333,29 @@ export function createAgentDetailScenarios({
         steps: [
           "Check the note names /gateway/bind with the saved value, and the editor keeps the other browser's model with this reader's bind.",
         ],
+      },
+      configurationConflictFocus: {
+        ...configurationConflictDraft,
+        name: "Configuration conflict preserves moved focus",
+        rules: [
+          {
+            method: "GET",
+            suffix: "/configurations/cfg_00000000-0000-4000-8000-000000000001",
+            skip: 1,
+            once: true,
+            // Leave time for a person to move focus during the simulated preflight.
+            delayMs: 10000,
+          },
+        ],
+        description:
+          "The first save waits 10 seconds for its simulated preflight read, then reports a conflict. Compare recovery focus with focus moved to the editor or navigation.",
+        steps: [
+          "Focus Save Configuration and press Enter. Stay on Checking Configuration: the conflict moves focus to Reload draft and announces an alert.",
+          "Reset. Save, then click Configuration JSON and use Select All during the 10-second check. The conflict keeps focus and active selection in the read-only editor without scrolling to the alert.",
+          "Reset and repeat, moving focus to the Agents link during the check. Focus stays on that link.",
+          "Choose Reload draft to merge the edits. Check that the saved model and this reader's bind remain, with a note naming /gateway/bind.",
+        ],
+        gap: "Simulated preflight conflict only; the browser regression checks a real Controller PATCH race.",
       },
       admitted: {
         group: "Pages/Agent detail",
