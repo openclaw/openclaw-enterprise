@@ -3,8 +3,8 @@ import { chmod, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { ensureImage } from "./image-pull.mjs";
-import { ownedName } from "./resource-names.mjs";
+import { ensureImage } from "./image-pull.ts";
+import { ownedName } from "./resource-names.ts";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const defaultCollectorContainerPort = 4318;

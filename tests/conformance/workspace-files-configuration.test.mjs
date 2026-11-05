@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -13,21 +13,21 @@ import {
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
 import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
+import { jsonEvent } from "../helpers/json-lines.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
 const agentId = "agt_00000000-0000-4000-8000-000000000001";
 
 async function tempPath(t, basename, contents) {
-  const directory = await mkdtemp(join(tmpdir(), "occ-gateway-api-key-"));
-  t.after(async () => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-gateway-api-key-");
   const path = join(directory, basename);
   await writeFile(path, contents, "utf8");
   return path;
 }
 
 async function projectedSecretKeyPath(t, contents) {
-  const directory = await mkdtemp(join(tmpdir(), "occ-projected-gateway-api-key-"));
-  t.after(async () => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-projected-gateway-api-key-");
   const revisionDirectory = "..2026_09_01_00_00_00.000000001";
   await mkdir(join(directory, revisionDirectory));
   await writeFile(join(directory, revisionDirectory, "gateway-api-key"), contents, "utf8");
@@ -51,14 +51,7 @@ async function rotateProjectedSecretKey(projected, contents) {
 const computeDriver = (overrides) => createReadyComputeDriver("compute-workspace-files", overrides);
 
 function startupDiagnostic(stderr) {
-  const diagnostic = stderr
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => JSON.parse(line))
-    .find((line) => line.event === "startup-error");
-  assert.ok(diagnostic, stderr);
-  return diagnostic;
+  return jsonEvent(stderr, "startup-error", { strict: true });
 }
 
 function revision(overrides = {}) {

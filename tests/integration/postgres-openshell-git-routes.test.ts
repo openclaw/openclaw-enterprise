@@ -9,7 +9,7 @@ import {
 } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
 import { CredentialDeliveries, PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { seedSessionRevision } from "../conformance/repository-sessions.contract.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 
 // The persisted OpenShell Git route (migration 0062) as the application role
 // writes it: identity and custody facts only, one holder named by a fence, a pending write
@@ -38,8 +38,7 @@ test(
   "OpenShell Git routes persist identity and custody facts under one fenced holder",
   { ...requiresPostgres, timeout: 60_000 },
   async (t) => {
-    const pool = new pg.Pool({ connectionString: databaseUrl, max: 2 });
-    t.after(() => pool.end());
+    const pool = testPool(t, { connectionString: databaseUrl, max: 2 });
     const state = new PostgresPlatformState(pool);
     const { revision } = await seedSessionRevision(state);
     const { revision: other } = await seedSessionRevision(state);
@@ -317,8 +316,7 @@ test(
     timeout: 60_000,
   },
   async (t) => {
-    const pool = new pg.Pool({ connectionString: databaseUrl });
-    t.after(() => pool.end());
+    const pool = testPool(t, { connectionString: databaseUrl });
     const state = new PostgresPlatformState(pool);
     const { repositoryCredentials } =
       await import("../fixtures/repository-credentials/session-state.mjs");
@@ -487,8 +485,7 @@ test(
   async (t) => {
     // Finding 2210: the worker that opened the route proves its bootstrap write unsent and
     // clears it; the next pass adopts the empty route and reserves the bootstrap again.
-    const pool = new pg.Pool({ connectionString: databaseUrl });
-    t.after(() => pool.end());
+    const pool = testPool(t, { connectionString: databaseUrl });
     const state = new PostgresPlatformState(pool);
     const { revision } = await seedSessionRevision(state);
     const store = new PostgresOpenShellGitRouteStore(pool);
@@ -546,8 +543,7 @@ for (const operation of ["bootstrap", "rotate"] as const) {
     `a replacement lease cannot settle or replay an uncertain ${operation} installation`,
     requiresPostgres,
     async (t) => {
-      const pool = new pg.Pool({ connectionString: databaseUrl });
-      t.after(() => pool.end());
+      const pool = testPool(t, { connectionString: databaseUrl });
       const state = new PostgresPlatformState(pool);
       const { revision } = await seedSessionRevision(state);
       const store = new PostgresOpenShellGitRouteStore(pool);

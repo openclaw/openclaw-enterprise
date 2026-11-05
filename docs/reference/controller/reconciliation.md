@@ -103,9 +103,16 @@ See the
 full placement, runtime, and recovery sequence.
 
 A recovered older operation never replaces a newer selected version: the worker
-marks it superseded without calling Compute. A stop or deletion owns the
-versions admitted before it was requested. PostgreSQL stamps both times on
-its own clock, so controller clock skew cannot exempt a running version.
+marks it superseded without preparing it. An older candidate also ends
+superseded once the newest version, on the same Compute and without repository
+credentials, failed with a held runtime failure: the worker keeps that runtime, so
+the older one cannot become ready. A superseded exclusive candidate finishes its
+yielded predecessor stops, then stops its own runtime, which a newer version may
+never stop. The failure of a version with repository credentials queues
+retirement of its runtime, so the older one keeps waiting.
+A stop or deletion owns the versions admitted before it was requested. PostgreSQL
+stamps both times on its own clock, so controller clock skew cannot exempt a
+running version.
 Sibling Agents have independent
 queue lanes, while versions for the same Agent serialize. The default
 PostgreSQL-backed development Compute Driver provisions Docker Namespace resources
@@ -205,17 +212,35 @@ connection, a dropped one, or a Harness status read left unanswered; an
 pass records that code, and `worker.completed` names the `dependency` and its
 `cause`. If the dependency is still failing at the convergence deadline, the
 deployment fails with that code rather than `CONVERGENCE_DEADLINE_EXCEEDED`.
-Pending convergence has its own limit: `OCC_WORKER_CONVERGENCE_TIMEOUT_MS`,
-measured from operation creation on PostgreSQL's clock, so
-controller clock skew cannot move it. Exceeding it fails the operation with
-`CONVERGENCE_DEADLINE_EXCEEDED`. A runtime reporting a deterministic
-credential rejection fails deployment earlier with
+When a bundled Compute Driver's cleanup after a failed preparation or activation
+fails too, the pass is decided by the preparation's or activation's own failure,
+and `worker.completed` adds `cleanupCause`.
+
+Pending Namespace convergence and Agent deployment share
+`OCC_WORKER_CONVERGENCE_TIMEOUT_MS` (default: 15 minutes), measured from
+operation creation on PostgreSQL's clock. Queue time counts; starting or
+restarting the worker does not reset it. Have the worker ready before submitting
+deployment work. After the limit, a deployment's first pending result can fail
+with `CONVERGENCE_DEADLINE_EXCEEDED`.
+
+For an intentional longer wait, configure the worker timeout before resuming
+(`worker.convergenceTimeoutMs` in Helm). It must cover the operation's total age
+plus remaining convergence time. The setting applies across that worker's
+Namespace and Agent deployment work and live SandboxPolicy applications.
+Extending it can delay `SANDBOX_POLICY_UNCONFIRMED`; the provider may already
+have applied the policy. Follow [SandboxPolicy recovery](../sandbox-policies.md#desired-and-applied-versions)
+for an unconfirmed outcome. The setting cannot reopen terminal operations.
+Restore the normal limit after affected work finishes.
+
+A runtime reporting a deterministic credential rejection fails deployment earlier with
 `RUNTIME_AUTHENTICATION_FAILED`, and one whose startup model probe ran out of
 CPU at its limit with `RUNTIME_CPU_STARVED`. Other failures that need a new
 version fail it early too: `RUNTIME_MODEL_PROBE_TIMEOUT`,
 `RUNTIME_MODEL_PROBE_FAILED`, `RUNTIME_LOGIN_FAILED`, `RUNTIME_STARTUP_FAILED`,
 and a workspace setup refusal (`WORKSPACE_SETUP_REFUSED`). A dedicated gateway that refuses its own in-Pod CLI as
-unauthorized fails activation at once with `AGENT_GATEWAY_UNAUTHORIZED`. A Sandbox Driver that cannot run
+unauthorized fails activation at once with `AGENT_GATEWAY_UNAUTHORIZED`, and a `403` on a
+private Secret write fails preparation or activation at once with
+[`KUBERNETES_SECRET_WRITE_FORBIDDEN`](../../guides/operate/troubleshooting.md#a-deployment-fails-because-kubernetes-refused-a-secret). A Sandbox Driver that cannot run
 the version fails it on the first attempt with its
 [closed code](../drivers/sandbox.md), such as
 `SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED`, and two credential sources that share

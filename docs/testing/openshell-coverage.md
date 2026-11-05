@@ -1,8 +1,52 @@
+---
+tags: [human_verified]
+# Backfilled from the verification tag recorded in 17ff921c5.
+last_verified: "2026-11-04"
+---
+
 # What the OpenShell Sandbox suite proves
 
 These are the checks in `tests/integration/sandbox-driver-openshell-k3d-real.test.mjs`.
 Prepare and run the suite as described in [OpenShell tests](openshell.md#openshell-sandbox).
 Unless a section says otherwise, the checks run in the default Codex scenario.
+
+## Gateway tool policy
+
+The dedicated Agent policy scenario uses the existing production deployment owner
+for either `OCC_TEST_OPENSHELL_HARNESS=openclaw` or `codex`. With an explicit
+`OCC_TEST_OPENSHELL_MODEL_BASE_URL`, both use `OPENAI_API_KEY`; the full lane still
+requires `CODEX_ACCESS_TOKEN` for its other owners.
+
+The scenario deploys the first revision with Gateway managed mode off so a human
+administrator can run the command-job control. The dedicated model tool policy
+still applies. A live model turn enters through the authenticated Envoy route
+as a Control UI administrator. The test checks a shell task and child task on the Harness,
+creation and execution of a caller-owned schedule, and an allowed schedule update.
+It then checks refusals to convert that schedule to a command or retarget it to
+another Agent. After a human converts the same owned job to a disabled command,
+model attempts to update, enable or run it must leave the job unchanged and the
+command canary absent. A foreign-job update is also refused. Direct human updates
+and a successful canary command remain positive controls.
+
+These refusals exercise the composed caller-scope and command-job restrictions.
+OpenClaw also tests the individual guards independently.
+
+Separate `tools.invoke` probes check an excluded administrative tool and a denied
+message action. They are direct invocation checks, not model-origin execution.
+
+The scenario then enables Gateway managed mode and deploys a revision with a
+narrower tool policy. The Gateway refuses the saved command job. The test
+observes replacement Gateway and Harness Pods and retirement of the old Sandbox
+before continuing the same conversation. It checks that the removed tool is
+withheld from discovery or that its reconstructed callback refuses execution,
+while a permitted automation call still succeeds. This tests policy activation
+through replacement after old work ends. It does not test mid-turn policy changes.
+
+These are fixture assertions; passing evidence remains tied to the tested source
+and images recorded in the implementation PR. A reconstructed Codex thread proves
+that excluded declarations are omitted, not that an old callback was retained and
+denied. The retained/fallback callback paths also have focused OpenClaw owner tests.
+Harness-local configuration, credentials and process protection remain separate work.
 
 ## Credential source and Harness
 
@@ -136,8 +180,7 @@ The Codex scenario then updates the source through the API, withdraws it from
 the running Agent, waits for `revoked`, and expects the next model turn in the
 same process to fail. It accepts any turn failure, so it does not yet tell a
 credential rejection from a transport error or a restarted process. The
-[complete OpenShell advisory lane](ci.md#qa-matrix) runs on every push to `main` and on
-trusted pull requests when a maintainer requests it with the `full-qa` label.
+[complete OpenShell advisory lane](ci/qa-advisory.md) uses the triggers and trusted-PR selection described on that page.
 
 ### QA matrix selector
 

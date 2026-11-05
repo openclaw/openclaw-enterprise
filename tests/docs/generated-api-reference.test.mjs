@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import test from "node:test";
 
+import { documentApiExamples } from "../../scripts/document-api-examples.mjs";
 import {
   generateApiReferenceOutputs,
   httpMethods,
@@ -30,6 +31,17 @@ function contractOperations(document) {
       .map(([, operation]) => operation),
   );
 }
+
+test("example enrichment preserves the generated contract and rejects duplicate operations", async () => {
+  const document = JSON.parse(await readFile(contractPath, "utf8"));
+  const original = structuredClone(document);
+  assert.equal(documentApiExamples(document), document);
+  assert.deepEqual(document, original);
+
+  const operations = contractOperations(document);
+  operations[1].operationId = operations[0].operationId;
+  assert.throws(() => documentApiExamples(document), /Missing or duplicate operationId/);
+});
 
 test("generated API reference stays on the approved single page", async () => {
   const document = JSON.parse(await readFile(contractPath, "utf8"));
@@ -163,7 +175,7 @@ test("Agent plugin and first deployment operations document conditional grants",
   }
 });
 
-test("credential source grants appear on the Agent and source operations that check them", async () => {
+test("Agent and CredentialSource operations document the permissions they check", async () => {
   const document = JSON.parse(await readFile(contractPath, "utf8"));
   const operations = new Map(
     contractOperations(document).map((operation) => [operation.operationId, operation]),
@@ -173,6 +185,22 @@ test("credential source grants appear on the Agent and source operations that ch
     assert.ok(operation, `${operationId} OpenAPI operation is missing`);
     return operation["x-openclaw-permissions"];
   };
+  const installationGrants = (operationId) =>
+    permissions(operationId).filter((permission) => permission.resourceKind === "installation");
+  for (const [operationId, condition] of [
+    ["createAgent", "gateway_managed_mode_disabled"],
+    ["validateAgentCreate", "gateway_managed_mode_disabled"],
+    ["updateAgent", "gateway_managed_mode_changed"],
+  ]) {
+    assert.deepEqual(
+      installationGrants(operationId),
+      [{ action: "administer", resourceKind: "installation", scope: "installation", condition }],
+      operationId,
+    );
+  }
+  // Deploy applies the mode already authorized on the saved draft.
+  assert.deepEqual(installationGrants("deployAgent"), []);
+
   const sourceOperate = (scope) => ({
     action: "operate",
     resourceKind: "credential_source",
@@ -221,14 +249,16 @@ test("OpenAPI check rejects unexpected generated API child pages in an isolated 
   const fixture = await temporaryDirectory(t, "occ-api-reference-check-");
 
   await mkdir(join(fixture, "scripts"), { recursive: true });
-  await copyFile(
-    join(repositoryRoot, "scripts/generate-occ-openapi.mjs"),
-    join(fixture, "scripts/generate-occ-openapi.mjs"),
-  );
-  await copyFile(
-    join(repositoryRoot, "scripts/generate-occ-api-reference.mjs"),
-    join(fixture, "scripts/generate-occ-api-reference.mjs"),
-  );
+  for (const file of [
+    "generate-occ-openapi.mjs",
+    "generate-occ-api-reference.mjs",
+    "document-api-examples.mjs",
+    "document-api-examples.ts",
+    "api-examples.mjs",
+    "api-examples.ts",
+  ]) {
+    await copyFile(join(repositoryRoot, "scripts", file), join(fixture, "scripts", file));
+  }
   await copyFile(join(repositoryRoot, "package.json"), join(fixture, "package.json"));
   await symlink(join(repositoryRoot, "apps"), join(fixture, "apps"));
   await symlink(join(repositoryRoot, "node_modules"), join(fixture, "node_modules"));

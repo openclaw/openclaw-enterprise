@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "./sandbox-driver.ts";
 import type { SelectedDriverConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { driverHasCapabilityContract } from "../../packages/occ/src/driver-contract.ts";
 import assert from "node:assert/strict";
@@ -19,6 +20,7 @@ import {
   RepositoryGitSenderUnqualifiedError,
 } from "../../packages/occ/src/index.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { CREDENTIAL_PROXY_INSTALLATION_PREVIEW } from "./refusal-text.mjs";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
 import {
@@ -69,6 +71,7 @@ export function protectedRepositoryGitRelease(
     id,
     implementation: "registered-online-sender",
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking", "filesystem", "process"],
     networkPolicy: { wildcards: true, portRanges: true, live: true },
     harnessResource: () => ({}),
@@ -114,7 +117,7 @@ export function protectedRepositoryGitRelease(
       assert.throws(
         () => super.assertRepositoryGitProfileAvailable(profile),
         profile === "github_installation"
-          ? /not qualified for GitHub installation/
+          ? { message: CREDENTIAL_PROXY_INSTALLATION_PREVIEW }
           : RepositoryGitSenderUnqualifiedError,
       );
     }

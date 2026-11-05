@@ -65,6 +65,33 @@ test("development wrappers resolve relative paths without changing CDPATH", asyn
   }
 });
 
+test("docker dev-up accepts --key-output=PATH", () => {
+  // Kubernetes Compute execs occ, whose flags accept either spelling. Docker
+  // Compute parses this script itself and used to report the equals form as an
+  // unknown option before any engine or Compose work.
+  const env = { ...process.env, OCC_DEVELOPMENT_COMPUTE_DRIVER: "docker" };
+  delete env.BASH_ENV;
+  delete env.ENV;
+  delete env.SHELLOPTS;
+  const empty = spawnSync("/bin/bash", ["scripts/dev-up", "--key-output="], {
+    cwd: repository,
+    encoding: "utf8",
+    env,
+  });
+  assert.equal(empty.status, 2, empty.stderr);
+  assert.match(empty.stderr, /--key-output requires a path/);
+  assert.doesNotMatch(empty.stderr, /unknown option/);
+
+  const equals = spawnSync("/bin/bash", ["scripts/dev-up", "--key-output=relative-key"], {
+    cwd: repository,
+    encoding: "utf8",
+    env,
+  });
+  assert.notEqual(equals.status, 0, equals.stderr);
+  assert.doesNotMatch(equals.stderr ?? "", /unknown option/);
+  assert.match(equals.stderr ?? "", /key output must be an absolute path|OCC CLI is required/);
+});
+
 test("k3d and CI tool setup resolve the checkout without CDPATH", async (t) => {
   // Each wrapper exits on a path that needs no cluster, container engine or download:
   // k3d prints help, and setup-tools rejects an unknown profile after entering the checkout.
@@ -112,5 +139,38 @@ test("k3d and CI tool setup resolve the checkout without CDPATH", async (t) => {
     const setup = await run(["scripts/ci/setup-tools.sh", "unknown-profile"]);
     assert.equal(setup.status, 64, setup.context);
     assert.equal(setup.stderr, "Unknown setup profile: unknown-profile\n");
+  }
+});
+
+// Exact, major and minor cache requests must enforce the same security floor
+// as wildcard requests; otherwise an explicitly cached affected runtime wins.
+test("CI cached Node requests reject affected patch releases", () => {
+  const helper = join(repository, ".github/actions/setup-pnpm-store-cache/ensure-node.sh");
+  for (const [version, accepted] of [
+    ["24.22.0", false],
+    ["24.22.1", true],
+    ["26.12.0", false],
+    ["26.12.1", true],
+  ]) {
+    const [major, minor] = version.split(".");
+    for (const request of [version, `${major}.${minor}`, major, `${major}.x`, ""]) {
+      const result = spawnSync(
+        "/bin/bash",
+        [
+          "-c",
+          'source "$1"; openclaw_node_version_matches "$2" "$3"',
+          "node-floor",
+          helper,
+          version,
+          request,
+        ],
+        { encoding: "utf8" },
+      );
+      assert.equal(
+        result.status,
+        accepted ? 0 : 1,
+        `${version} requested as ${request}: ${result.stderr}`,
+      );
+    }
   }
 });

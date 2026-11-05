@@ -13,8 +13,7 @@ do not create tests that merely mirror a reversible documentation or style edit.
 Read the touched scope's `AGENTS.md` and the selected
 [testing guide](../../../docs/testing/README.md). Run commands from the repository
 root. Use Node.js 24 or newer and repository-pinned pnpm with matching installed
-dependencies. Do not install or reconcile dependencies as a verification side
-effect. Report missing prerequisites; dependency-independent checks prove only
+dependencies. Report missing prerequisites; dependency-independent checks prove only
 their own scope. Never run `npm run precommit`.
 
 ## Select proof

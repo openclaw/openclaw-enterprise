@@ -3,12 +3,21 @@ import { story } from "./story.ts";
 export default { title: "Components/Workspace" };
 
 export const Workspace = { ...story("workspace"), name: "Editable files" };
+export const Loading = story("workspaceLoading");
 export const WorkspaceUnavailable = {
   ...story("workspaceUnavailable"),
   name: "No deployed revision",
 };
 export const WorkspaceDenied = { ...story("workspaceDenied"), name: "Access denied" };
 export const WorkspaceSaveDenied = { ...story("workspaceSaveDenied"), name: "Save denied" };
+export const WorkspaceOperateDenied = {
+  ...story("workspaceOperateDenied"),
+  name: "Save needs Agent operate",
+};
+export const WorkspaceOperateRestored = {
+  ...story("workspaceOperateRestored"),
+  name: "Operate answer on return",
+};
 export const WorkspaceMissing = { ...story("workspaceMissing"), name: "Missing file" };
 export const WorkspaceResourceMissing = {
   ...story("workspaceResourceMissing"),

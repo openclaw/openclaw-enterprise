@@ -70,36 +70,39 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.cluster.port }}
-{{- if not (kindIs "slice" .Values.api.modelDiscoveryCidrs) }}
-{{- fail "api.modelDiscoveryCidrs must be a list of explicit IPv4 /32 hosts" }}
+{{- range $name, $setting := dict "model-discovery" "modelDiscoveryCidrs" "plugin-discovery" "pluginDiscoveryCidrs" }}
+{{- $cidrs := index $.Values.api $setting }}
+{{- if not (kindIs "slice" $cidrs) }}
+{{- fail (printf "api.%s must be a list of explicit IPv4 /32 hosts" $setting) }}
 {{- end }}
-{{- if .Values.api.modelDiscoveryCidrs }}
-{{- range $cidr := .Values.api.modelDiscoveryCidrs }}
+{{- if $cidrs }}
+{{- range $cidr := $cidrs }}
 {{- if not (regexMatch (include "openclaw.ipv4Host32" .) (toString $cidr)) }}
-{{- fail "api.modelDiscoveryCidrs entries must identify exactly one IPv4 host with /32" }}
+{{- fail (printf "api.%s entries must identify exactly one IPv4 host with /32" $setting) }}
 {{- end }}
 {{- end }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: openclaw-enterprise-api-model-discovery-egress
+  name: openclaw-enterprise-api-{{ $name }}-egress
 spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ .Release.Name | quote }}
+      app.kubernetes.io/instance: {{ $.Release.Name | quote }}
       app.kubernetes.io/component: api
   policyTypes: [Egress]
   egress:
     - to:
-        {{- range .Values.api.modelDiscoveryCidrs }}
+        {{- range $cidrs }}
         - ipBlock:
             cidr: {{ . | quote }}
         {{- end }}
       ports:
         - protocol: TCP
           port: 443
+{{- end }}
 {{- end }}
 {{- $directoryProxyUrl := .Values.api.channelDirectoryProxyUrl }}
 {{- if not (kindIs "string" $directoryProxyUrl) }}

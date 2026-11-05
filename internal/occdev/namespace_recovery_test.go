@@ -36,6 +36,21 @@ func recoveryFixture(t *testing.T, namespace, sandbox, engine, outcome string) (
 	if err != nil {
 		t.Fatal(err)
 	}
+	if sandbox == "openshell" {
+		// Historical OpenShell receipts must remain readable for cleanup after
+		// retirement. Write raw wire fields so deleting a Go field cannot silently
+		// remove it from this fixture and hide a strict-decoder regression.
+		var receipt map[string]any
+		if err := json.Unmarshal(data, &receipt); err != nil {
+			t.Fatal(err)
+		}
+		receipt["protectedEgress"] = true
+		receipt["openShellHostGatewayIP"] = "172.30.42.1"
+		data, err = json.Marshal(receipt)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	for name, contents := range map[string][]byte{".openclaw-development": []byte(stateMarker), "state.json": data} {
 		if err := os.WriteFile(filepath.Join(directory, name), contents, 0600); err != nil {
 			t.Fatal(err)
@@ -62,7 +77,7 @@ fi
 printf '%s\n' "$*" >> "$RECOVERY_LOG"
 case "$*" in
   'cluster list -o json')
-    if [ "$RECOVERY_OUTCOME" = absent ]; then
+    if [ "$RECOVERY_OUTCOME" = absent ] || [ ! -f "$RECOVERY_RESOURCE" ]; then
       printf '%s\n' '[{"name":"occ-dev-unrelated"}]'
     else
       printf '%s\n' '[{"name":"occ-dev-recorded"},{"name":"occ-dev-unrelated"}]'
@@ -74,6 +89,23 @@ case "$*" in
 esac
 `
 	if err := os.WriteFile(filepath.Join(bin, "k3d"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Only the recorded engine accepts the volume observation. k3d retains
+	// its own command grammar; neither executable accepts the other's work.
+	const engineScript = `#!/bin/sh
+[ "$DOCKER_HOST" = "unix:///recorded-engine.sock" ] || exit 91
+[ -z "$DOCKER_CONTEXT$DOCKER_TLS_VERIFY$DOCKER_CERT_PATH" ] || exit 92
+if [ "$RECOVERY_ENGINE" = podman ]; then
+  [ "$CONTAINER_HOST" = "$DOCKER_HOST" ] && [ -z "$CONTAINER_CONNECTION" ] || exit 93
+fi
+case "$*" in
+  'volume ls --filter label=k3d.cluster=occ-dev-recorded --format {{.Name}}')
+    printf '%s\n' "$*" >> "$RECOVERY_LOG" ;;
+  *) exit 94 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(bin, engine), []byte(engineScript), 0700); err != nil {
 		t.Fatal(err)
 	}
 	for key, value := range map[string]string{
@@ -118,6 +150,9 @@ func TestLegacyNamespaceRecovery(t *testing.T) {
 						want := "cluster list -o json\n"
 						if outcome != "absent" {
 							want += "cluster delete occ-dev-recorded\n"
+						}
+						if outcome != "fail" {
+							want += "volume ls --filter label=k3d.cluster=occ-dev-recorded --format {{.Name}}\n"
 						}
 						if err != nil || string(data) != want {
 							t.Fatalf("cleanup selected unexpected commands: %q, %v", data, err)

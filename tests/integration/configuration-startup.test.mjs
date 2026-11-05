@@ -6,11 +6,11 @@ import {
   randomBytes,
   randomUUID,
 } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import test, { after, before } from "node:test";
+import test, { before } from "node:test";
 import pg from "pg";
 import {
   loadInstallationConfiguration,
@@ -32,7 +32,9 @@ import {
 } from "../../packages/contracts/src/index.ts";
 import { validateSelectedBackendDrivers } from "../../packages/occ/src/index.ts";
 import { spawnSync } from "node:child_process";
+import { reservedPortArgs, reservePort } from "../helpers/available-port.mjs";
 import { captureChild, concurrencyLimit, settled } from "../helpers/child-processes.mjs";
+import { fileCompileCache } from "../helpers/compile-cache.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   createCredentialProxyInstallationConfiguration as credentialProxyInstallation,
@@ -41,6 +43,7 @@ import {
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 function jsonLines(text) {
   return text
@@ -59,11 +62,7 @@ function startupDiagnostic(stderr, event) {
 // The startup cases boot the real API and worker processes with an allowlisted environment,
 // which drops NODE_COMPILE_CACHE, so it is passed explicitly: the lane's cache in CI, otherwise
 // a temporary one owned by this file, so each boot after the first reuses compiled code.
-const compileCache =
-  process.env.NODE_COMPILE_CACHE || (await mkdtemp(join(tmpdir(), "configuration-startup-cache-")));
-if (compileCache !== process.env.NODE_COMPILE_CACHE) {
-  after(() => rm(compileCache, { recursive: true, force: true }));
-}
+const compileCache = await fileCompileCache("configuration-startup");
 
 // The production listener and sign-in settings of the API boots that reach session auth.
 const productionServer = {
@@ -78,9 +77,9 @@ const productionServer = {
 // process that never exits: every boot here ends in a startup refusal within a second or two
 // on an idle machine, and on a loaded runner the same boot took more than 10 s.
 const limit = concurrencyLimit();
-async function boot(script, env, timeout = 30_000) {
+async function boot(script, env, timeout = 30_000, nodeArguments = []) {
   const { signal, ...result } = await limit(() =>
-    captureChild(process.execPath, [script], {
+    captureChild(process.execPath, [...nodeArguments, script], {
       cwd: process.cwd(),
       env: { ...env, NODE_COMPILE_CACHE: compileCache },
       timeout,
@@ -132,8 +131,7 @@ before(async () => {
 });
 
 async function fixture(t, configuration = installation()) {
-  const directory = await mkdtemp(join(tmpdir(), "occ-installation-startup-"));
-  t.after(async () => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-installation-startup-");
   const path = join(directory, "installation.yaml");
   // JSON is valid YAML; mutations exercise the same real SDK YAML parser as controller startup.
   await writeFile(path, JSON.stringify(configuration), "utf8");
@@ -217,6 +215,36 @@ test("Credential Proxy startup preserves the selection and refuses retired keys"
         await assert.rejects(load(), /drivers\.conduit is retired; use drivers\.credential_proxy/);
       });
     }
+  }
+
+  // Finding 2361: the retired drivers.repo refusal named only native Git, which startup refuses
+  // beside a Sandbox. It now names the path that fits the selected Sandbox.
+  for (const [sandbox, advice] of [
+    [
+      "bundled",
+      /configure repository\.openShell with repository\.preparedGitHub \(the bundled OpenShell Driver refuses git-write\), or repository\.nativeSender without drivers\.sandbox or drivers\.credential_proxy\./,
+    ],
+    [
+      "package",
+      /configure repository\.preparedGitHub with the package's drivers\.credential_proxy and no repository\.openShell, or repository\.nativeSender without drivers\.sandbox/,
+    ],
+    ["none", /then configure repository\.nativeSender with repository\.preparedGitHub\. Do not/],
+  ]) {
+    await t.test(`retired drivers.repo, Sandbox ${sandbox}`, async () => {
+      const invalid = structuredClone(configuration);
+      invalid.drivers.repo = { id: "repository-credentials", configuration: {} };
+      if (sandbox === "none") {
+        delete invalid.drivers.sandbox;
+      } else if (sandbox === "package") {
+        invalid.drivers.sandbox.package = "@example/installed-sender";
+      }
+      await writeFile(path, JSON.stringify(invalid));
+      await assert.rejects(load(), (error) => {
+        assert.match(error.message, /^drivers\.repo native admission is retired\./);
+        assert.match(error.message, advice);
+        return true;
+      });
+    });
   }
 });
 
@@ -721,8 +749,7 @@ function retiredChatgptInstallation() {
 }
 
 async function repositoryInstallation(t) {
-  const directory = await mkdtemp(join(tmpdir(), "occ-repository-startup-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-repository-startup-");
   const tls = await createTlsMaterial(t);
   await chmod(tls.certFile, 0o644);
   const writableCaPath = join(directory, "writable-ca.crt");
@@ -782,6 +809,29 @@ async function repositoryInstallation(t) {
     port: 8443,
   };
   return { configuration, registry, registrySource, tls, writableCaPath };
+}
+
+for (const mode of ["native", "selected-blocked", "selected"]) {
+  test(`Installation loads prepared GitHub lifecycle only for selected metadata: ${mode}`, async (t) => {
+    const configuration =
+      mode === "native"
+        ? (await repositoryInstallation(t)).configuration
+        : credentialProxyInstallation();
+    if (mode !== "native") {
+      configuration.drivers.credential_proxy.configuration.preparedGitHub = {
+        custodyKeyPath: "/nonexistent/fixture-custody.key",
+      };
+    }
+    const path = await fixture(t, configuration);
+    const result = spawnSync(
+      process.execPath,
+      ["tests/fixtures/repository-credentials/installation-module-guard.ts", path, mode],
+      { encoding: "utf8", timeout: 30_000, env: { PATH: process.env.PATH } },
+    );
+    assert.equal(result.error, undefined);
+    assert.equal(result.signal, null);
+    assert.equal(result.status, 0, result.stderr);
+  });
 }
 
 test("repository startup constructs the same local resolver without a private socket or App key", async (t) => {
@@ -936,13 +986,98 @@ test("the worker refuses a repository App key that cannot sign before it reports
   );
 });
 
-function nativeSenderRefusal(path, code) {
+test("the worker binds bundled OpenShell Git with the prepared owner's protected authority", async (t) => {
+  // Finding 2866: worker.mjs starts the prepared owner and hands the selected OpenShell transport
+  // only its protected authority, never the owner, which also holds the revision material
+  // reader and the trial request callback. This boots the real worker with repository.openShell:
+  // it starts the owner, binds the transport (its Git authority listener included) and stops
+  // only at the unreachable database.
+  const {
+    configuration: repository,
+    registry,
+    registrySource,
+    tls,
+  } = await repositoryInstallation(t);
+  // The prepared owner admits only one explicit write ref per Namespace.
+  Object.assign(registry.repositories[0].namespaces[0], {
+    profiles: ["git-write"],
+    transport: "git-only",
+    pushRefAllowlist: ["refs/heads/review"],
+  });
+  await writeFile(registrySource, JSON.stringify(registry));
+  const configuration = credentialProxyInstallation();
+  configuration.backend.push(...repository.backend);
+  // repository.openShell selects the bundled Proxy's Git registration, with no egress authority,
+  // on the same installed Driver as the Sandbox.
+  const { sandbox } = configuration.drivers;
+  configuration.drivers.credential_proxy = { id: sandbox.id, configuration: {} };
+  configuration.backend[0].drivers.credential_proxy = sandbox.id;
+  const { nativeSender: _native, ...protectedRepository } = repository.repository;
+  const directory = dirname(protectedRepository.preparedGitHub.custodyKeyPath);
+  const issuerPublicKeyPath = join(directory, "gateway-public.pem");
+  // The worker binds the Git authority on this port seconds after its configuration names it,
+  // once its boot gets a slot. Hold the port until the worker exits, so a test file running in
+  // parallel cannot take it (finding 3024's race).
+  const authority = await reservePort();
+  t.after(() => authority.release());
+  configuration.repository = {
+    ...protectedRepository,
+    openShell: {
+      registrationName: "oce-prepared-git",
+      authority: {
+        host: "127.0.0.1",
+        port: authority.port,
+        certificatePath: tls.certFile,
+        privateKeyPath: tls.keyFile,
+        issuerPublicKeyPath,
+        issuer: "openshell-gateway:openshell-gateway",
+        audience: "oce-prepared-git",
+        keyId: "current",
+      },
+    },
+  };
+  const pkcs8 = { type: "pkcs8", format: "pem" };
+  await Promise.all([
+    writeFile(protectedRepository.preparedGitHub.custodyKeyPath, randomBytes(32), { mode: 0o600 }),
+    writeFile(
+      protectedRepository.preparedGitHub.privateKeyPath,
+      generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export(pkcs8),
+      { mode: 0o600 },
+    ),
+    writeFile(
+      issuerPublicKeyPath,
+      generateKeyPairSync("ed25519").publicKey.export({ type: "spki", format: "pem" }),
+    ),
+  ]);
+  const worker = await boot(
+    "apps/controller/src/worker.mjs",
+    {
+      PATH: process.env.PATH,
+      NODE_ENV: "production",
+      OCC_CONFIG_PATH: await fixture(t, configuration),
+      OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
+    },
+    undefined,
+    reservedPortArgs(authority),
+  );
+  assert.equal(worker.status, 1, worker.stderr);
+  // The bundled sender reads the authority's online port, which the owner does not have: handing
+  // over the owner fails the bind (WORKER_STARTUP_FAILED) before the database is reached.
+  assert.equal(
+    startupDiagnostic(worker.stderr, "worker.startup-error").code,
+    "PERSISTENCE_UNAVAILABLE",
+    worker.stderr,
+  );
+});
+
+function nativeSenderRefusal(path, code, message) {
   return (error) => {
     assert.equal(error.name, "ConfigurationValidationError");
     assert.deepEqual(
       error.error.details.map((detail) => [detail.path, detail.code]),
       [[path, code]],
     );
+    assert.equal(error.error.details[0].message, message);
     return true;
   };
 }
@@ -983,14 +1118,26 @@ test("repository startup rejects unmatched ownership, registry identity, duratio
     ],
     [(value) => (value.repository.nativeSender.publicCaPath = tls.keyFile), /invalid-public-ca/],
     [(value) => (value.repository.nativeSender.publicCaPath = writableCaPath), /invalid-public-ca/],
-    // The native sender's path contract (finding 2214): an existing CA file under a
-    // non-canonical path is refused at load. The control socket client checks its own path.
+    // An existing CA file under a non-canonical path is refused before file loading.
     [
       (value) =>
         (value.repository.nativeSender.publicCaPath =
           value.repository.nativeSender.publicCaPath.replace(/\/ca\.crt$/, "/./ca.crt")),
-      nativeSenderRefusal("", "INVALID_VALUE"),
+      nativeSenderRefusal(
+        "/publicCaPath",
+        "INVALID_VALUE",
+        "repository.nativeSender.publicCaPath must be a canonical absolute path without ASCII control characters.",
+      ),
     ],
+    // Both diagnostics identify the configured field without repeating the supplied path.
+    ...["private-relative/control.sock", `/${"é".repeat(52)}`].map((controlSocket) => [
+      (value) => (value.repository.nativeSender.controlSocket = controlSocket),
+      nativeSenderRefusal(
+        "/controlSocket",
+        "INVALID_VALUE",
+        "repository.nativeSender.controlSocket must be a canonical absolute path without ASCII control characters, at most 103 UTF-8 bytes.",
+      ),
+    ]),
     [(value) => (value.repository.package = "@example/driver"), /unsupported option package/],
     [(value) => (value.repository.implementation = "other"), /unsupported option implementation/],
     [(value) => (value.drivers.compute.id = "compute-ssh"), /bundled Kubernetes/],
@@ -1035,8 +1182,7 @@ test("repository startup rejects unmatched ownership, registry identity, duratio
 });
 
 test("public CA loading rejects repeated malformed certificates without stalling", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-public-ca-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-public-ca-");
   const path = join(directory, "ca.pem");
   await writeFile(
     path,
@@ -1259,6 +1405,7 @@ test("production embedded replacements preserve their active Service across fail
     configurationId: `cfg_production-${harness.mode}-cutover`,
     configurationKind: "agent",
     configurationGeneration: 1,
+    gatewayManagedMode: true,
     executionAdmission: { version: 2, mode: "unprotected" },
     configuration: admitLoggingConfiguration(
       createHarnessConfiguration(harness.id, "gpt-4.1"),
@@ -1596,6 +1743,59 @@ test("production server and worker resolve singleton startup without an Installa
     "PERSISTENCE_UNAVAILABLE",
   );
   assert.doesNotMatch(worker.stderr, /OCC_INSTALLATION_ID|explicit Installation/);
+});
+
+// An unwritable readiness path left the worker running but never Ready (finding 2311). Both
+// health markers are probed before PostgreSQL; readiness through a sibling file, since its
+// marker must not appear before queue health does. The code names the setting (finding 2327),
+// whether the path is relative, in a missing directory or an existing directory.
+test("worker refuses an unwritable readiness or liveness path before opening PostgreSQL", async (t) => {
+  const path = await fixture(t);
+  const directory = await temporaryDirectory(t, "occ-worker-markers-");
+  const shared = {
+    PATH: process.env.PATH,
+    NODE_ENV: "production",
+    OCC_CONFIG_PATH: path,
+    OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
+  };
+  const occupied = join(directory, "occupied");
+  await mkdir(join(occupied, "entry"), { recursive: true });
+  const refusals = [
+    ["OCC_WORKER_READINESS_PATH", "WORKER_READINESS_PATH_INVALID"],
+    ["OCC_WORKER_LIVENESS_PATH", "WORKER_LIVENESS_PATH_INVALID"],
+  ].flatMap(([setting, code]) =>
+    ["marker", join(directory, "missing", "marker"), occupied].map((marker) => ({
+      setting,
+      code,
+      marker,
+    })),
+  );
+  const ready = join(directory, "ready");
+  const [writable, ...refused] = await settled([
+    boot("apps/controller/src/worker.mjs", { ...shared, OCC_WORKER_READINESS_PATH: ready }),
+    ...refusals.map(({ setting, marker }) =>
+      boot("apps/controller/src/worker.mjs", { ...shared, [setting]: marker }),
+    ),
+  ]);
+  for (const [index, { setting, code, marker }] of refusals.entries()) {
+    const worker = refused[index];
+    assert.equal(worker.status, 1, `${setting}=${marker}`);
+    assert.equal(
+      startupDiagnostic(worker.stderr, "worker.startup-error").code,
+      code,
+      `${setting}=${marker}`,
+    );
+    // The code names the setting; the configured path stays out of the log.
+    assert.ok(!worker.stderr.includes(directory), setting);
+  }
+  // A writable path reaches PostgreSQL, leaving neither the marker nor the probe behind.
+  assert.equal(writable.status, 1);
+  assert.equal(
+    startupDiagnostic(writable.stderr, "worker.startup-error").code,
+    "PERSISTENCE_UNAVAILABLE",
+  );
+  assert.deepEqual((await readdir(directory)).sort(), ["occupied"]);
+  assert.deepEqual(await readdir(occupied), ["entry"]);
 });
 
 test("only the actual API process reads ChatGPT admin credentials and backend accounts require PostgreSQL", async (t) => {
@@ -2357,6 +2557,66 @@ test("a repository OpenShell authority refusal names its own block", () => {
       return true;
     },
   );
+});
+
+test("production Kubernetes Compute refuses disabled ServicePrincipal credentials unless a Sandbox is selected", async (t) => {
+  // Finding 1753: #1400 dropped this production guard for every install, not only
+  // Sandbox-backed ones, so a hand-written Installation could run Agents without it.
+  const disabled = (configuration) => {
+    configuration.drivers.compute.configuration.servicePrincipalCredentials = {
+      mode: "disabled",
+    };
+    return configuration;
+  };
+  const details = [
+    {
+      path: "/drivers/compute/configuration/servicePrincipalCredentials/mode",
+      code: "INVALID_VALUE",
+      message:
+        "drivers.compute.configuration.servicePrincipalCredentials.mode must be projectedServiceAccountToken in production unless a Sandbox Driver is selected.",
+    },
+  ];
+  const load = async (mode, configuration) =>
+    loadInstallationConfiguration({
+      mode,
+      environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
+    });
+  await assert.rejects(load("production", disabled(installation())), (error) => {
+    assert.equal(
+      formatStartupConfigurationFailure(error),
+      `DRIVER_CONFIGURATION_INVALID: ${JSON.stringify(details)}`,
+    );
+    return true;
+  });
+  // Development, projected credentials, and a Sandbox-backed production install still load.
+  for (const [mode, configuration] of [
+    ["development", disabled(installation())],
+    ["production", installation()],
+    ["production", disabled(credentialProxyInstallation())],
+  ]) {
+    const loaded = await load(mode, configuration);
+    assert.equal(loaded.installation.occ.cluster, "production-west");
+  }
+  // API and worker startup logs carry the same field refusal.
+  const shared = {
+    PATH: process.env.PATH,
+    NODE_ENV: "production",
+    OCC_CONFIG_PATH: await fixture(t, disabled(installation())),
+    OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
+  };
+  const [server, worker] = await settled([
+    boot("apps/controller/src/server.mjs", { ...shared, ...productionServer }),
+    boot("apps/controller/src/worker.mjs", shared),
+  ]);
+  for (const [result, event] of [
+    [server, "startup-error"],
+    [worker, "worker.startup-error"],
+  ]) {
+    assert.equal(result.status, 1, result.stderr);
+    const diagnostic = startupDiagnostic(result.stderr, event);
+    assert.equal(diagnostic.code, "DRIVER_CONFIGURATION_INVALID", result.stderr);
+    assert.deepEqual(diagnostic.details, details);
+  }
 });
 
 test("a leftover repository broker peer names its field in API and worker startup logs", async (t) => {

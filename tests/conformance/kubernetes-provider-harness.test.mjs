@@ -1,23 +1,35 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFile, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { createServer as createHttpsServer } from "node:https";
 import { promisify } from "node:util";
+import { inflateRawSync } from "node:zlib";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
 import { waitFor } from "../helpers/qa-utils.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
-import { openAiStaticProvider } from "../../apps/controller/src/drivers/egress-proxy/openai-provider.ts";
+import { listen } from "../helpers/listen.mjs";
+import { createOpenAiStaticProvider } from "../../apps/controller/src/drivers/egress-proxy/openai-provider.ts";
 import {
   HARNESS_EGRESS_ENROLLMENT_HELPER,
   HARNESS_EGRESS_ENROLLMENT_PATH,
 } from "../../apps/controller/src/drivers/compute/harness-egress-enrollment.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import {
+  AGENT_RUNTIME_ENTRYPOINT,
+  AGENT_WITH_NODE_ENTRYPOINT,
+  PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
+  PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
+  RUNTIME_WRAPPER_COMMAND,
+} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import {
+  nodeProgramArguments,
+  withoutLineComments,
+} from "../../apps/controller/src/drivers/compute/node-program.ts";
 import test from "node:test";
 import {
   admitLoggingConfiguration,
@@ -36,6 +48,7 @@ import {
   digest,
   selectorMatches,
 } from "../helpers/kubernetes-routed-scenarios.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const providerUrl = "ws://tenant--sandbox.openshell.localhost:8080/";
 const providerWorkspaceRoot = "/sandbox/enterprise";
@@ -71,8 +84,17 @@ async function preparedEndpoint(fixture = providerEndpointFixture(), context) {
   return fixture;
 }
 
+const openAiStaticProvider = createOpenAiStaticProvider();
+
 test("provider Harness endpoint bootstraps Gateway before provisioning and requests node setup", async () => {
-  const fixture = providerEndpointFixture();
+  const fixture = providerEndpointFixture({
+    revisionOverrides: {
+      plugins: {
+        driver: { id: "codex-plugin", implementation: "occ/codex-plugin" },
+        plugins: { "codex-plugin:linear@openai-curated-remote": { enabled: true } },
+      },
+    },
+  });
   const {
     driver,
     revision,
@@ -95,6 +117,17 @@ test("provider Harness endpoint bootstraps Gateway before provisioning and reque
   assert.equal(endpoints.length, 0);
   const bootstrapGateway = read("Deployment", gatewayName, gatewayNamespace);
   assert.ok(bootstrapGateway);
+  // This Gateway must issue the setup needed to create the Harness. Waiting for
+  // the Harness's ordinary peer status here would deadlock first deployment.
+  const gatewayEnvironment = bootstrapGateway.spec.template.spec.containers[0].env;
+  assert.equal(
+    gatewayEnvironment.find(({ name }) => name === "OPENCLAW_CODEX_PLUGINS_PREPARED")?.value,
+    "true",
+  );
+  assert.equal(
+    gatewayEnvironment.some(({ name }) => name === "OPENCLAW_PLUGIN_STATUS_PORT"),
+    false,
+  );
   assert.notEqual(
     bootstrapGateway.spec.template.spec.containers[0].env.find(
       ({ name }) => name === "APP_SERVER_URL",
@@ -113,11 +146,18 @@ test("provider Harness endpoint bootstraps Gateway before provisioning and reque
   assert.deepEqual(setupRequests, [
     {
       url: driver.getGatewayEndpoint(revision),
-      nodeUrl: `ws://${gatewayName}.${gatewayNamespace}.svc.cluster.local:8080/node`,
+      // The node needs the scoped TLS route for HTTP transfers and proxy attribution.
+      nodeUrl: `wss://agents.example.internal/namespaces/${revision.namespaceId}/agents/${revision.agentId}/node`,
     },
   ]);
   assert.equal(provisions.length, 1);
   assert.equal(endpoints.length, 1);
+  assert.equal(
+    provisions[0].requirements.environment.some(
+      ({ name }) => name === "OPENCLAW_PLUGIN_STATUS_PORT",
+    ),
+    false,
+  );
 });
 
 test("provider Harness endpoint preparation re-observes the same revision across Pod transitions", async (t) => {
@@ -545,6 +585,40 @@ for (const scenario of [
   });
 }
 
+test("provider Harness reads a supervisor's held failure while its workspace node is pending", async () => {
+  // The Codex Harness supervisor holds a failed state migration or workspace setup before
+  // Codex and the workspace node start, so the node never connects. Compute reads the hold
+  // through the provider and fails the revision with it instead of waiting for the
+  // deadline as WORKSPACE_NODE_PENDING (finding 2686).
+  const fixture = await endpointWithGateway();
+  fixture.observePods([fixture.pod("ready")]);
+  fixture.driver.nodeEnrollment.isConnected = async () => false;
+  const observations = [];
+  let answer = { state: "serving" };
+  fixture.sandbox.harnessStatus = async (context) => {
+    observations.push(context);
+    return answer;
+  };
+  // A Codex that serves while its node pairs keeps the named wait.
+  assert.deepEqual(await fixture.prepare(), {
+    ...expectedRevision(fixture),
+    ready: false,
+    pendingReason: "WORKSPACE_NODE_PENDING",
+  });
+  assert.equal(observations.length, 1);
+  assert.equal(observations[0].transportToken, "test-transport");
+  for (const check of ["state-migration", "workspace-baseline"]) {
+    const runtimeFailure = { ...withoutCause, check, code: "UNAVAILABLE" };
+    answer = { state: "failed", runtimeFailure };
+    assert.deepEqual(await fixture.prepare(), {
+      ...expectedRevision(fixture),
+      ready: false,
+      runtimeFailure,
+    });
+  }
+  assert.equal(observations.length, 3);
+});
+
 test("provider Harness unready Pod prevents transport status observation", async () => {
   const fixture = await endpointWithGateway();
   let observations = 0;
@@ -687,15 +761,14 @@ test("provider Harness verified endpoint trust is projected before rollout and i
       client.terminate();
     }
     sockets.close();
-    return new Promise((resolve) => server.close(resolve));
   });
   sockets.on("connection", (socket, request) => {
     assert.equal(request.headers.authorization, "Bearer test-transport");
     socket.send("trust-ok");
   });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const providerPort = server.address().port;
+  // listen() registers the server close after the WebSocket teardown above, so the
+  // clients and the WebSocket server still close first.
+  const providerPort = await listen(t, server);
   let providerCaBundle = tls.caBundle;
 
   const providerUrl = `wss://localhost:${providerPort}/`;
@@ -861,6 +934,7 @@ test("provider Harness protected execution is released only on current signed in
   const sandbox = {
     ...fixture.sandbox,
     capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking"],
     cleanup: assert.fail,
     enrollHarness: assert.fail,
@@ -1245,8 +1319,7 @@ test("provider Harness protected execution is released only on current signed in
         driver.prepareRevision(zero, zeroContext),
         (error) => error === released,
       );
-      const directory = await mkdtemp(join(tmpdir(), "oce-compute-deny-all-"));
-      t.after(() => rm(directory, { recursive: true, force: true }));
+      const directory = await temporaryDirectory(t, "oce-compute-deny-all-");
       const calls = join(directory, "codex-calls");
       await writeFile(calls, "");
       // Stub only the CLI. Use the owning prepareRevision's actual files and environment.
@@ -1388,6 +1461,95 @@ test("provider Harness protected execution is released only on current signed in
         ]);
       }
       core.listNamespacedPod = originalList;
+    },
+  );
+  await t.test(
+    "an admitted protected Codex launch renders its no-connection-retry command; a stored revision keeps its bytes",
+    async () => {
+      // Pin the commands the Driver renders, not only the exported entrypoints (#3310,
+      // finding 2256): the Sandbox launch carries the workspace node; activation renders
+      // the same Harness without it for the endpoint and status reads.
+      const admission = driver.admitRevision(protectedRevision);
+      assert.equal(admission, "protected-codex-no-connection-retry:v1");
+      const admitted = {
+        ...protectedRevision,
+        compute: { ...protectedRevision.compute, admission },
+      };
+      // Controller-rendered programs reach `node -e` compressed behind a fixed loader.
+      const program = ([loader, ...pieces]) => {
+        assert.equal(loader, nodeProgramArguments("")[0]);
+        return inflateRawSync(Buffer.from(pieces.join(""), "base64")).toString("utf8");
+      };
+      const pod = fixture.pod("protected-revision");
+      pod.metadata.labels["openclaw.dev/revision"] = protectedRevision.id;
+      pod.metadata.labels["app.kubernetes.io/name"] =
+        "agent-" + digest(protectedRevision.agentId) + "-rev-" + digest(protectedRevision.id);
+      const originalList = core.listNamespacedPod;
+      const { enrollHarness, harnessEndpoint } = sandbox;
+      core.listNamespacedPod = async (request) =>
+        request.labelSelector.includes("openclaw.dev/revision=" + protectedRevision.id)
+          ? { items: [pod] }
+          : originalList(request);
+      observation = installed;
+      current = true;
+      try {
+        for (const target of [admitted, protectedRevision]) {
+          const rendered = [];
+          sandbox.enrollHarness = async ({ requirements }) => {
+            rendered.push([requirements.command, true]);
+            throw released;
+          };
+          sandbox.harnessEndpoint = async ({ requirements }) => {
+            rendered.push([requirements.command, false]);
+            throw released;
+          };
+          for (const lifecycle of ["prepareRevision", "activateRevision"]) {
+            await assert.rejects(
+              driver[lifecycle](target, protectedContext),
+              (error) => error === released,
+            );
+          }
+          assert.equal(rendered.length, 2);
+          const disabled = target === admitted;
+          for (const [command, node] of rendered) {
+            const legacy = node ? AGENT_WITH_NODE_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT;
+            const updated = node
+              ? PROTECTED_CODEX_WITH_NODE_ENTRYPOINT
+              : PROTECTED_CODEX_RUNTIME_ENTRYPOINT;
+            // A stored revision without the marker keeps its exact immutable command.
+            assert.deepEqual(command, [
+              ...RUNTIME_WRAPPER_COMMAND,
+              ...nodeProgramArguments(disabled ? updated : legacy),
+            ]);
+            const outer = program(command.slice(RUNTIME_WRAPPER_COMMAND.length));
+            const child = /\n\s+name: "Codex",\n\s+args: (.+),\n/.exec(outer);
+            assert.equal(child !== null, node);
+            const codex = node ? program(JSON.parse(child[1]).slice(1)) : outer;
+            assert.equal(
+              codex,
+              withoutLineComments(
+                disabled ? PROTECTED_CODEX_RUNTIME_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT,
+              ),
+            );
+            // Only the two model-calling invocations: the authentication probe and app-server.
+            assert.equal(
+              codex.match(/unbounded_connection_retries/g)?.length ?? 0,
+              disabled ? 2 : 0,
+            );
+            if (disabled) {
+              assert.match(
+                codex,
+                /spawnSync\(codexExecutable\(\), \[\s+\.\.\.nativeTelemetryArguments,\s+"--disable", "unbounded_connection_retries",\s+\.\.\.disabled/,
+              );
+              assert.match(codex, /"--disable", "unbounded_connection_retries",\s+"app-server",/);
+            }
+          }
+        }
+      } finally {
+        core.listNamespacedPod = originalList;
+        sandbox.enrollHarness = enrollHarness;
+        sandbox.harnessEndpoint = harnessEndpoint;
+      }
     },
   );
 });
