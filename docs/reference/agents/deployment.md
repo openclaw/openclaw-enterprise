@@ -162,15 +162,22 @@ unschedulable Pod, `REVISION_IMAGE_PULL_FAILED` for `ErrImagePull` or
 while Kubernetes retries failed workspace setup. For a Compute-owned Harness,
 `WORKSPACE_NODE_PENDING` means the ready workloads await the node's Gateway connection.
 
-For a provider-owned Harness, `PROVIDER_HARNESS_POD_PENDING`, `WORKSPACE_NODE_PENDING`
-or `CREDENTIAL_ATTACHMENT_PENDING` names the first pending check. Later checks
-may not have run. For these checks the worker retains the durable reason
-`REVISION_INCOMPLETE`, also the public fallback for absent or unknown readiness
-detail. Terminal deployments clear progress. Dedicated activation reports
-`WORKSPACE_NODE_BINDING_PENDING` until the Gateway applies the node binding,
-then `WORKSPACE_NODE_PENDING` until the node connects. Rechecks start at 500 ms
-and reach 5 s at deployment age 200 s. Readiness, a held failure such as
-`WORKSPACE_SETUP_REFUSED`, or the convergence deadline ends the wait.
+For a provider-owned Harness, look at the first check the worker reports:
+
+| Progress code                   | What to inspect                                                                                 |
+| ------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `PROVIDER_HARNESS_POD_PENDING`  | Is there exactly one matching provider Pod, and is it Ready?                                    |
+| `WORKSPACE_NODE_PENDING`        | The Gateway is Ready. Has the workspace node enrolled and connected with the required commands? |
+| `CREDENTIAL_ATTACHMENT_PENDING` | Are all expected credential attachments ready?                                                  |
+
+Later checks may not have run. Missing or unknown detail gives the generic
+`REVISION_INCOMPLETE` message. Terminal deployments clear progress.
+
+Dedicated activation reports `WORKSPACE_NODE_BINDING_PENDING` until the Gateway
+applies the node binding, then `WORKSPACE_NODE_PENDING` until the node connects.
+Rechecks start at 500 ms and reach 5 s at deployment age 200 s. Readiness, a
+held failure such as `WORKSPACE_SETUP_REFUSED`, or the convergence deadline ends
+the wait.
 
 A dedicated gateway that refuses its own in-Pod CLI as unauthorized can never
 apply its workspace node, so activation fails at once with
