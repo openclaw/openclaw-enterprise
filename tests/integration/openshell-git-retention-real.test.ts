@@ -12,6 +12,7 @@ import { verifyFirstAgentModel } from "../../scripts/first-agent-model.mjs";
 import { createManagedWorkloadExec } from "../helpers/egress-managed-workload-exec.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createOpenShellGitInstallation } from "../helpers/openshell-git-installation.mjs";
+import { createOpenShellGitDenial } from "../helpers/openshell-git-denial.mjs";
 
 const selected = process.env.OCC_TEST_OPENSHELL_K3D_REAL === "1";
 process.env.OCC_TEST_LOCAL_FIRST_AGENT_SANDBOX_DRIVER = "openshell";
@@ -263,6 +264,21 @@ test(
       sandboxName: original.sandbox.name,
       sandboxId: original.sandbox.id,
     };
+    const executable = await execute(target, [
+      "sh",
+      "-ceu",
+      'readlink -f "$(git --exec-path)/git-remote-https"',
+    ]);
+    const gitDenial = createOpenShellGitDenial({
+      gatewayClient,
+      workspace,
+      sandbox: original.sandbox.name,
+      sandboxId: original.sandbox.id,
+      supervisor,
+      readSupervisor: () => fixture.verifySupervisorImage(supervisorTarget),
+      executable: executable.stdout.toString("utf8").trim(),
+      signal: t.signal,
+    });
     assert.match(origin.repository, /^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_-]+$/);
     const gitUrl = `https://github.com/${origin.repository}.git`;
     const directory = `/sandbox/enterprise/git-retention-${suffix}`;
@@ -346,30 +362,72 @@ test(
         );
       }
       await verifyModelTurn(stage);
-      const result = await execute(target, [
-        "sh",
-        "-ceu",
-        [
-          `test "$(cat '${directory}/identity')" = '${suffix}'`,
-          `printf '%s' '${stage}' > '${directory}/non-git'`,
-          `test "$(cat '${directory}/non-git')" = '${stage}'`,
-          "git --version >/dev/null",
-          `set +e; ${git} >'${directory}/git.out' 2>'${directory}/git.err'; status=$?; set -e`,
-          'test "$status" -ne 0; test "$status" -ne 126; test "$status" -ne 127',
-          `test ! -s '${directory}/git.out'`,
-          // Require Git's C-locale status diagnostic, not digits in its URL:
-          // a repository named a403b must not turn a DNS failure into a pass.
-          `grep -Eq '(The requested URL returned error: 403|CONNECT tunnel failed, response 403)$' '${directory}/git.err'`,
-          "printf '%s' 'non-git-succeeded;fresh-git-denied'",
-        ].join("; "),
-      ]);
-      assert.equal(result.stdout.toString("utf8"), "non-git-succeeded;fresh-git-denied");
-      assert.deepEqual(origin.snapshot(), before, `${stage}: denied Git reached the origin`);
+      // Fixed exit codes identify the failed check without returning Git output.
+      // Every nonzero exit still fails the managed Exec and this installed case.
+      try {
+        const baseline = await gitDenial.snapshot();
+        const startedAt = Date.now();
+        const result = await execute(target, [
+          "sh",
+          "-ceu",
+          [
+            `test "$(cat '${directory}/identity')" = '${suffix}' || exit 41`,
+            `printf '%s' '${stage}' > '${directory}/non-git' || exit 42`,
+            `test "$(cat '${directory}/non-git')" = '${stage}' || exit 43`,
+            "git --version >/dev/null || exit 44",
+            `set +e; ${git} >'${directory}/git.out' 2>'${directory}/git.err'; status=$?; set -e`,
+            'test "$status" -ne 0 || exit 45',
+            'test "$status" -ne 126 && test "$status" -ne 127 || exit 46',
+            `test ! -s '${directory}/git.out' || exit 47`,
+            "printf '%s' 'non-git-succeeded;fresh-git-failed'",
+          ].join("; "),
+        ]);
+        const endedAt = Date.now();
+        assert.equal(result.stdout.toString("utf8"), "non-git-succeeded;fresh-git-failed");
+        // A fresh absolute name avoids resolver search domains. Stock emits the
+        // DNS refusal before answering, even if it supplies a synthetic address;
+        // only that ordered supplier marker, not lookup status, closes observation.
+        const markerHost = `git-retention-${randomUUID()}.invalid`;
+        await execute(target, [
+          "node",
+          "-e",
+          "require('node:dns').lookup(process.argv[1], { family: 4 }, () => {});",
+          `${markerHost}.`,
+        ]);
+        const markerEndedAt = Date.now();
+        // Stock mediates workload connect() before HTTP. Require its explicit
+        // policy denial during this isolated attempt, not a generic Git failure.
+        const denial = await gitDenial.expectAfter(baseline, {
+          startedAt,
+          endedAt,
+          markerHost,
+          markerEndedAt,
+        });
+        assert.deepEqual(origin.snapshot(), before, `${stage}: denied Git reached the origin`);
+        await evidence("git-policy-denied", { stage, ...denial });
+      } catch (error) {
+        // Retain only counters and equality, including when a shell subcheck
+        // fails before the normal no-origin assertion. Diagnostics are best effort.
+        try {
+          const after = origin.snapshot();
+          await evidence("retained-execution-failed", {
+            stage,
+            connectionsBefore: before.connections,
+            connectionsAfter: after.connections,
+            requestsBefore: before.requests,
+            requestsAfter: after.requests,
+            originUnchanged: isDeepStrictEqual(after, before),
+          });
+        } catch {
+          // Preserve the original Exec failure if checkpointing also fails.
+        }
+        throw error;
+      }
       assert.deepEqual((await readExecution()).identity, original.identity);
       await evidence(stage, {
         ...identity,
         nonGit: "succeeded",
-        freshGit: "http-403",
+        freshGit: "transparent-policy-denied",
         connections: before.connections,
         requests: before.requests,
       });

@@ -5363,7 +5363,36 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       undefined,
     );
   }
+  const retainedFailures = ["after-expiry", "after-worker-restart"].map((stage, index) => ({
+    event: "retained-execution-failed",
+    stage,
+    connectionsBefore: 2,
+    connectionsAfter: 2 + index,
+    requestsBefore: 1,
+    requestsAfter: 1 + index,
+    originUnchanged: index === 0,
+  }));
+  const policyDenials = ["after-expiry", "after-worker-restart"].map((stage) => ({
+    event: "git-policy-denied",
+    stage,
+    reason: "transparent_tcp_policy_denied",
+    policyReason: "endpoint-not-admitted",
+    marker: "policy-dns-ineligible",
+    host: "github.com",
+    port: 443,
+    executable: "/usr/lib/git-core/git-remote-http",
+    count: 1,
+    startedAt: 1_800_000_000_000,
+    endedAt: 1_800_000_001_000,
+  }));
   const retentionReceipts = [
+    ...policyDenials.map((receipt) => ({ ...receipt, message: forbidden, credential: forbidden })),
+    ...retainedFailures.map((receipt) => ({
+      ...receipt,
+      credential: forbidden,
+      stdout: forbidden,
+      stderr: forbidden,
+    })),
     expiryDiagnostic,
     {
       event: "supervisor-trust",
@@ -5425,7 +5454,7 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       event,
       ...runtimeReceipt,
       nonGit: "succeeded",
-      freshGit: "http-403",
+      freshGit: "transparent-policy-denied",
       connections: 2,
       requests: 1,
     })),
@@ -5448,6 +5477,29 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     { event: "cleanup", outcome: "passed" },
   ].map((value) => ({ kind: retentionKind, ...value, unexpected: forbidden }));
   const invalidRetention = [
+    ...[
+      ["stage", "before-expiry"],
+      ["reason", "transparent_tcp_identity_unavailable"],
+      ["policyReason", forbidden],
+      ["marker", forbidden],
+      ["host", forbidden],
+      ["port", 80],
+      ["executable", forbidden],
+      ["count", 0],
+      ["count", 2001],
+      ["count", { toString: 0, credential: forbidden }],
+      ["startedAt", forbidden],
+      ["endedAt", -1],
+    ].map(([field, value]) => ({ ...policyDenials[0], [field]: value })),
+    ...[
+      ["stage", "before-expiry"],
+      ["stage", forbidden],
+      ["connectionsBefore", forbidden],
+      ["connectionsAfter", -1],
+      ["requestsBefore", 0.5],
+      ["requestsAfter", Number.MAX_SAFE_INTEGER + 1],
+      ["originUnchanged", forbidden],
+    ].map(([field, value]) => ({ ...retainedFailures[0], [field]: value })),
     { ...expiryDiagnostic, polls: -1 },
     { ...expiryDiagnostic, logReadSuccesses: 0.5 },
     { ...expiryDiagnostic, driverSuccessSeen: forbidden },
@@ -5771,6 +5823,14 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     receipts.map(({ event }) => event),
     retentionReceipts.map(({ event }) => event),
   );
+  assert.deepEqual(
+    receipts.filter(({ event }) => event === "retained-execution-failed"),
+    retainedFailures.map((receipt) => ({ kind: retentionKind, ...receipt })),
+  );
+  assert.deepEqual(
+    receipts.filter(({ event }) => event === "git-policy-denied"),
+    policyDenials.map((receipt) => ({ kind: retentionKind, ...receipt })),
+  );
   assert.equal(summary.sourceSha, currentSha());
   assert.equal(summary.files[0].path, "tests/integration/measurements.test.mjs");
   assert.deepEqual(
@@ -5827,8 +5887,10 @@ test("run records only allowlisted measurements from test diagnostics", async (t
   assert.equal(unconfirmed.driverSuccessSeen, true);
   assert.equal(unconfirmed.workerAcknowledgementSeen, false);
   assert.equal(unconfirmed.observationsTruncated, true);
-  assert.ok(!artifact.includes(forbidden));
-  assert.ok(!artifact.includes(opaque));
+  for (const output of [result.stdout, result.stderr, artifact]) {
+    assert.ok(!output.includes(forbidden));
+    assert.ok(!output.includes(opaque));
+  }
 
   // A later failure makes the reporter emit its raw output buffer. Invalid
   // receipts and unselected fields must still not fall through into that buffer.

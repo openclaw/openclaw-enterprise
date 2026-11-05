@@ -2,6 +2,10 @@
 
 Complete the installation setup for [local k3d](local-setup.md), [Kubernetes](kubernetes-setup.md), or [Amazon EKS](eks-openshell-setup.md). Continue in the same Bash shell at the root of the matching release checkout. Use the API connection, namespace and browser origin from setup.
 
+Use this OpenShell workflow to evaluate Agent deployment and model execution.
+A successful run does not complete the
+[remaining OpenShell production qualification](../../reference/drivers/openshell-sandbox.md#remaining-qualification-work).
+
 ## 1. Select or register the model credential
 
 Choose one credential for the dedicated Codex Agent. Both paths use the [OpenShell Credential Gateway](../../reference/drivers/openshell-credential-gateway.md#source-type-catalog).

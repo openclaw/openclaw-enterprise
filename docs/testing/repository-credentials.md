@@ -226,6 +226,39 @@ not live GitHub access or a different published image set.
 An unsuccessful expiry wait retains bounded worker outcomes and polling counters;
 these diagnostics do not establish successful withdrawal or runtime retention.
 
+A failed retained-execution check records before/after origin counters and whether
+the origin snapshot changed. Its managed-Exec exit code identifies the failed
+check without retaining Git output:
+
+| Code | Failed check                        |
+| ---- | ----------------------------------- |
+| 41   | Original identity file contents     |
+| 42   | File write                          |
+| 43   | File readback                       |
+| 44   | Git executable availability         |
+| 45   | Git unexpectedly succeeded          |
+| 46   | Git could not execute (126 or 127)  |
+| 47   | Failed Git returned nonempty stdout |
+
+Stock mediates workload connections before HTTP. The test requires a supervisor
+`transparent_tcp_policy_denied` event for `github.com:443` and the measured Git
+executable, immediately preceded by the warning that the endpoint is not allowed
+by any policy. After Git exits, a normal filtered DNS lookup of a fresh absolute
+`.invalid.` name supplies an ordered end marker; lookup status is not proof.
+The reader waits through that exact marker, checks log continuity through every
+poll, and rejects observed competing or unpaired staged denials in the Git window.
+Unchanged supervisor identity excludes foreign events. No other client calls
+`github.com:443` during the isolated attempt.
+
+These observations accompany failed Git, successful file operations and unchanged
+origin counters. The event has no Exec request ID or process ID. Missing markers,
+pairs or retained history fail qualification, but stock producer drops are
+undetectable: this is bounded observed evidence, not a lossless record of every
+connection’s cause. Raw logs and Git output are not retained in result receipts.
+
+The diagnostic receipts do not replace successful shell operations, the explicit
+policy denial and unchanged-origin assertions.
+
 The case is registered in the `openshell` lane. For a reviewed same-repository PR,
 a maintainer selects [QA Matrix Advisory](ci/qa-advisory.md#trigger) with `full-qa`.
 The existing environment supplies credentials inside the job. The narrower
