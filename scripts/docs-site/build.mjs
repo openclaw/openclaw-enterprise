@@ -55,39 +55,24 @@ const route = (source) =>
 // contents, and source links agree. The renderer's own ID stays as an alias.
 function githubHeadingIds(parsed, ids) {
   const github = new GithubSlugger();
-  const headings = [];
+  const headingIds = new Map();
   for (let i = 0; i < parsed.tokens.length; i++) {
     const token = parsed.tokens[i];
-    if (token.type === "heading_open") {
-      headings.push({
-        id: token.attrGet("id"),
-        mint: token.meta?.anchorAlias,
-        slug: github.slug(githubHeadingVisibleText(parsed.tokens[i + 1])),
-      });
+    if (token.type !== "heading_open") {
+      continue;
     }
-  }
-  // Authored HTML and component IDs keep their names; a heading never takes one.
-  const taken = new Set(parsed.ids);
-  for (const { id, mint } of headings) {
-    taken.delete(id);
-    taken.delete(mint);
-  }
-  const kept = (heading) => heading.slug === heading.id || taken.has(heading.slug);
-  for (const heading of headings.filter(kept)) {
-    taken.add(heading.id);
-  }
-  for (const heading of headings) {
-    heading.canonical = kept(heading) ? heading.id : heading.slug;
-    taken.add(heading.canonical);
-    ids.add(heading.canonical);
-  }
-  const headingIds = new Map();
-  for (const heading of headings) {
-    headingIds.set(heading.id, {
-      id: heading.canonical,
-      alias: taken.has(heading.id) ? undefined : heading.id,
-      // The renderer's alias span would repeat an ID that now names a heading.
-      droppedMint: heading.mint && taken.has(heading.mint) ? heading.mint : undefined,
+    const id = token.attrGet("id");
+    const mint = token.meta?.anchorAlias;
+    const slug = github.slug(githubHeadingVisibleText(parsed.tokens[i + 1]));
+    // Existing IDs keep their owner: a heading takes its slug only if nobody else has it,
+    // and an empty slug keeps the renderer's ID.
+    const canonical = slug && (slug === id || slug === mint || !ids.has(slug)) ? slug : id;
+    ids.add(canonical);
+    headingIds.set(id, {
+      id: canonical,
+      alias: canonical === id ? undefined : id,
+      // The renderer's alias span would repeat an ID that now names the heading.
+      droppedMint: canonical === mint ? mint : undefined,
     });
   }
   return headingIds;
