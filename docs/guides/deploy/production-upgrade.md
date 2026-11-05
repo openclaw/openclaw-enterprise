@@ -9,8 +9,8 @@ Plan any traffic handoff separately from this in-place upgrade.
 
 1. [Select and prepare the release](#prepare-the-release). Record the live
    baseline and take the backups required by the [upgrade checklist](upgrade-checklist.md).
-2. [Preflight the target](#rehearse-before-the-maintenance-window). Rehearse to
-   measure interruption.
+2. [Preflight the target](#rehearse-before-the-maintenance-window).
+   [Compare manifests](upgrade-baseline.md#compare-the-candidate-with-the-installed-manifest).
 3. Freeze writers. Apply the [control plane](#upgrade-the-control-plane) or
    [runtime](#upgrade-agent-runtimes) upgrade once with fresh evidence.
 4. [Verify the release](#verify-the-release) with a real workload.
@@ -382,8 +382,10 @@ workload inventories.
 [Verify production workloads](production-agents.md#verify-production-workloads)
 for each execution mode and provider in use. Require a fresh model response and
 check relevant channels, credentials, workspace data, and native UI access.
-If you retain conversations, reopen the test conversation on the new release,
-find the marker, and get a fresh reply there.
+For retained conversations, reopen the test conversation on the new release,
+find the marker and obtain a fresh reply.
+
+After promotion, [verify the served Console](../../release/container-promotion.md#verify-the-served-console).
 
 ## Recover from a partial failure
 

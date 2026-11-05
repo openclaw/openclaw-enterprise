@@ -1,5 +1,6 @@
 ---
 doc-schema-version: 1
+tags: [human_verified]
 ---
 
 # Repository credential tests
@@ -94,10 +95,14 @@ a running Kubernetes Pod or model turn.
 ```sh
 pnpm credentials:build
 node --test tests/integration/repository-credentials-package.test.ts
+REPOSITORY_CREDENTIALS_APP_ROOT="$PWD/.build/repository-credentials/client/dist" \
+  node --test tests/integration/repository-credentials-router.test.mjs
 ```
 
 This verifies the emitted service and client without workspace source or runtime
-`node_modules`. To test those artifacts together, build both images as described in
+`node_modules`, including hooks reached through relative symlinks after package
+relocation. The router run uses the generated hook launchers for native Git checks.
+To test those artifacts together, build both images as described in
 the [operator guide](../guides/repository-credentials/standalone-service.md#container-images),
 then run:
 
@@ -228,7 +233,7 @@ The dedicated installed qualification is **disabled**. Its old automatic cleanup
 could race with changes to a branch or pull request. Preparation and selected
 tests fail before creating resources. Do not use that lane for qualification.
 
-Use the [QA matrix](ci.md#qa-matrix) for an installed Agent's real Git journey. It
+Use the [QA matrix](ci/qa-advisory.md) for an installed Agent's real Git journey. It
 requires an authorized disposable repository and independent provider readback;
 check the commit, the refused push outside the granted branch, credential disposal,
 and cleanup results. Its `git-only` grant opens no pull request. A direct

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { chmod, mkdir, readdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -10,6 +10,8 @@ import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
   collectNativeWorkerFailure,
+  nativePlacementReadRetryable,
+  nativeWorkerHistoryEvidence,
   nativeWorkerPlacementObservation,
   nativeWorkerTurnObservation,
 } from "../helpers/local-first-agent-native.mjs";
@@ -196,6 +198,8 @@ test("run resolves lane documents relative to the manifest and preserves ordered
       'import test from "node:test";',
       'test("first file sees scoped env", () => {',
       '  assert.equal(process.env.CI_RUNNER_SCOPED_VALUE, "one");',
+      "  assert.equal(process.env.ACTIONS_RUNTIME_TOKEN, undefined);",
+      "  assert.equal(process.env.ACTIONS_RESULTS_URL, undefined);",
       "  assert.match(process.env.OCC_TEST_PRODUCTION_UPGRADE_CONTROLLER_IMAGE, /@sha256:d{64}$/);",
       "  assert.match(process.env.OCC_TEST_PRODUCTION_UPGRADE_RUNTIME_IMAGE, /@sha256:e{64}$/);",
       "});",
@@ -254,6 +258,8 @@ test("run resolves lane documents relative to the manifest and preserves ordered
       resultsPath,
     ],
     {
+      ACTIONS_RUNTIME_TOKEN: "synthetic-cache-token",
+      ACTIONS_RESULTS_URL: "https://cache.example.test/",
       OCC_PROBE_CONTROLLER_IMAGE: `private.example/current-controller@sha256:${"b".repeat(64)}`,
       OCC_PROBE_BROKER_IMAGE: `private.example/current-broker@sha256:${"c".repeat(64)}`,
       OCC_PROBE_OLD_CONTROLLER_IMAGE: `private.example/old-controller@sha256:${"d".repeat(64)}`,
@@ -619,6 +625,27 @@ test("run fails missing expected tests, skipped expected tests, skips, todos, an
 
   const manifest = JSON.parse(await readFile(join(root, "manifest.json"), "utf8"));
   delete manifest.lanes.lane.requiredEnv;
+  manifest.lanes.lane.files[0].requiredEnv = ["CI_RUNNER_FILE_INPUT"];
+  await writeJson(join(root, "manifest.json"), manifest);
+  const missingFileEnv = run(root, [
+    "run",
+    "lane",
+    "--manifest",
+    "manifest.json",
+    "--root",
+    root,
+    "--state",
+    "state/lane.jsonl",
+    "--results",
+    resultsPath,
+  ]);
+  assert.equal(missingFileEnv.status, 1);
+  summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  assert.deepEqual(
+    summary.issues.map((entry) => [entry.code, entry.env]),
+    [["missing-env", "CI_RUNNER_FILE_INPUT"]],
+  );
+  delete manifest.lanes.lane.files[0].requiredEnv;
   await writeJson(join(root, "manifest.json"), manifest);
   const selected = run(root, [
     "run",
@@ -642,6 +669,12 @@ test("run fails missing expected tests, skipped expected tests, skips, todos, an
     "unexpected-skip",
     "unexpected-skip",
   ]);
+  const suiteSkip = summary.issues.find((entry) => entry.name === "skipped suite");
+  assert.equal(suiteSkip.file, "tests/integration/skips.test.mjs");
+  assert.equal(suiteSkip.source.file, suiteSkip.file);
+  assert.ok(Number.isSafeInteger(suiteSkip.source.line) && suiteSkip.source.line > 0);
+  assert.ok(Number.isSafeInteger(suiteSkip.source.column) && suiteSkip.source.column > 0);
+  assert.equal(suiteSkip.source.nesting, 0);
   // Every issue is named in the job log, which keeps every attempt.
   for (const line of [
     "run-tests: issue missing-expected-test tests/integration/skips.test.mjs: expected test did not run: missing named case",
@@ -650,6 +683,48 @@ test("run fails missing expected tests, skipped expected tests, skips, todos, an
     "run-tests: issue unexpected-skip tests/integration/skips.test.mjs: selected suite did not run its tests: skipped suite",
   ]) {
     assert.ok(selected.stderr.split("\n").includes(line), line);
+  }
+
+  // Filesystem traversal follows the symlink before '..'; lexical normalization
+  // instead points at the unrelated in-tree helper and must not supply a source.
+  const external = await temporaryDirectory(t, "ci-runner-source-");
+  await mkdir(join(external, "deep"));
+  await symlink(join(external, "deep"), join(root, "link"), "dir");
+  await writeFile(join(root, "helper.mjs"), "// Not the source of the skipped suite.\n");
+  await writeFile(
+    join(external, "helper.mjs"),
+    'describe("external skipped suite", { skip: true }, () => {});\n',
+  );
+  for (const filename of [`${root}/link/../helper.mjs`, "link/../helper.mjs"]) {
+    await writeFile(
+      join(root, "tests/integration/skips.test.mjs"),
+      [
+        'import { readFileSync } from "node:fs";',
+        'import { describe } from "node:test";',
+        'import { runInNewContext } from "node:vm";',
+        `const filename = ${JSON.stringify(filename)};`,
+        'runInNewContext(readFileSync(filename, "utf8"), { describe }, { filename });',
+      ].join("\n"),
+    );
+    const escaped = run(root, [
+      "run",
+      "lane",
+      "--manifest",
+      "manifest.json",
+      "--root",
+      root,
+      "--state",
+      "state/lane.jsonl",
+      "--results",
+      resultsPath,
+    ]);
+    const escapedSummary = JSON.parse(await readFile(resultsPath, "utf8"));
+    const escapedSkip = escapedSummary.issues.find(
+      (entry) => entry.name === "external skipped suite",
+    );
+    assert.equal(escaped.status, 1);
+    assert.equal(escapedSkip.code, "unexpected-skip");
+    assert.equal(escapedSkip.source, undefined, filename);
   }
 });
 
@@ -5087,6 +5162,53 @@ test("aggregate fails when a supplied non-lane need failed even if lane artifact
   assert.equal(summary.issues[0].need, "audit");
 });
 
+test("first-Agent scenario ownership drains child work before teardown after failure or cancellation", async (t) => {
+  for (const mode of ["failure", "cancel"]) {
+    const root = await fixture(t);
+    const trace = join(root, "trace");
+    const file = join(root, "scenario.test.mjs");
+    const owner = pathToFileURL(
+      join(repositoryRoot, "tests/helpers/local-first-agent-stack.mjs"),
+    ).href;
+    await writeFile(
+      file,
+      `
+import test from 'node:test';
+import { spawn } from 'node:child_process';
+import { appendFileSync } from 'node:fs';
+import { ownFirstAgentWork } from ${JSON.stringify(owner)};
+const controller = new AbortController();
+test('scenario', { signal: controller.signal }, async (t) => {
+  const own = ownFirstAgentWork(t);
+  t.after(() => appendFileSync(${JSON.stringify(trace)}, 'cleanup|'));
+  let ready;
+  const started = new Promise(resolve => { ready = resolve; });
+  t.test('native', { signal: t.signal }, (native) => own(new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['-e', "process.on('SIGTERM', () => setTimeout(() => process.exit(0), 50)); console.log('ready'); setTimeout(() => process.exit(0), 300);"], { stdio: ['ignore', 'pipe', 'ignore'] });
+    native.signal.addEventListener('abort', () => child.kill('SIGTERM'), { once: true });
+    child.stdout.once('data', ready);
+    child.once('error', reject);
+    child.once('close', () => { appendFileSync(${JSON.stringify(trace)}, 'settled|'); resolve(); });
+  })));
+  await started;
+  if (${JSON.stringify(mode)} === 'cancel') { controller.abort(); }
+  else { throw new Error('scenario-failed'); }
+});
+`,
+    );
+    const env = { ...process.env };
+    delete env.NODE_TEST_CONTEXT;
+    delete env.NODE_TEST_WORKER_ID;
+    const result = spawnSync(process.execPath, ["--test", file], {
+      env,
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert.equal(result.status, 1, result.stderr);
+    assert.equal(await readFile(trace, "utf8"), "settled|cleanup|", mode);
+  }
+});
+
 test("run records only allowlisted measurements from test diagnostics", async (t) => {
   const root = await fixture(t);
   const resultsPath = join(root, "results/measurements.json");
@@ -5097,6 +5219,69 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       'import test from "node:test";',
       'test("measures", (t) => {',
       ...[
+        measurement({
+          kind: "local-first-agent-command",
+          phase: "setup",
+          stage: "runtime-build",
+          count: 1,
+          failed: 0,
+          elapsedMs: 100,
+          args: "secretauthvalue-args",
+        }),
+        measurement({
+          kind: "local-first-agent-command",
+          phase: "setup",
+          stage: "secretauthvalue-stage",
+          count: 1,
+          failed: 0,
+          elapsedMs: 100,
+        }),
+        measurement({
+          kind: "local-first-agent-pod",
+          stage: "native-initial",
+          role: "harness",
+          restarts: 0,
+          createdAfterRequestMs: 100,
+          scheduledMs: 100,
+          initializedMs: 200,
+          runningMs: 200,
+          readyMs: 300,
+          observedMs: 400,
+          environment: "secretauthvalue-env",
+        }),
+        measurement({
+          kind: "local-first-agent-pod",
+          stage: "native-initial",
+          role: "secretauthvalue-role",
+          restarts: 0,
+        }),
+
+        measurement({
+          kind: "local-first-agent",
+          stage: "setup",
+          outcome: "passed",
+          elapsedMs: 1234,
+          transcript: "secretauthvalue-transcript",
+        }),
+        measurement({
+          kind: "local-first-agent",
+          stage: "secretauthvalue-stage",
+          outcome: "passed",
+          elapsedMs: 12,
+        }),
+        measurement({
+          kind: "local-first-agent",
+          stage: "setup",
+          outcome: "secretauthvalue-outcome",
+          elapsedMs: 12,
+        }),
+        measurement({
+          kind: "local-first-agent",
+          stage: "setup",
+          outcome: "passed",
+          elapsedMs: "secretauthvalue-time",
+        }),
+
         measurement({
           kind: "kubelet-volume-refresh",
           volume: "secret",
@@ -5233,6 +5418,28 @@ test("run records only allowlisted measurements from test diagnostics", async (t
   const summary = JSON.parse(artifact);
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(summary.files[0].measurements, [
+    {
+      kind: "local-first-agent-command",
+      phase: "setup",
+      stage: "runtime-build",
+      count: 1,
+      failed: 0,
+      elapsedMs: 100,
+    },
+    {
+      kind: "local-first-agent-pod",
+      stage: "native-initial",
+      role: "harness",
+      restarts: 0,
+      createdAfterRequestMs: 100,
+      scheduledMs: 100,
+      initializedMs: 200,
+      runningMs: 200,
+      readyMs: 300,
+      observedMs: 400,
+    },
+
+    { kind: "local-first-agent", stage: "setup", outcome: "passed", elapsedMs: 1234 },
     {
       kind: "kubelet-volume-refresh",
       volume: "secret",
@@ -5806,4 +6013,96 @@ describe("tests that wait out real runner limits, side by side", { concurrency: 
   for (const args of waitingTests) {
     test(...args);
   }
+});
+
+test("native history proof keeps exact run, explicit success and marker predicates", () => {
+  const prefix = "FIRST_AGENT_NATIVE_TOOL ";
+  const marker = "FIRST_AGENT_NATIVE_expected";
+  const output = prefix + JSON.stringify({ hostname: "private-host", content: "private-value" });
+  const tool = {
+    role: "toolResult",
+    toolName: "exec",
+    isError: false,
+    content: output,
+    __openclaw: { runId: "selected" },
+  };
+  const final = {
+    role: "assistant",
+    stopReason: "stop",
+    content: marker,
+    __openclaw: { runId: "selected" },
+  };
+  for (const [name, messages, toolPresent, finalPresent, flag] of [
+    ["valid", [tool, final], true, true, "false"],
+    [
+      "wrapped",
+      [{ ...tool, content: JSON.stringify({ value: { aggregated: output } }) }, final],
+      true,
+      true,
+      "false",
+    ],
+    ["missing flag", [{ ...tool, isError: undefined }, final], false, true, "absent"],
+    ["error", [{ ...tool, isError: true }, final], false, true, "true"],
+    ["invalid flag", [{ ...tool, isError: 0 }, final], false, true, "other"],
+    ["source echo", [{ ...tool, content: "command: " + output }, final], false, true, "false"],
+    ["wrong run", [{ ...tool, __openclaw: { runId: "other" } }, final], false, true, "none"],
+    ["wrong marker", [tool, { ...final, content: "Done: " + marker }], true, false, "false"],
+    [
+      "tool continuation",
+      [tool, { ...final, content: [{ type: "text", text: marker }, { type: "toolCall" }] }],
+      true,
+      false,
+      "false",
+    ],
+  ]) {
+    const evidence = nativeWorkerHistoryEvidence({
+      messages,
+      runId: "selected",
+      toolPrefix: prefix,
+      marker,
+    });
+    assert.equal(Boolean(evidence.tool), toolPresent, name);
+    assert.equal(Boolean(evidence.final), finalPresent, name);
+    assert.equal(evidence.observation.historyExecErrorFlag, flag, name);
+    assert.doesNotMatch(
+      JSON.stringify(evidence.observation),
+      /private-host|private-value|FIRST_AGENT_NATIVE/,
+    );
+  }
+});
+
+test("native placement retries only the correlated pinned read-generation signal", async () => {
+  const message = "Error: Session changed while preparing its description; retry the request";
+  const error = Object.assign(new Error(message), { code: "UNAVAILABLE" });
+  assert.equal(nativePlacementReadRetryable(error, true), true);
+  assert.equal(
+    nativePlacementReadRetryable(error, false),
+    false,
+    "local/transport errors cannot opt into a retry by text",
+  );
+  for (const rejected of [
+    Object.assign(new Error(message), { code: "FORBIDDEN" }),
+    Object.assign(new Error("Session repository binding changed while preparing its description"), {
+      code: "UNAVAILABLE",
+    }),
+    Object.assign(new Error("gateway request timed out"), { code: "UNAVAILABLE" }),
+    Object.assign(new Error("private peer text"), { code: "UNAVAILABLE" }),
+    Object.assign(new Error(message + "; private suffix"), { code: "UNAVAILABLE" }),
+  ]) {
+    assert.equal(nativePlacementReadRetryable(rejected, true), false);
+  }
+  const observed = await collectNativeWorkerFailure({
+    error,
+    elapsedMs: 1,
+    request: async (method) => {
+      assert.equal(method, "node.list");
+      return { nodes: [] };
+    },
+  });
+  assert.equal(
+    observed.proofError,
+    "session-read-changed",
+    "pre-turn failures must retain safe classification",
+  );
+  assert.doesNotMatch(JSON.stringify(observed), /Session changed|private peer/);
 });

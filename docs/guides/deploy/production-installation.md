@@ -4,6 +4,12 @@ tags: [nolimit]
 
 # Install the production control plane
 
+Use this procedure for a custom Helm installation, then continue to
+[production Agent deployment](production-agents.md). For the OpenShell path,
+follow [Kubernetes setup](kubernetes-setup.md) or [EKS setup](eks-openshell-setup.md)
+and their first-Agent instructions instead. Those guides use different generated
+configuration, namespace names, and operator-session helpers.
+
 Prepare [Kubernetes](kubernetes.md) or [EKS infrastructure](eks-openshell-setup.md#prepare-aws-infrastructure), the
 [prerequisites below](#before-you-start), and
 [workspace routing](workspace-routing.md#requirements), including a GatewayClass.
@@ -33,10 +39,9 @@ Before generating configuration, [select the published image pair](published-ima
 (`stable` or `latest`). Verify the source commit, export `CONTROLLER_IMAGE` and
 `RUNTIME_IMAGE`, and use the matching checkout and chart. Skip the build section.
 
-Public GHCR pulls need no pull Secret. For private registry copies, give every node
-that runs control-plane or tenant Pods its own pull access; see
-[private registry delivery](private-registry-images.md#configure-node-pull-access).
-Workstation `docker login` does not authenticate cluster nodes.
+Public GHCR pulls need no pull Secret. For private copies, grant pull access to
+every control-plane and tenant node; workstation `docker login` does not authenticate
+nodes. See [private registry delivery](private-registry-images.md#configure-node-pull-access).
 
 ## Build and publish production images
 
@@ -161,9 +166,8 @@ export OCC_PROFILE_INPUT="${OCC_PROFILE_INPUT:-$OCC_INPUT_DIRECTORY/profile-inpu
 )
 ```
 
-If rendering fails, stop, fix the input, and rerender; never substitute example
-or manual YAML. This keeps `values.yaml`, `installation.yaml`, and
-`controlPlane.installationChecksum` paired.
+If rendering fails, stop, fix the input, and rerender; do not substitute example
+or manual YAML. Keep `values.yaml`, `installation.yaml`, and `controlPlane.installationChecksum` paired.
 
 ### Advanced: copy manual YAML examples
 
@@ -205,9 +209,9 @@ chmod 600 "$OCC_INPUT_DIRECTORY/values.yaml" \
   "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml"
 ```
 
-For profile installs, change `$OCC_PROFILE_INPUT` and rerender instead of editing
+For profiles, change `$OCC_PROFILE_INPUT` and rerender instead of editing
 `values.yaml` or `installation.yaml`. For manual installs, edit the copied YAML
-before running the checks:
+before the checks:
 
 - `values.yaml`: set auth URL, admin email, database and cluster CIDRs,
   control-plane node selector, database CA, DNS, API clients, and bootstrap
@@ -232,11 +236,10 @@ before running the checks:
   `presets.includeDefaults: false` disables the
   [bundled Presets](../../reference/presets.md#installation-defaults).
 
-For every install, set `bootstrap-pvc.yaml` name, namespace, size, and
-protected `storageClassName`.
+Set `bootstrap-pvc.yaml` name, namespace, size, and protected `storageClassName`.
 
 For `logging.level`, see [Choose the log level](../observability.md#1-choose-the-log-level).
-Configure native admin domains through [native admin setup](native-admin.md#steps).
+[Configure native admin domains](native-admin.md#steps).
 For Slack Agents, configure both proxy paths in the
 [Slack guide](../integrations/slack.md#configure-both-slack-proxies). For Codex
 sandboxing, follow [Codex sandbox setup](codex-sandbox.md).
@@ -329,6 +332,14 @@ create `occ-private-gateway-key` and match the Helm and Installation routing
 settings. Validate and render changed inputs. Configure each
 Agent's authentication during [Agent deployment](production-agents.md#configure-the-agent-runtime).
 
+With chart-managed routing and Kubernetes Compute, startup checks the Installation's
+`drivers.compute.configuration.gatewayRouting` settings. Its `gatewayName`,
+`gatewayNamespace`, `envoyNamespace`, and effective `hostname` must match the
+chart's private Gateway. A mismatch reports
+`CHART_LISTENER_MISMATCH`. Correct the profile input and rerender, or align the
+manual Installation and Helm values, before retrying. Leave `hostname` unset in
+both files to use the generated Service DNS name.
+
 ## Provision system Secrets and install
 
 Create system Secrets from protected files:
@@ -409,25 +420,30 @@ labels, one option per label, so preparation and initialization share volume
 topology. Helm refuses keys and values that helper refuses; values may be
 empty, as in `--node-selector node-role.kubernetes.io/infra=`.
 
-The helper refuses any nonfresh mounted root except `lost+found`, schedules with
-the supplied node selector before storage binds, reports `Prepared bootstrap
-volume claim ... with UID/GID 1000 mode 0700.`, and retains failed Pods for
-diagnosis. If policy forbids the preparation Pod, have the storage administrator
-create the same root state.
+The helper refuses nonfresh roots except `lost+found`, schedules before storage
+binds, reports `Prepared bootstrap volume claim ... with UID/GID 1000 mode 0700.`,
+and retains failed Pods. If policy forbids the Pod, have the storage administrator
+prepare the same root state.
 
-Install the chart with native values:
+Exclude competing installs, upgrades and Job replacements. Use the CLI matching this chart's
+source revision. [Keep the receipt for handoff](production-handoff.md#record-the-initialization-job-for-handoff), then install once:
 
 ```bash
-helm upgrade --install oce deploy/helm/openclaw-enterprise \
-  --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CONTEXT" \
-  --namespace openclaw-system -f "$OCC_INPUT_DIRECTORY/values.yaml" \
-  --wait --timeout 5m
+INSTALL_RECEIPT_DIRECTORY="$OCC_INPUT_DIRECTORY/install-receipt"
+occ installation install --release oce --chart deploy/helm/openclaw-enterprise \
+  --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
+  --kube-namespace openclaw-system --values "$OCC_INPUT_DIRECTORY/values.yaml" \
+  --receipt "$INSTALL_RECEIPT_DIRECTORY" --wait-timeout 5m
 ```
+
+After a lost response or refused release name, [resume this installation](production-handoff.md#resume-an-installation-in-progress).
+Do not retry or switch to upgrade. An unused release name does not prove the database, identity or storage is fresh.
 
 For an explicitly [published chart release](../../release/chart-publication.md#pull-and-install)
 (created with `publish_chart: true`),
-verify its receipt, then use `oci://ghcr.io/openclaw/charts/openclaw-enterprise`
-with `--version "$OCE_VERSION"`.
+verify its publication receipt, pull the exact chart version locally, and pass
+that local chart archive to `--chart`. The installer freezes local chart files;
+it does not resolve a mutable remote chart reference.
 
 Helm owns migration and bootstrap ordering through its initialization hook.
 Readiness covers the API and worker probes, not authenticated API access, Agent
@@ -468,8 +484,25 @@ export READER_DIRECTORY="${READER_DIRECTORY:-/secure/occ}"
 )
 ```
 
-The block stops before it replaces a retained file or keeps a failed read; delete
-the reader Pod before you retry. The files use the default names;
+The block preserves completed copies, but a failed read can leave an incomplete
+`.tmp` file. If either read fails, delete this attempt's reader Pod using the
+command above. Keep the retrieved files private and in place; do not use `.tmp`
+files as credentials. Select a fresh directory before repeating the block:
+
+```bash
+umask 077
+READER_DIRECTORY="$(mktemp -d /secure/occ/bootstrap-reader.XXXXXXXX)" && export READER_DIRECTORY
+```
+
+Stop if directory creation fails. The retry reads both files from the same PVC
+without overwriting the earlier copies or rerunning bootstrap. After it succeeds,
+select the newly retrieved key, replacing any earlier path in this shell:
+
+```bash
+export OCC_BOOTSTRAP_KEY_FILE="${READER_DIRECTORY:?}/initial-admin-service-key.json"
+```
+
+Use the new directory for the credentials below. The files use the default names;
 `bootstrap.password.fileName` and `bootstrap.serviceKey.fileName` override them. Sign in to the Console with
 `bootstrap.adminEmail` and `initial-admin-password`. The service key file
 authenticates the CLI and REST calls below. This example works on a session copy:
@@ -578,9 +611,9 @@ Loopback cannot qualify production stop/drain, cookies, logging, and GitHub regi
 
 ## Related
 
-Use the [production image upgrade](production-upgrade.md) for an existing release. For failed
+For existing releases, use [production image upgrade](production-upgrade.md). For failed
 initialization, preserve state and follow [bootstrap recovery](../../reference/authentication/service-api-keys.md#recover-an-incomplete-bootstrap)
-and the [production startup flow](../../flows/production-startup.md).
+and the [startup flow](../../flows/production-startup.md).
 
-[Connect default metrics and logs](../observability.md) to your collectors. The
-[optional demo stack](../observability/demo.md) is not recommended for production.
+Connect [metrics and logs](../observability.md) to your collectors. The
+[demo stack](../observability/demo.md) is not recommended for production.

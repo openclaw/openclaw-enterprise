@@ -55,8 +55,7 @@ import {
 
 const retirementError = {
   code: "RESOURCE_CONFLICT",
-  message:
-    "Protected static OpenAI inference is retired. Ask an Installation administrator to configure model access through a supported driver.",
+  message: "The selected Driver has retired new uses of this protected static credential provider.",
 };
 
 function assertRetired(response) {
@@ -90,7 +89,7 @@ async function assertAdmissionUnchanged(f, before) {
   assert.deepEqual({ ...after, audit: [] }, { ...before, audit: [] });
 }
 
-test("default OpenShell retires mixed static CREATE before material or registration; Gateway-only CREATE and PATCH remain ordinary", async (t) => {
+test("a retired OpenShell owner refuses mixed static CREATE before material or registration; Gateway-only CREATE and PATCH remain ordinary", async (t) => {
   for (const gatewayOnly of [false, true]) {
     const f = await staticEgressAdmissionFixture(t, { gatewayOnly });
     const before = await admissionSnapshot(f);
@@ -98,6 +97,7 @@ test("default OpenShell retires mixed static CREATE before material or registrat
       body: {
         name: "retirement-control",
         type: "openai",
+        config: { authorized_base_url: f.modelProvider.baseUrl },
         secrets: { api_key: f.secret.ref },
       },
     });
@@ -192,56 +192,27 @@ test("default OpenShell retires mixed static CREATE before material or registrat
   }
 });
 
-test("default OpenShell retires explicit legacy adoption, exact re-admission and saved-source deployment without changing custody; original Gateway DELETE remains available", async (t) => {
-  // Arrange pre-cut rows with the same provider identity, then restore the real
-  // bundled definition before any refusal request. No production hook is involved.
+test("a retired OpenShell owner refuses unbound legacy adoption; original Gateway DELETE remains available", async (t) => {
   let clock = Date.now();
-  const f = await staticEgressFixture(t, {
+  const f = await staticEgressAdmissionFixture(t, {
     includeLegacy: true,
-    admitRevision: false,
     now: () => new Date(clock),
   });
-  const extra = await f.request("POST", f.path, {
-    body: { name: "unbound-pre-cut", type: "openai", secrets: { api_key: f.secret.ref } },
-  });
-  assert.equal(extra.status, 201, JSON.stringify(extra.body));
-  const saved = await f.controller.transact((unit) =>
-    unit.credentialSources.findCredentialSource(f.namespace.id, extra.data.id),
-  );
-  assert.deepEqual(saved.egress.key.provider, { id: "openai-static-https", generation: 2 });
-  assert.equal(saved.ownerCapability, "credential_gateway");
-  assert.equal(saved.driverId, "openshell-credentials");
   const replacement = await f.request("POST", `/namespaces/${f.namespace.id}/secrets`, {
     body: { name: "replacement", value: "synthetic-key-replacement" },
   });
   assert.equal(replacement.status, 201, JSON.stringify(replacement.body));
-  f.useDefaultAdmission();
-  const secrets = { api_key: replacement.data.ref };
-  for (const [id, body] of [
-    [f.legacySource.id, { adoption: "live", authorityScope: "execution", secrets }],
-    // No adoption consent: re-admission must resolve the stored provider, not the catalog.
-    [extra.data.id, { secrets }],
-  ]) {
-    const before = await admissionSnapshot(f);
-    assertRetired(await f.request("PATCH", `${f.path}/${id}`, { body }));
-    await assertAdmissionUnchanged(f, before);
-  }
   const before = await admissionSnapshot(f);
-  const agentBefore = await f.request("GET", `/namespaces/${f.namespace.id}/agents/${f.agent.id}`);
-  assert.equal(agentBefore.status, 200);
   assertRetired(
-    await f.request("POST", `/namespaces/${f.namespace.id}/agents/${f.agent.id}/deploy`),
+    await f.request("PATCH", `${f.path}/${f.legacySource.id}`, {
+      body: {
+        adoption: "live",
+        authorityScope: "execution",
+        secrets: { api_key: replacement.data.ref },
+      },
+    }),
   );
   await assertAdmissionUnchanged(f, before);
-  assert.deepEqual(
-    await f.controller.transact((unit) => unit.revisions.listRevisions(f.namespace.id, f.agent.id)),
-    [],
-  );
-  const agentAfter = await f.request("GET", `/namespaces/${f.namespace.id}/agents/${f.agent.id}`);
-  assert.equal(agentAfter.status, 200);
-  assert.deepEqual(agentAfter.data, agentBefore.data);
-  assert.equal(f.observed.sandbox, undefined);
-  assert.equal(f.observed.policy, undefined);
 
   // The original unbound Gateway copy remains deletable in the mixed installation.
   const legacy = await f.controller.transact((unit) =>
@@ -389,9 +360,6 @@ test("supplier-produced receipt protobuf and registered-instance claims decode t
 
 test("protected inference uses real admission, fresh IAM, versioned Secret reads and TLS authority/provider wires", async (t) => {
   const f = await staticEgressFixture(t, { physicalPlacement: true });
-  // The plan was admitted with the prior definition; fresh exchanges now use
-  // the real default registration, retaining exact provider and sender identity.
-  f.useDefaultAdmission();
   assert.notEqual(f.namespace.name, f.runtimeNamespace.name);
   assert.equal(f.namespace.id, f.runtimeNamespace.id);
   assert.deepEqual(f.source.egress, { adoption: "live", retention: "none" });
@@ -666,7 +634,12 @@ test("protected admission requires the actual counterpart and exact loaded polic
   assert.ok(manifest.extension.required_capabilities.includes(capability));
   f.observed.available = false;
   const refused = await f.request("POST", f.path, {
-    body: { name: "unsupported-peer", type: "openai", secrets: { api_key: f.secret.ref } },
+    body: {
+      name: "unsupported-peer",
+      type: "openai",
+      config: { authorized_base_url: f.modelProvider.baseUrl },
+      secrets: { api_key: f.secret.ref },
+    },
   });
   assert.equal(refused.status, 503, JSON.stringify(refused.body));
   assert.equal(
@@ -780,7 +753,7 @@ test("legacy approved copies survive Secret rotation and failed live adoption; o
   const { id, namespaceId } = f.legacySource;
   await f.controller.transact(async ({ credentialSources: sources }) => {
     const { egress } = await sources.findCredentialSource(namespaceId, id);
-    assert.equal(egress.key.provider.generation, 2);
+    assert.equal(egress.key.provider.generation, 3);
     const key = {
       ...egress.key,
       source: { id, generation: egress.key.source.generation + 1 },
@@ -1469,11 +1442,81 @@ test("selected Codex Responses wire admits local tools and finite SSE while reje
   await check.wireBody(body);
   assert.deepEqual(f.providerRequests[0].body, wire.request);
   await check.wireBody(body.replaceAll("\n", "\r\n"), { label: "CRLF" });
+
+  // A reduced, sanitized packaged-client capture uses developer input for local tools.
+  // Its format header participates in the signed request. This proves the OCE
+  // contract with a fixture sender, not native relay or model-provider support.
+  const inline = JSON.parse(
+    readFileSync(new URL("../fixtures/static-egress/codex-inline-tools.json", import.meta.url)),
+  );
+  const captured = f.capture(inline.request);
+  captured.request.headers.push(
+    ...Object.entries(inline.headers).map(([name, value]) => ({ name, value })),
+  );
+  const { ready } = await f.resolve(captured);
+  assert.ok(ready, "packaged inline local tools resolve through the installed provider");
+  assert.ok((await f.authorize(f.permitRequest(captured, ready))).allowed);
+  f.setResponse({ status: 200, contentType: "text/event-stream", rawBody: body });
+  const protectedReply = await f.protect(captured, await f.send(captured, ready));
+  assert.equal(protectedReply.response_complete, true);
+  assert.equal(protectedReply.body.toString(), body);
+  assert.deepEqual(f.providerRequests.at(-1).body, inline.request);
+
+  // Inline declarations cannot expand the admitted local-tool grant or let
+  // client metadata select authority. Refuse before another Secret read/send.
+  const inlineReads = f.secretReads;
+  const inlineSends = f.providerRequests.length;
+  const mutations = [
+    ...["system", "user", "assistant"].map((role) => (request) => {
+      request.input[0].role = role;
+    }),
+    (request) => {
+      request.input[0].tools.push({ type: "web_search" });
+    },
+    (request) => {
+      request.input[0].tools[0].tools.push({ type: "web_search" });
+    },
+    (request) => {
+      request.input[0].authority = "owner";
+    },
+    (request) => {
+      request.input[0].tools[1].tools[0].parameters.properties.message.encrypted = false;
+    },
+    (request) => {
+      request.input[0].tools[1].tools[0].parameters.properties.message.type = "number";
+    },
+    (request) => {
+      const metadata = JSON.parse(request.client_metadata["x-codex-turn-metadata"]);
+      metadata.reasoning_effort = "unrecognized";
+      request.client_metadata["x-codex-turn-metadata"] = JSON.stringify(metadata);
+    },
+    (request) => {
+      request.client_metadata.namespace_id = f.namespace.id;
+    },
+    (request) => {
+      request.text.format = {
+        type: "json_schema",
+        name: "output",
+        schema: { type: "string", encrypted: true },
+      };
+    },
+    (request) => {
+      request.store = true;
+    },
+  ];
+  for (const mutate of mutations) {
+    const request = structuredClone(inline.request);
+    mutate(request);
+    assert.ok((await f.resolve(f.capture(request))).refused);
+  }
+  assert.equal(f.secretReads, inlineReads, "unsupported inline requests cannot read credentials");
+  assert.equal(f.providerRequests.length, inlineSends, "unsupported inline requests cannot send");
   const beforeReads = f.secretReads;
   for (const body of [
     { ...wire.request, tools: [...wire.request.tools, ...wire.refusedTools] },
     { ...wire.request, tools: [{ type: "mcp", server_url: "https://remote.example.test" }] },
     { ...wire.request, tools: [{ type: "namespace", name: "remote", tools: wire.refusedTools }] },
+    { ...wire.request, tools: [{ ...wire.request.tools[0], strict: null }] },
     { ...wire.request, previous_response_id: "unadmitted-state" },
     {
       ...wire.request,
@@ -1688,6 +1731,77 @@ test("live-shaped Responses envelopes pass while undeclared or credential-bearin
     { ...completed, sequence_number: base.length + 1 },
   ];
   await check.events(live, false, "documented envelope fields on every envelope event");
+  // The provider reports its effective image policy even when the request omits it.
+  // Check each envelope event and preserve its original bytes through signed egress.
+  const withImage = (image) =>
+    live.map((event) =>
+      event.response ? { ...event, response: { ...event.response, image } } : event,
+    );
+  for (const context_compression of ["enabled", "disabled"]) {
+    await check.events(
+      withImage({ context_compression }),
+      false,
+      `documented image context compression: ${context_compression}`,
+    );
+  }
+  for (const [label, image] of [
+    ["null image policy", null],
+    ["missing image context compression", {}],
+    ["request-only automatic image policy", { context_compression: "auto" }],
+    ["wrong image context compression type", { context_compression: true }],
+    ["unknown image policy member", { context_compression: "enabled", extra: false }],
+    ["image policy reflects selected material", { context_compression: selectedMaterial }],
+  ]) {
+    await check.events(withImage(image), true, label);
+  }
+  // The admitted local declarations omit optional fields. Responses may echo their
+  // documented null defaults; they must not turn an otherwise valid turn into a 502.
+  const functionTool = {
+    type: "function",
+    name: "fixture_local",
+    parameters: { type: "object", properties: {} },
+  };
+  const customTool = { type: "custom", name: "fixture_custom" };
+  const localTools = [
+    functionTool,
+    customTool,
+    { type: "namespace", name: "fixture_namespace", tools: [functionTool, customTool] },
+  ];
+  const localRequest = { ...wire.request, tools: localTools };
+  const responseFunction = {
+    ...functionTool,
+    description: null,
+    strict: null,
+    defer_loading: null,
+  };
+  const responseCustom = { ...customTool, description: null, defer_loading: null, format: null };
+  const echoedTools = [
+    responseFunction,
+    responseCustom,
+    { ...localTools[2], tools: [responseFunction, responseCustom] },
+  ];
+  const withTools = (tools) =>
+    live.map((event) =>
+      event.response ? { ...event, response: { ...event.response, tools } } : event,
+    );
+  await check.events(
+    withTools(echoedTools),
+    false,
+    "nullable local-tool response defaults",
+    true,
+    localRequest,
+  );
+  for (const [label, tools] of [
+    ["wrong strict type", [{ ...responseFunction, strict: "false" }]],
+    ["wrong description type", [{ ...responseCustom, description: {} }]],
+    ["wrong defer_loading type", [{ ...responseFunction, defer_loading: 0 }]],
+    ["unknown custom format", [{ ...responseCustom, format: { type: "remote" } }]],
+    ["unknown function field", [{ ...responseFunction, remote_execution: true }]],
+    ["hosted tool", [{ type: "web_search" }]],
+    ["nested hosted tool", [{ ...localTools[2], tools: [{ type: "web_search" }] }]],
+  ]) {
+    await check.events(withTools(tools), true, label, true, localRequest);
+  }
   // Documented fields that the admitted request cannot ask for still have to be absent,
   // and documented optional structures are typed, not free-form.
   const nullableStructures = structuredClone(live);

@@ -23,15 +23,15 @@ shared exchange but does not establish static inference or Git transport support
 
 ## Bundled OpenShell admission
 
-The bundled OpenShell Credential Proxy Driver no longer accepts new protected
-static OpenAI sources, re-adoption of a saved source, or new protected revisions
-that use one. These requests return a resource-state conflict before preparing
-credentials for a new plan. Ask an Installation administrator to configure
-model access through a supported driver.
+The bundled OpenShell Credential Proxy Driver refuses new protected static
+OpenAI sources, live adoption or re-admission of a saved source, and new
+protected revisions using one. OCC returns `409 RESOURCE_CONFLICT` before
+preparing credentials for new use. Ask an Installation administrator to
+configure a supported model access path.
 
-Previously admitted revisions can continue under their existing authorization.
-The recorded owner still handles withdrawal and cleanup. Ordinary OpenAI sources
-managed only by the Credential Gateway are unaffected.
+Existing revisions keep the recorded provider for recovery and request
+authorization. Withdrawal and cleanup still go to their original owners.
+This restriction does not change ordinary Gateway-only OpenAI sources.
 
 ## Execution admission cutoff
 
@@ -103,6 +103,20 @@ text inference requests. Unsupported operations, remote provider tools, arbitrar
 model selection and discovery are refused before reading the Secret. The trusted
 sender injects the selected version. Neither the Agent nor the admission snapshot
 receives its value.
+
+Responses requests may declare local function and custom tools, including namespaces,
+in the top-level `tools` list or a developer `additional_tools` input item. Inline
+declarations use the same local-tool restrictions; they do not authorize hosted tools.
+Local function parameter schemas accept `encrypted: true` only on a string schema.
+This annotation does not itself encrypt data. The JSON string in
+`client_metadata["x-codex-turn-metadata"]` may include `reasoning_effort` with the value
+`none`, `minimal`, `low`, `medium`, `high` or `xhigh`. This metadata grants no authority.
+Unknown request fields remain refused. In streamed Responses envelopes, tool echoes may contain null descriptions,
+`strict`, `defer_loading`, or custom-tool `format`; their nonnull values retain
+the same type and local-tool restrictions. Namespace descriptions remain text. The optional
+`image` response object accepts only `context_compression: "enabled" | "disabled"`,
+the effective policy reported by the provider. Missing or unknown members and other
+values are refused; the request-only `"auto"` value is not an effective response policy.
 
 Static provider generation two identifies whole-execution authority. A generation-one
 grant remains narrower. Adopting live material and authorizing the broader execution

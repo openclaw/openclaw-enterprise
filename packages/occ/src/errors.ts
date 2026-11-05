@@ -391,7 +391,7 @@ export class RepositoryBindingSelectionError extends ScopeViolationError {
     "Send repositoryAccess or repositoryBindings, not both. In repositoryAccess, list each repository once, at most 16, with a defaultProfile other than github-installation.";
   // The Driver refuses a whole selection without saying which entry; this text lists its rules.
   static readonly notApproved =
-    "These repository selections are not approved for this Namespace: each repository must be approved here for its profile and listed once, at most 16. Choose from the repository options, or ask an Installation administrator to approve it.";
+    "Choose up to 16 distinct repositories approved for this Namespace and profile. For github-repository, all selections must have the same configured permissions. Ask an Installation administrator to check the available options.";
 
   constructor(message: string = RepositoryBindingSelectionError.installationAccessAlone) {
     super(message);
@@ -1384,6 +1384,9 @@ export class CredentialSourceRegistrationConfigError extends ScopeViolationError
  */
 export class StoredCredentialSourceConfigError extends ResourceStateConflictError {
   static message(field: string): string {
+    if (field === "base_url") {
+      return "Saved config.base_url was removed. If supported, register a replacement for the same URL. Its config.authorized_base_url must match the Installation's runtime.modelProvider.baseUrl. Rebind and redeploy Agents, then delete the old source once unused.";
+    }
     return `This credential source's saved ${field} no longer meets the OpenShell Credential Gateway's rules, so it cannot be used. Create a new source with a valid ${field}, bind it in place of this one, then delete this one.`;
   }
 

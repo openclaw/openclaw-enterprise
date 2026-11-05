@@ -47,6 +47,8 @@ it does not add token permissions or change GraphQL access.
 
 The generated Git configuration selects image-owned hooks. Ordinary hooks in the
 repository's common Git directory still run, including for linked worktrees.
+Symlinks to the managed wrapper resolve from its installed location. A hook that
+links back to that wrapper is refused with `recursive-repository-hook`.
 Repository initialization works before the initial `HEAD` exists.
 Standalone sessions with this policy require the emitted client from
 `pnpm credentials:build`.

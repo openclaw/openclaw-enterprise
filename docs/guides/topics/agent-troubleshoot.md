@@ -4,6 +4,18 @@ Start with the symptom you can observe. When asking an operator for help, give
 them the Namespace, Agent ID, version ID, approximate time, and any request ID
 the console shows. Never include API keys, tokens, or Secret values.
 
+## The configured model is unavailable
+
+Open the failed version in the Agent’s **Deployment** tab. If the startup model check reports an unavailable model, [choose a model ID for the same credential](../operate/model-verification.md#choose-a-model-for-dedicated-codex).
+
+For the dedicated Codex quickstart, open **Configuration** → **Edit current Configuration**. In the draft, replace the old model ID in these three places:
+
+- Set `agents.defaults.model` to `codex/<new-id>`.
+- Rename its entry in `agents.defaults.models` to the same prefixed ID. Keep the entry’s Codex runtime settings.
+- Set the corresponding `models.providers.codex.models` entry’s `id` and `name` to the new ID without the prefix.
+
+Save the Configuration and select **Deploy new version** on the same Agent. When deployment succeeds, open **Open Agent UI** and send a prompt to confirm the model replies.
+
 ## The Agent or Namespace is missing
 
 Open **Namespaces** and confirm that you selected the intended Namespace. The
@@ -168,6 +180,15 @@ succeed while the affected plugin is disabled for that startup. Inspect the
 a successful deployment does not confirm that a third-party connector is usable.
 
 ## An OpenShell Agent stops answering
+
+For a dedicated Codex Agent on OpenShell, if the Sandbox is running but replies
+time out, ask the operator to check the Agent Gateway's route to OpenShell:
+Gateway egress, matching OpenShell ingress
+and, for secure WebSocket (WSS) connections, the served certificate's coverage
+of the advertised service hostname. A successful control-endpoint check does
+not establish that the certificate covers the advertised hostname. Keep
+hostname verification enabled; correct the owning network or certificate
+configuration, then [verify a model response](../operate/model-verification.md).
 
 On OpenShell, OCE asks the gateway to restart the Harness whenever its process
 exits. `occ agent runtime AGENT_ID` shows

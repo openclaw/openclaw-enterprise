@@ -1,3 +1,4 @@
+import { openAdvancedSettings } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import type { BrowserContextOptions, Locator, Page, Route } from "playwright";
@@ -24,7 +25,6 @@ import {
 } from "./console-agents-browser-helpers.mjs";
 import {
   createRepositoryLaunchFixture,
-  openAdvancedSettings,
   withholdPermissionSummary,
 } from "./console-agents-test-support.mjs";
 import {

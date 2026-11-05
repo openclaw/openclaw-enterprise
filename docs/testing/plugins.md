@@ -1,3 +1,7 @@
+---
+tags: [human_verified]
+---
+
 # Agent plugin testing
 
 ## Overview
@@ -103,7 +107,7 @@ For Linear, connect the account and set `OCC_TEST_CODEX_LINEAR_PROMPT`, `OCC_TES
 
 ## Per-call approval acceptance
 
-Use the [QA matrix](ci.md#qa-matrix) Calendar scenario to exercise human and automatic approval in normal Agent turns. The scenario uses harmless reads. An unselected or skipped case does not prove approval enforcement.
+Use the [QA matrix](ci/qa-advisory.md) Calendar scenario to exercise human and automatic approval in normal Agent turns. The scenario uses harmless reads. An unselected or skipped case does not prove approval enforcement.
 
 ## Tool override acceptance
 

@@ -1,3 +1,4 @@
+import type { ModelProviderConfiguration } from "../drivers/compute/model-provider.ts";
 import {
   openShellProxyConfiguration,
   openShellRepositoryConfiguration,
@@ -19,6 +20,7 @@ import {
   chartListeners,
   InstallationFieldError,
   type InstallationFieldDetail,
+  requireChartGatewayRouting,
   requireChartListener,
 } from "./installation-fields.ts";
 import {
@@ -103,7 +105,7 @@ import { createGatewayNodeEnrollment } from "../gateway/node-enrollment-client.t
 import { readWorkspaceFilesApiKey } from "./workspace-files.ts";
 import { TokenService } from "../backends/token-service/service.ts";
 import { githubMetadataProvider } from "../drivers/egress-proxy/github-metadata.ts";
-import { PostgresPreparedGitHubLifecycle } from "../drivers/repo/github/credentials/prepared-lifecycle.ts";
+import type { PostgresPreparedGitHubLifecycle } from "../drivers/repo/github/credentials/prepared-lifecycle.ts";
 import { GitHubRepositoryPolicy } from "../drivers/repo/github/policy.ts";
 import { loadRepositoryPolicy } from "./repository-credentials/policy.ts";
 import type { PreparedRepositoryGitConfiguration } from "../backends/repository-credentials/prepared-git-owner.ts";
@@ -447,7 +449,7 @@ function installationRepositoryConfiguration(input: unknown, mode: "development"
     "repository",
   );
   const { openShell, ...portableSelection } = selection;
-  const portable = githubRepositoryConfiguration(portableSelection)!;
+  const portable = githubRepositoryConfiguration(portableSelection);
   // Preserve native/prepared validation before transport validation, and all raw selection
   // fields for the legacy digest. Proxy preview augmentation must not enter this projection.
   return {
@@ -1020,6 +1022,12 @@ export async function loadInstallationConfiguration(options: {
     computePackage?.implementation ?? (sshCompute ? "occ/ssh" : "occ/kubernetes"),
     computePackage?.module ?? (sshCompute ? SshComputeDriver : KubernetesComputeDriver),
   );
+  if (kubernetesCompute) {
+    requireChartGatewayRouting(
+      (compute.configuration as unknown as KubernetesComputeDriverOptions).gatewayRouting,
+      environment,
+    );
+  }
   const secret = selected(
     secretSelection,
     "secret",
@@ -1248,6 +1256,8 @@ export async function loadInstallationConfiguration(options: {
     resolveDelivery: repositoryRuntime?.resolveRepositoryDelivery,
   };
   let repositoryTransport: RepositoryTransportBinding | undefined;
+  const modelProvider = asRecord(compute.configuration.runtime)?.modelProvider as
+    ModelProviderConfiguration | undefined;
   const credentialGatewayDriver =
     credentialGateway === undefined
       ? undefined
@@ -1257,6 +1267,7 @@ export async function loadInstallationConfiguration(options: {
             id: credentialGateway.id,
             implementation: credentialGateway.implementation,
             backend: openShell!,
+            ...(modelProvider === undefined ? {} : { modelProvider }),
           },
         );
   if (
@@ -1280,16 +1291,18 @@ export async function loadInstallationConfiguration(options: {
     { id: secret.id, implementation: secret.implementation, preprovisionedNamespace },
   );
   const tokenService = new TokenService();
-  const preparedGitHub =
-    preparedGitHubKeyPath === undefined
-      ? undefined
-      : new PostgresPreparedGitHubLifecycle(
-          preparedGitHubKeyPath,
-          secretDriver,
-          preparedGitHubOrigin,
-          preparedGitHubCa,
-          tokenService,
-        );
+  let preparedGitHub: PostgresPreparedGitHubLifecycle | undefined;
+  if (preparedGitHubKeyPath !== undefined) {
+    const { PostgresPreparedGitHubLifecycle } =
+      await import("../drivers/repo/github/credentials/prepared-lifecycle.ts");
+    preparedGitHub = new PostgresPreparedGitHubLifecycle(
+      preparedGitHubKeyPath,
+      secretDriver,
+      preparedGitHubOrigin,
+      preparedGitHubCa,
+      tokenService,
+    );
+  }
   let protectedDriver: InstalledDriver | undefined;
   let sandboxDriver: SandboxDriver | undefined;
   if (sandbox !== undefined && proxySelection !== undefined) {
@@ -1300,6 +1313,8 @@ export async function loadInstallationConfiguration(options: {
         repositoryDeliveryMode === "protected" ? repositoryRuntime?.authorityIdentity : undefined,
       );
     } else {
+      const { openAiStaticProviderRef } =
+        await import("../drivers/egress-proxy/openai-provider.ts");
       // One configured OpenShell owner, with the original capability IDs retained for v2 revisions.
       const capabilities = createOpenShellCapabilities({
         sandbox,
@@ -1312,6 +1327,7 @@ export async function loadInstallationConfiguration(options: {
           id: proxySelection.id,
           configuration: proxySelection.configuration as unknown as OpenShellProxyOptions,
           preparedProviders: preparedGitHub ? [githubMetadataProvider] : [],
+          ...(modelProvider === undefined ? {} : { modelProvider }),
           ...(egressAuthority && { exchangeAuthority: egressAuthority }),
         },
       });
@@ -1319,6 +1335,7 @@ export async function loadInstallationConfiguration(options: {
       protectedDriver = new InstalledDriver(
         {
           ...sandbox,
+          retiredStaticProviderRefs: [openAiStaticProviderRef],
           configuration: {
             sandbox: sandbox.configuration,
             backend: openShellBackend,

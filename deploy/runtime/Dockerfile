@@ -10,6 +10,14 @@ FROM ${NODE_BASE_IMAGE} AS node-build-base
 RUN node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 22 || (minor === 22 && patch < 1)) throw new Error(`Select a Node.js 24.22.1+ base image in the 24 series; found ${process.version}.`);'
 RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
+FROM node-build-base AS curl-packages
+COPY deploy/runtime/curl /tmp/curl
+RUN --mount=type=secret,id=build-ca,required=false \
+    set -eu; \
+    if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \
+    sh /tmp/curl/build.sh
+RUN --network=none sh /tmp/curl/verify.sh
+
 FROM ${NODE_RUNTIME_BASE_IMAGE} AS node-runtime-base
 RUN node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 22 || (minor === 22 && patch < 1)) throw new Error(`Select a Node.js 24.22.1+ base image in the 24 series; found ${process.version}.`);'
 RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
@@ -118,7 +126,7 @@ RUN echo 'f8d1e51706f59964839d231818909ffb2ee5f6b951385a353a1a4fd07c45e2cc  /tmp
     && git apply /tmp/openclaw-codex-read-only-paths.patch
 # TODO: Remove this bridge patch when OpenClaw selects the native full-access profile.
 COPY deploy/runtime/openclaw-codex-full-access-profile.patch /tmp/openclaw-codex-full-access-profile.patch
-RUN echo '7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a  /tmp/openclaw-codex-full-access-profile.patch' | sha256sum --check --strict \
+RUN echo '37d79564f56e068c6ac982e5524a58e9da65172ac96177debca81d51442deccc  /tmp/openclaw-codex-full-access-profile.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-codex-full-access-profile.patch
 COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
 RUN node /tmp/build-runtime-assets.mjs inputs /source /inputs
@@ -172,34 +180,22 @@ COPY --from=openclaw-source /source/ ./
 # Exercise the original caller through the public RPC before and after the
 # placement acknowledgment, including revocation, against this exact source.
 COPY deploy/runtime/openclaw-required-worker-authority-regression.patch /tmp/openclaw-required-worker-authority-regression.patch
-RUN echo '4d7b31957dab6e8427eeb9a8cce0a8013f0f96b999e2692fdd6903595c3c4804  /tmp/openclaw-required-worker-authority-regression.patch' | sha256sum --check --strict \
+RUN echo 'fe61a9c3bd9d2c777db5ce7b6272c0db8b12da4a97a07fb7a42cc879a10dbf0e  /tmp/openclaw-required-worker-authority-regression.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-required-worker-authority-regression.patch
 # Remove this bridge when the pinned Control UI offers a browser navigation after access refusal.
 COPY deploy/runtime/openclaw-control-ui-browser-reconnect.patch /tmp/openclaw-control-ui-browser-reconnect.patch
-RUN echo 'f281242922bcd1e3349aef18e24d77e95ddf3e3d1dacbea30b26c759e0f5f947  /tmp/openclaw-control-ui-browser-reconnect.patch' | sha256sum --check --strict \
+RUN echo '21fef3589702683a173dd2967d852954e1bfa56ea9d9e9a99bdaa28159ff5d2c  /tmp/openclaw-control-ui-browser-reconnect.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-control-ui-browser-reconnect.patch
 # The runtime needs supervised recovery across private PID namespaces. Native
 # lock reinspection and custody still guard every destructive operation.
 COPY deploy/runtime/openclaw-terminated-gateway-namespace.patch /tmp/openclaw-terminated-gateway-namespace.patch
-RUN echo '570fb99e849442793eeb0e59417b4b4b2b282e7d236392a022258753b353263b  /tmp/openclaw-terminated-gateway-namespace.patch' | sha256sum --check --strict \
+RUN echo '1ed77577d53d43619f7c8fb33dbcdcf6a728351821abfe1b0beee947bd6eb456  /tmp/openclaw-terminated-gateway-namespace.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-terminated-gateway-namespace.patch
 
 # Forward the scoped Google placeholder and the OpenShell TLS root to native worker children.
 COPY deploy/runtime/openclaw-google-worker-placeholder.patch /tmp/openclaw-google-worker-placeholder.patch
 RUN echo '55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31  /tmp/openclaw-google-worker-placeholder.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-google-worker-placeholder.patch
-
-# Local qualification bridge for the pinned OpenClaw private-store owner.
-# Remove after selecting an OpenClaw revision containing this owning repair.
-COPY deploy/runtime/openclaw-linux-private-store-setgid.patch /tmp/openclaw-linux-private-store-setgid.patch
-RUN echo 'e97b0274d925f886638b0d8508d88842886b7ac3d84eacd29d76baf6cc487c8c  /tmp/openclaw-linux-private-store-setgid.patch' | sha256sum --check --strict \
-    && git apply /tmp/openclaw-linux-private-store-setgid.patch
-
-# Name each invalid plugin setting and exit 78 when Gateway startup refuses its config
-# (openclaw/openclaw#189392). Remove after selecting an OpenClaw commit that contains it.
-COPY deploy/runtime/openclaw-plugin-config-startup-report.patch /tmp/openclaw-plugin-config-startup-report.patch
-RUN echo '47519811aed229a451b6df394b7d7823814da2046616268f4f0aed2e433a8f93  /tmp/openclaw-plugin-config-startup-report.patch' | sha256sum --check --strict \
-    && git apply /tmp/openclaw-plugin-config-startup-report.patch
 
 # Run the bridge tests alongside the build using the same patched source.
 # Packaging mounts this stage so a failed test still blocks the runtime image.
@@ -322,7 +318,15 @@ WORKDIR /app
 
 RUN node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 22 || (minor === 22 && patch < 1)) throw new Error(`Select a Node.js 24.22.1+ base image in the 24 series; found ${process.version}.`);'
 
-RUN apt-get update && apt-get install -y --no-install-recommends tini git ca-certificates curl openssh-client libstdc++6 libgomp1 python3 procps && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=bind,from=curl-packages,source=/out,target=/tmp/curl-packages \
+    apt-get update --error-on=any \
+    && candidate="$(apt-cache policy curl | sed -n 's/^  Candidate: //p')" \
+    && expected="$(cat /tmp/curl-packages/debian-version)" \
+    && { [ "$candidate" = "$expected" ] || { echo "Refresh the curl backport: Debian candidate is $candidate, source is $expected" >&2; exit 1; }; } \
+    && apt-get install -y --no-install-recommends tini git ca-certificates openssh-client libstdc++6 libgomp1 python3 procps /tmp/curl-packages/*.deb \
+    && mkdir -p /usr/share/doc/curl/oce \
+    && cp /tmp/curl-packages/*.sha256 /usr/share/doc/curl/oce/ \
+    && rm -rf /var/lib/apt/lists/*
 # Version checks use throwaway state directories: gh writes a random device ID
 # and Codex a randomly named arg0 directory, which would otherwise ship.
 # --retry rides out GitHub's transient release-download errors (HTTP 408, 429,
@@ -356,8 +360,7 @@ RUN --mount=type=secret,id=build-ca,required=false \
     mkdir -p /usr/local/lib/oce/plugins/google/bin; \
     node /tmp/install-gog.mts /usr/local/lib/oce/plugins/google "linux-${TARGETARCH:-amd64}" /usr/local/lib/oce/plugins/google/bin /tmp/download-pinned.sh
 
-COPY apps/controller/plugins/oce-slack/mcp.json /usr/local/lib/oce/plugins/slack/mcp.json
-COPY apps/controller/plugins/oce-slack/ai.openclaw.oce/release.json /usr/local/lib/oce/plugins/slack/release.json
+COPY apps/controller/plugins/ /usr/local/lib/oce/plugin-catalog/
 
 COPY --from=openclaw-runtime-assets /out/ /opt/oce/runtime/
 COPY --from=openclaw-runtime-assets /source/ /app/node_modules/openclaw/

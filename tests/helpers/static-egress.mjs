@@ -1,4 +1,3 @@
-import { openAiStaticProvider } from "../../apps/controller/src/drivers/egress-proxy/openai-provider.ts";
 import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
 import { githubMetadataProvider } from "../../apps/controller/src/drivers/egress-proxy/github-metadata.ts";
 import {
@@ -91,8 +90,7 @@ async function buildStaticEgressFixture(
     ),
     driverConfigurations = /** @type {readonly import("../../packages/occ/src/index.ts").DriverConfigurationRegistration[]} */ ([]),
     includeLegacy = false,
-    // Existing custody regressions deliberately arrange the exact pre-retirement
-    // definition. Retirement cases opt into the actual default driver below.
+    // Only the admission fixture marks its owner; execution fixtures stay unmarked.
     admissionOnly = false,
     gatewayOnly = false,
     protectedSourceOnly = false,
@@ -512,7 +510,34 @@ async function buildStaticEgressFixture(
       withdraw: (...args) => owner.withdraw(...args),
     });
   }
+  const providerRequests = [];
+  let providerResponse = { status: 200, body: { output: "fixture answer" } };
+  const createProvider = providerServer === undefined ? createHttpsServer : providerServer;
+  const provider = createProvider({ key, cert }, async (request, response) => {
+    const bytes = await buffer(request);
+    providerRequests.push({
+      method: request.method,
+      path: request.url,
+      authorization: request.headers.authorization,
+      body: bytes.length ? JSON.parse(bytes) : undefined,
+      headers: request.headers,
+    });
+    response.writeHead(providerResponse.status, {
+      "content-type": providerResponse.contentType ?? "application/json",
+    });
+    response.write(providerResponse.rawBody ?? JSON.stringify(providerResponse.body));
+    if (providerResponse.trailers) {
+      response.addTrailers(providerResponse.trailers);
+    }
+    response.end();
+  });
+  const providerPort = await listen(t, provider);
+  const modelProvider = {
+    protocol: "openai-responses",
+    baseUrl: `https://provider.example.test:${providerPort}/v1`,
+  };
   const egress = new OpenShellCredentialProxyDriver(egressOptions, {
+    modelProvider,
     id: proxyDriverId,
     preparedProviders: preparedProvider
       ? [preparedProvider]
@@ -522,21 +547,9 @@ async function buildStaticEgressFixture(
     backend,
     sandbox,
   });
-  const defaultSourceControl = egress.sourceControl;
-  if (!admissionOnly) {
-    egress.sourceControl = Object.freeze({
-      ...defaultSourceControl,
-      providers: defaultSourceControl.providers.map((provider) =>
-        isDeepStrictEqual(provider.ref, openAiStaticProvider.ref) ? openAiStaticProvider : provider,
-      ),
-    });
-  }
-  const useDefaultAdmission = () => {
-    egress.sourceControl = defaultSourceControl;
-  };
   const catalog = new OpenShellCredentialGatewayDriver(
     { binaries: ["/usr/bin/model-client"] },
-    { id: "openshell-credentials", backend },
+    { id: "openshell-credentials", backend, modelProvider },
   );
   const gatewayEffects = [];
   for (const method of ["registerSource", "updateSource", "removeSource"]) {
@@ -579,8 +592,23 @@ async function buildStaticEgressFixture(
     app.controller.registerDriver(catalog);
     app.controller.selectDriver(catalog.capability, catalog.id);
   }
+  // Resolve the real catalog ref so baseline comparisons fail on behavior, not a new export.
+  const retiredStaticProviderRefs = [];
+  if (admissionOnly) {
+    const provider = egress.sourceControl.providers.find(
+      (entry) => entry.ref.id === "openai-static-https",
+    );
+    assert.ok(provider);
+    assert.deepEqual(provider.ref, { id: "openai-static-https", generation: 3 });
+    retiredStaticProviderRefs.push(provider.ref);
+  }
   const installedDriver = new InstalledDriver(
-    { id: sandbox.id, implementation: sandbox.implementation, configuration: egressOptions },
+    {
+      id: sandbox.id,
+      implementation: sandbox.implementation,
+      configuration: egressOptions,
+      ...(admissionOnly ? { retiredStaticProviderRefs } : {}),
+    },
     { capabilities: { sandbox, credential_proxy: egress } },
     { sandbox: sandbox.id, credential_proxy: egress.id },
   );
@@ -597,33 +625,12 @@ async function buildStaticEgressFixture(
   };
   const secret = await post("secrets", { name: "provider-key", value: "synthetic-key-initial" });
   const path = `/namespaces/${namespace.id}/credential-sources`;
-  const providerRequests = [];
-  let providerResponse = { status: 200, body: { output: "fixture answer" } };
-  const createProvider = providerServer === undefined ? createHttpsServer : providerServer;
-  const provider = createProvider({ key, cert }, async (request, response) => {
-    const bytes = await buffer(request);
-    providerRequests.push({
-      method: request.method,
-      path: request.url,
-      authorization: request.headers.authorization,
-      body: bytes.length ? JSON.parse(bytes) : undefined,
-      headers: request.headers,
-    });
-    response.writeHead(providerResponse.status, {
-      "content-type": providerResponse.contentType ?? "application/json",
-    });
-    response.write(providerResponse.rawBody ?? JSON.stringify(providerResponse.body));
-    if (providerResponse.trailers) {
-      response.addTrailers(providerResponse.trailers);
-    }
-    response.end();
-  });
-  const providerPort = await listen(t, provider);
   let legacySource;
   if (includeLegacy) {
     legacySource = await post("credential-sources", {
       name: "approved-copy",
       type: "openai",
+      config: { authorized_base_url: modelProvider.baseUrl },
       secrets: { api_key: secret.ref },
     });
   }
@@ -631,6 +638,7 @@ async function buildStaticEgressFixture(
     app.controller.selectDriver("credential_proxy", egress.id);
   }
   const admissionControls = {
+    modelProvider,
     namespace,
     secret,
     path,
@@ -643,7 +651,6 @@ async function buildStaticEgressFixture(
     legacySource,
     egress,
     observed,
-    useDefaultAdmission,
   };
   if (admissionOnly) {
     return {
@@ -658,7 +665,7 @@ async function buildStaticEgressFixture(
     : await post("credential-sources", {
         name: "inference",
         type: "openai",
-        config: { base_url: `https://provider.example.test:${providerPort}/v1` },
+        config: { authorized_base_url: `https://provider.example.test:${providerPort}/v1` },
         secrets: { api_key: secret.ref },
       });
   const config = await app.createConfiguration(namespace.id, {
@@ -1095,10 +1102,10 @@ async function buildStaticEgressFixture(
   return {
     ...app,
     fixtureKind: /** @type {const} */ ("deployed"),
-    useDefaultAdmission,
     gatewayEffects,
     namespace,
     runtimeNamespace,
+    modelProvider,
     refusalCode,
     secret,
     source,
@@ -1258,8 +1265,9 @@ export async function syntheticDispatchFixture(t, receipts) {
   const { createServer, connect } = await import("node:net");
   const { once } = await import("node:events");
   const { CredentialProxy } = await import("../../packages/occ/src/credential-proxy.ts");
-  const { openAiStaticProvider } =
+  const { createOpenAiStaticProvider } =
     await import("../../apps/controller/src/drivers/egress-proxy/openai-provider.ts");
+  const openAiStaticProvider = createOpenAiStaticProvider();
   const ref = () => ({ id: randomUUID(), generation: 1 });
   const now = Date.now();
   const deadlineAt = new Date(now + 25_000).toISOString();

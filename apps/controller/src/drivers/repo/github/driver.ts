@@ -62,9 +62,12 @@ export class GitHubNativeRepositorySender implements NativeRepositorySender {
       ) {
         return [
           {
-            path: "",
+            path: `/${field}`,
             code: "INVALID_VALUE",
-            message: "Configuration violates the Driver's constraints.",
+            message:
+              field === "controlSocket"
+                ? "repository.nativeSender.controlSocket must be a canonical absolute path without ASCII control characters, at most 103 UTF-8 bytes."
+                : "repository.nativeSender.publicCaPath must be a canonical absolute path without ASCII control characters.",
           },
         ];
       }
