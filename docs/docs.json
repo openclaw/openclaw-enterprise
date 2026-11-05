@@ -915,10 +915,6 @@
                         "label": "Observability Demo"
                       },
                       {
-                        "page": "testing/ci/staging-qualification",
-                        "label": "Staging Qualification"
-                      },
-                      {
                         "page": "testing/ci/k3d-quickstart",
                         "label": "Local k3d Quickstart"
                       }
@@ -1129,6 +1125,10 @@
                   {
                     "page": "release/cli-publication",
                     "label": "OCC CLI"
+                  },
+                  {
+                    "page": "testing/ci/staging-qualification",
+                    "label": "Staging Qualification"
                   },
                   {
                     "page": "release/container-promotion",

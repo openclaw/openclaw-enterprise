@@ -15,6 +15,10 @@ release configuration before dispatching a publication workflow.
 | [OCC CLI](cli-publication.md)                  | Publish versioned macOS and Linux binaries.                                       |
 | [Docker Hub promotion](container-promotion.md) | Copy verified GHCR image digests to private Docker Hub repositories.              |
 
+[Staging release qualification](../testing/ci/staging-qualification.md) checks
+published container startup on amd64. It does not install or promote a release,
+prove staging readiness, or replace CI coverage.
+
 ## Implementation flows
 
 - [Container publication](../flows/container-publication.md)

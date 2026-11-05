@@ -1,5 +1,4 @@
 ---
-kind: reference/ci
 tags: [human_verified]
 ---
 
@@ -9,7 +8,8 @@ tags: [human_verified]
 
 Check published controller and runtime images with trusted startup tests before
 considering a staging installation. This workflow qualifies container startup on
-amd64; it does not install or promote a release.
+amd64; it does not install or promote a release. See the [release guides](../../release/README.md)
+for publication and recovery procedures.
 
 <a id="when-it-runs"></a>
 
