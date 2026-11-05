@@ -7,11 +7,11 @@ import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import type { Page, Route } from "playwright";
 
-import type {
-  AgentResponse,
+import {
+  type AgentResponse,
   NamespaceListResponse,
-  NamespaceWire,
-  SecretWire,
+  type NamespaceWire,
+  type SecretWire,
 } from "../../packages/contracts/src/api/resources.ts";
 
 import { apiErrorResponse } from "../helpers/api-error.mjs";
@@ -21,7 +21,6 @@ import { restrict } from "../helpers/iam-grants.mjs";
 import {
   deniedCreateSecretOption,
   focusedId,
-  fulfillPatchedJson,
   grantMember,
   grantSecretOperate,
   hasFocus,
@@ -38,6 +37,7 @@ import {
   waitForCondition,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
+import { fulfillPatchedJson } from "./console-patched-response.ts";
 import { responseTo } from "./console-action-helpers.ts";
 import { refocus } from "./console-refocus-helpers.ts";
 import {
@@ -568,7 +568,7 @@ test("a member's form links Create Agent to why a Namespace that turned failed r
   const { page } = await newPage(t, fixture);
   let status: NamespaceWire["status"] = "provisioning";
   await page.route(`${fixture.origin}/namespaces`, (route) =>
-    fulfillPatchedJson(route, (body: NamespaceListResponse) => {
+    fulfillPatchedJson(route, NamespaceListResponse, (body) => {
       body.data = body.data.map((item) => (item.id === namespace.id ? { ...item, status } : item));
       return body;
     }),

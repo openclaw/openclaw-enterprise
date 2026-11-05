@@ -2,11 +2,15 @@ import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import type { Page, Request, Route } from "playwright";
 
+import {
+  AgentListResponse,
+  AgentRevisionListResponse,
+} from "../../packages/contracts/src/api/resources.ts";
+
 import type { DeploymentStatus } from "../../packages/occ/src/state/controller-work.ts";
 
 import {
   fileBrowser,
-  fulfillPatchedJson,
   hasFocus,
   holdRequests,
   login,
@@ -18,6 +22,7 @@ import {
   waitForCondition,
   waitForIdleFetches,
 } from "./console-agents-browser-helpers.mjs";
+import { fulfillPatchedJson } from "./console-patched-response.ts";
 import { refocus, tagView, viewTag } from "./console-refocus-helpers.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
@@ -305,18 +310,10 @@ void test("A return whose list read dropped an Agent never reveals that Agent, w
       await route.fallback();
       return;
     }
-    await fulfillPatchedJson(route, (value: unknown) => {
-      const body = record(value);
-      assert.ok(Array.isArray(body.data));
-      return {
-        ...body,
-        data: body.data.filter((value: unknown) => {
-          const item = record(value);
-          assert.equal(typeof item.id, "string");
-          return item.id !== removed.id;
-        }),
-      };
-    });
+    await fulfillPatchedJson(route, AgentListResponse, (body) => ({
+      ...body,
+      data: body.data.filter((item) => item.id !== removed.id),
+    }));
   });
   await startRecording(page);
   await page.goBack();
@@ -1536,16 +1533,9 @@ void test("Agents list names the current version by number in the page's outcome
   }) => {
     const { page: opened } = await newPage(t, fixture, { browser });
     await opened.route(`**/namespaces/${namespace.id}/agents/${newer.id}/revisions`, (route) =>
-      fulfillPatchedJson(route, (value: unknown) => {
-        const body = record(value);
-        assert.ok(Array.isArray(body.data));
-        body.data = body.data.filter((value: unknown) => {
-          const revision = record(value);
-          assert.equal(typeof revision.revision, "number");
-          return revision.revision !== 1;
-        });
-        const meta = record(body.meta);
-        meta.nextCursor = olderPage ? "older-page" : null;
+      fulfillPatchedJson(route, AgentRevisionListResponse, (body) => {
+        body.data = body.data.filter((revision) => revision.revision !== 1);
+        body.meta.nextCursor = olderPage ? "older-page" : null;
         return body;
       }),
     );

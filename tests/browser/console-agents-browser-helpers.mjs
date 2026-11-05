@@ -6,6 +6,10 @@ import { after } from "node:test";
 
 import { chromium, request as playwrightRequest } from "playwright";
 
+import { AgentCallerPermissionsResponse } from "../../packages/contracts/src/api/resources.ts";
+
+import { fulfillPatchedJson } from "./console-patched-response.ts";
+
 import { watchBrowserContext } from "../helpers/browser-failure-diagnostics.mjs";
 import { keepRequestInterceptionEnabled } from "../helpers/browser-request-interception.mjs";
 import { memberRole } from "../helpers/console-app.mjs";
@@ -174,7 +178,7 @@ export function persistedDeploymentError(code, data) {
 // test sees is the API's refusal (finding 2421).
 export async function grantStaleConfigurationUpdate(page) {
   await page.route(/\/agents\/[^/]+\/permissions$/, (route) =>
-    fulfillPatchedJson(route, (body) => ({
+    fulfillPatchedJson(route, AgentCallerPermissionsResponse, (body) => ({
       ...body,
       data: {
         ...body.data,
@@ -184,19 +188,6 @@ export async function grantStaleConfigurationUpdate(page) {
       },
     })),
   );
-}
-
-// Answers a routed request with the real API's answer, its JSON body replaced by what `patch`
-// returns for it (`patch` may change the body it is given and return it). Status and headers
-// stay the server's.
-/**
- * @param {import("playwright").Route} route
- * @param {(body: any) => unknown} patch
- */
-export async function fulfillPatchedJson(route, patch) {
-  const response = await route.fetch();
-  const body = await response.json();
-  await route.fulfill({ response, json: patch(body) });
 }
 
 export function apiRequests(page, origin) {

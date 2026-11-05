@@ -2,6 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Page } from "playwright";
 
+import {
+  NamespaceCallerPermissionsResponse,
+  SecretDetailResponse,
+} from "../../packages/contracts/src/api/resources.ts";
+
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import type {
   CreateIAMAccessBindingBody,
@@ -15,7 +20,6 @@ import type {
   IAMRoleResponse,
   NamespaceListResponse,
   NamespaceWire,
-  SecretDetailResponse,
   SecretListResponse,
 } from "../../packages/contracts/src/api/resources.ts";
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
@@ -39,7 +43,6 @@ import {
   expectReachableReason,
   expectWriteAsksBeforeUnload,
   fileBrowser,
-  fulfillPatchedJson,
   hasFocus,
   holdRequests,
   login,
@@ -47,6 +50,7 @@ import {
   pathRequests,
   settledView,
 } from "./console-agents-browser-helpers.mjs";
+import { fulfillPatchedJson } from "./console-patched-response.ts";
 import { responseTo } from "./console-action-helpers.ts";
 
 const browser = fileBrowser();
@@ -580,7 +584,7 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
   // A page that read the permission answer before a revocation still offers creation, as the
   // API's answer to a creator does; the API refuses the POST.
   await page.route(`**/namespaces/${namespace.id}/permissions`, (route) =>
-    fulfillPatchedJson(route, (body) => ({
+    fulfillPatchedJson(route, NamespaceCallerPermissionsResponse, (body) => ({
       ...body,
       data: { ...body.data, secrets: { create: true } },
     })),
@@ -602,7 +606,7 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
       await route.fallback();
       return;
     }
-    await fulfillPatchedJson(route, (body) => ({
+    await fulfillPatchedJson(route, SecretDetailResponse, (body) => ({
       ...body,
       data: { ...body.data, callerPermissions: { update: true, delete: true } },
     }));
@@ -794,7 +798,7 @@ test("Secret refusals keep their meaning, and incomplete consumers or a not-read
   await page.route(
     `${fixture.origin}${secretPath(namespace)}/${secret.id}`,
     (route) =>
-      fulfillPatchedJson(route, (body: SecretDetailResponse) => {
+      fulfillPatchedJson(route, SecretDetailResponse, (body) => {
         body.data.consumers = { ...body.data.consumers, truncated: true };
         return body;
       }),
