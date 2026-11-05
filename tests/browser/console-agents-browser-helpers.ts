@@ -36,6 +36,7 @@ type PageFixture =
   | (Pick<Fixture, "registerCleanupBeforeAppClose"> & { sharedByFile?: false })
   | { sharedByFile: true };
 type LoginFixture = Pick<Fixture, "origin" | "credentials"> & { sharedByFile?: boolean };
+type Credentials = Pick<LoginFixture["credentials"], "email" | "password">;
 type Grant = readonly [Permission["action"], Permission["resourceKind"]];
 type RequestRecord = { method: string; path: string; body: unknown };
 type Scope = Page | Locator;
@@ -54,7 +55,7 @@ type LayoutShift = {
 
 // Test-only globals installed and read in the browser context.
 declare global {
-  var __layoutShifts: LayoutShift[];
+  var layoutShiftCapture: { shifts: LayoutShift[]; failure: string | null } | undefined;
   var focusFrames: FocusFrames;
   var unavailableActivations: string[];
   var invalidEvents: string[];
@@ -408,6 +409,17 @@ export async function newPage(
 
 const signedInPath = /\/console\/(agents|backends|namespaces|settings|secrets)/;
 
+function assertCredentials(credentials: unknown): asserts credentials is Credentials {
+  assert.ok(
+    credentials !== null &&
+      typeof credentials === "object" &&
+      "email" in credentials &&
+      typeof credentials.email === "string" &&
+      "password" in credentials &&
+      typeof credentials.password === "string",
+  );
+}
+
 // Signs the page in and opens `path`. A fresh tab (still on about:blank) signs in with the same
 // Better Auth password request the form sends, made in the page's own browser context so the
 // browser stores the session cookie the API set, and then loads `path` already signed in: one
@@ -425,21 +437,14 @@ export async function login(
   path: string | URL = "/console/agents",
   credentials: unknown = fixture.credentials,
 ) {
-  assert.ok(
-    credentials !== null &&
-      typeof credentials === "object" &&
-      "email" in credentials &&
-      typeof credentials.email === "string" &&
-      "password" in credentials &&
-      typeof credentials.password === "string",
-  );
+  assertCredentials(credentials);
   const origin = new URL(fixture.origin);
   if (
     page.url() !== "about:blank" ||
     origin.protocol !== "http:" ||
     origin.hostname !== "127.0.0.1"
   ) {
-    await loginThroughForm(page, fixture, path, credentials);
+    await loginForm(page, fixture, path, credentials);
     return;
   }
   if (fixture.sharedByFile && credentials === fixture.credentials) {
@@ -509,14 +514,16 @@ export async function loginThroughForm(
   path: string | URL = "/console/agents",
   credentials: unknown = fixture.credentials,
 ) {
-  assert.ok(
-    credentials !== null &&
-      typeof credentials === "object" &&
-      "email" in credentials &&
-      typeof credentials.email === "string" &&
-      "password" in credentials &&
-      typeof credentials.password === "string",
-  );
+  assertCredentials(credentials);
+  await loginForm(page, fixture, path, credentials);
+}
+
+async function loginForm(
+  page: Page,
+  fixture: LoginFixture,
+  path: string | URL,
+  credentials: Credentials,
+) {
   await page.goto(new URL(path, fixture.origin).href);
   await page.getByLabel("Email", { exact: true }).fill(credentials.email);
   await page.getByLabel("Password").fill(credentials.password);
@@ -586,11 +593,7 @@ export async function operateDeniedSecretOption(
 // Lists the Secret field `label`'s inline Create new Secret action and returns it, checking that
 // it is disabled with `reason` in its accessible name.
 
-export async function deniedCreateSecretOption(
-  scope: Scope,
-  label: string,
-  reason: string | null | undefined,
-) {
+export async function deniedCreateSecretOption(scope: Scope, label: string, reason: string) {
   await scope.getByLabel(label, { exact: true }).fill("no matching Secret");
   const option = scope.getByRole("option", {
     name: `Create new Secret... ${reason}`,
@@ -791,11 +794,19 @@ export function nativeValues<Channels extends Record<string, unknown>>(
 ): NativeValues<Channels>;
 export function nativeValues(
   marker: string,
-  options?: { harnessId?: string; providerModel?: string },
+  options?: { harnessId?: string; providerModel?: string; channels?: undefined },
 ): NativeValues<Record<string, never>>;
+export function nativeValues<Channels extends Record<string, unknown>>(
+  marker: string,
+  options: { harnessId?: string; providerModel?: string; channels?: Channels | undefined },
+): NativeValues<Partial<Channels>>;
 export function nativeValues(
   marker: string,
-  options: { harnessId?: string; providerModel?: string; channels?: Record<string, unknown> } = {},
+  options: {
+    harnessId?: string;
+    providerModel?: string;
+    channels?: Record<string, unknown> | undefined;
+  } = {},
 ) {
   const harnessId = options.harnessId ?? "openclaw";
   const providerModel = options.providerModel ?? (harnessId === "codex" ? "gpt-5.1" : "gpt-4.1");
@@ -948,51 +959,82 @@ export async function holdRequests(
 // Records layout shifts from the first paint, naming the elements that moved. Install it with
 // page.addInitScript() before a full load, so no recent input excuses a shift.
 export function recordLayoutShifts() {
-  globalThis.__layoutShifts = [];
-  new globalThis.PerformanceObserver((list) => {
-    for (const entry of list.getEntries()) {
-      if (
-        !("hadRecentInput" in entry) ||
-        typeof entry.hadRecentInput !== "boolean" ||
-        !("value" in entry) ||
-        typeof entry.value !== "number" ||
-        !("sources" in entry) ||
-        !Array.isArray(entry.sources)
-      ) {
-        throw new Error("Expected a layout-shift entry");
+  const capture: NonNullable<typeof globalThis.layoutShiftCapture> = { shifts: [], failure: null };
+  globalThis.layoutShiftCapture = capture;
+  const recordFailure = (error: unknown) => {
+    capture.failure ??=
+      error instanceof Error ? error.message : "Unknown layout-shift capture failure";
+  };
+  const recordEntries: PerformanceObserverCallback = (list) => {
+    try {
+      for (const entry of list.getEntries()) {
+        if (
+          !("hadRecentInput" in entry) ||
+          typeof entry.hadRecentInput !== "boolean" ||
+          !("value" in entry) ||
+          typeof entry.value !== "number" ||
+          !("sources" in entry) ||
+          !Array.isArray(entry.sources)
+        ) {
+          throw new Error("Expected a layout-shift entry");
+        }
+        if (!entry.hadRecentInput) {
+          capture.shifts.push({
+            value: entry.value,
+            sources: entry.sources.map((source: unknown) => {
+              if (
+                source === null ||
+                typeof source !== "object" ||
+                !("node" in source) ||
+                !(
+                  source.node === null ||
+                  source.node === undefined ||
+                  source.node instanceof Node
+                ) ||
+                !("previousRect" in source) ||
+                !(source.previousRect instanceof DOMRectReadOnly) ||
+                !("currentRect" in source) ||
+                !(source.currentRect instanceof DOMRectReadOnly)
+              ) {
+                throw new Error("Expected a layout-shift source");
+              }
+              return {
+                node: `${source.node?.nodeName}.${source.node instanceof Element ? source.node.className : undefined}`,
+                text: source.node?.textContent?.slice(0, 40),
+                from: [source.previousRect.y, source.previousRect.height],
+                to: [source.currentRect.y, source.currentRect.height],
+              };
+            }),
+          });
+        }
       }
-      if (!entry.hadRecentInput) {
-        globalThis.__layoutShifts.push({
-          value: entry.value,
-          sources: entry.sources.map((source: unknown) => {
-            if (
-              source === null ||
-              typeof source !== "object" ||
-              !("node" in source) ||
-              !(source.node === null || source.node === undefined || source.node instanceof Node) ||
-              !("previousRect" in source) ||
-              !(source.previousRect instanceof DOMRectReadOnly) ||
-              !("currentRect" in source) ||
-              !(source.currentRect instanceof DOMRectReadOnly)
-            ) {
-              throw new Error("Expected a layout-shift source");
-            }
-            return {
-              node: `${source.node?.nodeName}.${source.node instanceof Element ? source.node.className : undefined}`,
-              text: source.node?.textContent?.slice(0, 40),
-              from: [source.previousRect.y, source.previousRect.height],
-              to: [source.currentRect.y, source.currentRect.height],
-            };
-          }),
-        });
-      }
+    } catch (error) {
+      recordFailure(error);
     }
-  }).observe({ type: "layout-shift", buffered: true });
+  };
+  try {
+    new globalThis.PerformanceObserver(recordEntries).observe({
+      type: "layout-shift",
+      buffered: true,
+    });
+  } catch (error) {
+    recordFailure(error);
+  }
 }
 
-// Returns the layout shifts recorded since the last call, and their total.
+// Returns the layout shifts recorded since the last call, and their total. A capture failure
+// remains fatal on every drain so an incomplete sample cannot pass as a stable layout.
 export async function takeLayoutShifts(page: Page) {
-  const shifts = await page.evaluate(() => globalThis.__layoutShifts.splice(0));
+  const shifts = await page.evaluate(() => {
+    const capture = globalThis.layoutShiftCapture;
+    if (capture === undefined) {
+      throw new Error("Layout-shift recording was not installed; call recordLayoutShifts first");
+    }
+    if (capture.failure !== null) {
+      throw new Error(`Layout-shift capture failed: ${capture.failure}`);
+    }
+    return capture.shifts.splice(0);
+  });
   return { shift: shifts.reduce((sum, entry) => sum + entry.value, 0), shifts };
 }
 
@@ -1251,7 +1293,7 @@ export async function assertControlEdge(
 // A status line's look and announcement: its class, tone and role, and with `text` its text, all
 // read at one moment (finding 2006).
 type StatusTone = {
-  className: string | SVGAnimatedString;
+  className: string;
   tone: string | null;
   role: string | null;
 };
@@ -1266,12 +1308,8 @@ export function statusTone(
 ): Promise<StatusTone & { text?: string }>;
 export function statusTone(locator: Locator, { text = false }: { text?: boolean } = {}) {
   return locator.evaluate((node, withText) => {
-    const className: unknown = node.className;
-    if (typeof className !== "string" && !(className instanceof SVGAnimatedString)) {
-      throw new Error("Expected a string or SVG class name");
-    }
     return {
-      className,
+      className: node.getAttribute("class") ?? "",
       tone: node.getAttribute("data-tone") ?? null,
       role: node.getAttribute("role"),
       ...(withText ? { text: node.textContent ?? "" } : {}),
@@ -1330,9 +1368,8 @@ export async function expectWriteAsksBeforeUnload(
 }
 
 // Whether the locator's element holds focus.
-export function hasFocus(locator: Locator | ElementHandle) {
-  const focused = (node: Element) => node === globalThis.document.activeElement;
-  return "elementHandle" in locator ? locator.evaluate(focused) : locator.evaluate(focused);
+export function hasFocus(locator: Pick<ElementHandle<HTMLElement | SVGElement>, "evaluate">) {
+  return locator.evaluate((node: Element) => node === globalThis.document.activeElement);
 }
 
 // The ID of the element that holds focus in the page: "" for one without an ID, null when nothing
