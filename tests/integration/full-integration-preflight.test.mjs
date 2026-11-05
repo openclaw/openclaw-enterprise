@@ -784,8 +784,14 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
   assert.notEqual(manualQueue, queue("workflow_dispatch", "103"));
 
   // Both event types acquire the same resource lock only after authorization.
+  const queuedLanes = ["slack", "dev-up-k3d", "skipper-prepared-git-installed"];
+  assert.equal(workflow.concurrency.queue, undefined);
+  const jobsWithQueue = Object.entries(workflow.jobs)
+    .filter(([, job]) => job.concurrency?.queue !== undefined)
+    .map(([lane]) => lane);
+  assert.deepEqual(jobsWithQueue.sort(), [...queuedLanes].sort());
   const resourceQueues = new Set();
-  for (const lane of ["slack", "dev-up-k3d", "skipper-prepared-git-installed"]) {
+  for (const lane of queuedLanes) {
     const job = workflow.jobs[lane];
     assert.equal(job.needs, "preflight");
     assert.equal(job.concurrency["cancel-in-progress"], false);
