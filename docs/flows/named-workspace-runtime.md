@@ -1,7 +1,7 @@
 ---
 created: "2026-10-23"
 updated: "2026-11-05"
-last_updated_session: "authoring-run/4ab091ce-0b1a-47e9-9b6c-7333d0cb7dcc"
+last_updated_session: "authoring-run/476480ac-61e1-4a78-8f55-9abf2b74e7c8"
 ---
 
 # Named workspace runtime flow
@@ -109,7 +109,9 @@ The gate distinguishes unavailable identity, forbidden access and pending
 readiness. Missing identity-read capability and permissive `local_dev` responses
 keep it closed. RPCs retain deadlines and abort cancellation. The worker repeats
 logical and physical identity checks before and after both gateway reads succeed.
-Permission failures during those checks report `forbidden`.
+Kubernetes HTTP 403 and gateway permission refusals report `forbidden`.
+A failed PostgreSQL logical identity read, including permission error `42501`,
+reports `identity-unavailable`.
 
 `packages/occ/src/state/postgres-work-queue.ts:startupWorkAge` reads original
 queued and claimed timestamps in the bound logical Namespace on the database clock.
@@ -155,6 +157,7 @@ GitHub sign-in, browser behavior, supplier compatibility or model execution.
 
 ## Changelog
 
+- 2026-11-05 12:06: Clarify which startup failures report forbidden or unavailable identity. (authoring-run/476480ac-61e1-4a78-8f55-9abf2b74e7c8 - 7efb5b882f6256c17feb3a48be71492a9d29fad9)
 - 2026-11-05 11:55: Retain the bound Namespace, scope preset initialization, distinguish startup failures, reject external Slack directory configuration, and document attachment limits. (authoring-run/4ab091ce-0b1a-47e9-9b6c-7333d0cb7dcc - 86d9decc43ddb6a66125c9221e9e5265f6266269)
 - 2026-10-26 18:27: Scope worker recovery, claims and exposure withdrawals to the bound Namespace. (authoring-run/ae36f43b-7d02-4085-a886-ef6421011637 - 993ba4674bed65cf6a31410760cea1ee1d53189d)
 - 2026-10-23 15:12: Require an authenticated identity read after public Health. (named-workspace-gateway-identity-20261023 - 5c7ffab23c3a7ebbc96e81b37722ad8e634ee1da)

@@ -73,8 +73,9 @@ Missing identity, forbidden access, pending readiness
 and unknown original work age keep it closed. A positively old age is reported,
 then normal original deadline and lease rules apply. Every process restart closes
 the gate; it never renews leases, resets attempts or changes original timestamps.
-Permission failures report `forbidden`; a failed work-age read reports
-`work-age-unknown`.
+Kubernetes HTTP 403 and gateway permission refusals report `forbidden`.
+A failed PostgreSQL logical identity read, including permission error `42501`,
+reports `identity-unavailable`; a failed work-age read reports `work-age-unknown`.
 `independent` has no startup gate and must not be used for a gateway with that cycle.
 The Git transport startup cycle is unsupported by this Git-disabled contract.
 
