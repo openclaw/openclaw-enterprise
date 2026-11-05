@@ -289,3 +289,28 @@ export function run(authorities: Authority[]) {
     ],
   );
 });
+
+test("keeps dynamic calls on project-typed library results unresolved", (t) => {
+  const root = fixture(t, {
+    "contracts.ts": `export interface Authority { authorize(): void; revoke(): void }
+export interface Other { authorize(): void; revoke(): void }`,
+    "caller.ts": `import type { Authority, Other } from "./contracts.js";
+export function run(authorities: Authority[], mapped: Pick<Authority, "authorize" | "revoke">[],
+  union: (Authority | Other)[], key: keyof Authority, dates: Date[], dateKey: "getTime" | "getDate") {
+  authorities.at(0)?.[key]();
+  const one = authorities.at(0);
+  one?.[key]();
+  mapped.at(0)?.[key]();
+  union.at(0)?.[key]();
+  dates.at(0)?.[dateKey]();
+}
+`,
+  });
+  const result = analyzeCoupling(root, ["caller.ts"]);
+  assert.deepEqual(result.edges, []);
+  // The library selects each receiver, but cannot settle its dynamic project method.
+  assert.deepEqual(
+    result.unresolved.map(({ from, kind, site }) => [from, kind, site.line]),
+    [4, 6, 7, 8].map((line) => ["caller.ts#run", "calls", line]),
+  );
+});

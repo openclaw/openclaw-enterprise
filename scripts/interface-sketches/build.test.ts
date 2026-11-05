@@ -181,35 +181,42 @@ test("custom local sources build to the requested prefix and bad arguments creat
   assert.equal(existsSync(join(directory, "bad.png")), false);
 });
 
-test("published asset check rejects symlinked previews in either directory", async (t) => {
+test("published asset check rejects symlinked previews and directories", async (t) => {
   const png = (await render({ title: "Preview", width: 1, height: 1, items: [] })).png;
   for (const linkedDirectory of ["examples", "published"]) {
-    await t.test(linkedDirectory, (t) => {
-      const directory = fixture(t);
-      mkdirSync(join(directory, "published"));
-      const examples = join(directory, "examples");
-      const published = join(directory, "published");
-      for (const destination of [examples, published]) {
-        writeFileSync(join(destination, "preview.png"), png);
-      }
-      const check = () =>
-        spawnSync(process.execPath, [join(directory, "check-assets.ts"), examples, published], {
-          encoding: "utf8",
-          timeout: 30_000,
-        });
-      assert.equal(check().status, 0);
-      // Equal bytes do not make a checkout-dependent symlink a portable site asset.
-      const target = join(directory, "original.png");
-      writeFileSync(target, png);
-      const linked = join(directory, linkedDirectory, "preview.png");
-      rmSync(linked);
-      symlinkSync(target, linked);
-      const rejected = check();
-      assert.equal(rejected.status, 1, rejected.stderr);
-      assert.match(rejected.stderr, /regular file/);
-      assert.ok(rejected.stderr.includes(linked));
-      assert.ok(lstatSync(linked).isSymbolicLink());
-      assert.deepEqual(readFileSync(target), png);
-    });
+    for (const entry of ["file", "directory"]) {
+      await t.test(`${linkedDirectory} ${entry}`, (t) => {
+        const directory = fixture(t);
+        mkdirSync(join(directory, "published"));
+        const examples = join(directory, "examples");
+        const published = join(directory, "published");
+        for (const destination of [examples, published]) {
+          writeFileSync(join(destination, "preview.png"), png);
+        }
+        const check = () =>
+          spawnSync(process.execPath, [join(directory, "check-assets.ts"), examples, published], {
+            encoding: "utf8",
+            timeout: 30_000,
+          });
+        assert.equal(check().status, 0);
+        // A linked gallery is as dependent on the checkout as an individual linked PNG.
+        const linked =
+          entry === "file"
+            ? join(directory, linkedDirectory, "preview.png")
+            : join(directory, linkedDirectory);
+        const target = join(directory, entry === "file" ? "original.png" : "original-gallery");
+        renameSync(linked, target);
+        symlinkSync(target, linked, entry === "file" ? "file" : "dir");
+        const rejected = check();
+        assert.equal(rejected.status, 1, rejected.stderr);
+        assert.match(rejected.stderr, entry === "file" ? /regular file/ : /directory/);
+        assert.ok(rejected.stderr.includes(linked));
+        assert.ok(lstatSync(linked).isSymbolicLink());
+        assert.deepEqual(
+          readFileSync(entry === "file" ? target : join(target, "preview.png")),
+          png,
+        );
+      });
+    }
   }
 });

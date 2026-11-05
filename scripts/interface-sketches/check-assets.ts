@@ -7,6 +7,11 @@ async function main(args: string[]): Promise<void> {
   }
   const [examples, published] = args.map((directory) => resolve(directory));
   const filenames = async (directory: string) => {
+    if (!(await lstat(directory)).isDirectory()) {
+      throw new Error(
+        `Preview directory must be a real directory (replace this entry): ${directory}`,
+      );
+    }
     const names = new Set((await readdir(directory)).filter((name) => name.endsWith(".png")));
     for (const name of [...names].sort()) {
       const path = resolve(directory, name);

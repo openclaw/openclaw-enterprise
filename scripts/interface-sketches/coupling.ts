@@ -201,6 +201,14 @@ export function analyzeCoupling(
     const declarations = symbolAt(expression)?.getDeclarations();
     return declarations?.length === 1 ? identity(declarations[0]) : undefined;
   }
+  function hasProjectDeclaration(type: ts.Type): boolean {
+    if (type.isUnionOrIntersection()) {
+      return type.types.some(hasProjectDeclaration);
+    }
+    return [type.getSymbol(), ...type.getProperties()].some((symbol) =>
+      symbol?.declarations?.some((declaration) => ownSource(declaration.getSourceFile())),
+    );
+  }
   function external(expression: ts.Expression): boolean {
     const symbol = checker.getSymbolAtLocation(expression);
     if (
@@ -226,7 +234,11 @@ export function analyzeCoupling(
       return declarations.every((declaration) => !ownSource(declaration.getSourceFile()));
     }
     if (ts.isPropertyAccessExpression(expression) || ts.isElementAccessExpression(expression)) {
-      return external(expression.expression);
+      // An unknown method on a project receiver stays unresolved, even if a library returned it.
+      return (
+        !hasProjectDeclaration(checker.getTypeAtLocation(expression.expression)) &&
+        external(expression.expression)
+      );
     }
     if (ts.isCallExpression(expression) || ts.isNewExpression(expression)) {
       return external(expression.expression);
