@@ -823,8 +823,13 @@ async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
   if (prepare.k3d && name !== "openshell" && effectiveEnv.OPENCLAW_CI_K3S_IMAGE) {
     assertImmutableImageReference(effectiveEnv.OPENCLAW_CI_K3S_IMAGE, "OPENCLAW_CI_K3S_IMAGE");
   }
-  const openShellGatewayFile =
-    file === "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs";
+  const openShellGatewayFile = [
+    "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
+    "tests/integration/openshell-gateway-tool-policy-real.test.ts",
+    "tests/integration/openshell-refresh-real.test.ts",
+    "tests/integration/openshell-upstream-real.test.ts",
+    "tests/integration/openshell-credentials-real.test.ts",
+  ].includes(file);
   const openShellApiKey =
     name === "openshell" &&
     ((effectiveEnv.OCC_TEST_OPENSHELL_HARNESS === "openclaw" &&
@@ -953,6 +958,7 @@ async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
 // (ci-image-cache.yml) exports it, building with images-packaging's state.
 const imageCacheLanes = new Map([
   ["openshell", { localStore: false }],
+  ["dev-up-k3d", { localStore: false }],
   ["images-packaging", { localStore: false }],
   ["images-runtime-startup", { localStore: false }],
   ["images-runtime-startup-2", { localStore: false }],
@@ -2919,6 +2925,27 @@ async function prepareLane({ lane, statePath, file }) {
   const env = baseEnv(resolvedStatePath, state);
   await writeState(resolvedStatePath, state);
 
+  if (
+    process.env.OCC_CI_IMAGE_CACHE === "1" &&
+    (lanePrepare(name).sourceBuildFiles?.includes(relativeFile) ||
+      (name === "dev-up-k3d" && relativeFile === undefined))
+  ) {
+    // Prime the selected builder, but keep the installer's actual source-build path.
+    // Cache credentials remain in preparation; tests inherit only the builder name.
+    const builder = process.env.BUILDX_BUILDER;
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]+$/.test(builder ?? "")) {
+      throw new Error("Installer image preparation requires its selected job builder.");
+    }
+    await timedPreparation(name, "installer-source-images", () =>
+      buildRuntimeImages(resolvedStatePath, state, {
+        controller: true,
+        runtime: true,
+        nodeBaseImage: effectiveLaneEnv(name, env).NODE_BASE_IMAGE,
+      }),
+    );
+    env.BUILDX_BUILDER = builder;
+  }
+
   switch (name) {
     case "postgres":
     case "postgres-application":
@@ -3330,7 +3357,10 @@ async function prepareLane({ lane, statePath, file }) {
       // These files exercise the installer in their own Local Setup. Preparing a
       // second stack here builds the same images and installs unused services.
       if (lanePrepare(name).selfProvisionedFiles.includes(relativeFile)) {
-        if (process.env.OCC_CI_IMAGE_CACHE === "1") {
+        if (
+          process.env.OCC_CI_IMAGE_CACHE === "1" &&
+          !lanePrepare(name).sourceBuildFiles?.includes(relativeFile)
+        ) {
           await prepareFirstAgentImages(resolvedStatePath, state, env, relativeFile);
         }
         break;
@@ -3563,6 +3593,10 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
       [
         "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
         "tests/integration/openshell-plugin-install-real.test.ts",
+        "tests/integration/openshell-gateway-tool-policy-real.test.ts",
+        "tests/integration/openshell-refresh-real.test.ts",
+        "tests/integration/openshell-upstream-real.test.ts",
+        "tests/integration/openshell-credentials-real.test.ts",
       ].includes(relativeFile)
     ) {
       env.OCC_TEST_OPENSHELL_POLICY_MIGRATION_DATABASE_URL = database.migrationUrl;

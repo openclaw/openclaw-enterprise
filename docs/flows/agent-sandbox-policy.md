@@ -238,7 +238,7 @@ the policy read, only the network policy card states it; the suggestions card is
 - Compare the application revision with the active Agent revision and inspect
   attributable audit evidence before retrying a stale or unconfirmed request.
 - [PostgreSQL admission integration](../../tests/integration/postgres-agent-sandbox-policy.test.mjs)
-  exercises HTTP/IAM/storage; the [OpenShell runtime lane](../../tests/integration/sandbox-driver-openshell-k3d-real.test.mjs)
+  exercises HTTP/IAM/storage; the [OpenShell runtime lane](../../tests/helpers/openshell-sandbox-workflows.mjs)
   owns real enforcement proof. Storybook proves simulated presentation only.
 - [Console batch browser tests](../../tests/browser/console-policy-denials.test.ts)
   cover selection across pages, stable Follow, deduplication, preservation of saved

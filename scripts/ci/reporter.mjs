@@ -61,6 +61,40 @@ function safeMeasurement(message) {
   } catch {
     return undefined;
   }
+  if (isRecord(value) && value.kind === "openshell-stage") {
+    if (
+      ![
+        "installation",
+        "initial-model",
+        "filesystem-network",
+        "network-policy",
+        "credential-route",
+        "replacement",
+        "untrusted-upstream",
+        "tool-outage",
+        "model-outage",
+        "gateway-outage",
+        "oauth-refresh",
+        "non-model-source",
+        "credential-absence",
+        "credential-withdrawal",
+        "embedded-refusal",
+        "native-policy",
+      ].includes(value.stage) ||
+      !["passed", "failed"].includes(value.outcome) ||
+      !Number.isInteger(value.elapsedMs) ||
+      value.elapsedMs < 0 ||
+      value.elapsedMs > 7_200_000
+    ) {
+      return undefined;
+    }
+    return {
+      kind: value.kind,
+      stage: value.stage,
+      outcome: value.outcome,
+      elapsedMs: value.elapsedMs,
+    };
+  }
   if (isRecord(value) && value.kind === "local-first-agent-setup-point") {
     if (
       ![

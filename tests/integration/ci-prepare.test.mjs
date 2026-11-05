@@ -1832,13 +1832,36 @@ for (let index = 0; index < Number(times); index += 1) {
       }
       assert.equal(result.status, 0, result.stderr);
       const { include } = JSON.parse(
-        (await readFile(output, "utf8")).trim().slice("matrix=".length),
+        (await readFile(output, "utf8"))
+          .split("\n")
+          .find((line) => line.startsWith("matrix="))
+          .slice("matrix=".length),
       );
       assert.deepEqual(
         include.map(({ file }) => file),
         selected ? [selected] : files.map(({ path }) => path),
       );
       assert.equal(new Set(include.map(({ shard }) => shard)).size, include.length);
+      const installation = JSON.parse(
+        (await readFile(output, "utf8"))
+          .split("\n")
+          .find((line) => line.startsWith("installation-matrix="))
+          .slice("installation-matrix=".length),
+      );
+      assert.deepEqual(
+        installation.include.map(({ file }) => file),
+        loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json")).lanes[
+          "dev-up-k3d"
+        ].files.map(({ path }) => path),
+      );
+      const installationJob = workflow.jobs["local-installation"];
+      assert.equal(installationJob.strategy["fail-fast"], false);
+      assert.equal(
+        installationJob.steps.find((step) => step.uses === "./.github/actions/run-ci-lane").with[
+          "test-file"
+        ],
+        "${{ matrix.file }}",
+      );
     }
   });
 
@@ -2756,6 +2779,25 @@ if (args[0] === "pull") {
         prepareLane: true,
       },
     ];
+    // Each split owner must retain the credential admission gate before any resource is created.
+    for (const file of [
+      "tests/integration/openshell-gateway-tool-policy-real.test.ts",
+      "tests/integration/openshell-credentials-real.test.ts",
+      "tests/integration/openshell-upstream-real.test.ts",
+      "tests/integration/openshell-refresh-real.test.ts",
+    ]) {
+      cases.push(
+        { harness: "codex", credentials: ["OPENAI_API_KEY"], file, missing: "CODEX_ACCESS_TOKEN" },
+        {
+          harness: "codex",
+          endpoint: true,
+          credentials: ["CODEX_ACCESS_TOKEN"],
+          file,
+          missing: "OPENAI_API_KEY",
+        },
+        { harness: "codex", endpoint: true, credentials: ["OPENAI_API_KEY"], file },
+      );
+    }
     for (const [index, value] of cases.entries()) {
       const statePath = join(root, `credential-${index}.json`);
       const env = {

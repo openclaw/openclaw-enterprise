@@ -5220,6 +5220,19 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       'test("measures", (t) => {',
       ...[
         measurement({
+          kind: "openshell-stage",
+          stage: "oauth-refresh",
+          outcome: "passed",
+          elapsedMs: 123,
+          transcript: "secretauthvalue-transcript",
+        }),
+        measurement({
+          kind: "openshell-stage",
+          stage: "secretauthvalue-stage",
+          outcome: "passed",
+          elapsedMs: 123,
+        }),
+        measurement({
           kind: "local-first-agent-command",
           phase: "setup",
           stage: "runtime-build",
@@ -5418,6 +5431,7 @@ test("run records only allowlisted measurements from test diagnostics", async (t
   const summary = JSON.parse(artifact);
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(summary.files[0].measurements, [
+    { kind: "openshell-stage", stage: "oauth-refresh", outcome: "passed", elapsedMs: 123 },
     {
       kind: "local-first-agent-command",
       phase: "setup",

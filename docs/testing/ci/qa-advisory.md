@@ -13,7 +13,7 @@ QA Matrix Advisory is one workflow with three groups of test jobs:
 
 - **QA matrix:** Codex model responses, Calendar access, and Console Secrets on
   Compose and Kubernetes installations.
-- **OpenShell:** five parallel jobs for sandbox policy, credentials, plugins,
+- **OpenShell:** nine jobs with at most six running at once for sandbox policy, credentials, plugins,
   installation, and Agent redeployment.
 - **Local installation:** the hosted local setup tests.
 
@@ -99,7 +99,7 @@ on its own Ubuntu 24.04 VM, with a Landlock check, Docker daemon, cluster, and
 private state. These are parallel jobs within the same advisory run, named
 `QA advisory (OpenShell / <test-file-basename>)`.
 
-The selection job reads the five files in the
+The selection job reads the nine files in the
 [OpenShell manifest](../../../scripts/ci/test-suites/openshell.json). Each resulting
 job calls `run-ci-lane` with `lane: openshell` and its selected `test-file`. The
 `qa-openshell-compose` label selects only the first row below.
@@ -108,11 +108,18 @@ job calls `run-ci-lane` with `lane: openshell` and its selected `test-file`. The
 | -------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [Compose first Agent](../../../tests/integration/local-first-agent-openshell-real.test.mjs)        | Compose control plane with Kubernetes workloads: Agent deployment and reuse, key replacement denial, native redeployment, retained session/files, and required-worker execution. |
 | [OpenShell installation](../../../tests/integration/dev-up-openshell-k3d-real.test.mjs)            | Pinned OpenShell installation with Kubernetes-only and Compose control planes.                                                                                                   |
-| [Sandbox enforcement](../../../tests/integration/sandbox-driver-openshell-k3d-real.test.mjs)       | Provider credential delivery, authenticated Codex access, and Gateway tool policy during normal Agent work.                                                                      |
+| [Gateway tool policy](../../../tests/integration/openshell-gateway-tool-policy-real.test.ts)       | Gateway model tool restrictions, positive administrator controls, and policy replacement.                                                                                        |
+| [Credential lifecycle](../../../tests/integration/openshell-credentials-real.test.ts)              | Credential routing, replacement, non-model sources, absence from Agent material, withdrawal, and authenticated native policy scopes.                                             |
+| [Upstream outages](../../../tests/integration/openshell-upstream-real.test.ts)                     | Untrusted model TLS, tool outages, and model provider outages with recovery.                                                                                                     |
+| [Gateway and OAuth recovery](../../../tests/integration/openshell-refresh-real.test.ts)            | Gateway restart, fresh OAuth minting, rotation, revocation, expiry, and source deletion.                                                                                         |
+| [Sandbox enforcement](../../../tests/integration/sandbox-driver-openshell-k3d-real.test.mjs)       | Provider credential delivery, authenticated Codex access, filesystem enforcement, and Agent network policy.                                                                      |
 | [Kubernetes first Agent](../../../tests/integration/local-first-agent-openshell-k3d-real.test.mjs) | The first-Agent and native redeployment workflow with the control plane in Kubernetes.                                                                                           |
 | [Codex plugin installation](../../../tests/integration/openshell-plugin-install-real.test.ts)      | Selected Codex plugin installation and retention through the OpenShell Agent workflow.                                                                                           |
 
 The runner requires the selected files' credentials, expected tests, and cleanup.
+Local installation also uses one runner per manifest file: input and network-policy
+refusals, Kubernetes and Compose profiles, and Keycloak sign-in and recovery.
+The six original installation cases remain required.
 A failed job does not cancel its peers. Hosted preparation builds first-Agent
 images from the current checkout using read-only caches. Local Setup then creates
 and cleans up each installation without duplicate clusters. See
@@ -135,7 +142,7 @@ To run the same coverage as the schedule, configure the
 gh workflow run qa-advisory.yml --repo openclaw/openclaw-enterprise --ref main
 ```
 
-This starts the QA matrix, all five OpenShell jobs, and local installation tests.
+This starts the QA matrix, all nine OpenShell jobs, and three local installation jobs.
 For only OpenShell, use [Full Integration](full-integration.md#run-a-protected-integration-lane)
 with `lane=openshell`.
 
@@ -222,10 +229,10 @@ Missing, filtered, or interrupted tests are not passes.
 | --------------------------------------------------- | ----------------------------------------------------------------------------- |
 | QA matrix stages (`passed`, `failed`, or `blocked`) | `matrix.json` in `qa-advisory-<installation>-<run-id>-<attempt>`              |
 | OpenShell tests                                     | `qa-advisory-<test-file-basename>-openshell` (omit `.test.mjs` or `.test.ts`) |
-| Local installation tests                            | `qa-advisory-local-installation-dev-up-k3d`                                   |
+| Local installation tests                            | `qa-advisory-local-installation-<test-file-basename>-dev-up-k3d`              |
 
 Artifacts expire after seven days. Each OpenShell job reports `scope: focused`
-because it runs one file; complete advisory OpenShell coverage requires all five
+because it runs one file; complete advisory OpenShell coverage requires all nine
 to pass.
 
 In `matrix.json`, `scope: full` means both installations and presets with the

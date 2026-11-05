@@ -22,7 +22,7 @@ install the dependencies and build the CLI before running:
 pnpm install --frozen-lockfile
 pnpm exec playwright install chromium
 pnpm cli:build
-OCC_TEST_DEV_UP_K3D_REAL=1 node --test tests/integration/dev-up-k3d-real.test.mjs
+OCC_TEST_DEV_UP_K3D_REAL=1 node --test --test-concurrency=1 tests/integration/dev-up-k3d-real.test.mjs tests/integration/dev-up-k3d-profiles-real.test.ts tests/integration/dev-up-k3d-keycloak-real.test.ts
 ```
 
 The tests cover installation, cleanup, workspace boundaries, NetworkPolicy,
