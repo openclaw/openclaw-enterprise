@@ -8,6 +8,12 @@ This record preserves the dated changes to the OpenShell Sandbox provisioning fl
 
 ## Changelog
 
+- 2026-10-29 04:23: Route OpenShell workspace nodes through Envoy for worker HTTP transfers and client attribution. (authoring-run/01a17fae-f253-7d71-af12-d3f259c4faf0 - 15440bacfc5a6553190c9580eb0eccf6f301f0ed)
+
+- 2026-10-28 21:24: Unify preparation cleanup. (01a184cd-7ec2-7fa2-8547-9629c51ad0ba - 208172f773)
+
+- 2026-10-28 16:50: Trace stdio plugin installation before verifier-only native startup. (01a184cd-7ec2-7fa2-8547-9629c51ad0ba - 000e1381e7)
+
 - 2026-10-28 15:09: Clarify mode support and Configuration transformation wording. (01a183dc-eb11-7f33-9992-dec02cd989e3 - a06c28fe0e)
 
 - 2026-10-28 12:05: Separate static Harness mode reporting from real Configuration transformation. (01a183dc-eb11-7f33-9992-dec02cd989e3 - 07418d1980)

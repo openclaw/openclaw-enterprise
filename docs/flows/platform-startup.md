@@ -1,7 +1,7 @@
 ---
 created: 2026-08-20
-updated: 2026-10-21
-last_updated_session: authoring-run/2173f820-1bb2-47dd-8d1a-8649183da29f
+updated: 2026-11-04
+last_updated_session: authoring-run/390095eb-01a9-4e24-b609-791b49f19f81
 ---
 
 # Platform Startup Flow
@@ -255,8 +255,8 @@ execution begins in the adjacent
   required to prove gateway or Agent workload execution; startup tests alone do
   not establish that outcome.
 - With a selected ServiceAccount Driver, verify the admin key and ChatGPT client
-  exist only in the API process; provider-issued access tokens require the
-  genuine scenario in `tests/integration/service-account-driver-real.test.mjs`.
+  exist only in the API process. See [service-account coverage](../testing/slack.md#service-account-coverage)
+  for the checks and their limits.
 
 ## Related docs
 
@@ -279,6 +279,7 @@ execution begins in the adjacent
 
 ## Changelog
 
+- 2026-11-04 09:42: Remove the retired hosted Provider Account test from verification instructions; retain service-account implementation coverage. (authoring-run/390095eb-01a9-4e24-b609-791b49f19f81 - e2311f4d2250874d622ab12c2fe8588a076bd19b)
 - 2026-10-23: Pass the Installation's Credential Proxy request capacity from startup to the exchange registry.
 
 - 2026-10-21: Load the route validators and serializers the image build precompiled.

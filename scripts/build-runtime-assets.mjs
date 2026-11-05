@@ -27,7 +27,7 @@ const appliedPatches = [
   },
   {
     file: "openclaw-codex-full-access-profile.patch",
-    sha256: "37d79564f56e068c6ac982e5524a58e9da65172ac96177debca81d51442deccc",
+    sha256: "e942e1804475a8e828859c5ba81c20de944105a7dbe00bbba6c2275b32c0944b",
   },
   {
     file: "openclaw-required-worker-authority-regression.patch",

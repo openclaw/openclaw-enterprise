@@ -10,7 +10,7 @@ last_updated_session: authoring-run/97c319f2-8bb0-4db4-9cfb-50478db52fdb
 
 Dedicated Codex uses prepared sessions without a Sandbox Driver;
 [OpenShell sandboxes](../reference/repository-credentials/protected-openshell-git.md) receive placeholders.
-Workers deliver credentials to providers, checking signed requests against live grants.
+Workers deliver credentials and check signed requests against live grants.
 See [enrollment and mandatory hooks](../guides/repository-credentials/openshell-enrollment.md),
 [service forwarding and retirement](repository-credentials.md) and [runtime qualification](../testing/repository-credentials.md).
 
@@ -224,12 +224,12 @@ Both gate startup; the consumer mount is read-only. Metadata and gateway
 bearers remain separate.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.activateRevision`
-replaces consumers when material changes, even within one version. Readiness requires
+replaces consumers whenever material changes, including within a version. Readiness requires
 role, version, generation and current deadlines. Dedicated replacement preserves enrollment
 and version-private storage.
 `KubernetesComputeDriver.prepareRevision` rechecks material after plugin,
 gateway and node observations; generation changes, lost readiness or expiry return incomplete.
-Activation rechecks deadlines after final observations.
+Activation rechecks deadlines after observation.
 Dedicated gateways lack repository material and repository-gateway egress.
 Both consumers trust CAs through `SSL_CERT_FILE`, `GIT_SSL_CAINFO` and
 `NODE_EXTRA_CA_CERTS`; overrides fail.
@@ -237,20 +237,19 @@ Compute grants consumer egress; Helm admits consumers through
 [credential-sidecar ingress selectors](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking).
 For [prepared native Git](../reference/repository-credentials/prepared-native-git.md),
 `apps/controller/src/drivers/compute/kubernetes/repository-compute-ingress.ts:reconcilePreparedRepositoryIngress`
-admits the revision's ingress peer only when the session's hostname, TLS port and
-worker selector match the Helm-recorded broker Service. A mismatch refuses admission
-without widening policy. Native preparation writes aggregate `gitconfig` without reading
-bearers. System Git includes
-`/run/oce/repository-credentials/gitconfig`, preserving HOME/global configuration.
+requires the peer’s hostname, TLS port and worker selector to match the broker
+Service recorded by Helm. Native preparation writes `gitconfig` without reading
+bearers. System Git includes `/run/oce/repository-credentials/gitconfig` and
+preserves global settings.
 Embedded `repositoryNativeConfiguration` keeps the `gh` router first in
 `tools.exec.pathPrepend`. `AGENT_RUNTIME_ENTRYPOINT` sets Codex's
 `allow_login_shell=false` and `shell_environment_policy.set.PATH`, and keeps the Pod's
-`NODE_EXTRA_CA_CERTS` for sandboxed commands. Model authentication remains intact.
+`NODE_EXTRA_CA_CERTS` for sandboxed commands. Model authentication persists.
 App keys, JWTs, installation tokens and the control socket never enter consumer material.
 The [networking contract](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking)
 defines Codex plugin and repository-bound filesystem and proxy access, explicit denies,
 and dedicated/embedded eligibility. Unbound policy, broker authorization and TLS
-verification stay in force.
+verification stay in force. Codex verifies the named network profile on thread start, resume, fork and turns.
 
 ### 5. Authenticate native Git and route GitHub CLI commands
 

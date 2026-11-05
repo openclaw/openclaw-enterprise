@@ -35,8 +35,8 @@ graph TD
   D6 -->|unsupported| D7["Unsupported"]
   D6 -->|token or none| D4["Call PluginDriver"]
   D6 -->|Secret| D3["Read and recheck"] --> D4
-  D6 -->|CredentialSource| D9["Read unless canceled"]
-  D9 -->|success| D10["Recheck authority"]
+  D6 -->|CredentialSource| D9["Check source and exact Gateway owner; read unless canceled"]
+  D9 -->|success| D10["Recheck authority, source and catalog"]
   D10 -->|allowed and connected| D4
   D9 -->|canceled or failed| D12["Stop"]
   D10 -->|denied or disconnected| D12
@@ -69,31 +69,31 @@ graph TD
 
 ### Credential-scoped discovery
 
-[Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) requires
-the target Harness, Agent `create` and caller `operate` on stored sources.
-A wrong Namespace returns `400`, a missing Secret `404`, and an unavailable
-explicit CredentialSource `409`.
+[Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) needs a
+Harness, Agent `create`, and caller `operate` on stored sources. Wrong Namespace:
+`400`; missing Secret: `404`; unavailable explicit CredentialSource: `409`.
 
-Saved discovery requires a dedicated Agent with caller `read` and `update`.
-OCC offers admissible plugins. It rechecks attachment and both caller and Agent
-`operate` for bound sources, and caller `operate` for explicit sources.
-Missing or unready bound sources return `404`. Hosted catalogs use the saved
-bearer; curated catalogs need none.
+Saved discovery needs a dedicated Agent and caller `read`/`update`. Bound sources
+require caller and Agent `operate`; explicit sources require caller `operate`.
+Missing or unready bound sources return `404`. Hosted catalogs use credentials;
+curated catalogs do not.
 
-Before provider access, OCC rechecks grants and catalog. Cancellation discards late credentials.
+The bundled OpenShell Backend reader looks up metadata and exports through
+operator mTLS. External Gateways retain optional `withSourceToken`. OCC checks
+the source and its Gateway owner, then rechecks authority, attachment and catalog
+before dispatch. Cancellation discards late credentials. Refresh stays with its owner.
 
 `packages/occ/src/index.ts:OpenClawController.discoverManagedMcpTools`
 
-For managed MCP, the Plugin Driver matches the release slot. OCC reads the bearer
-through the Secret Driver and rechecks grants and attachment before `tools/list`.
-`driverPolicy.toolNames` pins upstream names for worker, Gateway and OpenShell.
+Managed MCP reads through Secret Driver and rechecks before `tools/list`.
+`driverPolicy.toolNames` pins upstream names across runtimes.
 
-Closing the picker cancels discovery. Changing accounts clears results. Changing Harness clears selections and approvers. Hosted reads reject redirects and credential echoes, limit size and
-time, and return safe metadata with `Cache-Control: no-store`.
+Closing cancels; account changes clear results; Harness changes clear selections
+and approvers. Hosted reads bound size/time, reject redirects and credential echoes,
+and return safe metadata with `Cache-Control: no-store`.
 See [catalog browsing](../reference/drivers/plugin-bundled.md#selection-and-catalogs).
-
-The optional `NativeCodexPluginCatalogReader` calls `plugin/list` over stdio,
-rejects invalid results and stops the child on teardown. HTTP uses the hosted reader.
+The optional `NativeCodexPluginCatalogReader` uses stdio `plugin/list`, rejects
+invalid results and stops the child on teardown. HTTP uses the hosted reader.
 
 ### 1. Validate desired state under exact-Agent authority
 
