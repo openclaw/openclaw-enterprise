@@ -10,7 +10,7 @@ rfc: ../rfcs/0030-gateway-outbound-proxy.md
 - **Authority:** [Platform design](../../docs/design.md) and existing Kubernetes Compute/networking owners.
 - **Proposal:** [RFC-0030](../rfcs/0030-gateway-outbound-proxy.md), not yet accepted.
 - **Original experiment baseline:** `80725162a946f80652b939a32a57ee4e922eeb5c`
-- **Refreshed upstream baseline:** `0ecbe50bfe0df315fda06a90274b9e218b48d96c`
+- **Refreshed upstream baseline:** `324fbad6f248bce4606e175fbb67ac506cd824ff`
 
 ## Outcome and scope
 
@@ -36,7 +36,7 @@ The bridge must be removed when OC provides the owning internal-transport hook.
 
 ## Implementation
 
-- [ ] Complete upstream refresh, preserve Driver configuration/validation and
+- [x] Complete upstream refresh, preserve Driver configuration/validation and
       Credential Proxy boundaries, and repeat affected verification.
 - [x] Extend the existing bundled proxy and Helm packaging, not platform core.
 - [x] Render one endpoint for directory clients and embedded/dedicated Gateways.
@@ -59,6 +59,33 @@ The bridge must be removed when OC provides the owning internal-transport hook.
 | API/worker Agent deployment with enforced policies       | Existing Kubernetes API/worker fixture and real-runtime cases                          | Pending                             |
 | Embedded/dedicated real model turns and failure recovery | Explicitly selected disposable cluster, immutable images, authorized model credentials | Pending                             |
 | Native image startup, AMD64 and ARM64                    | Final-head container-check workflow                                                    | Pending                             |
+
+## Upstream refresh verification
+
+Refreshed to upstream `324fbad6f248bce4606e175fbb67ac506cd824ff` on 2026-11-05,
+retaining published history through merge commits. RFC-0030 and TASK-0051 avoid
+upstream's occupied IDs. Typed Driver configuration, structured validation,
+shared model providers, multiple plugin catalogs, and Credential Proxy ownership
+remain intact.
+
+- Compute and CONNECT suites: 420 passed; no failures or skips.
+- Profile renderer and chart parity: 116 passed; no failures or skips.
+- Plugin Compute, Slack directory and runtime assembly checks passed (184 cases
+  in the focused combined run). The one new async profile case was corrected
+  for upstream's renderer and passed on rerun with the complete profile suite.
+- Runtime credential and Secret delivery: 30 passed; no failures or skips.
+- Selected chart routing and policy checks: 9 passed; no failures or skips.
+- Selected committed-chart upgrade guards: 14 passed, including protected plugin
+  registrations and refusal of proxy changes by image-only upgrades.
+- TypeScript, lint, formatting, workspace isolation, CI suite audit, specification
+  metadata, five changed flow validators, and documentation checks passed. The
+  site checked 335 pages and 5,377 links; page lengths remain within hard limits.
+- All eight runtime patches apply together in recipe order to the current,
+  checksum-verified OC source pin. This is source compatibility, not a rebuilt
+  image or model-turn claim. Final-head native image checks remain required.
+
+The older runtime and ClawHub probes below remain evidence only for their exact
+original image. They do not qualify the refreshed runtime or full OCC workflow.
 
 ## Delivery record
 

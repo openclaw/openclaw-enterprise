@@ -1,6 +1,6 @@
 ---
 created: 2026-08-21
-updated: 2026-11-05 17:34
+updated: "2026-11-05 19:30"
 last_updated_session: authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62
 ---
 
@@ -353,7 +353,7 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 
 ## Changelog
 
-- 2026-11-05 17:34: Link proxy routing (authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62 - 80725162a946f80652b939a32a57ee4e922eeb5c)
+- 2026-11-05 19:30: Link proxy routing (authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62 - 324fbad6f248bce4606e175fbb67ac506cd824ff)
 
 - 2026-11-05 14:07: Trace helper specialization. (authoring-run/0f9e4fc6-9649-465a-8ab4-3fc3124417e2 - 644b3f9)
 

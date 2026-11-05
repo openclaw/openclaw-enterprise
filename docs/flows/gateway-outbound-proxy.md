@@ -1,6 +1,6 @@
 ---
 created: 2026-11-05
-updated: 2026-11-05 17:38
+updated: "2026-11-05 19:30"
 last_updated_session: authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62
 ---
 
@@ -112,4 +112,4 @@ prevents direct Internet fallback; this is not whole-Harness containment.
 
 ## Changelog
 
-- 2026-11-05 17:38: Trace one selected proxy and the exact internal transport bridge (authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62 - 80725162a946f80652b939a32a57ee4e922eeb5c)
+- 2026-11-05 19:30: Trace one selected proxy and the exact internal transport bridge (authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62 - 324fbad6f248bce4606e175fbb67ac506cd824ff)

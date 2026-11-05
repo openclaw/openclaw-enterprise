@@ -1,6 +1,6 @@
 ---
 created: 2026-09-28
-updated: 2026-11-05 17:33
+updated: "2026-11-05 19:30"
 last_updated_session: authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62
 ---
 
@@ -309,7 +309,7 @@ activation, and repository registry creation need separate evidence.
 
 ## Changelog
 
-- 2026-11-05 17:33: Document one selected bundled or external Gateway proxy (authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62 - 80725162a946f80652b939a32a57ee4e922eeb5c)
+- 2026-11-05 19:30: Document one selected bundled or external Gateway proxy (authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62 - 324fbad6f248bce4606e175fbb67ac506cd824ff)
 - 2026-11-03 15:09: Document shared provider routing and separate destination authorization. (authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc - 47e0e95df)
 
 - 2026-10-28 20:25: Refuse input/output file collisions before cleanup in the accompanying change. (authoring-run/ebaa9b91-58b3-47dc-97d9-ad103250247d - 420d76bcbd15dcd3644e474d413484c35ce22797)

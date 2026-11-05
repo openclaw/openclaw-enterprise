@@ -1,6 +1,6 @@
 ---
 created: 2026-09-27
-updated: 2026-11-05 17:33
+updated: "2026-11-05 19:30"
 last_updated_session: authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62
 ---
 
@@ -172,7 +172,7 @@ view.
 
 ## Changelog
 
-- 2026-11-05 17:33: Document one selected bundled or external Gateway proxy (authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62 - 80725162a946f80652b939a32a57ee4e922eeb5c)
+- 2026-11-05 19:30: Document one selected bundled or external Gateway proxy (authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62 - 324fbad6f248bce4606e175fbb67ac506cd824ff)
 - 2026-11-04 22:37: Document closed-picker reopening and pending activation cancellation in the accompanying local change. (authoring-run/1bc99c10-f761-424e-9533-b6e6a6ae9975 - 80b9e2c5238385ff8a8f52e9ab047b76da4c8fb4)
 
 - 2026-10-30: Send a view's first name lookup alone and the rest after it succeeds, so a revoked grant costs one audited denial. (2939)
