@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { normalizeConnectionDestinations } from "@openclaw-enterprise/contracts";
 import { asRecord } from "@openclaw-enterprise/utils";
 import type { CredentialSourceAttachment } from "@openclaw-enterprise/contracts";
 
@@ -54,6 +55,17 @@ if (createHash("sha256").update(bytes).digest("hex") !== googleRelease?.operatio
   throw new Error("The Google Workspace operation catalog does not match the reviewed release.");
 }
 export const googleCatalog: Catalog = JSON.parse(bytes.toString("utf8"));
+
+/** Service roots represented by the verified Google Workspace release, before account-specific grants. */
+export const googleWorkspaceDestinations = normalizeConnectionDestinations(
+  Object.values(googleCatalog.operations).map((operation) => {
+    const root = operation.path.split("/")[1];
+    if (!root || !/^[A-Za-z0-9_-]+$/.test(root)) {
+      throw new Error("Google operation lacks a literal service path.");
+    }
+    return { host: new URL(operation.origin).hostname, path: "/" + root + "/**" };
+  }),
+);
 
 const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 

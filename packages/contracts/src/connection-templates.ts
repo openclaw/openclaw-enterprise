@@ -11,17 +11,6 @@ export interface ConnectionEndpoint {
   readonly path: string;
 }
 
-/** Google API destinations supported by the consuming Driver. Each request still needs an approved operation. */
-export interface GoogleApisRecipient {
-  readonly kind: "google_apis";
-}
-
-export type ConnectionRecipient = ConnectionEndpoint | GoogleApisRecipient;
-
-export function isGoogleApisRecipient(recipient: object): recipient is GoogleApisRecipient {
-  return "kind" in recipient && recipient.kind === "google_apis";
-}
-
 export type OAuthClientAuthMethod = "none" | "client_secret_basic" | "client_secret_post";
 
 /** A client may send its credentials only to its explicitly approved provider endpoints. */
@@ -65,7 +54,7 @@ export interface ConnectionTemplateValues {
   /** An empty list leaves scope selection to the account owner and provider. */
   readonly scopes: readonly string[];
   readonly authorizationParameters: Readonly<Record<string, string>>;
-  readonly recipient: Readonly<ConnectionRecipient>;
+  readonly destinations: readonly ConnectionEndpoint[];
   readonly mcp?: { readonly serverUrl: string; readonly resource: string };
   readonly observed?: McpAuthorizationMetadata;
 }
@@ -147,22 +136,81 @@ export function validateConnectionTemplateAuthorization(
   }
 }
 
-/** A provider-wide recipient must use the OAuth endpoints for that provider. */
-export function validateConnectionTemplateRecipient(values: ConnectionTemplateValues): void {
-  if (
-    isGoogleApisRecipient(values.recipient) &&
-    (values.mode !== "manual" ||
-      values.issuer !== "https://accounts.google.com" ||
-      values.authorizationUrl !== "https://accounts.google.com/o/oauth2/v2/auth" ||
-      values.tokenUrl !== "https://oauth2.googleapis.com/token" ||
-      (values.revocationUrl !== undefined &&
-        values.revocationUrl !== "https://oauth2.googleapis.com/revoke"))
-  ) {
+function compareText(left: string, right: string): number {
+  if (left < right) {
+    return -1;
+  }
+  return left === right ? 0 : 1;
+}
+
+function compareEndpoint(left: ConnectionEndpoint, right: ConnectionEndpoint): number {
+  return (
+    compareText(left.host, right.host) ||
+    left.port - right.port ||
+    compareText(left.path, right.path)
+  );
+}
+
+/** Save exact HTTPS routes in a stable order regardless of editor row order or omitted defaults. */
+export function normalizeConnectionDestinations(
+  rows: readonly { readonly host: string; readonly port?: number; readonly path?: string }[],
+): ConnectionEndpoint[] {
+  if (!rows.length) {
     throw new ConnectionTemplateValidationError(
-      "recipient",
-      "Use Google’s published OAuth endpoints with the Google APIs destination.",
+      "destinations",
+      "Choose at least one HTTPS destination.",
     );
   }
+  const destinations = rows
+    .map(({ host, port = 443, path = "/**" }) => {
+      host = host.toLowerCase();
+      if (
+        host.length > 253 ||
+        !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(
+          host,
+        ) ||
+        !Number.isInteger(port) ||
+        port < 1 ||
+        port > 65535 ||
+        path.length > 512 ||
+        !/^\/[!-~]*$/.test(path) ||
+        /[?#\\]/.test(path)
+      ) {
+        throw new ConnectionTemplateValidationError(
+          "destinations",
+          "Choose a DNS host, HTTPS port and request path for each destination.",
+        );
+      }
+      return { host, port, path };
+    })
+    .sort(compareEndpoint);
+  return destinations.filter(
+    (row, index) => index === 0 || compareEndpoint(row, destinations[index - 1]!) !== 0,
+  );
+}
+
+/** The in-memory repository mirrors the persisted version's nonempty, canonical destination set. */
+export function validateConnectionTemplateDestinations(values: ConnectionTemplateValues): void {
+  const canonical = normalizeConnectionDestinations(values.destinations);
+  if (
+    !sameDestinations(values.destinations, canonical) ||
+    (values.mode === "mcp_discovery" && canonical.length !== 1)
+  ) {
+    throw new ConnectionTemplateValidationError(
+      "destinations",
+      "The saved destinations must be canonical. An MCP template requires exactly one server destination.",
+    );
+  }
+}
+
+function sameDestinations(
+  left: readonly ConnectionEndpoint[],
+  right: readonly ConnectionEndpoint[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((row, index) => compareEndpoint(row, right[index]!) === 0)
+  );
 }
 
 /** True when `next` changes a value a person approved, so it needs a new version. */
@@ -179,22 +227,10 @@ export function connectionValuesChanged(
     current.authorizationUrl !== next.authorizationUrl ||
     current.tokenUrl !== next.tokenUrl ||
     current.revocationUrl !== next.revocationUrl ||
-    !sameRecipient(current.recipient, next.recipient) ||
+    !sameDestinations(current.destinations, next.destinations) ||
     current.scopes.length !== next.scopes.length ||
     current.scopes.some((scope, index) => scope !== next.scopes[index]) ||
     !sameParameters(current.authorizationParameters, next.authorizationParameters)
-  );
-}
-
-function sameRecipient(left: ConnectionRecipient, right: ConnectionRecipient): boolean {
-  if (isGoogleApisRecipient(left)) {
-    return isGoogleApisRecipient(right);
-  }
-  return (
-    !isGoogleApisRecipient(right) &&
-    left.host === right.host &&
-    left.port === right.port &&
-    left.path === right.path
   );
 }
 

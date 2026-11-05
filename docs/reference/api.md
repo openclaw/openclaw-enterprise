@@ -1760,6 +1760,10 @@ List all Installation-wide and Namespace-scoped connection templates
 | `data[].current.authorizationParameters` | `object<string, string>` | Yes | — |
 | `data[].current.authorizationUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data[].current.createdAt` | `string` | Yes | — |
+| `data[].current.destinations` | `array<object>` | Yes | min items: 1 |
+| `data[].current.destinations[].host` | `string` | Yes | — |
+| `data[].current.destinations[].path` | `string` | Yes | — |
+| `data[].current.destinations[].port` | `integer` | Yes | — |
 | `data[].current.issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data[].current.mcp` | `object` | No | — |
 | `data[].current.mcp.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
@@ -1779,7 +1783,6 @@ List all Installation-wide and Namespace-scoped connection templates
 | `data[].current.observed.supportedScopes` | `array<string>` | No | — |
 | `data[].current.observed.tokenEndpointAuthMethods` | `array<string>` | No | — |
 | `data[].current.observed.tokenUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data[].current.recipient` | `object or object` | Yes | — |
 | `data[].current.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
 | `data[].current.scopes` | `array<string>` | Yes | Scopes approved by the administrator. An empty list leaves scope selection to the account owner and provider. |
 | `data[].current.templateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -1789,6 +1792,10 @@ List all Installation-wide and Namespace-scoped connection templates
 | `data[].id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].namespaceId` | `string` | No | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `meta` | `object` | Yes | — |
+| `meta.googleWorkspaceDestinations` | `array<object>` | Yes | min items: 1 |
+| `meta.googleWorkspaceDestinations[].host` | `string` | Yes | — |
+| `meta.googleWorkspaceDestinations[].path` | `string` | Yes | — |
+| `meta.googleWorkspaceDestinations[].port` | `integer` | Yes | — |
 | `meta.redirectUri` | `string` | No | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -1797,6 +1804,13 @@ No readable resources
 {
   "data": [],
   "meta": {
+    "googleWorkspaceDestinations": [
+      {
+        "host": "gmail.googleapis.com",
+        "path": "/gmail/**",
+        "port": 443
+      }
+    ],
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
   }
 }
@@ -1812,14 +1826,16 @@ Example response
         "authorizationParameters": {},
         "authorizationUrl": "https://accounts.example.com/authorize",
         "createdAt": "2026-10-01T12:00:00.000Z",
+        "destinations": [
+          {
+            "host": "api.example.com",
+            "path": "/profile",
+            "port": 443
+          }
+        ],
         "issuer": "https://accounts.example.com",
         "mode": "manual",
         "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
-        "recipient": {
-          "host": "api.example.com",
-          "path": "/profile",
-          "port": 443
-        },
         "scopes": [
           "profile.read"
         ],
@@ -1833,6 +1849,13 @@ Example response
     }
   ],
   "meta": {
+    "googleWorkspaceDestinations": [
+      {
+        "host": "gmail.googleapis.com",
+        "path": "/gmail/**",
+        "port": 443
+      }
+    ],
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
   }
 }
@@ -1864,16 +1887,18 @@ Example request
 ```json
 {
   "authorizationUrl": "https://accounts.example.com/authorize",
+  "destinations": [
+    {
+      "host": "api.example.com",
+      "path": "/profile",
+      "port": 443
+    }
+  ],
   "displayName": "Example account",
   "issuer": "https://accounts.example.com",
   "mode": "manual",
   "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
   "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
-  "recipient": {
-    "host": "api.example.com",
-    "path": "/profile",
-    "port": 443
-  },
   "scopes": [
     "profile.read"
   ],
@@ -1906,6 +1931,10 @@ Example request
 | `data.current.authorizationParameters` | `object<string, string>` | Yes | — |
 | `data.current.authorizationUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.createdAt` | `string` | Yes | — |
+| `data.current.destinations` | `array<object>` | Yes | min items: 1 |
+| `data.current.destinations[].host` | `string` | Yes | — |
+| `data.current.destinations[].path` | `string` | Yes | — |
+| `data.current.destinations[].port` | `integer` | Yes | — |
 | `data.current.issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.mcp` | `object` | No | — |
 | `data.current.mcp.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
@@ -1925,7 +1954,6 @@ Example request
 | `data.current.observed.supportedScopes` | `array<string>` | No | — |
 | `data.current.observed.tokenEndpointAuthMethods` | `array<string>` | No | — |
 | `data.current.observed.tokenUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.recipient` | `object or object` | Yes | — |
 | `data.current.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.scopes` | `array<string>` | Yes | Scopes approved by the administrator. An empty list leaves scope selection to the account owner and provider. |
 | `data.current.templateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -1947,14 +1975,16 @@ Example response
       "authorizationParameters": {},
       "authorizationUrl": "https://accounts.example.com/authorize",
       "createdAt": "2026-10-01T12:00:00.000Z",
+      "destinations": [
+        {
+          "host": "api.example.com",
+          "path": "/profile",
+          "port": 443
+        }
+      ],
       "issuer": "https://accounts.example.com",
       "mode": "manual",
       "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
-      "recipient": {
-        "host": "api.example.com",
-        "path": "/profile",
-        "port": 443
-      },
       "scopes": [
         "profile.read"
       ],
@@ -2143,6 +2173,10 @@ Get one connection template
 | `data.current.authorizationParameters` | `object<string, string>` | Yes | — |
 | `data.current.authorizationUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.createdAt` | `string` | Yes | — |
+| `data.current.destinations` | `array<object>` | Yes | min items: 1 |
+| `data.current.destinations[].host` | `string` | Yes | — |
+| `data.current.destinations[].path` | `string` | Yes | — |
+| `data.current.destinations[].port` | `integer` | Yes | — |
 | `data.current.issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.mcp` | `object` | No | — |
 | `data.current.mcp.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
@@ -2162,7 +2196,6 @@ Get one connection template
 | `data.current.observed.supportedScopes` | `array<string>` | No | — |
 | `data.current.observed.tokenEndpointAuthMethods` | `array<string>` | No | — |
 | `data.current.observed.tokenUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.recipient` | `object or object` | Yes | — |
 | `data.current.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.scopes` | `array<string>` | Yes | Scopes approved by the administrator. An empty list leaves scope selection to the account owner and provider. |
 | `data.current.templateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -2184,14 +2217,16 @@ Example response
       "authorizationParameters": {},
       "authorizationUrl": "https://accounts.example.com/authorize",
       "createdAt": "2026-10-01T12:00:00.000Z",
+      "destinations": [
+        {
+          "host": "api.example.com",
+          "path": "/profile",
+          "port": 443
+        }
+      ],
       "issuer": "https://accounts.example.com",
       "mode": "manual",
       "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
-      "recipient": {
-        "host": "api.example.com",
-        "path": "/profile",
-        "port": 443
-      },
       "scopes": [
         "profile.read"
       ],
@@ -2269,6 +2304,10 @@ Example request
 | `data.current.authorizationParameters` | `object<string, string>` | Yes | — |
 | `data.current.authorizationUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.createdAt` | `string` | Yes | — |
+| `data.current.destinations` | `array<object>` | Yes | min items: 1 |
+| `data.current.destinations[].host` | `string` | Yes | — |
+| `data.current.destinations[].path` | `string` | Yes | — |
+| `data.current.destinations[].port` | `integer` | Yes | — |
 | `data.current.issuer` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.mcp` | `object` | No | — |
 | `data.current.mcp.resource` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
@@ -2288,7 +2327,6 @@ Example request
 | `data.current.observed.supportedScopes` | `array<string>` | No | — |
 | `data.current.observed.tokenEndpointAuthMethods` | `array<string>` | No | — |
 | `data.current.observed.tokenUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.recipient` | `object or object` | Yes | — |
 | `data.current.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.scopes` | `array<string>` | Yes | Scopes approved by the administrator. An empty list leaves scope selection to the account owner and provider. |
 | `data.current.templateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -2310,14 +2348,16 @@ Example response
       "authorizationParameters": {},
       "authorizationUrl": "https://accounts.example.com/authorize",
       "createdAt": "2026-10-01T12:00:00.000Z",
+      "destinations": [
+        {
+          "host": "api.example.com",
+          "path": "/profile",
+          "port": 443
+        }
+      ],
       "issuer": "https://accounts.example.com",
       "mode": "manual",
       "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
-      "recipient": {
-        "host": "api.example.com",
-        "path": "/profile",
-        "port": 443
-      },
       "scopes": [
         "profile.read"
       ],

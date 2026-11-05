@@ -151,12 +151,12 @@ Stores the scope and current version of each OAuth connection template.
 
 ### `oauth_connection_template_versions`
 
-Pins the approved OAuth configuration and access to its API recipient. A discovered version also retains the MCP metadata observed when the administrator saved it.
+Pins the approved OAuth configuration and the HTTPS destinations that can receive the credential. A discovered version also retains the MCP metadata observed when the administrator saved it.
 
 - `template_id`, `version`, `oauth_client_id`, `mode`
 - `issuer`, `authorization_url`, `token_url`, `revocation_url`
 - `scopes`, `authorization_parameters`, `observed_metadata`
-- `recipient_kind`, `recipient_host`, `recipient_port`, `recipient_path`
+- `destinations` (exact host, port, and path for each approved HTTPS destination)
 - `created_at`
 
 ### `oauth_clients`

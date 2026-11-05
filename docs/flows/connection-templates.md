@@ -2,7 +2,7 @@
 
 The administrator selects manual configuration or supplies an MCP server URL. OCC checks Installation administration before discovery. For MCP, the controller reads protected resource metadata over TLS, resolves each metadata host to public addresses and pins those addresses for the request. It contacts only the selected advertised authorization server. OCC stores the metadata it observed with the approved version.
 
-For a Google APIs recipient, OCC verifies Google’s issuer, authorization and token URLs and any supplied revocation URL before it saves the version. The consuming Driver selects the supported Google API destinations when the account is used.
+The Console reads the Google starter destinations from the reviewed Google Workspace release and displays them as editable rows. OCC normalizes the saved destinations and records the complete list on the immutable template version. MCP discovery supplies one transport destination and its OAuth resource.
 
 OCC checks scope and the client's allowed destinations before it references an OAuth client. PostgreSQL commits the template version and its audit together. A template can exist without a client. The Agent plugin release determines the local credential placeholder when the account is used.
 

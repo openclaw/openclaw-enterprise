@@ -77,7 +77,7 @@ export const connectionTemplateScenarios = {
     oauthCatalog: "ready",
     actions: [click("Set up Google OAuth")],
     description:
-      "The built-in Google template selects Google APIs. The administrator chooses the scope limit and their registered Google client.",
+      "Edit the proposed HTTPS destinations before saving. This preview includes sample Gmail, Calendar and Drive routes.",
   },
   credentialsManualTemplate: {
     group: "Pages/Credentials",
@@ -86,7 +86,7 @@ export const connectionTemplateScenarios = {
     oauthCatalog: "ready",
     actions: openTemplate,
     description:
-      "Enter the authorization server and recipient, then associate a compatible OAuth client or save a draft.",
+      "Enter the authorization server, add each destination as a host, port and path, then associate a compatible OAuth client or save a draft.",
   },
   credentialsTemplateWithoutNamespace: {
     group: "Pages/Credentials",

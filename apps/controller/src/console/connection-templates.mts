@@ -1,4 +1,5 @@
 import type {
+  ConnectionEndpoint,
   ConnectionTemplate,
   McpAuthorizationMetadata,
   Namespace,
@@ -19,6 +20,136 @@ import type { ConsolePageContext } from "./page-context.mjs";
 type Context = Pick<ConsolePageContext, "request" | "isCurrent">;
 function option(value: string, label: string) {
   return element("option", { value }, label);
+}
+
+export async function connectionTemplates(context: Context) {
+  return (await context.request("/connection-templates", {
+    installationAdministration: "required",
+    includeMeta: true,
+  })) as {
+    data: ConnectionTemplate[];
+    meta: { googleWorkspaceDestinations: ConnectionEndpoint[] };
+  };
+}
+
+function destinationEditor(initial: readonly ConnectionEndpoint[], onEdit: () => void) {
+  const body = element("tbody");
+  const legend = element("legend");
+  const rows = new Map<HTMLTableRowElement, ReturnType<typeof inputs>>();
+  function inputs(value?: ConnectionEndpoint) {
+    return {
+      host: element("input", {
+        "aria-label": "Host",
+        required: true,
+        value: value?.host ?? "",
+        spellcheck: false,
+      }),
+      port: element("input", {
+        "aria-label": "Port",
+        type: "number",
+        required: true,
+        min: 1,
+        max: 65535,
+        value: String(value?.port ?? 443),
+      }),
+      path: element("input", {
+        "aria-label": "Path",
+        required: true,
+        pattern: "/.*",
+        value: value?.path ?? "/**",
+        spellcheck: false,
+      }),
+    };
+  }
+  function updateRows() {
+    legend.textContent = `API destinations (${rows.size})`;
+    for (const remove of body.querySelectorAll("button")) {
+      remove.disabled = rows.size === 1;
+    }
+  }
+  function append(value?: ConnectionEndpoint) {
+    const controls = inputs(value);
+    const row = element("tr");
+    const remove = button(
+      "Remove",
+      () => {
+        const focusRow = row.nextElementSibling ?? row.previousElementSibling;
+        rows.delete(row);
+        row.remove();
+        updateRows();
+        focusRow?.querySelector("input")?.focus();
+        onEdit();
+      },
+      { size: "sm", "aria-label": "Remove destination" },
+    );
+    row.append(
+      ...Object.entries(controls).map(([name, input]) =>
+        element("td", { "data-label": name }, input),
+      ),
+      element("td", {}, remove),
+    );
+    rows.set(row, controls);
+    body.append(row);
+    return controls.host;
+  }
+  function replace(values: readonly ConnectionEndpoint[]) {
+    body.replaceChildren();
+    rows.clear();
+    for (const value of values) {
+      append(value);
+    }
+    if (!rows.size) {
+      append();
+    }
+    updateRows();
+  }
+  replace(initial);
+  const add = button(
+    "Add destination",
+    () => {
+      const host = append();
+      updateRows();
+      host.focus();
+      onEdit();
+    },
+    { size: "sm" },
+  );
+  const table = element(
+    "table",
+    { className: "connection-destination-table", "aria-label": "HTTPS destinations" },
+    element(
+      "thead",
+      {},
+      element(
+        "tr",
+        {},
+        ...["Host", "Port", "Path", ""].map((label) => element("th", { scope: "col" }, label)),
+      ),
+    ),
+    body,
+  );
+  return {
+    element: element(
+      "fieldset",
+      { className: "connection-template-fields connection-destinations" },
+      legend,
+      element(
+        "p",
+        { className: "hint" },
+        "OCE sends credentials only to HTTPS destinations that match a row. Existing connections keep their approved destinations.",
+      ),
+      element("div", { className: "connection-destination-scroll" }, table),
+      add,
+    ),
+    replace,
+    controls: () => Array.from(rows.values()).flatMap(({ host, port, path }) => [host, port, path]),
+    values: () =>
+      Array.from(rows.values(), ({ host, port, path }) => ({
+        host: host.value.trim(),
+        port: Number(port.value),
+        path: path.value.trim(),
+      })),
+  };
 }
 
 const installationWide = "installation-wide";
@@ -75,6 +206,7 @@ export function renderConnectionTemplates(
   );
   let clients: PublicClient[] = [];
   let savedTemplates: ConnectionTemplate[] = [];
+  let googleDestinations: ConnectionEndpoint[] = [];
   let redirectUri: string | undefined;
   async function refresh(saved?: string) {
     create.disabled = true;
@@ -82,7 +214,7 @@ export function renderConnectionTemplates(
     notice.textContent = "Loading connection templates…";
     try {
       const [templates, available] = await Promise.all([
-        context.request("/connection-templates", { installationAdministration: "required" }),
+        connectionTemplates(context),
         oauthClients(context),
       ]);
       if (!context.isCurrent()) {
@@ -90,7 +222,8 @@ export function renderConnectionTemplates(
       }
       const clientList = available;
       clients = clientList.data;
-      savedTemplates = templates as ConnectionTemplate[];
+      savedTemplates = templates.data;
+      googleDestinations = templates.meta.googleWorkspaceDestinations;
       redirectUri = clientList.meta?.redirectUri;
       catalog.append(
         element(
@@ -100,7 +233,7 @@ export function renderConnectionTemplates(
           element(
             "p",
             { className: "hint" },
-            "Built-in template · Use your own Google OAuth client.",
+            "Start with the Google Workspace plugin’s editable API destinations and register your own OAuth client.",
           ),
           button("Set up Google OAuth", () => edit(undefined, googleOAuthProvider), { size: "sm" }),
         ),
@@ -122,9 +255,7 @@ export function renderConnectionTemplates(
           ),
         );
       }
-      notice.textContent =
-        saved ||
-        ((templates as ConnectionTemplate[]).length ? "" : "No saved connection templates.");
+      notice.textContent = saved || (savedTemplates.length ? "" : "No saved connection templates.");
       create.disabled = false;
       return true;
     } catch (cause) {
@@ -146,6 +277,7 @@ export function renderConnectionTemplates(
       namespaces,
       currentNamespace,
       clients,
+      googleDestinations,
       template,
       preset,
       onSaved(saved) {
@@ -183,6 +315,7 @@ export function openConnectionTemplateEditor(
     namespaces: readonly Namespace[];
     currentNamespace: string | null;
     clients: readonly PublicClient[];
+    googleDestinations: readonly ConnectionEndpoint[];
     template?: ConnectionTemplate | undefined;
     preset?: typeof googleOAuthProvider | undefined;
     onSaved: (saved: ConnectionTemplate) => void;
@@ -228,56 +361,7 @@ export function openConnectionTemplateEditor(
     type: "url",
     value: version?.revocationUrl ?? "",
   });
-  const exactRecipient = version && "host" in version.recipient ? version.recipient : undefined;
-  const recipient = element(
-    "select",
-    {},
-    option("google_apis", "Google APIs"),
-    option("endpoint", "Specific endpoint"),
-  );
-  recipient.value =
-    version && "kind" in version.recipient && version.recipient.kind === "google_apis"
-      ? "google_apis"
-      : "endpoint";
-  const recipientChoice = field({ label: "API destination", control: recipient });
-  const host = element("input", { required: true, value: exactRecipient?.host ?? "" });
-  const port = element("input", {
-    type: "number",
-    required: true,
-    min: 1,
-    max: 65535,
-    value: String(exactRecipient?.port ?? 443),
-  });
-  const path = element("input", {
-    required: true,
-    pattern: "/.*",
-    value: exactRecipient?.path ?? "/**",
-  });
-  const exactFields = element(
-    "fieldset",
-    { className: "connection-template-fields" },
-    field({ label: "Destination host", control: host }),
-    field({ label: "Port", control: port }),
-    field({ label: "Path", control: path }),
-  );
-  function showRecipient() {
-    const google =
-      issuer.value.trim() === googleOAuthProvider.issuer &&
-      authorizationUrl.value.trim() === googleOAuthProvider.authorizationUrl &&
-      tokenUrl.value.trim() === googleOAuthProvider.tokenUrl &&
-      (!revocationUrl.value.trim() ||
-        revocationUrl.value.trim() === googleOAuthProvider.revocationUrl);
-    if (!google) {
-      recipient.value = "endpoint";
-    }
-    recipientChoice.hidden = !google;
-    exactFields.hidden = exactFields.disabled = recipient.value === "google_apis";
-  }
-  recipient.addEventListener("change", showRecipient);
-  for (const control of [issuer, authorizationUrl, tokenUrl, revocationUrl]) {
-    control.addEventListener("input", showRecipient);
-  }
-  showRecipient();
+  const destinations = destinationEditor(version?.destinations ?? [], markEdited);
   const googleStarter =
     !template && !preset
       ? button("Use Google OAuth settings", applyGoogleSettings, { size: "sm" })
@@ -285,14 +369,13 @@ export function openConnectionTemplateEditor(
   const manual = element(
     "fieldset",
     { className: "connection-template-fields" },
-    element("legend", {}, "OAuth provider and allowed destination"),
+    element("legend", {}, "OAuth provider"),
     googleStarter ?? null,
     field({ label: "Issuer URL", control: issuer }),
     field({ label: "Authorization URL", control: authorizationUrl }),
     field({ label: "Token URL", control: tokenUrl }),
     field({ label: "Revocation URL (optional)", control: revocationUrl }),
-    recipientChoice,
-    exactFields,
+    destinations.element,
   );
   const server = element("input", {
     id: "connection-template-server",
@@ -349,9 +432,8 @@ export function openConnectionTemplateEditor(
     authorizationUrl.value = googleOAuthProvider.authorizationUrl;
     tokenUrl.value = googleOAuthProvider.tokenUrl;
     revocationUrl.value = googleOAuthProvider.revocationUrl;
-    recipient.value = "google_apis";
+    destinations.replace(options.googleDestinations);
     parameters.value = formatParameters(googleOAuthProvider.authorizationParameters);
-    showRecipient();
     clientChoices();
     if (googleStarter) {
       googleStarter.hidden = true;
@@ -555,7 +637,7 @@ export function openConnectionTemplateEditor(
         name,
         scopes,
         ...(mode.value === "manual"
-          ? [issuer, authorizationUrl, tokenUrl, revocationUrl, host, port, path]
+          ? [issuer, authorizationUrl, tokenUrl, revocationUrl, ...destinations.controls()]
           : [server]),
       ])
     ) {
@@ -589,14 +671,7 @@ export function openConnectionTemplateEditor(
             authorizationUrl: authorizationUrl.value.trim(),
             tokenUrl: tokenUrl.value.trim(),
             ...(revocationUrl.value.trim() && { revocationUrl: revocationUrl.value.trim() }),
-            recipient:
-              recipient.value === "google_apis"
-                ? { kind: "google_apis" }
-                : {
-                    host: host.value.trim(),
-                    port: Number(port.value),
-                    path: path.value.trim(),
-                  },
+            destinations: destinations.values(),
           }
         : { mode: "mcp_discovery", serverUrl: server.value.trim(), issuer: observed!.issuer }),
     };
@@ -655,18 +730,15 @@ export function openConnectionTemplateEditor(
     control.addEventListener("input", () => clientChoices());
   }
   if (googleStarter) {
-    for (const control of [issuer, authorizationUrl, tokenUrl, revocationUrl, host, parameters]) {
-      control.addEventListener("input", () => {
-        googleStarter.hidden = [
-          issuer,
-          authorizationUrl,
-          tokenUrl,
-          revocationUrl,
-          host,
-          parameters,
-        ].some((input) => input.value.trim());
-      });
-    }
+    inputs.addEventListener("input", () => {
+      googleStarter.hidden =
+        [issuer, authorizationUrl, tokenUrl, revocationUrl, parameters].some((input) =>
+          input.value.trim(),
+        ) ||
+        destinations
+          .values()
+          .some(({ host, port, path }) => host !== "" || port !== 443 || path !== "/**");
+    });
   }
   if (preset) {
     applyGoogleSettings();

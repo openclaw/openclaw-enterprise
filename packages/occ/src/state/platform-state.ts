@@ -1,7 +1,7 @@
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import {
   assertExecutionAdmission,
-  validateConnectionTemplateRecipient,
+  validateConnectionTemplateDestinations,
 } from "@openclaw-enterprise/contracts";
 import { memoryEgressSendReceipts } from "./egress-send-receipts.ts";
 import type { EgressSendReceiptRepository, StoredSendReceipt } from "../egress-send-receipts.ts";
@@ -1890,7 +1890,7 @@ function repositories(
     template: ConnectionTemplate,
     version: OAuthConnectionTemplateVersion,
   ) => {
-    validateConnectionTemplateRecipient(version);
+    validateConnectionTemplateDestinations(version);
     if (!version.oauthClientId) {
       return;
     }

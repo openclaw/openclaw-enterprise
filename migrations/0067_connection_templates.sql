@@ -42,6 +42,39 @@ CREATE TABLE occ.connection_templates (
   CONSTRAINT connection_templates_current_version_positive CHECK (current_version >= 1)
 );
 --> statement-breakpoint
+-- Canonical order makes equality of two stored lists equality of their approved routes.
+CREATE FUNCTION occ.valid_connection_destinations(destinations jsonb) RETURNS boolean
+LANGUAGE plpgsql IMMUTABLE STRICT SET search_path = pg_catalog, pg_temp AS $$
+DECLARE
+  endpoint jsonb;
+  previous jsonb;
+BEGIN
+  IF jsonb_typeof(destinations) <> 'array' OR destinations = '[]'::jsonb THEN RETURN false; END IF;
+  FOR endpoint IN SELECT value FROM jsonb_array_elements(destinations) LOOP
+    IF jsonb_typeof(endpoint) <> 'object' THEN RETURN false; END IF;
+    IF NOT (endpoint ?& ARRAY['host','port','path'])
+      OR endpoint - ARRAY['host','port','path'] <> '{}'::jsonb
+      OR jsonb_typeof(endpoint->'host') <> 'string'
+      OR (endpoint->>'host') COLLATE "C" !~ '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$'
+      OR length(endpoint->>'host') > 253
+      OR jsonb_typeof(endpoint->'port') <> 'number' OR endpoint->>'port' !~ '^[1-9][0-9]{0,4}$'
+      OR jsonb_typeof(endpoint->'path') <> 'string'
+      OR length(endpoint->>'path') > 512 OR (endpoint->>'path') COLLATE "C" !~ '^/[!-~]*$'
+      OR endpoint->>'path' ~ '[?#\\]'
+    THEN RETURN false; END IF;
+    IF (endpoint->>'port')::integer > 65535 OR
+      ROW((previous->>'host') COLLATE "C", (previous->>'port')::integer, (previous->>'path') COLLATE "C") >=
+      ROW((endpoint->>'host') COLLATE "C", (endpoint->>'port')::integer, (endpoint->>'path') COLLATE "C")
+    THEN RETURN false; END IF;
+    previous := endpoint;
+  END LOOP;
+  RETURN true;
+END $$;
+--> statement-breakpoint
+REVOKE ALL ON FUNCTION occ.valid_connection_destinations(jsonb) FROM PUBLIC;
+--> statement-breakpoint
+GRANT EXECUTE ON FUNCTION occ.valid_connection_destinations(jsonb) TO occ_app;
+--> statement-breakpoint
 CREATE TABLE occ.oauth_connection_template_versions (
   template_id text NOT NULL REFERENCES occ.connection_templates(id)
     ON UPDATE RESTRICT ON DELETE CASCADE,
@@ -56,11 +89,7 @@ CREATE TABLE occ.oauth_connection_template_versions (
   token_url text COLLATE "C" NOT NULL,
   scopes text[] NOT NULL,
   authorization_parameters jsonb NOT NULL,
-  recipient_kind text NOT NULL,
-  recipient_host text COLLATE "C",
-  recipient_port integer,
-  recipient_path text COLLATE "C",
-
+  destinations jsonb NOT NULL,
   created_at timestamptz NOT NULL,
   PRIMARY KEY (template_id, version),
   CONSTRAINT oauth_connection_template_versions_version_positive CHECK (version >= 1),
@@ -77,19 +106,8 @@ CREATE TABLE occ.oauth_connection_template_versions (
   CONSTRAINT oauth_connection_template_versions_parameters_object CHECK (
     jsonb_typeof(authorization_parameters) = 'object'
   ),
-  CONSTRAINT oauth_connection_template_versions_recipient_valid CHECK (
-    (recipient_kind = 'endpoint'
-      AND recipient_host IS NOT NULL AND recipient_port IS NOT NULL AND recipient_path IS NOT NULL
-      AND recipient_host ~ '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$'
-      AND length(recipient_host) <= 253
-      AND recipient_port BETWEEN 1 AND 65535
-      AND recipient_path ~ '^/[!-~]*$' AND length(recipient_path) <= 512) OR
-    (recipient_kind = 'google_apis' AND mode = 'manual'
-      AND recipient_host IS NULL AND recipient_port IS NULL AND recipient_path IS NULL
-      AND issuer = 'https://accounts.google.com'
-      AND authorization_url = 'https://accounts.google.com/o/oauth2/v2/auth'
-      AND token_url = 'https://oauth2.googleapis.com/token'
-      AND (revocation_url IS NULL OR revocation_url = 'https://oauth2.googleapis.com/revoke'))
+  CONSTRAINT oauth_connection_template_versions_destinations_valid CHECK (
+    occ.valid_connection_destinations(destinations)
   ),
   CONSTRAINT oauth_connection_template_versions_discovery CHECK (
     (mode = 'manual' AND observed_metadata IS NULL) OR
@@ -98,7 +116,8 @@ CREATE TABLE occ.oauth_connection_template_versions (
       AND observed_metadata ?& ARRAY['resource','serverUrl','issuer','authorizationUrl','tokenUrl']
       AND observed_metadata->>'issuer' = issuer
       AND observed_metadata->>'authorizationUrl' = authorization_url
-      AND observed_metadata->>'tokenUrl' = token_url)
+      AND observed_metadata->>'tokenUrl' = token_url
+      AND jsonb_array_length(destinations) = 1)
   ),
   CONSTRAINT oauth_connection_template_versions_client_issuer FOREIGN KEY
     (oauth_client_id, issuer, token_url)
