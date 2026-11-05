@@ -74,7 +74,7 @@ test(
       login = managedLogin,
     ) {
       const before = github.paths.length;
-      github.login = () => login;
+      github.getProfileLogin = () => login;
       github.membership = (path, authenticatedSubject) =>
         authenticatedSubject === subject ? (answers.get(path) ?? 404) : 403;
       const { callback, attemptId } = await githubSignIn(

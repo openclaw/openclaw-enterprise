@@ -429,7 +429,7 @@ export async function serveAsGitHub(t, server) {
  * `fixture-<id>`. Modes: "up", "error" (503) and "hang" (never answers). Set
  * `fixture.membership(path, subject)` to answer the allowlist's membership lookups with
  * "active", "pending", a page of JSON objects, or an HTTP status. Override
- * `fixture.login(subject)` to simulate a different profile login. `fixture.paths` records each request path.
+ * `fixture.getProfileLogin(subject)` to simulate a different profile login. `fixture.paths` records each request path.
  */
 export async function startFakeGitHub(t) {
   const server = createServer();
@@ -437,7 +437,7 @@ export async function startFakeGitHub(t) {
     mode: "up",
     requests: 0,
     paths: /** @type {string[]} */ ([]),
-    login: (/** @type {number} */ subject) => `fixture-${subject}`,
+    getProfileLogin: (/** @type {number} */ subject) => `fixture-${subject}`,
     membership:
       /** @type {((path: string, subject: number) => "active" | "pending" | number | { entries: readonly unknown[], link?: string }) | undefined} */ (
         undefined
@@ -479,7 +479,7 @@ export async function startFakeGitHub(t) {
         return;
       }
       const id = Number(subject[1]);
-      response.end(JSON.stringify({ id, login: fixture.login(id) }));
+      response.end(JSON.stringify({ id, login: fixture.getProfileLogin(id) }));
     } else if (fixture.membership !== undefined) {
       const subject = /^Bearer ghu_fixture_([0-9]+)$/.exec(request.headers.authorization ?? "");
       const answer = subject === null ? 401 : fixture.membership(request.url, Number(subject[1]));
