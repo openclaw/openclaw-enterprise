@@ -32,3 +32,7 @@ export async function withRetryTimers(operation, pauses = []) {
 // as a pin: five pauses, about four seconds in all. A change to the schedule
 // updates both.
 export const READ_RETRY_PAUSES_MS = [100, 250, 500, 1_000, 2_000];
+
+// A copy of MINIMUM_SEND_BUDGET_MS (same file), as a pin: the least time an API write's deadline
+// must leave to send a write, or to retry a read after its pause.
+export const MINIMUM_SEND_BUDGET_MS = 2_000;

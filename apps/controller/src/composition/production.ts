@@ -1,3 +1,4 @@
+import { closeResources } from "./close-resources.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
 import { installationControllerOptions } from "./installation-config.ts";
 import type { AuditEvent } from "@openclaw-enterprise/contracts";
@@ -109,7 +110,7 @@ export async function composeProduction(
     credentialRefreshDriver,
     protectedDriver,
     preparedGitHub,
-    pluginDriver,
+    pluginDrivers,
     repositoryPolicy,
     createIAMDriver,
   } = config.drivers;
@@ -144,6 +145,9 @@ export async function composeProduction(
     ...(config.poolMax === undefined ? {} : { max: config.poolMax }),
   });
 
+  let exchange: Awaited<ReturnType<typeof installEgressAuthority>>;
+  const close = (database: { close(): Promise<void> }) =>
+    closeResources(exchange, protectedDriver, preparedGitHub, database);
   try {
     const state = new PostgresPlatformState(pool, {
       preparedTokenProof: config.drivers.tokenService?.postgresCurrentProof,
@@ -278,40 +282,42 @@ export async function composeProduction(
     }
 
     phaseCompleted("computePreflight");
-    const controller = new OpenClawController(persistedInstallation, {
-      ...installationControllerOptions(config.drivers.installation),
-      state,
-      ...(config.drivers.tokenService && { preparedTokens: config.drivers.tokenService }),
-      recordOperations: true,
-      backends: installation.backend,
-      defaultPresets: config.drivers.defaultPresets ?? [],
-      bundledPresetVersions: config.drivers.bundledPresetVersions ?? [],
-      refreshBundledDefaultPresets: config.drivers.installation.presets?.includeDefaults === true,
-      loggingLevel: config.drivers.installation.logging.level,
-    });
+    const channelDriver = new SlackChannelDriver(
+      globalThis.fetch,
+      config.channelDirectoryProxyUrl,
+      {
+        managedProxyHosts:
+          config.channelDirectoryManagedProxyHost === undefined
+            ? []
+            : [config.channelDirectoryManagedProxyHost],
+        // A closed egress reaches Slack only through a proxy; an open one may reach it
+        // directly, so a timeout there stays a retryable outage (finding 2533).
+        expectProxy: config.apiHttpsEgressOpen !== true,
+      },
+    );
+    const controller = OpenClawController.forInstallation(
+      persistedInstallation,
+      {
+        ...installationControllerOptions(config.drivers.installation),
+        state,
+        ...(config.drivers.tokenService && { preparedTokens: config.drivers.tokenService }),
+        recordOperations: true,
+        backends: installation.backend,
+        defaultPresets: config.drivers.defaultPresets ?? [],
+        bundledPresetVersions: config.drivers.bundledPresetVersions ?? [],
+        refreshBundledDefaultPresets: config.drivers.installation.presets?.includeDefaults === true,
+        loggingLevel: config.drivers.installation.logging.level,
+      },
+      config.drivers.repositoryAdmission,
+    );
     controller.registerDriver(iamDriver);
     controller.selectDriver("iam", driverId);
     controller.registerDriver(computeDriver);
     controller.selectDriver("compute", computeDriver.id);
     controller.registerDriver(secretDriver);
     controller.selectDriver("secret", secretDriver.id);
-    {
-      const channelDriver = new SlackChannelDriver(
-        globalThis.fetch,
-        config.channelDirectoryProxyUrl,
-        {
-          managedProxyHosts:
-            config.channelDirectoryManagedProxyHost === undefined
-              ? []
-              : [config.channelDirectoryManagedProxyHost],
-          // A closed egress reaches Slack only through a proxy; an open one may reach it
-          // directly, so a timeout there stays a retryable outage (finding 2533).
-          expectProxy: config.apiHttpsEgressOpen !== true,
-        },
-      );
-      controller.registerDriver(channelDriver);
-      controller.selectDriver("channel", channelDriver.id);
-    }
+    controller.registerDriver(channelDriver);
+    controller.selectDriver("channel", channelDriver.id);
     if (protectedDriver !== undefined) {
       controller.installDriver(protectedDriver, ["sandbox", "credential_proxy"]);
     } else if (sandboxDriver !== undefined) {
@@ -329,10 +335,7 @@ export async function composeProduction(
     controller.registerDriver(configurationDriver);
     controller.selectDriver("configuration", configurationDriver.id);
     config.serviceAccountDriverFactory?.(controller, state);
-    if (pluginDriver !== undefined) {
-      controller.registerDriver(pluginDriver);
-      controller.selectDriver("plugin", pluginDriver.id);
-    }
+    controller.installPluginDrivers(pluginDrivers ?? []);
     if (repositoryPolicy !== undefined) {
       controller.registerDriver(repositoryPolicy);
       controller.selectDriver("repo", repositoryPolicy.id);
@@ -399,24 +402,18 @@ export async function composeProduction(
       ...(workspaceFilesAccess === undefined ? {} : { workspaceFilesAccess }),
     });
     await preparedGitHub?.connect(pool);
-    const exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
+    exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
     app.get("/healthz", async () => ({ status: "ok" }));
     app.get("/readyz", async () => {
       await pool.query("SELECT 1");
       return { status: "ready" };
     });
-    app.addHook("onClose", async () => {
-      await exchange?.close();
-      await config.drivers.protectedDriver?.close();
-      await preparedGitHub?.close();
-      await state.close();
-    });
+    app.addHook("onClose", () => close(state));
     phaseCompleted("routes");
     return app;
   } catch (error) {
-    await config.drivers.protectedDriver?.close();
-    await preparedGitHub?.close();
-    await pool.end();
+    // Preserve the startup failure after attempting each cleanup.
+    await close({ close: () => pool.end() }).catch(() => undefined);
     throw error;
   }
 }

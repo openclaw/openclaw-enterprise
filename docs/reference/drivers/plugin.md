@@ -1,16 +1,21 @@
+---
+kind: reference/driver
+---
+
 # PluginDriver contract
 
 ## Overview
 
 `PluginDriver` supplies a curated catalog, policy capabilities, and policy
 validation for an Agent Harness. OpenClaw Control Plane (OCC) owns Agent
-selections, authorization, and immutable Agent revisions.
+selections, authorization, and Agent revisions.
 Compute owns native installation, runtime connections, readiness, activation,
 and retirement. Bundled startup code also translates selected policy into native
 configuration; those helpers are not methods on the exported Driver interface.
 
-An Installation can select at most one bundled Plugin Driver. The default is no
-Driver, which permits plugin-free deployments. External Plugin Driver packages
+An Installation can enable both bundled Plugin Drivers. The Driver's `harnessId`
+identifies its catalog. OpenClaw uses `occ-plugin` in either execution mode.
+Dedicated Codex uses `codex-plugin`. Omitting the setting permits plugin-free deployments. External Plugin Driver packages
 are not selectable. See [Driver selection](selection.md) and the
 [Agent plugin reference](../agent-plugins.md).
 
@@ -18,13 +23,31 @@ are not selectable. See [Driver selection](selection.md) and the
 
 ### Selection and catalogs
 
-The [shared interface](../../../packages/contracts/src/index.ts) exposes:
+The [shared interface](../../../packages/contracts/src/drivers/plugin/index.ts) exposes:
 
 - `policyCapabilities`: supported default/tool enablement, approval modes, and
   reviewer arrays per scope, plus the JSON Schema for `driverPolicy` fields.
   An empty reviewer array means explicit selection is unsupported at that scope.
+  For IDs marked `enablement_only` in `policyScopeByPlugin`, adding the plugin
+  sets `enabled: true`. The next deployment applies that selection.
 - `validatePolicies(selections)`: validate requested policy without installation
   or authenticated discovery. OCC calls this before save and deployment admission.
+- `validatePlacement(selections, harness, computeImplementation, credentialRuntime)`
+  (optional): check whether the selected packages can run on this Harness and
+  Compute Driver. `credentialRuntime` gives the implementations of the selected
+  Sandbox Driver and Credential Gateway as `{sandbox, gateway}`; either can be
+  undefined. A plugin that needs a bound credential can refuse an Installation
+  that cannot deliver it. OCC checks placement before saving selections and
+  again when it admits deployment.
+- `credentials` (optional): credential slots for plugins that use an Agent's
+  [credential sources](../credential-sources.md). The Driver receives only source
+  metadata that OCC authorized, never credential values.
+  `choices(sources)` returns each slot with the attached ready sources that
+  match it. OCC returns them as `credentialSlots` in a dedicated Agent's plugin
+  capabilities. `validate(selections, sources, modelSourceId)` refuses a
+  binding that names no matching attached source, or the source that
+  authenticates the model. OCC calls it at Agent create, update, provisioning,
+  and deployment.
 - `validateAgentConfiguration(selections, configuration)` (optional): check
   selections against the Agent's Configuration values at Agent create and
   update, provisioning, and deployment, which checks again because a
@@ -57,8 +80,7 @@ metadata never enters Agent selections and does not verify app connections,
 grant access, or configure credentials. Connection verification and deployment
 gates are not part of this metadata contract.
 
-Authorized `GET /installation` exposes the selected Driver's identity and policy
-capabilities. See the [capability response](../agent-plugins.md#discover-policy-controls).
+Authorized `GET /installation` exposes each enabled catalog's Harness, Driver identity and policy capabilities. See the [capability response](../agent-plugins.md#discover-policy-controls).
 
 There is no exported install, enable, policy-translation, or preparation method.
 The optional _backend reader_ in bundled Codex is different from the required
@@ -71,7 +93,8 @@ cursor?, q?}, signal?)` returns `{plugins, nextCursor, setup?}`, and
 `getCatalogPlugin({accessToken?, pluginId}, signal?)` returns plugin details. Here
 `pluginId` is the opaque `remoteId` from a discovery entry; the entry's `id` is
 the stable selection key. The HTTP routes are `POST /namespaces/:namespaceId/agents/plugins`
-and its `/details` child. The selected Driver reports `pluginDiscovery.credential`
+and its `/details` child. Include the target `harnessId` in each request.
+OCC resolves the catalog before it reads a credential. The selected Driver reports `pluginDiscovery.credential`
 in Installation capabilities as `required` or `none`. When required, supply
 exactly one of `accessToken`, `secretRef`, or `credentialSource`. Stored references
 use `{kind, namespaceId, id}` with kind `secret` or `credential_source`.
@@ -92,6 +115,12 @@ CredentialSource returns `409 RESOURCE_CONFLICT`. A Secret backend ownership
 mismatch returns `404`, a denied grant returns
 `403`, and an unavailable backend returns a safe dependency error. A rejected PAT returns
 `PLUGIN_DISCOVERY_CREDENTIALS_REJECTED`; rotate the Secret and retry.
+For details of an ID that a bundled catalog (`occ-plugin` or the curated
+`codex-plugin` catalog) does not offer, the Driver throws the `unknownPlugin`
+refusal that admission uses. OCC returns `400 INVALID_REQUEST` that names the ID
+and, if the ID only omits the version, the versioned ID. Hosted Codex discovery
+does not recognize unknown IDs: a provider error returns the unavailable
+discovery error.
 
 Discovery does not store catalog results and returns `Cache-Control: no-store`.
 Authorization denials emit `authorization_denial` audit events.
@@ -131,7 +160,7 @@ metadata, translate supported policy, and apply it to the specified Agent revisi
 before declaring readiness. Nonempty selections cannot start with a missing,
 changed, or Harness-incompatible Driver. Agent save, provisioning and deployment
 refuse a Harness the Driver cannot run (`400`): bundled OpenClaw plugins need an
-OpenClaw Harness, bundled Codex plugins dedicated Codex or embedded OpenClaw.
+OpenClaw Harness, bundled Codex plugins require a dedicated Codex Harness.
 An unsupported policy or unsafe native configuration prevents startup or leaves
 the version unready. Retries reuse the
 requested IDs and policy; they may resolve a newer curated release at that later
@@ -171,7 +200,7 @@ and [Compute startup warnings](compute.md#plugin-startup-warnings).
 ## Implementations
 
 - [Bundled OpenClaw and Codex Drivers](plugin-bundled.md): `occ-plugin` serves
-  embedded OpenClaw; `codex-plugin` serves dedicated Codex.
+  OpenClaw in either mode and `codex-plugin` serves dedicated Codex.
 - [PluginDriver feature matrix](plugin-matrix.md): historical capability review
   with pinned source evidence.
 

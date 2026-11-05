@@ -5,16 +5,34 @@ on:
     paths:
       - "apps/controller/src/console/**"
       - "apps/controller/src/console-assets.ts"
+      - "deploy/examples/console-theme/**"
+      - "deploy/presets/*.json"
       - "packages/contracts/src/preset-variables.mjs"
       - "scripts/console-storybook/**"
+      - "!scripts/console-storybook/evidence/**/*.png"
+      - "!scripts/console-storybook/evidence/**/*.mp4"
+      - "!scripts/console-storybook/evidence/**/*.webm"
       - ".github/workflows/console-storybook.yml"
   push:
     branches: [main]
     paths:
       - "apps/controller/src/console/**"
       - "apps/controller/src/console-assets.ts"
+      - "apps/controller/src/console-theme.ts"
+      - "apps/controller/src/composition/console-theme.ts"
+      - "deploy/examples/console-theme/**"
+      - "deploy/presets/*.json"
       - "packages/contracts/src/preset-variables.mjs"
+      - "packages/contracts/src/workspace-defaults.mjs"
+      - "packages/occ/src/environment-references.ts"
+      - "packages/occ/src/gateway-security-defaults.ts"
+      - "packages/occ/src/stored-configuration-rules.ts"
+      - "packages/occ/src/retired-openclaw-settings.ts"
+      - "packages/occ/src/deployment-failure-steps.ts"
       - "scripts/console-storybook/**"
+      - "!scripts/console-storybook/evidence/**/*.png"
+      - "!scripts/console-storybook/evidence/**/*.mp4"
+      - "!scripts/console-storybook/evidence/**/*.webm"
       - ".github/workflows/console-storybook.yml"
   workflow_dispatch:
 

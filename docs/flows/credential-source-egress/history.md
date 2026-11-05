@@ -8,6 +8,12 @@ This record preserves the dated changes to the protected credential request page
 
 ## Changelog
 
+- 2026-11-04 01:56: Trace inline tool validation. (authoring-run/c172d58e-be9c-43c1-a44d-7853dfb585af - fdca6e74421067adc66dce4f141d153af0355f68)
+
+- 2026-10-30 10:12: Retain guarded OpenShell 0.1.6 preview. (authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008 - 319e24a88facddd38a883bdfd5b226652d2a6e26)
+
+- 2026-10-27 16:46: Describe selection checks at the Kubernetes Secret GET. (authoring-run/7ecad263-f8b0-46d5-9e93-50bba4fa0edb - 7514893cced39e8307d71c59e2fd1b209a67314f)
+
 - 2026-10-27 16:00: Document provider pinning. (authoring-run/53dd6d74-5181-417f-934c-dd6c8ef6db2d - e2dfabf042852adea8ed797b48aae122927d6226)
 
 - 2026-10-27 15:34: Document the accompanying provider conflict refusal and callback pinning. (authoring-run/9e204161-489f-4c88-9848-c811faa3e6d9 - 0b8d61ffd7b7014274eb92b03a6e646d40e7c4f7)
@@ -19,6 +25,8 @@ This record preserves the dated changes to the protected credential request page
 - 2026-10-27 13:15: Document the accompanying Compute readiness capability boundary. (authoring-run/a9e60d49-8da5-441f-b0f3-25d6ce5681de - f6396abd5698efacabfeb150ef6cd38cdef6e814)
 
 - 2026-10-27 10:59: Document stream renewal retry cadence. (authoring-run/1655d259-04e8-4e20-a37d-072ccfcaf037 - 0418ef3a2c116b73f025281395d92477daf665d2)
+
+- 2026-10-27 10:54: Trace send authorization and response release for a repository metadata read. (authoring-run/2c5a77ee-7b17-4553-b360-486daa794f9a - 0418ef3a2c116b73f025281395d92477daf665d2)
 
 - 2026-10-26 21:57: Trace a protected repository metadata request through access, dispatch and response checks. (authoring-run/8a58b4b6-9e85-4789-b9e8-8e820a7c6d7c - e573b7de03bafa2e84ea072d8c10cef7320575d4)
 

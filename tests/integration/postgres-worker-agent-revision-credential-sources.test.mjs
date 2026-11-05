@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test, { after } from "node:test";
@@ -28,7 +29,7 @@ import {
   withUnavailableIAM,
 } from "../helpers/postgres-worker-revision-support.mjs";
 import { gitCommandBodies, gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
-import { openShellOnlineGitWire } from "../helpers/openshell-online-git-wire.mjs";
+import { onlineGitAllow, openShellOnlineGitWire } from "../helpers/openshell-online-git-wire.mjs";
 import { invoke, token } from "../helpers/openshell-online-wire.mjs";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { PostgresOpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
@@ -53,6 +54,7 @@ function withCredentialGateway(drivers) {
     id: "sandbox-worker-fixture",
     capability: "sandbox",
     implementation: "sandbox-worker-fixture",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets: ["networking"],
     async cleanup() {},
   };
@@ -3027,10 +3029,10 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
         });
         return found ?? (refused && { refused });
       },
-      async approve(request) {
+      async authorizeOnlineRequest(request, installed) {
         assert.equal(request.sessionId, sessionId);
         approved.push(request.operation);
-        return true;
+        return onlineGitAllow(request, installed);
       },
     });
     // Allocate the Agent and independent model grant before starting the short Git clock.
@@ -3099,6 +3101,7 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
           workspace,
           sandbox,
           signal,
+          "/sandbox/enterprise",
           world.retainedProviders,
         );
         world.id = sandboxId;

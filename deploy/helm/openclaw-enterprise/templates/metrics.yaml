@@ -10,8 +10,9 @@
 {{- fail "metrics requires both scraperNamespaceLabels and scraperPodLabels, or neither" }}
 {{- end }}
 {{- $port := int .Values.metrics.port }}
-{{- if or (lt $port 1) (gt $port 65535) (eq $port (int .Values.api.port)) }}
-{{- fail "metrics.port must be a valid TCP port distinct from api.port" }}
+{{- /* The API and worker run as a non-root user without capabilities: no port below 1024. */ -}}
+{{- if or (lt $port 1024) (gt $port 65535) (eq $port (int .Values.api.port)) }}
+{{- fail "metrics.port must be a TCP port from 1024 to 65535, distinct from api.port" }}
 {{- end }}
 {{- if and .Values.repositoryCredentials.enabled (eq $port 8443) }}
 {{- fail "metrics.port must be distinct from the repository credentials listener on port 8443" }}

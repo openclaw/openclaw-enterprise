@@ -75,9 +75,8 @@ async function listFixture(t, name) {
 test("Preset and revision lists return summaries, not the stored documents", async (t) => {
   const { state, fixture, namespace, agent, first, revisionsPath, seedRevisions } =
     await listFixture(t, "Heavy lists");
-  // Documents of about 0.9 MB, bughunt-69's size. The in-memory store copies its whole state
-  // on every read, so this proves response shape and size; the 64-document timing runs
-  // against PostgreSQL in postgres-platform-state.test.mjs.
+  // Documents of about 0.9 MB, bughunt-69's size. This in-memory run proves response shape and
+  // size; the 64-document timing runs against PostgreSQL in postgres-platform-state.test.mjs.
   const large = Object.fromEntries(Array.from({ length: 70_000 }, (_, i) => [`k${i}`, "v"]));
   const heavy = await seedRevisions(4, { ...first.configuration, env: { vars: large } });
   const presets = [];

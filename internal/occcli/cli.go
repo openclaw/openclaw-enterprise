@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net"
 	"net/http"
 	"os"
 	"regexp"
@@ -170,7 +171,7 @@ func (app *application) installationCommand() *cobra.Command {
 			})
 		},
 	}
-	command.AddCommand(get, deploymentInventory)
+	command.AddCommand(get, deploymentInventory, app.installationInstallCommand(), app.installationHandoffCommand("doctor"), app.installationHandoffCommand("plan"))
 	return command
 }
 
@@ -809,6 +810,67 @@ func (app *application) agentCommand() *cobra.Command {
 			return nil
 		},
 	}
+	firstDeploymentCommand := func(recoverOnly bool) *cobra.Command {
+		var intent occclient.FirstDeploymentIntent
+		var generation string
+		name, description := "deploy-first", "Deploy exactly the reviewed Configuration, only if never deployed"
+		if recoverOnly {
+			name, description = "recover-first-deployment", "Read an exact first-deployment receipt without deploying"
+		}
+		cmd := &cobra.Command{
+			Use:   name + " ID",
+			Short: description,
+			Args:  idArgs(agentIDArg),
+			RunE: func(command *cobra.Command, args []string) error {
+				namespace, err := app.requiredNamespace()
+				if err != nil {
+					return err
+				}
+				parsed, err := strconv.ParseInt(generation, 10, 64)
+				if err != nil || strconv.FormatInt(parsed, 10) != generation {
+					return fmt.Errorf("--generation must be a canonical positive decimal integer")
+				}
+				intent.ExpectedGeneration = parsed
+				if err := intent.Validate(); err != nil {
+					return err
+				}
+
+				client, err := app.client()
+				if err != nil {
+					return err
+				}
+				var receipt any
+				if recoverOnly {
+					receipt, err = client.RecoverAgentFirstDeployment(namespace, args[0], intent)
+				} else {
+					receipt, err = client.DeployAgentFirst(namespace, args[0], intent)
+				}
+				if err != nil {
+					if !recoverOnly {
+						app.firstDeploymentRecoveryNotice(command.ErrOrStderr(), namespace, args[0], intent, err)
+					}
+					return err
+				}
+				if receipt == nil {
+					fmt.Fprintln(command.ErrOrStderr(), "No matching admission found. An in-flight request may still commit; this does not prove failure.")
+					if app.output == "table" {
+						return nil
+					}
+				}
+				return app.printItems(receipt, false, []column{
+					{title: "REVISION", key: "revisionId"}, {title: "AGENT", key: "agentId"},
+					{title: "CONFIGURATION", key: "configurationId"}, {title: "GENERATION", key: "configurationGeneration"},
+				})
+			},
+		}
+		cmd.Flags().StringVar(&intent.Key, "key", "", "Stable nonsecret intent key")
+		cmd.Flags().StringVar(&intent.ExpectedConfigurationID, "configuration", "", "Reviewed Configuration ID")
+		cmd.Flags().StringVar(&generation, "generation", "", "Reviewed Configuration generation (canonical positive decimal)")
+		for _, flag := range []string{"key", "configuration", "generation"} {
+			_ = cmd.MarkFlagRequired(flag)
+		}
+		return cmd
+	}
 	var revisionLimit int
 	var revisionCursor string
 	revisions := &cobra.Command{
@@ -827,7 +889,7 @@ func (app *application) agentCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			rows, err := describeAgentRevisions(client, command.ErrOrStderr(), namespace, args[0], page.Revisions)
+			rows, err := describeAgentRevisions(client, namespace, args[0], page.Revisions)
 			if err != nil {
 				return err
 			}
@@ -941,6 +1003,8 @@ func (app *application) agentCommand() *cobra.Command {
 		get,
 		update,
 		deploy,
+		firstDeploymentCommand(false),
+		firstDeploymentCommand(true),
 		revisions,
 		deploymentStatus,
 		stop,
@@ -952,6 +1016,27 @@ func (app *application) agentCommand() *cobra.Command {
 		app.agentPolicyCommand(),
 	)
 	return command
+}
+
+func (app *application) firstDeploymentRecoveryNotice(notices io.Writer, namespace, agentID string, intent occclient.FirstDeploymentIntent, err error) {
+	var dial *net.OpError
+	if errors.As(err, &dial) && dial.Op == "dial" {
+		return
+	}
+	var apiErr *occclient.APIError
+	if errors.As(err, &apiErr) && apiErr.Status < http.StatusInternalServerError && apiErr.Status != http.StatusRequestTimeout {
+		return
+	}
+	// A lost or unreadable reply, timeout, or server failure does not establish
+	// whether admission committed. Never turn this diagnostic into a retry.
+	fmt.Fprintln(notices, "First-deployment outcome is unconfirmed. Before another deployment, read the original receipt with the same caller (the service-key file must still identify that caller):")
+	quote := func(value string) string {
+		return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+	}
+	// Connection settings can contain shell metacharacters; the intent and IDs
+	// have already passed their restricted-ASCII validation. No key value is read.
+	fmt.Fprintf(notices, "  occ --url %s --service-key-file %s --ca-bundle %s --timeout-seconds %s --namespace %s agent recover-first-deployment %s --key %s --configuration %s --generation %d\n",
+		quote(app.url), quote(app.serviceKeyFile), quote(app.caBundle), quote(app.timeoutSeconds), namespace, agentID, intent.Key, intent.ExpectedConfigurationID, intent.ExpectedGeneration)
 }
 
 // defaultDeploymentNotice says which revision deployment-status chose without
@@ -984,21 +1069,17 @@ func defaultDeploymentNotice(client *occclient.Client, notices io.Writer, namesp
 	}
 }
 
-// describeAgentRevisions adds what tells revisions apart to each listed
-// revision: whether it is the Agent's active revision and the status of the
-// deployment that created it. A revision whose deployment status the caller may
-// not read, or that OCC no longer records, gets a null deploymentStatus.
-func describeAgentRevisions(client *occclient.Client, notices io.Writer, namespace, agentID string, revisions []any) ([]any, error) {
+// describeAgentRevisions marks the Agent's active revision in each listed
+// revision. Each summary already carries the deploymentStatus and
+// deploymentErrorCode OCC read with the list, including for a revision whose
+// saved settings are unreadable, so the CLI keeps them as OCC sent them.
+func describeAgentRevisions(client *occclient.Client, namespace, agentID string, revisions []any) ([]any, error) {
 	agent, err := client.GetAgent(namespace, agentID)
 	if err != nil {
 		return nil, err
 	}
 	resource, _ := agent.(map[string]any)
 	activeID, _ := resource["activeRevisionId"].(string)
-	agentReadError, agentUnreadable := resource["configurationReadError"].(map[string]any)
-	if agentUnreadable {
-		noticef(notices, "notice: Agent saved configuration is unreadable (%s); deployment status is unavailable in revision history", displayValue(agentReadError["field"]))
-	}
 	rows := make([]any, 0, len(revisions))
 	for _, item := range revisions {
 		revision, ok := item.(map[string]any)
@@ -1008,24 +1089,6 @@ func describeAgentRevisions(client *occclient.Client, notices io.Writer, namespa
 		row := maps.Clone(revision)
 		id, _ := revision["id"].(string)
 		row["active"] = id != "" && id == activeID
-		row["deploymentStatus"] = nil
-		if id != "" && !agentUnreadable {
-			deployment, err := client.GetAgentDeployment(namespace, agentID, id)
-			var apiErr *occclient.APIError
-			switch {
-			case err == nil:
-				if status, ok := deployment.(map[string]any); ok {
-					row["deploymentStatus"] = status["status"]
-				}
-			case errors.As(err, &apiErr) && (apiErr.Status == http.StatusNotFound || apiErr.Status == http.StatusForbidden):
-			case errors.As(err, &apiErr) && apiErr.Status == http.StatusServiceUnavailable:
-				// List items are summaries, so a revision whose saved settings are unreadable
-				// shows up only here; its status read fails while the others still work.
-				noticef(notices, "notice: deployment status of revision %s is unavailable: %v", id, err)
-			default:
-				return nil, err
-			}
-		}
 		rows = append(rows, row)
 	}
 	return rows, nil

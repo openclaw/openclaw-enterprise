@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-10-15
-last_updated_session: authoring-run/92de1204-326a-4c11-a868-5b3f1b9de0c1
+updated: 2026-11-04
+last_updated_session: authoring-run/4dc828f0-0acc-4001-b6e2-3f57824db925
 ---
 
 # Compose development flow
@@ -35,7 +35,7 @@ selected Kubernetes Compute Driver and the
   from the repository root, followed by authenticated Namespace operations.
 - Source: `scripts/dev-up:require_command`, `internal/occdev/up.go:Up`, and
   `internal/occdev/openshell.go:prepareOpenShell`.
-- Assumptions: Docker Engine with Compose, or Podman with `podman-compose`;
+- Assumptions: Docker Engine with Compose, or Podman with `docker-compose` or `podman-compose` (Docker Compute requires `podman-compose`);
   Bash, curl, Python 3, and `yq` v4 for the Docker profile; writable PostgreSQL
   and Configuration volumes; loopback API publication; executable `bin/occ`
   built with `pnpm cli:build`. Startup needs no model credential.
@@ -49,7 +49,9 @@ owns the operator procedure and destructive cleanup boundary.
 
 ```mermaid
 graph TD
-  A["./bin/occ dev up"] --> Profile{"Compute profile"}
+  A["./bin/occ dev up"] --> Guard{"Development settings valid?"}
+  Guard -->|No| Refuse["Refuse before startup"]
+  Guard -->|Yes| Profile{"Compute profile"}
   Profile -->|Docker| B["Preflight host tools, resolve Podman machine connection,<br/>and inspect Compose config"]
   Profile -->|Kubernetes| KPre["Pin local engine endpoint<br/>and reject existing resources"]
   KPre --> KControl{"Control-plane profile"}
@@ -60,11 +62,9 @@ graph TD
   KCodex -->|failure| KRollback
   KDriver -->|OpenShell| KOpenFirst["Prepare OpenShell assets,<br/>install routing, then import runtime"]
   KRoutingFirst --> KOnly["Install selected control-plane profile<br/>and retain all readiness gates"]
-  KOpenFirst --> KProtection{"Protected egress?"}
-  KProtection -->|Off| KOnly
-  KProtection -->|On| KAuthority["Prepare authority TLS and registry<br/>Install Gateway without readiness wait"]
-  KAuthority --> KOnly
-  KOnly --> KWait["Complete readiness gates<br/>including protected Gateway rollout"]
+  KOpenFirst --> KGateway["Install authenticated Gateway<br/>and wait for readiness"]
+  KGateway --> KOnly
+  KOnly --> KWait["Complete control-plane readiness gates"]
   KWait --> KWorkspace
   KControl -->|Compose| KConfig["Validate Compose and claim<br/>private state with snapshot"]
   KConfig --> KStart["Bootstrap OCC and create<br/>the owned k3d cluster"]
@@ -129,7 +129,7 @@ engine selection, database initialization, local API admission and worker startu
 `apps/controller/src/drivers/compute/docker/index.ts:DockerComputeDriver`
 
 [Namespace execution and Agent admission](docker-compose-development/agent-execution.md)
-traces API authorization, durable work, tenant network ownership, unsupported
+traces API authorization, queued controller operations, tenant network ownership, unsupported
 Agent authentication and exact resource removal.
 The Driver rejects Docker API responses above 4 MiB from either a declared
 content length or the bytes received before buffering the complete body.
@@ -165,8 +165,7 @@ Meanwhile, `internal/occdev/concurrent.go:concurrently` imports the controller
 image, then checks network isolation while importing PostgreSQL and, when
 configured, repository images. The first independent failure cancels the others
 and is reported. A sandbox refusal or failed check rolls back the owned cluster
-before Installation setup or credential delivery. OpenShell retains its
-routing-controller installation, then runtime-import order. Both paths install
+before Installation setup or credential delivery. Both paths install
 the platform only after the check, then gate on authenticated readiness.
 
 `internal/occdev/kubernetes.go:importDevelopmentImage` exports each selected
@@ -177,7 +176,16 @@ resolves the imported digest from containerd, rejects missing or ambiguous
 results, and removes the archive. Tagged builds share this path.
 `internal/occdev/registry_k3d.go:pullDevelopmentImage` pulls digest-pinned
 `OCC_DEVELOPMENT_IMAGE_REGISTRY_CONTAINER` images instead; `state.json` records
-the registry attachment for `occ dev down` to detach.
+the registry attachment for `occ dev down` to detach. Kubernetes-only uses its
+owned k3d network; Compose uses its exact recorded Compose network and selects
+only a runtime image with the current checkout label. Both detach after imports
+and on rollback, including recovery after interrupted startup.
+For Kubernetes-only OpenShell, runtime import follows PostgreSQL/repository imports
+in their existing concurrent branch. OpenShell asset preparation follows those
+imports while network probes finish. This installs the Agent Sandbox controller
+and CRDs and imports images; platform installation and credential delivery still
+wait for every branch, including successful network verification. Image builds
+remain serial, and the large runtime import precedes smaller OpenShell assets.
 
 ### 5. Prepare the optional OpenShell development profile
 
@@ -188,7 +196,12 @@ the registry attachment for `occ dev down` to detach.
 With `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes`, OpenShell uses the
 Kubernetes-only lifecycle before Compose rendering. It pins K3s and OpenShell
 inputs, installs PostgreSQL, OCE, and one central Gateway in `oce-system`, and
-publishes only an admitted API proxy on host loopback.
+publishes only an admitted API proxy on host loopback. The source archive and all three
+OpenShell images select 0.1.6 together, including the paired sandbox/supervisor
+control protocol and compromised-key rejection. The observed-hook repository
+credential preview admits 0.1.6 through its existing opt-in, held-launcher and
+recipient checks. Repository-scoped access uses the separate
+[protected Git enrollment](../guides/repository-credentials/openshell-enrollment.md).
 
 By default, the Kubernetes lifecycle starts PostgreSQL, migration, bootstrap,
 the API, and the worker in Compose. It installs the central Gateway in
@@ -206,33 +219,39 @@ before creating the corresponding Gateway Workspace. Startup waits until the
 OCC Namespace becomes ready. See the
 [OpenShell flow](openshell-sandbox-provisioning.md#0-create-the-development-control-plane).
 
-### 6. Start protected OpenShell transport
+<a id="6-start-protected-openshell-transport"></a>
+
+### 6. Start authenticated OpenShell transport
 
 `internal/occdev/egress_k3d.go:protectedEgressSelection`,
 `internal/occdev/openshell_k3d.go:installDevelopmentPlatform`,
 `apps/controller/src/drivers/sandbox/openshell-gateway-client.ts:createClient`
 
-The explicit protected profile requires Kubernetes Compute, Kubernetes control
-plane, OpenShell Sandbox, and reviewed
-candidate images/charts. It prepares authority server TLS and its public CA,
-then installs OpenShell with native PKI and a TLS middleware registration.
-OpenShell owns the complete Gateway server/client certificate and extension-JWT
-key set. The launcher reads only its public key ID and writes the paired Backend,
-egress Driver and authority listener settings into the Installation.
+`internal/occdev/openshell.go:installOpenShellGateway` enables native PKI,
+TLS, mTLS and authentication for every Kubernetes-only OpenShell installation.
+`openShellBackendConfiguration` selects HTTPS and client certificates;
+`installKubernetesControlPlane` projects them into the API and worker through Helm.
+The default profile registers no static-inference middleware and waits for the
+Gateway before installing OCE. It needs no corrective Gateway upgrade or Pod deletion.
 
-Gateway startup contacts the registry, so `installDevelopmentPlatform` defers
-its readiness wait until after the OCE release's normal readiness gates. API
-composition starts the authority; Backend validation is declarative, and worker
-startup/preflight and health do not require a Gateway call. The final Gateway
-rollout gate still precedes Namespace readiness. Any failure returns to the
-existing owned-cluster rollback path; no empty registry response substitutes for
-negotiation.
+New protected static-inference launches are retired.
+`CheckDevelopmentProfile` rejects `OCC_DEVELOPMENT_PROTECTED_EGRESS=1` before
+Compute dispatch, including the former Kubernetes/OpenShell selection. Direct
+Kubernetes startup also checks `protectedEgressSelection` before provisioning.
+Any presence of `OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP`, including an empty
+value, is rejected. Unset, empty and `0` protected-egress selections retain ordinary
+startup; malformed values still fail validation. Refusal does not select a fallback.
+
+For an existing installation, keep the recorded state and ownership evidence
+for cleanup. Legacy protected fields remain readable in cleanup receipts but
+do not configure startup.
 
 The chart projects the administrative client certificate into API and worker
 only. The Backend supplies it to verified gRPC TLS for DNS or exact-IP server
-identities. Service traffic keeps its separate scoped bearer identity. The API
-alone receives authority TLS and the issuer public key; selected Gateway and
-supervisor Pods can reach that listener through narrow NetworkPolicies. See the
+identities. Service traffic keeps its separate scoped bearer identity. For
+separately prepared production installations with an authority, the API alone
+receives authority TLS and the issuer public key; selected Gateway and supervisor
+Pods can reach that listener through narrow NetworkPolicies. See the
 [Backend authentication boundary](../reference/backends.md#openshell-gateway).
 
 `selectedDevelopmentDatabase` validates an optional disposable database name
@@ -240,9 +259,8 @@ before effects. `installKubernetesControlPlane` uses that name in creation, read
 migrator and application URLs. Bootstrap, API and worker share the limited
 application-role URL. PostgreSQL starts while the bootstrap volume is prepared;
 Helm waits for both. Unselected profiles retain the existing database and
-transport defaults. The [launch guide](../guides/deploy/local-openshell-images.md#select-the-protected-profile)
-owns inputs; [packaging verification](../testing/static-egress.md#protected-launch-packaging)
-distinguishes local proof from pending connected runtime qualification.
+transport defaults. The [retirement notice](../guides/deploy/local-openshell-images.md#select-the-protected-profile)
+describes accepted selectors.
 
 ## Debugging and Verification
 
@@ -300,6 +318,18 @@ distinguishes local proof from pending connected runtime qualification.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 20:46: Overlap selected-image setup while retaining joined readiness and rollback gates. (authoring-run/4dc828f0-0acc-4001-b6e2-3f57824db925 - 7951de4edf7abadc02725484771bcd6207ed9b9d)
+
+- 2026-11-04 08:53: Remove retired local authority provisioning and retain authenticated Gateway readiness and recorded-state cleanup. (authoring-run/a8b6b1f4-19b7-48f0-bb5b-f86a5dcf62a9 - d0421ca03868db643faa8ba2d13e784fc637cc2e)
+
+- 2026-11-02 13:31: Separate default authenticated Gateway bootstrap from opt-in static inference; accompanying launcher changes. (01a19d8b-33a8-76c0-9817-521a7f10626d - f5bef23f5796c2c3421189c79e6508079257cfd5)
+
+- 2026-10-30 16:09: Reconcile patched OpenShell documentation with capability-based repository admission. (authoring-run/9aae796b-aac3-4058-99fd-5d9f4d403d4f - 87d52638bda95e06820328e244ba2ad9960df1c4)
+
+- 2026-10-30 10:12: Select paired OpenShell 0.1.6 and preserve guarded preview admission. (authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008 - 319e24a88facddd38a883bdfd5b226652d2a6e26)
+
+- 2026-10-28 21:21: Select paired OpenShell 0.1.6 inputs without widening credential preview admission. (authoring-run/cc92d8d2-ac00-488a-a581-bba758672967 - aa2cfe543b3bba361679e7e1a3028c3327d2c388)
 
 - 2026-10-15 23:41: Isolate development-wrapper path resolution from CDPATH while preserving the CLI environment. (authoring-run/92de1204-326a-4c11-a868-5b3f1b9de0c1 - 04514330688378316bd0641b8d5560da56aeff85)
 

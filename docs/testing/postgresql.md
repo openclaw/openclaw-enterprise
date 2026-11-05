@@ -1,3 +1,9 @@
+---
+tags: [human_verified]
+# Backfilled from the verification tag recorded in 17ff921c5.
+last_verified: "2026-11-04"
+---
+
 # PostgreSQL tests
 
 ## Overview
@@ -46,7 +52,7 @@ file database: the suite copies it. The suite rejects a standalone
 `node scripts/ci/cleanup.mjs --state /printed/run/directory/state.json` and
 retain the state if cleanup fails. The `postgres`, `postgres-platform`, and
 `postgres-auth` lanes use the same prepare, run, and cleanup pattern; see
-[CI lanes](ci.md#manual-full-integration-lanes).
+[CI lanes](ci/full-integration.md#scenarios).
 
 <a id="postgresql"></a>
 
@@ -111,6 +117,21 @@ loopback database named `openclaw_failures_*` via
 its optional migration URL. Do not share that database with another process.
 
 ## Canonical migration compatibility
+
+Fresh installation, populated canonical upgrades, and logical restore checks
+pass on PostgreSQL 18.6 and 17.11. This evidence covers these workflows on those
+releases, not every server version or a complete production deployment.
+
+The `postgres` lane also runs a disposable PostgreSQL 16.15 container to verify
+early refusal for fresh and populated databases, unchanged dumps after refusal,
+and redaction of real connection errors. Run that regression alone with Docker:
+
+```sh
+OCC_TEST_MIGRATION_SERVER=1 node --test tests/integration/postgres-migration-version.test.ts
+```
+
+It pulls its pinned PostgreSQL image and removes only its own container and volume.
+Without the selector the case skips. It does not use an existing database.
 
 The `postgres` lane runs migration compatibility against its owned fixture. To
 run the canonical cases against an existing disposable loopback PostgreSQL 18

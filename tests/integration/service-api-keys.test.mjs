@@ -13,10 +13,11 @@ import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { signInWithEmailPassword } from "../helpers/auth-session.mjs";
+import { jsonRequestInit } from "../helpers/inject-json.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
-import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
+import { bindRole, grantRole, restrict } from "../helpers/iam-grants.mjs";
 import {
   AUTHORIZATION_HEADER_REFUSED,
   CREDENTIAL_REQUIRED,
@@ -107,14 +108,7 @@ test("service API keys authenticate scoped automation without replacing sessions
     path,
     { headers = { cookie: session.cookie, origin: authOptions.baseURL }, body } = {},
   ) {
-    const response = await fetch(`${origin}${path}`, {
-      method,
-      headers: {
-        ...headers,
-        ...(body === undefined ? {} : { "content-type": "application/json" }),
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
+    const response = await fetch(`${origin}${path}`, jsonRequestInit(method, body, headers));
     assert.equal(response.headers.get("cache-control"), "no-store");
     return { status: response.status, ...(await response.json()) };
   }
@@ -878,13 +872,7 @@ test("service API keys authenticate scoped automation without replacing sessions
     const [binding] = policy.bindings.splice(bindingIndex, 1);
     assert.equal((await request("GET", path, { headers })).status, 403);
     policy.bindings.push(binding);
-    policy.restrictions.push({
-      id: "deny-read",
-      namespaceId,
-      resourceKind: "namespace",
-      action: "read",
-      effect: "deny",
-    });
+    restrict(policy, "read", "namespace", { namespaceId });
     assert.equal((await request("GET", path, { headers })).status, 403);
     policy.restrictions.length = 0;
     assert.equal((await request("GET", path, { headers })).status, 200);
@@ -981,13 +969,7 @@ test("service API keys authenticate scoped automation without replacing sessions
       for (const restricted of [false, true]) {
         if (restricted) {
           policy.bindings.push(adminBinding);
-          policy.restrictions.push({
-            id: "deny-service-key-management",
-            resourceKind: "installation",
-            resourceId: installationId,
-            action: "administer",
-            effect: "deny",
-          });
+          restrict(policy, "administer", "installation", { resourceId: installationId });
         }
         await assertServiceKeyManagementDenied(replacementHeaders, child, 403);
       }
@@ -1396,15 +1378,10 @@ test("service key issuance cannot exceed the caller's own IAM grants", async (t)
   const adminSession = await signInWithEmailPassword({ origin, ...adminCredentials });
   const operatorSession = await signInWithEmailPassword({ origin, ...operatorCredentials });
   async function request(method, path, { headers, body } = {}) {
-    const response = await fetch(`${origin}${path}`, {
-      method,
-      headers: {
-        origin: baseURL,
-        ...headers,
-        ...(body === undefined ? {} : { "content-type": "application/json" }),
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
+    const response = await fetch(
+      `${origin}${path}`,
+      jsonRequestInit(method, body, { origin: baseURL, ...headers }),
+    );
     return { status: response.status, ...(await response.json()) };
   }
   const asAdmin = { cookie: adminSession.cookie };

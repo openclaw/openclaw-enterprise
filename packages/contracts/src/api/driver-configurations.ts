@@ -18,6 +18,7 @@ export const DriverConfigurationDescriptorSchema = Type.Object(
     scope: Type.Union([Type.Literal("installation"), Type.Literal("agent")]),
     key: Type.String(),
     configurationSchema: Type.Record(Type.String(), Type.Unknown()),
+    startupConfiguration: Type.Optional(Type.Record(Type.String(), Type.Ref("SafeJsonValue"))),
     binding: Type.Union([Type.Literal("installation-startup"), Type.Literal("sandbox-policy")]),
     actions: Type.Object(
       {

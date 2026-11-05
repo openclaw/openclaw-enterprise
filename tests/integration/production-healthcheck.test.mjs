@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { rm, utimes, writeFile } from "node:fs/promises";
+import { mkdir, rm, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -61,3 +61,35 @@ test("production worker liveness fails once the run loop stops reporting progres
   await utimes(alive, outage, outage);
   await assert.rejects(live(), ({ stderr }) => /run loop has not made progress/.test(stderr));
 });
+
+for (const mode of ["readiness", "liveness", "legacy liveness"]) {
+  test(`production worker ${mode} refuses a directory in place of its health marker`, async (t) => {
+    const directory = await temporaryDirectory(t, "occ-worker-health-");
+    const marker = join(directory, "marker");
+    await mkdir(marker);
+    const environment = { ...process.env, OCC_WORKER_READINESS_PATH: marker };
+    delete environment.OCC_WORKER_LIVENESS_PATH;
+    if (mode === "liveness") {
+      environment.OCC_WORKER_LIVENESS_PATH = marker;
+    }
+    const probe = () =>
+      execute(
+        process.execPath,
+        [
+          "scripts/production-healthcheck.mjs",
+          "worker",
+          ...(mode === "readiness" ? ["ready"] : []),
+        ],
+        { cwd: repository, env: environment },
+      );
+
+    // No worker observation exists: a freshly mounted or replaced directory is not a marker.
+    await assert.rejects(
+      probe(),
+      ({ code, stderr }) => code === 1 && /marker must be a regular file/.test(stderr),
+    );
+    await rm(marker, { recursive: true });
+    await writeFile(marker, "healthy\n", { mode: 0o600 });
+    await probe();
+  });
+}

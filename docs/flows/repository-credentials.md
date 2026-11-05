@@ -1,7 +1,7 @@
 ---
 created: "2026-09-17"
-updated: 2026-10-27
-last_updated_session: authoring-run/2af9e346-e424-4bb7-8b0e-a6e1126f9832
+updated: 2026-10-30
+last_updated_session: authoring-run/d49a5c43-d13a-4c18-8850-b9e95cca726c
 ---
 
 # Repository credential service flow
@@ -28,7 +28,7 @@ protected files and control; clients receive session files and public connection
 
 ```mermaid
 graph TD
-  Operator["Worker or operator<br/>opens session"] --> Admission["Service freezes grant<br/>and creates bearer"]
+  Operator["Worker or operator<br/>opens session"] --> Admission["Reserve slot, resolve grant<br/>then construct session"]
   Admission -->|Construction failed| ConstructionCleanup["Seal renewal access<br/>drain unpublished custody"]
   Operator -->|Uncertain admission| Recovery["Inspect original owner<br/>and known session status"]
   Admission --> Files["CLI publishes private<br/>client directory"]
@@ -73,8 +73,8 @@ The production native sender consumes READY material from the worker Token Servi
 It owns no App signing key, cannot issue installation tokens and does not load the
 development static-token implementation. The development backend requires both
 `developmentOnly: true` and the `--development-authority` process flag.
-`packages/contracts/src/repo.ts` owns public `RepoDriver`, grant identity and
-four-field status. Private contracts under
+`packages/contracts/src/drivers/repo/index.ts` owns public `RepositoryPolicyDriver` and
+`NativeRepositorySender`, grant identity and four-field status. Private contracts under
 `apps/controller/src/drivers/repo/credentials/` separate full status/admission/bearer
 results (`service-contracts.ts`), the dependency-free six-field client DTO
 (`client-contracts.ts`), and backend protocol/custody handles (`backend-contracts.ts`).
@@ -96,12 +96,11 @@ until the control socket has mode `0600` and its identity is recorded.
 `apps/controller/src/drivers/repo/credentials/control.ts:handleControl` validates the local
 request method, target, content type, and body before invoking the common
 service. The body limit is the smaller of 16,384 bytes and `controlBodyBytes`. `apps/controller/src/drivers/repo/credentials/service.ts:createCredentialService`
-checks duration, allowed profile and capacity, then freezes the resolved binding.
-Profiles are opaque to the common service. GitHub resolves `git-read`, `git-write`
-and `git-full` to the [permission maps](../reference/repository-credentials.md#configuration)
-and includes the profile in grant identity. Startup rejects unknown names,
-including `read-write`; the example defaults to `git-write`. Bearer lookup stores
-a digest; only the original admission response contains the bearer.
+reserves capacity through binding resolution and construction. Shutdown cancels unclaimed
+selections and drains in-flight work within grace; expiry or shutdown closes unpublished
+sessions. GitHub maps `git-read`, `git-write` and `git-full` to
+[permissions](../reference/repository-credentials.md#configuration); startup rejects
+unknown profiles. Only the original response contains the bearer; lookup stores its digest.
 
 `apps/controller/src/drivers/repo/credentials/server.ts:startListeners` owns the
 correlation registry from
@@ -121,10 +120,10 @@ retries it and forgets it once committed, so it stops counting toward capacity.
 Known nondelivery closes the session.
 Reconciliation cannot recover a bearer, change its binding or replay provider work.
 Keep the original admission ID and inspect its owner and any known session after an
-uncertain response. Status observes expiry without closing the session or publishing
-disposal; clock rollback cannot restore use. After a lost disposal acknowledgement,
-the broker checks the original receipt against the session, binding, deadline and
-cleanup counts. An unconfirmed disposal remains unknown.
+uncertain response. Status observes expiry without closing the session or starting
+disposal; clock rollback cannot restore use. If a disposal acknowledgement is lost,
+status, close and shutdown resend the same status; the journal records it once and
+refuses a different one.
 
 The receipt and operator control clients reject private-socket replies over
 16,384 bytes and destroy the response without waiting for its end.
@@ -139,9 +138,9 @@ All handles are sealed before awaiting callbacks. Unpublished custody occupies
 the configured session capacity until callbacks settle and bytes are disposed.
 
 `apps/controller/src/drivers/repo/github/credentials/client/config.ts:writeClientConfiguration`
-stages private files, synchronizes writes and renames the directory into place.
-CLI output reports status and location. After a write failure, the CLI attempts
-closure and reports the admitted session ID for operator follow-up.
+sets files `0600` and directories `0700` despite umask. `operator open` checks
+`--output` before admission and again when writing; after a write failure it
+closes the session and reports its ID.
 
 ### 3. Authenticate the selected client
 
@@ -240,18 +239,19 @@ the original settlement receives `not-submitted`.
 Missing or uncertain material does not cause request-time issuance. The explicit
 development token factory instead borrows its process-owned static token.
 
-Handler and sender capture allowed origins independently.
+Handler and sender each capture allowed origins.
 `apps/controller/src/drivers/repo/credentials/transport/request-headers.ts:createUpstreamHeaders`
-validates adapter fields within byte and field-count limits, rejects case-insensitive
-duplicates, and removes reserved fields such as `Expect` before request construction.
-After verified TLS, owned exchanges recheck configured standing before first write.
-Prepared sends check their original one-use permit, cancellation and send deadline
-there. Gate denial or confirmed pre-write socket close prevents HTTP writes. The response-header timer starts
-after upload unless headers arrived. Connection, upload, stall and total deadlines
-apply. Upload-pack has separate response-byte, first-header, stall and total
-budgets; other requests retain ordinary limits. Every plan obeys `maxExchangeMs` and
-the session deadline; static-token upload-pack also obeys its lease. The byte counter
-applies backpressure without buffering the pack.
+enforces adapter header byte and count limits, rejects duplicates case-insensitively,
+and strips reserved fields such as `Expect` before request construction.
+After TLS, the first-write gate rechecks the owned lease or the original
+prepared permit, cancellation and deadline. Withdrawal blocks new permits;
+an issued permit allows one send before its deadline. Denial or confirmed
+pre-write closure sends no HTTP request. The response-header timer starts after
+upload unless headers arrived. Connection, upload, stall and total deadlines
+apply. Upload-pack uses separate response-byte, first-header, stall and total
+budgets. Plans obey `maxExchangeMs` and session deadlines; static-token
+upload-pack also obeys its lease. Byte counting applies backpressure without
+pack buffering.
 
 ### 5. Deliver an outcome and release ownership
 
@@ -361,6 +361,10 @@ client and alternate-adapter checks; live-provider behavior requires separate qu
 
 ## Changelog
 
+- 2026-10-30 06:21: Reserve admission capacity and drain shutdown work. (authoring-run/d49a5c43-d13a-4c18-8850-b9e95cca726c - 4a27fe5e2ff5fc4b216040bcf1227bfb6a7e0a88)
+
+- 2026-10-27 17:25: Resend a disposal whose acknowledgement was lost with its original status. (fix-3873-dispose)
+
 - 2026-10-27 16:36: Preserve original receipt recovery and observed expiry with prepared route admission. (authoring-run/2af9e346-e424-4bb7-8b0e-a6e1126f9832 - 759e6312f4e5939c17837132ef51d26c84146517)
 
 - 2026-10-27 16:17: Reconcile selected route admission and disposal observation. (authoring-run/09fabde1-4f6f-46b0-9d37-943815810d11 - cf476a1b8303c5c24a2ec0c6fd7bc82df501115f)
@@ -376,7 +380,5 @@ client and alternate-adapter checks; live-provider behavior requires separate qu
 - 2026-10-27 13:43: Reserve the original attempt before constructing the selected prepared route. (authoring-run/c791ff25-9d48-4b6a-b400-315fa09ba049 - af7b0b904719bc1e1b238985d3db7cda8a3f7515)
 
 - 2026-10-27 13:32: Retain observed session expiry through wall-clock correction. (authoring-run/190e7ec1-f80f-46f3-8a1c-06a9976abbc4 - bc4d77fb896d89b02b561a7e5f213e713ee40d13)
-
-- 2026-10-27 13:13: Preserve the selected exchange credential through rotation and authorize the first write. (authoring-run/1d86daf8-5e6c-47f3-b6b2-624ef2b23f37 - 852146b8faea0fd083abd2255190eed5c0e5f43d)
 
 - [Earlier entries](repository-credentials/history.md) are preserved in the documentation history.

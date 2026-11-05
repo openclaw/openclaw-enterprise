@@ -248,7 +248,12 @@ func (app *application) printRuntime(description any, namespace, agentID, revisi
 		containers, _ := pod["containers"].([]any)
 		for _, entry := range containers {
 			container, _ := entry.(map[string]any)
-			if container["name"] != pod["role"] && len(containers) > 1 {
+			name, nameOK := container["name"].(string)
+			role, roleOK := pod["role"].(string)
+			if !nameOK || !roleOK {
+				return fmt.Errorf("OCC returned an invalid runtime description")
+			}
+			if name != role && len(containers) > 1 {
 				continue
 			}
 			row["restarts"] = container["restartCount"]

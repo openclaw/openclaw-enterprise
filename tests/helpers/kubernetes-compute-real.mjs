@@ -279,7 +279,7 @@ export async function createProvisioningApiFixture(
   let worker;
   const drivers = {
     ...runtimeDrivers({ computeDriver, configurationDriver, secretDriver }),
-    pluginDriver: new CodexPluginDriver(),
+    pluginDrivers: [new CodexPluginDriver()],
   };
   const app = await composePostgresDevelopment(
     {
@@ -475,13 +475,25 @@ export async function assertReadyGateway(namespaceName, agentId, namespaceId, sn
           ...(snapshot.harness.id === "codex" && snapshot.harness.mode === "dedicated"
             ? {
                 // The paired Harness owns the real filesystem; the Gateway
-                // keeps a writable local key for native chat preparation.
+                // keeps a writable local key for native chat preparation. Compute
+                // also pins it on the main entry that carries the Agent name.
                 agents: {
                   ...snapshot.configuration.agents,
                   defaults: {
                     ...snapshot.configuration.agents?.defaults,
                     workspace: "/home/node/workspace",
                   },
+                  ...(snapshot.configuration.agents?.entries?.main === undefined
+                    ? {}
+                    : {
+                        entries: {
+                          ...snapshot.configuration.agents.entries,
+                          main: {
+                            ...snapshot.configuration.agents.entries.main,
+                            workspace: "/home/node/workspace",
+                          },
+                        },
+                      }),
                 },
               }
             : {}),
@@ -494,11 +506,33 @@ export async function assertReadyGateway(namespaceName, agentId, namespaceId, sn
             auth: {
               ...snapshot.configuration.gateway?.auth,
               mode: "trusted-proxy",
+              // Compute keeps explicit identities and grants; omission is machine-only.
+              // Admitting a human makes the Gateway require x-openclaw-scopes (finding 2183).
               trustedProxy: {
+                ...snapshot.configuration.gateway?.auth?.trustedProxy,
+                ...((snapshot.configuration.gateway?.auth?.trustedProxy?.allowUsers ?? []).some(
+                  (user) => user !== "occ-workspace-files",
+                )
+                  ? {
+                      requiredHeaders: [
+                        ...(snapshot.configuration.gateway?.auth?.trustedProxy?.requiredHeaders ??
+                          []),
+                        ...((
+                          snapshot.configuration.gateway?.auth?.trustedProxy?.requiredHeaders ?? []
+                        ).some((header) => header.toLowerCase() === "x-openclaw-scopes")
+                          ? []
+                          : ["x-openclaw-scopes"]),
+                      ],
+                    }
+                  : {}),
                 userHeader: "x-occ-identity",
-                allowUsers: ["occ-workspace-files"],
+                allowUsers: snapshot.configuration.gateway?.auth?.trustedProxy?.allowUsers ?? [
+                  "occ-workspace-files",
+                ],
               },
-              identityScopes: { "occ-workspace-files": ["operator.admin"] },
+              identityScopes: snapshot.configuration.gateway?.auth?.identityScopes ?? {
+                "occ-workspace-files": ["operator.admin"],
+              },
             },
           },
         };

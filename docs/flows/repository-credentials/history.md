@@ -8,6 +8,8 @@ This record preserves the dated changes to the repository credential service flo
 
 ## Changelog
 
+- 2026-10-27 13:13: Preserve the selected exchange credential through rotation and authorize the first write. (authoring-run/1d86daf8-5e6c-47f3-b6b2-624ef2b23f37 - 852146b8faea0fd083abd2255190eed5c0e5f43d)
+
 - 2026-10-27 13:11: Keep uncertain admission and disposal observation on the original owner. (authoring-run/eee8818e-6453-492f-acc7-5e5a3f1fe630 - bb7fa74e2d95bdd21648b36ad5c65558b0baffa9)
 
 - 2026-10-27 11:09: Separate prepared startup from development authority and defer listener admission until socket setup completes. (authoring-run/51557b14-ec25-4b33-98f2-b5a16d00d6ea - 0418ef3a2c116b73f025281395d92477daf665d2)

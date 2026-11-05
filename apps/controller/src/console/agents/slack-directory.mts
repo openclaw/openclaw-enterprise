@@ -4,6 +4,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { type RequestOptions, requestFailure } from "../api-client.mjs";
 import { button, element, statusBlock } from "../dom.mjs";
+import { createRequestTurns, type RequestInTurn } from "../request-turns.mjs";
 import { notIncluded } from "./access-reasons.mjs";
 import { namedRefusal, namespacePath } from "./list.mjs";
 
@@ -58,6 +59,46 @@ function lookup(
     body,
     ...(signal ? { signal } : {}),
   }) as Promise<ChannelDirectoryResult>;
+}
+
+// A view's name lookups. The lookup authorizes Secret operate on the bot token Secret, which an
+// Installation administrator may hold only through that administration; revoked before she
+// opened Edit Slack, its fields sent their lookups at once and each refusal was audited (finding
+// 2939). The first lookup goes alone, and once one succeeds the rest go at once. A refusal answers
+// the lookups waiting behind it for the same Secret unsent, so each field shows that refusal's
+// reason; once none are pending, a later lookup asks again. A lookup whose view is no longer
+// current is not sent.
+interface NameLookupTurns {
+  inTurn: RequestInTurn;
+  refusals: Map<string, unknown>;
+}
+const nameLookupTurns = new WeakMap<SlackDirectoryContext, NameLookupTurns>();
+function nameLookupInTurn(
+  context: SlackDirectoryContext,
+  scope: string,
+  send: () => Promise<ChannelDirectoryResult>,
+) {
+  let turns = nameLookupTurns.get(context);
+  if (!turns) {
+    const refusals = new Map<string, unknown>();
+    turns = { inTurn: createRequestTurns(() => refusals.clear()), refusals };
+    nameLookupTurns.set(context, turns);
+  }
+  const { refusals } = turns;
+  return turns.inTurn(() => {
+    if (refusals.has(scope)) {
+      return Promise.reject(refusals.get(scope));
+    }
+    if (!context.isCurrent()) {
+      return Promise.reject(new Error("The view is no longer shown."));
+    }
+    return send().catch((cause: unknown) => {
+      if (requestFailure(cause).status === 403) {
+        refusals.set(scope, cause);
+      }
+      throw cause;
+    });
+  });
 }
 
 export function isSlackId(value: string, kind: DirectoryKind) {
@@ -187,13 +228,18 @@ export function createSlackNameResolver({
         if (cache.size >= 100) {
           cache.delete(cache.keys().next().value!);
         }
-        request = lookup(context, {
-          secretId,
-          kind,
-          ids: requestedIds,
-          ...(agentId ? { agentId } : {}),
-          ...(configurationId ? { configurationId } : {}),
-        });
+        request = nameLookupInTurn(
+          context,
+          JSON.stringify([secretId, agentId ?? null, configurationId ?? null]),
+          () =>
+            lookup(context, {
+              secretId,
+              kind,
+              ids: requestedIds,
+              ...(agentId ? { agentId } : {}),
+              ...(configurationId ? { configurationId } : {}),
+            }),
+        );
         cache.set(key, request);
         // Share simultaneous fields, then reread the Secret for later views of the same ID.
         const clear = () => {
@@ -564,11 +610,19 @@ export function createSlackDirectoryField({
     nextCursor = null;
     searchAsName = false;
   }
-  function startSearch() {
+  function startSearch(activateFirst = false) {
     prepareSearch();
-    return load(0);
+    return load(0, activateFirst);
   }
-  async function load(index: number): Promise<void> {
+  function activateOption(index: number) {
+    const options = [...results.querySelectorAll("button")];
+    activeOption = index;
+    options.forEach((option, index) => option.classList.toggle("active", index === activeOption));
+    const active = options[activeOption]!;
+    search.setAttribute("aria-activedescendant", active.id);
+    active.scrollIntoView({ block: "nearest" });
+  }
+  async function load(index: number, activateFirst = false): Promise<void> {
     const secretId = getSecretId();
     if (!secretId || (index >= pages.length && pages.length > 0 && !nextCursor)) {
       return;
@@ -634,7 +688,7 @@ export function createSlackDirectoryField({
           workspaceIdentity !== page.workspaceId
         ) {
           // A newer name lookup observed a different workspace while this search was pending.
-          return startSearch();
+          return startSearch(activateFirst);
         }
         if (index > 0 && workspaceIdentity && workspaceIdentity !== page.workspaceId) {
           status.textContent = "The Slack bot workspace changed. Search again.";
@@ -691,6 +745,9 @@ export function createSlackDirectoryField({
           );
         }),
       );
+      if (activateFirst && candidates.length && document.activeElement === search) {
+        activateOption(0);
+      }
       status.textContent = wrongWorkspace
         ? `That ID belongs to workspace ${exactTarget.teamId}; this bot belongs to ${page.workspaceId}.`
         : candidates.length
@@ -719,6 +776,11 @@ export function createSlackDirectoryField({
       void startSearch();
     }
   });
+  search.addEventListener("click", () => {
+    if (panel.hidden) {
+      void startSearch();
+    }
+  });
   search.addEventListener("input", () => {
     prepareSearch();
     timer = setTimeout(() => {
@@ -728,19 +790,30 @@ export function createSlackDirectoryField({
     }, 300);
   });
   search.addEventListener("keydown", (event) => {
+    if (
+      panel.hidden &&
+      event.key === "ArrowDown" &&
+      !event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.shiftKey &&
+      !event.isComposing &&
+      event.keyCode !== 229
+    ) {
+      event.preventDefault();
+      void startSearch(true);
+      return;
+    }
     const options = [...results.querySelectorAll("button")];
     if (!panel.hidden && (event.key === "ArrowDown" || event.key === "ArrowUp") && options.length) {
       event.preventDefault();
-      activeOption =
+      activateOption(
         activeOption < 0
           ? event.key === "ArrowDown"
             ? 0
             : options.length - 1
-          : (activeOption + (event.key === "ArrowDown" ? 1 : -1) + options.length) % options.length;
-      options.forEach((option, index) => option.classList.toggle("active", index === activeOption));
-      const active = options[activeOption]!;
-      search.setAttribute("aria-activedescendant", active.id);
-      active.scrollIntoView({ block: "nearest" });
+          : (activeOption + (event.key === "ArrowDown" ? 1 : -1) + options.length) % options.length,
+      );
     } else if (event.key === "Escape" && !panel.hidden) {
       event.preventDefault();
       event.stopPropagation();

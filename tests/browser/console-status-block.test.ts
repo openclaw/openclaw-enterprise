@@ -1,3 +1,4 @@
+import { openAdvancedSettings } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import type { BrowserContextOptions, Locator, Page, Route } from "playwright";
@@ -8,6 +9,7 @@ import type { PermissionAction } from "../../packages/contracts/src/index.ts";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   consoleViewports,
   detailUrl,
@@ -20,10 +22,9 @@ import {
   selectSecret,
   statusTone,
   grantStaleConfigurationUpdate,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import {
   createRepositoryLaunchFixture,
-  openAdvancedSettings,
   withholdPermissionSummary,
 } from "./console-agents-test-support.mjs";
 import {
@@ -36,8 +37,9 @@ import {
   REPOSITORY_EDITS_PENDING,
 } from "../helpers/refusal-text.mjs";
 
-// Errors, warnings and notices share one status block (UX plan C1): a stripe and wash in the
-// tone's design-token colours, with the text in the body colour. A refusal after a request takes
+// Errors, warnings and notices share one status block (UX plan C1): a wash in the tone's
+// design-token colour, with the text in the body colour. Errors and warnings retain a stripe;
+// the version-selection notice has a quieter border. A refusal after a request takes
 // focus and comes into view; Share Agent left its refusal unfocused above the form, so a reader
 // at phone width heard nothing (findings 1862, 1864).
 //
@@ -119,10 +121,11 @@ function assertPaint(
   paint: Awaited<ReturnType<typeof statusPaint>>,
   tone: "info" | "warning" | "danger",
   label: string,
+  stripe = true,
 ) {
   assert.deepEqual(
     { ...paint, contrast: paint.contrast >= 4.5 },
-    { status: true, tone, stripe: true, wash: true, bodyText: true, contrast: true },
+    { status: true, tone, stripe, wash: true, bodyText: true, contrast: true },
     `${label}: ${JSON.stringify(paint)}`,
   );
 }
@@ -239,7 +242,7 @@ test("Share Agent refusals", async (t) => {
   // person.
   async function sharingPage(
     t: TestContext,
-    viewport: BrowserContextOptions["viewport"],
+    viewport: NonNullable<BrowserContextOptions["viewport"]>,
     target = namespace,
   ) {
     agents += 1;
@@ -358,7 +361,7 @@ test("Notices and the sign-in alert", async (t) => {
         "Plugin changes to this Agent appear in the next deployment. Existing versions stay unchanged.",
       );
       assert.equal(await info.getAttribute("role"), "status");
-      assertPaint(await statusPaint(info), "info", "version notice");
+      assertPaint(await statusPaint(info), "info", "version notice", false);
     },
   );
 
@@ -675,9 +678,7 @@ test("Repository access save refusals", async (t) => {
 });
 
 test("Configuration save outcomes", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Status configuration", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Status configuration");
   const reader = await createReader(fixture, namespace, "status-config-reader");
   let agents = 0;
   const newAgent = () => {
@@ -939,9 +940,7 @@ async function answerDiagnostics(page: Page, revisionId: string) {
 const DIAGNOSTICS_REASON = DIAGNOSTICS_DENIED;
 
 test("Run diagnostics access and outcomes", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Status diagnostics", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Status diagnostics");
   const reader = await createReader(fixture, namespace, "status-diagnostics-reader");
   let agents = 0;
   // An Agent with an active version, and that version's diagnostics section and Run button.
@@ -963,7 +962,7 @@ test("Run diagnostics access and outcomes", async (t) => {
     await login(
       page,
       fixture,
-      detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration"),
+      detailUrl(fixture, namespace.id, agent.id, revision.id, "deployment"),
       credentials,
     );
     const observations = page.locator(".version-diagnostics");

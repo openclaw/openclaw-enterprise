@@ -8,6 +8,11 @@ import { setTimeout as delay } from "node:timers/promises";
 import { TransientDependencyError } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 
+/** Device identifiers accepted by the persisted workspace-node binding. */
+export function isWorkspaceNodeDeviceId(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value);
+}
+
 export interface NodeSetup {
   readonly setupId: string;
   readonly setupCode: string;
@@ -17,9 +22,10 @@ export interface NodeSetup {
 export interface GatewayNodeEnrollment {
   createSetup(url: string, nodeUrl: string, signal: AbortSignal): Promise<NodeSetup>;
   /**
-   * Reads the setup's completion and whether its node is connected. With
-   * `waitMs`, keeps one connection and re-reads until the node is connected or
-   * the time is up, so a node that pairs a moment later is seen at once.
+   * Reads the setup receipt before any node lookup, so its owner can persist
+   * the consumed setup's identity before probing credential possession. With
+   * `waitMs`, keeps one connection and re-reads until either receipt appears
+   * or the time is up.
    * `stopWaiting` ends the wait early, after at least one reading, when it
    * returns true between readings.
    */
@@ -29,6 +35,7 @@ export interface GatewayNodeEnrollment {
     signal: AbortSignal,
     options?: NodeSetupObserveOptions,
   ): Promise<NodeSetupObservation | undefined>;
+  /** Requires the supported commands and a current device-token-authenticated session. */
   isConnected(url: string, deviceId: string, signal: AbortSignal): Promise<boolean>;
 }
 
@@ -39,7 +46,8 @@ export interface NodeSetupObserveOptions {
 
 export interface NodeSetupObservation {
   readonly deviceId: string;
-  readonly connected: boolean;
+  /** Native delivery status describes the server write, not client credential custody. */
+  readonly delivery: "confirmed" | "uncertain";
 }
 
 type GatewayRequest = (
@@ -179,9 +187,9 @@ export function createGatewayNodeEnrollment(
 }
 
 /**
- * Setup status and node presence over one Gateway connection. Without a wait
- * this is a single read. With one, it re-reads every NODE_SETUP_POLL_MS until
- * the node is connected or `waitMs` has passed, and returns the last reading.
+ * Setup status over one Gateway connection. Without a wait this is a single
+ * read. With one, it re-reads every NODE_SETUP_POLL_MS until
+ * a receipt appears or `waitMs` has passed, and returns the last reading.
  * `stopWaiting`, asked between readings, ends the wait early the same way.
  * Every reading gets the same validation; waiting never relaxes it.
  */
@@ -193,34 +201,36 @@ export async function observeNodeSetup(
   stopWaiting?: () => Promise<boolean>,
 ): Promise<NodeSetupObservation | undefined> {
   const deadline = Date.now() + waitMs;
-  let deviceId: string | undefined;
   for (;;) {
     signal.throwIfAborted();
-    if (deviceId === undefined) {
-      const status = asRecord(await request("device.pair.setupStatus", { setupId }, { signal }));
-      if (status === undefined) {
-        throw new Error("The Gateway returned an invalid setup status.");
-      }
-      // A delivery-uncertain handoff may still have reached the node. Live
-      // presence is observed separately; setup status alone is not readiness.
-      const completion = asRecord(status.completion ?? status.deliveryUncertain);
-      if (completion !== undefined) {
-        if (
-          completion.setupId !== setupId ||
-          completion.access !== "node" ||
-          !isNonEmptyString(completion.deviceId)
-        ) {
-          throw new Error("The Gateway returned an invalid node setup completion.");
-        }
-        deviceId = completion.deviceId;
-      }
+    const status = asRecord(await request("device.pair.setupStatus", { setupId }, { signal }));
+    signal.throwIfAborted();
+    if (status === undefined) {
+      throw new Error("The Gateway returned an invalid setup status.");
     }
-    const observation =
-      deviceId === undefined
-        ? undefined
-        : { deviceId, connected: await isConnected(request, deviceId, signal) };
+    // Validate both present receipts before preferring confirmed completion.
+    // Even a confirmed server write can precede the client's hello receipt.
+    let observation: NodeSetupObservation | undefined;
+    for (const field of ["completion", "deliveryUncertain"] as const) {
+      if (!Object.hasOwn(status, field)) {
+        continue;
+      }
+      const completion = asRecord(status[field]);
+      if (
+        completion === undefined ||
+        completion.setupId !== setupId ||
+        completion.access !== "node" ||
+        !isWorkspaceNodeDeviceId(completion.deviceId)
+      ) {
+        throw new Error("The Gateway returned an invalid node setup completion.");
+      }
+      observation ??= {
+        deviceId: completion.deviceId,
+        delivery: field === "completion" ? "confirmed" : "uncertain",
+      };
+    }
     if (
-      observation?.connected === true ||
+      observation !== undefined ||
       Date.now() + NODE_SETUP_POLL_MS > deadline ||
       (stopWaiting !== undefined && (await stopWaiting()))
     ) {
@@ -241,23 +251,36 @@ async function isConnected(
   deviceId: string,
   signal: AbortSignal,
 ): Promise<boolean> {
+  signal.throwIfAborted();
   const node = asRecord(await request("node.describe", { nodeId: deviceId }, { signal }));
-  if (node?.nodeId !== deviceId || typeof node.connected !== "boolean") {
+  signal.throwIfAborted();
+  if (
+    node?.nodeId !== deviceId ||
+    typeof node.connected !== "boolean" ||
+    typeof node.deviceTokenAuthenticated !== "boolean"
+  ) {
     throw new Error("The Gateway returned an invalid node observation.");
   }
+  if (!node.connected) {
+    return false;
+  }
   const commands = Array.isArray(node.commands) ? node.commands : [];
-  return (
-    node.connected &&
-    [
-      "file.fetch",
-      "file.stat",
-      "file.write",
-      "file.create",
-      "dir.list",
-      "workspace.memory",
-      "workspace.skills",
-    ].every((command) => commands.includes(command))
-  );
+  const missing = [
+    "file.fetch",
+    "file.stat",
+    "file.write",
+    "file.create",
+    "dir.list",
+    "workspace.memory",
+    "workspace.skills",
+  ].filter((command) => !commands.includes(command));
+  if (missing.length > 0) {
+    throw new Error(`The workspace node is missing required commands: ${missing.join(", ")}.`);
+  }
+  // Bootstrap registration and its server receipt do not prove possession.
+  // Native exposes this fact only for the current open session after checking
+  // the exact device token and its still-current pairing generation.
+  return node.deviceTokenAuthenticated;
 }
 
 async function withGateway<T>(
