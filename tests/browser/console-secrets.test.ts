@@ -140,7 +140,11 @@ test("Credentials opens Secrets and lets an Installation administrator manage sh
   assert.equal(template.current.oauthClientId, undefined);
   assert.equal(template.current.version, 2);
   await page.getByText("Saved Google OAuth, version 2.", { exact: true }).waitFor();
-  assert.equal(await page.getByRole("heading", { name: "Google OAuth", exact: true }).count(), 1);
+  const googleRow = page.getByRole("row").filter({
+    has: page.getByRole("rowheader", { name: "Google OAuth", exact: true }),
+  });
+  await googleRow.getByRole("cell", { name: "No OAuth client assigned", exact: true }).waitFor();
+  await googleRow.getByRole("cell", { name: "2", exact: true }).waitFor();
   await page.getByRole("button", { name: "Create connection template" }).click();
   const editor = dialog(page, "Create connection template");
   const availability = editor.getByLabel("Template availability");
@@ -362,12 +366,12 @@ test("registering a provider-issued client uses a saved or newly created templat
   const client = (await first.json()).data;
   assert.equal(client.namespaceId, namespace.id);
   assert.equal(Object.hasOwn(client, "clientSecret"), false);
-  const row = page.getByRole("heading", { name: "Engineering directory" }).locator("..");
-  await row
-    .getByText("Namespace · OAuth client owners · client_secret_basic", {
-      exact: true,
-    })
-    .waitFor();
+  const row = page.getByRole("row").filter({
+    has: page.getByRole("rowheader", { name: "Engineering directory", exact: true }),
+  });
+  await row.getByRole("cell", { name: client.issuer, exact: true }).waitFor();
+  await row.getByRole("cell", { name: "Namespace · OAuth client owners", exact: true }).waitFor();
+  await row.getByRole("cell", { name: "client_secret_basic", exact: true }).waitFor();
   assert.equal((await page.locator("body").innerText()).includes(privateValue), false);
 
   // Register another client from the saved template; choosing it as the default is a separate edit.
@@ -394,7 +398,7 @@ test("registering a provider-issued client uses a saved or newly created templat
   await form.getByRole("button", { name: "Register OAuth client" }).click();
   const second = await secondRegistration;
   assert.equal(second.status(), 201, await second.text());
-  await page.getByRole("heading", { name: "Second directory" }).waitFor();
+  await page.getByRole("rowheader", { name: "Second directory", exact: true }).waitFor();
   // Switching Namespace keeps the current tab and hides the previous Namespace's clients and templates.
   const selector = page.getByRole("combobox", { name: "Namespace", exact: true });
   await selector.selectOption(other.id);
@@ -411,7 +415,11 @@ test("registering a provider-issued client uses a saved or newly created templat
   assert.equal(await selector.inputValue(), other.id);
   assert.equal(await page.getByRole("button", { name: "Edit Directory OAuth" }).count(), 0);
   await selector.selectOption(namespace.id);
-  await page.getByRole("button", { name: "Edit Directory OAuth" }).click();
+  const directoryRow = page.getByRole("row").filter({
+    has: page.getByRole("rowheader", { name: "Directory OAuth", exact: true }),
+  });
+  await directoryRow.getByRole("cell", { name: "Engineering directory", exact: true }).waitFor();
+  await directoryRow.getByRole("button", { name: "Edit Directory OAuth" }).click();
   const edit = dialog(page, "Edit connection template");
   assert.equal(await edit.getByLabel("OAuth client", { exact: true }).inputValue(), client.id);
   await edit
@@ -463,7 +471,10 @@ test("deleting a template and client targets the selected availability and prese
   }
   const clientId = await register(google.id);
   await register(local.data.id);
-  const { page } = await newPage(t, fixture, { browser });
+  const { page } = await newPage(t, fixture, {
+    browser,
+    context: { viewport: { width: 390, height: 844 } },
+  });
   await login(page, fixture, secretsUrl(namespace));
   const sections = page.getByRole("navigation", { name: "Credential sections" });
   await sections.getByRole("link", { name: "OAuth clients", exact: true }).click();
