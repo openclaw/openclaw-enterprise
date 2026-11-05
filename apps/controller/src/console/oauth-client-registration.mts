@@ -57,7 +57,7 @@ export function openOAuthClientRegistration(
     templates: readonly ConnectionTemplate[];
     selected?: ConnectionTemplate;
     redirectUri?: string | undefined;
-    createTemplate?: (google: boolean, onSaved: (template: ConnectionTemplate) => void) => void;
+    createTemplate?: (onSaved: (template: ConnectionTemplate) => void) => void;
     onClose: (created?: PublicClient) => void;
   },
 ) {
@@ -72,23 +72,35 @@ export function openOAuthClientRegistration(
     required: true,
     disabled: !options.createTemplate,
   });
+  const choiceField = field({ label: "Connection template", control: choice });
+  const empty = element("p", { className: "hint" }, "No connection templates yet.");
+  const createTemplate = options.createTemplate
+    ? button(
+        "Create connection template",
+        () =>
+          options.createTemplate?.((saved) => {
+            if (!dialog.open || !context.isCurrent()) {
+              return;
+            }
+            byId.set(saved.id, saved);
+            showChoices();
+            select(saved);
+            name.focus();
+          }),
+        { size: "sm" },
+      )
+    : undefined;
   function showChoices() {
+    const hasTemplates = byId.size > 0;
+    choiceField.hidden = !hasTemplates;
+    empty.hidden = hasTemplates;
+    register.hidden = !hasTemplates;
     choice.replaceChildren(
       element("option", { value: "", disabled: true }, "Choose a connection template"),
       ...Array.from(byId.values(), (t) =>
         option(t.id, `${t.displayName} · ${availabilityLabel(t, options.namespaces)}`),
       ),
     );
-    if (options.createTemplate) {
-      choice.append(
-        element(
-          "optgroup",
-          { label: "Create a template" },
-          option("create-google", "Set up Google OAuth…"),
-          option("create-template", "Create connection template…"),
-        ),
-      );
-    }
   }
   const availability = element("input", { readOnly: true });
   const name = element("input", { required: true });
@@ -123,7 +135,9 @@ export function openOAuthClientRegistration(
   const fields = element(
     "fieldset",
     { className: "connection-template-fields" },
-    field({ label: "Connection template", control: choice }),
+    empty,
+    choiceField,
+    createTemplate ?? null,
     details,
   );
   const cancel = button("Cancel", () => dialog.close());
@@ -175,26 +189,7 @@ export function openOAuthClientRegistration(
         ? "This template’s authorization server advertises no supported client authentication method."
         : "";
   }
-  choice.addEventListener("change", () => {
-    if (
-      (choice.value === "create-template" || choice.value === "create-google") &&
-      options.createTemplate
-    ) {
-      const google = choice.value === "create-google";
-      choice.value = selected?.id ?? "";
-      options.createTemplate(google, (saved) => {
-        if (!dialog.open || !context.isCurrent()) {
-          return;
-        }
-        byId.set(saved.id, saved);
-        showChoices();
-        select(saved);
-        name.focus();
-      });
-    } else {
-      select(byId.get(choice.value));
-    }
-  });
+  choice.addEventListener("change", () => select(byId.get(choice.value)));
   async function submit() {
     const template = selected;
     if (
@@ -281,6 +276,10 @@ export function openOAuthClientRegistration(
   showChoices();
   select(options.selected);
   dialog.showModal();
-  (options.selected ? name : choice).focus();
+  if (byId.size) {
+    (options.selected ? name : choice).focus();
+  } else {
+    createTemplate?.focus();
+  }
   return () => dialog.close();
 }

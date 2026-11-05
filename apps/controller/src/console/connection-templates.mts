@@ -192,7 +192,6 @@ export function openConnectionTemplateEditor(
 ) {
   const { parent, namespaces, currentNamespace, clients, template, preset } = options;
   const version = template?.current;
-  const initialProvider = version ?? preset;
   const dialog = element("dialog", {
     className: "dialog dialog--framed connection-template-dialog",
     "aria-label": template ? "Edit connection template" : "Create connection template",
@@ -200,7 +199,7 @@ export function openConnectionTemplateEditor(
   const name = element("input", {
     required: true,
     maxLength: 200,
-    value: template?.displayName ?? preset?.displayName ?? "",
+    value: template?.displayName ?? "",
   });
   const scope = availabilitySelect(namespaces, currentNamespace, template);
   const mode = element(
@@ -213,21 +212,21 @@ export function openConnectionTemplateEditor(
   const issuer = element("input", {
     type: "url",
     required: true,
-    value: initialProvider?.issuer ?? "",
+    value: version?.issuer ?? "",
   });
   const authorizationUrl = element("input", {
     type: "url",
     required: true,
-    value: initialProvider?.authorizationUrl ?? "",
+    value: version?.authorizationUrl ?? "",
   });
   const tokenUrl = element("input", {
     type: "url",
     required: true,
-    value: initialProvider?.tokenUrl ?? "",
+    value: version?.tokenUrl ?? "",
   });
   const revocationUrl = element("input", {
     type: "url",
-    value: initialProvider?.revocationUrl ?? "",
+    value: version?.revocationUrl ?? "",
   });
   const exactRecipient = version && "host" in version.recipient ? version.recipient : undefined;
   const recipient = element(
@@ -237,7 +236,7 @@ export function openConnectionTemplateEditor(
     option("endpoint", "Specific endpoint"),
   );
   recipient.value =
-    preset || (version && "kind" in version.recipient && version.recipient.kind === "google_apis")
+    version && "kind" in version.recipient && version.recipient.kind === "google_apis"
       ? "google_apis"
       : "endpoint";
   const recipientChoice = field({ label: "API destination", control: recipient });
@@ -279,10 +278,15 @@ export function openConnectionTemplateEditor(
     control.addEventListener("input", showRecipient);
   }
   showRecipient();
+  const googleStarter =
+    !template && !preset
+      ? button("Use Google OAuth settings", applyGoogleSettings, { size: "sm" })
+      : undefined;
   const manual = element(
     "fieldset",
     { className: "connection-template-fields" },
     element("legend", {}, "OAuth provider and allowed destination"),
+    googleStarter ?? null,
     field({ label: "Issuer URL", control: issuer }),
     field({ label: "Authorization URL", control: authorizationUrl }),
     field({ label: "Token URL", control: tokenUrl }),
@@ -331,9 +335,28 @@ export function openConnectionTemplateEditor(
   scopeLimit.addEventListener("change", showScopeLimit);
   showScopeLimit();
   const parameters = element("textarea", { rows: 2 });
-  parameters.value = Object.entries(initialProvider?.authorizationParameters ?? {})
-    .map(([key, value]) => `${key}=${value}`)
-    .join("\n");
+  function formatParameters(values: Readonly<Record<string, string>>) {
+    return Object.entries(values)
+      .map(([key, value]) => `${key}=${value}`)
+      .join("\n");
+  }
+  parameters.value = formatParameters(version?.authorizationParameters ?? {});
+  function applyGoogleSettings() {
+    if (!name.value.trim()) {
+      name.value = googleOAuthProvider.displayName;
+    }
+    issuer.value = googleOAuthProvider.issuer;
+    authorizationUrl.value = googleOAuthProvider.authorizationUrl;
+    tokenUrl.value = googleOAuthProvider.tokenUrl;
+    revocationUrl.value = googleOAuthProvider.revocationUrl;
+    recipient.value = "google_apis";
+    parameters.value = formatParameters(googleOAuthProvider.authorizationParameters);
+    showRecipient();
+    clientChoices();
+    if (googleStarter) {
+      googleStarter.hidden = true;
+    }
+  }
   const client = element("select");
   const status = element("p", { className: "hint", role: "status" });
   let edited = false;
@@ -630,6 +653,23 @@ export function openConnectionTemplateEditor(
   mode.addEventListener("change", showMode);
   for (const control of [issuer, tokenUrl, revocationUrl, scope]) {
     control.addEventListener("input", () => clientChoices());
+  }
+  if (googleStarter) {
+    for (const control of [issuer, authorizationUrl, tokenUrl, revocationUrl, host, parameters]) {
+      control.addEventListener("input", () => {
+        googleStarter.hidden = [
+          issuer,
+          authorizationUrl,
+          tokenUrl,
+          revocationUrl,
+          host,
+          parameters,
+        ].some((input) => input.value.trim());
+      });
+    }
+  }
+  if (preset) {
+    applyGoogleSettings();
   }
   showMode();
   clientChoices(version?.oauthClientId);

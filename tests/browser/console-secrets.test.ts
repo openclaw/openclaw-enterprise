@@ -216,13 +216,12 @@ test("registering a provider-issued client uses a saved or newly created templat
   await sections.getByRole("link", { name: "OAuth clients", exact: true }).click();
   await page.getByRole("button", { name: "Register OAuth client" }).click();
   const form = dialog(page, "Register OAuth client");
-  assert.equal(
-    await form.getByRole("button", { name: "Register OAuth client" }).isDisabled(),
-    true,
-  );
+  await form.getByText("No connection templates yet.", { exact: true }).waitFor();
+  assert.equal(await form.getByLabel("Connection template", { exact: true }).isVisible(), false);
   const templateChoice = form.getByLabel("Connection template", { exact: true });
-  await templateChoice.selectOption({ label: "Set up Google OAuth…" });
+  await form.getByRole("button", { name: "Create connection template", exact: true }).click();
   const editor = dialog(page, "Create connection template");
+  await editor.getByRole("button", { name: "Use Google OAuth settings" }).click();
   assert.equal(await editor.getByLabel("Template availability").inputValue(), namespace.id);
   assert.equal(await editor.getByLabel("API destination").inputValue(), "google_apis");
   assert.equal(await editor.getByLabel("Destination host").isVisible(), false);
@@ -252,7 +251,13 @@ test("registering a provider-issued client uses a saved or newly created templat
   await form.getByLabel("Client ID", { exact: true }).fill("engineering-google");
   await form.getByLabel("Client secret", { exact: true }).fill(privateValue);
   // Opening and canceling another template editor preserves credentials for the original selection.
-  await templateChoice.selectOption({ label: "Create connection template…" });
+  assert.deepEqual(
+    await templateChoice
+      .locator("option")
+      .evaluateAll((options) => options.map((option) => option.getAttribute("value"))),
+    ["", template.id],
+  );
+  await form.getByRole("button", { name: "Create connection template", exact: true }).click();
   await editor.getByRole("button", { name: "Cancel" }).click();
   assert.equal(await templateChoice.inputValue(), template.id);
   assert.equal(await form.getByLabel("OAuth client name").inputValue(), "Engineering Google");
@@ -283,7 +288,8 @@ test("registering a provider-issued client uses a saved or newly created templat
   await form.getByLabel("Client authentication").selectOption("client_secret_basic");
   await form.getByLabel("Client secret", { exact: true }).fill(privateValue);
   // Choosing a new, wider template must not carry confidential registration details across scopes.
-  await templateChoice.selectOption({ label: "Set up Google OAuth…" });
+  await form.getByRole("button", { name: "Create connection template", exact: true }).click();
+  await editor.getByRole("button", { name: "Use Google OAuth settings" }).click();
   await editor.getByLabel("Template name").fill("Installation Google");
   await editor.getByLabel("Template availability").selectOption({ label: "Installation-wide" });
   await editor.getByLabel("OAuth scope limit").selectOption({ label: "No template limit" });
@@ -329,8 +335,11 @@ test("a lost template creation response closes registration and reloads the comm
   await open.click();
   const registration = dialog(page, "Register OAuth client");
   const choice = registration.getByLabel("Connection template", { exact: true });
-  await choice.selectOption({ label: "Set up Google OAuth…" });
+  await registration
+    .getByRole("button", { name: "Create connection template", exact: true })
+    .click();
   const editor = dialog(page, "Create connection template");
+  await editor.getByRole("button", { name: "Use Google OAuth settings" }).click();
   await editor.getByLabel("OAuth scope limit").selectOption({ label: "No template limit" });
   // The real API commits the template. Only the browser response is lost.
   await page.route(fixture.origin + "/connection-templates", async (route) => {
