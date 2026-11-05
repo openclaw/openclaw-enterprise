@@ -56,7 +56,7 @@ user can select individual scopes. OCC enforces any list and required MCP
 challenge scopes. With a fixed manual list, OCC requests those configured
 scopes. Without a limit or requested scopes, it omits `scope` so the provider
 can apply its defaults. Discovery alone requests no optional scopes.
-Changed endpoints require a new version and consent. [MCP authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#client-registration-approaches) · [TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk/blob/v2.3.1/packages/client/src/client/auth.ts)
+Changing the MCP server URL, protected resource or issuer requires new consent. [MCP authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#client-registration-approaches) · [TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk/blob/v2.3.1/packages/client/src/client/auth.ts)
 
 At Agent setup, Console uses `tools/list` to show available tools. An authorized
 caller selects tools by exact name for that Agent and server. By default the
@@ -188,9 +188,13 @@ administrators, who hold every action through the built-in administrator role.
 
 Apply [RFC-0023 admission and sender contracts](../0023-egress-proxy-credential-lifecycle/contracts.md)
 within the Installation’s egress ceiling. A protected request must match the
-host, port and path of one approved destination. The Plugin Driver selects
-routes both the saved account and the release allow. Manual destination rows
-constrain credential delivery. MCP discovery supplies the OAuth resource.
+host, port and path of one approved destination. For a manual connection, OCC
+reads the current rows from the same manual template and checks its issuer
+against the grant. An Installation administrator can authorize a new host for
+an existing account. OCC reconciles affected senders, including those on
+running revisions, and retries failed updates. The Plugin Driver enforces the
+selected release’s credential policy. MCP connections require the original
+issuer, server URL and protected resource.
 
 Remote MCP plugins share one credential policy helper. It matches the approved
 server URL and resource to the plugin release. OpenShell binds the bearer to
@@ -210,24 +214,25 @@ argument restrictions before forwarding the call.
 If the selected route cannot enforce a promised restriction, refuse deployment.
 
 For Google, the Credential Gateway prepares one presentation from the intersection
-of the saved destinations, reviewed operations and granted scopes. The sender
+of the current manual destinations, reviewed operations and granted scopes. The sender
 checks each credentialed request against those operations.
 
 ## Failure and recovery
 
-| Condition                                                   | Result                                           | Recovery                                       |
-| ----------------------------------------------------------- | ------------------------------------------------ | ---------------------------------------------- |
-| Consent denied, popup closed, or session expired            | Pending source deleted                           | Connect again                                  |
-| `state` mismatch, reuse, or another user's session          | `400`; no exchange                               | The owner connects again                       |
-| Exchange refused or no refresh token returned               | Source deleted; `fix_configuration`              | Administrator corrects the connection template |
-| Timeout after the exchange started                          | Source stays `registering`                       | Delete and reconnect; OCC never replays a code |
-| Issuer revokes the grant                                    | `status.refresh.recoveryAction: reauthorize`     | **Reconnect** and redeploy                     |
-| Driver unavailable before source creation                   | `503`; no source created                         | Retry                                          |
-| OIDC metadata mismatch or unreachable provider              | Version rejected with `400`                      | Administrator corrects `issuer` or URLs        |
-| ID token from a wrong issuer, untrusted key, or wrong nonce | Source deleted; `fix_configuration`              | Administrator checks the provider; reconnect   |
-| Connection template edited after consent                    | Source unchanged; **Reconnect to apply changes** | Owner reconnects; administrator can disconnect |
-| Withdrawal pending or failed after detach or disconnect     | Affected attachments deny further use            | Retry withdrawal, or stop the affected Agent   |
-| Provider rejects the current client secret                  | Client authentication fails                      | Admin corrects secret, then refresh retries    |
+| Condition                                                   | Result                                         | Recovery                                       |
+| ----------------------------------------------------------- | ---------------------------------------------- | ---------------------------------------------- |
+| Consent denied, popup closed, or session expired            | Pending source deleted                         | Connect again                                  |
+| `state` mismatch, reuse, or another user's session          | `400`; no exchange                             | The owner connects again                       |
+| Exchange refused or no refresh token returned               | Source deleted; `fix_configuration`            | Administrator corrects the connection template |
+| Timeout after the exchange started                          | Source stays `registering`                     | Delete and reconnect; OCC never replays a code |
+| Issuer revokes the grant                                    | `status.refresh.recoveryAction: reauthorize`   | **Reconnect** and redeploy                     |
+| Driver unavailable before source creation                   | `503`; no source created                       | Retry                                          |
+| OIDC metadata mismatch or unreachable provider              | Version rejected with `400`                    | Administrator corrects `issuer` or URLs        |
+| ID token from a wrong issuer, untrusted key, or wrong nonce | Source deleted; `fix_configuration`            | Administrator checks the provider; reconnect   |
+| Manual destination rows edited                              | Existing senders reconcile the current rows    | Retry a failed reconciliation                  |
+| OAuth identity or MCP target changed                        | Original grant cannot authorize the new target | Owner reconnects for the new identity          |
+| Withdrawal pending or failed after detach or disconnect     | Affected attachments deny further use          | Retry withdrawal, or stop the affected Agent   |
+| Provider rejects the current client secret                  | Client authentication fails                    | Admin corrects secret, then refresh retries    |
 
 The operator guide documents provider rules. Google requires verification for
 public applications requesting `gmail.readonly`, and External Testing applications
@@ -246,6 +251,11 @@ issue seven-day refresh tokens.
   requests, and neither action repeats consent. Disconnect the account and
   verify B also loses access. Verify no codes or tokens appear in responses,
   logs, or audit.
+- **Manual destination changes.** Replace a host on a template used by a running
+  Agent. After reconciliation, verify the original account can send an allowed
+  request to the new host and the old host receives no bearer. Select a different
+  default client and verify the account still refreshes with its original
+  registration. Change the issuer and verify that delivery stops.
 - **Refresh ownership.** For both configured OAuth and MCP, observe the Token
   Service refresh the access token with the issuer in the background. Send a
   worker request with the same placeholder and verify that OpenShell presents
