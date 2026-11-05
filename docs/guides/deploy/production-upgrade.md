@@ -138,7 +138,10 @@ chmod 600 /secure/occ/candidate-values.yaml /secure/occ/candidate-installation.y
 These copies may change the
 [Slack directory proxy](../integrations/slack.md#configure-both-slack-proxies)
 and select the [curated Codex PluginDriver](../../reference/drivers/plugin-bundled.md#selection-and-catalogs).
-Other configuration changes are not supported by this upgrade command.
+An explicit candidate may also wrap an existing single `drivers.plugin`
+registration in a one-element array, preserving its `id` and `configuration`.
+The helper does not convert the baseline automatically. Other configuration
+changes are not supported by this upgrade command.
 Review compatibility with the selected images, Agent drafts and credentials
 before the maintenance window; the startup preflight below does not prove
 external access.
@@ -171,7 +174,7 @@ and available at the same paths for recovery.
 ### Apply other Installation changes
 
 An upgrade keeps your Installation YAML. A candidate that changes any setting
-other than the Plugin Driver selection stops the helper with `candidate
+other than these Plugin Driver changes stops the helper with `candidate
 Installation changes a protected setting`. Apply other changes, such as newly
 recommended resource values, separately with
 [apply other Installation changes](production-installation-changes.md).
