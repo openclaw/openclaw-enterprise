@@ -521,6 +521,127 @@ function installOpenClawPlugins(runtime, failures = []) {
 // "12abc" as NaN, "" as 0 and 3e9 as a timer that fires after 1 ms (finding 2312); the install
 // deadline shares the bound. Whole-line comments here cost nothing at runtime: nodeProgramArguments
 // drops them before the dedicated Harness command is measured against the exec string budget.
+const OPENCLAW_PLUGIN_CONFIGURATION_HELPERS = String.raw`// The Gateway serves browsers through an OCC-authenticated public origin only
+// when native admin routes that exact origin to it with trusted-proxy auth.
+function gatewayServesPublicOrigin(config) {
+  const gateway = config?.gateway;
+  const raw = gateway?.publicOrigin;
+  return (
+    typeof raw === "string" &&
+    /^https:\/\/[a-z0-9.-]+(:[0-9]{1,5})?$/.test(raw) &&
+    gateway.auth?.mode === "trusted-proxy" &&
+    Array.isArray(gateway.controlUi?.allowedOrigins) &&
+    gateway.controlUi.allowedOrigins.includes(raw)
+  );
+}
+
+function conflictingApproverList(configured, managedList) {
+  return isPlainObject(configured) && Object.hasOwn(configured, "approvers") &&
+    managedList !== undefined &&
+    (!Array.isArray(configured.approvers) ||
+      !pluginDeepEqual(
+        configured.approvers.map((id) => typeof id === "string" ? id.toLowerCase() : id).sort(),
+        managedList.map((id) => id.toLowerCase()).sort(),
+      ));
+}
+
+function assertNoOpenClawPluginConfigConflict(base, overlay, options = {}) {
+  const managedApprovers = objectAtPath(overlay, ["approvals", "plugin", "slack"]);
+  const configuredApprovers = objectAtPath(base, ["approvals", "plugin", "slack"]);
+  if (managedApprovers !== undefined && configuredApprovers !== undefined) {
+    // A native child list must not bypass an inherited Agent or plugin approver list.
+    const managedDefault = managedApprovers.approvers;
+    const configuredPlugins = isPlainObject(configuredApprovers.plugins)
+      ? Object.entries(configuredApprovers.plugins)
+      : [];
+    const conflictingPlugin = configuredPlugins.some(([pluginId, configuredPlugin]) => {
+      const managedPlugin = isPlainObject(managedApprovers.plugins)
+        ? managedApprovers.plugins[pluginId]
+        : undefined;
+      const pluginList = managedPlugin?.approvers ?? managedDefault;
+      if (conflictingApproverList(configuredPlugin, pluginList)) return true;
+      const configuredTools = isPlainObject(configuredPlugin?.tools)
+        ? Object.entries(configuredPlugin.tools)
+        : [];
+      return configuredTools.some(([toolId, configuredTool]) => {
+        const managedTool = isPlainObject(managedPlugin?.tools)
+          ? managedPlugin.tools[toolId]
+          : undefined;
+        return conflictingApproverList(configuredTool, managedTool?.approvers ?? pluginList);
+      });
+    });
+    if (conflictingApproverList(configuredApprovers, managedDefault) || conflictingPlugin) {
+      throw new Error("OpenClaw plugin approval configuration conflicts with managed Agent approvers.");
+    }
+  }
+  const baseEntries = objectAtPath(base, ["plugins", "entries"]);
+  const overlayEntries = objectAtPath(overlay, ["plugins", "entries"]);
+  if (overlayEntries === undefined) return;
+  const policyIds = (value) => Array.isArray(value)
+    ? value.map((id) => id.trim().toLowerCase()).filter(Boolean)
+    : [];
+  const allow = policyIds(base?.plugins?.allow);
+  const deny = policyIds(base?.plugins?.deny);
+  for (const pluginId of Object.keys(overlayEntries)) {
+    if (overlayEntries[pluginId].enabled === true) {
+      let conflict;
+      if (base?.plugins?.enabled === false) conflict = "plugins.enabled is false";
+      else if (deny.includes(pluginId)) conflict = "plugins.deny includes the plugin";
+      else if (allow.length > 0 && !allow.includes(pluginId)) conflict = "plugins.allow excludes the plugin";
+      if (conflict !== undefined) {
+        throw new Error("OpenClaw plugin configuration conflicts with managed plugin selection " + pluginId + ": " + conflict + ". Update Configuration or the Agent plugin selection.");
+      }
+    }
+    if (pluginId === "codex") continue;
+    if (
+      baseEntries?.[pluginId] !== undefined &&
+      JSON.stringify(baseEntries[pluginId]) !== JSON.stringify(overlayEntries[pluginId])
+    ) {
+      if (
+        options.allowManagedOpenClawPluginReplacement === true &&
+        isManagedOpenClawPluginEntry(baseEntries[pluginId], pluginId) &&
+        isManagedOpenClawPluginEntry(overlayEntries[pluginId], pluginId)
+      ) {
+        continue;
+      }
+      throw new Error("OpenClaw plugin configuration conflicts with managed plugin selections.");
+    }
+  }
+  const overlayBridge = objectAtPath(overlay, ["plugins", "entries", "codex", "config", "codexPlugins"]);
+  if (overlayBridge === undefined) return;
+  const baseBridge = objectAtPath(base, ["plugins", "entries", "codex", "config", "codexPlugins"]);
+  if (baseBridge === undefined) return;
+  if (JSON.stringify(baseBridge) !== JSON.stringify(overlayBridge)) {
+    throw new Error("OpenClaw Codex bridge configuration conflicts with managed Codex plugin selections.");
+  }
+}
+
+function mergeOpenClawPluginConfiguration(base, overlay, options = {}) {
+  assertNoOpenClawPluginConfigConflict(base, overlay, options);
+  const next = mergeConfig(base, overlay);
+  for (const key of ["allow", "alsoAllow", "deny"]) {
+    const baseAllow = Array.isArray(base?.tools?.[key]) ? base.tools[key] : [];
+    const overlayAllow = Array.isArray(overlay?.tools?.[key]) ? overlay.tools[key] : [];
+    if (overlayAllow.length === 0) continue;
+    next.tools[key] = [
+      ...baseAllow,
+      ...overlayAllow.filter((tool) => !baseAllow.includes(tool)),
+    ];
+  }
+  const overlayEntries = objectAtPath(overlay, ["plugins", "entries"]);
+  if (overlayEntries !== undefined) {
+    const disabledManagedTools = Object.entries(overlayEntries)
+      .filter(([pluginId, entry]) => pluginId !== "codex" && isManagedOpenClawPluginEntry(entry, pluginId) && entry.enabled === false)
+      .map(([pluginId]) => pluginId);
+    if (disabledManagedTools.length > 0 && Array.isArray(next.tools?.alsoAllow)) {
+      next.tools.alsoAllow = next.tools.alsoAllow.filter((tool) => !disabledManagedTools.includes(tool));
+    }
+  }
+  return next;
+}
+
+`;
+
 function pluginRuntimeHelpers(includeOpenClawInstaller: boolean): string {
   return String.raw`
 const pluginRuntimeTranslator = (${PLUGIN_RUNTIME_TRANSLATOR_SOURCE})();
@@ -1217,126 +1338,7 @@ function isManagedOpenClawPluginEntry(value, pluginId) {
   );
 }
 
-// The Gateway serves browsers through an OCC-authenticated public origin only
-// when native admin routes that exact origin to it with trusted-proxy auth.
-function gatewayServesPublicOrigin(config) {
-  const gateway = config?.gateway;
-  const raw = gateway?.publicOrigin;
-  return (
-    typeof raw === "string" &&
-    /^https:\/\/[a-z0-9.-]+(:[0-9]{1,5})?$/.test(raw) &&
-    gateway.auth?.mode === "trusted-proxy" &&
-    Array.isArray(gateway.controlUi?.allowedOrigins) &&
-    gateway.controlUi.allowedOrigins.includes(raw)
-  );
-}
-
-function conflictingApproverList(configured, managedList) {
-  return isPlainObject(configured) && Object.hasOwn(configured, "approvers") &&
-    managedList !== undefined &&
-    (!Array.isArray(configured.approvers) ||
-      !pluginDeepEqual(
-        configured.approvers.map((id) => typeof id === "string" ? id.toLowerCase() : id).sort(),
-        managedList.map((id) => id.toLowerCase()).sort(),
-      ));
-}
-
-function assertNoOpenClawPluginConfigConflict(base, overlay, options = {}) {
-  const managedApprovers = objectAtPath(overlay, ["approvals", "plugin", "slack"]);
-  const configuredApprovers = objectAtPath(base, ["approvals", "plugin", "slack"]);
-  if (managedApprovers !== undefined && configuredApprovers !== undefined) {
-    // A native child list must not bypass an inherited Agent or plugin approver list.
-    const managedDefault = managedApprovers.approvers;
-    const configuredPlugins = isPlainObject(configuredApprovers.plugins)
-      ? Object.entries(configuredApprovers.plugins)
-      : [];
-    const conflictingPlugin = configuredPlugins.some(([pluginId, configuredPlugin]) => {
-      const managedPlugin = isPlainObject(managedApprovers.plugins)
-        ? managedApprovers.plugins[pluginId]
-        : undefined;
-      const pluginList = managedPlugin?.approvers ?? managedDefault;
-      if (conflictingApproverList(configuredPlugin, pluginList)) return true;
-      const configuredTools = isPlainObject(configuredPlugin?.tools)
-        ? Object.entries(configuredPlugin.tools)
-        : [];
-      return configuredTools.some(([toolId, configuredTool]) => {
-        const managedTool = isPlainObject(managedPlugin?.tools)
-          ? managedPlugin.tools[toolId]
-          : undefined;
-        return conflictingApproverList(configuredTool, managedTool?.approvers ?? pluginList);
-      });
-    });
-    if (conflictingApproverList(configuredApprovers, managedDefault) || conflictingPlugin) {
-      throw new Error("OpenClaw plugin approval configuration conflicts with managed Agent approvers.");
-    }
-  }
-  const baseEntries = objectAtPath(base, ["plugins", "entries"]);
-  const overlayEntries = objectAtPath(overlay, ["plugins", "entries"]);
-  if (overlayEntries === undefined) return;
-  const policyIds = (value) => Array.isArray(value)
-    ? value.map((id) => id.trim().toLowerCase()).filter(Boolean)
-    : [];
-  const allow = policyIds(base?.plugins?.allow);
-  const deny = policyIds(base?.plugins?.deny);
-  for (const pluginId of Object.keys(overlayEntries)) {
-    if (overlayEntries[pluginId].enabled === true) {
-      let conflict;
-      if (base?.plugins?.enabled === false) conflict = "plugins.enabled is false";
-      else if (deny.includes(pluginId)) conflict = "plugins.deny includes the plugin";
-      else if (allow.length > 0 && !allow.includes(pluginId)) conflict = "plugins.allow excludes the plugin";
-      if (conflict !== undefined) {
-        throw new Error("OpenClaw plugin configuration conflicts with managed plugin selection " + pluginId + ": " + conflict + ". Update Configuration or the Agent plugin selection.");
-      }
-    }
-    if (pluginId === "codex") continue;
-    if (
-      baseEntries?.[pluginId] !== undefined &&
-      JSON.stringify(baseEntries[pluginId]) !== JSON.stringify(overlayEntries[pluginId])
-    ) {
-      if (
-        options.allowManagedOpenClawPluginReplacement === true &&
-        isManagedOpenClawPluginEntry(baseEntries[pluginId], pluginId) &&
-        isManagedOpenClawPluginEntry(overlayEntries[pluginId], pluginId)
-      ) {
-        continue;
-      }
-      throw new Error("OpenClaw plugin configuration conflicts with managed plugin selections.");
-    }
-  }
-  const overlayBridge = objectAtPath(overlay, ["plugins", "entries", "codex", "config", "codexPlugins"]);
-  if (overlayBridge === undefined) return;
-  const baseBridge = objectAtPath(base, ["plugins", "entries", "codex", "config", "codexPlugins"]);
-  if (baseBridge === undefined) return;
-  if (JSON.stringify(baseBridge) !== JSON.stringify(overlayBridge)) {
-    throw new Error("OpenClaw Codex bridge configuration conflicts with managed Codex plugin selections.");
-  }
-}
-
-function mergeOpenClawPluginConfiguration(base, overlay, options = {}) {
-  assertNoOpenClawPluginConfigConflict(base, overlay, options);
-  const next = mergeConfig(base, overlay);
-  for (const key of ["allow", "alsoAllow", "deny"]) {
-    const baseAllow = Array.isArray(base?.tools?.[key]) ? base.tools[key] : [];
-    const overlayAllow = Array.isArray(overlay?.tools?.[key]) ? overlay.tools[key] : [];
-    if (overlayAllow.length === 0) continue;
-    next.tools[key] = [
-      ...baseAllow,
-      ...overlayAllow.filter((tool) => !baseAllow.includes(tool)),
-    ];
-  }
-  const overlayEntries = objectAtPath(overlay, ["plugins", "entries"]);
-  if (overlayEntries !== undefined) {
-    const disabledManagedTools = Object.entries(overlayEntries)
-      .filter(([pluginId, entry]) => pluginId !== "codex" && isManagedOpenClawPluginEntry(entry, pluginId) && entry.enabled === false)
-      .map(([pluginId]) => pluginId);
-    if (disabledManagedTools.length > 0 && Array.isArray(next.tools?.alsoAllow)) {
-      next.tools.alsoAllow = next.tools.alsoAllow.filter((tool) => !disabledManagedTools.includes(tool));
-    }
-  }
-  return next;
-}
-
-function pluginFailureIds(failures) {
+${includeOpenClawInstaller ? OPENCLAW_PLUGIN_CONFIGURATION_HELPERS : ""}function pluginFailureIds(failures) {
   return new Set((failures ?? []).map((failure) => failure.pluginId));
 }
 
@@ -3291,7 +3293,7 @@ const started = configureGateway(peerStatus);
 const gatewayStateDirectory = process.env.OPENCLAW_STATE_DIR || "/home/node/.openclaw";
 const outdatedDatabases = outdatedOpenClawDatabases(gatewayStateDirectory);
 if (
-  outdatedDatabases.length > 0 &&
+  (outdatedDatabases.length > 0 || openClawMaintenancePending(gatewayStateDirectory)) &&
   !(await migrateOpenClawState(gatewayStateDirectory, outdatedDatabases, process.env))
 ) {
   setInterval(() => {}, 3600000);
@@ -3880,13 +3882,14 @@ function codexReadinessFailure(url, token) {
 }
 `;
 
-// The Codex child uses its own plugin lifecycle; native OpenClaw installation stays
-// in the full helper consumed by Gateway and Docker entrypoints.
+// Nested Codex children use their own plugin lifecycle. Keep standalone commands
+// stable while omitting the unused native installer from the bounded supervisor.
 // Zero provider retry budgets do not disable native connection waiting. Protected
 // launches turn that feature off explicitly in both native CLI invocations.
 function agentRuntimeEntrypoint(
   disableUnboundedConnectionRetries: boolean,
   computeOwned = false,
+  includeOpenClawInstaller = true,
 ): string {
   return String.raw`
 const { createHash } = require("node:crypto");
@@ -3894,7 +3897,7 @@ const { mkdirSync, mkdtempSync, rmSync } = require("node:fs");
 const { spawn, spawnSync } = require("node:child_process");
 const { performance } = require("node:perf_hooks");
 
-${pluginRuntimeHelpers(false)}
+${pluginRuntimeHelpers(includeOpenClawInstaller)}
 ${AUTH_PROBE_FAILURE_HELPER}
 ${CODEX_FAILURE_OUTPUT_CLASS_HELPER}
 ${CODEX_STDERR_FILTER_HELPER}
@@ -4780,7 +4783,7 @@ function workspaceBaselineReport(path) {
 // the Harness unready rather than restarting into another Doctor backup.
 (async () => {
 const outdatedDatabases = outdatedOpenClawDatabases(state);
-if (outdatedDatabases.length > 0 && !(await migrateOpenClawState(state, outdatedDatabases, nodeEnv))) {
+if ((outdatedDatabases.length > 0 || openClawMaintenancePending(state)) && !(await migrateOpenClawState(state, outdatedDatabases, nodeEnv))) {
   holdStartupFailure("state-migration", "UNAVAILABLE");
   return;
 }
@@ -5108,16 +5111,18 @@ for (const slot of [...processes].reverse()) start(slot);
 `;
 }
 
-export const AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(AGENT_RUNTIME_ENTRYPOINT);
+export const AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
+  agentRuntimeEntrypoint(false, false, false),
+);
 export const PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
-  PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
+  agentRuntimeEntrypoint(true, false, false),
 );
 
 export const COMPUTE_AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
-  COMPUTE_AGENT_RUNTIME_ENTRYPOINT,
+  agentRuntimeEntrypoint(false, true, false),
 );
 export const COMPUTE_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
-  COMPUTE_PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
+  agentRuntimeEntrypoint(true, true, false),
 );
 
 export const NATIVE_WORKER_ENTRYPOINT = String.raw`
@@ -5161,7 +5166,7 @@ if (
 // The node state on the Agent's workspace claim outlives runtime image upgrades.
 // Until Doctor has brought it current, readiness does not open it.
 const outdatedNodeDatabases = outdatedOpenClawDatabases(state);
-let nodeStateCurrent = outdatedNodeDatabases.length === 0;
+let nodeStateCurrent = outdatedNodeDatabases.length === 0 && !openClawMaintenancePending(state);
 
 const installs = managedPluginInstallations();
 const boundCredentialEnv = process.env[${JSON.stringify(managedCredentialEnvironment)}];

@@ -200,12 +200,12 @@ Source authorization cannot override routing.
 `pluginRuntimeConfigMapData` in `apps/controller/src/drivers/compute/plugin-runtime.ts`
 writes Codex's provider and optional standalone-search declaration.
 Protected `providerTools: none` still disables search.
-Only Gateway and Docker include native installers
-(`runtime-entrypoints.ts:pluginRuntimeHelpers`).
+Nested Codex omits native helpers (`runtime-entrypoints.ts:pluginRuntimeHelpers`).
+OpenShell compresses preludes with `node-program.ts:prependNodeProgramArguments`.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:writeCodexConfigToml`
-writes the generated file into `CODEX_HOME` before native startup. The capability
-belongs to Codex's user configuration, not a workspace override.
-Login, authentication probes and app-server launch explicitly override native log and metrics exporters.
+writes the generated file into `CODEX_HOME` before native startup. Codex owns this user
+configuration, outside workspace overrides.
+Login, authentication probes and app-server launch override native log and metrics exporters.
 [Runtime logging](../reference/harness-execution.md#runtime-logging) defines the export defaults.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:probeCodexAuthentication`
 uses CLI overrides because the probe ignores user configuration. Account login and
@@ -213,7 +213,7 @@ other Harnesses keep their endpoints; only the Harness holds model credentials.
 
 Kubernetes Compute records admitted inference launch behavior in new protected Codex revisions. The authentication probe and app-server disable unbounded
 native connection retries, avoiding indefinite reconnects. Stored revisions retain
-original commands.
+original retry settings.
 
 For custom endpoints, `gatewayConfigurationDocument` uses
 `apps/controller/src/drivers/compute/codex-model-configuration.ts:codexGatewayModelConfiguration`

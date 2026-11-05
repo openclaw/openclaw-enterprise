@@ -81,8 +81,8 @@ export const OPENCLAW_STATE_DATABASE_SCHEMA_VERSION = 39;
 // "openclaw doctor --fix" first. OpenClaw's own image entrypoint runs that Doctor
 // pass before every Gateway start. The Kubernetes and Docker wrappers replace
 // that entrypoint, so they run the same pass for each state directory they start
-// OpenClaw on, but only when a database needs it: fresh and current state start
-// without Doctor's ~15 s. Doctor must not rewrite the controller-owned
+// OpenClaw on when a database is older or prior maintenance remains pending.
+// Fresh and settled current state skip Doctor. It must not rewrite the controller-owned
 // configuration (OPENCLAW_CONFIG_READONLY), and it never deletes state: it saves
 // a pre-migration copy beside each database and verifies integrity first. The
 // schema versions and Doctor's settled machine result both gate startup. Harmless
@@ -97,6 +97,40 @@ export function openClawStateMigrationHelper(
   retry: string,
 ): string {
   return String.raw`
+// This private presence marker survives a failed or interrupted repair even when
+// Doctor already advanced every schema. Native maintenance still owns its locks.
+function openClawMaintenancePending(stateDirectory) {
+  try {
+    const stat = require("node:fs").lstatSync(require("node:path").join(stateDirectory, ".oce-maintenance-pending"));
+    if (!stat.isFile() || (stat.mode & 0o077) !== 0) throw new Error("Invalid pending maintenance marker");
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+function setOpenClawMaintenancePending(stateDirectory, pending) {
+  const fs = require("node:fs");
+  const marker = require("node:path").join(stateDirectory, ".oce-maintenance-pending");
+  const directory = fs.openSync(stateDirectory, "r");
+  try {
+    if (pending) {
+      const fd = fs.openSync(marker, fs.constants.O_WRONLY | fs.constants.O_CREAT |
+        fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK, 0o600);
+      try {
+        const stat = fs.fstatSync(fd);
+        if (!stat.isFile() || (stat.mode & 0o077) !== 0) throw new Error("Invalid pending maintenance marker");
+        fs.fsyncSync(fd);
+      } finally { fs.closeSync(fd); }
+    } else {
+      fs.unlinkSync(marker);
+    }
+    // Publish presence before Doctor can write, and removal only after it settles.
+    fs.fsyncSync(directory);
+  } finally { fs.closeSync(directory); }
+}
+
 function outdatedOpenClawDatabases(stateDirectory) {
   const { join } = require("node:path");
   const candidates = [
@@ -222,8 +256,13 @@ async function runStateMigrationDoctor(environment) {
     records += 1;
     try { result = JSON.parse(line.slice(prefix.length)); } catch { invalid = true; }
   }
+  const advisory = result?.advisory;
+  const acceptedStatus = result?.status === "ok" || (result?.status === "advisory" &&
+    advisory?.kind === "package-post-install-doctor" && advisory.reason === "deferred-configured-plugin-repair" &&
+    typeof advisory.message === "string" && Array.isArray(advisory.details) && advisory.details.length > 0 &&
+    advisory.details.every((detail) => typeof detail === "string" && detail.trim().length > 0));
   const completed = !doctor.error && !doctor.signal && [0, 86].includes(doctor.status) &&
-    !invalid && records === 1 && result && ["ok", "advisory"].includes(result.status) &&
+    !invalid && records === 1 && acceptedStatus &&
     result.maintenanceRefusal === undefined && result.configWriteRefusal === undefined &&
     (result.failureFacts === undefined || (Array.isArray(result.failureFacts) && result.failureFacts.length === 0));
   const outcome = doctor.error
@@ -242,10 +281,12 @@ async function migrateOpenClawState(stateDirectory, outdated, environment) {
       outdated.map(({ version, current }) => version + " to " + current).join(", ") +
       " with openclaw doctor --fix.",
   );
+  setOpenClawMaintenancePending(stateDirectory, true);
   const doctor = await runStateMigrationDoctor(environment);
   if (doctor.terminating) process.exit(0);
   const remaining = outdatedOpenClawDatabases(stateDirectory);
   if (doctor.completed && remaining.length === 0) {
+    setOpenClawMaintenancePending(stateDirectory, false);
     logStartupPhase("state-migration", startedAt);
     return true;
   }

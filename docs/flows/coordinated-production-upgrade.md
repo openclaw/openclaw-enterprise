@@ -209,17 +209,18 @@ replica counts, and changed Installation checksums. Each component needs
 exactly one named container. A broker-enabled worker may instead be a restartable
 init container; non-restartable or ambiguous placement fails. Authenticated OCC
 access is retried and must return the same Installation ID.
-Versions retain their deploying controller's Pod specification until worker preparation. Repository-bound Agents get maintenance every 30 seconds until their session deadline. Other Agents
-are prepared again only when their deployment was still finishing as the new
-worker took over (the helper checks for unfinished deployments only before a
-runtime release).
-Kubernetes Compute applies the Gateway and, for dedicated Harnesses, Harness
-Deployments as the new controller renders them, with the Installation's current
-images, so a changed Pod template rolls those Pods once on the unchanged runtime
-image. Chat remains unavailable until the new Pods are ready.
-Controller fixes to Gateway and Agent Pods, such as
-[diagnostics](agent-deployment-diagnostics.md) mappings, reach an Agent then or
-at its next deployment.
+Worker preparation re-renders launch requirements from the current controller.
+Repository-bound Agents receive maintenance every 30 seconds until their session
+deadline; other Agents are re-prepared if deployment remains unfinished.
+Kubernetes Compute applies current Gateway and Harness Deployments, rolling
+changed Pod templates even when runtime images are unchanged. Chat waits for readiness.
+OpenShell instead requires exact existing Sandbox content
+(`apps/controller/src/drivers/sandbox/openshell.ts:verifyExistingSandbox`).
+Controller changes to its generated command require a fresh Agent revision;
+controller-only reuse cannot adopt the changed command. See the
+[upgrade guide](../guides/deploy/production-upgrade.md#prepare-the-release).
+Controller fixes to Pod configuration and [diagnostics](agent-deployment-diagnostics.md)
+reach other Agents on their next preparation or deployment.
 
 For a repository-enabled release, it also verifies the ready API and worker
 Pods, their owning ReplicaSets, node architecture, and runtime controller and
@@ -244,7 +245,8 @@ The script verifies authorized deployment status, version, and ready Pods on the
 candidate digest. Before OpenClaw starts, `openClawStateMigrationHelper` in
 `runtime-startup.ts` runs `openclaw doctor --fix --non-interactive` for older schemas.
 Current schemas and Doctor's settled result gate startup: maintenance or cleanup
-refusal holds `state-migration` unready; ordinary warnings do not. The same step
+refusal holds `state-migration` unready; ordinary warnings do not. A private pending
+marker forces interrupted or refused maintenance to retry after restart, even with current schemas. The same step
 runs before Harness native setup or native-worker connection. Embedded execution
 requires one runtime container; dedicated execution requires Gateway and Agent containers.
 Each replacement gateway runs read-only

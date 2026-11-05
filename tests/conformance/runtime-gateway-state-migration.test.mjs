@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
 import { writeSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { lstat, mkdir, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -208,7 +208,7 @@ function migrate(directory, doctor = () => assert.fail("Doctor must not run")) {
   // The same guard the Gateway program applies before its spawn.
   const result = vm.runInNewContext(
     `${helper}\nconst outdated = outdatedOpenClawDatabases(process.env.OPENCLAW_STATE_DIR);\n` +
-      "outdated.length === 0 ? Promise.resolve(true)\n" +
+      "outdated.length === 0 && !openClawMaintenancePending(process.env.OPENCLAW_STATE_DIR) ? Promise.resolve(true)\n" +
       "  : migrateOpenClawState(process.env.OPENCLAW_STATE_DIR, outdated, process.env);",
     context,
   );
@@ -267,7 +267,7 @@ test("Gateway state migration runs Doctor for an older shared state database bes
     { main: CURRENT },
     { shared: STATE_CURRENT - 2, marker: STATE_CURRENT - 1 },
   );
-  const outcome = await migrate(directory, (child) => child.emit("close", 0, null));
+  const outcome = await migrate(directory, (child) => finishDoctor(child, { status: "ok" }));
   assert.equal(outcome.started, false);
   assert.equal(outcome.spawned.length, 1);
   assert.match(
@@ -323,6 +323,16 @@ test("Gateway state migration refuses incomplete maintenance even after schemas 
   const records = [
     ["missing result", undefined],
     [
+      "malformed advisory",
+      {
+        status: "advisory",
+        advisory: {
+          kind: "package-post-install-doctor",
+          reason: "deferred-configured-plugin-repair",
+        },
+      },
+    ],
+    [
       "maintenance refusal",
       { status: "ok", maintenanceRefusal: { kind: "deferred", reason: "coordinator-contention" } },
     ],
@@ -360,7 +370,7 @@ test("Gateway state migration refuses incomplete maintenance even after schemas 
 test("Gateway state migration names the failure when Doctor leaves an older agent database", async (t) => {
   const directory = await stateDirectory(t, { main: CURRENT - 1 });
   // Doctor can hold back a store it cannot verify and still exit 0.
-  const outcome = await migrate(directory, (child) => child.emit("close", 0, null));
+  const outcome = await migrate(directory, (child) => finishDoctor(child, { status: "ok" }));
   assert.equal(outcome.started, false);
   assert.equal(outcome.spawned.length, 1);
   assert.deepEqual(outcome.phases, [{ phase: "state-migration", outcome: "failed" }]);
@@ -416,6 +426,7 @@ test("Gateway state migration stops Doctor with the signal it got and exits", as
     const directory = await stateDirectory(t, { main: CURRENT - 1 });
     const killed = [];
     const outcome = await migrate(directory, (child, { listeners }) => {
+      setVersion(databasePath(directory, "main"), CURRENT);
       child.on("killed", (received) => {
         killed.push(received);
         child.emit("close", null, received);
@@ -428,6 +439,10 @@ test("Gateway state migration stops Doctor with the signal it got and exits", as
     assert.deepEqual(outcome.exits, [0]);
     assert.deepEqual(outcome.failures, []);
     assert.deepEqual(outcome.listeners, { SIGTERM: [], SIGINT: [] });
+    // Stop after schema publication still requires a completed repair on restart.
+    const restarted = await migrate(directory, (child) => finishDoctor(child));
+    assert.equal(restarted.spawned.length, 1);
+    assert.equal(restarted.started, true);
   }
 });
 
@@ -531,6 +546,13 @@ test("Docker development Gateway starts current state without Doctor", async (t)
   assert.deepEqual(outcome.exits, []);
 });
 
+test("Docker development Gateway refuses an unreadable pending-maintenance marker before native startup", async (t) => {
+  const directory = await stateDirectory(t, { main: CURRENT });
+  // A non-file at the reserved path cannot be treated as absent or silently removed.
+  await mkdir(join(directory, ".oce-maintenance-pending"));
+  await assert.rejects(runDockerGateway(directory), /Invalid pending maintenance marker/);
+});
+
 test("Docker development Gateway migrates an older agent database before starting OpenClaw", async (t) => {
   const directory = await stateDirectory(t, { main: CURRENT - 1 });
   const outcome = await runDockerGateway(directory, (child) => {
@@ -540,6 +562,8 @@ test("Docker development Gateway migrates an older agent database before startin
       advisory: {
         kind: "package-post-install-doctor",
         reason: "deferred-configured-plugin-repair",
+        message: "Deferred configured plugin repair",
+        details: ["A configured plugin needs repair after verified installation."],
       },
     });
   });
@@ -569,7 +593,9 @@ test("Docker development Gateway migrates an older agent database before startin
 
 test("Docker development Gateway exits without starting OpenClaw when Doctor leaves an older agent database", async (t) => {
   const directory = await stateDirectory(t, { main: CURRENT - 1 });
-  const outcome = await runDockerGateway(directory, (child) => child.emit("close", 0, null));
+  const outcome = await runDockerGateway(directory, (child) =>
+    finishDoctor(child, { status: "ok" }),
+  );
   assert.deepEqual(
     outcome.spawned.map(({ args }) => args[1]),
     ["doctor"],
@@ -584,16 +610,20 @@ test("Docker development Gateway exits without starting OpenClaw when Doctor lea
 test("Docker development Gateway exits without starting OpenClaw on an unexpected migration error", async (t) => {
   const directory = await stateDirectory(t, { main: CURRENT - 1 });
   let loads = 0;
-  const outcome = await runDockerGateway(directory, (child) => child.emit("close", 0, null), {
-    // The re-read after Doctor fails outside the per-database check.
-    sqlite: () => {
-      loads += 1;
-      if (loads > 1) {
-        throw new Error("node:sqlite is unavailable");
-      }
-      return nodeRequire("node:sqlite");
+  const outcome = await runDockerGateway(
+    directory,
+    (child) => finishDoctor(child, { status: "ok" }),
+    {
+      // The re-read after Doctor fails outside the per-database check.
+      sqlite: () => {
+        loads += 1;
+        if (loads > 1) {
+          throw new Error("node:sqlite is unavailable");
+        }
+        return nodeRequire("node:sqlite");
+      },
     },
-  });
+  );
   assert.deepEqual(
     outcome.spawned.map(({ args }) => args[1]),
     ["doctor"],
@@ -773,6 +803,46 @@ test("Harness migrates older workspace node state with the node's environment be
   assert.equal(doctor.env.OPENAI_API_KEY, undefined);
   assert.equal(outcome.spawned[2].env.OPENAI_API_KEY, "sk-fixture-harness-model-credential");
   assert.ok(outcome.errors.some((line) => /"phase":"state-migration","outcome":"ok"/.test(line)));
+});
+
+test("Harness retries refused maintenance after schemas advance and skips it only after successful settlement", async (t) => {
+  const directory = await harnessDirectory(t, STATE_CURRENT - 1);
+  const state = join(directory, "node-state");
+  const refusal = {
+    status: "error",
+    maintenanceRefusal: { kind: "data-at-risk", reason: "active-mutation" },
+  };
+  // The first repair advances SQLite before its external process reports failed cleanup.
+  const first = await runHarness(directory, (child) => {
+    setVersion(sharedPath(state), STATE_CURRENT);
+    finishDoctor(child, refusal);
+  });
+  assert.equal(first.holds, 1);
+  assert.deepEqual(
+    first.spawned.map(({ name }) => name),
+    ["doctor"],
+  );
+
+  // A new wrapper receives the same retained files. Current schemas cannot erase refusal.
+  const second = await runHarness(directory, (child) => finishDoctor(child, refusal));
+  assert.equal(second.holds, 1);
+  assert.deepEqual(
+    second.spawned.map(({ name }) => name),
+    ["doctor"],
+  );
+  const pending = await lstat(join(state, ".oce-maintenance-pending"));
+  assert.equal(pending.mode & 0o777, 0o600);
+
+  const recovered = await runHarness(directory, (child) => finishDoctor(child));
+  assert.deepEqual(
+    recovered.spawned.map(({ name }) => name),
+    ["doctor", "setup", "codex", "node"],
+  );
+  const current = await runHarness(directory);
+  assert.deepEqual(
+    current.spawned.map(({ name }) => name),
+    ["setup", "codex", "node"],
+  );
 });
 
 test("Harness holds without native setup or children when Doctor leaves older workspace node state", async (t) => {

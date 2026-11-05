@@ -110,7 +110,8 @@ configuration read-only, when the shared state database or an agent database
 uses an older schema than the pinned OpenClaw; Doctor keeps a
 `.pre-startup-migration-<id>.bak` copy beside each. Outdated schemas or refused
 maintenance hold the Gateway unready with check `state-migration`
-(`RUNTIME_STARTUP_FAILED`).
+(`RUNTIME_STARTUP_FAILED`). A private pending marker requires retry after restart,
+even if schemas already advanced.
 
 ## Harness storage
 
