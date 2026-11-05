@@ -273,14 +273,16 @@ A version that is still deploying has no credential yet, so its requests answer
 
 ### Worker log
 
-For held enrollment failures, check the worker log even after workload cleanup.
-`worker.openshell-git-probe-failed` logs the HTTP 400 category as `reason`:
+After held enrollment failure and cleanup, check worker logs.
+`worker.openshell-git-probe-failed` records the HTTP 400 `reason`:
 
-- `probe_process_failed`: curl failed. An optional integer `code` gives its exit status (1–99).
-- `probe_response_invalid`: the launcher could not read the response as JSON.
+- `probe_process_failed`: curl failed; optional integer `code` is its exit status (1–99).
+- `probe_response_invalid`: the launcher could not read response JSON.
 
-The event omits stdout, stderr, response bodies, URLs and proofs. A parsed but
-unexpected denial returns HTTP 409 `preview_not_observed`.
+The event omits stdout, stderr, response bodies, URLs and proofs. Collector
+attributes: `occ.git_probe.reason` and optional `occ.git_probe.exit_code`
+([limits](../../flows/common-logging.md#7-collector-exports-only-operational-classes)).
+A parsed unexpected denial returns HTTP 409 `preview_not_observed`.
 
 For refused Git requests, `worker.openshell-git-denied` records `reasonCode`
 from the table, the detailed `reason` (such as `ref_not_allowed`, `draft_rejected`,
