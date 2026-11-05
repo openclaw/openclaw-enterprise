@@ -156,11 +156,12 @@ managed-by labels and active phase; conflicts fail preparation.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`
 
-Compute derives `provisionHarness` from its ordinary Deployment. First deployment
+`provisionHarness` derives from Compute's Deployment. Initially, it
 keeps the Agent Service inactive and Gateway transport fail-closed. Attachments
 and provider/Sandbox creation await Gateway readiness and its Agent-owned setup
-Secret reference. Projected identity is disabled locally; enabling it fails before Gateway
-mutation because the pinned API cannot preserve the exact Agent ServiceAccount/token.
+Secret reference. At deployment, `validateHarnessAuth` rejects dedicated OpenShell
+projected identity, naming `servicePrincipalCredentials.mode`: OpenShell cannot
+preserve the Agent ServiceAccount/token.
 
 For `credential_source`, Compute renders the catalog login mode without a model
 Secret and passes version and `attachForRevision` provider names through `requirements.credentialAttachments`.
@@ -402,6 +403,8 @@ model execution.
 ## Changelog
 
 - 2026-11-05 12:54: Extract shared setup validation while preserving OpenShell provisioning. (authoring-run/0428fede-167f-4783-a06f-00eb40ffa23c - f1295c81f3ac79f51af2b93b61013e0a8e5c0394)
+
+- 2026-11-05 12:54: Reject projected identity at admission. (authoring-run/root-deployment_docs - 894a5b6698049c41fba27f5c2c0764e86b4c0632)
 
 - 2026-11-05 02:27: Enable `push.negotiate`. (authoring-run/bbe8db1d-f7e2-4322-80db-fbdf882659e2 - b4c30b3593105309904715c7dfff29c987dbb885)
 
