@@ -268,6 +268,7 @@ else
   test "$(git ls-remote --exit-code --heads "$url" "refs/heads/$branch" | cut -f1)" = "$parent"
 fi
 # The remote must still advertise the parent before the empty commit is sent.
+# Current Sandbox environments enable negotiation; keep it explicit for older revisions.
 test "$(git ls-remote --exit-code origin "refs/heads/$source_branch" | cut -f1)" = "$parent"
 git -c push.negotiate=true push --thin --porcelain origin "HEAD:refs/heads/$branch"
 local_sha=$(git rev-parse HEAD)

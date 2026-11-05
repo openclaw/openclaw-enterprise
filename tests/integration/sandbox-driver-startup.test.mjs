@@ -1,3 +1,4 @@
+import { verifyOpenShellPushNegotiation } from "../helpers/openshell-git-push-negotiation.mjs";
 import { runDocker, image, imageTestOptions } from "../helpers/runtime-image-startup.mjs";
 import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
@@ -7988,6 +7989,9 @@ test(
           });
           assert.equal(trust.status, 0, trust.stderr);
           assert.equal(trust.stdout.trim(), sandbox.options.kubernetes.sandboxDataMount.mountPath);
+          await subtest.test("Git negotiates shared history before pushing", async (gitTest) => {
+            await verifyOpenShellPushNegotiation(gitTest, gitEnvironment);
+          });
           await subtest.test(
             "Git trusts only the selected root-owned workspace",
             imageTestOptions,

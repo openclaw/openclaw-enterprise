@@ -892,7 +892,7 @@ export class OpenShellGitRuntime {
             ]
           : []),
         { name: "GIT_TERMINAL_PROMPT", value: "0" },
-        { name: "GIT_CONFIG_COUNT", value: "6" },
+        { name: "GIT_CONFIG_COUNT", value: "7" },
         { name: "GIT_CONFIG_KEY_0", value: "credential.helper" },
         { name: "GIT_CONFIG_VALUE_0", value: "" },
         {
@@ -913,6 +913,9 @@ export class OpenShellGitRuntime {
         // Trust only the approved data mount, without changing persistent Git config.
         { name: "GIT_CONFIG_KEY_5", value: "safe.directory" },
         { name: "GIT_CONFIG_VALUE_5", value: workspaceRoot },
+        // Discover shared history even when the remote advanced after the last fetch.
+        { name: "GIT_CONFIG_KEY_6", value: "push.negotiate" },
+        { name: "GIT_CONFIG_VALUE_6", value: "true" },
       ],
       middlewares: openShellGitMiddleware(this.configuration.registrationName, entry.bindingId),
     };
