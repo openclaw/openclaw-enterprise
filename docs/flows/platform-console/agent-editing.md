@@ -60,7 +60,7 @@ graph TD
 
 `loadDetails` settles history and snapshot independently. Rejected history
 (including `null`/`undefined`) warns without hiding readable drafts; Deploy waits.
-`snapshotErrorPanel` explains Configuration refusal without showing draft data.
+`snapshotErrorPanel` explains Configuration refusal without exposing drafts.
 Numeric `401` triggers sign-in.
 
 Browsing uses `packages/occ/src/index.ts:listAgents`, `listRevisions`,
@@ -68,7 +68,7 @@ Browsing uses `packages/occ/src/index.ts:listAgents`, `listRevisions`,
 `packages/occ/src/state/postgres-state.ts:browseSavedConfiguration` returns decode-failure `configurationReadError` metadata; operational reads stay strict.
 Unreadable drafts block editing/deployment without defaults. **Selected for service** follows `activeRevisionId`.
 **Viewing version** switches draft/read-only (`revision=draft`/`revision=<id>`) without activation.
-**Load older versions** appends pages, preserves selection, and focuses the picker after pagination.
+**Load older versions** appends pages, keeps selection and focuses the picker after the last page.
 `deploymentStatus`/`deploymentErrorCode` mark failures after reload, excluding superseded/stopped.
 
 **Deployment** mounts activity, the selected record, and diagnostics
