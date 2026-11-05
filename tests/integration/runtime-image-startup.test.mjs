@@ -1192,8 +1192,18 @@ try {
   if (!${historicalCodex}) {
     // Managed read-only requirements also refuse a workspace profile. Check the native
     // response before exposing that silently substituted thread to the Gateway caller.
-    await assert.rejects(client.request("thread/start", { ...request, permissions: ":workspace" }),
-      /thread.start: Codex did not grant the requested permission profile/);
+    for (const [selection, source, selectors] of [
+      [{ permissions: ":workspace" }, "permissions", "single"],
+      [{ config: { default_permissions: ":workspace" } }, "configDefault", "single"],
+      [{ permissions: ":workspace", config: { default_permissions: ":workspace" } }, "permissions", "both-equal"],
+      [{ permissions: ":workspace", config: { default_permissions: ":read-only" } }, "permissions", "both-different"],
+    ]) {
+      await assert.rejects(client.request("thread/start", { ...request, ...selection }), (error) => {
+        assert.match(error.message, new RegExp("^thread/start: Codex did not grant the requested permission profile \\(requestSource=" +
+          source + ", selectors=" + selectors + ", comparison=(nonobject-result|field-absent|field-null|field-not-object|id-not-string|string-id-different)\\)$"));
+        return true;
+      });
+    }
   }
 } finally {
   client.close();
@@ -1876,7 +1886,7 @@ assert.equal(provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256, ${
     )});
 assert.deepEqual(provenance.patches, {
   "openclaw-codex-read-only-paths.patch": provenance.openclawBridgePatchSha256,
-  "openclaw-codex-full-access-profile.patch": ${historicalCodex} ? "7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a" : "e942e1804475a8e828859c5ba81c20de944105a7dbe00bbba6c2275b32c0944b",
+  "openclaw-codex-full-access-profile.patch": ${historicalCodex} ? "7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a" : "3022b708a6499e0efc7aa9a08b3e01676fb44cf4080bf3eddb8c6877d68d668e",
   "openclaw-required-worker-authority-regression.patch": provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256,
   "openclaw-google-worker-placeholder.patch": "55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31",
   ...(${historicalCodex} ? {
