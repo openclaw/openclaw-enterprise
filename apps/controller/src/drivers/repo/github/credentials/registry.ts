@@ -213,13 +213,9 @@ export function validateGitHubRepositoryRegistry(
         selected
           ? !isGitHubRepositoryPermissions(policy.permissions) ||
             profiles.length !== 1 ||
-            [
-              "transport",
-              "pushRefAllowlist",
-              "pullRequestBase",
-              "draftPullLimit",
-              "allowStandingApproval",
-            ].some((k) => Object.hasOwn(policy, k))
+            ["transport", "pushRefAllowlist", "pullRequestBase", "draftPullLimit"].some((k) =>
+              Object.hasOwn(policy, k),
+            )
           : Object.hasOwn(policy, "permissions")
       ) {
         return invalid();
@@ -458,9 +454,6 @@ export function resolveGitHubStandingApprovalScope(
     binding: AdmittedRepositoryBinding;
   },
 ): RepositoryApprovalScope | undefined {
-  if (input.binding.profile === "github-repository") {
-    return undefined;
-  }
   const scope = standingApprovalScope(registry, input);
   if (!scope) {
     return;
@@ -523,10 +516,10 @@ function standingApprovalScope(
     pullRequestBase: policy.pullRequestBase ?? null,
     draftPullLimit:
       policy.transport === "git-and-draft-pr" ? (policy.draftPullLimit ?? "one-per-grant") : null,
-    apiPermissions: repositoryTransportPermissions(
-      policy.transport,
-      input.binding.profile as GitHubProfile,
-    ),
+    apiPermissions:
+      input.binding.profile === "github-repository"
+        ? policy.permissions!
+        : repositoryTransportPermissions(policy.transport, input.binding.profile as GitHubProfile),
     maximumSessionDurationSeconds: registry.maximumDurationSeconds,
     installationPolicyAllowsStanding: true,
     namespacePolicyAllowsStanding: true,
@@ -540,6 +533,17 @@ export function createGitHubRepositoryDeliveryResolver(
   return (revision) => {
     const state = revision.repositoryCredentials;
     const binding = state?.bindings[0];
+    if (
+      state?.standingApprovalId !== undefined &&
+      (state.bindings.length !== 1 ||
+        !binding ||
+        !resolveGitHubStandingApprovalScope(registry, {
+          namespaceId: revision.namespaceId,
+          binding,
+        }))
+    ) {
+      throw new Error("Standing repository policy is unavailable.");
+    }
     if (state?.bindings.length && state.bindings.every((b) => b.profile === "github-repository")) {
       const scope = resolveSelectedRepositoryScope(registry, revision.namespaceId, state.bindings);
       return Object.freeze({
@@ -562,15 +566,6 @@ export function createGitHubRepositoryDeliveryResolver(
     });
     if (!isDeepStrictEqual(binding, resolved)) {
       throw new Error("Repository Git delivery requires the current exact registry grant.");
-    }
-    if (
-      state.standingApprovalId !== undefined &&
-      !standingApprovalScope(registry, {
-        namespaceId: revision.namespaceId,
-        binding,
-      })
-    ) {
-      throw new Error("Standing repository policy is unavailable.");
     }
     if (binding.profile === githubInstallationProfile) {
       return Object.freeze({
