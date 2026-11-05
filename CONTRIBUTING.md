@@ -198,7 +198,7 @@ the repository root with Node.js 24.22.1 or newer (26.x requires 26.12.1 or newe
 pnpm contributors:update
 ```
 
-You can also run `node scripts/update-contributors.mjs` directly; the generator
+You can also run `node scripts/update-contributors.ts` directly; the generator
 uses only Node built-ins and does not require installing npm packages.
 
 The command needs only read access to repository metadata, contributors, pull

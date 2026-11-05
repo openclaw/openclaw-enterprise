@@ -4,10 +4,9 @@ const scenarioPresets = {
   "sandbox-policy": ["Codex"],
   "plugin-install": ["Codex"],
   "openshell-linear-read": ["Codex"],
-  "model-ui": ["OpenClaw", "Codex"],
+  "model-ui": ["OpenClaw"],
   "codex-search-config": ["Codex"],
   "console-secrets": ["OpenClaw", "Codex"],
-  calendar: ["Codex"],
   "git-write": ["Codex"],
   "git-push-denied": ["Codex"],
   slack: ["Codex"],
@@ -81,7 +80,7 @@ export function selectQaMatrix(env = process.env) {
   if (env.OCC_TEST_QA_CUSTOM_PERMISSION_PROFILES === "0") {
     // These scenarios start native Codex threads with a generated permission profile.
     // Console Secret operations on the same preset do not start a model turn.
-    const needsProfile = new Set(["model-ui", "calendar", "git-write", "git-push-denied", "slack"]);
+    const needsProfile = new Set(["git-write", "git-push-denied", "slack"]);
     for (const cell of cells.filter((cell) => cell.preset === "Codex")) {
       const excluded = cell.scenarios.filter((scenario) => needsProfile.has(scenario));
       if (excluded.length > 0) {
@@ -140,9 +139,6 @@ export function selectQaMatrix(env = process.env) {
       requiredEnv.push("OCC_TEST_QA_CODEX_TOKEN_FILE");
     }
     requiredEnv.push("OCC_TEST_QA_SANDBOX_ENV");
-  }
-  if (activeScenarios.includes("calendar")) {
-    requiredEnv.push("OCC_TEST_CODEX_CALENDAR_TOOL_NAME", "OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT");
   }
   if (repository) {
     requiredEnv.push("OCC_TEST_QA_REPOSITORY_AUTHORIZED", "OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY");

@@ -8,7 +8,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
-import { after } from "node:test";
+import { fileConsoleApp as createFileConsoleApp } from "./console-file-app.ts";
 
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { createControllerAuth } from "./password-hasher.mjs";
@@ -220,62 +220,12 @@ export async function startHttpsIngress({
 // pages for the file app close when their test ends (newPage), and login() signs them in with one
 // session shared by the file.
 export function fileConsoleApp(options = {}) {
-  const cleanups = [];
-  let startPolicy;
-  /** @type {ReturnType<typeof createConsoleAppFixture> | undefined} */
-  let created;
-  after(async () => {
-    await created?.catch(() => {});
-    let cleanupError;
-    for (const cleanup of cleanups) {
-      try {
-        await cleanup();
-      } catch (error) {
-        cleanupError ??= error;
-      }
-    }
-    if (cleanupError) {
-      throw cleanupError;
-    }
-  });
-  return async function fileApp(t) {
-    if (created === undefined) {
-      const creating = (async () => {
-        const fixture = await createConsoleAppFixture(
-          { after: (cleanup) => cleanups.push(cleanup) },
-          options,
-        );
-        await fixture.bootstrap();
-        fixture.sharedByFile = true;
-        startPolicy = structuredClone(fixture.policy);
-        return fixture;
-      })();
-      // A failed start fails only the test that asked for it; the next test starts a new app,
-      // as each test did with an app of its own. The partial app's cleanups still run after.
-      creating.catch(() => {
-        if (created === creating) {
-          created = undefined;
-        }
-      });
-      created = creating;
-    }
-    const fixture = await created;
-    // The policy as the app started, restored before and after each test: a test body still
-    // running after its end (a timeout, an unawaited promise) cannot carry its changes into the
-    // next test.
-    const restorePolicy = () => {
-      for (const [key, value] of Object.entries(structuredClone(startPolicy))) {
-        fixture.policy[key].splice(0, Infinity, ...value);
-      }
-    };
-    restorePolicy();
-    t.after(restorePolicy);
-    return fixture;
-  };
+  return createFileConsoleApp((registrar) => createConsoleAppFixture(registrar, options));
 }
 
 /**
  * Keep object-typed wrappers and keyed options extracted with Parameters compatible.
+ * @param {import("./console-file-app.ts").CleanupRegistrar} t
  * @template {object | Record<string, unknown>} [Options=object]
  * @param {Options & {auditSink?: InMemoryAuditSink}} [options]
  */

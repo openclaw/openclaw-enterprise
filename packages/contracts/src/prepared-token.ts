@@ -79,16 +79,29 @@ export interface PreparedTokenIssuer {
   ): Promise<void>;
   withdraw(source: PreparedTokenSource, signal: AbortSignal): Promise<void>;
   ready(source: PreparedTokenSource, signal: AbortSignal): Promise<boolean>;
-  readWarm(
-    source: PreparedTokenSource,
-    lifetime: CredentialReadLifetime,
+  resolve(
+    reference: EgressSourceKey,
+    options: TokenResolveOptions,
   ): Promise<PreparedTokenSelection | undefined>;
 }
 
-/** The installation chooses the lifecycle owner independently of the Sandbox and sender. */
-export interface PreparedTokenService {
+/** The proxy supplies its original request deadline and the token lifetime that use requires. */
+export interface TokenResolveOptions extends CredentialReadLifetime {
+  readonly minimumValidityMs: number;
+}
+
+/** Registration binds an immutable grant to its issuer secret. Its reference survives renewal. */
+export interface TokenService {
   readonly oauthConnections?: OAuthConnectionTokenService | undefined;
-  issuer(provider: EgressRef): PreparedTokenIssuer | undefined;
+  register(
+    registration: { readonly source: PreparedTokenSource; readonly secret: Readonly<Secret> },
+    signal: AbortSignal,
+  ): Promise<EgressSourceKey>;
+  resolve(
+    reference: EgressSourceKey,
+    options: TokenResolveOptions,
+  ): Promise<PreparedTokenSelection | undefined>;
+  issuer(provider: EgressRef): Omit<PreparedTokenIssuer, "configure" | "resolve"> | undefined;
 }
 
 /** The source owner keeps this private Secret reference outside the user-managed Secret inventory. */

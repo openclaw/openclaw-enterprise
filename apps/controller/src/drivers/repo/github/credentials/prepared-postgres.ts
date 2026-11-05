@@ -5,7 +5,11 @@ import {
   issueAttemptLiveBoundMs,
   providerClockSkewMs,
 } from "./driver/lifetime.ts";
-import type { PreparedGitHubEgressSource, Secret } from "@openclaw-enterprise/contracts";
+import type {
+  EgressSourceKey,
+  PreparedGitHubEgressSource,
+  Secret,
+} from "@openclaw-enterprise/contracts";
 import { preparedGitHubLive as live, readPreparedGitHubMetadata } from "@openclaw-enterprise/occ";
 import type {
   PostgresClient,
@@ -245,17 +249,45 @@ export class PreparedGitHubPostgres {
     });
   }
 
-  async claim(claim: string) {
+  async registeredSource(reference: EgressSourceKey): Promise<Source | undefined> {
     return this.transaction(async (c) => {
       const { rows } = await c.query(
+        `SELECT source FROM ${families} f WHERE f.source_id=$1 AND f.source->'key'=$2::jsonb
+          AND f.enabled AND f.admission->>'issuerAuthority'=$3 AND ${active}`,
+        [reference.source.id, reference, this.issuerAuthority],
+      );
+      return (rows[0] as Pick<FamilyRow, "source"> | undefined)?.source;
+    });
+  }
+
+  async claim(claim: string, source?: Source) {
+    return this.transaction(async (c) => {
+      // A request may need fresh material before the scheduled poll. It can take only its
+      // registered family, and cannot displace a live claim from a worker or another request.
+      const eligible = source
+        ? `f.source_id=$3 AND f.source=$4::jsonb
+            AND (f.worker_claim IS NULL OR f.next_check_at <= clock_timestamp())`
+        : "f.next_check_at <= clock_timestamp()";
+      const { rows } = await c.query(
         `WITH due AS (SELECT source_id FROM ${families} f
-        WHERE enabled AND admission->>'issuerAuthority'=$2 AND next_check_at <= clock_timestamp() AND ${active}
+        WHERE enabled AND admission->>'issuerAuthority'=$2 AND ${eligible} AND ${active}
         ORDER BY next_check_at LIMIT 1 FOR UPDATE SKIP LOCKED)
         UPDATE ${families} f SET next_check_at=clock_timestamp() + interval '60 seconds',worker_claim=$1
         FROM due WHERE f.source_id=due.source_id RETURNING f.source, f.issuer`,
-        [claim, this.issuerAuthority],
+        source
+          ? [claim, this.issuerAuthority, source.key.source.id, source]
+          : [claim, this.issuerAuthority],
       );
       return rows[0] as Pick<FamilyRow, "source" | "issuer"> | undefined;
+    });
+  }
+
+  async releaseClaim(source: Source, claim: string): Promise<void> {
+    await this.transaction(async (c) => {
+      await c.query(
+        `UPDATE ${families} f SET worker_claim=NULL WHERE ${matching} AND worker_claim=$3`,
+        [source.key.source.id, source, claim],
+      );
     });
   }
 

@@ -24,11 +24,132 @@ import {
   fixtureRepositoryId,
   fixtureRepository,
 } from "../fixtures/repository-credentials/github.mjs";
+import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
 import { PostgresPreparedGitHubLifecycle } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-lifecycle.ts";
 import { preparedAttemptSettled } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-postgres.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
+
+test(
+  "authorized GitHub proxy requests mint the registered grant and share one replacement",
+  requiresPostgres,
+  async (t) => {
+    let hold;
+    const fixture = await preparedLifecycleFixture(t, {
+      tokenLifetimeMs: 45 * 60_000,
+      async beforeIssueResponse() {
+        if (hold) {
+          hold.started = true;
+          await hold.release.promise;
+        }
+      },
+    });
+    const { f, gh, tokens, source, createOwner, registerSource } = fixture;
+    const unrelated = await registerSource("unrelated-due-family");
+    assert.equal(gh.issuesOfTokens.length, 0, "registration alone sends nothing to GitHub");
+
+    const request = captureMetadata(f);
+    const { ready } = await f.resolve(request);
+    assert.ok(ready, "an authorized cold proxy request gets a token without a maintenance pass");
+    const selected = JSON.parse(ready.evidence.authority_evidence);
+    assert.equal(selected.family.id, source.key.source.id);
+    assert.deepEqual(
+      gh.issuesOfTokens.map((issue) => ({
+        repositoryIds: issue.repositoryIds.map(String),
+        permissions: issue.permissions,
+      })),
+      [{ repositoryIds: [String(fixtureRepositoryId)], permissions: { metadata: "read" } }],
+    );
+    await dispatchMetadata(f, gh, request, ready);
+    const warm = captureMetadata(f);
+    const second = await f.resolve(warm);
+    assert.ok(second.ready);
+    assert.equal(
+      JSON.parse(second.ready.evidence.authority_evidence).materialVersion,
+      selected.materialVersion,
+    );
+    await dispatchMetadata(f, gh, warm, second.ready);
+    assert.equal(gh.issuesOfTokens.length, 1);
+
+    // The token still works upstream, but no longer covers the proxy's remaining signed request lifetime.
+    const aged = await f.pool.query(
+      "UPDATE occ.prepared_github_attempts SET usable_until=clock_timestamp()+interval '10 seconds' WHERE source_id=$1 AND material_version=$2",
+      [source.key.source.id, selected.materialVersion],
+    );
+    assert.equal(aged.rowCount, 1);
+    const expired = captureMetadata(f);
+    expired.deadline = wireTime(Date.now() - 1_000);
+    assert.ok((await f.resolve(expired)).refused);
+    assert.equal(gh.issuesOfTokens.length, 1, "an expired request cannot start issuance");
+
+    // The first caller leaves after GitHub accepted the request. The proxy and another service
+    // instance must still converge on that issuance, without claiming the unrelated due family.
+    const otherTokens = new TokenService();
+    const otherOwner = createOwner(gh.origin, otherTokens);
+    await otherOwner.connect(f.pool);
+    t.after(() => otherOwner.close());
+    hold = { started: false, release: Promise.withResolvers() };
+    const leaving = new AbortController();
+    const lifetime = {
+      deadlineAt: new Date(Date.now() + 30_000).toISOString(),
+      minimumValidityMs: 20_000,
+    };
+    const first = tokens.resolve(source.key, { ...lifetime, signal: leaving.signal });
+    const leavingResult = first.catch((error) => {
+      if (error.name !== "AbortError") {
+        throw error;
+      }
+      return undefined;
+    });
+    const other = () => otherTokens.resolve(source.key, { ...lifetime, signal: t.signal });
+    let proxyResult, otherResult;
+    const replacementRequest = captureMetadata(f);
+    try {
+      await waitUntil("selected GitHub grant reached the issuer", () => hold.started);
+      proxyResult = f.resolve(replacementRequest);
+      otherResult = other();
+      leaving.abort();
+      assert.equal(await leavingResult, undefined, "a cancelled caller receives no credential");
+    } finally {
+      hold.release.resolve();
+    }
+    const [{ ready: replacement }, fromPeer] = await Promise.all([proxyResult, otherResult]);
+    assert.ok(replacement);
+    assert.ok(fromPeer);
+    const newVersion = JSON.parse(replacement.evidence.authority_evidence).materialVersion;
+    assert.notEqual(newVersion, selected.materialVersion);
+    assert.equal(fromPeer.materialVersion, newVersion);
+    await dispatchMetadata(f, gh, replacementRequest, replacement);
+    assert.equal(gh.issuesOfTokens.length, 2);
+    const selectedBeforeLoss = captureMetadata(f);
+    const snapshot = await f.resolve(selectedBeforeLoss);
+    assert.ok(snapshot.ready);
+    const uses = gh.authenticationAttempts.length;
+    await f.revoke();
+    assert.ok((await f.authorize(f.permitRequest(selectedBeforeLoss, snapshot.ready))).refused);
+    assert.ok((await f.resolve(captureMetadata(f))).refused);
+    assert.equal(
+      gh.authenticationAttempts.length,
+      uses,
+      "no upstream request after losing the Agent grant",
+    );
+
+    // Withdrawal also fences direct resolution by a second owner with the old stored reference.
+    await fixture.lifecycle.withdraw(source, t.signal);
+    assert.equal(await other(), undefined);
+    assert.equal(gh.issuesOfTokens.length, 2);
+
+    assert.equal(
+      (
+        await f.pool.query("SELECT 1 FROM occ.prepared_github_attempts WHERE source_id=$1", [
+          unrelated,
+        ])
+      ).rowCount,
+      0,
+    );
+  },
+);
 
 test(
   "PostgreSQL prepared custody: source consent, proactive renewal, restart, issuer rotation and withdrawal",
@@ -1152,6 +1273,7 @@ async function preparedLifecycleFixture(t, githubOptions = {}, now = undefined) 
   const gh = await startGitHubFixture(t, { clock: createSystemClock(), ...githubOptions });
   const secretValue = gh.privateKey.export({ format: "pem", type: "pkcs8" });
   let lifecycle;
+  let tokens;
   let secretDriver;
   let issuer;
   let source;
@@ -1164,7 +1286,8 @@ async function preparedLifecycleFixture(t, githubOptions = {}, now = undefined) 
     ...(now && { now }),
     createPreparedGitHub(opts) {
       secretDriver = opts.secretDriver;
-      lifecycle = createOwner(gh.origin, opts.tokenService);
+      tokens = opts.tokenService;
+      lifecycle = createOwner(gh.origin, tokens);
       return lifecycle;
     },
     async appFactory(t, opts) {
@@ -1211,6 +1334,7 @@ async function preparedLifecycleFixture(t, githubOptions = {}, now = undefined) 
   return {
     gh,
     f,
+    tokens,
     lifecycle,
     issuer,
     source,

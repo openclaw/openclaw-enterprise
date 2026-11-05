@@ -12,7 +12,7 @@ status: Proposed
 
 Let an Agent use a provider without giving it the provider credential. If `build-agent` may read GitHub repository `123`, it makes an ordinary request; a trusted sender verifies which execution sent it, checks whether the read is still allowed, and authenticates to GitHub. A child process has the same access as its parent. A different execution needs its own admitted authority.
 
-Replace `CredentialGatewayDriver` with the `credential_proxy` Installation capability and its `CredentialProxyDriver`. It configures and withdraws egress; `SandboxDriver` installs that configuration and prevents bypass. We retain `SecretDriver` and `CredentialRefreshDriver` for credential access and preparation. These are [distinct responsibilities](contracts.md), not a requirement to run four services.
+Replace `CredentialGatewayDriver` with the `credential_proxy` Installation capability and its `CredentialProxyDriver`. It configures and withdraws egress; `SandboxDriver` installs that configuration and prevents bypass. The Secret Driver protects secret inputs. The Token Service registers and resolves OCE-managed grants. A selected Refresh Driver can own other credential families. These are [distinct responsibilities](contracts.md), not a requirement to run four services.
 
 ![Proposed protected egress: Sandbox prevents bypass; a trusted sender checks current authority, resolves a credential if needed, and sends the request](assets/overview.svg)
 
@@ -63,7 +63,7 @@ can be satisfied by this preview, and no existing admission changes meaning.
 ## From startup to one repository read with exact dispatch
 
 1. **Admit the execution.** The OpenClaw Control Plane (OCC) admits the routes and grants. Sandbox enforces the plan and authenticates the execution and supervisor installation.
-2. **Prepare the credential.** OCE obtains and stores a scoped GitHub installation token in the background. The request path never issues or renews it.
+2. **Prepare the credential.** OCE registers the GitHub installation and its approved repository permissions with the Token Service. The service renews in the background. If a request needs a fresher token, the service starts or joins renewal for that grant.
 3. **Send the read.** Credential Proxy binds the request and reply to their origin, checks current authority before material access and again before sending, and protects the response. Withdrawal racing the final check may not stop that send.
 
 [Request protocol and failure semantics](protocol.md#capture-and-authorize-a-request) · [Verification and migration](security.md)

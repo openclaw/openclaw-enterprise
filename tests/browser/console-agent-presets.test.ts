@@ -56,6 +56,7 @@ import {
   focusKeptOverClose,
   holdRequests,
   inViewport,
+  isRecord,
   login,
   nativeValues,
   newPage,
@@ -703,6 +704,34 @@ test("Main-only Preset models create drafts through the regular Agent APIs", asy
     const unchanged = await presetTemplate(fixture, namespace.id, preset.data.id);
     assert.deepEqual(unchanged, template);
   }
+});
+
+test("Model clearing preserves enumerable draft content", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Draft merge contents", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  const requests = apiRequests(page, fixture.origin);
+  await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
+  await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
+  await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
+  await openAdvancedSettings(page);
+  const editor = page.getByLabel("Configuration JSON", { exact: true });
+  const draft: unknown = JSON.parse(await editor.inputValue());
+  assert.ok(isRecord(draft) && isRecord(draft.models));
+  const retained = { models: [{ id: "draft-local" }] };
+  // This malformed parent has no selected provider catalog. Clearing the model must keep
+  // its enumerable contents, leaving admission to reject the unsupported shape on save.
+  draft.models.providers = [retained];
+  await editor.fill(JSON.stringify(draft));
+  const model = page.getByLabel("Model ID", { exact: true });
+  await model.fill("");
+  await model.press("Tab");
+  const edited: unknown = JSON.parse(await editor.inputValue());
+  assert.ok(isRecord(edited) && isRecord(edited.models));
+  assert.deepEqual(edited.models.providers, { "0": retained });
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
 });
 
 test("Model edits preserve refusals for invalid Advanced JSON rosters", async (t) => {
@@ -4273,7 +4302,58 @@ test("invalid Preset application retains chooser edits and the applied form for 
   }
 });
 
-test("failed Preset form construction retains chooser edits for both origins", async (t) => {
+test("a stored null Preset primary opens with model choices for both origins", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Unset primary", { ready: true });
+  const starter = await defaultPresetSummary(fixture, namespace.id);
+  const template = await presetTemplate(fixture, namespace.id, starter.id);
+  // Exercise an older stored value through real reads, without asserting current write admission.
+  const stored = await fixture.controller.transact((state: PlatformUnitOfWork) =>
+    state.presets.updatePreset(namespace.id, starter.id, {
+      template: {
+        ...template,
+        configuration: {
+          ...template.configuration,
+          values: {
+            ...template.configuration?.values,
+            agents: { defaults: { model: { primary: null } } },
+          },
+        },
+      },
+    }),
+  );
+  assert.ok(stored);
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  for (const origin of ["shortcut", "explicit"]) {
+    if (origin === "explicit") {
+      await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
+      await page.getByLabel("Preset template").selectOption(starter.id);
+      await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+    } else {
+      await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
+    }
+    const model = page.getByLabel("Model", { exact: true });
+    await model.waitFor();
+    assert.equal(await model.inputValue(), "", origin);
+    assert.equal(await model.isEnabled(), true, origin);
+    await openAdvancedSettings(page);
+    const before: unknown = JSON.parse(
+      await page.getByLabel("Configuration JSON", { exact: true }).inputValue(),
+    );
+    assert.partialDeepStrictEqual(before, { agents: { defaults: { model: { primary: null } } } });
+    await model.selectOption("gpt-6-sol");
+    const after: unknown = JSON.parse(
+      await page.getByLabel("Configuration JSON", { exact: true }).inputValue(),
+    );
+    assert.partialDeepStrictEqual(after, {
+      agents: { defaults: { model: { primary: "codex/gpt-6-sol" } } },
+    });
+  }
+});
+
+test("a non-text Preset primary refuses application and retains chooser edits for both origins", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const { page } = await newPage(t, fixture);
@@ -4324,8 +4404,13 @@ test("failed Preset form construction retains chooser edits for both origins", a
     await page.getByRole("button", { name: "Use Preset", exact: true }).click();
     await page
       .getByRole("alert")
-      .filter({ hasText: /startsWith/ })
+      .filter({
+        hasText:
+          "This Preset's primary model must be text. Choose another Preset, or ask a Preset editor to fix the template.",
+      })
       .waitFor();
+    assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0, origin);
+    assert.equal(await marker.inputValue(), `draft ${origin}`, origin);
     await page.getByRole("link", { name: "← Agents" }).click();
     await page.getByRole("button", { name: "Create Agent", exact: true }).click();
     await marker.waitFor();

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
 updated: 2026-11-05
-last_updated_session: authoring-run/9cb771c4-f1a8-44ec-a4ef-7c914a5ddb6e
+last_updated_session: authoring-run/ead82952-8ee4-4f4a-82fe-148da7fa2edc
 ---
 
 # Agent Plugin Deployment Flow
@@ -99,23 +99,36 @@ invalid results and stops the child on teardown. HTTP uses the hosted reader.
 
 `apps/controller/src/index.ts:createFastifyApp`
 
-HTTP contracts validate input before [OpenClawController](../../packages/occ/src/index.ts)
-checks the exact Namespace and Agent. Reads require Agent `read`; create/PATCH
-stores the `plugins` map and its Driver identity. `validateAgentPlugins` uses the Harness catalog for policy and Configuration checks on Agent and provisioning writes. Deployment rechecks Configuration. The OpenClaw Driver refuses a selection
-whose tools `tools.deny`, the sole `agents.entries` entry's list, the primary provider's
-`byProvider` lists, or these together block, any selection beside an entry denying `*`, or one a
-sole entry's `alsoAllow` hides under a profile. With an OpenClaw Harness,
+HTTP validates input. [OCC](../../packages/occ/src/index.ts) checks the exact
+Namespace and Agent (`read` for reads). Create/PATCH saves `plugins` and Driver
+identity. Updates atomically save state and audit evidence. Omitted selections
+persist, `{}` clears them, and nonempty maps replace them. Clear selections with
+unknown or different owners before changing catalogs.
+
+`validateAgentPlugins` checks policy and Configuration against the Harness
+catalog on Agent/provisioning writes. Deployment rechecks Configuration.
+OpenClaw refuses selections blocked by `tools.deny`, the sole `agents.entries`
+tool list, the primary provider's `byProvider` lists, or their combination.
+It also refuses selections beside an entry denying `*` or hidden under a
+profile by the sole entry's `alsoAllow`.
 [`openClawPluginSettingConflict`](../../apps/controller/src/drivers/plugin/openclaw-plugin-settings.ts)
-first refuses [plugin settings the Gateway refuses](../reference/drivers/plugin-bundled.md#native-mappings-and-limits).
-Unsupported controls and incompatible selections return `400 INVALID_REQUEST`. Agent updates store desired state and audit evidence atomically. Omission preserves selections, `{}` clears them, and a nonempty map replaces them. Clear selections with an unknown or different owner before changing catalogs.
+checks [Gateway-rejected settings](../reference/drivers/plugin-bundled.md#native-mappings-and-limits)
+first for OpenClaw Harnesses.
+Unsupported controls or incompatible selections return `400 INVALID_REQUEST`.
 
-[`validatePolicies`](../../apps/controller/src/drivers/plugin/runtime-translator.ts) marks conflicting enablement defaults.
-`BundledPluginDriverBase.validate` allowlists this reason; OCC's `PluginPolicyValidationError`
-supplies fixed recovery advice. The Console preserves rejected drafts.
-Unrecognized failures retain the generic refusal.
+[`validatePolicies`](../../apps/controller/src/drivers/plugin/runtime-translator.ts)
+detects conflicting enablement defaults. `BundledPluginDriverBase.validate`
+allowlists it for OCC's fixed `PluginPolicyValidationError` advice.
+Unrecognized refusals stay generic. The Console preserves rejected drafts.
 
-Policy capabilities come from `GET /installation` or, with Agent read/update,
-`GET .../plugins/capabilities`.
+[Save](../../apps/controller/src/console/agents/plugins.mts#L396) keeps out-of-range
+**Plugin selections JSON** text and skips Agent `GET`/`PATCH`.
+[Picker edits](../../apps/controller/src/console/agents/plugin-fields.mts#L414)
+stop. [Available catalogs](../guides/console/configuration-plugins-and-files.md#plugins-tab)
+remain browsable.
+
+Read capabilities from `GET /installation` or `GET .../plugins/capabilities`
+(Agent `read`/`update`).
 
 ### 2. Admit an immutable plugin deployment
 
@@ -355,6 +368,8 @@ establish starvation.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 21:02: Trace plugin JSON refusal. (authoring-run/ead82952-8ee4-4f4a-82fe-148da7fa2edc - 3768cfd0d640f450f485cb334b6753ac1e5ea1c3)
 
 - 2026-11-05 13:37: Trace plugin-policy refusal recovery. (authoring-run/9cb771c4-f1a8-44ec-a4ef-7c914a5ddb6e - a8259883139ac831b32c0a7b0fe872f6db4ee290)
 

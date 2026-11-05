@@ -439,7 +439,7 @@ export async function staticEgressFixture(
     : preparedGitHub;
   const preparedProvider = configurePreparedTokens?.(preparedTokens);
   if (preparedGitHub) {
-    preparedTokens.register({
+    preparedTokens.registerIssuer({
       provider: preparedGitHubProviderRef,
       sourceFromRoute: preparedGitHubSourceFromRoute,
       issuerInput: "private_key",
@@ -448,7 +448,7 @@ export async function staticEgressFixture(
         return { origin: owner.apiOrigin, grant: githubMetadataGrant(config), schemaVersion: 2 };
       },
       configure: (...args) => owner.configure(...args),
-      readWarm: (...args) => owner.readWarm(...args),
+      resolve: (...args) => owner.resolve(...args),
       ready: (...args) => owner.ready(...args),
       withdraw: (...args) => owner.withdraw(...args),
     });

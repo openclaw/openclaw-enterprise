@@ -27,7 +27,7 @@ import type {
   EgressMaterialEvidence,
   EgressSelectionEvidence,
   ProtectedEgressSource,
-  PreparedTokenIssuer,
+  TokenService,
   StaticEgressSource,
   VersionedSecretValue,
 } from "@openclaw-enterprise/contracts";
@@ -78,7 +78,7 @@ export interface EgressAuthorityPorts {
     lifetime: CredentialReadLifetime,
     isProviderCurrent: () => boolean,
   ): Promise<VersionedSecretValue & { readonly materialId: string }>;
-  readonly readPrepared?: PreparedTokenIssuer["readWarm"];
+  readonly resolvePrepared?: TokenService["resolve"];
   /** Check the exact selection, then mint once immediately before the possible-send receipt. */
   authorizeSend(
     use: CapturedEgressUse,
@@ -693,6 +693,21 @@ export class CredentialProxy implements CredentialProxyExchange {
       if (evidence.kind !== "no_material_required" && material.value === undefined) {
         return { kind: "refused", error: { kind: "not_ready", code: "material_missing" } };
       }
+      if (source.adoption === "prepared") {
+        // Resolution can wait for the issuer. Recheck the grant and selected token before
+        // disclosing headers to the trusted proxy, even if it never asks for a send permit.
+        const current = await this.ports.check(captured, evidence, undefined, provider);
+        const ended = accessEnded();
+        if (ended) {
+          return { kind: "refused", error: ended };
+        }
+        if (!("key" in current)) {
+          return { kind: "refused", error: current };
+        }
+        if (!isDeepStrictEqual(current, source)) {
+          return refuse("scope_mismatch");
+        }
+      }
       const headers =
         evidence.kind === "no_material_required"
           ? []
@@ -788,7 +803,10 @@ export class CredentialProxy implements CredentialProxyExchange {
         return { kind: "denied", code: "scope_mismatch" };
       }
 
-      const selected = await this.ports.readPrepared?.(source, lifetime);
+      const selected = await this.ports.resolvePrepared?.(source.key, {
+        ...lifetime,
+        minimumValidityMs: remaining,
+      });
       if (!selected) {
         return { kind: "not_ready", code: "material_missing" };
       }

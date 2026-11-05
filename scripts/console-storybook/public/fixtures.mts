@@ -48,6 +48,7 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     slackGrantMissing?: string;
     auth?: null | string;
     namespaceDeleteOutcome?: string;
+    namespaceDeleteRetryStatusFailure?: true;
     observabilityUrl?: string;
     repositoryOptions?: readonly RepositoryOption[];
     credentialRegistrationOutcome?: string;
@@ -246,6 +247,7 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
           },
         ];
   const namespaceDeletionReads = new Map<string, number>();
+  let namespaceDeleteRetryStatusFailed = false;
   const backends = scenario.emptyBackends
     ? []
     : [{ id: "chatgpt-demo", name: "ChatGPT", type: "chatgpt" }];
@@ -532,6 +534,18 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
         return response(item, 202);
       }
       if (method === "GET") {
+        // Consume this preview failure only while the ordinary retry prompt is open.
+        // Earlier polls and later Refresh status reads keep their normal responses.
+        if (
+          scenario.namespaceDeleteRetryStatusFailure &&
+          item.id === namespaceId &&
+          !namespaceDeleteRetryStatusFailed &&
+          document.querySelector(".namespace-delete-dialog[open] #namespace-delete-title")
+            ?.textContent === `Retry deletion of ${item.name}?`
+        ) {
+          namespaceDeleteRetryStatusFailed = true;
+          return new Response("Service unavailable", { status: 503 });
+        }
         if (item.status === "deleting" && scenario.namespaceDeleteOutcome === "complete") {
           const reads = (namespaceDeletionReads.get(item.id) ?? 0) + 1;
           namespaceDeletionReads.set(item.id, reads);

@@ -71,7 +71,8 @@ export type {
   OAuthConnectionRegistration,
   OAuthConnectionStatus,
   OAuthConnectionTokenService,
-  PreparedTokenService,
+  TokenResolveOptions,
+  TokenService,
 } from "./prepared-token.ts";
 export { PENDING_OAUTH_CONNECTION } from "./prepared-token.ts";
 export {

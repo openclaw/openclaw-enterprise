@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: 2026-11-05
-last_updated_session: authoring-run/cdb62c1d-61db-4f65-985f-7b44e64f10d0
+last_updated_session: codex/01a19e60-87d0-71d0-8c9a-e3e3b33b1676
 ---
 
 # Protected credential request flow
@@ -33,8 +33,7 @@ Suppose the revision admits `github-app-metadata` for repository ID `12345`,
    reply to its exchange. The GitHub adapter checks method, URL, headers and body
    against the installed route.
 2. **Resolve the token.** OCC checks installation, binding, withdrawal and current
-   `credential_source:operate`, selects a usable worker-prepared token, then returns
-   its `Authorization: Bearer …` header to the supervisor.
+   `credential_source:operate`, then resolves the registered GitHub grant through the Token Service. If the token has too little time left, resolution can wait for issuance within the request deadline. OCC checks the binding, permission and selected token version again before releasing the header to the supervisor.
 3. **Permit one send.** On the same stream, OCC rechecks authority and the
    token version. If the Agent lost its source grant after resolution, OCC
    refuses the send. Otherwise, the supervisor can start the request by the
@@ -340,6 +339,8 @@ the origin and caller independently.
 None.
 
 ## Changelog
+
+- 2026-11-05 23:21: Trace request-time token resolution and the permission check before releasing a credential header. (codex/01a19e60-87d0-71d0-8c9a-e3e3b33b1676 - 614169814)
 
 - 2026-11-05 02:35: Refresh model observation after Git credential rotation. (authoring-run/cdb62c1d-61db-4f65-985f-7b44e64f10d0 - 261e4b54cbd0366ff0cba0dc6a00b7890b8e39f2)
 
