@@ -132,10 +132,8 @@ selects the Backend's GitHub policy. Its Backend ID must match the registry.
 and rejects missing or mismatched ownership for configured repository access.
 Startup rejects `drivers.repo` in every mode before worker or attempt creation.
 
-`apps/controller/src/drivers/egress-proxy/openshell-configuration.ts:openShellRepositoryConfiguration`
-parses the OpenShell transport settings. The same adapter owns `openShellGitChartListener`;
-Installation composition passes that specification to `requireChartListener` to check
-ports and mounted authority files before startup.
+OpenShell parsing and chart listener constraints belong to
+`apps/controller/src/drivers/egress-proxy/openshell-configuration.ts`.
 
 Bundled deploy calls `resolveBindings` in `OpenClawController.admitRepositoryCredentials`;
 a deselected policy fails. Programmatic controllers call `RepositoryPolicyDriver.resolve`.
@@ -399,7 +397,7 @@ denied before reaching the provider, and chat continues.
 
 ## Changelog
 
-- 2026-11-05 11:46: Document adapter ownership of OpenShell settings and chart listener checks. (authoring-run/507ebdda-c10f-4840-acd7-1667d5919fab - f960b469e2c6dfb6653fd72ba1c1a39b97a9bcf0)
+- 2026-11-05 11:46: Document OpenShell configuration ownership. (authoring-run/507ebdda-c10f-4840-acd7-1667d5919fab - f960b469e2c6dfb6653fd72ba1c1a39b97a9bcf0)
 
 - 2026-11-05 01:05: Trace Git-only branch-pattern authorization. (authoring-run/f65a98dd-79e1-45e2-a740-b7e73c1d9dd3 - dde29ac47a)
 
