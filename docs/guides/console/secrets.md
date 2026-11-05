@@ -9,7 +9,7 @@ note under it says so.
 
 ## Set up a Google connection template
 
-Installation administrators can open **Credentials → Connection templates → Set up Google OAuth**. Choose availability, allowed scopes and your registered Google OAuth client. Keep **Google APIs** to use the account across Google APIs. For a single host and path, select **Specific endpoint**. See [Connection templates](../../reference/connection-templates.md) to register a client.
+Open **Credentials → OAuth clients → Register OAuth client** as an Installation administrator. Under **Connection template**, select **Set up Google OAuth…**. Choose availability and allowed scopes. Keep **Google APIs** to use the account across Google APIs, or select **Specific endpoint** for one host and path. Choose **Create template** to return to registration. Register the displayed redirect URI with Google and enter the credentials Google issued. [Connection templates](../../reference/connection-templates.md)
 
 ## Create and use a Secret
 

@@ -9,7 +9,45 @@ export function createConnectionTemplateFixture(
   createdAt: string,
   nextId: (prefix: string) => string,
 ) {
-  const oauthTemplates: object[] = [];
+  const issuer = "https://identity.example.com";
+  const templateId = "ctp_00000000-0000-4000-8000-000000000004";
+  const oauthTemplates: Record<string, unknown>[] =
+    mode === "ready"
+      ? [
+          {
+            id: templateId,
+            displayName: "Support MCP",
+            createdAt,
+            current: {
+              templateId,
+              version: 1,
+              mode: "mcp_discovery",
+              issuer,
+              authorizationUrl: issuer + "/authorize",
+              tokenUrl: issuer + "/token",
+              scopes: ["messages.read"],
+              authorizationParameters: {},
+              recipient: { host: "mcp.example.com", port: 443, path: "/mcp" },
+              mcp: {
+                serverUrl: "https://mcp.example.com/mcp",
+                resource: "https://mcp.example.com/mcp",
+              },
+              observed: {
+                issuer,
+                issuers: [issuer],
+                authorizationUrl: issuer + "/authorize",
+                tokenUrl: issuer + "/token",
+                requestedScopes: ["messages.read"],
+                serverUrl: "https://mcp.example.com/mcp",
+                resource: "https://mcp.example.com/mcp",
+                tokenEndpointAuthMethods: ["none", "client_secret_basic"],
+              },
+              oauthClientId: "ccr_00000000-0000-4000-8000-000000000006",
+              createdAt,
+            },
+          },
+        ]
+      : [];
   const oauthClients: object[] =
     mode === "ready"
       ? [
@@ -34,7 +72,6 @@ export function createConnectionTemplateFixture(
       });
     }
     if (mode && isRecord(body)) {
-      const issuer = "https://identity.example.com";
       const observed = {
         serverUrl: "https://mcp.example.com/mcp",
         resource: "https://mcp.example.com/mcp",
@@ -52,14 +89,36 @@ export function createConnectionTemplateFixture(
           : response(observed);
       }
       if (path === "/oauth-clients" && method === "POST") {
-        const { clientSecret: _writeOnly, ...publicFields } = body;
-        const client = { ...publicFields, id: nextId("ccr"), createdAt };
+        const selected = oauthTemplates.find((t) => t.id === body.connectionTemplateId);
+        const version = selected?.current;
+        if (
+          !selected ||
+          !isRecord(version) ||
+          version.version !== body.connectionTemplateVersion ||
+          typeof version.version !== "number"
+        ) {
+          return error(409, "RESOURCE_STATE_CONFLICT", "Reload the selected connection template.");
+        }
+        const client = {
+          id: nextId("ccr"),
+          displayName: body.displayName,
+          clientId: body.clientId,
+          tokenEndpointAuthMethod: body.tokenEndpointAuthMethod,
+          namespaceId: selected.namespaceId,
+          issuer: version.issuer,
+          tokenUrl: version.tokenUrl,
+          revocationUrl: version.revocationUrl,
+          createdAt,
+        };
+        if (!version.oauthClientId) {
+          selected.current = { ...version, oauthClientId: client.id, version: version.version + 1 };
+        }
         oauthClients.push(client);
         return response(client, 201);
       }
       if (path === "/connection-templates" && method === "POST") {
         const { displayName, namespaceId, ...config } = body;
-        const id = nextId("ct");
+        const id = nextId("ctp");
         const current = {
           ...config,
           templateId: id,

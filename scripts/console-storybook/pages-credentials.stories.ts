@@ -11,4 +11,5 @@ export const DiscoveredMcpTemplate = story("credentialsMcpDiscovery");
 export const McpDiscoveryUnavailable = story("credentialsMcpDiscoveryError");
 export const OAuthClientCatalog = story("credentialsOAuthClientCatalog");
 export const RegisterOAuthClient = story("credentialsRegisterOAuthClient");
+export const RegisterMcpOAuthClient = story("credentialsRegisterFromMcp");
 export const MemberAccess = story("credentialsMemberAccess");

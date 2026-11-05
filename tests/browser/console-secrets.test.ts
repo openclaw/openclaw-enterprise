@@ -88,8 +88,7 @@ test("Credentials opens Secrets and lets an Installation administrator manage sh
   const availability = editor.getByLabel("Template availability");
   assert.equal(await availability.inputValue(), namespace.id);
   await editor.getByLabel("OAuth client", { exact: true }).waitFor();
-  await editor.getByText("Register a new OAuth client", { exact: true }).click();
-  await editor.getByLabel("Provider client ID").waitFor();
+  await editor.getByRole("button", { name: "Create template and register OAuth client" }).waitFor();
   await editor.getByRole("button", { name: "Cancel" }).click();
   await page.goBack();
   await sections
@@ -130,11 +129,9 @@ test("a template needs an explicit availability when the administrator has no Na
   await editor.getByLabel("Token URL").fill("https://identity.example.test/token");
   await editor.getByLabel("Destination host").fill("tools.example.test");
   await editor.getByLabel("Approved OAuth scopes").fill("tools.read");
-  await editor.getByText("Register a new OAuth client", { exact: true }).click();
-  await editor.getByLabel("OAuth client name").fill("Tools client");
-  await editor.getByLabel("Provider client ID").fill("tools-client");
-  await editor.getByLabel("Client authentication").selectOption("none");
-  const register = editor.getByRole("button", { name: "Register OAuth client" });
+  const register = editor.getByRole("button", {
+    name: "Create template and register OAuth client",
+  });
   const save = editor.getByRole("button", { name: "Create template" });
   const requests = apiRequests(page, fixture.origin);
   for (const action of [register, save]) {
@@ -147,12 +144,6 @@ test("a template needs an explicit availability when the administrator has no Na
   }
   // Only the administrator's explicit selection permits saving an Installation-wide client.
   await availability.selectOption({ label: "Installation-wide" });
-  const createdClient = responseTo(page, "POST", fixture.origin + "/oauth-clients");
-  await register.click();
-  assert.equal((await createdClient).status(), 201);
-  const submittedClient = pathRequests(requests, "POST", "/oauth-clients")[0]?.body;
-  assert.ok(submittedClient && typeof submittedClient === "object");
-  assert.equal(Object.hasOwn(submittedClient, "namespaceId"), false);
   const policy = editor.getByLabel("OAuth scope limit");
   assert.equal(await policy.locator("option:checked").textContent(), "Limit to approved scopes");
   // Whitespace in a restricted allowlist can never turn into an unrestricted template.
@@ -163,14 +154,37 @@ test("a template needs an explicit availability when the administrator has no Na
   assert.deepEqual(pathRequests(requests, "POST", "/connection-templates"), []);
   await policy.selectOption({ label: "No template limit" });
   const created = responseTo(page, "POST", fixture.origin + "/connection-templates");
-  await save.click();
+  await register.click();
   const response = await created;
   assert.equal(response.status(), 201, await response.text());
   const template = (await response.json()).data;
   assert.deepEqual(template.current.scopes, []);
   assert.equal(template.namespaceId, undefined);
-  await page.getByRole("button", { name: "Edit Company tools" }).click();
+  const registration = dialog(page, "Register OAuth client");
+  assert.equal(
+    await registration.getByLabel("Client availability").inputValue(),
+    "Installation-wide",
+  );
+  await registration.getByLabel("OAuth client name").fill("Tools client");
+  await registration.getByLabel("Provider client ID").fill("tools-client");
+  await registration.getByLabel("Client authentication").selectOption("none");
+  const registered = responseTo(page, "POST", fixture.origin + "/oauth-clients");
+  await registration.getByRole("button", { name: "Register OAuth client" }).click();
+  const regResult = await registered;
+  assert.equal(regResult.status(), 201, await regResult.text());
+  const registeredId = (await regResult.json()).data.id;
+  assert.deepEqual(pathRequests(requests, "POST", "/oauth-clients")[0]?.body, {
+    connectionTemplateId: template.id,
+    connectionTemplateVersion: 1,
+    displayName: "Tools client",
+    clientId: "tools-client",
+    tokenEndpointAuthMethod: "none",
+  });
   const editing = dialog(page, "Edit connection template");
+  assert.equal(
+    await editing.getByLabel("OAuth client", { exact: true }).inputValue(),
+    registeredId,
+  );
   assert.equal(await editing.getByLabel("Template availability").isDisabled(), true);
   assert.equal(
     await editing.getByLabel("Template availability").locator("option:checked").textContent(),
@@ -191,7 +205,7 @@ test("a template needs an explicit availability when the administrator has no Na
   assert.deepEqual((await patch.json()).data.current.scopes, ["tools.read"]);
 });
 
-test("an administrator can register an OAuth client independently of a connection template", async (t) => {
+test("registering a provider-issued client uses a saved or newly created template without changing an existing default", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth client owners");
   selectTemplateDrivers(fixture.controller);
   const { page } = await newPage(t, fixture, { browser });
@@ -200,60 +214,79 @@ test("an administrator can register an OAuth client independently of a connectio
   await sections.getByRole("link", { name: "OAuth clients", exact: true }).click();
   await page.getByRole("button", { name: "Register OAuth client" }).click();
   const form = dialog(page, "Register OAuth client");
-  assert.equal(await form.getByLabel("Client availability").inputValue(), namespace.id);
-  await form.getByLabel("Provider", { exact: true }).selectOption({ label: "Google" });
   assert.equal(
-    await form.getByLabel("Issuer URL", { exact: true }).inputValue(),
-    "https://accounts.google.com",
+    await form.getByRole("button", { name: "Register OAuth client" }).isDisabled(),
+    true,
   );
-  assert.equal(
-    await form.getByLabel("Token URL").inputValue(),
-    "https://oauth2.googleapis.com/token",
-  );
-  assert.equal(
-    await form.getByLabel("Revocation URL (optional)").inputValue(),
-    "https://oauth2.googleapis.com/revoke",
-  );
-  assert.equal(await form.getByLabel("Client authentication").inputValue(), "client_secret_post");
-  await form.getByLabel("OAuth client name").fill("Engineering Google");
-  await form.getByLabel("Provider client ID").fill("google-browser-client");
-  const privateValue = crypto.randomUUID();
-  await form.getByLabel("Client secret", { exact: true }).fill(privateValue);
-  const registered = responseTo(page, "POST", fixture.origin + "/oauth-clients");
-  await form.getByRole("button", { name: "Register OAuth client" }).click();
-  const receipt = await registered;
-  assert.equal(receipt.status(), 201, await receipt.text());
-  const record = (await receipt.json()).data;
-  assert.equal(record.namespaceId, namespace.id);
-  assert.equal(Object.hasOwn(record, "clientSecret"), false);
-  const row = page.getByRole("heading", { name: "Engineering Google" }).locator("..");
-  await row.getByText("https://accounts.google.com", { exact: true }).waitFor();
-  await row
-    .getByText("Namespace · OAuth client owners · Client secret in request body", { exact: true })
-    .waitFor();
-  assert.equal((await page.locator("body").innerText()).includes(privateValue), false);
-  // Losing Installation administration also denies a direct link to the catalog.
-  // Configure Google's built-in provider with the client this admin just registered.
-  await sections.getByRole("link", { name: "Connection templates" }).click();
-  await page.getByRole("button", { name: "Set up Google OAuth" }).click();
+  const templateChoice = form.getByLabel("Connection template", { exact: true });
+  await templateChoice.selectOption({ label: "Set up Google OAuth…" });
   const editor = dialog(page, "Create connection template");
   assert.equal(await editor.getByLabel("Template availability").inputValue(), namespace.id);
   assert.equal(await editor.getByLabel("API destination").inputValue(), "google_apis");
   assert.equal(await editor.getByLabel("Destination host").isVisible(), false);
   await editor.getByLabel("OAuth scope limit").selectOption({ label: "No template limit" });
-  await editor
-    .getByLabel("OAuth client", { exact: true })
-    .selectOption({ label: "Engineering Google" });
-  const created = responseTo(page, "POST", fixture.origin + "/connection-templates");
-  await editor.getByRole("button", { name: "Create template" }).click();
-  const saved = await created;
-  assert.equal(saved.status(), 201, await saved.text());
-  const { current } = (await saved.json()).data;
-  assert.equal(current.oauthClientId, record.id);
-  assert.equal(current.authorizationUrl, "https://accounts.google.com/o/oauth2/v2/auth");
-  assert.deepEqual(current.authorizationParameters, { access_type: "offline", prompt: "consent" });
-  assert.deepEqual(current.recipient, { kind: "google_apis" });
+  const posted = responseTo(page, "POST", fixture.origin + "/connection-templates");
+  await editor.getByRole("button", { name: "Create template", exact: true }).click();
+  const result = await posted;
+  assert.equal(result.status(), 201, await result.text());
+  const template = (await result.json()).data;
+  assert.deepEqual(template.current.recipient, { kind: "google_apis" });
+  assert.equal(template.current.oauthClientId, undefined);
+  assert.equal(await templateChoice.inputValue(), template.id);
+  assert.equal(
+    await form.getByLabel("Client availability").inputValue(),
+    "Namespace · OAuth client owners",
+  );
+  assert.equal(
+    await form.getByLabel("Redirect URI").inputValue(),
+    fixture.origin + "/oauth/callback",
+  );
+  assert.equal(await form.getByLabel("Issuer URL", { exact: true }).count(), 0);
+  assert.equal(await form.getByLabel("Token URL").count(), 0);
+  assert.equal(await form.getByLabel("Provider", { exact: true }).count(), 0);
+  const privateValue = "browser-write-only-client-material";
+  await form.getByLabel("OAuth client name").fill("Engineering Google");
+  // Opening and canceling another template editor preserves the selected template and client fields.
+  await templateChoice.selectOption({ label: "Create connection template…" });
+  await editor.getByRole("button", { name: "Cancel" }).click();
+  assert.equal(await templateChoice.inputValue(), template.id);
+  assert.equal(await form.getByLabel("OAuth client name").inputValue(), "Engineering Google");
+  await form.getByLabel("Provider client ID").fill("engineering-google");
+  assert.equal(await form.getByLabel("Client authentication").inputValue(), "client_secret_post");
+  await form.getByLabel("Client secret", { exact: true }).fill(privateValue);
+  const registered = responseTo(page, "POST", fixture.origin + "/oauth-clients");
+  await form.getByRole("button", { name: "Register OAuth client" }).click();
+  const first = await registered;
+  assert.equal(first.status(), 201, await first.text());
+  const client = (await first.json()).data;
+  assert.equal(client.namespaceId, namespace.id);
+  assert.equal(Object.hasOwn(client, "clientSecret"), false);
+  const row = page.getByRole("heading", { name: "Engineering Google" }).locator("..");
+  await row
+    .getByText("Namespace · OAuth client owners · Client secret in request body", { exact: true })
+    .waitFor();
+  assert.equal((await page.locator("body").innerText()).includes(privateValue), false);
 
+  // Register another client from the saved template; choosing it as the default is a separate edit.
+  await page.getByRole("button", { name: "Register OAuth client" }).click();
+  await templateChoice.selectOption(template.id);
+  await form.getByLabel("OAuth client name").fill("Second Google");
+  await form.getByLabel("Provider client ID").fill("second-google");
+  await form.getByLabel("Client authentication").selectOption("none");
+  const secondRegistration = responseTo(page, "POST", fixture.origin + "/oauth-clients");
+  await form.getByRole("button", { name: "Register OAuth client" }).click();
+  const second = await secondRegistration;
+  assert.equal(second.status(), 201, await second.text());
+  await page.getByRole("heading", { name: "Second Google" }).waitFor();
+  await sections.getByRole("link", { name: "Connection templates", exact: true }).click();
+  await page.getByRole("button", { name: "Edit Google OAuth" }).click();
+  const edit = dialog(page, "Edit connection template");
+  assert.equal(await edit.getByLabel("OAuth client", { exact: true }).inputValue(), client.id);
+  await edit
+    .getByLabel("OAuth client", { exact: true })
+    .getByRole("option", { name: "Second Google" })
+    .waitFor({ state: "attached" });
+  await edit.getByRole("button", { name: "Cancel" }).click();
   restrict(fixture.policy, "administer", "installation");
   await page.goto(fixture.origin + "/console/credentials/oauth-clients?namespace=" + namespace.id);
   await page.getByRole("heading", { name: "Installation administrator access required" }).waitFor();
