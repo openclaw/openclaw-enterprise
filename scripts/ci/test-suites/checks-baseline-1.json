@@ -119,7 +119,7 @@
     "tests/integration/egress-stock-online-authority.test.mjs",
     "tests/integration/managed-plugin-request-authority.test.ts",
     "tests/integration/egress-stock-online-git-authority.test.mjs",
-    "tests/integration/harness-egress-probe-diagnostics.test.mjs",
+    "tests/integration/harness-egress-probe-diagnostics.test.ts",
     "tests/conformance/openshell-prepared-git-provider.test.mjs",
     "tests/conformance/openshell-git-runtime.test.mjs",
     "tests/integration/openshell-observed-request-hook.test.ts",
@@ -606,7 +606,7 @@
       ]
     },
     {
-      "path": "tests/integration/harness-egress-probe-diagnostics.test.mjs",
+      "path": "tests/integration/harness-egress-probe-diagnostics.test.ts",
       "expectedTests": [
         "held enrollment distinguishes probe failures without exposing proxy output or retrying"
       ]

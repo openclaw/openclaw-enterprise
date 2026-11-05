@@ -16,6 +16,15 @@ import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { signedLeaf } from "../helpers/certificates.mjs";
 import { listen } from "../helpers/listen.mjs";
 
+type ProbeScenario = {
+  name: string;
+  connectRefused?: boolean;
+  invalidJson?: boolean;
+  body?: Record<string, unknown>;
+  status?: number;
+  expected?: { error: string; code?: number };
+};
+
 // Run the generated listener and its unmodified curl against an owned loopback proxy.
 // This covers startup diagnostics, not installed supervisor policy or production egress.
 test(
@@ -27,6 +36,7 @@ test(
       name: "github-probe",
       commonName: "Fixture endpoint",
       subjectAltName: "DNS:github.com",
+      keyPem: undefined,
       days: 1,
     });
     const refusal = {
@@ -34,7 +44,7 @@ test(
       middleware: "oce-prepared-git",
       reason_code: "oce_hook_" + "a".repeat(36),
     };
-    for (const scenario of [
+    const scenarios: ProbeScenario[] = [
       {
         name: "CONNECT refused",
         connectRefused: true,
@@ -52,7 +62,8 @@ test(
         expected: { error: "preview_not_observed" },
       },
       { name: "valid denial", body: refusal, status: 200 },
-    ]) {
+    ];
+    for (const scenario of scenarios) {
       await t.test(scenario.name, async (t) => {
         const privateText = "private-proxy-response-" + randomUUID();
         let connections = 0;
@@ -136,10 +147,10 @@ test(
           },
         );
         let output = "";
-        child.stdout.on("data", (chunk) => {
+        child.stdout.on("data", (chunk: Buffer) => {
           output += chunk;
         });
-        child.stderr.on("data", (chunk) => {
+        child.stderr.on("data", (chunk: Buffer) => {
           output += chunk;
         });
         const exited = once(child, "exit");
@@ -154,7 +165,7 @@ test(
           authorization: "Bearer " + transport,
           "content-type": "application/json",
         };
-        let challenge;
+        let challenge: { startupId: string } | undefined;
         const deadline = Date.now() + 5000;
         while (!challenge && Date.now() < deadline) {
           try {
@@ -171,13 +182,14 @@ test(
         }
         assert.ok(challenge, "generated enrollment listener must start");
         await reservation.release();
+        const startupId = challenge.startupId;
         const probePath =
           "/example/project.git/oce-observe-request/" + "b".repeat(32) + ".git/info/refs";
         const probe = () =>
           fetch(url, {
             method: "POST",
             headers,
-            body: JSON.stringify({ startupId: challenge.startupId, probePath }),
+            body: JSON.stringify({ startupId, probePath }),
             signal: AbortSignal.timeout(15000),
           });
         const response = await probe();
@@ -186,7 +198,7 @@ test(
         assert.deepEqual(
           result,
           scenario.expected ?? {
-            startupId: challenge.startupId,
+            startupId,
             probePath,
             reasonCode: refusal.reason_code,
           },
