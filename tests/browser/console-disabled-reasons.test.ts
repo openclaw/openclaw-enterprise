@@ -303,50 +303,33 @@ test("the Namespace selector with no readable Namespace is reachable and names t
   assert.equal(new URL(page.url()).pathname, "/console/agents");
 });
 
-// Finding 2937: with no default Preset, Start with default Preset was natively disabled with no
-// reason. The hint beside it says why, describes it, and stays when another Preset is chosen
-// (the chooser's status line changes then).
-test("Start with default Preset names the missing default as its reason", async (t) => {
+// With no readable starter, the disabled shortcut must expose its reason to keyboard
+// and screen-reader users. The quick-start suite separately covers custom fallbacks.
+test("Start with default Preset names the missing readable starter as its reason", async (t) => {
   const { fixture, namespace }: ReadyNamespace = await createReadyConsoleNamespace(
     t,
-    "No default Preset",
-    {
-      defaultPresets: [],
-      filesystemConfiguration: true,
-    },
+    "No readable starter Preset",
+    { defaultPresets: [], filesystemConfiguration: true },
   );
   assertId(namespace);
-  const other = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-    body: { name: "Team Preset", template: { agent: { name: "Team Agent" } } },
-  });
-  assert.equal(other.status, 201, JSON.stringify(other.body));
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  const reason = "default-codex is not available to you in this Namespace.";
+  const reason = "No readable starter Preset is available in this Namespace.";
   await page.getByText(reason, { exact: true }).waitFor();
   const shortcut = page.getByRole("button", { name: "Start with default Preset", exact: true });
   assert.equal(await shortcut.isDisabled(), true);
   await expectReachableReason(page, shortcut, reason);
   assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
-  // The chooser's status line does not repeat the hint (finding 2946), and it still describes
-  // the unavailable Use Preset.
-  const choose = "Choose a Preset.";
-  await page
+  assert.equal(await page.getByText(reason, { exact: true }).count(), 1);
+  const status = page
     .getByRole("status")
-    .filter({ hasText: /^Choose a Preset\.$/ })
-    .waitFor();
-  assert.equal(await page.getByText(reason, { exact: false }).count(), 1);
-  await expectReachableReason(page, page.getByRole("button", { name: "Use Preset" }), choose);
-
-  const preset: unknown = other.data;
-  assertId(preset);
-  await page.getByLabel("Preset template").selectOption(preset.id);
-  await page
-    .getByText("Fill in the variables, then use this Preset to create an editable draft.", {
-      exact: true,
-    })
-    .waitFor();
-  await expectReachableReason(page, shortcut, reason);
+    .filter({ hasText: /^No Presets available to you in this Namespace\./ });
+  await status.waitFor();
+  await expectReachableReason(
+    page,
+    page.getByRole("button", { name: "Use Preset" }),
+    (await status.textContent())?.trim(),
+  );
 });
 
 // Finding D793. Save plugin selections, Discard changes, Save channel Secrets and Use Preset were
