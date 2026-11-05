@@ -1,6 +1,6 @@
 # Credential Proxy architecture
 
-Start with a user asking an Agent to push a change. OpenClaw Enterprise (OCE) runs the Agent in a sandbox. The Agent runs ordinary Git commands. OCE keeps the signing key and the installation token outside that sandbox.
+Start with a user asking an Agent to push a change. OpenClaw Enterprise (OCE) runs the Agent in a sandbox. The Agent runs ordinary Git commands. OCE keeps the GitHub App signing key and the installation token outside that sandbox.
 
 ## From the user to GitHub
 
@@ -12,7 +12,7 @@ The task tells the Agent what to do. An operator’s grant determines whether it
 
 ## How does the Credential Proxy authorize a Git request?
 
-![The Agent runs git push. The Credential Proxy asks the Git adapter to check the grant. The adapter returns allow or deny. Only on allow does the proxy add the installed token and send.](../assets/credential-proxy/current-git.png)
+![The Agent runs git push. The Credential Proxy asks the Git transport adapter about the push. The adapter calls the Repository Git authority to check the grant and returns allow or deny. Only on allow does the proxy add the installed token and send.](../assets/credential-proxy/current-git.png)
 
 In the OpenShell implementation shown here, the supervisor acts as the Credential Proxy. Its `EvaluateHttpRequest` hook sends the attempted request to the OCE worker. The worker checks who called, which credential version the proxy loaded, and whether the grant covers this operation.
 
