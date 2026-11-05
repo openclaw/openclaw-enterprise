@@ -1,7 +1,12 @@
 import type { BackendSummary, Namespace } from "@openclaw-enterprise/contracts";
 import { NAMESPACE_UNAVAILABLE } from "./agents/access-reasons.mjs";
 import { button, element, requestIdLine, setUnavailable } from "./dom.mjs";
-import { connectionTemplatesPage, type createNavigation, type pages } from "./navigation.mjs";
+import {
+  connectionTemplatesPage,
+  oauthClientsPage,
+  type createNavigation,
+  type pages,
+} from "./navigation.mjs";
 
 interface Account {
   name: string;
@@ -590,7 +595,8 @@ export function createShell({
         navigate(name);
       });
     }
-    const templates = feature === connectionTemplatesPage;
+    const credentialAdministration =
+      feature === connectionTemplatesPage || feature === oauthClientsPage;
     const icons = { agents: "◇", secrets: "⚿", namespaces: "▤" };
     for (const name of ["agents", "secrets", "namespaces"] as const) {
       const link = element(
@@ -598,7 +604,7 @@ export function createShell({
         {
           href: pageUrl(name),
           "data-nav": name,
-          ...(feature === name || (templates && name === "secrets")
+          ...(feature === name || (credentialAdministration && name === "secrets")
             ? { "aria-current": "page" }
             : {}),
         },
@@ -666,8 +672,8 @@ export function createShell({
     );
     const main = element("main", { className: "content", id: "main" });
     const selected = namespaces.find((item) => item.id === namespaceId);
-    const scope = templates
-      ? "Installation and Namespace templates"
+    const scope = credentialAdministration
+      ? "Installation and Namespace availability"
       : ["agents", "secrets"].includes(feature)
         ? `Namespace · ${selected?.name ?? (session && !namespaceAdmissionPending ? "No available selection" : "Checking access")}`
         : feature === "settings"
@@ -677,7 +683,7 @@ export function createShell({
             : "Installation-wide";
     // Settings is about the account, and Namespaces lists them: neither has a Namespace scope.
     const scopeSelector =
-      feature === "namespaces" || feature === "settings" || templates
+      feature === "namespaces" || feature === "settings" || credentialAdministration
         ? null
         : namespaceSelector("Namespace", { compact: true });
     // Refresh rebuilds the page: one whose write must finish here stays and says why.
@@ -726,7 +732,7 @@ export function createShell({
         );
     const view = element("div", { "aria-live": "polite", "aria-busy": "true" });
     main.append(header);
-    if (feature === "secrets" || templates) {
+    if (feature === "secrets" || credentialAdministration) {
       const sections = element("nav", {
         className: "credential-tabs",
         "aria-label": "Credential sections",
@@ -734,8 +740,9 @@ export function createShell({
       for (const [name, label] of [
         ["secrets", "Secrets"],
         [connectionTemplatesPage, "Connection templates"],
+        [oauthClientsPage, "OAuth clients"],
       ] as const) {
-        if (name === connectionTemplatesPage && !state.installationAdmin) {
+        if (name !== "secrets" && !state.installationAdmin) {
           continue;
         }
         const link = element(
@@ -1030,7 +1037,9 @@ export function createShell({
     // The shown page learned that the caller does not administer the Installation, whose
     // administrators alone get the link (finding D760).
     dropAdministrationLinks() {
-      app.querySelector(`.credential-tabs [data-nav="${connectionTemplatesPage}"]`)?.remove();
+      for (const page of [connectionTemplatesPage, oauthClientsPage]) {
+        app.querySelector(`.credential-tabs [data-nav="${page}"]`)?.remove();
+      }
       observabilityUrl = null;
       observabilityLink?.remove();
       observabilityLink = null;

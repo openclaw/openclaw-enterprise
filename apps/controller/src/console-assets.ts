@@ -45,6 +45,8 @@ const CONSOLE_ASSETS = new Map([
       "sign-in-presentation.mts",
       "configuration-fields.mts",
       "connection-templates.mts",
+      "oauth-clients.mts",
+      "oauth-providers.mts",
       "driver-configurations.mts",
       "view-lifetime.mts",
       "request-turns.mts",
@@ -172,6 +174,7 @@ const CONSOLE_SHELL_ROUTES = new Set([
   "/console/namespaces",
   "/console/secrets",
   "/console/credentials/connection-templates",
+  "/console/credentials/oauth-clients",
   "/console/settings",
 ]);
 
