@@ -136,6 +136,8 @@ one `@` and a dotted domain.
 }
 ```
 
+Optional `controlPlane.clusterPort` sets the Kubernetes API egress port (default 443).
+
 `controlPlane.gatewayClassName`, `controlPlane.gatewayApiKeySecretName` and
 `controlPlane.databaseCa.secretName` must be Kubernetes resource names of at
 most 253 characters: the existing GatewayClass that Envoy Gateway serves, the

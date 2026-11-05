@@ -1192,6 +1192,7 @@ function buildInput(rawInput, diagnostics) {
       "apiClients",
       "databaseCidrs",
       "clusterCidrs",
+      "clusterPort",
       "dns",
       "gatewayClassName",
       "gatewayApiKeySecretName",
@@ -1631,6 +1632,12 @@ function buildRendered(profile, parsed, diagnostics) {
   // its refusal of any @ before the host (http://@host).
   // A rewritten IPv4 host gets its own sentence; other URL failures stay on the
   // absolute HTTP(S) message from optionalString.
+  const clusterPort = optionalPositiveInteger(
+    controlPlane,
+    ["controlPlane", "clusterPort"],
+    diagnostics,
+    { max: 65535 },
+  );
   const rawObservabilityUrl = controlPlane.observabilityUrl;
   const parsedObservability =
     typeof rawObservabilityUrl === "string"
@@ -1772,6 +1779,7 @@ function buildRendered(profile, parsed, diagnostics) {
         validate: (value) => isIpv4Cidr(value, 32),
         description: "an IPv4 /32 CIDR",
       }),
+      ...(clusterPort === undefined ? {} : { port: clusterPort }),
     },
     controlPlane: {
       ...(controlPlane.nodeSelector === undefined
