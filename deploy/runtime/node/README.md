@@ -12,11 +12,19 @@ Build through the [runtime recipe](../README.md#build-a-local-runtime-image).
 on Bookworm. A newer override fails instead of silently receiving an older
 binary. The separate repository-credential service keeps its original base.
 
-[`build.sh`](build.sh) retains full ICU and default features, uses four compiler
-jobs, and runs the real worker regression plus six adjacent loader cases. The
+[`build.sh`](build.sh) retains full ICU and default features, defaults to four
+compiler jobs, and runs the real worker regression plus six adjacent loader cases. The
 same cases run against the copied binary in slim Bookworm, with linkage, locale
 and crypto checks. Compiler objects are removed before the build layer commits.
 The source-only stage remains available for the slim test harness.
+
+For a builder with verified spare CPU and memory, pass
+`--build-arg NODE_BUILD_JOBS=8` to select more compiler jobs. The build-only
+argument accepts a positive decimal integer without leading zeros; an empty
+value fails. It changes only Make parallelism in the Node compile stage, not
+runtime settings or compiler options. Size it for the builder's effective CPU
+and memory limits, including concurrent builds and linking. Changing this
+argument invalidates the compile layer; record it with build timing evidence.
 
 A clean source build adds substantial compilation time. Builds that reuse
 compiler objects do not establish clean-build cost. Before release, require
