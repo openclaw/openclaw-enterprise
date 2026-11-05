@@ -14,7 +14,6 @@ import type {
   CredentialSourceBrowserAuthorization,
   CredentialSourceDeviceAuthorizationResult,
 } from "@openclaw-enterprise/contracts";
-import { BrowserAuthorizationError } from "@openclaw-enterprise/occ";
 import { ScopeViolationError } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
 
@@ -341,19 +340,11 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
     privateState: string,
     callback: CredentialBrowserAuthorizationCallback,
     request: CredentialBrowserAuthorizationRequest,
+    clientSecret: string | undefined,
     acceptGrant: (grant: OAuthConnectionGrant) => Promise<void>,
   ): Promise<void> {
     this.requireBrowserSource(context);
     const state = browserAuthorizationState(context.source.id, privateState, callback);
-    const clientSecret =
-      request.tokenEndpointAuthMethod === "none"
-        ? undefined
-        : await this.readClientSecret({
-            registrationId: request.oauthClientId,
-            issuer: request.issuer,
-            clientId: request.clientId,
-            signal: context.signal,
-          });
     const grant = await exchangeAuthorizationCode(
       request,
       state.verifier,
@@ -501,22 +492,6 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
   }
 
   /** Only the operator channel can export a stored credential. */
-  async readClientSecret(context: CredentialClientRegistrationContext): Promise<string> {
-    const workspace = this.requireClientWorkspace();
-    const name = clientProviderName(context.registrationId);
-    const provider = await this.backend.client
-      .clientForNamespace(workspace)
-      .getProvider(workspace, name, context.signal);
-    if (!provider) {
-      throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
-    }
-    this.assertClientProvider(provider, context.registrationId);
-    const secret = await this.backend.client
-      .credentialClientForNamespace(workspace)
-      .getProviderCredential(workspace, name, CLIENT_SECRET_KEY, context.signal);
-    return secret.value;
-  }
-
   private async completeCodexConnection(
     context: CredentialSourceContext,
     provider: OpenShellProviderResponse,

@@ -4624,7 +4624,6 @@ export class OpenClawController {
     view: PlatformReadView,
     namespaceId: string,
     version: OAuthConnectionTemplateVersion,
-    refreshDriverId: string,
   ) {
     const client = version.oauthClientId
       ? await view.connectionTemplates.findOAuthClient(version.oauthClientId)
@@ -4634,8 +4633,7 @@ export class OpenClawController {
       (client.namespaceId !== undefined && client.namespaceId !== namespaceId) ||
       client.issuer !== version.issuer ||
       client.tokenUrl !== version.tokenUrl ||
-      (version.revocationUrl !== undefined && client.revocationUrl !== version.revocationUrl) ||
-      client.credentialRefreshDriverId !== refreshDriverId
+      (version.revocationUrl !== undefined && client.revocationUrl !== version.revocationUrl)
     ) {
       throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
     }
@@ -4671,7 +4669,7 @@ export class OpenClawController {
       }
       const version = template.current;
       const selectedScopes = connectionConsentScopes(version, input.selectedScopes);
-      const client = await this.connectionClientForVersion(state, namespaceId, version, refresh.id);
+      const client = await this.connectionClientForVersion(state, namespaceId, version);
       const createdAt = this.timestamp();
       const expiresAt = new Date(Date.parse(createdAt) + CONNECTION_SESSION_TTL_MS).toISOString();
       // Consent starts with one atomic reservation. There is no grant or worker provider to retire
@@ -4820,12 +4818,7 @@ export class OpenClawController {
         ) {
           throw new BrowserAuthorizationError("invalid_session", "retry");
         }
-        const client = await this.connectionClientForVersion(
-          view,
-          namespaceId,
-          version,
-          refresh.id,
-        );
+        const client = await this.connectionClientForVersion(view, namespaceId, version);
         await holdSession?.(view);
         return { namespace, source, client };
       });
@@ -4840,37 +4833,41 @@ export class OpenClawController {
         session.redirectUri,
         session.selectedScopes,
       );
-      exchangeStarted = true;
       await this.credentialGatewayOperation(() =>
-        refresh.completeBrowserAuthorization!(
-          context,
-          session.privateState,
-          { code: input.code!, state: input.state },
-          request,
-          async (grant) => {
-            handoffStarted = true;
-            approved = {
-              issuer: version.issuer,
-              tokenUrl: version.tokenUrl,
-              oauthClientId: client.id,
-              clientId: client.clientId,
-              destinations: version.destinations,
-              ...(version.mcp
-                ? { resource: version.mcp.resource, mcpServerUrl: version.mcp.serverUrl }
-                : {}),
-              requestedScopes: session.selectedScopes,
-              grantedScopes: grant.grantedScopes,
-            };
+        this.withOAuthClientSecret(client, async (clientSecret) => {
+          context.signal.throwIfAborted();
+          exchangeStarted = true;
+          await refresh.completeBrowserAuthorization!(
+            context,
+            session.privateState,
+            { code: input.code!, state: input.state },
+            request,
+            clientSecret,
+            async (grant) => {
+              handoffStarted = true;
+              approved = {
+                issuer: version.issuer,
+                tokenUrl: version.tokenUrl,
+                oauthClientId: client.id,
+                clientId: client.clientId,
+                destinations: version.destinations,
+                ...(version.mcp
+                  ? { resource: version.mcp.resource, mcpServerUrl: version.mcp.serverUrl }
+                  : {}),
+                requestedScopes: session.selectedScopes,
+                grantedScopes: grant.grantedScopes,
+              };
 
-            await this.acceptConnectionTokens(
-              namespaceId,
-              credentialSourceId,
-              grant,
-              context.signal,
-              holdSession,
-            );
-          },
-        ),
+              await this.acceptConnectionTokens(
+                namespaceId,
+                credentialSourceId,
+                grant,
+                context.signal,
+                holdSession,
+              );
+            },
+          );
+        }),
       );
       if (!approved) {
         throw new DependencyUnavailableError(
@@ -5195,7 +5192,6 @@ export class OpenClawController {
     namespaceId: string,
     sourceId: string,
   ): Promise<OAuthConnectionClient> {
-    const driver = this.browserConnectionDriver();
     return this.read(async (view) => {
       const account = await view.savedConnections.findSavedConnection(namespaceId, sourceId);
       if (!account || account.revocationRequestedBy) {
@@ -5208,7 +5204,7 @@ export class OpenClawController {
       if (!version || version.oauthClientId !== account.oauthClientId) {
         throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
       }
-      const client = await this.connectionClientForVersion(view, namespaceId, version, driver.id);
+      const client = await this.connectionClientForVersion(view, namespaceId, version);
       return {
         registration: {
           oauthClientId: client.id,
@@ -5218,16 +5214,16 @@ export class OpenClawController {
           tokenEndpointAuthMethod: client.tokenEndpointAuthMethod,
           ...(version.mcp && { resource: version.mcp.resource }),
         },
-        ...(client.tokenEndpointAuthMethod !== "none" &&
-          driver.readClientSecret && {
-            readSecret: (signal: AbortSignal) =>
-              driver.readClientSecret!({
-                registrationId: client.id,
-                issuer: client.issuer,
-                clientId: client.clientId,
-                signal,
-              }),
-          }),
+        ...(client.tokenEndpointAuthMethod !== "none" && {
+          readSecret: (signal: AbortSignal) =>
+            this.withOAuthClientSecret(client, async (value) => {
+              signal.throwIfAborted();
+              if (value === undefined) {
+                throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
+              }
+              return value;
+            }),
+        }),
       };
     });
   }
@@ -5280,7 +5276,7 @@ export class OpenClawController {
         "The selected Secret Driver cannot store an OAuth grant.",
       );
     }
-    const refresh = this.connectionRegistrationDriver();
+    const refresh = this.credentialRefreshDriver();
     if (!refresh.startBrowserAuthorization || !refresh.completeBrowserAuthorization) {
       throw new NotImplementedError(
         "connection_templates",

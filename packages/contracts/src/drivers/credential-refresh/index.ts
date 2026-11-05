@@ -40,8 +40,6 @@ export interface CredentialRefreshDriver extends Driver {
     context: CredentialClientRegistrationContext,
     clientSecret: string,
   ): Promise<void>;
-  /** Trusted Token Service access to the current confidential registration credential. */
-  readClientSecret?(context: CredentialClientRegistrationContext): Promise<string>;
   /** Replaces the stored credential for operations that authenticate this client. */
   rotateClientSecret?(
     context: CredentialClientRegistrationContext,
@@ -63,6 +61,8 @@ export interface CredentialRefreshDriver extends Driver {
     privateState: string,
     callback: CredentialBrowserAuthorizationCallback,
     request: CredentialBrowserAuthorizationRequest,
+    /** Current registration material for this exchange only. */
+    clientSecret: string | undefined,
     acceptGrant: (grant: OAuthConnectionGrant) => Promise<void>,
   ): Promise<void>;
   /** Replaces the source's refresh material; replaying a successful `requestId` is a no-op. */
