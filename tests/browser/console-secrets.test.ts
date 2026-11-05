@@ -2,6 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Page } from "playwright";
 
+import {
+  NamespaceCallerPermissionsResponse,
+  SecretDetailResponse,
+} from "../../packages/contracts/src/api/resources.ts";
+
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import type {
   CreateIAMAccessBindingBody,
@@ -15,7 +20,6 @@ import type {
   IAMRoleResponse,
   NamespaceListResponse,
   NamespaceWire,
-  SecretDetailResponse,
   SecretListResponse,
 } from "../../packages/contracts/src/api/resources.ts";
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
@@ -30,8 +34,8 @@ import {
   SECRET_UPDATE_DENIED,
   tooManyRequestsIn,
 } from "../helpers/refusal-text.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
-import { consoleStorage } from "../helpers/console-storage.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
+import { consoleStorage } from "../helpers/console-storage.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   accessibleDescription,
@@ -39,15 +43,15 @@ import {
   expectReachableReason,
   expectWriteAsksBeforeUnload,
   fileBrowser,
-  fulfillPatchedJson,
   hasFocus,
   holdRequests,
   login,
   newPage,
   pathRequests,
   settledView,
-} from "./console-agents-browser-helpers.mjs";
-import { responseTo } from "./console-action-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+import { fulfillPatchedJson } from "./console-patched-response.ts";
+import { responseTo } from "./console-action-helpers.ts";
 
 const browser = fileBrowser();
 type Namespace = Pick<NamespaceWire, "id">;
@@ -56,8 +60,7 @@ type SecretWriteMethod = "POST" | "PATCH" | "DELETE";
 const secretsUrl = (namespace: Namespace) => `/console/secrets?namespace=${namespace.id}`;
 const secretPath = (namespace: Namespace) => `/namespaces/${namespace.id}/secrets`;
 const dialog = (page: Page, name: string) => page.getByRole("dialog", { name, exact: true });
-const DELETE_BLOCKED =
-  "Deletion is blocked while references remain. Remove them from their owning resources first.";
+const SECRET_REFERENCED = "This Secret is referenced.";
 
 async function createFromConsole(page: Page, name: string, value: string) {
   await page.getByRole("button", { name: "Create Secret", exact: true }).click();
@@ -116,7 +119,17 @@ test("console Secret creation, replacement, Agent consumers and cleanup use real
     {},
     { harnessAuth: { method: "api_key", source: secret.ref } },
   );
+  const requests = apiRequests(page, fixture.origin);
+  const detailRead = responseTo(
+    page,
+    "GET",
+    `${fixture.origin}${secretPath(namespace)}/${secret.id}`,
+  );
   await page.getByRole("button", { name: "Shared model", exact: true }).click();
+  const detailResponse = await detailRead;
+  assert.equal(detailResponse.status(), 200);
+  const { data: opened }: SecretDetailResponse = await detailResponse.json();
+  assert.equal(opened.callerPermissions?.delete, true);
   const detail = dialog(page, "Shared model");
   // Consumers name the Agent, its ID beside it (finding D761).
   await detail.getByRole("link", { name: agent.name, exact: true }).waitFor();
@@ -125,7 +138,12 @@ test("console Secret creation, replacement, Agent consumers and cleanup use real
   await expectReachableReason(
     page,
     detail.getByRole("button", { name: "Delete Secret", exact: true }),
-    DELETE_BLOCKED,
+    SECRET_REFERENCED,
+  );
+  assert.doesNotMatch(await detail.innerText(), /remove .*references|remove them/i);
+  assert.ok(
+    requests.every((request) => request.method === "GET"),
+    "inspection must be read-only",
   );
   await detail.getByRole("link", { name: agent.name, exact: true }).click();
   await page.waitForURL(new RegExp(`/console/agents/${agent.id}`));
@@ -429,6 +447,7 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
   const { data: fresh }: SecretDetailResponse = await freshResponse.json();
   assert.deepEqual(fresh.consumers.agents, [sharedAgent.id]);
   assert.equal(fresh.consumers.unreadable, 1);
+  assert.equal(fresh.callerPermissions?.delete, false);
   const privateDetail = dialog(page, privateSecret.name);
   await privateDetail.getByText(/1 additional consumer/).waitFor();
   assert.equal(await privateDetail.getByText(privateAgent.id, { exact: true }).count(), 0);
@@ -439,8 +458,9 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
   await expectReachableReason(
     page,
     privateDetail.getByRole("button", { name: "Delete Secret", exact: true }),
-    `${DELETE_BLOCKED} ${SECRET_DELETE_DENIED}`,
+    `${SECRET_REFERENCED} ${SECRET_DELETE_DENIED}`,
   );
+  assert.doesNotMatch(await privateDetail.innerText(), /remove .*references|remove them/i);
   await privateDetail.getByRole("button", { name: "Close" }).click();
   assert.ok(
     requests.every((request) => request.method === "GET"),
@@ -564,7 +584,7 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
   // A page that read the permission answer before a revocation still offers creation, as the
   // API's answer to a creator does; the API refuses the POST.
   await page.route(`**/namespaces/${namespace.id}/permissions`, (route) =>
-    fulfillPatchedJson(route, (body) => ({
+    fulfillPatchedJson(route, NamespaceCallerPermissionsResponse, (body) => ({
       ...body,
       data: { ...body.data, secrets: { create: true } },
     })),
@@ -586,7 +606,7 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
       await route.fallback();
       return;
     }
-    await fulfillPatchedJson(route, (body) => ({
+    await fulfillPatchedJson(route, SecretDetailResponse, (body) => ({
       ...body,
       data: { ...body.data, callerPermissions: { update: true, delete: true } },
     }));
@@ -631,10 +651,16 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
     {},
     { harnessAuth: { method: "api_key", source: secret.ref } },
   );
+  const blockedDelete = responseTo(
+    page,
+    "DELETE",
+    `${fixture.origin}${secretPath(namespace)}/${secret.id}`,
+  );
   await dialog(page, "Delete Secret")
     .getByRole("button", { name: "Permanently delete Secret", exact: true })
     .click();
   // The API's 409 names the reference the recheck found (finding 2538).
+  assert.equal((await blockedDelete).status(), 409);
   await dialog(page, "Delete Secret")
     .getByText(
       /^Could not delete this Secret\. The Secret is still referenced by Agent agt_\S+\. Remove those references first\. Close and reopen the Secret to inspect its current consumers\.$/,
@@ -772,7 +798,7 @@ test("Secret refusals keep their meaning, and incomplete consumers or a not-read
   await page.route(
     `${fixture.origin}${secretPath(namespace)}/${secret.id}`,
     (route) =>
-      fulfillPatchedJson(route, (body: SecretDetailResponse) => {
+      fulfillPatchedJson(route, SecretDetailResponse, (body) => {
         body.data.consumers = { ...body.data.consumers, truncated: true };
         return body;
       }),
@@ -781,7 +807,7 @@ test("Secret refusals keep their meaning, and incomplete consumers or a not-read
   await page.getByRole("button", { name: secret.name, exact: true }).click();
   const detail = dialog(page, secret.name);
   await detail.getByText(/This consumer list is incomplete/).waitFor();
-  await detail.getByText(/Deletion is blocked while references remain/).waitFor();
+  await detail.getByText(SECRET_REFERENCED, { exact: true }).waitFor();
   assert.equal(
     await detail.getByRole("button", { name: "Delete Secret", exact: true }).isDisabled(),
     true,

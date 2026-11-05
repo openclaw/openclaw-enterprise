@@ -364,8 +364,9 @@ test("renderer supports exactly the openclaw and codex profiles", () => {
   const openclaw = renderCli("openclaw", baseInput());
   assert.equal(openclaw.summary.ok, true);
   assert.equal(openclaw.preflight.profile, "openclaw");
-  assert.match(openclaw.installation, /id: occ-plugin/);
-  assert.doesNotMatch(openclaw.installation, /id: codex-plugin/);
+  assert.deepEqual(loadYaml(openclaw.installation).drivers.plugin, [
+    { id: "occ-plugin", configuration: {} },
+  ]);
   assert.match(openclaw.values, /agentNativeAdmin:\n {2}enabled: true/);
   assert.match(openclaw.values, /repositoryCredentials:\n {2}enabled: false/);
   assert.match(openclaw.values, /slackProxy:\n {2}enabled: true/);
@@ -382,8 +383,9 @@ test("renderer supports exactly the openclaw and codex profiles", () => {
   const codex = renderCli("codex", codexInput());
   assert.equal(codex.summary.ok, true);
   assert.equal(codex.preflight.profile, "codex");
-  assert.match(codex.installation, /id: codex-plugin/);
-  assert.match(codex.installation, /catalogSource: hosted/);
+  assert.deepEqual(loadYaml(codex.installation).drivers.plugin, [
+    { id: "codex-plugin", configuration: { catalogSource: "hosted" } },
+  ]);
   assert.doesNotMatch(codex.installation, /service_account: chatgpt-service-accounts/);
   assert.match(codex.values, /slackProxy:\n {2}enabled: true/);
   assert.match(
@@ -2849,34 +2851,57 @@ test("preflight rejects Codex seccomp paths the compute driver refuses", async (
   assert.match(accepted.installation, /codexSeccompProfile: profiles\/codex\.json/);
 });
 
-test("the codex profile carries a Codex model endpoint under Compute startup's rule", async () => {
-  const field = "runtime.codexModelBaseUrl";
-  await assertFieldRefusals(
-    "openclaw",
-    baseInput(),
-    field,
-    ["https://models.example.com/v1"],
-    "is only consumed by the codex profile",
+test("both profiles carry the shared model endpoint under Compute startup's rule", async () => {
+  const field = "runtime.modelProvider.baseUrl";
+  const shared = { protocol: "openai-responses", baseUrl: "https://models.example.com/v1" };
+  const native = await render("openclaw", {
+    ...baseInput(),
+    runtime: { ...baseInput().runtime, modelProvider: shared },
+  });
+  assert.deepEqual(
+    loadYaml(native.installation).drivers.compute.configuration.runtime.modelProvider,
+    shared,
+  );
+  const capable = await render(
+    "codex",
+    codexInput({ runtime: { modelProvider: { ...shared, supportsStandaloneWebSearch: true } } }),
+  );
+  assert.equal(
+    loadYaml(capable.installation).drivers.compute.configuration.runtime.modelProvider
+      .supportsStandaloneWebSearch,
+    true,
   );
   const accepted = await render(
     "codex",
-    codexInput({ runtime: { codexModelBaseUrl: "https://Models.Example.com:443/v1/" } }),
+    codexInput({
+      runtime: {
+        modelProvider: {
+          protocol: "openai-responses",
+          baseUrl: "https://Models.Example.com:443/v1/",
+        },
+      },
+    }),
   );
   const compute = loadYaml(accepted.installation).drivers.compute.configuration;
   // Written as Compute normalizes it, and accepted by Compute startup.
-  assert.equal(compute.runtime.codexModelBaseUrl, "https://models.example.com/v1");
+  assert.equal(compute.runtime.modelProvider?.baseUrl, "https://models.example.com/v1");
   const backslashScheme = await render(
     "codex",
-    codexInput({ runtime: { codexModelBaseUrl: "https:\\\\192.0.2.1/v1" } }),
+    codexInput({
+      runtime: {
+        modelProvider: { protocol: "openai-responses", baseUrl: "https:\\\\192.0.2.1/v1" },
+      },
+    }),
   );
   assert.equal(
-    loadYaml(backslashScheme.installation).drivers.compute.configuration.runtime.codexModelBaseUrl,
+    loadYaml(backslashScheme.installation).drivers.compute.configuration.runtime.modelProvider
+      ?.baseUrl,
     "https://192.0.2.1/v1",
   );
   requireConfiguration(KubernetesComputeDriver, compute);
   assert.equal(
     loadYaml((await render("codex", codexInput())).installation).drivers.compute.configuration
-      .runtime.codexModelBaseUrl,
+      .runtime.modelProvider?.baseUrl,
     undefined,
   );
   // Each refusal is Compute startup's (finding 1292 spellings included), with its own message.
@@ -2923,12 +2948,21 @@ test("the codex profile carries a Codex model endpoint under Compute startup's r
     // A spelling refusal comes first, whatever host the parser would read.
     ["https:/192.168.1/v1", "must start with https:// (the // after the scheme is missing)."],
   ]) {
-    await assertFieldRefusals("codex", codexInput(), field, [value], message);
+    await assertFieldRefusals(
+      "codex",
+      codexInput({ runtime: { modelProvider: shared } }),
+      field,
+      [value],
+      message,
+    );
     assert.throws(
       () =>
         requireConfiguration(KubernetesComputeDriver, {
           ...compute,
-          runtime: { ...compute.runtime, codexModelBaseUrl: value },
+          runtime: {
+            ...compute.runtime,
+            modelProvider: { protocol: "openai-responses", baseUrl: value },
+          },
         }),
       // Compute startup has no separate nonempty-string refusal; its general rule covers it.
       SharedConfigurationValidationError,
@@ -2950,7 +2984,10 @@ test("the codex profile carries a Codex model endpoint under Compute startup's r
     ["https://[2001:db8::1]/v1", "is an IPv6 address but Harness model egress allows only IPv4"],
     ["https://10.0.0.1/v1", "has an IPv4 host in 10.0.0.0/8 which Harness model egress excludes"],
   ]) {
-    const warned = await render("codex", codexInput({ runtime: { codexModelBaseUrl: value } }));
+    const warned = await render(
+      "codex",
+      codexInput({ runtime: { modelProvider: { protocol: "openai-responses", baseUrl: value } } }),
+    );
     assert.ok(
       warned.preflight.warnings.includes(
         `${field} ${blocked}: the generated policy will not admit it unless another NetworkPolicy does.`,
@@ -2958,7 +2995,7 @@ test("the codex profile carries a Codex model endpoint under Compute startup's r
       value,
     );
     const configured = loadYaml(warned.installation).drivers.compute.configuration;
-    assert.equal(configured.runtime.codexModelBaseUrl, value);
+    assert.equal(configured.runtime.modelProvider?.baseUrl, value);
     requireConfiguration(KubernetesComputeDriver, configured);
   }
 });

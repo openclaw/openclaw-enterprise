@@ -1,14 +1,10 @@
 import { closed, nonempty, object } from "../../../composition/installation-fields.ts";
+import type { ConfigurationRecord } from "../../../composition/installation-fields.ts";
 import type { PreparedRepositoryGitConfiguration } from "../../../backends/repository-credentials/prepared-git-owner.ts";
 import { preparedGitHubConfiguration } from "./credentials/prepared-configuration.ts";
 
 /** Interpret portable repository configuration after integration extracts transport. */
-export function githubRepositoryConfiguration(input: unknown) {
-  if (input === undefined) {
-    return undefined;
-  }
-  const selection = object(input, "repository");
-  closed(selection, ["id", "configuration", "preparedGitHub", "nativeSender"], "repository");
+export function githubRepositoryConfiguration(selection: ConfigurationRecord) {
   const native =
     selection.nativeSender === undefined
       ? undefined
@@ -22,7 +18,6 @@ export function githubRepositoryConfiguration(input: unknown) {
     };
   }
   return {
-    selection,
     nativeSender,
     prepared:
       selection.preparedGitHub === undefined

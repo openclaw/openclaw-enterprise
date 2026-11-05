@@ -1,11 +1,24 @@
 # Deploy OpenClaw Enterprise
 
-Install OpenClaw Enterprise on Kubernetes, verify access to the OpenClaw
-Control Plane (OCC), then deploy an Agent and check its model response. Use
-[Local Setup](quickstart.md) for a first installation on your machine. The
-production guides below are for operators using an existing cluster; [Kubernetes setup](deploy/kubernetes-setup.md) installs an OpenShell Codex Agent and finishes with the shared operator session. Run
-repository commands from the repository root. Starting OCC needs no model
-credential; an Agent needs one to send a model request.
+Install OpenClaw Enterprise (OCE), verify access to the OpenClaw Control Plane
+(OCC), then deploy an Agent and check its model response. Choose one installation
+path below and keep its operator shell and protected files for the next step.
+Run repository commands from the matching release checkout's root. Starting OCC
+needs no model credential; an Agent needs one to send a model request.
+
+OCE's OpenShell integration is not production-qualified. Review its
+[remaining qualification work](../reference/drivers/openshell-sandbox.md#remaining-qualification-work)
+before choosing an OpenShell installation path.
+
+| Task                                                     | Start here                                                           | Continue with                                                                                                       |
+| -------------------------------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Try OCE on your machine                                  | [Local Setup](quickstart.md)                                         | [Deploy an Agent](quickstart.md#deploy-an-agent)                                                                    |
+| Try OpenShell locally                                    | [Local k3d setup](deploy/local-setup.md)                             | [Deploy your first Agent](deploy/deploy-first-agent.md)                                                             |
+| Install on an existing Kubernetes cluster with OpenShell | [Kubernetes setup](deploy/kubernetes-setup.md)                       | [Deploy your first Agent](deploy/deploy-first-agent.md)                                                             |
+| Install on Amazon EKS with OpenShell                     | [EKS setup](deploy/eks-openshell-setup.md)                           | [Deploy your first Agent](deploy/deploy-first-agent.md)                                                             |
+| Configure a custom Helm installation                     | [Standard Kubernetes](deploy/kubernetes.md)                          | [Production installation](deploy/production-installation.md), then [production Agents](deploy/production-agents.md) |
+| Upgrade an existing Helm installation                    | [Upgrade checklist](deploy/upgrade-checklist.md)                     | [Production image upgrades](deploy/production-upgrade.md)                                                           |
+| Recover an interrupted image upgrade                     | [Production upgrade recovery](deploy/production-upgrade-recovery.md) | Reconcile the original run before any retry                                                                         |
 
 ## Development
 
@@ -31,16 +44,11 @@ The [console reference](../reference/console.md) covers browser behavior and lim
 
 ## Production
 
-Choose the guide for your cluster:
-
-- [Standard Kubernetes](deploy/kubernetes.md): prepare an existing Kubernetes
-  cluster, storage, networking, and PostgreSQL.
-- [Amazon EKS quickstart](deploy/eks-openshell-setup.md): prepare AWS infrastructure,
-  install OCE, configure browser access, and onboard a dedicated OpenShell Agent.
-
-The EKS quickstart includes installation and Agent deployment; do not repeat the
-sequence below after completing it. For a custom installation, use the shared
-procedure below. Cluster hosting does not select the Agent model provider.
+The Kubernetes and EKS setup guides install OCE with OpenShell and prepare the
+shared operator session for **Deploy your first Agent**. Do not repeat the custom
+installation sequence below after either setup guide. Installation profiles and
+the custom Helm procedure use a separate configuration and Agent deployment path.
+Cluster hosting does not select the Agent model provider.
 
 ### Production prerequisites
 
@@ -48,16 +56,19 @@ procedure below. Cluster hosting does not select the Agent model provider.
 
 ### Production installation sequence
 
-Follow these pages in order in the same operator shell:
+For a custom Helm installation, follow these pages in order:
 
-1. [Build images and install the control plane](deploy/production-installation.md).
+1. [Select images and install the control plane](deploy/production-installation.md).
    Generate configuration from an
    [installation profile](deploy/installation-profiles.md) (recommended) or copy
    the manual YAML examples, then create system Secrets, prepare the fresh
-   bootstrap PVC, install the chart, and authenticate to the production API.
+   bootstrap PVC, and [install the chart once](deploy/production-installation.md#install-the-control-plane)
+   with `occ installation install`. Keep the bootstrap key in the installation shell.
+   Use it there to authenticate to the production API.
 2. [Prepare Namespaces and deploy Agents](deploy/production-agents.md).
    Grant tenant RoleBindings, choose embedded OpenClaw or dedicated Codex,
-   provision exact-Agent credentials, and deploy a saved version.
+   and grant access to the model Secret. Switch to the [Namespace service key in a separate shell](deploy/production-agents.md#prepare-transport-credentials-and-deploy)
+   before deploying the reviewed Configuration with `occ agent deploy-first`.
 3. [Verify the production workload](deploy/production-agents.md#verify-production-workloads).
    Confirm the selected version and require a real model response. The guide
    offers a TUI and an HTTP check using the optional loopback password on

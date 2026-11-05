@@ -1,7 +1,7 @@
 ---
 created: "2026-09-20"
-updated: 2026-10-15
-last_updated_session: "authoring-run/ec3b3e9d-0724-4b9e-a41d-4eb8a44d4851"
+updated: 2026-11-04
+last_updated_session: "authoring-run/fbfcb29f-156c-4cfd-af1d-fa15224dd2e5"
 ---
 
 # Namespace IAM Policy Flow
@@ -152,6 +152,11 @@ indexes each snapshot once (identities by id, issuer and subject; bindings by
 subject; Restrictions by action and kind). Nothing outlives the
 unit: the next request reads the policy again.
 
+`packages/occ/src/index.ts:OpenClawController.updateAgent` checks Agent `update`
+again after locking the Namespace. Namespace IAM writes take the same lock.
+If a binding withdrawal commits first and the caller has no other applicable
+`update` grant, the Agent save returns `403` and leaves the draft unchanged.
+
 ### 5. Platform state commits policy and audit together
 
 `packages/occ/src/state/postgres-state.ts:PostgresPlatformState`
@@ -230,6 +235,7 @@ selected account, session, and policy writers join the same protocol.
 
 ## Changelog
 
+- 2026-11-04 02:25: Recheck Agent update permission under the Namespace lock. (authoring-run/fbfcb29f-156c-4cfd-af1d-fa15224dd2e5 - fdca6e74421067adc66dce4f141d153af0355f68)
 - 2026-10-15 13:28: Retain assigning sessions through policy COMMIT, require transactional IAM writes, and preserve caller limits with shared guarded-session holds. (authoring-run/ec3b3e9d-0724-4b9e-a41d-4eb8a44d4851 - a302a3e2061575b64dcc37e212c55075d5c74b9a)
 - 2026-10-14 11:00: Read, validate and index native policy once per State unit of work instead of once per decision. (fix-1322)
 - 2026-10-01 20:30: Refuse AccessBindings whose Role cannot apply to the target. (fix-d93-d100)

@@ -62,11 +62,11 @@ function jsonValue(value: unknown, depth = 0): boolean {
   );
 }
 
-function jsonSchema(value: unknown, depth = 0): boolean {
+function jsonSchema(value: unknown, depth = 0, localTool = false): boolean {
   if (depth > 16) {
     return false;
   }
-  const nested = (item: unknown) => jsonSchema(item, depth + 1);
+  const nested = (item: unknown) => jsonSchema(item, depth + 1, localTool);
   const definitions: Validator = (item) => {
     const record = asRecord(item);
     return (
@@ -97,6 +97,10 @@ function jsonSchema(value: unknown, depth = 0): boolean {
     multipleOf: (item) => number(item) && Number(item) > 0,
     minLength: integer,
     maxLength: integer,
+    // A local string-parameter annotation, not a grant or an encryption operation.
+    ...(localTool
+      ? { encrypted: (item: unknown) => item === true && asRecord(value)?.type === "string" }
+      : {}),
     minItems: integer,
     maxItems: integer,
     minProperties: integer,
@@ -114,7 +118,7 @@ function jsonSchema(value: unknown, depth = 0): boolean {
 }
 
 const functionTool = object(
-  { type: oneOf("function"), name, parameters: jsonSchema },
+  { type: oneOf("function"), name, parameters: (value) => jsonSchema(value, 0, true) },
   { description: text, strict: bool, defer_loading: bool },
 );
 const plainTextFormat = object({ type: oneOf("text") });
@@ -137,6 +141,31 @@ const namespaceTool = object(
   { description: text },
 );
 const tools = array((value) => localTool(value) || namespaceTool(value), 128);
+// Response echoes may contain documented null defaults for local-tool metadata.
+// Keep these separate from request admission and retain the same bounded schemas.
+const responseFunctionTool = object(
+  { type: oneOf("function"), name, parameters: (value) => jsonSchema(value, 0, true) },
+  { description: nullable(text), strict: nullable(bool), defer_loading: nullable(bool) },
+);
+const responseCustomTool = object(
+  { type: oneOf("custom"), name },
+  {
+    description: nullable(text),
+    defer_loading: nullable(bool),
+    format: nullable((value) => plainTextFormat(value) || grammarFormat(value)),
+  },
+);
+const responseLocalTool: Validator = (value) =>
+  responseFunctionTool(value) || responseCustomTool(value);
+const responseNamespaceTool = object(
+  { type: oneOf("namespace"), name, tools: array(responseLocalTool, 128) },
+  { description: text },
+);
+const responseTools = array(
+  (value) => responseLocalTool(value) || responseNamespaceTool(value),
+  128,
+);
+
 const toolChoice = oneOf("auto", "none", "required");
 
 const textPart = object({ type: oneOf("input_text", "output_text"), text });
@@ -177,12 +206,23 @@ const toolCall: Validator = (value) => {
     { id: text, namespace: name, status },
   )(value);
 };
+// Codex can declare the same local tools in developer input instead of the top-level list.
+const additionalLocalTools = object(
+  { type: oneOf("additional_tools"), role: oneOf("developer"), tools },
+  { id: text },
+);
 const inputItems = array(
-  (item) => inputMessage(item) || reasoningItem(item) || toolCall(item) || toolOutput(item),
+  (item) =>
+    inputMessage(item) ||
+    reasoningItem(item) ||
+    toolCall(item) ||
+    toolOutput(item) ||
+    additionalLocalTools(item),
 );
 
+const reasoningEffort = oneOf("none", "minimal", "low", "medium", "high", "xhigh");
 const reasoning = optionalFields({
-  effort: oneOf("none", "minimal", "low", "medium", "high", "xhigh"),
+  effort: reasoningEffort,
   summary: oneOf("auto", "concise", "detailed"),
   context: oneOf("auto", "current_turn", "all_turns"),
 });
@@ -232,6 +272,7 @@ const clientMetadata = optionalFields({
         analytics_enabled: bool,
         history_ingest_requested: bool,
         model: metadataText,
+        reasoning_effort: reasoningEffort,
       })(parseUnambiguousJson(String(value)));
     } catch {
       return false;
@@ -364,6 +405,9 @@ const cacheDiagnostics: Validator = (value) =>
 // moderation, background execution) must echo their empty value. `billing` is not in that
 // model but is returned by the provider alongside the documented fields; it is declared
 // here with its observed shape rather than left to refuse every live response.
+// The image policy follows the Responses API response schema (2026-11-04):
+// https://developers.openai.com/api/reference/resources/responses/methods/create
+// Its effective policy excludes the request-only "auto" value.
 const response = object(
   {
     id: text,
@@ -383,7 +427,7 @@ const response = object(
       }),
     ),
     instructions: nullable(text),
-    tools,
+    tools: responseTools,
     tool_choice: toolChoice,
     parallel_tool_calls: bool,
     reasoning: nullable(
@@ -408,6 +452,7 @@ const response = object(
     conversation: oneOf(null),
     prompt: oneOf(null),
     moderation: oneOf(null),
+    image: object({ context_compression: oneOf("enabled", "disabled") }),
     prompt_cache_key: nullable(text),
     prompt_cache_retention: nullable(text),
     prompt_cache_options: nullable(

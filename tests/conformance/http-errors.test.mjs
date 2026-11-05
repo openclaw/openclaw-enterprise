@@ -350,6 +350,16 @@ const cases = [
     },
   ],
   [
+    "a stored openai credential source with removed base_url names the supported replacement and rollout order",
+    new StoredCredentialSourceConfigError("base_url"),
+    {
+      status: 409,
+      code: "RESOURCE_CONFLICT",
+      message:
+        "Saved config.base_url was removed. If supported, register a replacement for the same URL. Its config.authorized_base_url must match the Installation's runtime.modelProvider.baseUrl. Rebind and redeploy Agents, then delete the old source once unused.",
+    },
+  ],
+  [
     "a config value refused at Gateway registration names its field",
     new CredentialSourceRegistrationConfigError(
       "token_url",

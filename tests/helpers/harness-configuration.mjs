@@ -104,13 +104,20 @@ export function nativeAdminGatewayAuth() {
 
 // `configuration` with the native admin opt-in: the Control UI on, allowed only from `origin`
 // (the Agent's native admin origin), and nativeAdminGatewayAuth().
+/**
+ * @template {{ gateway?: { controlUi?: Record<string, unknown> } }} T
+ * @param {T} configuration
+ * @param {string} origin
+ */
 export function withNativeAdminGateway(configuration, origin) {
+  const { gateway, ...fields } = configuration;
+
   return {
-    ...configuration,
+    ...fields,
     gateway: {
-      ...configuration.gateway,
+      ...gateway,
       controlUi: {
-        ...configuration.gateway?.controlUi,
+        ...gateway?.controlUi,
         enabled: true,
         allowedOrigins: [origin],
       },

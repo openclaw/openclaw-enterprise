@@ -217,9 +217,11 @@ install_actionlint() {
 install_browser_dependencies() {
   if [[ -n "${CI:-}" ]]; then
     need_command pnpm
-    # Every test launches Chromium headless, which runs the headless shell, so
-    # skip the full Chrome for Testing download (about 190 MB, 7 s).
-    pnpm exec playwright install --with-deps --only-shell chromium
+    # An explicitly selected, already-installed browser is validated below.
+    # Installing a second Chromium and its dependencies does not prepare that binary.
+    if [[ -z "${OCC_TEST_BROWSER_EXECUTABLE:-}" ]]; then
+      pnpm exec playwright install --with-deps --only-shell chromium
+    fi
     if [[ -n "${OCC_TEST_BROWSER_EXECUTABLE:-}" ]]; then
       if [[ ! -x "${OCC_TEST_BROWSER_EXECUTABLE}" ]]; then
         echo "Selected CI browser executable is unavailable." >&2

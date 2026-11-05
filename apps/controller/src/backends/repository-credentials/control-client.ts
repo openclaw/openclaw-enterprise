@@ -1,3 +1,4 @@
+import { createStatusWirePrimitives } from "./status-wire.ts";
 import { request } from "node:http";
 import { isAbsolute, resolve } from "node:path";
 import type { RepositoryCredentialGrantIdentity } from "@openclaw-enterprise/contracts";
@@ -47,37 +48,7 @@ function unavailable(): never {
   throw new RepositoryCredentialControlError(true);
 }
 
-function object(value: unknown, fields: readonly string[]): Record<string, unknown> {
-  if (
-    value === null ||
-    typeof value !== "object" ||
-    Array.isArray(value) ||
-    Object.keys(value).some((key) => !fields.includes(key)) ||
-    fields.some((key) => !Object.hasOwn(value, key))
-  ) {
-    return unavailable();
-  }
-  return value as Record<string, unknown>;
-}
-
-function identity(value: unknown): string {
-  if (
-    typeof value !== "string" ||
-    value.length === 0 ||
-    Buffer.byteLength(value) > 512 ||
-    hasControlCharacter(value)
-  ) {
-    return unavailable();
-  }
-  return value;
-}
-
-function counter(value: unknown): number {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
-    return unavailable();
-  }
-  return value;
-}
+const { object, identity, counter } = createStatusWirePrimitives(unavailable);
 
 function sessionId(value: unknown): string {
   if (typeof value !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(value)) {

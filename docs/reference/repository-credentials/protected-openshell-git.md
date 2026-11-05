@@ -1,14 +1,13 @@
 # Protected repository access with OpenShell
 
-Selected repositories require a pre-credentials request binding. Before issuing
-credentials, OCE verifies the registration and matches a held launcher request to
-an authenticated middleware denial. The Agent starts after credential installation
-and signed release.
+Before issuing repository credentials, OCE verifies registration and matches a held
+launcher request to an authenticated middleware denial. The Agent starts after
+credential installation and signed release.
 
 Follow [OpenShell enrollment](../../guides/repository-credentials/openshell-enrollment.md).
-Select repositories sharing an explicit permission map. OCE requests their canonical
-IDs and verifies GitHub’s returned scope. GitHub governs refs and REST/GraphQL
-operations. Changing or removing a grant blocks subsequent use of that grant.
+Select repositories sharing an explicit permission map. OCE requests canonical IDs
+and verifies GitHub’s returned scope. GitHub governs refs and REST/GraphQL.
+Changed or removed grants block subsequent use.
 
 Existing `git-write` grants retain their exact ref policy. OCE qualifies the live
 sender by its configured capabilities and runtime evidence. `git-read` and
@@ -21,8 +20,6 @@ existing installation, follow the
 [compatibility upgrade](../../guides/deploy/credential-proxy-upgrade.md#check-compatibility-before-interrupting-access).
 
 ## Prerequisites
-
-Check these before qualifying a release:
 
 - **Kernel.** The Driver requires Landlock (`hard_requirement`). Sandboxes need ABI
   v3 or later and Linux 6.2 or newer. Ubuntu 22.04's 5.15 kernel cannot start them.
@@ -184,7 +181,10 @@ binding (Agent save and deploy refuse it next to another). No default or wildcar
 Repository grants require authenticated `allowlist`/`exact` with only `pre_credentials`.
 Opted-in installation preview also accepts both binding fields absent; partial,
 malformed or explicit optional/wrong values fail. Both paths retain policy,
-recipient, isolation and authenticated launcher-denial checks.
+recipient, isolation and authenticated launcher-denial checks. For `git-write`,
+startup probes stay within the selected repository endpoint without broadening
+grants, accessing credentials or releasing the Harness. `github-repository` and
+`github-installation` providers retain their discovery-path probe.
 
 Absence grants only observed assurance: 0.1.5 and 0.1.6 default dynamic registrations
 emit identical absence, without a distinct advertised support signal. Before
@@ -199,18 +199,22 @@ for profile-specific allowed/denied requests and the required model-source choic
 
 ## Use the admitted repository
 
-With `github-repository`, use selected HTTPS Git URLs. API operations
-use token permissions. Both API scopes refuse runner-token and deploy-key
-creation. For selected repositories, the sender accepts the CLI’s
-`Time-Zone: Etc/UTC` and, on GraphQL POSTs, `Graphql-Features: merge_queue`.
-Duplicate headers are refused. Each request requires current authorization.
+The Sandbox sets process-scoped `safe.directory` for its approved mount,
+allowing root-owned workspaces without trusting nested repositories or changing
+persistent Git configuration. `push.negotiate=true` reduces redundant transfers; [push request limits](../../guides/repository-credentials/openshell-enrollment.md#plan-for-request-limits) apply.
 
-For an explicit `git-write` grant, clone, fetch and push exactly
-`https://github.com/$OCE_OPENSHELL_GIT_REPOSITORY.git`: the lowercase name OCE
-gives the Sandbox, with `.git`. Git and OpenShell match the credential path
-case-sensitively, so GitHub's mixed-case spelling, such as
-`https://github.com/Acme/Widgets.git`, or the URL without `.git` gets no
-credential, and Git fails, for example with `could not read Username` or
+With `github-repository`, use selected HTTPS Git URLs; API operations use token
+permissions. Both API scopes refuse runner-token and deploy-key creation.
+Selected-repository requests to `api.github.com` accept `Time-Zone: Etc/UTC`;
+GraphQL POSTs also accept `Graphql-Features: merge_queue` and bounded
+`X-GH-CACHE-TTL` hints (such as `24h0m0s`).
+Hints support `gh pr list --search`; OCE ignores their values and checks current
+authorization. Duplicate headers are refused.
+
+With `git-write`, use exactly
+`https://github.com/$OCE_OPENSHELL_GIT_REPOSITORY.git` for clone, fetch and push.
+Credential paths are case-sensitive: mixed-case URLs or those missing `.git`
+receive no credential. Git reports `could not read Username` or
 `The requested URL returned error: 403`.
 
 [OCC access rules](../../flows/agent-repository-credentials.md) own grant lifetime

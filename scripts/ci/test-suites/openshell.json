@@ -1,20 +1,5 @@
 {
-  "requiredEnv": [
-    "OCC_TEST_KUBERNETES_KUBECONFIG",
-    "OCC_TEST_KUBERNETES_CONTEXT",
-    "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
-    "OCC_TEST_KUBERNETES_AGENT_IMAGE",
-    "CODEX_ACCESS_TOKEN",
-    "OPENAI_API_KEY",
-    "OCC_TEST_OPENAI_MODEL",
-    "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
-    "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
-    "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
-    "OCC_TEST_OPENSHELL_HELM",
-    "OCC_TEST_OPENSHELL_HELM_CHART",
-    "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
-    "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
-  ],
+  "requiredEnv": ["CODEX_ACCESS_TOKEN", "OPENAI_API_KEY", "OCC_TEST_OPENAI_MODEL"],
   "env": {
     "OCC_TEST_DEV_UP_OPENSHELL_COMPOSE_REAL": "1",
     "OCC_TEST_DEV_UP_OPENSHELL_REAL": "1",
@@ -33,6 +18,10 @@
       "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
       "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
       "OCC_TEST_KEYCLOAK_IMAGE"
+    ],
+    "selfProvisionedFiles": [
+      "tests/integration/local-first-agent-openshell-real.test.mjs",
+      "tests/integration/local-first-agent-openshell-k3d-real.test.mjs"
     ]
   },
   "files": [
@@ -48,6 +37,19 @@
       "expectedTests": [
         "dev-up installs the pinned OpenShell profile in its owned k3d cluster",
         "dev-up runs OCC in Compose with OpenShell and Kubernetes Compute in k3d"
+      ],
+      "requiredEnv": [
+        "OCC_TEST_KUBERNETES_KUBECONFIG",
+        "OCC_TEST_KUBERNETES_CONTEXT",
+        "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+        "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+        "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
+        "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
+        "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
+        "OCC_TEST_OPENSHELL_HELM",
+        "OCC_TEST_OPENSHELL_HELM_CHART",
+        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
+        "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
       ]
     },
     {
@@ -55,6 +57,19 @@
       "expectedTests": [
         "OpenShell enforces provider delivery and authenticated Codex exposure",
         "OpenShell dedicated Agents enforce Gateway tool policy during normal work"
+      ],
+      "requiredEnv": [
+        "OCC_TEST_KUBERNETES_KUBECONFIG",
+        "OCC_TEST_KUBERNETES_CONTEXT",
+        "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+        "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+        "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
+        "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
+        "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
+        "OCC_TEST_OPENSHELL_HELM",
+        "OCC_TEST_OPENSHELL_HELM_CHART",
+        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
+        "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
       ]
     },
     {
@@ -66,7 +81,20 @@
     },
     {
       "path": "tests/integration/openshell-plugin-install-real.test.ts",
-      "expectedTests": ["OpenShell Agent workflow installs and retains selected Codex plugins"]
+      "expectedTests": ["OpenShell Agent workflow installs and retains selected Codex plugins"],
+      "requiredEnv": [
+        "OCC_TEST_KUBERNETES_KUBECONFIG",
+        "OCC_TEST_KUBERNETES_CONTEXT",
+        "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+        "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+        "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
+        "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
+        "OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE",
+        "OCC_TEST_OPENSHELL_HELM",
+        "OCC_TEST_OPENSHELL_HELM_CHART",
+        "OCC_TEST_OPENSHELL_WORKSPACE_HELM_CHART",
+        "OCC_TEST_OPENSHELL_RUNTIME_CLASS"
+      ]
     }
   ],
   "optionalEnv": [

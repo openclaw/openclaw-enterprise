@@ -71,9 +71,9 @@ default `openclaw_enterprise` database on a fresh launch.
 
 Already recorded development state retains its owned rollback and recovery path.
 Keep that state for cleanup; changing these selectors does not convert an existing
-installation. [Protected packaging verification](../../testing/static-egress.md#protected-launch-packaging)
-is retained for historical state and existing owners. It is not a new local
-launch procedure.
+installation. The launcher no longer provisions the local static-inference
+authority. [Remaining transport and production packaging checks](../../testing/static-egress.md#protected-launch-packaging)
+do not provide a local protected-launch procedure.
 
 ## Preload the Agent Sandbox controller from a verified cache
 

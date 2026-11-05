@@ -11,7 +11,6 @@ import {
   validateInstallationTokenResponse,
 } from "./installation-token-response.ts";
 import { preparationIssuerAuthority } from "./origin.ts";
-import { permissionsForProfile } from "./profiles.ts";
 import { createProviderTransport, type ProviderAttempt } from "./provider-transport.ts";
 
 interface PreparationOptions {
@@ -38,16 +37,6 @@ export function createGitHubPreparationOwner(options: PreparationOptions) {
   }
   const { grant } = admission;
   const exchange = createProviderTransport(options.apiOrigin, options.ca, clock, grant);
-  const scope =
-    grant.profile === "github-repository"
-      ? { profile: grant.profile, repositories: grant.repositories, permissions: grant.permissions }
-      : grant.profile === "github-installation"
-        ? { profile: grant.profile }
-        : {
-            repositoryId: grant.repositoryId,
-            repository: grant.repository,
-            permissions: permissionsForProfile(grant.profile),
-          };
 
   type Observation = Omit<TokenPreparationObservation, "attemptId"> | ProviderObservation;
   type Snapshot = Partial<Omit<GitHubPreparationDiagnostic, "attemptId" | "outcome">>;
@@ -91,7 +80,6 @@ export function createGitHubPreparationOwner(options: PreparationOptions) {
         const response = await exchange.issue(
           jwt,
           attempt,
-          () => {},
           assertCurrent,
           (response) => {
             // Capture before transport close: a late/lost response still has a cleanup owner.
@@ -106,7 +94,7 @@ export function createGitHubPreparationOwner(options: PreparationOptions) {
               candidate,
               clock.wallNow(),
               {
-                ...scope,
+                ...grant,
                 minimumValidityMs,
               },
             );

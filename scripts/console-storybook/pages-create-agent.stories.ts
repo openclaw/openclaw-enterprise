@@ -110,6 +110,8 @@ export const CreateDeploymentSuperseded = {
   name: "A newer deployment took over",
 };
 export const CreateDeploymentFailed = story("createDeploymentFailed");
+export const CreateMalformedProvisioningRevision = story("createMalformedProvisioningRevision");
+export const CreateMalformedProvisioningMessage = story("createMalformedProvisioningMessage");
 export const CreateDeploymentStopped = story("createDeploymentStopped");
 export const CreateProvisioningStopped = story("createProvisioningStopped");
 export const CreateUnsupportedProvisioning = {
@@ -380,3 +382,13 @@ export const PasswordSecretConflictPat = story("createPasswordSecretConflictPat"
 export const PasswordSecretConflictOAuth = story("createPasswordSecretConflictOAuth");
 
 export const CreateOAuthStartNavigation = story("createOAuthStartNavigation");
+
+export const SharedModelDestination = {
+  ...story("createSharedModelProviderSource"),
+  name: "Authorize shared model destination",
+};
+
+export const SharedModelDestinationRefusal = {
+  ...story("createSharedModelProviderRefusal"),
+  name: "Destination authorization refusal",
+};

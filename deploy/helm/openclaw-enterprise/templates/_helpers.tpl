@@ -873,6 +873,14 @@ capabilities:
 {{- printf "occ-gateway-%s" (include "openclaw.gatewayRouting.routeNamespaceLabel" .) -}}
 {{- end -}}
 
+{{- define "openclaw.gatewayRouting.defaultHostname" -}}
+{{- printf "%s.%s.svc" (include "openclaw.gatewayRouting.serviceName" .) .Values.gatewayRouting.envoyNamespace -}}
+{{- end -}}
+
+{{- define "openclaw.gatewayRouting.hostname" -}}
+{{- default (include "openclaw.gatewayRouting.defaultHostname" .) .Values.gatewayRouting.hostname -}}
+{{- end -}}
+
 
 {{- define "openclaw.gatewayRouting.rootSecretName" -}}
 {{- printf "%s-root" (include "openclaw.gatewayRouting.serviceName" .) -}}
@@ -908,11 +916,16 @@ capabilities:
 {{/* Each listener the chart routes through a Service: its port, or disabled. API and worker
      startup and the upgrade check refuse an Installation listener on another port, not on
      all addresses, without the chart listener (finding 2213), or naming TLS or issuer files
-     other than the chart's mounts. */}}
+     other than the chart's mounts. The chart-owned private Gateway expectation also checks
+     selected Kubernetes routing against the rendered resource identity and hostname. */}}
 {{- define "openclaw.listenerEnv" -}}
 {{- range $listener := list (dict "name" "OCC_EGRESS_AUTHORITY_PORT" "label" "egressAuthority.port" "values" .Values.egressAuthority) (dict "name" "OCC_OPENSHELL_GIT_PORT" "label" "openshellGit.port" "values" .Values.openshellGit) }}
 - name: {{ $listener.name }}
   value: {{ if $listener.values.enabled }}{{ include "openclaw.positiveSafeInteger" (dict "name" $listener.label "value" $listener.values.port "port" true) | quote }}{{ else }}"disabled"{{ end }}
+{{- end }}
+{{- if .Values.gatewayRouting.enabled }}
+- name: OCC_CHART_GATEWAY_ROUTING
+  value: {{ dict "gatewayName" (include "openclaw.gatewayRouting.gatewayName" .) "gatewayNamespace" .Release.Namespace "envoyNamespace" .Values.gatewayRouting.envoyNamespace "hostname" (include "openclaw.gatewayRouting.hostname" .) "defaultHostname" (include "openclaw.gatewayRouting.defaultHostname" .) | toJson | quote }}
 {{- end }}
 {{- end -}}
 

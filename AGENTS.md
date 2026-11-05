@@ -188,8 +188,9 @@ Use the [documentation map](docs/README.md) and keep these ownership boundaries:
 - `docs/contributing/` owns onboarding and workflows for people changing the
   platform. Link the root `CONTRIBUTING.md` for contribution policy and the
   relevant reference, flow, or testing page for detailed behavior.
-- The site has six menu sections: **Getting Started**, **Topics**, **Integrations**,
+- The site has seven menu sections: **Getting Started**, **Topics**, **Integrations**,
   **Deploy & Operate**, and **Reference** serve people using or administering the product;
+  **Testing & CI** serves contributors running and interpreting checks;
   **Contribute** serves people changing the platform. Each menu switches sidebars.
   Register each Markdown page once in `docs/docs.json`; put deep implementation
   and testing pages in the owning tab's `hidden` list when an index links them.

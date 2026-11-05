@@ -17,7 +17,6 @@ interface ProviderRequestDependencies {
   readonly operation: "issue" | "revoke";
   readonly authorization: string;
   readonly attempt: ProviderAttempt;
-  readonly onDispatch: () => void;
   readonly assertMaterialCurrent: () => void;
   readonly observeResponse: (response: ProviderResponse) => void;
   readonly observe?: (observation: ProviderObservation) => void;
@@ -30,7 +29,6 @@ export function sendProviderRequest({
   operation,
   authorization,
   attempt,
-  onDispatch,
   assertMaterialCurrent,
   observeResponse,
   observe,
@@ -148,7 +146,6 @@ export function sendProviderRequest({
         }
         try {
           attempt.observeDispatch();
-          onDispatch();
         } catch {
           fail("admission-fenced");
         }

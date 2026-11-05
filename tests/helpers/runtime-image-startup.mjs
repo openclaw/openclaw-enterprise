@@ -8,7 +8,7 @@
 // runtime-image-managed-files.test.mjs,
 // runtime-image-native-listener.test.mjs and
 // runtime-image-gateway-workspace.test.mjs).
-import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
+import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";

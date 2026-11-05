@@ -6,7 +6,7 @@ import type {
   PlatformReadView,
   PlatformStateStore,
 } from "../../packages/occ/src/state/platform-state.ts";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { callerDenied } from "../helpers/refusal-text.mjs";
 import {
   AGENT_READ,
@@ -18,10 +18,10 @@ import {
   login,
   nativeValues,
   newPage,
-  waitForIdleFetches,
-  trackSettledFetches,
-} from "./console-agents-browser-helpers.mjs";
-import { responseTo } from "./console-action-helpers.mjs";
+  waitForCondition,
+} from "./console-agents-browser-helpers.ts";
+import { waitForIdleFetches, trackSettledFetches } from "./console-fetch-accounting.ts";
+import { responseTo } from "./console-action-helpers.ts";
 
 // The real controller admits and authorizes the deployment. The fixture has no
 // worker: change only its exact work lookup/lease, then its revision lookup.
@@ -464,8 +464,8 @@ for (const viewport of [
       // Distinguishes the old collision: both 503 and 404 used to stamp "///false".
       // Start with the first folded reader position, before later phases can scroll.
       const original = await focusDiagnostics(true);
-      async function readerPosition() {
-        return original.evaluate((node) => {
+      async function readerPosition(control = original) {
+        return control.evaluate((node) => {
           const box = node.getBoundingClientRect();
           return {
             focused: node.isConnected && node === document.activeElement,
@@ -550,6 +550,39 @@ for (const viewport of [
       // An explicit refresh is not an instruction to expand unchanged healthy evidence.
       // Reuse the same controller and page, including a completed terminal record.
       for (const outcome of ["running", "succeeded"] as const) {
+        if (outcome === "succeeded") {
+          // Before an explicit Refresh, let the existing running poll discover completion.
+          const focused = await focusDiagnostics(true);
+          assert.equal(await isOpen(), false);
+          // A reader can scroll back toward the summary without moving keyboard focus.
+          const wheel = await focused.evaluate((node) => {
+            const delta = Math.min(
+              0,
+              Math.round(node.getBoundingClientRect().bottom - innerHeight + 10),
+            );
+            return { delta, target: Math.max(0, scrollY + delta) };
+          });
+          if (wheel.delta < 0) {
+            await page.mouse.wheel(0, wheel.delta);
+            await waitForCondition(
+              () => page.evaluate((target) => Math.abs(scrollY - target) <= 1, wheel.target),
+              "Diagnostics wheel scroll reaches its target before the deployment poll",
+            );
+          }
+          const before = await readerPosition(focused);
+          assert.ok(
+            before.focused && before.hit && before.top >= 0 && before.bottom <= before.viewport,
+          );
+          control.succeeded = true;
+          await poll("succeeded");
+          assert.equal(await isOpen(), true, "terminal evidence still opens automatically");
+          const after = await readerPosition(focused);
+          assert.equal(after.focused, true, "the original diagnostics button retains focus");
+          assert.ok(
+            after.hit && after.top >= 0 && after.bottom <= after.viewport,
+            "the original diagnostics button stays visible when terminal evidence opens",
+          );
+        }
         await t.test(`unchanged ${outcome} refresh respects a manual fold`, async () => {
           control.succeeded = outcome === "succeeded";
           const established = next();

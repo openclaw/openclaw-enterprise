@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: "2026-10-30"
-last_updated_session: authoring-run/ddbd21a8-0432-4c61-b4ad-e48d12268c8c
+updated: 2026-11-03
+last_updated_session: authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc
 ---
 
 # Credential source lifecycle Flow
@@ -77,16 +77,14 @@ intermediate State record before calling `registerSource` or `removeSource`.
 
 The route accepts `name`, `type`, optional `config`, and lowercase-keyed `secrets`.
 One transaction authorizes `credential_source:create`, locks the Namespace,
-requires a selected gateway (`409 CREDENTIAL_GATEWAY_NOT_CONFIGURED`) and a
-ready Namespace, then reads `listSourceTypes`. Before effects, an unoffered type
-returns `CredentialSourceTypeNotOfferedError` (`409`); unknown or missing fields
-return `ScopeViolationError` (`404`). Side-effect-free `validateSourceConfig`
-rejects invalid values with `CredentialSourceConfigError` (`400 INVALID_REQUEST`)
-before Secret reads, record creation, or gateway writes. OCC checks any returned
-normalized configuration against the catalog and stores it in the source record.
+requires its selected source Driver and a ready Namespace, then reads the type catalog.
+An unoffered type returns `CredentialSourceTypeNotOfferedError` (`409`). Unknown
+or missing catalog fields and Driver-invalid values return `400 INVALID_REQUEST`
+before Secret reads, record creation, or gateway writes. OCC checks normalized
+configuration against the catalog and stores it in the source record.
 
 `apps/controller/src/drivers/credential-source-endpoint.ts:validateOpenAiSourceBaseUrl` shares
-OpenShell's strict source endpoint decision between request validation and stored-source
+OpenShell's strict destination authorization decision between request validation and stored-source
 use. Requests retain field-specific `400` errors; invalid stored endpoints retain `409`
 errors. Explicit URLs are normalized; an omitted URL stays omitted. Sources require an
 exact DNS host; Compute and Proxy provider normalization keep their broader URL rules.
@@ -359,6 +357,10 @@ OpenShell detaches again only if `SandboxSpec.providers` still lists the provide
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-03 16:57: Correct catalog-field refusal status. (authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc - 82a04653d)
+
+- 2026-11-03 15:09: Document shared provider routing and separate destination authorization. (authoring-run/4d0e1a9c-b86a-4b59-be3e-d4306d5da9fc - 47e0e95df)
 
 - 2026-10-30 02:05: Resolve fresh static provider identities consistently with source updates. (authoring-run/ddbd21a8-0432-4c61-b4ad-e48d12268c8c - 262a2188226cbcd2ee22630040617f6c39969352)
 

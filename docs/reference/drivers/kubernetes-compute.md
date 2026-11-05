@@ -71,7 +71,8 @@ Harness configuration selects the Agent's execution topology:
   selection. A missing or disconnected Harness fails the turn without gateway
   inference fallback. Explicit `openai/` models require complete API,
   token-limit, input, reasoning, and cost metadata. Custom endpoints require
-  endpoint-bound `credential_source` authentication and HTTPS on port 443 ending
+  the [shared provider](kubernetes-compute/model-provider.md), endpoint-bound
+  `credential_source` authentication and HTTPS on port 443 ending
   in `/v1`. Secret-backed keys require `https://api.openai.com/v1`. Model URLs
   reject credentials, queries, fragments and wildcards.
 
@@ -272,7 +273,11 @@ before replacing the controller images.
   [network profile](kubernetes-compute/networking-and-isolation.md#explicit-network-profiles)
   label. Private HTTP readiness returns `503` until native, plugin,
   authentication, or identity gates pass. Dedicated Codex clears its plugin
-  marker at process start to reject stale readiness. Access-token login retries timeouts,
+  marker at process start to reject stale readiness. For Compute-owned Harnesses, resident HTTP `GET /readyz`
+  requires a successful loopback app-server `initialize` response. It creates no
+  thread or model turn. The resident RPC check has a two-second internal deadline;
+  Kubernetes retains its one-second default HTTP-probe timeout. This does not
+  verify the Gateway's network path to the Harness. Access-token login retries timeouts,
   `network` and `http_5xx` failures: five attempts, 90 seconds. Exhausted startup remains unready
   until an explicit restart; see the
   [authentication probe contract](../harness-execution.md#harness-authentication)

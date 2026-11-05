@@ -210,7 +210,7 @@ print_failure_context() {
 }
 
 kubectl "${kubectl_args[@]}" --request-timeout 10s get persistentvolumeclaim "$claim" --output name >/dev/null
-kubectl "${kubectl_args[@]}" --request-timeout 10s create --filename - <<EOF
+kubectl "${kubectl_args[@]}" --request-timeout 10s create --filename - <<EOF || {
 apiVersion: v1
 kind: Pod
 metadata:
@@ -278,6 +278,12 @@ ${node_selector_yaml}  containers:
       persistentVolumeClaim:
         claimName: "${claim}"
 EOF
+  create_status=$?
+  printf 'prepare-bootstrap-volume: could not confirm creation of preparation Pod %s/%s.\n' "$namespace" "$pod" >&2
+  printf 'Inspect Pod: %s\n' "$(quote_command "${diagnostic_describe[@]}")" >&2
+  printf 'Resolve the create outcome before rerunning this helper or starting initialization.\n' >&2
+  exit "$create_status"
+}
 
 deadline=$((SECONDS + 120))
 phase=

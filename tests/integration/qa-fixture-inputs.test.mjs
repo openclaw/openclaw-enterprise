@@ -219,6 +219,7 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
   assert.deepEqual(selected.cells[0].notApplicable, [
     "codex-search-config",
     "calendar",
+    "git-write",
     "git-push-denied",
     "slack",
   ]);
@@ -239,7 +240,25 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
   assert.ok(!calendar.requiredEnv.includes("OCC_TEST_QA_OPENAI_KEY_FILE"));
   assert.deepEqual(calendar.cells[0].scenarios, []);
   const openclaw = selectQaMatrix({ OCC_TEST_QA_PRESET: "OpenClaw" });
-  assert.deepEqual(openclaw.cells[0].scenarios, ["model-ui", "console-secrets", "git-write"]);
+  assert.deepEqual(openclaw.cells[0].scenarios, ["model-ui", "console-secrets"]);
+  assert.equal(openclaw.repository, false);
+  assert.ok(!openclaw.requiredEnv.some((name) => /REPOSITORY|GITHUB_OBSERVER/.test(name)));
+  assert.throws(
+    () => selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "git-write", OCC_TEST_QA_PRESET: "OpenClaw" }),
+    /not applicable/,
+  );
+  const git = selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "git-write,git-push-denied" });
+  assert.deepEqual(
+    git.cells.map(({ cell, scenarios }) => ({ cell, scenarios })),
+    [
+      { cell: "compose/OpenClaw", scenarios: [] },
+      { cell: "compose/Codex", scenarios: ["git-write", "git-push-denied"] },
+      { cell: "kubernetes/OpenClaw", scenarios: [] },
+      { cell: "kubernetes/Codex", scenarios: ["git-write", "git-push-denied"] },
+    ],
+  );
+  assert.ok(git.repository);
+  assert.ok(!git.requiredEnv.includes("OCC_TEST_QA_OPENAI_KEY_FILE"));
   assert.ok(!openclaw.requiredEnv.some((name) => /CODEX|SLACK|CALENDAR/.test(name)));
   const secrets = selectQaMatrix({
     OCC_TEST_QA_SCENARIOS: "console-secrets",
@@ -369,7 +388,7 @@ test("hosted QA materializes only selected credentials and rejects missing selec
   await assert.rejects(readFile(githubEnv), { code: "ENOENT" });
 });
 
-test("QA command diagnostics retain the error while hiding generated and environment secrets", async () => {
+test("QA command diagnostics retain the error while hiding generated and environment secrets", async (t) => {
   const { qaCommandFailureDetail, registerQaSecret } = await import("../helpers/qa-secrets.mjs");
   registerQaSecret("generated-private-value");
   const output = qaCommandFailureDetail(
@@ -382,6 +401,58 @@ test("QA command diagnostics retain the error while hiding generated and environ
   assert.doesNotMatch(
     output,
     /generated-private-value|process-private-value|example-private-value/,
+  );
+  await t.test(
+    "native failure metadata keeps fixed classes without echoing response or log values",
+    async () => {
+      const { nativeTaskFailureSummary } = await import("../helpers/normal-agent-tools.mjs");
+      const summary = nativeTaskFailureSummary(
+        "thread/start: Codex did not grant the requested permission profile. Authorization: Bearer native-private-value",
+      );
+      assert.deepEqual(summary, {
+        classes: ["profile-grant-mismatch"],
+        nativeMethod: "thread/start",
+      });
+      assert.doesNotMatch(
+        JSON.stringify(summary),
+        /native-private-value|Authorization|Codex did not/,
+      );
+      assert.deepEqual(nativeTaskFailureSummary("unrecognized private-native-message"), {
+        classes: ["unclassified"],
+        nativeMethod: "unknown",
+      });
+    },
+  );
+  await t.test(
+    "native requirements distinguish missing experimental fields from an explicit allowlist",
+    async () => {
+      const { nativePolicyRequirementsSummary } = await import("../helpers/normal-agent-tools.mjs");
+      assert.deepEqual(nativePolicyRequirementsSummary({}), { available: false });
+      assert.equal(
+        nativePolicyRequirementsSummary({ requirements: {} }).profileAllowlistPresent,
+        "unknown",
+      );
+      const expected = "openclaw-network-0123456789abcdef";
+      const summary = nativePolicyRequirementsSummary({
+        requirements: {
+          allowedPermissionProfiles: {
+            ":workspace": true,
+            ":read-only": true,
+            [expected]: false,
+          },
+          defaultPermissions: ":workspace",
+          modelProviders: { privateProvider: { apiKey: "native-private-value" } },
+        },
+      });
+      assert.equal(summary.profileAllowlistPresent, true);
+      assert.equal(summary.workspaceAllowed, true);
+      assert.equal(summary.generatedNetworkProfilesAllowed, 0);
+      assert.equal(summary.defaultProfileKind, "builtin-workspace");
+      assert.doesNotMatch(
+        JSON.stringify(summary),
+        /0123456789abcdef|native-private-value|privateProvider|modelProviders/,
+      );
+    },
   );
 });
 

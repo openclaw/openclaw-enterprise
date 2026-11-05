@@ -66,7 +66,7 @@ export function openShellPluginPolicy(
   endpoint: string | undefined,
   installationProviders: readonly string[],
 ) {
-  const binding = managedCredentialBinding(revision.plugins?.plugins);
+  const binding = managedCredentialBinding(revision.plugins?.plugins, managedGoogleInstall);
   if (!binding) {
     return undefined;
   }

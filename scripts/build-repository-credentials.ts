@@ -234,7 +234,13 @@ async function stage(name: Runtime, files: ReadonlyMap<string, string>) {
     for (const hook of hooks) {
       await writeFile(
         join(directory, hook),
-        '#!/bin/sh\nexec node "$(dirname "$0")/../hook-dispatch.js" ' + hook + ' "$@"\n',
+        `#!/usr/bin/env node
+import { fileURLToPath } from "node:url";
+
+const dispatcher = new URL("../hook-dispatch.js", import.meta.url);
+process.argv.splice(1, 1, fileURLToPath(dispatcher), ${JSON.stringify(hook)});
+await import(dispatcher.href);
+`,
         { mode: 0o755 },
       );
       await chmod(join(directory, hook), 0o755);

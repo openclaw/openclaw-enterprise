@@ -1,13 +1,11 @@
 # Recover a partial production upgrade
 
-Resume from the original checkout and keep the original
-[upgrade evidence directory](production-upgrade.md) private. Paths that resolve
-to the same directory share its lock. A different directory identity stops
-resume before live access.
+Resume from the original checkout and private
+[upgrade evidence directory](production-upgrade.md). Directory aliases share its
+lock; a different directory identity stops resume before live access.
 
-For a runtime upgrade, also keep the original private dispatch journal. The
-helper creates it at `<evidence-directory>.dispatch-state`, beside the evidence
-directory at its resolved path. Keep the current journal separate from evidence
+For a runtime upgrade, also keep the original private dispatch journal. It is
+`<evidence-directory>.dispatch-state`, beside the resolved evidence directory. Keep the current journal separate from evidence
 backups. A missing or invalid journal stops runtime resume before live access.
 If the journal may have been restored, stop and reconcile from OCC history and
 audit records before starting another run.
@@ -23,7 +21,22 @@ OCC URL, scripts, flow and chart. Keep candidates semantically unchanged.
 The helper rechecks the pair, nodes and live state against baseline or candidate.
 
 After verified completion, clean up only: no Helm, Agent rollout, Doctor,
-`--resume` or renewed freeze. `prepared` survives success.
+`--resume` or renewed freeze. The helper writes `completed` after its final
+verification and evidence capture. Any `completed` entry makes `--resume` stop
+before cluster or OCC access. Keep the marker with the original evidence; use a
+new evidence directory for a new upgrade.
+
+If the final command output was lost, inspect the completion marker and retained
+evidence before deciding to resume. If writing the marker failed, reconcile the
+live state first: its absence does not prove the upgrade is unfinished.
+`prepared` survives success and alone is not a reason to resume. Older runs may
+have completed without a `completed` marker.
+
+## Correct unusable comparison inputs
+
+`Cannot compare upgrade YAML` requires readable YAML mappings (including candidates)
+without empty documents and writable evidence. Correct inputs before retrying;
+this does not establish drift.
 
 ## Clean up preflight resources
 
@@ -273,16 +286,15 @@ keeping baseline files matched to live state.
 
 ## Roll back across human sign-in
 
-Migration `0037` adds the human sign-in state. `helm rollback` skips the
-pre-upgrade migration Job, so it never reverses that migration.
+Helm rollback does not reverse migration `0037`. Never run both controllers together.
 
-Before GitHub sign-in is activated, scale `deployment/openclaw-enterprise-api` to
-zero and wait for its Pods to disappear, run `helm rollback`, then verify password
-sign-in before reopening ingress.
+If the target supports the configured provider and enforces session bindings,
+keep that configuration. [Rehearse the return](upgrade-baseline.md#restore-the-retained-candidate-database).
+Verify a fresh sign-in reaches the original account and a resource it could read before.
 
-After activation, do not roll back; fix forward. The database refuses sessions
-that the previous controller issues without a human sign-in binding, so it
-cannot sign anyone in, and existing sessions expire within 8 hours. Never run
-the previous and current controllers together.
-To roll back anyway, first return to password-only sign-in with
-[stopped maintenance](auth-maintenance.md#deactivate-external-sign-in).
+For a target that issues unbound sessions:
+
+- Before activation, scale `deployment/openclaw-enterprise-api` to zero, wait
+  for its Pods to disappear, roll back, then verify password sign-in before reopening ingress.
+- After activation, fix forward: the database rejects unbound sessions; existing sessions
+  expire within 8 hours. Returning to this target requires [stopped password-only maintenance](auth-maintenance.md#deactivate-external-sign-in).

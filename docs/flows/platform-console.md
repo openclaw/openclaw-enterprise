@@ -355,7 +355,7 @@ gateway startup and file availability.
   worker leases, or Compute effects.
 - `node --test tests/browser/console-secrets.test.ts` exercises Secret mutation,
   Agent references, denials, and lost replies with passive test Secret storage.
-  The `console-secrets` [QA scenario](../testing/ci.md#qa-matrix) selects real
+  The `console-secrets` [QA scenario](../testing/ci/qa-advisory.md) selects real
   shipped storage; it requires the documented runtime and credential setup.
 - API tests cover safe discovery, permission boundaries, empty versus missing
   wiring, static MIME/allowlisting, and unchanged API JSON errors. See

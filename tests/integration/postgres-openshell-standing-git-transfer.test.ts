@@ -7,7 +7,13 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import type { AgentRevision, ComputeRevisionContext } from "../../packages/contracts/src/index.ts";
+import type {
+  AgentRevision,
+  ComputeRevisionContext,
+  GitHubRepositoryCredentialBackendDefinition,
+} from "../../packages/contracts/src/index.ts";
+import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
+import type { InstallationRuntimeDrivers } from "../../apps/controller/src/composition/installation-config.ts";
 import { exerciseInstallationRequests } from "../helpers/openshell-installation-github-requests.ts";
 import { protectedRepositoryGitRelease } from "../helpers/protected-repository-git-release.ts";
 import {
@@ -109,7 +115,7 @@ test(
     // CI exercises the model grant, attachment and withdrawal but cannot claim a model response.
     const codex = process.env.OCC_TEST_STANDING_GIT_CODEX;
     const conversation = codex && (await standingGitConversation(t, codex));
-    const modelConfig = conversation ? { base_url: conversation.baseUrl } : undefined;
+    const modelConfig = conversation ? { authorized_base_url: conversation.baseUrl } : undefined;
     let onlineOwner!: ReturnType<typeof protectedOpenShellGitOwner>;
     const protectedGit = protectedRepositoryGitRelease(
       () => standing(),
@@ -123,6 +129,9 @@ test(
       { binaries: ["/usr/bin/codex"] },
       {
         id: gatewayId,
+        ...(conversation && {
+          modelProvider: { protocol: "openai-responses", baseUrl: conversation.baseUrl },
+        }),
         backend: {
           id: "fixture-gateway",
           drivers: { credential_gateway: gatewayId },
@@ -161,10 +170,22 @@ test(
           protectedDriver: protectedGit.owner,
           credentialGateway: gateway,
           ...(modelConfig && { modelConfig }),
+          ...(conversation && {
+            modelProvider: { protocol: "openai-responses" as const, baseUrl: conversation.baseUrl },
+          }),
         }),
         { sandbox: protectedGit.sandboxConfiguration },
       );
-    const { prepared, registrationName, gh, send, input } = peer;
+    const { prepared, registrationName, gh, send, input, backendId } = peer;
+    const repositoryBackend: GitHubRepositoryCredentialBackendDefinition = {
+      id: backendId,
+      type: "github",
+      configuration: { registryPath: "/unused/standing.json" },
+      drivers: { repo: driver.id },
+    };
+    // The fixture used the registered policy to seed the approval before the Worker starts.
+    const legacyResolve = t.mock.method(driver, "resolve");
+    const boundResolve = t.mock.method(driver, "resolveBindings");
     const authority = prepared.protectedGit!;
     // Each explicit probe owns its receipt; runtime reconciliation uses the normal owner.
     const readInstallation = async (
@@ -277,6 +298,9 @@ test(
       options({
         runtime: {
           transportSecretPrefix: "fixture-transport",
+          ...(conversation && {
+            modelProvider: { protocol: "openai-responses", baseUrl: conversation.baseUrl },
+          }),
           gatewayStorageClassName: "local-path",
         },
       }) as never,
@@ -357,12 +381,8 @@ test(
           assert.equal(login.credentialSource?.id, auth.sourceId);
           assert.equal(login.loginMode, "api_key");
           if (conversation) {
-            assert.equal(login.credentialSource?.config.base_url, conversation.baseUrl);
-            const manifest = pluginRuntimeSpecForRevision(
-              r,
-              undefined,
-              login.credentialSource!.config.base_url,
-            )!;
+            assert.equal(login.credentialSource?.config.authorized_base_url, conversation.baseUrl);
+            const manifest = pluginRuntimeSpecForRevision(r, undefined, conversation.baseUrl)!;
             modelEnvironment = {
               ...Object.fromEntries(
                 login.environment.map(({ name, value }: { name: string; value?: string }) => [
@@ -379,7 +399,7 @@ test(
           assert.equal(r.id, revision.id);
           const s = AbortSignal.timeout(15000);
           const p = await runtime
-            .prepare(r, client, workspace, sandbox, s, [model])
+            .prepare(r, client, workspace, sandbox, s, "/sandbox/enterprise", [model])
             .catch((e: Error) => {
               t.diagnostic("prepare: " + e.message);
               throw e;
@@ -554,6 +574,23 @@ test(
       outcome?: string;
     };
     const events: Event[] = [];
+    const selectDrivers = (d: InstallationRuntimeDrivers) => ({
+      ...d,
+      credentialGatewayDriver: gateway,
+      installation: {
+        ...d.installation,
+        backend: [...(d.installation.backend ?? []), repositoryBackend],
+        drivers: {
+          ...d.installation.drivers,
+          credential_gateway: { id: gatewayId },
+        },
+      },
+      repositoryPolicy: driver,
+      repositoryAdmission: { policy: driver, backendId },
+      protectedDriver: protectedGit.owner,
+      sandboxDriver: protectedGit.owner.require("sandbox"),
+      proxyDriver: protectedGit.owner.require("credential_proxy"),
+    });
     const start = () =>
       f.start(compute, {
         emit: (e?: Event) => {
@@ -571,21 +608,7 @@ test(
             }
           }
         },
-        transformDrivers: (d: { installation: { drivers: object } }) => ({
-          ...d,
-          credentialGatewayDriver: gateway,
-          installation: {
-            ...d.installation,
-            drivers: {
-              ...d.installation.drivers,
-              credential_gateway: { id: gatewayId },
-            },
-          },
-          repositoryPolicy: driver,
-          protectedDriver: protectedGit.owner,
-          sandboxDriver: protectedGit.owner.require("sandbox"),
-          proxyDriver: protectedGit.owner.require("credential_proxy"),
-        }),
+        transformDrivers: selectDrivers,
       });
     const { client: wire, keys } = await openShellOnlineGitWire(t, {
       registrationName,
@@ -641,12 +664,33 @@ test(
       "the private origin requires a credential",
     );
     try {
+      const otherPolicy = new GitHubRepositoryPolicy({ driverId: driver.id, backendId }, registry, {
+        sessionDurationSeconds: 120,
+      });
+      const otherResolve = t.mock.method(otherPolicy, "resolveBindings");
+      await assert.rejects(
+        async () =>
+          f.start(compute, {
+            transformDrivers: (d: InstallationRuntimeDrivers) => ({
+              ...selectDrivers(d),
+              repositoryAdmission: { policy: otherPolicy, backendId },
+            }),
+          }),
+        /The bound repository admission owner is not selected or unavailable/,
+      );
+      assert.equal(legacyResolve.mock.callCount(), 0);
+      assert.equal(boundResolve.mock.callCount(), 0);
+      assert.equal(otherResolve.mock.callCount(), 0);
+      assert.deepEqual(await attempts(), [], "a mismatched policy cannot open a session");
+      assert.equal(gh.issuesOfTokens.length, 0, "a mismatched policy cannot prepare a credential");
       originCallsBeforeActivation = peer.originCalls();
       await start();
       await waitFor("held candidate pass", async () => (heldStopped ? true : undefined));
       // The completion callback stops polling before another preparation can report serving.
       assert.ok(heldStopped);
       await heldStopped;
+      assert.ok(boundResolve.mock.callCount() > 0, "the Worker resolves the admitted bindings");
+      assert.equal(legacyResolve.mock.callCount(), 0, "the bound Worker skips the legacy resolver");
       assert.equal((await f.currentAgent(owner))?.activeRevisionId, revision.id);
       const heldWork = await f.observerPool.query(
         "SELECT state, attempt_count FROM occ.controller_work WHERE idempotency_key=$1",
@@ -824,6 +868,7 @@ test(
       assert.deepEqual(await custody(), [{ state: "committed", custody: "retire", erased: false }]);
       assert.equal(gh.trace.filter((x) => x.method === "DELETE").length, 0);
       await delay(Math.max(0, issue1.expires + 60_100 - Date.now()));
+      const beforeRenewal = boundResolve.mock.callCount();
       await start();
       await waitForRevisionPass(
         "same execution with a newly installed bounded successor",
@@ -841,6 +886,8 @@ test(
       // The provider write precedes durable installation confirmation. Wait for the latter
       // before asking for a *single* use; neither a pending write nor an uncertain use is retried.
       await f.stop();
+      assert.ok(boundResolve.mock.callCount() > beforeRenewal, "renewal rechecks policy");
+      assert.equal(legacyResolve.mock.callCount(), 0, "renewal keeps the bound policy path");
       const later = Date.now();
       const [prior, second] = [...(await attempts())].sort(
         (a, b) => a.deadlineWallMs - b.deadlineWallMs,

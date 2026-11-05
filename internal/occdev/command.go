@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // Options selects the checkout and output destinations for a development command.
@@ -64,7 +65,9 @@ func (r *runner) command(ctx context.Context, name string, args ...string) *exec
 func (r *runner) output(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd := r.command(ctx, name, args...)
 	cmd.Stderr = io.Discard
+	started := time.Now()
 	data, err := cmd.Output()
+	r.commandTiming(name, args, started, err)
 	// Never include subprocess output here: bootstrap/config output can contain credentials.
 	if err != nil {
 		return nil, fmt.Errorf("%s %s failed: %w", name, strings.Join(args, " "), err)
@@ -75,7 +78,10 @@ func (r *runner) run(ctx context.Context, name string, args ...string) error {
 	cmd := r.command(ctx, name, args...)
 	cmd.Stdout = r.opts.Out
 	cmd.Stderr = r.opts.Err
-	if err := cmd.Run(); err != nil {
+	started := time.Now()
+	err := cmd.Run()
+	r.commandTiming(name, args, started, err)
+	if err != nil {
 		return fmt.Errorf("%s failed: %w", name, err)
 	}
 	return nil

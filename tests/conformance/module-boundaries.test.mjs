@@ -11,14 +11,19 @@ import ts from "typescript-compiler-api";
 import {
   runModuleBoundaryCli,
   verifyModuleBoundaries,
-} from "../../scripts/verify-module-boundaries.mjs";
+} from "../../scripts/verify-module-boundaries.ts";
+import {
+  applyExceptions,
+  diagnosticIdentity,
+  validateExceptions,
+} from "../../scripts/module-boundaries/exceptions.ts";
 import { settled as settle } from "../helpers/child-processes.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repository = fileURLToPath(new URL("../../", import.meta.url));
 const fixture = new URL("../fixtures/module-boundaries/", import.meta.url);
 const execute = promisify(execFile);
-const cli = join(repository, "scripts/verify-module-boundaries.mjs");
+const cli = join(repository, "scripts/verify-module-boundaries.ts");
 const policy = JSON.parse(await readFile(new URL("policy.json", fixture), "utf8"));
 
 // Child processes (CLI runs and native Node oracles) are most of this file's
@@ -189,6 +194,108 @@ async function workspace(t, overrides = {}) {
 }
 
 describe("module boundaries", { concurrency: true }, () => {
+  test("preserves exception coercion, sparse bindings and detached frozen reports", () => {
+    const hash = `loader:sha256:${"a".repeat(64)}`;
+    const bindings = Array(2);
+    bindings[1] = "name";
+    const entry = {
+      rule: "",
+      from: "",
+      to: "",
+      specifier: "",
+      kind: "",
+      typeOnly: false,
+      bindings,
+      owner: "owner",
+      removeWhen: "remove",
+      reason: "reason",
+      loaderIdentity: [hash],
+      extra: { nested: [1] },
+    };
+    const input = { version: 1, exceptions: [entry] };
+    validateExceptions(input);
+    assert.throws(
+      () => validateExceptions({ version: 1, exceptions: [entry, { ...entry, owner: "other" }] }),
+      /Duplicate module-boundary exception/,
+    );
+    assert.throws(
+      () =>
+        validateExceptions({ version: 1, exceptions: [{ ...entry, loaderIdentity: Symbol() }] }),
+      TypeError,
+    );
+    assert.throws(
+      () => validateExceptions({ version: 1, exceptions: [{ ...entry, loaderIdentity: null }] }),
+      /Exceptions require/,
+    );
+    assert.equal(diagnosticIdentity({ from: "x" }), '[null,"x",null,null,null,null,null,null]');
+    const result = applyExceptions([], input);
+    assert.equal(result.violations[0].rule, "stale-exception");
+    assert.deepEqual(result.violations[0].extra, entry.extra);
+    assert.notEqual(result.violations[0].extra, entry.extra);
+    assert.equal(Object.isFrozen(result.violations[0].extra.nested), true);
+    assert.equal(Object.isFrozen(entry.extra), false);
+    assert.equal(Object.isFrozen(entry.bindings), false);
+    const inherited = Object.create({ from: "src", rule: "r", bindings: [] });
+    const hidden = Object.defineProperty({ from: "src", bindings: [] }, "rule", {
+      value: "hidden",
+      enumerable: false,
+    });
+    assert.deepEqual(applyExceptions([inherited], { version: 1, exceptions: [] }).violations, [{}]);
+    assert.deepEqual(applyExceptions([hidden], { version: 1, exceptions: [] }).violations, [
+      { from: "src", bindings: [] },
+    ]);
+    let reads = 0;
+    const getter = {
+      from: "src",
+      bindings: [],
+      get message() {
+        reads++;
+        return reads;
+      },
+    };
+    const copied = applyExceptions([getter], { version: 1, exceptions: [] });
+    assert.equal(reads, 1);
+    assert.equal(copied.violations[0].message, 1);
+  });
+  test("sorts exception diagnostics without rereading an accessor", () => {
+    for (const changing of [false, true]) {
+      let reads = 0;
+      const row = {
+        rule: "r",
+        line: 1,
+        get from() {
+          reads++;
+          return changing && reads === 3 ? undefined : "b";
+        },
+      };
+      const report = applyExceptions([{ rule: "r", line: 1, from: "a" }, row], {
+        version: 1,
+        exceptions: [],
+      });
+      assert.equal(reads, 3);
+      assert.equal(report.violations[1].from, changing ? undefined : "b");
+    }
+    const rows = [
+      { rule: "r", line: 1, from: null },
+      { rule: "r", line: 1, from: "o" },
+    ];
+    assert.deepEqual(
+      applyExceptions(rows, { version: 1, exceptions: [] }).violations.map((item) => item.from),
+      [null, "o"],
+    );
+  });
+  test("CLI usage names the TypeScript entrypoint", async () => {
+    let stdout = "";
+    let stderr = "";
+    const streams = {
+      stdout: { write: (text) => (stdout += text) },
+      stderr: { write: (text) => (stderr += text) },
+    };
+    assert.equal(await runModuleBoundaryCli(["--help"], streams), 0);
+    assert.match(stdout, /scripts\/verify-module-boundaries\.ts/);
+    assert.equal(await runModuleBoundaryCli([], streams), 2);
+    assert.match(stderr, /scripts\/verify-module-boundaries\.ts/);
+  });
   test("keeps native package error diagnostics independent of the workspace path", async (t) => {
     const { root, write, cli: verify, link } = await workspace(t);
     await link();
@@ -1875,6 +1982,223 @@ describe("module boundaries", { concurrency: true }, () => {
     );
     await write("apps/app/src/broken.ts", "export const broken = ;");
     assert.ok(violates(await check(), "apps/app/src/broken.ts", "source-syntax"));
+  });
+
+  test("source analysis and frozen records retain concrete compiler types", () => {
+    const path = join(repository, "scripts/module-boundaries/source-imports.ts");
+    const program = ts.createProgram([path], {
+      allowJs: true,
+      allowImportingTsExtensions: true,
+      noEmit: true,
+      strict: true,
+      exactOptionalPropertyTypes: true,
+      noUncheckedIndexedAccess: true,
+      target: ts.ScriptTarget.ESNext,
+      module: ts.ModuleKind.NodeNext,
+      moduleResolution: ts.ModuleResolutionKind.NodeNext,
+      skipLibCheck: true,
+    });
+    const source = program.getSourceFile(path);
+    assert.ok(source);
+    const checker = program.getTypeChecker();
+    const declaration = source.statements.find(
+      (statement) =>
+        ts.isFunctionDeclaration(statement) && statement.name?.text === "collectSourceImports",
+    );
+    assert.ok(declaration);
+    const signature = checker.getSignatureFromDeclaration(declaration);
+    assert.ok(signature);
+    const checkType = (type, label, seen = new Set()) => {
+      assert.equal(type.flags & ts.TypeFlags.Any, 0, `${label} must not be any`);
+      if (seen.has(type)) {
+        return;
+      }
+      seen.add(type);
+      if (type.isUnionOrIntersection()) {
+        for (const member of type.types) {
+          checkType(member, label, seen);
+        }
+      } else if (checker.isArrayType(type)) {
+        for (const element of checker.getTypeArguments(type)) {
+          checkType(element, `${label}[]`, seen);
+        }
+      } else if (type.flags & ts.TypeFlags.Object) {
+        for (const property of checker.getPropertiesOfType(type)) {
+          checkType(
+            checker.getTypeOfSymbolAtLocation(property, source),
+            `${label}.${property.name}`,
+            seen,
+          );
+        }
+      }
+    };
+    checkType(checker.getReturnTypeOfSignature(signature), "collectSourceImports return");
+    const frozenCalls = [];
+    function visit(node) {
+      if (
+        ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === "freezeRecord"
+      ) {
+        frozenCalls.push(node);
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(source);
+    assert.equal(frozenCalls.length, 3);
+    for (const call of frozenCalls) {
+      checkType(
+        checker.getTypeAtLocation(call),
+        `freezeRecord at ${source.getLineAndCharacterOfPosition(call.pos).line + 1}`,
+      );
+    }
+  });
+
+  test("migrated analysis expressions and freeze traversal have concrete types", () => {
+    const configPath = join(repository, "scripts/tsconfig.json");
+    const config = ts.readConfigFile(configPath, ts.sys.readFile);
+    assert.equal(config.error, undefined);
+    const parsed = ts.parseJsonConfigFileContent(
+      config.config,
+      ts.sys,
+      dirname(configPath),
+      undefined,
+      configPath,
+    );
+    assert.deepEqual(parsed.errors, []);
+    const files = [
+      "loader-provenance.ts",
+      "source-mutations.ts",
+      "source-imports.ts",
+      "parse-diagnostics.ts",
+      "freeze-record.ts",
+      "source-path.ts",
+    ].map((name) => join(repository, "scripts/module-boundaries", name));
+    for (const file of files) {
+      assert.ok(parsed.fileNames.includes(file));
+    }
+    const program = ts.createProgram(files, {
+      ...parsed.options,
+      composite: false,
+      incremental: false,
+    });
+    const checker = program.getTypeChecker();
+    for (const file of files) {
+      const source = program.getSourceFile(file);
+      assert.ok(source);
+      function visit(node) {
+        if (
+          ts.isCallExpression(node) ||
+          ts.isPropertyAccessExpression(node) ||
+          ts.isElementAccessExpression(node)
+        ) {
+          const type = checker.getTypeAtLocation(node);
+          assert.equal(
+            type.flags & ts.TypeFlags.Any,
+            0,
+            `${file}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1} ${node.getText(source)} must not be any`,
+          );
+        }
+        ts.forEachChild(node, visit);
+      }
+      visit(source);
+    }
+    const helper = program.getSourceFile(files[4]);
+    assert.ok(helper);
+    const traversal = [];
+    function find(node) {
+      if (
+        ts.isVariableDeclaration(node) &&
+        ts.isIdentifier(node.name) &&
+        ["children", "child"].includes(node.name.text)
+      ) {
+        traversal.push([
+          node.name.text,
+          checker.typeToString(checker.getTypeAtLocation(node.name)),
+        ]);
+      }
+      if (
+        ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === "freezeRecord"
+      ) {
+        traversal.push(["recursive call", checker.typeToString(checker.getTypeAtLocation(node))]);
+      }
+      ts.forEachChild(node, find);
+    }
+    find(helper);
+    assert.deepEqual(traversal, [
+      ["children", "unknown[]"],
+      ["child", "unknown"],
+      ["recursive call", "unknown"],
+    ]);
+  });
+
+  test("scripts configuration checks the enrolled generic freeze implementation", () => {
+    const configPath = join(repository, "scripts/tsconfig.json");
+    const config = ts.readConfigFile(configPath, ts.sys.readFile);
+    assert.equal(config.error, undefined);
+    const parsed = ts.parseJsonConfigFileContent(
+      config.config,
+      ts.sys,
+      dirname(configPath),
+      undefined,
+      configPath,
+    );
+    assert.deepEqual(parsed.errors, []);
+    const helper = join(repository, "scripts/module-boundaries/freeze-record.ts");
+    assert.ok(parsed.fileNames.includes(helper));
+    const options = { ...parsed.options, composite: false, incremental: false };
+    const host = ts.createCompilerHost(options);
+    const getSourceFile = host.getSourceFile.bind(host);
+    const original = ts.sys.readFile(helper);
+    assert.ok(original);
+    const invalid = original.replace(
+      "  return Object.freeze(value);",
+      "  return value.nonexistent();",
+    );
+    assert.notEqual(invalid, original);
+    host.getSourceFile = (fileName, languageVersion, onError, shouldCreateNewSourceFile) =>
+      fileName === helper
+        ? ts.createSourceFile(fileName, invalid, languageVersion, true)
+        : getSourceFile(fileName, languageVersion, onError, shouldCreateNewSourceFile);
+    const program = ts.createProgram([helper], options, host);
+    const source = program.getSourceFile(helper);
+    assert.ok(source);
+    const errors = program.getSemanticDiagnostics(source);
+    assert.ok(
+      errors.some(
+        (diagnostic) =>
+          diagnostic.code === 2339 &&
+          ts.flattenDiagnosticMessageText(diagnostic.messageText, " ").includes("nonexistent"),
+      ),
+    );
+  });
+
+  test("reports parse errors without adding JavaScript grammar diagnostics or losing imports", async (t) => {
+    const { write, check } = await workspace(t);
+    const tsPath = "apps/app/src/parse-errors.ts";
+    const jsPath = "apps/app/src/parse-errors.js";
+    const validJsPath = "apps/app/src/parse-valid.js";
+    await write(tsPath, 'import "./index.ts";\nconst a = ;\nconst b = ;\n');
+    await write(
+      jsPath,
+      'import "./index.ts";\nconst x: number = 1;\ninterface Foo {}\nconst y = ;\n',
+    );
+    await write(validJsPath, "const x: number = 1;\ninterface Foo {}\n");
+    const report = await check();
+    const syntax = (path) =>
+      report.violations
+        .filter((item) => item.from === path && item.rule === "source-syntax")
+        .map(({ line, message }) => ({ line, message }));
+    assert.deepEqual(syntax(tsPath), [
+      { line: 2, message: "Expression expected." },
+      { line: 3, message: "Expression expected." },
+    ]);
+    assert.deepEqual(syntax(jsPath), [{ line: 4, message: "Expression expected." }]);
+    assert.deepEqual(syntax(validJsPath), []);
+    assert.equal(reaches(report, tsPath, "apps/app/src/index.ts"), true);
+    assert.equal(reaches(report, jsPath, "apps/app/src/index.ts"), true);
   });
 
   test("classifies runtime, erased type-only and mixed cycles using Node type-stripping semantics", async (t) => {

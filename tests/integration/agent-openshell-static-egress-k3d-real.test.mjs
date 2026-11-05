@@ -399,7 +399,7 @@ async function verifyManagedClientsAndDirectBypass(setup, evidence, owned, insta
   assert.equal(installation.enforcement.authorityScope, "execution");
   for (const { binding } of installation.plan.routes) {
     assert.equal(binding.source.source.generation, 2, "install the explicitly adopted generation");
-    assert.deepEqual(binding.source.provider, { id: "openai-static-https", generation: 2 });
+    assert.deepEqual(binding.source.provider, { id: "openai-static-https", generation: 3 });
     assert.deepEqual(binding.grant, {
       kind: "inference",
       models: [controller.model],
