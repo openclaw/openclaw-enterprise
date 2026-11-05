@@ -104,15 +104,13 @@ identifies where the token may be sent. Plugin policy determines which
 operations are allowed there. Saving pins the effective values. A later
 discovery can propose a new version.
 
-The Google starter defaults to **Google APIs**. One saved account can serve
-Gmail, Calendar, Drive, and other Google APIs. Administrators can narrow the
-template to one HTTPS endpoint. OCC accepts the `google_apis` recipient
-only for Google's published issuer and OAuth endpoints. It pins that choice
-on the template version and the saved account. The Google Workspace Driver
-selects exact routes from its reviewed operations and the granted scopes.
-One presentation can serve multiple API hosts. The Sandbox checks each
-request's host, operation and arguments. Public discovery requests carry no
-bearer token. Narrowing the grant withdraws any broader presentation.
+Manual templates list HTTPS destinations. Each row binds a host, port and path.
+The Google starter fills editable rows from the Google Workspace release’s
+reviewed operations. Saving freezes the list on the version. Consent freezes
+that version’s destinations on the account. Adding an endpoint requires new
+consent before an existing account can use it. A Google request must also fit
+the granted scopes, reviewed operation and Agent policy. Public discovery
+requests carry no bearer token. Narrowing a grant withdraws broader access.
 
 An administrator registers an OAuth client against a saved template version.
 OCC takes its availability, issuer and client authentication endpoints from that
