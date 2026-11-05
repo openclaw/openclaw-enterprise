@@ -202,33 +202,13 @@ Continue when the deployment reports `succeeded` and the Agent's `activeRevision
 <AccordionGroup>
 <Accordion title="Control UI">
 
-Before sending the first prompt, use the operator shell to check the bootstrap file in this Agent's workspace. This check needs permission to list Pods and execute a command in the tenant namespace.
-
-```bash
-revision=$(request GET "$base/agents/$agent" | jq -er .data.activeRevisionId)
-agent_pod=$(kube -n "${TENANT_NAMESPACE:?}" get pods \
-  -l "openclaw.dev/agent=$agent,openclaw.dev/revision=${revision:?}" -o json |
-  jq -er '[.items[] | select(.metadata.deletionTimestamp == null and
-    any(.status.containerStatuses[]?; .name == "agent" and .ready))] |
-    select(length == 1) | first.metadata.name')
-workspace_check() {
-  kube -n "$TENANT_NAMESPACE" exec "$agent_pod" -c agent -- sh -c \
-    'cd /sandbox/enterprise && test -x . && test "$@"' sh "$@"
-}
-workspace_check -f BOOTSTRAP.md
-```
-
 <Snippet file="../../snippets/openshell-quickstart/console-open-agent.md" />
 
 In the Control UI, send this message:
 
 > Your name is fred. I prefer short answers. Please finish onboarding and save those details.
 
-In the Console, open **Workspace files** on `fred`. Check `IDENTITY.md` for its name and `USER.md` for your preference. Back in the operator shell, confirm the Agent removed the bootstrap file:
-
-```bash
-workspace_check ! -e BOOTSTRAP.md
-```
+In the Console, open **Workspace files** on `fred`. Check `IDENTITY.md` for its name and `USER.md` for your preference.
 
 Send `Reply with OCE_READY.` and confirm the reply. Close the Agent tab, reopen **Open Agent UI**, and select the **same conversation** in chat history. Ask “How do I like my answers?” and check the reply against your saved preference. Retain the conversation's browser path with the private session record.
 

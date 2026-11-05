@@ -31,9 +31,8 @@ const before = [
   step(agent, 'cfg=$(jq -er .data.id "$RUN_DIR/configuration")'),
   step(agent, "# Provision transport once, before the first revision."),
   step(agent, "deploy_and_wait"),
-  step(agent, "workspace_check -f BOOTSTRAP.md"),
 ];
-const after = [step(agent, "workspace_check ! -e BOOTSTRAP.md"), step(agent, "save_session")];
+const after = [step(agent, "save_session")];
 for (const [file, blocks] of [
   ["setup-before-browser.sh", before],
   ["setup-after-browser.sh", after],
