@@ -64,8 +64,9 @@ auth:
     secretName: occ-github-login
     clientIdKey: client-id
     clientSecretKey: client-secret
-    # Optional allowlist (RFC-0061): GitHub organization logins, and "org/team-slug" entries,
-    # whose active members may sign in; at most 10 entries together. Empty admits any
+    # Optional allowlist (RFC-0061): GitHub organization logins and team entries as
+    # "org/team-slug" or "id:org-id/team-id". Active members may sign in; at most 10
+    # entries together. Empty admits any
     # attached GitHub identity. Set, the GitHub App needs the organization permission
     # Members: read and an installation on each listed organization; sign-in fails closed
     # when GitHub cannot answer the membership lookup.
