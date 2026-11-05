@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmod, copyFile, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { commandPath, writeCommand } from "../helpers/fake-commands.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
@@ -108,53 +107,31 @@ test("hook installation refuses to replace an existing unmanaged native hook", a
   assert.notEqual((await stat(nativeHookPath)).mode & 0o111, 0);
 });
 
-test("the native pre-push hook runs installed Prettier directly and blocks formatting failures", async (t) => {
-  const { format } = await import("prettier");
+test("the native pre-push hook runs the pinned formatter and blocks formatting failures", async (t) => {
   const fixtureRoot = await createRepositoryFixture(t);
   const install = installHooks(fixtureRoot);
   assert.equal(install.status, 0, install.stderr);
 
-  for (const filename of [".prettierrc.json", ".prettierignore"]) {
+  for (const filename of [".prettierrc.json", ".prettierignore", ".bun-version"]) {
     await copyFile(join(repositoryRoot, filename), join(fixtureRoot, filename));
   }
-  const formattingOptions = JSON.parse(
-    await readFile(join(fixtureRoot, ".prettierrc.json"), "utf8"),
-  );
-
-  const binariesPath = join(fixtureRoot, "bin");
-  await mkdir(binariesPath);
-  await symlink(process.execPath, join(binariesPath, "node"));
-  await mkdir(join(fixtureRoot, "node_modules"));
-  const prettierDirectory = join(fixtureRoot, "node_modules/prettier");
-  await symlink(
-    dirname(fileURLToPath(import.meta.resolve("prettier/package.json"))),
-    prettierDirectory,
-    "dir",
-  );
-  await writeCommand(
-    binariesPath,
-    "pnpm",
-    'printf "%s\\n" "$@" > "$PACKAGE_MANAGER_INVOCATION_LOG"\nexit 97\n',
-  );
-
-  const packageManagerInvocationLog = join(fixtureRoot, "pnpm-invocation.log");
-  const nativeHookPath = join(fixtureRoot, ".git/hooks/pre-push");
-  const environment = {
-    ...process.env,
-    PATH: commandPath(binariesPath),
-    PACKAGE_MANAGER_INVOCATION_LOG: packageManagerInvocationLog,
+  const { scripts } = JSON.parse(await readFile(join(repositoryRoot, "package.json"), "utf8"));
+  const fixturePackage = {
+    name: "hook-fixture",
+    private: true,
+    scripts: { "format:check": scripts["format:check"] },
   };
+  const nativeHookPath = join(fixtureRoot, ".git/hooks/pre-push");
   const runHook = () =>
     spawnSync(nativeHookPath, ["origin", "https://example.test/repository"], {
       cwd: fixtureRoot,
       encoding: "utf8",
-      env: environment,
     });
 
   const cases = [
     ["packages/utils/src/example.ts", "export const answer={value:42};\n"],
     ["apps/controller/src/drivers/compute/ssh/example.cjs", "module.exports={value:42};\n"],
-    ["package.json", '{ "name":"hook-fixture","private":true }\n'],
+    ["package.json", `${JSON.stringify(fixturePackage)}\n`],
     ["apps/console/public/index.html", "<!doctype html><html><body><p>Example</p></body></html>\n"],
     ["apps/console/public/styles.css", "body{color:red}\n"],
     ["docs/guides/example.md", "# Example\n\n-   item\n"],
@@ -167,10 +144,16 @@ test("the native pre-push hook runs installed Prettier directly and blocks forma
   for (const [relativePath, unformatted] of cases) {
     const path = join(fixtureRoot, relativePath);
     await mkdir(dirname(path), { recursive: true });
-    await writeFile(path, await format(unformatted, { ...formattingOptions, filepath: path }));
+    await writeFile(path, unformatted);
   }
 
-  // Generated API documentation is checked by openapi:check, not Prettier.
+  const format = spawnSync("bun", ["fmt", "--no-script", ...cases.map(([path]) => path)], {
+    cwd: fixtureRoot,
+    encoding: "utf8",
+  });
+  assert.equal(format.status, 0, format.stdout + format.stderr);
+
+  // Generated API documentation is checked by openapi:check, not the formatter.
   const generatedPath = join(fixtureRoot, "docs/reference/api.md");
   const generatedContent = "# Generated API\n\n-   generated entry\n";
   await mkdir(dirname(generatedPath), { recursive: true });
@@ -200,13 +183,23 @@ test("the native pre-push hook runs installed Prettier directly and blocks forma
   }
   assert.equal(await readFile(generatedPath, "utf8"), generatedContent);
 
-  await rm(prettierDirectory);
-  const missingPrettier = spawnSync(nativeHookPath, [], {
+  // A real installed Bun must match the checkout's pin before it checks files.
+  await writeFile(join(fixtureRoot, ".bun-version"), "0.0.0\n");
+  const wrongVersion = runHook();
+  assert.equal(wrongVersion.status, 1);
+  assert.match(wrongVersion.stderr, /Bun 0\.0\.0 is required by \.bun-version/);
+
+  // Keep Git available while removing Bun from this invocation's PATH.
+  const binariesPath = join(fixtureRoot, "bin");
+  await mkdir(binariesPath);
+  const git = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" });
+  assert.equal(git.status, 0, git.stderr);
+  await symlink(git.stdout.trim(), join(binariesPath, "git"));
+  const missingBun = spawnSync(nativeHookPath, [], {
     cwd: fixtureRoot,
     encoding: "utf8",
-    env: environment,
+    env: { ...process.env, PATH: binariesPath },
   });
-  assert.equal(missingPrettier.status, 1);
-  assert.match(missingPrettier.stderr, /installed Prettier executable is unavailable/);
-  await assert.rejects(stat(packageManagerInvocationLog), { code: "ENOENT" });
+  assert.equal(missingBun.status, 1);
+  assert.match(missingBun.stderr, /Bun is unavailable/);
 });
