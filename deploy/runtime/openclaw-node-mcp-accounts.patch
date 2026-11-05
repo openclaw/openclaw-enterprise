@@ -128,10 +128,16 @@ index c5c97ab..c54fcd9 100644
      .filter(
        ([serverName, config]) =>
 diff --git a/src/node-host/mcp.ts b/src/node-host/mcp.ts
-index 12cfdc5..1e29c22 100644
+index 12cfdc5..93fedbe 100644
 --- a/src/node-host/mcp.ts
 +++ b/src/node-host/mcp.ts
-@@ -7,6 +7,7 @@ import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
+@@ -2,11 +2,13 @@
+ import { isDeepStrictEqual } from "node:util";
+ import { Client, SdkErrorCode, type Tool } from "@modelcontextprotocol/client";
+ import { formatErrorMessage } from "@openclaw/normalization-core/error-coercion";
++import { mapJsonSchema } from "@openclaw/normalization-core/json-schema";
+ import { clampPositiveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
+ import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
  import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
  import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
  import pLimit from "p-limit";
@@ -139,7 +145,7 @@ index 12cfdc5..1e29c22 100644
  import type { NodePluginToolDescriptor } from "../../packages/gateway-protocol/src/schema/nodes.js";
  import { assignSafeServerNames } from "../agents/agent-bundle-mcp-names.js";
  import { listAllMcpTools } from "../agents/mcp-catalog-listing.js";
-@@ -27,7 +28,7 @@ import {
+@@ -27,11 +29,16 @@ import {
  } from "../agents/mcp-tool-metadata.js";
  import { resolveMcpRequestTimeoutMs } from "../agents/mcp-transport-config.js";
  import type { resolveMcpTransport } from "../agents/mcp-transport.js";
@@ -148,7 +154,16 @@ index 12cfdc5..1e29c22 100644
  import {
    NODE_MCP_TOOL_CALL_TIMEOUT_MS,
    NODE_MCP_TOOLS_CALL_COMMAND,
-@@ -65,7 +66,9 @@ type NodeHostMcpSession = NodeHostMcpTransport & {
+ } from "../infra/node-commands.js";
++import { splitResourceRef } from "../shared/json-schema-defaults.js";
++import {
++  collectJsonSchemaResources,
++  resolveJsonSchemaResourceId,
++} from "../shared/json-schema-resources.js";
+ import { VERSION } from "../version.js";
+ import type { NodeHostClient } from "./client.js";
+ import { bindNodeMcpElicitation } from "./mcp-elicitation.js";
+@@ -65,7 +72,9 @@ type NodeHostMcpSession = NodeHostMcpTransport & {
  
  type NodeHostMcpServerState = {
    serverName: string;
@@ -159,7 +174,7 @@ index 12cfdc5..1e29c22 100644
    current?: NodeHostMcpSession;
    listedTools: Tool[];
    work: Promise<void>;
-@@ -132,9 +135,66 @@ function reserveDescriptorName(baseName: string, usedNames: Set<string>): string
+@@ -132,9 +141,104 @@ function reserveDescriptorName(baseName: string, usedNames: Set<string>): string
    }
  }
  
@@ -167,6 +182,44 @@ index 12cfdc5..1e29c22 100644
 +  serverName: string;
 +  tool: Pick<Tool, "name" | "description"> & { inputSchema: Record<string, unknown> };
 +};
++
++// A catalog from another account may give a different schema the same resource
++// ID. Preserve references within each variant, including absolute self-references.
++function embedAccountToolSchema(schema: Tool["inputSchema"], scope: string) {
++  const resources = collectJsonSchemaResources(schema);
++  const bases = new WeakMap<object, string | undefined>();
++  const scoped = (ref: string) => {
++    const { resource, fragment } = splitResourceRef(ref);
++    return `${scope}:${encodeURIComponent(resource)}${fragment}`;
++  };
++  return mapJsonSchema(schema, (node, ancestors) => {
++    const parent = ancestors.at(-1);
++    const inherited = parent && bases.get(parent);
++    const id =
++      typeof node.$id === "string" ? resolveJsonSchemaResourceId(node.$id, inherited) : inherited;
++    const base = id && splitResourceRef(id).resource;
++    bases.set(node, base);
++    const embedded = { ...node };
++    if (!parent || typeof node.$id === "string") {
++      embedded.$id = scoped(id ?? "");
++    }
++    for (const key of ["$ref", "$dynamicRef", "$recursiveRef"]) {
++      const ref = node[key];
++      if (typeof ref === "string" && !ref.startsWith("#")) {
++        const resolved = resolveJsonSchemaResourceId(ref, base);
++        const { resource, fragment } = splitResourceRef(resolved);
++        if (resource === (base ?? "")) {
++          embedded[key] = fragment || "#";
++        } else if (resources.has(resource) || resources.has(resolved)) {
++          embedded[key] = scoped(resolved);
++        } else {
++          embedded[key] = resolved;
++        }
++      }
++    }
++    return embedded;
++  });
++}
 +
 +function listNodeMcpTools(states: Iterable<NodeHostMcpServerState>): ListedNodeMcpTool[] {
 +  const listedTools: ListedNodeMcpTool[] = [];
@@ -192,12 +245,12 @@ index 12cfdc5..1e29c22 100644
 +  for (const { serverName, tool, schemas } of grouped.values()) {
 +    // Each embedded upstream schema stays its own resource: #/$defs and recursive
 +    // references keep resolving relative to the native argument object.
-+    const variants = schemas.map((schema, index) => ({
-+      ...schema,
-+      $id:
-+        schema.$id ??
-+        `urn:openclaw:node-mcp:${encodeURIComponent(serverName)}:${encodeURIComponent(tool.name)}:${index}`,
-+    }));
++    const variants = schemas.map((schema, index) => {
++      const scope = `urn:openclaw:node-mcp:${encodeURIComponent(serverName)}:${encodeURIComponent(tool.name)}:${index}`;
++      return schemas.length === 1
++        ? { ...schema, $id: schema.$id ?? scope }
++        : embedAccountToolSchema(schema, scope);
++    });
 +    listedTools.push({
 +      serverName,
 +      tool: {
@@ -227,7 +280,7 @@ index 12cfdc5..1e29c22 100644
  ): NodePluginToolDescriptor[] {
    const usedNames = new Set<string>();
    const descriptors: NodePluginToolDescriptor[] = [];
-@@ -193,7 +253,7 @@ async function disposeNodeHostMcpSession(
+@@ -193,7 +297,7 @@ async function disposeNodeHostMcpSession(
  
  /** Starts process-lifetime MCP server state for the node host. */
  export async function startNodeHostMcpManager(
@@ -236,7 +289,7 @@ index 12cfdc5..1e29c22 100644
    deps: NodeHostMcpManagerDeps = {},
  ) {
    const [
-@@ -216,23 +276,36 @@ export async function startNodeHostMcpManager(
+@@ -216,23 +320,36 @@ export async function startNodeHostMcpManager(
    const lifecycleSignal = deps.signal
      ? AbortSignal.any([deps.signal, lifecycleAbortController.signal])
      : lifecycleAbortController.signal;
@@ -284,7 +337,7 @@ index 12cfdc5..1e29c22 100644
    let closed = false;
    let startupComplete = false;
  
-@@ -240,9 +313,7 @@ export async function startNodeHostMcpManager(
+@@ -240,9 +357,7 @@ export async function startNodeHostMcpManager(
      if (closed) {
        return;
      }
@@ -295,7 +348,7 @@ index 12cfdc5..1e29c22 100644
      const next = buildNodeMcpToolDescriptors(listedTools);
      if (next.length < listedTools.length) {
        console.warn(
-@@ -339,7 +410,7 @@ export async function startNodeHostMcpManager(
+@@ -339,7 +454,7 @@ export async function startNodeHostMcpManager(
        try {
          resolved = resolveMcpTransport(state.serverName, state.config);
          if (!resolved) {
@@ -304,7 +357,7 @@ index 12cfdc5..1e29c22 100644
            throw new Error("invalid or unsupported transport");
          }
          let onToolsChanged = () => {};
-@@ -480,7 +551,7 @@ export async function startNodeHostMcpManager(
+@@ -480,7 +595,7 @@ export async function startNodeHostMcpManager(
  
    const tasks = Array.from(states.values(), (state) => async () => {
      if (state.config.auth === "oauth" || state.config.oauth) {
@@ -313,7 +366,7 @@ index 12cfdc5..1e29c22 100644
        console.warn(`node host MCP server "${state.serverName}" skipped: OAuth is not supported`);
        return;
      }
-@@ -513,7 +584,20 @@ export async function startNodeHostMcpManager(
+@@ -513,7 +628,20 @@ export async function startNodeHostMcpManager(
          signal?: AbortSignal;
        },
      ) {
@@ -335,7 +388,7 @@ index 12cfdc5..1e29c22 100644
        const session = state?.current;
        if (!state || !session?.connected) {
          throw new NodeHostMcpError(
-@@ -531,6 +615,21 @@ export async function startNodeHostMcpManager(
+@@ -531,6 +659,21 @@ export async function startNodeHostMcpManager(
            `MCP tool "${params.tool}" is unavailable on server "${params.server}"`,
          );
        }
@@ -357,7 +410,7 @@ index 12cfdc5..1e29c22 100644
        const requestedTimeoutMs =
          clampPositiveTimerTimeoutMs(params.timeoutMs) ?? NODE_MCP_TOOL_CALL_TIMEOUT_MS;
        const validateResult = session.toolMetadata?.validatorForCall(params.tool);
-@@ -540,7 +639,7 @@ export async function startNodeHostMcpManager(
+@@ -540,7 +683,7 @@ export async function startNodeHostMcpManager(
            session.client.request(
              {
                method: "tools/call",
@@ -368,10 +421,10 @@ index 12cfdc5..1e29c22 100644
              options,
 diff --git a/src/node-host/node-worker-mcp-accounts.integration.test.ts b/src/node-host/node-worker-mcp-accounts.integration.test.ts
 new file mode 100644
-index 0000000..5a31573
+index 0000000..c2917d9
 --- /dev/null
 +++ b/src/node-host/node-worker-mcp-accounts.integration.test.ts
-@@ -0,0 +1,146 @@
+@@ -0,0 +1,148 @@
 +import assert from "node:assert/strict";
 +import { randomUUID } from "node:crypto";
 +import { expect, it } from "vitest";
@@ -417,14 +470,16 @@ index 0000000..5a31573
 +    } else if (message.method === "tools/list") {
 +      // Both accounts expose probe. Its native field named account means something
 +      // different on each account and must reach the remote server unchanged.
++      const schemaId = "https://schemas.example/probe";
 +      const probe = {
 +        name: "probe",
 +        inputSchema: {
 +          type: "object",
++          $id: schemaId,
 +          $defs: {
 +            target: { type: identity === "cs_west" ? "string" : "integer" },
 +          },
-+          properties: { account: { $ref: "#/$defs/target" } },
++          properties: { account: { $ref: schemaId + "#/$defs/target" } },
 +          required: ["account"],
 +        },
 +      };
