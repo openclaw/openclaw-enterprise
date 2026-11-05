@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, readFile, stat, truncate, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import test from "node:test";
@@ -191,6 +191,12 @@ test("pinned manifests retry transient downloads and publish only verified priva
   assert.equal(await readFile(destination, "utf8"), body);
   assert.equal((await stat(destination)).mode & 0o777, 0o600);
 
+  // Reusing verified bytes must also restore the manifest's private mode.
+  await chmod(destination, 0o644);
+  await downloadPinnedArtifact({ artifact: { ...artifact, url: server.url }, directory });
+  assert.equal(server.requests(), 3);
+  assert.equal((await stat(destination)).mode & 0o777, 0o600);
+
   // An invalid cached file is replaced only after the new bytes pass the pin.
   await writeFile(destination, "previous unverified bytes");
   const corrupt = await flakyServer(t, [answer(200, "wrong digest"), answer(200, body)]);
@@ -208,6 +214,48 @@ test("pinned manifests retry transient downloads and publish only verified priva
   );
   assert.equal(denied.requests(), 1);
   assert.equal(await readFile(destination, "utf8"), "previous unverified bytes");
+});
+
+test("pinned manifests bound cached files and chunked responses before verification", async (t) => {
+  const directory = await temporaryDirectory(t, "bounded-manifest-");
+  const artifact = {
+    name: "Agent Sandbox",
+    version: "test",
+    path: "sandbox.yaml",
+    sha256: createHash("sha256").update("small manifest").digest("hex"),
+  };
+  const destination = join(directory, artifact.path);
+  const server = await flakyServer(t, [answer(200, "small manifest")]);
+  await writeFile(destination, "");
+  await truncate(destination, 32 * 1024 * 1024 + 1);
+  await assert.rejects(
+    downloadPinnedArtifact({ artifact: { ...artifact, url: server.url }, directory }),
+    /manifest exceeds its size limit/,
+  );
+  assert.equal(server.requests(), 0, "an oversized cache fails before a download");
+
+  // Without Content-Length, the reader must enforce the limit as bytes arrive.
+  const oversized = await flakyServer(t, [
+    (_request, response) => {
+      const chunk = Buffer.alloc(1024 * 1024, "x");
+      for (let index = 0; index < 33; index += 1) {
+        response.write(chunk);
+      }
+      response.end();
+    },
+  ]);
+  await assert.rejects(
+    downloadPinnedArtifact({
+      artifact: { ...artifact, path: "download.yaml", url: oversized.url },
+      directory,
+    }),
+    (error) => {
+      assert.match(error.cause?.message ?? "", /manifest exceeds its size limit/);
+      return true;
+    },
+  );
+  assert.equal(oversized.requests(), 1, "oversized content is not retried");
+  await assert.rejects(stat(join(directory, "download.yaml")), { code: "ENOENT" });
 });
 
 test("fetchPinnedBytes retries 5xx, resets and timeouts, then returns the body", async (t) => {

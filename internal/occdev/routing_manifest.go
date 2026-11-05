@@ -25,7 +25,7 @@ type manifestRetry struct {
 
 // The same rule as scripts/ci/routing.mjs (fetchPinnedBytes) and
 // scripts/ci/download-pinned.sh: eight attempts, backoff doubling from 2 s to a
-// 20 s cap, and no retry starts more than 120 s after the first attempt.
+// 20 s cap. Schedule a retry only when its delay fits the 120 s budget.
 var developmentManifestRetry = manifestRetry{
 	attempts:       8,
 	firstDelay:     2 * time.Second,

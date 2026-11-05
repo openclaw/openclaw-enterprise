@@ -93,13 +93,13 @@ Gateway/supervisor/sandbox images. Importing OCE images first prevents k3s garba
 collection. `writeInstallation` selects curated Codex plugins; the selected
 Credential Gateway supplies credentials.
 
-Agent Sandbox manifest downloads use
+Agent Sandbox downloads use
 `internal/occdev/routing_manifest.go`; CI bootstrap uses
 `scripts/ci/routing.mjs:downloadPinnedArtifact`. Transient network failures
 and HTTP 408/429/5xx allow eight attempts, each limited to 60 seconds;
-retries start within 120 seconds. Other HTTP errors and checksum mismatches
-fail immediately. Only verified bytes become the private manifest passed to
-`kubectl`; source-archive downloads are unchanged.
+retries are scheduled only when their delay fits the 120-second budget. Other failures
+are terminal. Verified manifests are limited to 32 MiB and written `0600`; archives
+are unchanged.
 
 `dev-up` validates Kubernetes/OpenShell before `occ dev up`.
 `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` selects Kubernetes-only: in-cluster
