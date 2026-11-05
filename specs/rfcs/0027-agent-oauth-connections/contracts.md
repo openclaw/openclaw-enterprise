@@ -212,6 +212,11 @@ name against the deployed selection for that Agent and server and enforces any
 argument restrictions before forwarding the call.
 If the selected route cannot enforce a promised restriction, refuse deployment.
 
+For a [Google APIs recipient](index.md), the Credential Gateway prepares one
+presentation with exact endpoints across reviewed APIs. Each credentialed
+request must pass the Google operation guard. MCP credentials stay bound to
+their approved server and protected resource.
+
 ## Failure and recovery
 
 | Condition                                                   | Result                                           | Recovery                                       |

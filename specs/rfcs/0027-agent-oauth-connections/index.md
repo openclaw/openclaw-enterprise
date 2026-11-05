@@ -104,6 +104,16 @@ identifies where the token may be sent. Plugin policy determines which
 operations are allowed there. Saving pins the effective values. A later
 discovery can propose a new version.
 
+The Google starter defaults to **Google APIs**. One saved account can serve
+Gmail, Calendar, Drive, and other Google APIs. Administrators can narrow the
+template to one HTTPS endpoint. OCC accepts the `google_apis` recipient
+only for Google's published issuer and OAuth endpoints. It pins that choice
+on the template version and the saved account. The Google Workspace Driver
+selects exact routes from its reviewed operations and the granted scopes.
+One presentation can serve multiple API hosts. The Sandbox checks each
+request's host, operation and arguments. Public discovery requests carry no
+bearer token. Narrowing the grant withdraws any broader presentation.
+
 An OAuth client is a separate scoped resource. It records the issuer, client ID,
 token endpoint authentication method and trusted destinations for client
 authentication. Its protected credential belongs to the selected Driver. A
