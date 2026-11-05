@@ -678,7 +678,11 @@ test("managed trust fails closed on invalid inputs and removes operation files a
         },
       },
     ),
-    { code: 1 },
+    (error) =>
+      error.code === 1 &&
+      error.stderr.includes("public-git-refusal:child-dispatch:ENOENT") &&
+      !error.stderr.includes("absent-helper") &&
+      !error.stderr.includes(fixture.token),
   );
   await clean();
   // Concurrent helpers own different private directories in the admitted
@@ -864,6 +868,21 @@ test("managed API uses verified HTTP and HTTPS proxies without bypass or startup
   const env = await fixture.install();
   const script = path.join(env.GIT_EXEC_PATH, "transport.mjs");
   const args = [script, "--api-get", "/repos/example/project/pulls/27"];
+  if (process.platform === "linux") {
+    // Reproduce Node's documented runtime state after /proc/self/exe lookup
+    // fails. The real helper, spawn, TLS and authorization remain unmodified.
+    args.unshift(
+      "--input-type=module",
+      "-e",
+      'process.execPath = "node"; await import(process.argv[1]);',
+    );
+  }
+  const poisonedPath = path.join(fixture.directory, "poisoned-bin");
+  await mkdir(poisonedPath);
+  const poisonedNode = path.join(poisonedPath, "node");
+  await writeFile(poisonedNode, '#!/bin/sh\nprintf poisoned > "$0.called"\nexit 97\n', {
+    mode: 0o700,
+  });
   const proxyTls = await selfSigned(fixture.directory, { name: "distinct-proxy" });
   for (const secure of [false, true]) {
     const sockets = new Set();
@@ -908,6 +927,8 @@ test("managed API uses verified HTTP and HTTPS proxies without bypass or startup
       no_proxy: "*",
       CURL_CA_BUNDLE: proxyTls.certPath,
       NODE_DEBUG: "http,https,tls,child_process",
+      NODE_USE_ENV_PROXY: "1",
+      PATH: poisonedPath,
       NODE_TLS_REJECT_UNAUTHORIZED: "0",
       OPENCLAW_WORKSPACE_DIR: "/unavailable-private-sentinel",
       TMPDIR: "/unavailable-private-sentinel",
@@ -915,6 +936,7 @@ test("managed API uses verified HTTP and HTTPS proxies without bypass or startup
     const result = await execute(process.execPath, args, { env: context, timeout: 30000 });
     assert.equal(JSON.parse(result.stdout).title, "provider-only-pull");
     assert.equal(connected, 1);
+    await assert.rejects(readFile(poisonedNode + ".called"), { code: "ENOENT" });
     assert.ok(!result.stderr.includes(fixture.token));
     assert.doesNotMatch(result.stderr, /private-proxy-sentinel|unavailable-private-sentinel/);
     assert.equal(fixture.requests.at(-1).headers["proxy-authorization"], undefined);

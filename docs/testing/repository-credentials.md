@@ -69,9 +69,13 @@ The native fixture supplies the same existing workspace variable as production,
 without changing its filesystem grants. These tests do not establish cleanup after
 uncatchable termination; Git public-CA residue can remain.
 API cases instead ignore unavailable scratch roots and exercise in-memory
-trust, isolated Node startup, large distinct public-root bundles, SIGTERM/SIGINT
+trust, isolated Node startup with a fixed executable path, large distinct public-root
+bundles, SIGTERM/SIGINT
 and the 24-second parent deadline, including a proxy holding CONNECT. Host checks
-exercise the same Node client; the native filesystem/proxy still needs Linux proof.
+exercise the same Node client. The Linux proxy owner sets the legitimate bare
+`process.execPath` fallback before importing the actual helper and poisons ambient
+PATH; this proves component lookup/privacy, not native proc behavior. The native
+filesystem/proxy still needs Linux proof.
 The native fixture adds a separate Limited read-only API body/metadata control,
 asserts workspace write denial and no residue, and retains the Limited
 workspace-write POST-denial and Full workspace-write Git controls: a

@@ -251,8 +251,10 @@ API reads use the same validated current trust entirely in memory on every
 supported host. A fixed child of the existing Node executable receives request
 data, capability and CA bytes on bounded stdin. It uses Node's built-in HTTPS
 Agent and proxy support; no workspace, temporary file or descriptor pathname is
-needed. The child has an empty environment so inherited Node debugging, preload,
-insecure-TLS and key-log settings do not enter it. Origin TLS uses only the
+needed. The child environment contains only the fixed executable search path
+`/usr/local/bin:/usr/bin:/bin`; inherited PATH, Node debugging, preload, insecure-TLS
+and key-log settings do not enter it. This also supports the pinned image when
+Node reports a bare executable name because proc is unavailable. Origin TLS uses only the
 composed tool roots. HTTPS proxy TLS uses those roots plus the selected Node
 defaults and operating-system roots, configured only in that child before any connection.
 

@@ -157,8 +157,11 @@ For API reads, `apiGet` sends the capability, validated current CA bundle,
 selected proxy, request inputs and supported platform CA defaults on bounded
 stdin to a fixed child of `process.execPath`. `apiClient` uses Node's built-in
 HTTPS Agent, including its CONNECT implementation. No API filesystem path or
-extra network executable is needed. The empty child environment excludes
-startup debugging, preload, insecure-TLS and key-log settings. Its origin Agent
+extra network executable is needed. The child environment contains only fixed
+`PATH=/usr/local/bin:/usr/bin:/bin`, excluding inherited PATH, startup debugging,
+preload, insecure-TLS and key-log settings. When proc is unavailable, Node can
+report bare `node` as `process.execPath`; the fixed path finds the image-owned
+executable without selecting an Agent-controlled replacement. Its origin Agent
 has explicit tool CA roots; its thread-local default CA store also preserves
 Node defaults and operating-system roots for HTTPS proxy TLS. The Agent parent's trust is unchanged.
 
@@ -188,6 +191,8 @@ Body-only `--api-get` remains unchanged.
 existing synchronous refusal. Configuration, authorization, trust input/composition,
 private trust-file creation and child setup/dispatch remain distinct. Unknown
 exceptions remain unknown; messages, stacks, paths and credentials are not emitted.
+Child spawn errors also report their closed errno through this vocabulary, without
+serializing the executable or arguments.
 The model fixture validates these fields before logging them, without retrying.
 
 An authored native limited-method proxy permits API GET but blocks Git's
@@ -249,6 +254,10 @@ that the owning runtime has stopped.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 15:19: Resolve bare native Node through a fixed child-only executable path and report closed spawn errors (authoring-run/01a19cef-6046-7960-88eb-e30de1c96e9e - 9567489ec7121311b9fc938afc31f22bb777ed54)
+
+- 2026-11-05 14:10: Verify projected transport source before launch and preserve upstream workspace/provider composition (accompanying integration; authoring-run/147833b4-6d46-4ba7-8b0f-bd7df3bd09da - 35d51ed96a505420fa7e7d7c141be5223e5794c9)
 
 - 2026-11-05 11:28: Deliver API trust as in-memory bytes through the built-in Node HTTPS client (accompanying correction; authoring-run/01a19cef-6046-7960-88eb-e30de1c96e9e - 572595236e9d0455e1655a8434374be5083d4210)
 

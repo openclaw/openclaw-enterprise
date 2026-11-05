@@ -374,8 +374,10 @@ function runChild(binary, args, env, input) {
   };
   process.on("SIGTERM", term);
   process.on("SIGINT", interrupt);
-  child.once("error", () => {
+  child.once("error", (error) => {
     process.stderr.write("The managed public reader child could not start.\n");
+    refusalPhase = "child-dispatch";
+    refusalReceipt(error);
     process.exitCode = 1;
   });
   child.once("close", (code, signal) => {
@@ -472,7 +474,16 @@ ${responseMetadata.toString()}
 });`;
   // No inherited Node options/debugging, proxy bypass, CA paths, client identity,
   // preload or key-log settings. All request/trust data arrives only on stdin.
-  runChild(process.execPath, ["--input-type=module", "-e", program], {}, input);
+  // Without proc, Node can report bare argv[0] as execPath. Search only image-
+  // owned executable directories, never the Agent's ambient PATH.
+  runChild(
+    process.execPath,
+    ["--input-type=module", "-e", program],
+    {
+      PATH: "/usr/local/bin:/usr/bin:/bin",
+    },
+    input,
+  );
 }
 
 function configuration(path) {
