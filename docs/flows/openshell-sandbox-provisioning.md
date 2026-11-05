@@ -113,12 +113,10 @@ Pods/port. Both launchers install private Envoy routing and operator Workspaces.
 `docs/snippets/openshell-quickstart/kubernetes/service-policies.py` uses live
 selectors to admit API, worker, supervisors and Agent Gateways on TCP/8080.
 Supervisor grants accumulate per Namespace; callers must match ownership labels.
-Protected Git isolates Gateway egress, retaining DNS and Kubernetes API access
-for registration and reconciliation. The helper derives Service and translated
-peers from DNS selectors/target ports and ready API EndpointSlices, without
-opening general egress. Successful discovery with no ready endpoints warns and
-removes prior backend grants; failed discovery aborts without applying. Policies
-are recorded before application and deleted on uninstall. See [local deployment](../guides/deploy/local-kubernetes-development.md)
+Protected Git preserves Gateway DNS/API egress using Service addresses, DNS
+selectors/ports and ready API endpoints. Empty discovery warns and removes stale
+backend grants; failed reads abort. Policies are recorded before application and
+deleted on uninstall. See [local deployment](../guides/deploy/local-kubernetes-development.md)
 and the [retired local protected profile](../guides/deploy/local-openshell-images.md#select-the-protected-profile).
 
 `internal/occdev/sandbox_network_policy.go:loadSandboxNetworkPolicies` validates
