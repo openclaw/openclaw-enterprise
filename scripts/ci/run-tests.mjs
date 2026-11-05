@@ -118,6 +118,7 @@ function normalizeFile(file, laneName, index, issues) {
   return {
     path: file.path,
     expectedTests: stringArray(file.expectedTests, `${path}.expectedTests`, issues),
+    requiredEnv: stringArray(file.requiredEnv, `${path}.requiredEnv`, issues),
   };
 }
 
@@ -486,6 +487,8 @@ function mergeEnv(...objects) {
 
 function shouldRemoveInheritedEnv(name) {
   return (
+    name === "ACTIONS_RUNTIME_TOKEN" ||
+    name === "ACTIONS_RESULTS_URL" ||
     name === "KEEP" ||
     name === "DEBUG" ||
     name === "NODE_TEST_CONTEXT" ||
@@ -1218,12 +1221,9 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
     issues.push(laneDeadlineIssue(relativePath));
   }
 
-  const env = mergeEnv(
-    baseChildEnv([...lane.requiredEnv, ...lane.optionalEnv]),
-    lane.env,
-    prepared.env,
-  );
-  for (const name of lane.requiredEnv) {
+  const requiredEnv = [...lane.requiredEnv, ...file.requiredEnv];
+  const env = mergeEnv(baseChildEnv([...requiredEnv, ...lane.optionalEnv]), lane.env, prepared.env);
+  for (const name of requiredEnv) {
     if (env[name] === undefined || env[name] === "") {
       issues.push(
         issue("missing-env", `lane ${lane.name} requires env ${name}`, {

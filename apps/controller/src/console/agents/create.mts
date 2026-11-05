@@ -608,7 +608,10 @@ async function waitForProvisioning({
   const neutralOutcome =
     cancelledAgent === "kept"
       ? "stopped"
-      : neutralDeploymentOutcome({ status: current.status, error: current.error ?? null });
+      : neutralDeploymentOutcome({
+          status: current.status,
+          error: current.error?.code === undefined ? null : { code: current.error.code },
+        });
   // A failed job's reason leads the form's error line, so its status line would only repeat
   // that it failed (finding 2423).
   status.textContent =
@@ -1113,11 +1116,17 @@ function renderAgentForm(
   );
   const toggleModel = button("Enter model ID manually", () => {
     if (manualModel) {
-      resetModelChoices(false, model.value);
+      if (!resetModelChoices(false, model.value)) {
+        return;
+      }
     } else {
+      const values = readModelConfiguration();
+      if (values === "invalid-allow") {
+        return;
+      }
       manualModel = true;
       modelChoice.value = "";
-      updateModelConfiguration();
+      updateModelConfiguration(false, values);
       updateControls();
     }
     (manualModel ? model : modelChoice).focus();
@@ -1134,7 +1143,14 @@ function renderAgentForm(
     ...(useModelChoices ? [choiceField, toggleModel] : []),
     modelField,
   );
-  function resetModelChoices(resetTransport = false, selectedModel = "") {
+  function resetModelChoices(
+    resetTransport = false,
+    selectedModel = "",
+    values = readModelConfiguration(),
+  ) {
+    if (values === "invalid-allow") {
+      return false;
+    }
     manualModel = !useModelChoices;
     model.value = modelChoices().includes(selectedModel) ? selectedModel : "";
     modelChoice.replaceChildren(
@@ -1142,14 +1158,21 @@ function renderAgentForm(
       ...modelChoices().map((id) => element("option", { value: id }, id)),
     );
     modelChoice.value = model.value;
-    updateModelConfiguration(resetTransport);
+    updateModelConfiguration(resetTransport, values);
     updateControls();
+    return true;
   }
   if (useModelChoices) {
     modelChoice.addEventListener("change", () => {
+      const values = readModelConfiguration();
+      if (values === "invalid-allow") {
+        // The native select has already changed; keep the last applied choice visible.
+        modelChoice.value = model.value;
+        return;
+      }
       manualModel = false;
       model.value = modelChoice.value;
-      updateModelConfiguration();
+      updateModelConfiguration(false, values);
     });
   }
   const modelCredentialPicker = createSecretReferenceField({
@@ -1347,9 +1370,30 @@ function renderAgentForm(
     feedback.textContent = "";
     renderChannelEditor();
   });
-  function updateModelConfiguration(resetTransport = false) {
+  function readModelConfiguration(
+    targetHarness = harness.value,
+  ): LaunchValues | "invalid-json" | "invalid-allow" {
     const values = parseObject(configuration);
+    // Keep the existing control transitions for invalid JSON; only the merge is skipped.
     if (values === undefined) {
+      return "invalid-json";
+    }
+    // Only the Codex template merges this field. Do not validate unrelated draft settings.
+    if (targetHarness !== "codex" || !Object.hasOwn(values.plugins ?? {}, "allow")) {
+      return values;
+    }
+    const allow = values.plugins?.allow;
+    if (Array.isArray(allow) && allow.every((id) => typeof id === "string")) {
+      return values;
+    }
+    configurationError.show(
+      'Set plugins.allow to an array of strings, such as ["codex"], or remove the field.',
+    );
+    focusConfiguration();
+    return "invalid-allow";
+  }
+  function updateModelConfiguration(resetTransport = false, values = readModelConfiguration()) {
+    if (typeof values === "string") {
       return;
     }
     retainPendingModel(values);
@@ -1556,24 +1600,41 @@ function renderAgentForm(
   }
   nativeProvider.addEventListener("change", () => {
     // Operator-managed Presets retain the embedded harness required by their fixed binding.
-    harness.value =
+    const targetHarness =
       nativeProvider.value === "anthropic" || binding?.method === "runtime" ? "openclaw" : "codex";
+    const values = readModelConfiguration(targetHarness);
+    if (values === "invalid-allow") {
+      // The native select changed before preflight; retain the last applied provider.
+      nativeProvider.value = appliedProvider;
+      return;
+    }
+    appliedProvider = nativeProvider.value;
+    harness.value = targetHarness;
     mode.value = harness.value === "codex" ? "dedicated" : "embedded";
     // A provider change must not send the previous provider's key to a different service.
     clearModelCredential();
     if (!binding) {
       authMethod.value = "api_key";
-      resetModelChoices(true);
+      resetModelChoices(true, "", values);
     } else {
-      updateModelConfiguration(true);
+      updateModelConfiguration(true, values);
     }
   });
   authMethod.addEventListener("change", () => {
     clearModelCredential();
-    resetModelChoices();
+    if (!resetModelChoices()) {
+      // The authentication choice still applies when the Configuration merge is blocked.
+      updateControls();
+    }
   });
   model.addEventListener("change", () => updateModelConfiguration());
   harness.addEventListener("change", () => {
+    const values = readModelConfiguration();
+    if (values === "invalid-allow") {
+      // Only Codex merges the allowlist; the other harness choice was OpenClaw.
+      harness.value = "openclaw";
+      return;
+    }
     // Embedded is OpenClaw's default because dedicated OpenClaw needs a provisioning
     // Sandbox Driver; operators opt into it through Execution mode. An Installation that
     // refuses Embedded preselects Dedicated when it accepts that (#2670).
@@ -1587,9 +1648,9 @@ function renderAgentForm(
     ) {
       authMethod.value = "api_key";
       clearModelCredential();
-      resetModelChoices(true);
+      resetModelChoices(true, "", values);
     } else {
-      updateModelConfiguration(true);
+      updateModelConfiguration(true, values);
     }
     updateControls();
   });
@@ -1644,6 +1705,7 @@ function renderAgentForm(
           clearModelCredential();
         }
         nativeProvider.value = selectedProvider;
+        appliedProvider = selectedProvider;
         if (selectedProvider === "anthropic") {
           harness.value = "openclaw";
           mode.value = "embedded";
@@ -1665,11 +1727,14 @@ function renderAgentForm(
   plugins.value = JSON.stringify(agent.plugins ?? {}, null, 2);
   let pluginDiscoveryCredential: "none" | "required" | null = null;
   let savedOpenClawCatalog = false;
+  let catalogUnavailable = false;
+  let pluginHarness = harness.value;
+  let installationCapabilities: InstallationCapabilities | undefined;
   // Codex serves curated plugins only to ChatGPT logins; API-key Agents get them disabled.
   const apiKeyCodex = () =>
     harness.value === "codex" && (binding?.method ?? authMethod.value) === "api_key";
   function discoveryCredential() {
-    if (savedOpenClawCatalog || apiKeyCodex()) {
+    if (catalogUnavailable || savedOpenClawCatalog || apiKeyCodex()) {
       return null;
     }
     if (harness.value === "codex" && pluginDiscoveryCredential === "none") {
@@ -1716,15 +1781,23 @@ function renderAgentForm(
       ["codex_pat", "credential_source"].includes(binding?.method ?? authMethod.value) &&
       Boolean(boundSource ?? modelCredentialSource ?? apiKey.value.trim()),
     isPending: () => pending,
-    requestBody: (body) => ({ ...discoveryCredential(), ...body }),
-    unavailableMessage: () =>
-      savedOpenClawCatalog
+    requestBody: (body) => ({
+      ...discoveryCredential(),
+      harnessId: harness.value,
+      ...body,
+    }),
+    unavailableMessage: () => {
+      if (catalogUnavailable) {
+        return "This Installation has no plugin catalog for the selected Harness.";
+      }
+      return savedOpenClawCatalog
         ? "To install Google Workspace, open Plugins on a saved dedicated OpenClaw Agent using Kubernetes Compute."
         : apiKeyCodex()
           ? "Codex plugins need a ChatGPT login. With an OpenAI API key, each selected plugin is disabled when the Agent deploys (PLUGIN_AUTH_REQUIRED). Choose Service Accounts or ChatGPT OAuth to browse and use plugins."
           : pluginDiscoveryCredential === "none"
             ? "Choose the Codex harness to browse this Installation's curated plugin catalog."
-            : "For discovery, choose ChatGPT OAuth (Experimental) and sign in, or choose Service Accounts with the Codex harness and select a Secret or enter a preview token.",
+            : "For discovery, choose ChatGPT OAuth (Experimental) and sign in, or choose Service Accounts with the Codex harness and select a Secret or enter a preview token.";
+    },
     availableMessage: () =>
       pluginDiscoveryCredential === "none"
         ? "Load the installation's curated plugin catalog. Access and tool availability are checked separately."
@@ -1737,8 +1810,33 @@ function renderAgentForm(
       }),
   });
   const pluginFields = pluginDiscovery.fields;
-  const updatePluginDiscovery = pluginDiscovery.update;
-  const resetPluginDiscovery = pluginDiscovery.reset;
+  function applyPluginCapabilities() {
+    const capabilities = installationCapabilities;
+    const catalog = capabilities?.pluginCatalogs?.find(
+      (candidate) => candidate.harnessId === harness.value,
+    );
+    const policies = catalog?.pluginPolicies;
+    const discovery = catalog?.pluginDiscovery;
+    savedOpenClawCatalog = policies?.driver.implementation === "occ/openclaw-plugin";
+    catalogUnavailable = capabilities !== undefined && discovery === undefined;
+    pluginDiscoveryCredential = discovery?.credential ?? (catalogUnavailable ? null : "required");
+    pluginFields.setCapabilities(policies ?? null);
+    defaultApprovers.hidden = policies?.approvers?.agent !== true;
+    if (!defaultApprovers.hidden) {
+      defaultApprovers.refreshNames();
+    } else if (capabilities && pluginApprovers !== undefined) {
+      pluginApprovers = undefined;
+      defaultApprovers.refreshValue();
+    }
+  }
+  function resetPluginDiscovery() {
+    if (pluginHarness !== harness.value) {
+      pluginHarness = harness.value;
+      plugins.value = "{}";
+      applyPluginCapabilities();
+    }
+    pluginDiscovery.reset();
+  }
   apiKey.addEventListener("input", resetPluginDiscovery);
   for (const control of [nativeProvider, authMethod, harness]) {
     control.addEventListener("change", resetPluginDiscovery);
@@ -2294,6 +2392,7 @@ function renderAgentForm(
       input.value = value;
     }
   }
+  let appliedProvider = nativeProvider.value;
   manualModel = draft.manualModel ?? manualModel;
   // Whether the reader changed the form or its Preset variables: Cancel then asks first, and a
   // reload or tab close warns. Restoring a draft and the form's own updates fire no trusted event.
@@ -2772,7 +2871,11 @@ function renderAgentForm(
     if (!planLocked && capabilityDiscoveryDone && (!nativeAdminAvailable || !shouldProvision())) {
       nativeAdmin.checked = false;
     }
-    updatePluginDiscovery();
+    if (pluginHarness !== harness.value) {
+      resetPluginDiscovery();
+    } else {
+      pluginDiscovery.update();
+    }
     pluginFields.setDisabled(planLocked);
     channelEditor.toggleAttribute("inert", planLocked || saved);
     channelEditor.setAttribute("aria-busy", pending ? "true" : "false");
@@ -3210,16 +3313,8 @@ function renderAgentForm(
       if (!context.isCurrent()) {
         return;
       }
-      pluginDiscoveryCredential =
-        installation.capabilities?.pluginDiscovery?.credential ?? "required";
-      savedOpenClawCatalog =
-        installation.capabilities?.pluginPolicies?.driver?.implementation === "occ/openclaw-plugin";
-      pluginFields.setCapabilities(installation.capabilities?.pluginPolicies ?? null);
-      defaultApprovers.hidden =
-        installation.capabilities?.pluginPolicies?.approvers?.agent !== true;
-      if (!defaultApprovers.hidden) {
-        defaultApprovers.refreshNames();
-      }
+      installationCapabilities = installation.capabilities;
+      applyPluginCapabilities();
       nativeAdminAvailable = installation.capabilities?.nativeAdmin === true;
       nativeWorkersAvailable = installation.capabilities?.nativeWorkers !== undefined;
       const openclawModes = installation.capabilities?.openclaw?.executionModes;

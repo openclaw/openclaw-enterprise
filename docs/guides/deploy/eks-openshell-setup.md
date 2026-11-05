@@ -1,5 +1,7 @@
 ---
 tags: [human_verified, nolimit]
+# Backfilled from the verification tag recorded in a66a9cdfd.
+last_verified: "2026-11-02"
 ---
 
 # Set up OCE on Amazon EKS
@@ -147,6 +149,22 @@ kubectl --context "$CONTEXT" get gatewayclass eg -o json |
 kubectl --context "$CONTEXT" wait gatewayclass/eg --for=condition=Accepted --timeout=3m
 ```
 
+### Check the prepared resources
+
+Run [prerequisite diagnosis](prerequisite-diagnosis.md) after preparing the target
+namespace and controllers. Save its plan as `$RUN_DIR/prerequisites.json`, using
+`$KUBECONFIG`, `$CONTEXT`, `$PLATFORM_NS`, the installed controller names, and the
+reviewed API/webhook CIDRs above. Set `peakAdditional` from the candidate chart
+and put the intended cluster ARN in `eks.clusterArn`.
+
+```bash
+node scripts/diagnose-kubernetes-prerequisites.mjs --config "$RUN_DIR/prerequisites.json"
+```
+
+Resolve failed and unknown checks before installing. Matching address inventory
+does not prove that deployed NetworkPolicies or admission webhooks work; retain
+the network and certificate checks above.
+
 <a id="configure-the-protected-copies-and-install"></a>
 
 Confirm the database endpoint from your infrastructure outputs; EKS does not select RDS automatically. For RDS, obtain its [approved CA bundle](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/PostgreSQL.Concepts.General.SSL.html). The templates use Secret `occ-database-ca`, key `ca.pem`, mounted at `/etc/openclaw/database-ca`. Both database URLs must use the database hostname and `sslmode=verify-full&sslrootcert=/etc/openclaw/database-ca/ca.pem`. Use the provider’s verified CA for other PostgreSQL services. Keep exact database and API egress addresses current through failover; security groups do not replace NetworkPolicies.
@@ -157,12 +175,6 @@ Confirm the database endpoint from your infrastructure outputs; EKS does not sel
 <a id="5-deploy-and-open-the-owners-agent"></a>
 
 ## 4. Prepare the operator session
-
-Set `MODEL` to a model your credential can use. Choose the credential when you deploy the Agent. A Linear connection and GitHub App are not needed for installation setup. The [operator session reference](quickstart-session.md) defines the shared inputs and helpers.
-
-```bash
-export MODEL=gpt-5.4
-```
 
 Continue in the same Bash shell to [Deploy your first Agent](deploy-first-agent.md).
 

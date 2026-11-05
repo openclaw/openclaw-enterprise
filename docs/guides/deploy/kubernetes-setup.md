@@ -1,5 +1,7 @@
 ---
 tags: [human_verified, nolimit]
+# Backfilled from the verification tag recorded in a66a9cdfd.
+last_verified: "2026-11-02"
 ---
 
 # Set up OCE on Kubernetes
@@ -73,12 +75,6 @@ kubectl --kubeconfig "$KUBECONFIG" --context "$CONTEXT" wait gatewayclass/eg --f
 <Snippet file="../../snippets/openshell-quickstart/cluster-installation.md" />
 
 ## 4. Prepare the operator session
-
-Set `MODEL` to a model your credential can use. Choose the credential when you deploy the Agent. A Linear connection and GitHub App are not needed for installation setup. See the [operator session](quickstart-session.md).
-
-```bash
-export MODEL=gpt-5.4
-```
 
 Continue in the same Bash shell to [Deploy your first Agent](deploy-first-agent.md).
 
