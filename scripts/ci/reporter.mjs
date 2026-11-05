@@ -53,6 +53,7 @@ const postTestAsyncActivityPrefix =
 // Tests publish timings with t.diagnostic(`${measurementPrefix}${JSON}`). Only the
 // allowlisted shape below is retained in ordinary results.
 const measurementPrefix = "openclaw-ci-measurement ";
+const openShellStageMeasurementKind = "openshell-stage";
 const openShellSandboxMeasurementKind = "openshell-sandbox-phase";
 const openShellSandboxStages = new Set([
   "installation",
@@ -86,7 +87,7 @@ function parseMeasurement(message) {
 }
 
 function safeMeasurement(value) {
-  if (isRecord(value) && value.kind === "openshell-stage") {
+  if (isRecord(value) && value.kind === openShellStageMeasurementKind) {
     if (
       ![
         "installation",
@@ -1334,7 +1335,11 @@ export default async function* jsonLinesReporter(source) {
       const value = parseMeasurement(message);
       // Per-test diagnostics name their file; the run summary counts do not.
       // OpenShell phase timings belong only in the projected measurement, even on failure.
-      if (typeof event.data.file === "string" && value?.kind !== openShellSandboxMeasurementKind) {
+      if (
+        typeof event.data.file === "string" &&
+        value?.kind !== openShellStageMeasurementKind &&
+        value?.kind !== openShellSandboxMeasurementKind
+      ) {
         output.diagnostic(message);
       }
       // Node diagnostics can quote thrown errors; retain only this fixed failure category.

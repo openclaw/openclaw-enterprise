@@ -3171,10 +3171,11 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
     outcome: "failed",
     elapsedMs: 1_234,
   };
-  const phaseDiagnostic = `openclaw-ci-measurement ${JSON.stringify({
-    ...failedPhase,
-    detail: "fixture-opaque-phase-detail",
-  })}`;
+  const failedStage = { ...failedPhase, kind: "openshell-stage" };
+  const phaseDiagnostics = [failedPhase, failedStage].map(
+    (measurement) =>
+      `openclaw-ci-measurement ${JSON.stringify({ ...measurement, detail: "fixture-opaque-phase-detail" })}`,
+  );
   await writeFile(
     join(root, "tests/integration/details.test.mjs"),
     [
@@ -3186,7 +3187,7 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
       "  console.error(`credential ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);",
       '  console.log("Authorization: Bearer abcdefghijklmnop0123");',
       '  t.diagnostic("phase timings 1234 ms");',
-      `  t.diagnostic(${JSON.stringify(phaseDiagnostic)});`,
+      `  for (const message of ${JSON.stringify(phaseDiagnostics)}) t.diagnostic(message);`,
       '  assert.fail(`password="fixture,\\nprivate-tail" phase=after ${"stage line\\n".repeat(80)}decisive line ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);',
       "});",
       "",
@@ -3225,7 +3226,7 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
   assert.equal(result.status, 1);
   const summary = JSON.parse(await readFile(resultsPath, "utf8"));
   assert.equal(summary.files[0].status, "failed");
-  assert.deepEqual(summary.files[0].measurements, [failedPhase]);
+  assert.deepEqual(summary.files[0].measurements, [failedPhase, failedStage]);
   const failed = summary.files[0].tests.find(({ name }) => name === "long failure");
   // Results and the job log keep the short message only.
   assert.match(failed.error.message, /\.\.\. \[truncated\]$/);
