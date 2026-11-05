@@ -206,8 +206,8 @@ persistent Git configuration. `push.negotiate=true` reduces redundant transfers;
 With `github-repository`, use selected HTTPS Git URLs; API operations use token
 permissions. Both API scopes refuse runner-token and deploy-key creation.
 Selected-repository requests to `api.github.com` accept `Time-Zone: Etc/UTC`;
-GraphQL POSTs also accept `Graphql-Features: merge_queue` and `X-GH-CACHE-TTL`
-hints of 1–64 characters without control characters (such as `24h0m0s`).
+GraphQL POSTs also accept `Graphql-Features: merge_queue` and bounded
+`X-GH-CACHE-TTL` hints (such as `24h0m0s`).
 Hints support `gh pr list --search`; OCE ignores their values and checks current
 authorization. Duplicate headers are refused.
 
