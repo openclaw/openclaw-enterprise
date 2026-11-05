@@ -57,6 +57,10 @@ function computeDriver({
   agentProvisioning = false,
   sandboxDriver,
   credentialGatewayDriver,
+  resolveSandboxNamespace = async (namespace) => ({
+    ...namespace,
+    name: `console-${namespace.id}`,
+  }),
   // OCC applies the bundled Kubernetes Compute's own save rules (channel credentials only from
   // Secret bindings, finding 2319) only under its implementation, such as `kubernetes-local`.
   implementation = "test-memory-lifecycle",
@@ -91,9 +95,7 @@ function computeDriver({
       return { namespaceId: namespace.id, namespaceDeleted: true };
     },
     // The same fixture placement is shared by source management and the Sandbox.
-    async resolveSandboxNamespace(namespace) {
-      return { ...namespace, name: `console-${namespace.id}` };
-    },
+    resolveSandboxNamespace,
     async prepareRevision(revision) {
       return {
         namespaceId: revision.namespaceId,
@@ -458,6 +460,7 @@ export async function createConsoleAppFixture(t, options = {}) {
         modelProvider: options.modelProvider,
         sandboxDriver: options.sandboxDriver,
         credentialGatewayDriver: options.credentialGatewayDriver,
+        resolveSandboxNamespace: options.resolveSandboxNamespace,
         implementation: options.computeImplementation,
       }),
     configurationDriver:
@@ -482,6 +485,9 @@ export async function createConsoleAppFixture(t, options = {}) {
         state: platformState,
         ...(authorizeWith === undefined ? {} : { authorize: authorizeWith(iamDriver) }),
         preparedTokens: options.preparedTokens,
+        ...(options.pluginSourceReader === undefined
+          ? {}
+          : { pluginSourceReader: options.pluginSourceReader }),
         sandboxNetworkPolicyCeiling: options.sandboxNetworkPolicyCeiling,
         driverConfigurations: options.driverConfigurations,
         ...(options.now === undefined ? {} : { now: options.now }),

@@ -62,6 +62,7 @@ async function createFixture(
     logger,
     onSend,
     credentialGatewayDriver,
+    pluginSourceReader,
     sandboxDriver,
   } = {},
 ) {
@@ -74,6 +75,7 @@ async function createFixture(
     logger,
     onSend,
     credentialGatewayDriver,
+    pluginSourceReader,
     sandboxDriver,
   });
   await fixture.bootstrap();
@@ -636,8 +638,17 @@ test("Saved Agent plugin discovery requires exact Agent and Secret grants before
 
 test("Saved Agent source discovery denies missing grants and rechecks revocation after retrieval", async (t) => {
   const { gateway, refresh } = createDeviceCredentialDrivers();
+  let wrongReaderCalls = 0;
   const fixture = await createFixture(t, {
     credentialGatewayDriver: gateway,
+    // Same public ID, a distinct selected object. Never use this private reader.
+    pluginSourceReader: {
+      gateway: { ...gateway },
+      async withSourceToken(_context, use) {
+        wrongReaderCalls += 1;
+        return use({ accessToken });
+      },
+    },
     sandboxDriver: {
       id: "source-discovery-sandbox",
       capability: "sandbox",
@@ -700,6 +711,19 @@ test("Saved Agent source discovery denies missing grants and rechecks revocation
     gateway.calls.filter(({ operation }) => operation === "withSourceToken").length;
   const remove = (binding) =>
     fixture.policy.bindings.splice(fixture.policy.bindings.indexOf(binding), 1);
+  // An external Gateway without its optional callback must still receive 501.
+  // Its ID and source ownership alone never authorize a bundled reader fallback.
+  const externalWithSourceToken = gateway.withSourceToken;
+  gateway.withSourceToken = undefined;
+  try {
+    const unsupported = await fixture.request("POST", path, { session, body: {} });
+    assert.equal(unsupported.status, 501, JSON.stringify(unsupported.body));
+    assert.equal(tokenReads(), 0);
+    assert.equal(wrongReaderCalls, 0);
+    assert.equal(fixture.calls.length, 0);
+  } finally {
+    gateway.withSourceToken = externalWithSourceToken;
+  }
   const allowed = await fixture.request("POST", path, { session, body: {} });
   assert.equal(allowed.status, 200, JSON.stringify(allowed.body));
   assert.equal(tokenReads(), 1);
