@@ -74,3 +74,60 @@ test("workspace setup validation reports ownership and expiry through its public
     message: "The workspace node setup envelope is expired or has no bounded expiry.",
   });
 });
+
+function expiredSetupWithSavedDevice() {
+  const envelope = {
+    url: "wss://gateway.example.test/node",
+    bootstrapToken: "synthetic-bootstrap-token",
+    expiresAtMs: 1,
+  };
+  return {
+    envelope,
+    secret: {
+      metadata: {
+        namespace: "runtime-ns",
+        labels: { "openclaw.dev/namespace": "ns-one", "openclaw.dev/agent": "agent-one" },
+      },
+      data: {
+        setup: Buffer.from(Buffer.from(JSON.stringify(envelope)).toString("base64url")).toString(
+          "base64",
+        ),
+        deviceId: Buffer.from("saved-device").toString("base64"),
+      },
+    },
+    expected: {
+      namespace: "runtime-ns",
+      namespaceId: "ns-one",
+      agentId: "agent-one",
+      key: "setup",
+    },
+  };
+}
+
+test("workspace setup and saved-device encodings retain optional trailing padding", () => {
+  const { secret, expected, envelope } = expiredSetupWithSavedDevice();
+  for (const padding of ["", "=", "==", "=".repeat(65_536)]) {
+    const padded = structuredClone(secret);
+    for (const key of ["setup", "deviceId"] as const) {
+      padded.data[key] = padded.data[key].replaceAll("=", "") + padding;
+    }
+    assert.deepEqual(validateWorkspaceNodeSetupSecret(padded, expected), envelope);
+  }
+});
+
+test("workspace setup and saved-device encodings reject nontrailing padding", () => {
+  const { secret, expected } = expiredSetupWithSavedDevice();
+  for (const key of ["setup", "deviceId"] as const) {
+    for (const suffix of ["=suffix", "=".repeat(65_536) + "!", "=\n"]) {
+      const malformed = structuredClone(secret);
+      malformed.data[key] = malformed.data[key].replaceAll("=", "") + suffix;
+      assert.throws(() => validateWorkspaceNodeSetupSecret(malformed, expected), {
+        constructor: WorkspaceNodeSetupValidationError,
+        message:
+          key === "setup"
+            ? "The workspace node setup Secret contains invalid material."
+            : "The workspace node device ID is invalid.",
+      });
+    }
+  }
+});

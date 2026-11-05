@@ -29,6 +29,14 @@ function configurationObject(
   return object;
 }
 
+function withoutBase64Padding(value: string): string {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === "=") {
+    end -= 1;
+  }
+  return value.slice(0, end);
+}
+
 /** Device identifiers accepted by the persisted workspace-node binding. */
 export function isWorkspaceNodeDeviceId(value: unknown): value is string {
   return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value);
@@ -79,8 +87,8 @@ export function validateWorkspaceNodeSetupSecret(
   if (
     !isNonEmptyString(value) ||
     value.length > 65_536 ||
-    Buffer.from(value, "utf8").toString("base64").replace(/=+$/u, "") !==
-      encoded.replace(/=+$/u, "")
+    withoutBase64Padding(Buffer.from(value, "utf8").toString("base64")) !==
+      withoutBase64Padding(encoded)
   ) {
     throw new WorkspaceNodeSetupValidationError(
       "The workspace node setup Secret contains invalid material.",
@@ -124,8 +132,8 @@ export function validateWorkspaceNodeSetupSecret(
   const recordedDevice =
     typeof encodedDeviceId === "string" &&
     isWorkspaceNodeDeviceId(deviceId) &&
-    Buffer.from(deviceId, "utf8").toString("base64").replace(/=+$/u, "") ===
-      encodedDeviceId.replace(/=+$/u, "");
+    withoutBase64Padding(Buffer.from(deviceId, "utf8").toString("base64")) ===
+      withoutBase64Padding(encodedDeviceId);
   if (encodedDeviceId !== undefined && !recordedDevice) {
     throw new WorkspaceNodeSetupValidationError("The workspace node device ID is invalid.");
   }
