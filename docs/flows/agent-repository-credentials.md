@@ -126,9 +126,9 @@ can supply several repositories. Omitted updates preserve selections; `[]` clear
 ### 2. Freeze a deployable version
 
 `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
-selects the Backend's GitHub policy. Its Backend ID must match the registry.
+selects the Backend's GitHub policy with a registry-matched Backend ID.
 `packages/occ/src/index.ts:OpenClawController.forInstallation` binds that owner
-and rejects missing or mismatched ownership for configured repository access.
+and rejects missing or mismatched repository ownership.
 Startup rejects `drivers.repo` in every mode before worker or attempt creation.
 
 OpenShell parsing and chart constraints belong to
