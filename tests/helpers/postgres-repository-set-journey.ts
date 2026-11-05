@@ -1,6 +1,7 @@
 import { deferred } from "./deferred.ts";
 import { waitFor } from "./wait-for.mjs";
 import { buffer } from "node:stream/consumers";
+import { setTimeout as delay } from "node:timers/promises";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import {
   signComputeExecutionRelease,
@@ -32,6 +33,7 @@ import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/g
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { preparedStandingGitPeer } from "./prepared-standing-git-peer.ts";
 import { standingGitConversation } from "./standing-git-conversation.ts";
+import { waitForRevisionPass } from "./postgres-worker-revision-support.mjs";
 import {
   pluginRuntimeEnvironment,
   pluginRuntimeSpecForRevision,
@@ -114,7 +116,9 @@ export async function narrowOnlineGitJourney(
 }
 
 export async function repositorySetJourney(t: TestContext) {
-  return repositoryGitJourney(t);
+  return repositoryGitJourney(t, undefined, {
+    sessionDurationSeconds: process.env.OCC_TEST_STANDING_GIT_CODEX ? 120 : 45,
+  });
 }
 
 async function repositoryGitJourney(
@@ -418,6 +422,7 @@ async function repositoryGitJourney(
     ReturnType<Awaited<ReturnType<typeof standingGitConversation>>["launch"]> | undefined;
   let askModel: ((phase: "before" | "after") => Promise<void>) | undefined;
   let signed = false;
+  let reducedAttachmentEpoch: string | undefined;
   let wrongIdentity = false;
   const evaluate = (input: object, signedSandbox = wrongIdentity ? "unowned" : wire.world.id) =>
     invoke(
@@ -537,18 +542,17 @@ async function repositoryGitJourney(
             async (phase) => {
               assert.equal(signed, true, "no model traffic before signed Compute release");
               assert.equal((await f.currentAgent(agent))?.activeRevisionId, revision.id);
-              assert.equal(
-                (
-                  await client.getSandboxProviderStatus(
-                    workspace,
-                    state.sandbox,
-                    "openai",
-                    t.signal,
-                  )
-                ).state,
-                "PROVIDER_READINESS_STATE_READY",
+              const model = await client.getSandboxProviderStatus(
+                workspace,
+                state.sandbox,
+                "openai",
+                t.signal,
               );
+              assert.equal(model.state, "PROVIDER_READINESS_STATE_READY");
               if (phase === "after") {
+                assert.ok(reducedAttachmentEpoch, "settle Git removal before the second turn");
+                assert.equal(model.receipt?.desired?.attachmentEpoch, reducedAttachmentEpoch);
+                assert.equal(model.observed?.attachmentEpoch, reducedAttachmentEpoch);
                 const before = peer.originCalls() + peer.gh.trace.length;
                 assert.equal((await evaluate(removedMemberProbe)).decision, 2);
                 assert.equal(peer.originCalls() + peer.gh.trace.length, before);
@@ -861,6 +865,10 @@ async function repositoryGitJourney(
       await peer.prepared.maintain();
       return;
     }
+    // Keep the released execution serving during a worker outage. Restart after its
+    // admitted grant expires to exercise persisted subtraction, not a fabricated detach.
+    await f.stop();
+    const originalAttachmentEpoch = entry.installed.attachmentEpoch;
     assert.equal(peer.gh.issuesOfTokens.length, 1, "one issuance for the selected set");
     assert.deepEqual(
       peer.gh.issuesOfTokens[0].repositoryIds,
@@ -1077,6 +1085,78 @@ async function repositoryGitJourney(
       "member removal denies before provider traffic",
     );
     assert.equal(withdrawn.decision, 2, "withdrawal closes the same native route");
+    // Binding removal denies requests immediately; subtraction follows the revision's
+    // finite grant expiry. Let that real deadline pass before restarting maintenance.
+    const remaining = revision.repositoryCredentials!.deadlineWallMs - Date.now();
+    assert.ok(remaining > 0, "exercise Git withdrawal before the admitted grant expires");
+    await delay(remaining + 10);
+    await start();
+    // Immediate denial is not retained-runtime proof. Let the worker detach Git, then
+    // recover the lost reply through a new runtime before allowing the second turn.
+    await waitForRevisionPass(
+      "Git detach committed with its reply lost",
+      f,
+      revision,
+      () => (wire.world.detaches.length === 1 ? true : undefined),
+      30_000,
+    );
+    await f.stop();
+    const reduction = async () => {
+      const { rows } = await f.observerPool.query<{
+        request_id: string;
+        observed_generation: string | null;
+      }>(
+        `SELECT request_id, observed_generation
+         FROM occ.credential_delivery_reductions WHERE revision_id=$1`,
+        [revision.id],
+      );
+      assert.equal(rows.length, 1);
+      return rows[0]!;
+    };
+    const pendingReduction = await reduction();
+    assert.ok(pendingReduction.request_id);
+    await runtime.close();
+    runtime = createRuntime();
+    runtime.connectRouteStore(f.observerPool, (event) => events.push(event));
+    await runtime.bindRepositoryGit(peer.prepared.protectedGit!);
+    events.length = 0;
+    await start();
+    await waitForRevisionPass(
+      "ordinary maintenance retains the reduced execution after restart",
+      f,
+      revision,
+      () =>
+        events.find(
+          (event) =>
+            event.event === "worker.completed" &&
+            event.revisionId === revision.id &&
+            event.code === "REPOSITORY_ACCESS_WITHDRAWN" &&
+            typeof event.workId === "string" &&
+            event.workId.includes(":maintenance:"),
+        ),
+      30_000,
+    );
+    const settledReduction = await reduction();
+    assert.equal(settledReduction.request_id, pendingReduction.request_id);
+    assert.ok(settledReduction.observed_generation);
+    reducedAttachmentEpoch = settledReduction.observed_generation;
+    assert.notEqual(reducedAttachmentEpoch, originalAttachmentEpoch);
+    const model = await client.getSandboxProviderStatus(
+      workspace,
+      state.sandbox,
+      "openai",
+      t.signal,
+    );
+    assert.equal(model.state, "PROVIDER_READINESS_STATE_READY");
+    assert.equal(model.receipt?.desired?.attachmentEpoch, reducedAttachmentEpoch);
+    assert.equal(model.observed?.attachmentEpoch, reducedAttachmentEpoch);
+    assert.equal((await f.currentAgent(agent))?.activeRevisionId, revision.id);
+    assert.deepEqual(stopped, [], "Git subtraction preserves this running Agent");
+    assert.deepEqual([wire.world.detaches.length, wire.world.writes], [1, 1]);
+    assert.equal(peer.gh.issuesOfTokens.length, 1);
+    const trafficAfterReduction = peer.originCalls() + peer.gh.trace.length;
+    assert.equal((await evaluate(removedMemberProbe)).decision, 2);
+    assert.equal(peer.originCalls() + peer.gh.trace.length, trafficAfterReduction);
     if (askModel) {
       await askModel("after");
     }

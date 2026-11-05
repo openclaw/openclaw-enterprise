@@ -318,8 +318,9 @@ or `gateway_unauthorized`. `worker.openshell-git-route-warning` distinguishes
 `withdrawn` and `repository_expired` when another worker closed the route) and
 `retained` ones.
 `OPENSHELL_GIT_WITHDRAWAL_UNRECORDED` means the store did not record a withdrawal:
-this worker still refuses the route, but confirm its Sandbox was deleted, or another
-worker could adopt it. The worker drops a closed route after its Sandbox reads absent
+this worker still refuses the route. Verify recorded withdrawal and Git detach or
+runtime retirement; replacement preparation fails closed. The worker drops a closed
+route after its Sandbox reads absent
 (twice if never observed). Failed reads retain it. A denied read logs one `retained`
 warning with `gateway_unauthorized`; reads continue with backoff until absence.
 The worker still refuses to
