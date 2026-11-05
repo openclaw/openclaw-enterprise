@@ -65,7 +65,7 @@ The provider core and Installation-native selection are implemented on `feat/git
 
 - Fixed `https://gitlab.com` origin, canonical project path, profile-scoped operations, draft merge-request creation, and possibly-sent write semantics.
 - Conformance coverage and an opt-in live GitLab.com read/write case.
-- OCE composition, Repo Driver wiring, mixed-provider admission, and the native sender startup path are covered. The Installation-deployed Agent proof, final-send authority after withdrawal or reassignment, and audit persistence remain for the next milestone.
+- OCE composition, Repo Driver wiring, mixed-provider admission, and the native sender startup path are covered. The Installation-deployed Agent proof, final-send authority after withdrawal or reassignment, audit persistence, and an upgrade run that preserves an existing Installation and its bindings remain for the next milestone.
 
 ### Composition milestone
 
@@ -75,6 +75,7 @@ The provider core and Installation-native selection are implemented on `feat/git
 - [x] `gitlab-token` kind in repository-credential composition and the `platform.ts` GitLab branch.
 - [x] Native sender session flow, Installation selection, Console options, and the mixed-provider refusal.
 - [ ] Composed proof: allowed effects, forbidden operation refused before GitLab receives it, withdrawal, and uncertain-write recovery.
+- [ ] Upgrade proof: load an existing Installation and its persisted repository bindings after this change, then exercise the selected Agent workflow without regenerating the bindings.
 
 ## Manual Notes
 

@@ -142,7 +142,7 @@ Use one running Agent, the selected Credential Proxy and paired Sandbox, and an 
 2. Attempt a forbidden push and a request for the nearest forbidden project or profile. Verify that both requests are denied before GitLab I/O and that each denial is attributable in OCE audit. Withdraw or reassign the OCE binding while the PAT is still valid. Try a fresh fetch and send from the same Agent. Verify denial while its conversation still works. Use an observer that saw the allowed Git traffic to confirm zero upstream requests after withdrawal or reassignment. Record any gap in that observation.
 3. Verify successful writes and uncertain creates have attributable audit evidence with the provider, project, actor, and OCE operation identity. Confirm audit records contain no PAT or request body. Submit a revision with both provider selections and verify admission refuses it while single-provider GitHub and GitLab revisions remain independently supported.
 
-The [implementation plan](../plans/0030-gitlab-repository-credentials.md) covers credential failures and token non-disclosure. The branch now loads a GitLab Backend with `repository.nativeSender` without GitHub prepared custody, and the focused Installation, provider, and stored-material checks pass. AWS qualification of the disposable OCE deployment reached a ready Agent and real model turn, but it did not qualify GitLab composition or live GitLab I/O. The live Agent lane still needs authorized GitLab inputs and an Installation-deployed Agent. Final-send authorization after withdrawal or reassignment remains an open contract and proof item. Stock OpenShell’s refusal of unqualified Git access is a separate result.
+The [implementation plan](../plans/0030-gitlab-repository-credentials.md) covers credential failures and token non-disclosure. The branch now loads a GitLab Backend with `repository.nativeSender` without GitHub prepared custody, and the focused Installation, provider, and stored-material checks pass. These are composition and material-reader checks, not an upgrade run against an existing Installation with its persisted bindings. AWS qualification of the disposable OCE deployment reached a ready Agent and real model turn, but it did not qualify GitLab composition or live GitLab I/O. The live Agent lane still needs authorized GitLab inputs and an Installation-deployed Agent. Final-send authorization after withdrawal or reassignment remains an open contract and proof item: the current native PAT sender checks local token availability, cancellation, and deadlines, but does not re-read current Namespace or project grants before GitLab I/O. Stock OpenShell’s refusal of unqualified Git access is a separate result.
 
 ## Rationale and alternatives
 
@@ -152,9 +152,10 @@ Support lets teams keep GitLab as their source of truth and retain their review 
 
 ## Unresolved questions
 
-1. **Product maintainers:** Can the supported GitLab.com project-service-account procedure create the required PAT without an experimental or lingering broad token, and do its expiry and rotation steps preserve the qualified grants without interrupting active bindings?
+1. **Product maintainers:** Approve or reject shipping native development-only PAT delivery for the first supported path. Approval must name the protected PAT owner and the supported creation, scope, expiry, rotation, and retirement procedure.
 2. **Credential and Repo maintainers:** Which exact GitLab API operations and audit details do the selected profiles require?
-3. **Future Token Service maintainers:** What provider contract will replace the protected live PAT, including preparation, custody, renewal, retirement, and the same final-send authorization boundary?
+3. **Credential and Repo maintainers:** Define the current-grant authority source and lifetime rule for an already-open session. A Namespace withdrawal or project/profile reassignment must deny the next request before GitLab I/O; a PAT’s continued validity is not sufficient.
+4. **Future Token Service maintainers:** What provider contract will replace the protected live PAT, including preparation, custody, renewal, retirement, and the same final-send authorization boundary?
 
 ## References
 

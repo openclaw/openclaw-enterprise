@@ -14,6 +14,8 @@ container, platform, or live-provider boundary. Run commands from the repository
 root with Node.js 24, Git, OpenSSL, Docker, and installed workspace dependencies.
 The controlled tests use disposable fixtures and do not use ambient GitHub credentials.
 
+<a id="gitlab-client-checks"></a>
+
 ## GitLab provider checks
 
 Run the component checks with `node --test tests/conformance/gitlab-repository-{config,policy,credentials}.test.mjs`.
