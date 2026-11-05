@@ -76,11 +76,12 @@ test("generator collects paginated contributors, corrections and merged authors 
   assert.ok(readme.indexOf("github.com/Alpha") < readme.indexOf("github.com/beta"));
   assert.ok(readme.indexOf("github.com/beta") < readme.indexOf("github.com/gamma"));
   assert.ok(readme.indexOf("github.com/gamma") < readme.indexOf("github.com/zeta"));
-  assert.match(
-    readme,
-    /href="https:\/\/github\.com\/gamma"><img src="https:\/\/avatars\.githubusercontent\.com\/u\/4\?/,
-  );
-  assert.equal([...readme.matchAll(/github\.com\/zeta/g)].length, 1);
+  const gamma =
+    '<a href="https://github.com/gamma"><img src="https://avatars.githubusercontent.com/u/4?s=48&amp;v=4" width="48" height="48" alt="gamma"></a>';
+  const zeta =
+    '<a href="https://github.com/zeta"><img src="https://avatars.githubusercontent.com/u/1?s=48&amp;v=4" width="48" height="48" alt="zeta"></a>';
+  assert.equal(readme.split(gamma).length - 1, 1);
+  assert.equal(readme.split(zeta).length - 1, 1);
   assert.match(readme, /alt="A &amp; B"/);
 });
 
