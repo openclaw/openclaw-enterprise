@@ -643,6 +643,124 @@ test(
         expectedScopeFingerprint: reviewed.scopeFingerprint,
       },
     };
+    await t.test(
+      "bundled standing preview and approval save use the exact bound owner",
+      async (t) => {
+        const created = await request("POST", `/namespaces/${namespaceId}/agents`, {
+          name: "Bound standing approval",
+          configurationId,
+          repositoryBindings: agent.repositoryBindings,
+        });
+        assert.equal(created.statusCode, 201, created.body);
+        const boundAgent = created.json().data;
+        const boundPath = `/namespaces/${namespaceId}/agents/${boundAgent.id}`;
+        const expected = {
+          ...reviewed,
+          scopeFingerprint: repositoryApprovalFingerprint({
+            ...fingerprintInput,
+            agentId: boundAgent.id,
+          }),
+        };
+        // Approval-only PATCH must not pick up a resolution from ordinary settings save.
+        const approval = {
+          configurationId,
+          repositoryStandingApproval: {
+            ...grant.repositoryStandingApproval,
+            approvalId: randomUUID(),
+            expectedScopeFingerprint: expected.scopeFingerprint,
+          },
+        };
+        const widened = structuredClone(registry);
+        widened.repositories[0]!.namespaces[0]!.pushRefAllowlist = ["refs/heads/*"];
+        try {
+          for (const control of ["bound-veto", "same-id-scope"] as const) {
+            const { repositoryAdmission } = await selectRepo(
+              control === "bound-veto" ? registry : widened,
+              control === "bound-veto" ? false : "registry",
+              {
+                bundled: true,
+                ...(control === "same-id-scope"
+                  ? {
+                      // Preserve every real policy decision behind a different selected object.
+                      adaptPolicy: (policy: GitHubRepositoryPolicy) =>
+                        new Proxy(policy, {
+                          get(target, property) {
+                            const value = Reflect.get(target, property, target);
+                            return typeof value === "function" ? value.bind(target) : value;
+                          },
+                        }),
+                    }
+                  : {}),
+              },
+            );
+            if (control === "same-id-scope") {
+              assert.notEqual(selectedPolicy, repositoryAdmission.policy);
+              assert.equal(selectedPolicy.id, repositoryAdmission.policy.id);
+            }
+            const adapter = t.mock.method(selectedPolicy, "resolve");
+            try {
+              const preview = await request("GET", boundPath + "/repository-approval-scopes");
+              assert.equal(preview.statusCode, 200, preview.body);
+              if (control === "bound-veto") {
+                assert.deepEqual(preview.json().data, []);
+              } else {
+                assert.notEqual(preview.json().data[0].scopeFingerprint, expected.scopeFingerprint);
+              }
+              const denied = await request("PATCH", boundPath, approval);
+              assert.equal(denied.statusCode, 409, denied.body);
+              assert.equal(
+                denied.json().error.message,
+                control === "bound-veto"
+                  ? STANDING_APPROVAL_NOT_PERMITTED
+                  : STANDING_APPROVAL_SCOPE_CHANGED,
+              );
+              assert.equal(adapter.mock.callCount(), control === "same-id-scope" ? 2 : 0);
+              assert.deepEqual(
+                await state.read((v) =>
+                  v.repositorySessions.listStandingApprovals(namespaceId, boundAgent.id),
+                ),
+                [],
+              );
+            } finally {
+              adapter.mock.restore();
+            }
+          }
+          await selectRepo(registry, "registry", { bundled: true });
+          const policy = selectedPolicy;
+          assert.ok(policy instanceof GitHubRepositoryPolicy);
+          const bound = t.mock.method(policy, "resolveBindings");
+          const adapter = t.mock.method(policy, "resolve");
+          try {
+            const preview = await request("GET", boundPath + "/repository-approval-scopes");
+            assert.equal(preview.statusCode, 200, preview.body);
+            assert.deepEqual(preview.json().data, [expected]);
+            assert.equal(bound.mock.callCount(), 1);
+            assert.equal(adapter.mock.callCount(), 0);
+            assert.deepEqual(bound.mock.calls[0]?.arguments, [
+              { namespaceId, bindings: agent.repositoryBindings },
+            ]);
+            const saved = await request("PATCH", boundPath, approval);
+            assert.equal(saved.statusCode, 200, saved.body);
+            assert.equal(bound.mock.callCount(), 2, "approval-only PATCH resolves exactly once");
+            assert.equal(adapter.mock.callCount(), 0);
+            assert.deepEqual(bound.mock.calls[1]?.arguments, bound.mock.calls[0]?.arguments);
+            const stored = await state.read((v) =>
+              v.repositorySessions.listStandingApprovals(namespaceId, boundAgent.id),
+            );
+            assert.equal(stored.length, 1);
+            assert.equal(stored[0]!.id, approval.repositoryStandingApproval.approvalId);
+            assert.equal(stored[0]!.scopeFingerprint, expected.scopeFingerprint);
+            assert.deepEqual(stored[0]!.scope, expected.scope);
+            assert.deepEqual(stored[0]!.binding, expected.binding);
+          } finally {
+            bound.mock.restore();
+            adapter.mock.restore();
+          }
+        } finally {
+          await selectRepo(registry);
+        }
+      },
+    );
     const unreviewed = {
       ...grant,
       repositoryStandingApproval: { ...grant.repositoryStandingApproval },
@@ -955,18 +1073,24 @@ test(
         ),
       );
       const policy = selectedPolicy;
-      const original = policy.resolve.bind(policy);
-      let rechecks = 0;
-      let permitted = true;
       assert.ok(policy instanceof GitHubRepositoryPolicy);
+      const original = policy.resolveBindings.bind(policy);
+      let resolutions = 0;
+      let permitted = true;
       t.mock.method(policy, "allowsStandingApproval", () => permitted);
-      t.mock.method(policy, "resolve", (input: Parameters<typeof policy.resolve>[0]) => {
-        // This legacy call occurs only after OCC reads the stored approval. Initial
-        // admission has already succeeded through the bound provider resolver.
-        rechecks++;
-        permitted = false;
-        return original(input);
-      });
+      const legacy = t.mock.method(policy, "resolve");
+      const bound = t.mock.method(
+        policy,
+        "resolveBindings",
+        (input: Parameters<typeof policy.resolveBindings>[0]) => {
+          // Initial admission succeeds; revoke permission on the resolution after
+          // approval lookup, whether called directly or through the legacy adapter.
+          if (++resolutions === 2) {
+            permitted = false;
+          }
+          return original(input);
+        },
+      );
       const before = await state.read((v) => v.revisions.listRevisions(namespaceId, agent.id));
       const beforeWork = await state.read((v) =>
         Promise.all(
@@ -978,7 +1102,6 @@ test(
       statusCalls.length = 0;
       provisionCalls.length = 0;
       const denied = await request("POST", path + "/deploy");
-      assert.equal(rechecks, 1);
       assert.deepEqual(statusCalls, [], "late veto precedes credential status inspection");
       assert.deepEqual(provisionCalls, [], "late veto precedes credential provisioning");
       assert.deepEqual(await operations(), beforeOperations, "no work added in this Namespace");
@@ -1001,6 +1124,12 @@ test(
         before,
       );
       assert.deepEqual(await read(), [first]);
+      assert.equal(bound.mock.callCount(), 2, "initial admission and post-approval resolution");
+      assert.equal(
+        legacy.mock.callCount(),
+        0,
+        "bundled standing recheck must not use legacy resolve",
+      );
     });
     await selectRepo(registry, true);
     const currentGeneration = async () =>

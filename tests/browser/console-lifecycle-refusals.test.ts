@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Page } from "playwright";
 
-import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { NamespaceCallerPermissionsResponse } from "../../packages/contracts/src/api/resources.ts";
+
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   AGENT_READ,
   accessibleDescription,
@@ -10,7 +12,6 @@ import {
   detailUrl,
   expectReachableReason,
   fileBrowser,
-  fulfillPatchedJson,
   grantMember,
   hasFocus,
   holdRequests,
@@ -24,8 +25,9 @@ import {
   settlePageRequests,
   settledView,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
-import { confirmAgentAction, responseTo } from "./console-action-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+import { fulfillPatchedJson } from "./console-patched-response.ts";
+import { confirmAgentAction, responseTo } from "./console-action-helpers.ts";
 import {
   fulfillMethod,
   refocus,
@@ -33,7 +35,7 @@ import {
   tagView,
   taggedView,
   waitForFocusedLabel,
-} from "./console-refocus-helpers.mjs";
+} from "./console-refocus-helpers.ts";
 import { withholdPermissionSummary } from "./console-agents-test-support.mjs";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import {
@@ -109,11 +111,9 @@ for (const action of ["Stop", "Delete"] as const) {
     await page.getByRole("tab", { name: "Logs", exact: true }).click();
     await page.getByText(/Runtime status requires Agent operate/).waitFor();
     await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
-    const failed = page.waitForResponse(
-      (reply) => reply.url() === permissionsUrl && reply.status() === 503,
-    );
+    const failed = responseTo(page, "GET", permissionsUrl);
     await page.getByRole("tab", { name: "Logs", exact: true }).click();
-    await failed;
+    assert.equal((await failed).status(), 503);
     await page.getByRole("tab", { name: "Configuration", exact: true }).click();
     await nextFrames(page);
     assert.equal(await control.getAttribute("aria-disabled"), "true");
@@ -122,9 +122,9 @@ for (const action of ["Stop", "Delete"] as const) {
     // A grant, seen by a later permission read, makes the control available without the refusal.
     await page.unroute(permissionsUrl);
     grantMember(fixture, MEMBER, [[grant, "agent"]]);
-    const answered = responseTo(page, "GET", permissionsUrl, { status: 200 });
+    const answered = responseTo(page, "GET", permissionsUrl);
     await page.getByRole("tab", { name: "Logs", exact: true }).click();
-    await answered;
+    assert.equal((await answered).status(), 200);
     await page.getByRole("tab", { name: "Configuration", exact: true }).click();
     await alert.waitFor({ state: "detached" });
     await waitForEnabled(control);
@@ -171,9 +171,9 @@ for (const action of ["Stop", "Delete"] as const) {
     assert.equal(await control.getAttribute("aria-disabled"), "true");
     await page.unroute(permissionsUrl);
     grantMember(fixture, MEMBER, [[stopping ? "operate" : "delete", "agent"]]);
-    const answered = responseTo(page, "GET", permissionsUrl, { status: 200 });
+    const answered = responseTo(page, "GET", permissionsUrl);
     await refocus(page);
-    await answered;
+    assert.equal((await answered).status(), 200);
     await alert.waitFor({ state: "detached" });
     await waitForEnabled(control);
     assert.equal(await hasFocus(control), true);
@@ -337,11 +337,11 @@ for (const action of ["Stop", "Delete"] as const) {
     // The grant reaches the API before the held first read, so that read allows the action.
     const grant = stopping ? "operate" : "delete";
     grantMember(fixture, MEMBER, [[grant, "agent"]]);
-    const answered = page.waitForResponse(
-      (reply) => reply.url() === permissionsUrl && reply.status() === 200,
-    );
+    const answered = responseTo(page, "GET", permissionsUrl);
     firstAnswer.release();
-    assert.equal((await (await answered).json()).data[grant], true);
+    const reply = await answered;
+    assert.equal(reply.status(), 200);
+    assert.equal((await reply.json()).data[grant], true);
     await nextFrames(page);
     assert.equal(await control.getAttribute("aria-disabled"), "true");
     assert.equal(await accessibleDescription(control), refusal);
@@ -541,11 +541,13 @@ test("an Agents list row refusal lifts only for a permission answer read after i
   ]);
   // The early row's held read reaches the API after the grant and allows delete, but it was
   // requested before the refusal.
-  const earlyAnswered = page.waitForResponse(
-    (reply) => reply.url() === urls[0] && reply.status() === 200,
-  );
+  const [earlyUrl] = urls;
+  assert.ok(earlyUrl, "the early row must have a permission URL");
+  const earlyAnswered = responseTo(page, "GET", earlyUrl);
   early!.release();
-  assert.equal((await (await earlyAnswered).json()).data.delete, true);
+  const reply = await earlyAnswered;
+  assert.equal(reply.status(), 200);
+  assert.equal((await reply.json()).data.delete, true);
   // A search that hides the fresh row retires its held read; showing it again reads anew, and
   // that answer, which restricts nothing, makes its Delete available.
   const search = page.getByRole("searchbox", { name: "Search Agents" });
@@ -695,7 +697,9 @@ test("a refocus that rebuilds a taller refused row keeps its icon and note in vi
     await fixture.seedActiveAgentRevision(namespace.id, agent.id);
     agents.push(agent);
   }
-  const agentPath = `/namespaces/${namespace.id}/agents/${agents[2].id}`;
+  const thirdAgent = agents[2];
+  assert.ok(thirdAgent);
+  const agentPath = `/namespaces/${namespace.id}/agents/${thirdAgent.id}`;
   const { page } = await newPage(t, fixture, { browser });
   // The owner holds delete; this Delete is refused for another reason, as a stale row's was.
   await fulfillMethod(
@@ -852,7 +856,7 @@ test("a refused Create Secret explains Show value and the page's Create Secret",
   const { page } = await newPage(t, fixture, { browser });
   // A permission answer that predates a revocation still offers creation; the API refuses it.
   await page.route(`**/namespaces/${namespace.id}/permissions`, (route) =>
-    fulfillPatchedJson(route, (body) => ({
+    fulfillPatchedJson(route, NamespaceCallerPermissionsResponse, (body) => ({
       ...body,
       data: { ...body.data, secrets: { create: true } },
     })),

@@ -1,3 +1,4 @@
+import { requireManagedCredentialRuntime } from "./managed-runtime.ts";
 import { type ErrorDetail } from "@openclaw-enterprise/contracts";
 import {
   CODEX_PLUGIN_DRIVER_IMPLEMENTATION,
@@ -6,11 +7,10 @@ import {
   ConfigurationValidationError,
 } from "@openclaw-enterprise/contracts";
 import {
-  managedCredentialBinding,
-  managedGoogleInstall,
+  managedCliCredentialBindings,
   managedInstalls,
   managedPluginCredentials,
-  requireManagedCredentialRuntime,
+  managedMcpCredentialBindings,
 } from "./managed-catalog.ts";
 import { asRecord, deepFreeze, immutableCopy } from "@openclaw-enterprise/utils";
 import {
@@ -322,8 +322,12 @@ function sameDriver(left: PluginDriverIdentity, right: PluginDriverIdentity): bo
   return left.id === right.id && left.implementation === right.implementation;
 }
 
-function ensureHarness(context: PluginDriverContext, mode: "embedded" | "dedicated"): void {
-  if (context.harness.mode !== mode) {
+function ensureHarness(
+  context: PluginDriverContext,
+  harnessId: string,
+  mode: "embedded" | "dedicated",
+): void {
+  if (context.harness.id !== harnessId || context.harness.mode !== mode) {
     throw notImplemented(
       "plugin-harness-mismatch",
       "The selected Plugin Driver does not match the Harness.",
@@ -382,7 +386,17 @@ class BundledPluginDriverBase {
   }
 }
 
+function splitOpenClawSelections(selections: PluginDesiredState) {
+  const managed = managedInstalls.filter(({ id }) => Object.hasOwn(selections, id));
+  const native = { ...selections };
+  for (const { id } of managed) {
+    delete native[id];
+  }
+  return { managed, native };
+}
+
 export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDriver {
+  readonly harnessId = "openclaw" as const;
   readonly discoveryCredential = "none" as const;
   readonly credentials = managedPluginCredentials;
   static readonly configurationSchema = EMPTY_CONFIGURATION_SCHEMA;
@@ -397,32 +411,21 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
   });
 
   validatePolicies(selections: PluginDesiredState, defaultApprovers?: PluginApprovers): void {
-    const managed = managedInstalls.find((pkg) => Object.hasOwn(selections, pkg.id));
-    if (!managed) {
-      this.validate("openclaw", selections, defaultApprovers);
-      return;
+    const { managed, native } = splitOpenClawSelections(selections);
+    this.validate("openclaw", native, defaultApprovers);
+    for (const pkg of managed) {
+      const policy = selections[pkg.id]!;
+      if (
+        typeof policy.enabled !== "boolean" ||
+        Object.keys(policy).some((key) => key !== "enabled" && key !== "driverPolicy")
+      ) {
+        throw new ConfigurationHarnessError(
+          `The ${pkg.entry.name} package supports enablement and an optional credential slot.`,
+        );
+      }
     }
-    if (Object.keys(selections).length !== 1) {
-      throw new ConfigurationHarnessError(
-        `${managed.entry.name} must be the only plugin selected for this release.`,
-      );
-    }
-    const policy = selections[managed.id]!;
-    const supportsCredentials = managed === managedGoogleInstall;
-    if (
-      typeof policy.enabled !== "boolean" ||
-      Object.keys(policy).some(
-        (key) => key !== "enabled" && !(supportsCredentials && key === "driverPolicy"),
-      )
-    ) {
-      throw new ConfigurationHarnessError(
-        supportsCredentials
-          ? "The Google Workspace package supports enablement and an optional credential slot."
-          : `${managed.entry.name} supports plugin enablement only.`,
-      );
-    }
-    managedCredentialBinding(selections);
-    this.validate("openclaw", {}, defaultApprovers);
+    managedCliCredentialBindings(selections);
+    managedMcpCredentialBindings(selections);
   }
 
   static validateConfiguration(): readonly ErrorDetail[] {
@@ -442,7 +445,7 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
     if (packages.length > 0) {
       return this.catalog(packages.map((pkg) => pkg.entry));
     }
-    ensureHarness(context, "embedded");
+    ensureHarness(context, this.harnessId, "embedded");
     return this.catalog(OCC_CATALOG);
   }
 
@@ -486,16 +489,21 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
       readonly gateway: string | undefined;
     },
   ): void {
-    const pkg = managedInstalls.find(({ id }) => Object.hasOwn(selections, id));
-    if (!pkg) {
-      return;
+    const { managed, native } = splitOpenClawSelections(selections);
+    const [nativeId] = Object.keys(native);
+    if (managed.length > 0 && nativeId !== undefined) {
+      const names = managed.map(({ entry }) => entry.name).join(", ");
+      throw new ConfigurationHarnessError(
+        `Select ${nativeId} on an embedded OpenClaw Agent. Use a dedicated OpenClaw Agent for ${names}.`,
+      );
     }
-    const { placement } = pkg;
-    if (harness.id !== placement.harnessId || harness.mode !== placement.mode) {
-      throw new ConfigurationHarnessError(`${pkg.entry.name} requires a dedicated OpenClaw Agent.`);
-    }
-    if (!placement.computeImplementations.includes(computeImplementation)) {
-      throw new ConfigurationHarnessError(`${pkg.entry.name} requires Kubernetes Compute.`);
+    for (const { placement, entry } of managed) {
+      if (harness.id !== placement.harnessId || harness.mode !== placement.mode) {
+        throw new ConfigurationHarnessError(`${entry.name} requires a dedicated OpenClaw Agent.`);
+      }
+      if (!placement.computeImplementations.includes(computeImplementation)) {
+        throw new ConfigurationHarnessError(`${entry.name} requires Kubernetes Compute.`);
+      }
     }
     requireManagedCredentialRuntime(
       selections,
@@ -531,6 +539,7 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
 }
 
 export class CodexPluginDriver extends BundledPluginDriverBase implements PluginDriver {
+  readonly harnessId = "codex" as const;
   static readonly configurationSchema = CODEX_CONFIGURATION_SCHEMA;
   // TODO: gate all_actions/write_actions on enforceable session constraints before this draft ships.
   // A permissive native session can bypass app-level review despite translation.
@@ -625,9 +634,21 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
     signal?: AbortSignal,
   ): Promise<PluginCatalogEntry> {
     if (this.catalogSource === "openai-curated") {
-      const entry = OPENAI_CURATED_CATALOG.find((plugin) => plugin.remoteId === input.pluginId);
+      // Details take an entry's remoteId; its listed id names the same entry (finding 3137).
+      const entry = OPENAI_CURATED_CATALOG.find(
+        (plugin) => plugin.remoteId === input.pluginId || plugin.id === input.pluginId,
+      );
       if (!entry) {
-        throw new PluginPolicyValidationError("unknownPlugin", this.id, input.pluginId);
+        // Name the listed id when the caller left out the marketplace and one entry matches.
+        const versioned = OPENAI_CURATED_CATALOG.filter(({ id }) =>
+          id.startsWith(`${input.pluginId}@`),
+        );
+        throw new PluginPolicyValidationError(
+          "unknownPlugin",
+          this.id,
+          input.pluginId,
+          versioned.length === 1 ? versioned[0]!.id : undefined,
+        );
       }
       return this.catalog([entry])[0]!;
     }
@@ -653,7 +674,7 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
   }
 
   async listCatalog(context: PluginDriverContext): Promise<readonly PluginCatalogEntry[]> {
-    ensureHarness(context, "dedicated");
+    ensureHarness(context, this.harnessId, "dedicated");
     if (this.catalogSource === "openai-curated") {
       return this.catalog(OPENAI_CURATED_CATALOG);
     }

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: "2026-11-03 22:30"
-last_updated_session: "authoring-run/34b14770-5418-4b77-9f71-c574bb48e0fd"
+updated: "2026-11-04 11:22"
+last_updated_session: "authoring-run/d3b76aba-07fb-422b-b0fd-f5957926b7b8"
 ---
 
 # Bootstrap and human authentication flow
@@ -136,7 +136,10 @@ password authentication, protected cookies, and PostgreSQL storage. Sign-in retu
 `safeSessionResponse` returns public identity and `sessionKey`, an auth-secret HMAC
 of the session ID (`apps/controller/src/auth/session-binding.ts`). A changed key makes
 the [Console](platform-console.md#2-resolve-the-session-before-private-reads) clear
-retained views and drafts. Sign-out revokes the session.
+retained views and drafts. Password-only sign-out uses
+`apps/controller/src/auth/password-sign-out.ts:passwordSignOut` to delete the session
+through the selected database adapter before clearing its cookie. Storage failure
+returns `503` without cookie changes; the caller can retry after recovery.
 `auth/admission.ts:passwordFailureAdmission` counts failures; fast success clears
 the selected identity, not the address. `onLimited` reports
 `authentication.sign-in-limited` once per lane/window. `auth/known-device.ts`
@@ -313,7 +316,7 @@ Account creation issues no session and infers no grants.
   password/key delivery, human sign-in, service-key access, and no reissue on rerun.
 - `node --test tests/integration/postgres-auth-accounts.test.mjs` with
   `OCC_TEST_DATABASE_URL` covers account provisioning, transactional rollback, and
-  a lost provisioning COMMIT reply.
+  a lost provisioning COMMIT reply, and password-only logout under database contention.
   Its fresh development bootstrap case also verifies the service identity,
   protected output, and key access, skipping when an Installation exists.
 - `node --test tests/integration/bootstrap-output.test.mjs` covers exclusive
@@ -351,6 +354,8 @@ Account creation issues no session and infers no grants.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 11:22: Record durable password-only session revocation and storage failure handling. (authoring-run/d3b76aba-07fb-422b-b0fd-f5957926b7b8 - 0c7126dc16df1a01e2242e9bd35f9e742d6cee56)
 
 - 2026-11-03 22:30: Trace GitHub sign-in admission by team ID and user ID. (authoring-run/34b14770-5418-4b77-9f71-c574bb48e0fd - 380fb5bbf0578fd8ab345acd3f041623272a703c)
 

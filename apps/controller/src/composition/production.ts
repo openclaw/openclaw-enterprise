@@ -110,7 +110,7 @@ export async function composeProduction(
     credentialRefreshDriver,
     protectedDriver,
     preparedGitHub,
-    pluginDriver,
+    pluginDrivers,
     repositoryPolicy,
     createIAMDriver,
   } = config.drivers;
@@ -282,6 +282,19 @@ export async function composeProduction(
     }
 
     phaseCompleted("computePreflight");
+    const channelDriver = new SlackChannelDriver(
+      globalThis.fetch,
+      config.channelDirectoryProxyUrl,
+      {
+        managedProxyHosts:
+          config.channelDirectoryManagedProxyHost === undefined
+            ? []
+            : [config.channelDirectoryManagedProxyHost],
+        // A closed egress reaches Slack only through a proxy; an open one may reach it
+        // directly, so a timeout there stays a retryable outage (finding 2533).
+        expectProxy: config.apiHttpsEgressOpen !== true,
+      },
+    );
     const controller = OpenClawController.forInstallation(
       persistedInstallation,
       {
@@ -303,23 +316,8 @@ export async function composeProduction(
     controller.selectDriver("compute", computeDriver.id);
     controller.registerDriver(secretDriver);
     controller.selectDriver("secret", secretDriver.id);
-    {
-      const channelDriver = new SlackChannelDriver(
-        globalThis.fetch,
-        config.channelDirectoryProxyUrl,
-        {
-          managedProxyHosts:
-            config.channelDirectoryManagedProxyHost === undefined
-              ? []
-              : [config.channelDirectoryManagedProxyHost],
-          // A closed egress reaches Slack only through a proxy; an open one may reach it
-          // directly, so a timeout there stays a retryable outage (finding 2533).
-          expectProxy: config.apiHttpsEgressOpen !== true,
-        },
-      );
-      controller.registerDriver(channelDriver);
-      controller.selectDriver("channel", channelDriver.id);
-    }
+    controller.registerDriver(channelDriver);
+    controller.selectDriver("channel", channelDriver.id);
     if (protectedDriver !== undefined) {
       controller.installDriver(protectedDriver, ["sandbox", "credential_proxy"]);
     } else if (sandboxDriver !== undefined) {
@@ -337,10 +335,7 @@ export async function composeProduction(
     controller.registerDriver(configurationDriver);
     controller.selectDriver("configuration", configurationDriver.id);
     config.serviceAccountDriverFactory?.(controller, state);
-    if (pluginDriver !== undefined) {
-      controller.registerDriver(pluginDriver);
-      controller.selectDriver("plugin", pluginDriver.id);
-    }
+    controller.installPluginDrivers(pluginDrivers ?? []);
     if (repositoryPolicy !== undefined) {
       controller.registerDriver(repositoryPolicy);
       controller.selectDriver("repo", repositoryPolicy.id);

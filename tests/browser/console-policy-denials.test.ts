@@ -22,7 +22,7 @@ import {
   nextFrames,
   pathRequests,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import { restrict } from "../helpers/iam-grants.mjs";
 
 const grants: SandboxNetworkGrant[] = ["one", "two", "three"].map((name) => ({

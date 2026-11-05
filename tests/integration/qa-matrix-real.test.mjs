@@ -19,7 +19,7 @@ test(
   async (context) => {
     const selection = selectQaMatrix();
     validateQaInputs(selection);
-    const { createQaInstallation, prepareQaPreset, createQaAgent } =
+    const { createQaInstallation, prepareQaPluginCatalogs, createQaAgent } =
       await import("../helpers/qa-installation.mjs");
     const { protectedText } = await import("../helpers/qa-secrets.mjs");
     const { createQaReport } = await import("../helpers/qa-report.mjs");
@@ -94,11 +94,19 @@ test(
           const f = await stage(
             installationContext,
             installation,
-            "shipped startup, default Namespace and presets",
-            () =>
-              createQaInstallation(installationContext, installation, artifacts, {
-                repositoryInputs: selection.repository,
-              }),
+            "shipped startup, default Namespace, presets and both plugin catalogs",
+            async () => {
+              const fixture = await createQaInstallation(
+                installationContext,
+                installation,
+                artifacts,
+                {
+                  repositoryInputs: selection.repository,
+                },
+              );
+              await prepareQaPluginCatalogs(fixture);
+              return fixture;
+            },
           );
           const cells = selection.cells.filter(
             (cell) => cell.installation === installation && cell.scenarios.length > 0,
@@ -133,18 +141,26 @@ test(
               `Standard ${preset}`,
               { timeout: 3_000_000 },
               async (cellContext) => {
-                const ready = await stage(cellContext, cell, "prepare preset runtime", async () => {
-                  assert.ok(f, "blocked by installation startup failure");
-                  await prepareQaPreset(f, preset);
-                  if (selectedCell.scenarios.includes("codex-search-config")) {
-                    f.configuration.drivers.compute.configuration.runtime.codexModelBaseUrl =
-                      process.env.OCC_TEST_QA_CODEX_MODEL_BASE_URL;
-                    delete f.configuration.drivers.compute.configuration.runtime
-                      .codexModelSupportsStandaloneWebSearch;
-                    await f.saveInstallation(f.configuration);
-                  }
-                  return true;
-                });
+                const ready = await stage(
+                  cellContext,
+                  cell,
+                  "check preset prerequisites",
+                  async () => {
+                    assert.ok(f, "blocked by installation startup failure");
+                    assert.ok(
+                      !f.retained && f.pendingRepositories.size === 0,
+                      "blocked by unresolved repository cleanup",
+                    );
+                    if (selectedCell.scenarios.includes("codex-search-config")) {
+                      f.configuration.drivers.compute.configuration.runtime.modelProvider = {
+                        protocol: "openai-responses",
+                        baseUrl: process.env.OCC_TEST_QA_CODEX_MODEL_BASE_URL,
+                      };
+                      await f.saveInstallation(f.configuration);
+                    }
+                    return true;
+                  },
+                );
                 async function runScenario(parent, name, work) {
                   // Keep the preset's overall deadline; a shorter worker deadline
                   // could interrupt cleanup after individually valid stage durations.
@@ -372,7 +388,7 @@ test(
                             `search declaration ${enabled} through supported stop and deploy`,
                             async () => {
                               await stopQaAgent(f, agent);
-                              f.configuration.drivers.compute.configuration.runtime.codexModelSupportsStandaloneWebSearch =
+                              f.configuration.drivers.compute.configuration.runtime.modelProvider.supportsStandaloneWebSearch =
                                 enabled;
                               await f.saveInstallation(f.configuration);
                               await f.deployAndWait(agent);

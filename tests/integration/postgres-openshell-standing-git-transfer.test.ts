@@ -109,7 +109,7 @@ test(
     // CI exercises the model grant, attachment and withdrawal but cannot claim a model response.
     const codex = process.env.OCC_TEST_STANDING_GIT_CODEX;
     const conversation = codex && (await standingGitConversation(t, codex));
-    const modelConfig = conversation ? { base_url: conversation.baseUrl } : undefined;
+    const modelConfig = conversation ? { authorized_base_url: conversation.baseUrl } : undefined;
     let onlineOwner!: ReturnType<typeof protectedOpenShellGitOwner>;
     const protectedGit = protectedRepositoryGitRelease(
       () => standing(),
@@ -123,6 +123,9 @@ test(
       { binaries: ["/usr/bin/codex"] },
       {
         id: gatewayId,
+        ...(conversation && {
+          modelProvider: { protocol: "openai-responses", baseUrl: conversation.baseUrl },
+        }),
         backend: {
           id: "fixture-gateway",
           drivers: { credential_gateway: gatewayId },
@@ -161,6 +164,9 @@ test(
           protectedDriver: protectedGit.owner,
           credentialGateway: gateway,
           ...(modelConfig && { modelConfig }),
+          ...(conversation && {
+            modelProvider: { protocol: "openai-responses" as const, baseUrl: conversation.baseUrl },
+          }),
         }),
         { sandbox: protectedGit.sandboxConfiguration },
       );
@@ -277,6 +283,9 @@ test(
       options({
         runtime: {
           transportSecretPrefix: "fixture-transport",
+          ...(conversation && {
+            modelProvider: { protocol: "openai-responses", baseUrl: conversation.baseUrl },
+          }),
           gatewayStorageClassName: "local-path",
         },
       }) as never,
@@ -357,12 +366,8 @@ test(
           assert.equal(login.credentialSource?.id, auth.sourceId);
           assert.equal(login.loginMode, "api_key");
           if (conversation) {
-            assert.equal(login.credentialSource?.config.base_url, conversation.baseUrl);
-            const manifest = pluginRuntimeSpecForRevision(
-              r,
-              undefined,
-              login.credentialSource!.config.base_url,
-            )!;
+            assert.equal(login.credentialSource?.config.authorized_base_url, conversation.baseUrl);
+            const manifest = pluginRuntimeSpecForRevision(r, undefined, conversation.baseUrl)!;
             modelEnvironment = {
               ...Object.fromEntries(
                 login.environment.map(({ name, value }: { name: string; value?: string }) => [
@@ -379,7 +384,7 @@ test(
           assert.equal(r.id, revision.id);
           const s = AbortSignal.timeout(15000);
           const p = await runtime
-            .prepare(r, client, workspace, sandbox, s, [model])
+            .prepare(r, client, workspace, sandbox, s, "/sandbox/enterprise", [model])
             .catch((e: Error) => {
               t.diagnostic("prepare: " + e.message);
               throw e;

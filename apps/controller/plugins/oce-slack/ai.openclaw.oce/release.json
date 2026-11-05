@@ -1,5 +1,5 @@
 {
-  "release": "slack-mcp-install-v1",
+  "release": "slack-mcp-v1",
   "placement": {
     "harnessId": "openclaw",
     "mode": "dedicated",
@@ -14,7 +14,8 @@
       "delivery": { "role": "harness", "env": "SLACK_MCP_TOKEN", "presentation": "bearer" },
       "mcp": {
         "server": "slack",
-        "resource": "https://mcp.slack.com"
+        "resource": "https://mcp.slack.com",
+        "versions": ["2025-03-26", "2025-06-18", "2025-11-25"]
       }
     }
   }

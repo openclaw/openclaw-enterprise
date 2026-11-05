@@ -1,18 +1,51 @@
 # Install the local Kubernetes tools on Linux
 
-Use these commands in Bash on a Linux AMD64 or ARM64 host. Start from the OCE checkout with a working Docker Engine, sudo access and enough disk space for the images. Install the tools globally so a fresh operator shell can resume the quickstart session.
+Start from the OCE checkout on a Linux AMD64 or ARM64 host with Bash, sudo access and space for the container images. Install the host tools globally so a fresh shell can resume the quickstart.
 
-On Ubuntu, install the base utilities if they are missing. If Docker is missing, follow [Docker Engine for Ubuntu](https://docs.docker.com/engine/install/ubuntu/) and check access from your operator account. Authenticate the GitHub reader with your approved account for the independent repository check.
+## Prepare Docker and host utilities
+
+Choose your Linux distribution, then run the Docker checks below.
+
+<AccordionGroup>
+<Accordion title="Ubuntu">
+
+Follow the [Docker Engine installation instructions for Ubuntu](https://docs.docker.com/engine/install/ubuntu/), including the Buildx plugin. Start Docker, then install the host utilities:
 
 ```bash
-# Install the missing host utilities.
 sudo apt-get update
-sudo apt-get install -y ca-certificates curl git gh jq openssl tar xz-utils
-docker version --format '{{.Server.Version}}'
-gh auth status
+sudo apt-get install -y ca-certificates curl git jq openssl tar xz-utils
 ```
 
-Download the Node and Go versions pinned for this release into a temporary directory. The repository download helper checks each archive against its SHA-256 before extraction. Install them under `/opt/oce-tools` and link their commands into `/usr/local/bin`. This replaces any existing commands with the same names in `/usr/local/bin`.
+</Accordion>
+<Accordion title="Fedora 44">
+
+Follow the [Docker Engine installation instructions for Fedora](https://docs.docker.com/engine/install/fedora/), including the Buildx plugin. Start Docker, then install the host utilities:
+
+```bash
+sudo dnf install -y ca-certificates /usr/bin/curl git jq openssl tar xz
+```
+
+</Accordion>
+</AccordionGroup>
+
+Run these commands as the account that will start k3d:
+
+```bash
+docker version --format '{{.Server.Version}}'
+docker buildx version
+```
+
+[Docker socket permission denied?](https://docs.docker.com/engine/install/linux-postinstall/#manage-docker-as-a-non-root-user) Docker group membership grants root-level access.
+
+## Install Node, pnpm, Go and the Kubernetes tools
+
+[Downloading packages through an HTTP proxy?](../operate/local-setup-troubleshooting.md#corepack-cannot-download-pnpm-through-a-proxy)
+
+Download the Node and Go versions pinned for this release into a temporary directory. The repository download helper checks each archive against its SHA-256 before extraction. Install them under `/opt/oce-tools` and link their commands into `/usr/local/bin`. This replaces any existing commands with the same names in `/usr/local/bin`. Run the remaining blocks in a child Bash shell so a failed installation returns you to your original shell.
+
+```bash
+bash --noprofile --norc
+```
 
 ```bash
 set -euo pipefail
@@ -76,5 +109,7 @@ helm version --short
 yq --version
 BASH
 ```
+
+After the checks succeed, type `exit` in the child shell to return to the original shell for installation.
 
 Expect Node 24.22.1, Go 1.27.3, pnpm 11.15.1, kubectl 1.35.0, k3d 5.8.3, Helm 3.19.2 and yq 4.48.1 for this release. When selecting another source checkout, compare its `mise.toml`, `go.mod` and `package.json` before continuing. Keep TLS verification enabled for all downloads. Retain `/opt/oce-tools` and the commands in `/usr/local/bin` when cleaning up an installation; saved operator sessions use these tools.

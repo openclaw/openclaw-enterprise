@@ -300,9 +300,9 @@ function asString(source, path, diagnostics, { pattern, validate, description } 
 
 // Kubernetes Compute startup's rule and messages (finding 1296). The normalized URL is the one
 // Compute uses.
-function codexModelBaseUrl(runtime, diagnostics) {
-  const field = "runtime.codexModelBaseUrl";
-  const value = asString(runtime, field.split("."), diagnostics);
+function sharedModelBaseUrl(runtime, diagnostics) {
+  const field = "runtime.modelProvider.baseUrl";
+  const value = asString(runtime.modelProvider, field.split("."), diagnostics);
   // Normalize only after the raw spelling is accepted. `https://192.168.1/v1` would otherwise
   // become `https://192.168.0.1/v1` and pass Compute.
   if (typeof value === "string" && value !== "" && openAiBaseUrlRewritesIpv4(value)) {
@@ -324,6 +324,34 @@ function codexModelBaseUrl(runtime, diagnostics) {
     diagnostics.warnings.push(blocked);
   }
   return url ?? value;
+}
+
+function sharedModelProvider(runtime, diagnostics) {
+  const provider = record(runtime.modelProvider, "runtime.modelProvider", diagnostics);
+  closed(
+    provider,
+    "runtime.modelProvider",
+    ["protocol", "baseUrl", "supportsStandaloneWebSearch"],
+    diagnostics,
+  );
+  if (!["openai-responses", "openai-completions"].includes(provider.protocol)) {
+    diagnostics.errors.push(
+      "runtime.modelProvider.protocol must be openai-responses or openai-completions.",
+    );
+  }
+  return {
+    protocol: provider.protocol,
+    baseUrl: sharedModelBaseUrl(runtime, diagnostics),
+    ...(provider.supportsStandaloneWebSearch === undefined
+      ? {}
+      : {
+          supportsStandaloneWebSearch: asBoolean(
+            provider,
+            ["runtime", "modelProvider", "supportsStandaloneWebSearch"],
+            diagnostics,
+          ),
+        }),
+  };
 }
 
 // URL parsing strips only C0 controls and spaces (U+0000 to U+0020) from the ends.
@@ -1197,7 +1225,7 @@ function buildInput(rawInput, diagnostics) {
       "gatewayNodeSelector",
       "transportSecretPrefix",
       "codexSeccompProfile",
-      "codexModelBaseUrl",
+      "modelProvider",
     ],
     diagnostics,
   );
@@ -1566,7 +1594,7 @@ function buildRendered(profile, parsed, diagnostics) {
   if (profile.name === "openclaw" && Object.keys(codex).length > 0) {
     diagnostics.errors.push("codex inputs are only consumed by the codex profile.");
   }
-  for (const key of ["codexSeccompProfile", "codexModelBaseUrl"]) {
+  for (const key of ["codexSeccompProfile"]) {
     if (profile.name === "openclaw" && runtime[key] !== undefined) {
       diagnostics.errors.push(`runtime.${key} is only consumed by the codex profile.`);
     }
@@ -1929,6 +1957,9 @@ function buildRendered(profile, parsed, diagnostics) {
                   "a prefix producing a DNS-safe Secret name of at most 253 characters with its 12-character suffix",
               },
             ),
+            ...(runtime.modelProvider === undefined
+              ? {}
+              : { modelProvider: sharedModelProvider(runtime, diagnostics) }),
             ...(profile.name === "codex"
               ? {
                   codexSeccompProfile: asString(
@@ -1941,9 +1972,6 @@ function buildRendered(profile, parsed, diagnostics) {
                         "a relative localhost profile path without traversal or unconfined mode",
                     },
                   ),
-                  ...(runtime.codexModelBaseUrl === undefined
-                    ? {}
-                    : { codexModelBaseUrl: codexModelBaseUrl(runtime, diagnostics) }),
                 }
               : {}),
             ...(managedSlackProxyEnabled
@@ -2253,11 +2281,11 @@ function buildRendered(profile, parsed, diagnostics) {
 }
 
 async function resolveHostedDiscoveryCidrs(profile, parsed, values, diagnostics) {
-  const plugin = profile.installation.drivers.plugin;
-  if (
-    plugin.id !== "codex-plugin" ||
-    (plugin.configuration?.catalogSource ?? "hosted") !== "hosted"
-  ) {
+  const hostedDiscovery = profile.installation.drivers.plugin.some(
+    (entry) =>
+      entry.id === "codex-plugin" && (entry.configuration?.catalogSource ?? "hosted") === "hosted",
+  );
+  if (!hostedDiscovery) {
     return;
   }
   const hosts = ["auth.openai.com", "chatgpt.com"];

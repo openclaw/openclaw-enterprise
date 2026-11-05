@@ -81,7 +81,9 @@ test(
     const { port } = reservation;
     const transport = new GrpcOpenShellGatewayClient({ endpoint: `http://127.0.0.1:${port}` });
     t.after(() => transport.close());
-    const compute = createTestKubernetesComputeDriver("launch-compute", { channelRuntime: true });
+    const admissionCompute = createTestKubernetesComputeDriver("launch-compute", {
+      channelRuntime: true,
+    });
     const f = await staticEgressFixture(t, {
       // Keep local lifecycle observations, but run the actual Compute admission at
       // the normal deploy route and read its immutable result back from State.
@@ -90,14 +92,19 @@ test(
           ...options,
           computeDriver: {
             ...options.computeDriver,
-            id: compute.id,
-            implementation: compute.implementation,
-            admitRevision: compute.admitRevision.bind(compute),
+            id: admissionCompute.id,
+            implementation: admissionCompute.implementation,
+            admitRevision: admissionCompute.admitRevision.bind(admissionCompute),
           },
         }),
       recordInstallation: false,
       physicalPlacement: true,
       serviceTransport: transport,
+    });
+    // Render with the provider the fixture selected for this admitted revision.
+    const compute = createTestKubernetesComputeDriver(admissionCompute.id, {
+      channelRuntime: true,
+      sandboxDriver: f.sandboxDriver,
     });
     f.observed.service = {
       url: serviceUrl,

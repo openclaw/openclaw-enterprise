@@ -1,14 +1,16 @@
 # Deploy your first Agent
 
-Complete the installation setup for [local k3d](local-setup.md), [Kubernetes](kubernetes-setup.md), or [Amazon EKS](eks-openshell-setup.md). Continue in the same Bash shell at the root of the matching release checkout. Use the API connection, namespace, browser origin and model from setup.
+Complete the installation setup for [local k3d](local-setup.md), [Kubernetes](kubernetes-setup.md), or [Amazon EKS](eks-openshell-setup.md). Continue in the same Bash shell at the root of the matching release checkout. Use the API connection, namespace and browser origin from setup.
 
 ## 1. Select or register the model credential
 
 Choose one credential for the dedicated Codex Agent. Both paths use the [OpenShell Credential Gateway](../../reference/drivers/openshell-credential-gateway.md#source-type-catalog).
 
+Before selecting either credential, confirm its account policy meets the [OpenShell permission-profile requirement](../../reference/drivers/openshell-sandbox.md#codex-permission-profile).
+
 ### Option A. ChatGPT service account token
 
-Choose this path to use Codex plugins. Use a [ChatGPT workspace service account](https://learn.chatgpt.com/docs/enterprise/service-accounts) with the plugins you need enabled. For a new source, save its Codex access token in a private file outside the checkout.
+To use Codex plugins, choose a [ChatGPT service account](https://learn.chatgpt.com/docs/enterprise/service-accounts) with the plugins you need enabled. For a new source, save its Codex access token in a private file outside the checkout.
 
 ```bash
 source_type=codex-pat
@@ -20,7 +22,7 @@ credential_file=/secure/oce/codex-token
 
 > **Warning:** An Agent that uses an OpenAI API key cannot access Codex plugins, including Linear. Choose the service account token if you need plugins.
 
-Use an OpenAI API key with access to the model selected during setup. For a new source, save the key in a private file outside the checkout.
+Use your OpenAI project’s API key. For a new source, save the key in a private file outside the checkout.
 
 ```bash
 source_type=openai
@@ -63,7 +65,11 @@ modelSource=$(jq -er '.data|select(.state=="ready")|.id' "$RUN_DIR/model-source"
 
 Register the model with a fail-closed loopback URL. The Gateway uses authenticated WebSocket transport to the dedicated Codex Harness inside OpenShell.
 
-Render the [Codex configuration template](../../snippets/openshell-quickstart/codex-configuration.jq) with `MODEL` and post its JSON to OCE.
+Set `MODEL` to a [Codex model ID available to your credential](../operate/model-verification.md#choose-a-model-for-dedicated-codex), without the `codex/` prefix.
+
+```bash
+read -r -p "Codex model ID: " MODEL
+```
 
 <Snippet file="../../snippets/openshell-quickstart/codex-configuration.jq" lang="jq" />
 
@@ -156,7 +162,7 @@ deploy_and_wait
 </Accordion>
 </AccordionGroup>
 
-Continue when the deployment reports `succeeded` and the Agent's `activeRevisionId` matches the new revision.
+Continue when the deployment reports `succeeded` and the Agent's `activeRevisionId` matches the new revision. If the Console says the model is unavailable, see [Recover from an unavailable model](../topics/agent-troubleshoot.md#the-configured-model-is-unavailable).
 
 <a id="7-verify-a-turn-through-openclaw"></a>
 

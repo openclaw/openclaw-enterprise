@@ -1,5 +1,17 @@
 /// <reference lib="es2024.promise" />
 
+import {
+  openCreateSecretDialog,
+  createModelCredentialSecret,
+  enterManualModel,
+  openAdvancedSettings,
+  assertAgentNameTaken,
+  optionValues,
+  runProvisioningPolls,
+  waitForProvisioningFailure,
+  createAgentThroughForm,
+  submitCreateAgent,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -27,46 +39,39 @@ import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
+  persistedDeploymentError,
   apiRequests,
   login,
   nativeValues,
   newPage,
   nonAuthWriteRequests,
   pathRequests,
-  persistedDeploymentError,
   recordLayoutShifts,
   secretOptionLabel,
   secretPostRequests,
   selectSecret,
-  settledFetches,
   takeLayoutShifts,
-  trackSettledFetches,
   waitForCondition,
   waitForEnabled,
+} from "./console-agents-browser-helpers.ts";
+
+import {
+  settledFetches,
+  trackSettledFetches,
   waitForIdleFetches,
   waitForSettledFetches,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-fetch-accounting.ts";
 import {
-  openCreateSecretDialog,
-  createModelCredentialSecret,
-  enterManualModel,
-  openAdvancedSettings,
   configurationPostRequests,
   routeInstallationProvisioning,
   routeInstallationWithoutProvisioning,
   agentPostRequests,
-  assertAgentNameTaken,
-  optionValues,
   raceAgentName,
-  runProvisioningPolls,
-  waitForProvisioningFailure,
-  createAgentThroughForm,
-  submitCreateAgent,
-  routeProvisioningJob,
-  provisioningJob,
 } from "./console-agents-test-support.mjs";
+import { provisioningJob, routeProvisioningJob } from "./console-provisioning-job-fixture.ts";
 import {
   AGENT_NAME_CONFLICT,
   CONSOLE_NAMESPACE_NOT_READY,
@@ -220,6 +225,170 @@ test("Create keeps provisioning reads and retries on the admitted job", async (t
   assert.equal(pathRequests(requests, "POST", `${url}/retry`).length, 1);
   assert.equal(pathRequests(requests, "POST", `${other}/retry`).length, 0);
 });
+
+for (const malformed of ["revision ID", "error message"] as const) {
+  test(`Create handles a terminal provisioning reply with malformed ${malformed}`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace(`Malformed ${malformed}`, { ready: true });
+    // The job has already handed off a real saved Agent/version. Corrupt only its HTTP reply.
+    const agent = await fixture.createAgent(
+      namespace.id,
+      "Malformed reply Agent",
+      nativeValues("reply"),
+    );
+    const revision = await fixture.deployAgent(namespace.id, agent.id);
+    const { page } = await newPage(t, fixture);
+    await routeDedicatedProvisioning(page, fixture, namespace);
+    const root = `/namespaces/${namespace.id}/agents/provision`;
+    const work = provisioningJob(namespace.id, `work_${randomUUID()}`);
+    const served = await routeProvisioningJob(page, fixture, work, null);
+    const meta = { requestId: `req_${randomUUID()}` };
+    const malformedMessage = { detail: "Unreadable provisioning message" };
+    await page.route(`${fixture.origin}${work.url}`, (route) => {
+      if (
+        route.request().method() !== "GET" ||
+        new URL(route.request().url()).pathname !== work.url
+      ) {
+        return route.continue();
+      }
+      return route.fulfill({
+        status: 200,
+        json: {
+          data: work.job("failed", {
+            requestId: served.requestId,
+            phase: "handoff",
+            agentId: agent.id,
+            revisionId: malformed === "revision ID" ? 17 : revision.id,
+            error: {
+              code: "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED",
+              message:
+                malformed === "error message"
+                  ? malformedMessage
+                  : "Credential initialization failed.",
+            },
+          }),
+          meta,
+        },
+      });
+    });
+    const retryPath = `${work.url}/retry`;
+    await page.route(`${fixture.origin}${retryPath}`, (route) => {
+      if (
+        route.request().method() !== "POST" ||
+        new URL(route.request().url()).pathname !== retryPath
+      ) {
+        return route.continue();
+      }
+      return route.fulfill(
+        apiErrorResponse(
+          409,
+          "RESOURCE_CONFLICT",
+          "The Agent lifecycle does not allow provisioning retry.",
+        ),
+      );
+    });
+    await trackSettledFetches(page);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByRole("button", { name: "Start without Preset" }).click();
+    await page.getByLabel("Agent name").fill(agent.name);
+    await enterManualModel(page, "test-malformed-reply-key");
+    // Start the write trace after credential setup: submission must only admit this one job.
+    const requests = apiRequests(page, fixture.origin);
+    const responseAt = (method: string, path: string) =>
+      page.waitForResponse(
+        (response) =>
+          response.request().method() === method && response.url() === `${fixture.origin}${path}`,
+      );
+    const admittedResponse = responseAt("POST", root);
+    const terminalResponse = responseAt("GET", work.url);
+    const create = page.getByRole("button", { name: "Create Agent", exact: true });
+    await runProvisioningPolls(page, () => create.click(), work.url, 1);
+    const admitted = await admittedResponse;
+    assert.equal(admitted.status(), 202);
+    const accepted = await admitted.json();
+    const submitted = pathRequests(requests, "POST", root)[0];
+    const body = submitted?.body;
+    assert.ok(body && typeof body === "object" && "requestId" in body);
+    assert.equal(typeof body.requestId, "string");
+    assert.equal(accepted.data.provisioning.requestId, body.requestId);
+    assert.equal(accepted.data.provisioning.url, work.url);
+    const httpRequestId: unknown = accepted.meta.requestId;
+    assert.ok(
+      typeof httpRequestId === "string" && httpRequestId.trim().length > 0,
+      "admission includes a nonempty HTTP request ID",
+    );
+    assert.notEqual(
+      httpRequestId,
+      body.requestId,
+      "HTTP request metadata is not the original provisioning request identity",
+    );
+    const terminal = await terminalResponse;
+    assert.equal(terminal.status(), 200);
+    const reply = await terminal.json();
+    assert.equal(reply.data.status, "failed");
+    assert.equal(reply.data.requestId, body.requestId);
+    assert.equal(reply.data.workId, work.workId);
+    assert.equal(reply.data.url, work.url);
+    assert.equal(reply.data.agentId, agent.id);
+    assert.equal(reply.meta.requestId, meta.requestId);
+    assert.notEqual(reply.meta.requestId, body.requestId);
+    assert.equal(reply.data.error.code, "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED");
+    assert.deepEqual(reply.data.revisionId, malformed === "revision ID" ? 17 : revision.id);
+    assert.deepEqual(
+      reply.data.error.message,
+      malformed === "error message" ? malformedMessage : "Credential initialization failed.",
+    );
+    const writePaths = () =>
+      nonAuthWriteRequests(requests).map(({ method, path }) => [method, path]);
+    assert.deepEqual(writePaths(), [["POST", root]]);
+    assert.equal(served.submitted, 1);
+    const alert = page.locator("#create-agent-form ~ p[role=alert]");
+    const retry = page.getByRole("button", { name: "Retry provisioning request", exact: true });
+    const link = page.getByRole("link", { name: "Open Agent and deployment details", exact: true });
+    await alert.filter({ hasText: /\S/ }).waitFor();
+    const feedback = await alert.innerText();
+    if (malformed === "revision ID") {
+      assert.match(feedback, /^Outcome unknown after provisioning admission/);
+      assert.equal(await create.isDisabled(), true);
+      assert.equal(
+        await alert.getByRole("link").count(),
+        0,
+        "an invalid version must not offer recovery for a different or absent version",
+      );
+      assert.equal(await retry.isVisible(), true);
+      const refusedResponse = responseAt("POST", retryPath);
+      await retry.click();
+      const refused = await refusedResponse;
+      assert.equal(refused.status(), 409);
+      assert.equal(
+        (await refused.json()).error.message,
+        "The Agent lifecycle does not allow provisioning retry.",
+      );
+      await alert.filter({ hasText: "resend the same request ID" }).waitFor();
+      await waitForEnabled(create);
+      assert.deepEqual(writePaths(), [
+        ["POST", root],
+        ["POST", retryPath],
+      ]);
+      assert.equal(served.submitted, 1, "retry refusal must not admit another job");
+    } else {
+      assert.match(feedback, /^Provisioning did not complete\./);
+      assert.doesNotMatch(
+        feedback,
+        /\[object Object\]|Unreadable provisioning message|Outcome unknown|submit a new request/,
+      );
+      const href = await link.getAttribute("href");
+      assert.ok(href);
+      const target = new URL(href, fixture.origin);
+      assert.equal(target.pathname, `/console/agents/${agent.id}`);
+      assert.equal(target.searchParams.get("namespace"), namespace.id);
+      assert.equal(target.searchParams.get("revision"), revision.id);
+      assert.equal(await retry.isVisible(), false);
+      assert.deepEqual(writePaths(), [["POST", root]]);
+    }
+  });
+}
 
 test("Dedicated Agent creation offers Retry only for a transient provisioning failure", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -790,6 +959,7 @@ test("Dedicated Agent creation distinguishes stopped, superseded and failed firs
   // A versioned job already identifies its revision when Create admits it.
   await routeProvisioningJob(
     page,
+    fixture,
     {
       ...work,
       job: (status, extra) =>
@@ -908,7 +1078,7 @@ test("Dedicated Agent creation keeps the first revision observed after admission
         error: { code: "REVISION_SUPERSEDED", message: "Deployment was superseded." },
       }),
     ];
-    const served = await routeProvisioningJob(page, work, (index) => {
+    const served = await routeProvisioningJob(page, fixture, work, (index) => {
       const observation = observations[index];
       assert.ok(observation, "unexpected additional provisioning poll");
       return observation;
@@ -1127,7 +1297,7 @@ test("Dedicated Agent creation keeps one provisioning label while the job retrie
   const { url, job, failed } = work;
   // The worker starts the job, waits to retry it, then retries it twice before it fails.
   const reads = [job("running"), job("queued"), job("running"), job("running"), failed()];
-  const served = await routeProvisioningJob(page, work, reads);
+  const served = await routeProvisioningJob(page, fixture, work, reads);
 
   await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
@@ -1187,7 +1357,7 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
       job("running", handedOff),
       failed(handedOff),
     ];
-    const served = await routeProvisioningJob(page, work, reads);
+    const served = await routeProvisioningJob(page, fixture, work, reads);
     const attempts: (ProvisioningMessage | "stalled" | "unavailable")[] =
       mode === "interrupted"
         ? [
@@ -1415,7 +1585,7 @@ test("Dedicated Agent creation names the first deployment's wait while it provis
       job("queued", waiting(null)),
       failed(handedOff),
     ];
-    const served = await routeProvisioningJob(page, work, reads);
+    const served = await routeProvisioningJob(page, fixture, work, reads);
     await page.route(
       `**/namespaces/${namespace.id}/agents/${agentId}/deployments/${revisionId}`,
       (route) => {
@@ -1739,6 +1909,7 @@ test("Agent creation offers mainline Anthropic models before credentials and sav
   const selectedConfiguration = await page.getByLabel("Configuration JSON").inputValue();
   await page.getByLabel("Agent name").fill("Anthropic Agent");
   const credentialSecret = await createModelCredentialSecret(page, "test-anthropic-api-key");
+  assert.ok(credentialSecret, "Expected the created model credential Secret");
   assert.equal(await choice.inputValue(), "claude-fable-5-1");
   assert.equal(await page.getByLabel("Configuration JSON").inputValue(), selectedConfiguration);
   assert.deepEqual(
@@ -1875,6 +2046,233 @@ test("Static model selection survives credential edits and resets for provider o
   );
 });
 
+// Exercise the real draft editor without submitting or providing model credentials.
+for (const width of [1440, 390]) {
+  test(`Create preserves invalid plugins.allow through model changes at ${width}px`, async (t) => {
+    const { fixture, namespace } = await createReadyConsoleNamespace(t, "Model JSON correction");
+    const { page } = await newPage(t, fixture, {
+      context: { viewport: { width, height: 844 } },
+    });
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    const requests = apiRequests(page, fixture.origin);
+    await page.getByRole("button", { name: "Start without Preset", exact: true }).click();
+    await openAdvancedSettings(page);
+    const configuration = page.getByLabel("Configuration JSON", { exact: true });
+    const choice = page.getByLabel("Model", { exact: true });
+    const manual = page.getByLabel("Model ID", { exact: true });
+    const chooseList = page.getByRole("button", {
+      name: "Choose a model from the list",
+      exact: true,
+    });
+    const template = await configuration.inputValue();
+    const record = (value: unknown): Record<string, unknown> => {
+      assert.ok(value && typeof value === "object" && !Array.isArray(value));
+      return Object.fromEntries(Object.entries(value));
+    };
+    const readValues = async () => record(JSON.parse(await configuration.inputValue()));
+    const primary = (values: Record<string, unknown>) =>
+      record(record(values.agents).defaults).model;
+    const editAllow = async (allow: unknown, base?: string) => {
+      const values = record(JSON.parse(base ?? (await configuration.inputValue())));
+      values.plugins = { ...record(values.plugins ?? {}), allow };
+      const raw = JSON.stringify(values, null, 2) + "\n";
+      await configuration.fill(raw);
+      return raw;
+    };
+    const assertBlocked = async (raw: string) => {
+      assert.equal(await configuration.inputValue(), raw, "the raw draft must remain exact");
+      assert.equal(await configuration.getAttribute("aria-invalid"), "true");
+      const feedback = await configuration.evaluate((node) => ({
+        focused: node.ownerDocument.activeElement === node,
+        messages: (node.getAttribute("aria-describedby") ?? "")
+          .split(" ")
+          .map((id) => node.ownerDocument.getElementById(id)?.textContent ?? ""),
+      }));
+      assert.equal(feedback.focused, true);
+      assert.ok(
+        feedback.messages.includes(
+          'Set plugins.allow to an array of strings, such as ["codex"], or remove the field.',
+        ),
+      );
+      assert.deepEqual(errors, []);
+      assert.deepEqual(nonAuthWriteRequests(requests), []);
+    };
+
+    // With no primary in JSON, the list remains visible. Native change must be rolled back.
+    for (const allow of ["codex", 7, null, ["keep-plugin", 7]]) {
+      assert.equal(await choice.inputValue(), "");
+      const raw = await editAllow(allow, template);
+      await choice.selectOption("gpt-6-luna");
+      await assertBlocked(raw);
+      assert.equal(await choice.inputValue(), "");
+      assert.equal(await manual.isVisible(), false);
+    }
+    await editAllow([], template);
+    await choice.selectOption("gpt-6-luna");
+    assert.equal(primary(await readValues()), "codex/gpt-6-luna");
+
+    // A selected model must also roll back, then accept a genuine change after correction.
+    const raw = await editAllow(7, template);
+    await choice.selectOption("gpt-6-sol");
+    await assertBlocked(raw);
+    assert.equal(await choice.inputValue(), "gpt-6-luna");
+    await editAllow([], template);
+    await choice.selectOption("gpt-6-sol");
+    assert.equal(await choice.inputValue(), "gpt-6-sol");
+    assert.equal(primary(await readValues()), "codex/gpt-6-sol");
+
+    // A blocked return to the list must keep the manual choice, including noncatalog IDs.
+    for (const allow of ["codex", 7, null, ["keep-plugin", 7]]) {
+      const raw = await editAllow(allow);
+      assert.equal(await manual.inputValue(), "gpt-6-sol");
+      await chooseList.click();
+      await assertBlocked(raw);
+      assert.equal(await manual.isVisible(), true);
+      assert.equal(await manual.inputValue(), "gpt-6-sol");
+      await manual.fill("custom-model-id");
+      await manual.press("Tab");
+      await assertBlocked(raw);
+      assert.equal(await manual.inputValue(), "custom-model-id", "keep the manual draft for retry");
+      await chooseList.click();
+      await assertBlocked(raw);
+      assert.equal(await manual.inputValue(), "custom-model-id");
+      await editAllow(["keep-plugin"]);
+      await chooseList.click();
+      await choice.selectOption("gpt-6-sol");
+      assert.deepEqual(record((await readValues()).plugins).allow, ["keep-plugin", "codex"]);
+      assert.equal(await configuration.getAttribute("aria-invalid"), null);
+    }
+
+    // Absence, an empty array, and whole string entries all permit the same merge and retry.
+    for (const allow of [undefined, [], ["keep-plugin", "codex"]]) {
+      await editAllow(allow);
+      await chooseList.click();
+      await choice.selectOption("gpt-6-luna");
+      const values = await readValues();
+      assert.equal(primary(values), "codex/gpt-6-luna");
+      assert.deepEqual(record(values.plugins).allow, allow?.length ? allow : ["codex"]);
+      assert.equal(await configuration.getAttribute("aria-invalid"), null);
+    }
+
+    // Switching to Anthropic does not merge this field and must not acquire this validation.
+    await editAllow(7);
+    const provider = page.getByLabel("Provider", { exact: true });
+    const harness = page.getByLabel("Harness", { exact: true });
+    const mode = page.getByLabel("Execution mode", { exact: true });
+    const authMethod = page.getByLabel("Authentication method", { exact: true });
+    await provider.selectOption("anthropic");
+    assert.equal(await provider.inputValue(), "anthropic");
+    assert.equal(await harness.inputValue(), "openclaw");
+    assert.equal(await choice.isVisible(), true);
+    assert.equal(await choice.inputValue(), "");
+    assert.equal(record((await readValues()).plugins).allow, 7);
+    assert.equal(await configuration.getAttribute("aria-invalid"), null);
+
+    // Returning to Codex must preflight before changing the provider, catalog, or credentials.
+    await choice.selectOption("claude-opus-5-5");
+    assert.equal(primary(await readValues()), "anthropic/claude-opus-5-5");
+    const anthropicDraft = await configuration.inputValue();
+    const anthropicOptions = await optionValues(choice);
+    const previousMode = await mode.inputValue();
+    const previousAuth = await authMethod.inputValue();
+    await provider.selectOption("openai");
+    await assertBlocked(anthropicDraft);
+    assert.equal(await provider.inputValue(), "anthropic");
+    assert.equal(await harness.inputValue(), "openclaw");
+    assert.equal(await mode.inputValue(), previousMode);
+    assert.equal(await authMethod.inputValue(), previousAuth);
+    assert.equal(await choice.inputValue(), "claude-opus-5-5");
+    assert.deepEqual(await optionValues(choice), anthropicOptions);
+
+    // Refresh rebuilds the form from its kept draft; rollback must use the restored provider.
+    const originalProvider = await provider.elementHandle();
+    assert.ok(originalProvider);
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    await page.waitForFunction((element) => !element.isConnected, originalProvider);
+    await provider.waitFor({ state: "visible" });
+    assert.equal(await configuration.inputValue(), anthropicDraft);
+    assert.equal(await provider.inputValue(), "anthropic");
+    assert.equal(await harness.inputValue(), "openclaw");
+    assert.equal(await choice.inputValue(), "claude-opus-5-5");
+    assert.deepEqual(await optionValues(choice), anthropicOptions);
+    await provider.selectOption("openai");
+    await assertBlocked(anthropicDraft);
+    assert.equal(await provider.inputValue(), "anthropic");
+    assert.equal(await harness.inputValue(), "openclaw");
+    assert.equal(await mode.inputValue(), previousMode);
+    assert.equal(await authMethod.inputValue(), previousAuth);
+    assert.equal(await choice.inputValue(), "claude-opus-5-5");
+    assert.deepEqual(await optionValues(choice), anthropicOptions);
+
+    await editAllow([]);
+    await provider.selectOption("openai");
+    assert.equal(await provider.inputValue(), "openai");
+    assert.equal(await harness.inputValue(), "codex");
+    assert.equal(await choice.isVisible(), true);
+    assert.equal(await choice.inputValue(), "");
+    assert.equal(primary(await readValues()), undefined);
+    assert.equal(await choice.locator('option[value="claude-opus-5-5"]').count(), 0);
+    assert.equal(await choice.locator('option[value="gpt-6-sol"]').count(), 1);
+    assert.equal(await configuration.getAttribute("aria-invalid"), null);
+    await choice.selectOption("gpt-6-sol");
+    assert.equal(primary(await readValues()), "codex/gpt-6-sol");
+
+    // Authentication owns its picker even when the model reset cannot merge the draft.
+    const keySecret = page.getByLabel("API key Secret", { exact: true });
+    const tokenSecret = page.getByLabel("Service account token Secret", { exact: true });
+    const authDraft = await editAllow("codex");
+    const authModel = await manual.inputValue();
+    const authMode = await mode.inputValue();
+    await authMethod.selectOption("codex_pat");
+    await assertBlocked(authDraft);
+    assert.equal(await authMethod.inputValue(), "codex_pat");
+    assert.equal(await keySecret.isVisible(), false);
+    assert.equal(await tokenSecret.isVisible(), true);
+    assert.equal(await manual.inputValue(), authModel);
+    assert.equal(await manual.isVisible(), true);
+    assert.equal(await mode.inputValue(), authMode);
+    await editAllow([]);
+    await authMethod.selectOption("api_key");
+    assert.equal(await keySecret.isVisible(), true);
+    assert.equal(await tokenSecret.isVisible(), false);
+    assert.equal(await choice.inputValue(), "");
+    assert.equal(await configuration.getAttribute("aria-invalid"), null);
+    await choice.selectOption("gpt-6-sol");
+    assert.equal(primary(await readValues()), "codex/gpt-6-sol");
+
+    // A refused Codex transition must leave the OpenClaw controls and policy together.
+    await harness.selectOption("openclaw");
+    assert.equal(await harness.inputValue(), "openclaw");
+    assert.equal(primary(await readValues()), "openai/gpt-6-sol");
+    const harnessDraft = await editAllow("codex");
+    const harnessModel = await manual.inputValue();
+    const openClawMode = await mode.inputValue();
+    const openClawAuth = await authMethod.inputValue();
+    await harness.selectOption("codex");
+    await assertBlocked(harnessDraft);
+    assert.equal(await harness.inputValue(), "openclaw");
+    assert.equal(await mode.inputValue(), openClawMode);
+    assert.equal(await authMethod.inputValue(), openClawAuth);
+    assert.equal(await manual.inputValue(), harnessModel);
+    assert.equal(await manual.isVisible(), true);
+    assert.equal(await keySecret.isVisible(), true);
+    assert.equal(await tokenSecret.isVisible(), false);
+    await editAllow([]);
+    await harness.selectOption("codex");
+    assert.equal(await harness.inputValue(), "codex");
+    assert.equal(await mode.inputValue(), "dedicated");
+    assert.equal(await authMethod.inputValue(), openClawAuth);
+    assert.equal(await manual.inputValue(), harnessModel);
+    assert.equal(primary(await readValues()), "codex/gpt-6-sol");
+    assert.deepEqual(record((await readValues()).plugins).allow, ["codex"]);
+    assert.equal(await configuration.getAttribute("aria-invalid"), null);
+    assert.deepEqual(errors, []);
+    assert.deepEqual(nonAuthWriteRequests(requests), []);
+  });
+}
+
 test("Agent creation can return from manual model entry to the list and save the selected model", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -1915,6 +2313,7 @@ test("Agent creation can return from manual model entry to the list and save the
   assert.equal(await choice.inputValue(), "");
   assert.equal(JSON.parse(await configuration.inputValue()).agents?.defaults?.model, undefined);
   const secret = await createModelCredentialSecret(page, "round-trip-model-key");
+  assert.ok(secret, "Expected the created model credential Secret");
   await choice.selectOption("gpt-6-astra");
   await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
   assert.equal(await choice.isVisible(), false);
@@ -2026,6 +2425,7 @@ test("Agent creation accepts a manual model outside the static list and saves th
     "manual-model-key",
     "gpt-manual-account-model",
   );
+  assert.ok(selectedSecret, "Expected the created model credential Secret");
   assert.deepEqual(
     secretPostRequests(requests, namespace.id).map((request) => request.body),
     [{ name: "Manual model Agent model credential", value: "manual-model-key" }],
@@ -2355,6 +2755,15 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const pluginDriver = new CodexPluginDriver();
+  // Keep optional catalog prefetch local while exercising the real Agent creation conflict.
+  t.mock.method(
+    pluginDriver,
+    "discoverCatalog",
+    async (): ReturnType<typeof pluginDriver.discoverCatalog> => ({
+      plugins: [],
+      nextCursor: null,
+    }),
+  );
   fixture.controller.registerDriver(pluginDriver);
   fixture.controller.selectDriver("plugin", pluginDriver.id);
   const namespace = await fixture.createNamespace("Partial save retry", { ready: true });
@@ -2433,6 +2842,7 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   requests.length = 0;
   await page.getByLabel("Agent name").fill("Retry Agent");
   const selectedSecret = await createModelCredentialSecret(page, "at-browser-pat");
+  assert.ok(selectedSecret, "Expected the created model credential Secret");
   assert.equal(
     await page.getByLabel("Service account token Secret", { exact: true }).inputValue(),
     secretOptionLabel(selectedSecret),
@@ -2655,6 +3065,7 @@ for (const swapped of ["Agent", "service principal"]) {
     await page.getByRole("button", { name: "Start with default Preset" }).click();
     await page.getByLabel("Agent name").fill("New Agent");
     const secret = await enterManualModel(page, "test-create-response-key");
+    assert.ok(secret, "Expected the created model credential Secret");
     await page.getByRole("button", { name: "Create Agent" }).click();
     const warning = page.getByRole("alert").filter({
       hasText: swapped === "Agent" ? "Outcome unknown" : "service principal could not be confirmed",
