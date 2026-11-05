@@ -55,6 +55,19 @@ each story at 1440 and at 390.
 12. With a screen reader, focus each field with an error: it reads the label,
     then the error and the help.
 
+## Stored Preset refusal
+
+Open **Pages / Create Agent / Preset with a non-text primary** at 1440 and 390 px.
+The refusal explains that the primary model must be text and offers another
+Preset or a template fix. The chooser stays open with **Marker** set to
+`Retained chooser draft`. Follow the story steps to check navigation preserves
+Marker, **Research assistant** opens a normal Agent form, and explicit selection
+of **default-codex** gives the same refusal as the shortcut.
+
+This preview uses the production form with a simulated GET for one older stored
+Preset; the current Controller refuses to save that numeric primary. Keep
+**Preset with an invalid field** as the separate execution-mode check.
+
 ## Native admin at creation
 
 Open **Pages / Create Agent / Native admin UI opt-in**. The checkbox starts off.
