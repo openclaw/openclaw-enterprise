@@ -1394,6 +1394,7 @@ test("lane lists outside the lane table name every lane they must", async (t) =>
   const firstAgentFiles = new Set([
     "tests/integration/local-first-agent-openshell-real.test.mjs",
     "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
+    "tests/integration/openshell-git-retention-real.test.ts",
   ]);
   const observed = new Set();
   for (const lane of Object.keys(suiteIndex.lanes)) {
