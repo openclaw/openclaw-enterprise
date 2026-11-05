@@ -283,9 +283,30 @@ test(
             return client.query(sql, parameters);
           }),
         );
+        // Only the successful override uses this connection. Observe PostgreSQL on the
+        // same transaction immediately before its real COMMIT.
+        const overridePool = testPool(context, {
+          connectionString: databaseUrl,
+          options: "-c default_transaction_isolation=repeatable\\ read",
+          max: 1,
+        });
+        const overrideIsolation = [];
+        const overrideState = new PostgresPlatformState(
+          transportPool(overridePool, async (client, sql, parameters) => {
+            if (sql === "COMMIT") {
+              const { rows } = await client.query(
+                `SELECT current_setting('default_transaction_isolation') AS configured,
+                        current_setting('transaction_isolation') AS effective`,
+              );
+              overrideIsolation.push(...rows);
+            }
+            return client.query(sql, parameters);
+          }),
+        );
         await assertGithubRosterMemberships(
           state,
           rejecting,
+          overrideState,
           pool,
           installation.id,
           issuer,
@@ -293,6 +314,9 @@ test(
           prepared.id,
           rosterSeed.principal.id,
         );
+        assert.deepEqual(overrideIsolation, [
+          { configured: "repeatable read", effective: "read committed" },
+        ]);
       },
     );
 

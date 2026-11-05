@@ -7,7 +7,7 @@ import {
   PostgresHumanAuthentication,
   type GithubRosterMapping,
   type HumanAuthenticationActor,
-  PostgresPlatformState,
+  type PostgresPlatformState,
 } from "../../packages/occ/src/index.ts";
 
 async function waitForBlocker(pool: Pool, pid: number): Promise<void> {
@@ -29,6 +29,7 @@ async function waitForBlocker(pool: Pool, pid: number): Promise<void> {
 export async function assertGithubRosterMemberships(
   state: PostgresPlatformState,
   failingAuditState: PostgresPlatformState,
+  overrideState: PostgresPlatformState,
   pool: Pool,
   installationId: string,
   issuer: string,
@@ -302,12 +303,9 @@ export async function assertGithubRosterMemberships(
   };
 
   const beforeWrite = await readOverride();
-  const otherAuth = new PostgresHumanAuthentication(
-    new PostgresPlatformState(pool),
-    installationId,
-    issuer,
-    { externalProviderIds: [providerId] },
-  );
+  const otherAuth = new PostgresHumanAuthentication(overrideState, installationId, issuer, {
+    externalProviderIds: [providerId],
+  });
   const held = Promise.withResolvers<number>();
   const heldOperation = state.transact(async (unit) => {
     await auth.holdSession(unit, userId, liveSession.id);
