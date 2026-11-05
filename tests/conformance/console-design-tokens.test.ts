@@ -2,20 +2,20 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const stripComments = (text) => text.replace(/\/\*[\s\S]*?\*\//g, "");
-const read = async (name) =>
+const stripComments = (text: string) => text.replace(/\/\*[\s\S]*?\*\//g, "");
+const read = async (name: string) =>
   stripComments(
     await readFile(new URL(`../../apps/controller/src/console/${name}`, import.meta.url), "utf8"),
   );
 const consoleCss = await read("console.css");
 const channelsCss = await read("channels.css");
 
-function declarations(block) {
+function declarations(block: string) {
   return new Map(
-    [...block.matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)].map(([, name, value]) => [
-      name,
-      value.trim(),
-    ]),
+    [...block.matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)].map(([, name, value]) => {
+      assert.ok(name !== undefined && value !== undefined);
+      return [name, value.trim()];
+    }),
   );
 }
 
@@ -28,7 +28,7 @@ const tokenName =
   /^--(color|font|text|weight|tracking|space|radius|shadow|duration|ease|focus|control|touch|content|form|prose|sidebar)(-|$)/;
 // Older names that the family pattern above also matches.
 const olderInFamily = new Set(["--text", "--text-strong", "--shadow", "--radius"]);
-const isToken = (name) => tokenName.test(name) && !olderInFamily.has(name);
+const isToken = (name: string) => tokenName.test(name) && !olderInFamily.has(name);
 
 test("older console custom properties are aliases of design tokens, not separate values", () => {
   const older = [...root].filter(([name]) => !isToken(name));
@@ -47,7 +47,10 @@ test("every custom property console.css and channels.css read is defined", () =>
   // Set on the document element by trackVisualViewport (dom.mjs).
   defined.add("--visual-viewport-top").add("--visual-viewport-bottom");
   const reads = new Set(
-    [...(consoleCss + channelsCss).matchAll(/var\((--[\w-]+)/g)].map(([, name]) => name),
+    [...(consoleCss + channelsCss).matchAll(/var\((--[\w-]+)/g)].map(([, name]) => {
+      assert.ok(name !== undefined);
+      return name;
+    }),
   );
   assert.deepEqual(
     [...reads].filter((name) => !defined.has(name)),
@@ -57,9 +60,9 @@ test("every custom property console.css and channels.css read is defined", () =>
 
 // Every rule (selector text) with its declarations, outside :root. At-rule preludes are skipped;
 // rules nested in @media/@container keep their own selector.
-function rules(css) {
+function rules(css: string) {
   const found = [];
-  const stack = [];
+  const stack: { selector: string; body: number }[] = [];
   let start = 0;
   for (let i = 0; i < css.length; i++) {
     if (css[i] === "{") {
@@ -70,6 +73,7 @@ function rules(css) {
       if (rule && !rule.selector.startsWith("@") && rule.selector !== ":root") {
         const body = css.slice(rule.body, i).replace(/[^;{}]*\{[^{}]*\}/g, "");
         for (const [, prop, value] of body.matchAll(/(?:^|;)\s*([a-z-]+)\s*:\s*([^;]+)/g)) {
+          assert.ok(prop !== undefined && value !== undefined);
           found.push({ selector: rule.selector.replace(/\s+/g, " "), prop, value: value.trim() });
         }
       }
@@ -83,7 +87,7 @@ function rules(css) {
 
 // A length literal that is not zero.
 const lengthLiteral = /(?<![\w.-])-?\d*\.?\d+(px|rem|em)\b/g;
-const literalsOf = (value) =>
+const literalsOf = (value: string) =>
   (value.match(lengthLiteral) ?? []).filter((literal) => !/^-?0*\.?0+[a-z]+$/.test(literal));
 
 test("spacing and radius use the design-language scale (UX plan B3, spec P12)", () => {
@@ -125,7 +129,10 @@ test("spacing and radius use the design-language scale (UX plan B3, spec P12)", 
 
 test("the console breakpoints are the documented 520, 760 and 1100 px (design-language 2.4)", () => {
   const widths = [...(consoleCss + channelsCss).matchAll(/@media([^{]*)\{/g)].flatMap(
-    ([, prelude]) => [...prelude.matchAll(/width:\s*(\d+)px/g)].map(([, px]) => Number(px)),
+    ([, prelude]) => {
+      assert.ok(prelude !== undefined);
+      return [...prelude.matchAll(/width:\s*(\d+)px/g)].map(([, px]) => Number(px));
+    },
   );
   assert.deepEqual(
     [...new Set(widths)].filter((px) => ![520, 760, 1100, 1101].includes(px)),
@@ -152,7 +159,7 @@ test("type uses the design-language scale (UX plan B3, spec P12)", () => {
   const used = new Set();
   for (const { selector, prop, value } of rules(consoleCss + channelsCss)) {
     const key = `${selector} ${prop}`;
-    const checks = {
+    const checks: Record<string, (() => boolean) | undefined> = {
       "font-size": () => literalsOf(value).length > 0 || /%|calc\(|smaller|larger/.test(value),
       font: () => literalsOf(value).length > 0 || /%|calc\(/.test(value),
       "font-weight": () => /\d|\b(bold|bolder|lighter)\b/.test(value),

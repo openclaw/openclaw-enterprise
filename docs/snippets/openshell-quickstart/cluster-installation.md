@@ -184,10 +184,7 @@ bash "$assets/trusted-envoy-peers.sh" "$RUN_DIR/kubeconfig" > "$RUN_DIR/trusted-
 jq --slurpfile peers "$RUN_DIR/trusted-peers.json" \
   '.drivers.compute.configuration.network.gatewayTrustedProxyCidrs=$peers[0]' \
   "$RUN_DIR/installation.json" > "$RUN_DIR/installation-with-peers.json"
-peer_secret="occ-installation-peers-$(date +%s)"
-kubectl -n "$PLATFORM_NS" create secret generic "$peer_secret" \
-  --from-file="installation.yaml=$RUN_DIR/installation-with-peers.json"
-jq --arg secret "$peer_secret" '.installation.secretName=$secret | .worker.replicaCount=1' \
+jq '.worker.replicaCount=1' \
   "$RUN_DIR/values.json" > "$RUN_DIR/worker.json"
 # The API registers model credentials and the worker manages workspaces through OpenShell.
 kube -n "$PLATFORM_NS" get service openshell-gateway -o json |
@@ -205,9 +202,10 @@ kube -n "$PLATFORM_NS" get service openshell-gateway -o json |
          {to:[{podSelector:{matchLabels:$svc.selector}}],ports:[{protocol:"TCP",port:$port.targetPort}]}
        ]}}' > "$RUN_DIR/management-policy.json"
 kube create -f "$RUN_DIR/management-policy.json"
-helm upgrade oce "$OCE_CHART" -n "$PLATFORM_NS" -f "$RUN_DIR/worker.json" --wait
 cp "$RUN_DIR/installation-with-peers.json" "$INSTALLATION_FILE"
 cp "$RUN_DIR/worker.json" "$VALUES_FILE"
+save_session
+upgrade_installation
 ```
 
 Agent deployment pairs these egress rules with management ingress for the API, worker, selected tenant’s supervisors and Agent Gateway on TCP 8080. Keep both directions. Tenant callers must match the backing namespace name and its current `openclaw.dev/namespace` label. Supervisor grants apply per tenant and Gateway grants per Agent. To verify ownership-based withdrawal, inspect every grant for that namespace. For a live Agent in its verified namespace, stage the current platform helper and renderer and run `deployment_network` in its saved session to replace a name-only grant.
