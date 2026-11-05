@@ -1824,7 +1824,7 @@ const timeout = setTimeout(() => {
 );
 
 test(
-  "runtime image shares the reviewed Codex version between the plugin and Dedicated command",
+  "runtime image records the reviewed Node binary and shares Codex between the plugin and Dedicated command",
   imageTestOptions,
   async () => {
     const source = historicalCodex
@@ -1833,6 +1833,9 @@ test(
           sourceArchiveSha256: "1532c8e1baf84ecae6080aee6d15003afd2458aeaaeaa30b0504818b000c82d9",
         }
       : await readOpenclawSource();
+    const nodeSource = JSON.parse(
+      await readFile(new URL("../../deploy/runtime/node/source.json", import.meta.url), "utf8"),
+    );
     assert.equal(
       source.commit,
       historicalController?.commit ?? GATEWAY_TOOL_POLICY_SOURCE_COMMIT,
@@ -1858,6 +1861,26 @@ assert.equal(realpathSync("/app/node_modules/.bin/codex"), realpathSync(bundledC
 assert.equal(execFileSync("codex", ["--version"], {encoding: "utf8"}).trim(), ${JSON.stringify(`codex-cli ${stagingCodexVersion}`)});
 assert.equal(execFileSync(process.execPath, [bundledCommand, "--version"], {encoding: "utf8"}).trim(), ${JSON.stringify(`codex-cli ${stagingCodexVersion}`)});
 const provenance = JSON.parse(readFileSync("/opt/oce/runtime/provenance.json", "utf8"));
+if (!${historicalCodex}) {
+  // The manifest is from the tested checkout; the binary and its ABI are read
+  // inside the built image, independently of its recorded provenance.
+  const expectedNode = JSON.parse(process.argv[3]);
+  assert.equal(process.versions.node, expectedNode.version);
+  assert.equal(process.versions.modules, expectedNode.modules);
+  assert.equal(process.versions.napi, expectedNode.napi);
+  assert.deepEqual(provenance.node, {
+    source: "https://github.com/nodejs/node",
+    ...expectedNode,
+    version: process.versions.node,
+    architecture: process.arch,
+    platform: process.platform,
+    modules: process.versions.modules,
+    napi: process.versions.napi,
+    icu: process.versions.icu,
+    executable: "/usr/local/bin/node",
+    sha256: createHash("sha256").update(readFileSync(process.execPath)).digest("hex"),
+  });
+}
 assert.equal(provenance.source, "https://github.com/openclaw/openclaw");
 const expectedSource = JSON.parse(process.argv[2]);
 assert.equal(provenance.commit, expectedSource.commit);
@@ -2078,6 +2101,7 @@ const deadline = setTimeout(() => {
       script,
       JSON.stringify(defaultPluginPolicy),
       JSON.stringify(source),
+      JSON.stringify(nodeSource),
     ]);
     assert.match(stdout, /shared-reviewed-codex-ready/);
   },

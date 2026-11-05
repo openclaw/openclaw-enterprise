@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-11-04
-last_updated_session: authoring-run/2811a56d-1652-4ba4-bb5f-a5be2e647c16
+updated: 2026-11-05
+last_updated_session: authoring-run/e800e024-db39-481b-a057-372ef95213de
 ---
 
 # Container publication flow
@@ -99,10 +99,23 @@ and applies the checksum-verified patches described in the
 frozen lockfiles and upstream's selected-plugin manifests, retaining required
 bundled plugins plus Codex and Slack. The standalone Codex command links to the
 plugin's installation. Build stages use full Bookworm; final images use separately
-pinned slim bases. `Dockerfile` checks its dependency and runtime stages, and
-`deploy/runtime/Dockerfile` checks both bases and its runtime, for Node 24.22.1+
-within the 24 series. Older explicit overrides fail. Both bases apply available
-Debian updates; image digests do not freeze Debian repositories.
+pinned slim bases. The controller requires Node 24.22.1+ within the 24 series.
+The runtime's `node-source` stage instead requires matching Node 24.22.1
+Bookworm bases, verifies `deploy/runtime/node/source.json` archive and patch
+digests, and applies the worker-termination repair. `node-compiled` builds the
+native executable with full ICU and runs the owning Node regression and adjacent
+loader cases. Runtime assembly copies that executable and repeats the checks in
+slim Bookworm. Missing shared libraries, changed ABI, or a failed regression
+stops assembly. Repository-credential service stages keep their original base.
+Both bases apply available Debian updates; image digests do not freeze Debian
+repositories.
+
+`deploy/runtime/node/build.sh` records the source, patch, ABI and executable
+digest. `scripts/build-runtime-assets.mjs:inventory` verifies that digest against
+its running executable before adding `node` to final runtime provenance. The
+startup image test compares this record with the selected checkout and the
+installed executable. Native image qualification still includes the packaged
+Gateway restart tests; a standalone Node regression does not replace them.
 
 Publication builds use the default package registries. Operators building from
 source can [configure a package registry mirror](../guides/deploy/production-installation.md#build-through-a-package-registry-mirror)
@@ -264,6 +277,8 @@ owns package-write access and coordination.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-05 20:42: Document the source-built Node termination repair, final executable provenance and native full/slim verification. (authoring-run/e800e024-db39-481b-a057-372ef95213de - 0eab6d6c320f8f4e522ccb1b1ebfd3ad7e400e6a)
 
 - 2026-11-04 22:30: Document the Debian curl CONNECT-authentication backport and package verification. (authoring-run/2811a56d-1652-4ba4-bb5f-a5be2e647c16 - 80b9e2c5238385ff8a8f52e9ab047b76da4c8fb4)
 
