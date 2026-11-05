@@ -3573,3 +3573,64 @@ test("an automatically reviewed Calendar read runs again once, only after a revi
     assert.equal(f.turns.length, 1);
   });
 });
+
+test("QA model failure evidence preserves the failure and its admitted revision", async () => {
+  const { createNativePluginAssertions } = await import("../helpers/plugin-driver-real.mjs");
+  const secret = `qa-log-secret-${randomUUID()}`;
+  registerQaSecret(secret);
+  const agent = { namespaceId: "namespace", id: "agent", revision: { id: "original" } };
+  const reads = [];
+  const evidence = [];
+  const failure = new Error("original model assertion");
+  const native = createNativePluginAssertions({
+    // These pages stand in for OCC's already-redacted response. This verifies
+    // the QA collector's additional redaction, not the runtime log API.
+    async readRuntimeLogs(target) {
+      reads.push(target);
+      if (target.source === "agent") {
+        throw new Error("log source unavailable");
+      }
+      return {
+        records: [{ type: "line", level: "error", message: `failure ${secret}`, private: secret }],
+      };
+    },
+    async recordRuntimeLogs(record) {
+      evidence.push(record);
+    },
+  });
+  assert.equal(await native.withRuntimeFailureLogs(agent, async () => "passed"), "passed");
+  assert.deepEqual(reads, [], "successful assertions do not collect failure evidence");
+  await assert.rejects(
+    native.withRuntimeFailureLogs(agent, async () => {
+      agent.revision = { id: "replacement" };
+      throw failure;
+    }),
+    (error) => error === failure,
+  );
+  assert.deepEqual(reads, [
+    { namespaceId: "namespace", agentId: "agent", revisionId: "original", source: "gateway" },
+    { namespaceId: "namespace", agentId: "agent", revisionId: "original", source: "agent" },
+  ]);
+  assert.equal(evidence.length, 1);
+  assert.equal(evidence[0].revisionId, "original");
+  assert.match(evidence[0].sources[0].lines[0], /failure/);
+  assert.equal(JSON.stringify(evidence).includes(secret), false);
+  assert.equal(JSON.stringify(evidence).includes("private"), false);
+  assert.deepEqual(evidence[0].sources[1], { source: "agent", unavailable: true });
+
+  // Failure to save diagnostics must not replace the original model assertion.
+  const unavailable = createNativePluginAssertions({
+    async readRuntimeLogs() {
+      throw new Error("logs unavailable");
+    },
+    async recordRuntimeLogs() {
+      throw new Error("artifact write failed");
+    },
+  });
+  await assert.rejects(
+    unavailable.withRuntimeFailureLogs(agent, async () => {
+      throw failure;
+    }),
+    (error) => error === failure,
+  );
+});
