@@ -61,6 +61,7 @@ export type {
   PreparedTokenGrant,
   PreparedTokenSource,
   PreparedTokenSelection,
+  ResolvedToken,
   PreparedTokenEvidence,
   PreparedTokenCurrentProof,
   PreparedTokenIssuer,

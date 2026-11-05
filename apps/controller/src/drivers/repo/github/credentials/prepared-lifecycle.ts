@@ -51,7 +51,7 @@ function grantId({ grant: g }: Source) {
 }
 type Metadata = NonNullable<Awaited<ReturnType<PreparedGitHubPostgres["metadata"]>>>;
 
-function evidence(m: Metadata): Omit<PreparedTokenSelection, "value"> {
+function evidence(m: Metadata): Omit<PreparedTokenSelection, "accessToken"> {
   const { admission: a } = m;
   return {
     family: { id: a.familyId, generation: a.generation },
@@ -60,7 +60,7 @@ function evidence(m: Metadata): Omit<PreparedTokenSelection, "value"> {
     preparationAttemptId: m.id,
     materialId: a.familyId,
     materialVersion: m.material_version!,
-    providerExpiresAt: m.provider_expires_at.toISOString(),
+    expiresAt: m.provider_expires_at.toISOString(),
     usableUntil: m.usable_until.toISOString(),
   };
 }
@@ -353,7 +353,7 @@ export class PostgresPreparedGitHubLifecycle implements PreparedTokenIssuer {
       ) {
         return {
           ...evidence(m),
-          value: Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString(),
+          accessToken: Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString(),
         };
       }
     } finally {

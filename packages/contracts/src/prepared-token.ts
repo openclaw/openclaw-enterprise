@@ -29,19 +29,24 @@ export interface PreparedTokenSource<
   readonly grant: G;
 }
 
-export interface PreparedTokenSelection {
-  readonly value: string;
+/** A trusted consumer receives the usable access token and its issuer-reported expiry. */
+export interface ResolvedToken {
+  readonly accessToken: string;
+  readonly expiresAt: string;
+}
+
+export interface PreparedTokenSelection extends ResolvedToken {
   readonly family: EgressRef;
   readonly ownerEpoch: number;
   readonly inputVersion: string;
   readonly preparationAttemptId: string;
   readonly materialId: string;
   readonly materialVersion: string;
-  readonly providerExpiresAt: string;
   readonly usableUntil: string;
 }
 
-export interface PreparedTokenEvidence extends Omit<PreparedTokenSelection, "value"> {
+export interface PreparedTokenEvidence extends Omit<PreparedTokenSelection, keyof ResolvedToken> {
+  readonly providerExpiresAt: string;
   /** Existing GitHub receipts keep their exact meaning. */
   readonly kind: "prepared_token" | "prepared_github";
   readonly source: EgressSourceKey;

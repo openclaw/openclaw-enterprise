@@ -95,9 +95,9 @@ test("consented protected repository read uses only exact, already prepared meta
           result.material;
         try {
           return {
-            value: Buffer.from(bytes).toString(),
+            accessToken: Buffer.from(bytes).toString(),
             materialVersion,
-            providerExpiresAt: new Date(providerExpiresAt).toISOString(),
+            expiresAt: new Date(providerExpiresAt).toISOString(),
             usableUntil: new Date(usableUntil).toISOString(),
             materialId: admission.familyId,
             family: reference.source,
