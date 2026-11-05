@@ -173,8 +173,7 @@ revision to change artifact authority. Live Agent policy apply remains unavailab
 
 Optional readiness observes a Service and Pods in the OCC namespace (a paired
 Gateway normally uses a Backend `endpoint`). It needs a positive `timeoutMs`;
-`pollIntervalMs` (default 1000) is at most `2147483647`. Development retains
-the 30-second `startupDelayMs`.
+`pollIntervalMs` (default 1000) is at most `2147483647`. Development uses Harness readiness with the optional `startupDelayMs` unset.
 
 Install OpenShell's gateway separately. Required `gateway.workspaceMode`
 accepts `operator` or `managed`; deferred managed mode fails before Kubernetes

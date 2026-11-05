@@ -808,15 +808,17 @@ test(
       { Pool },
       { createControllerWorker },
       { createDevelopmentComputeDriver },
-      { DEVELOPMENT_HARNESS_DESCRIPTOR },
+      { PRODUCTION_HARNESS_DESCRIPTOR },
+      { CodexPluginDriver },
       { PostgresPlatformState },
       { PostgresWorkQueue },
-      { authorizedPrincipal, ensureInstallation },
+      { authorizedPrincipal, createBackendWorkerDrivers, ensureInstallation },
     ] = await Promise.all([
       import("pg"),
       import("../../apps/controller/src/worker.ts"),
       import("../helpers/development.mjs"),
       import("../../apps/controller/src/composition/production-harness.ts"),
+      import("../../apps/controller/src/drivers/plugin/index.ts"),
       import("../../packages/occ/src/state/postgres-state.ts"),
       import("../../packages/occ/src/state/postgres-work-queue.ts"),
       import("../helpers/postgres-backend-state.mjs"),
@@ -855,7 +857,7 @@ test(
       configurationId: `cfg_${randomUUID()}`,
       backendId: null,
       harnessAuth: { method: "runtime" },
-      executionMode: "embedded",
+      executionMode: "dedicated",
       gatewayManagedMode: true,
       servicePrincipalId: `service-agent-${randomUUID()}`,
       createdAt: new Date().toISOString(),
@@ -873,7 +875,7 @@ test(
       configurationKind: "agent",
       configurationGeneration: 1,
       gatewayManagedMode: owner.gatewayManagedMode,
-      harness: { ...DEVELOPMENT_HARNESS_DESCRIPTOR, mode: "embedded" },
+      harness: { ...PRODUCTION_HARNESS_DESCRIPTOR, mode: "dedicated" },
       compute: {
         id: compute.id,
         implementation: compute.implementation,
@@ -912,30 +914,43 @@ test(
       });
     });
 
-    const prepareStarted = Promise.withResolvers();
-    worker = createControllerWorker({
-      pool: workerPool,
-      installationId: installation.id,
-      pollIntervalMs: 20,
-      leaseDurationMs: 30_000,
-      maxAttempts: 5,
-      computeDriver: {
-        ...compute,
-        async prepareRevision(candidate) {
-          prepareStarted.resolve();
-          await releasePreparation.promise;
-          return {
-            namespaceId: candidate.namespaceId,
-            agentId: candidate.agentId,
-            revisionId: candidate.id,
-            ready: true,
-            warnings: [{ code: "PLUGIN_INSTALL_FAILED", pluginId }],
-          };
+    const warningWorker = (pool, beforePrepare) =>
+      createControllerWorker({
+        pool,
+        installationId: installation.id,
+        pollIntervalMs: 20,
+        leaseDurationMs: 30_000,
+        maxAttempts: 5,
+        drivers: {
+          ...createBackendWorkerDrivers(
+            {
+              ...compute,
+              async prepareRevision(candidate) {
+                await beforePrepare?.();
+                return {
+                  namespaceId: candidate.namespaceId,
+                  agentId: candidate.agentId,
+                  revisionId: candidate.id,
+                  ready: true,
+                  warnings: [{ code: "PLUGIN_INSTALL_FAILED", pluginId }],
+                };
+              },
+            },
+            [],
+          ),
+          pluginDrivers: [new CodexPluginDriver()],
         },
-      },
+      });
+    let preparing = false;
+    worker = warningWorker(workerPool, async () => {
+      preparing = true;
+      await releasePreparation.promise;
     });
     await worker.start();
-    await prepareStarted.promise;
+    await waitFor(
+      "the first worker to prepare the pinned Codex revision",
+      async () => preparing || undefined,
+    );
 
     const original = await observerPool.query(
       `SELECT state, claim_token, attempt_count
@@ -979,26 +994,7 @@ test(
     worker = undefined;
     await recoveryQueue.retry(recovered, { code: "TEST_RECOVERY_HANDOFF" });
 
-    const recoveredCompute = createDevelopmentComputeDriver();
-    worker = createControllerWorker({
-      pool: recoveredWorkerPool,
-      installationId: installation.id,
-      pollIntervalMs: 20,
-      leaseDurationMs: 30_000,
-      maxAttempts: 5,
-      computeDriver: {
-        ...recoveredCompute,
-        async prepareRevision(candidate) {
-          return {
-            namespaceId: candidate.namespaceId,
-            agentId: candidate.agentId,
-            revisionId: candidate.id,
-            ready: true,
-            warnings: [{ code: "PLUGIN_INSTALL_FAILED", pluginId }],
-          };
-        },
-      },
-    });
+    worker = warningWorker(recoveredWorkerPool);
     await worker.start();
 
     const terminal = await waitFor("recovered worker successful plugin warning", async () => {

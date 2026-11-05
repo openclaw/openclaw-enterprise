@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type { Page } from "playwright";
 
 // agents/deployment-evidence.mts shows the newest readable deployment's recorded status in
 // "Deployment details". These helpers check when that disclosure opens, including a slow first read:
@@ -9,22 +10,27 @@ import assert from "node:assert/strict";
 //   summary above shows its outcome (finding 2163);
 // - any other first record, and every later change, opens them.
 
-/**
- * @param {import("playwright").Page} page
- * @returns {import("playwright").Locator}
- */
-export const deploymentActivity = (page) => page.locator(".deployment-status");
+export const deploymentActivity = (page: Page) => page.locator(".deployment-status");
 
-const deploymentDetails = (page) => page.locator(".deployment-status > details");
+const deploymentDetails = (page: Page) => page.locator(".deployment-status > details");
 
-export const deploymentDetailsOpen = (page) =>
-  deploymentDetails(page).evaluate((node) => node.open);
+export const deploymentDetailsOpen = (page: Page) =>
+  deploymentDetails(page).evaluate((node) => {
+    if (!(node instanceof HTMLDetailsElement)) {
+      throw new TypeError("Expected deployment details to be an HTMLDetailsElement");
+    }
+    return node.open;
+  });
 
 // The browser's read of one deployment's record.
-export const deploymentRecordUrl = (fixture, namespaceId, agentId, revisionId) =>
-  `${fixture.origin}/namespaces/${namespaceId}/agents/${agentId}/deployments/${revisionId}`;
+export const deploymentRecordUrl = (
+  fixture: { origin: string },
+  namespaceId: string,
+  agentId: string,
+  revisionId: string,
+) => `${fixture.origin}/namespaces/${namespaceId}/agents/${agentId}/deployments/${revisionId}`;
 
-export async function showDeploymentTab(page) {
+export async function showDeploymentTab(page: Page) {
   const tab = page.getByRole("tab", { name: "Deployment", exact: true });
   await tab.waitFor();
   if ((await tab.getAttribute("aria-selected")) !== "true") {
@@ -33,7 +39,7 @@ export async function showDeploymentTab(page) {
 }
 
 // Opens the folded details, as a reader does, for the record's evidence.
-export async function openDeploymentActivity(page) {
+export async function openDeploymentActivity(page: Page) {
   await showDeploymentTab(page);
   if (!(await deploymentDetailsOpen(page))) {
     await deploymentDetails(page).locator(":scope > summary").click();
@@ -43,7 +49,7 @@ export async function openDeploymentActivity(page) {
 
 // A failure's card leads the Agent page and folds the details (finding 2094); a reader opens
 // them for the record's evidence.
-export async function openFailureDetails(page) {
+export async function openFailureDetails(page: Page) {
   await page.getByRole("region", { name: "Deployment needs attention" }).waitFor();
   return openDeploymentActivity(page);
 }
@@ -55,13 +61,11 @@ export async function openFailureDetails(page) {
 // - unset, for the page's first record: they may be folded, because that record can land after
 //   the page showed; the summary must then show the same outcome, and the details are opened
 //   for the record's evidence.
-/**
- * @param {import("playwright").Page} page
- * @param {string} label
- * @param {{folded?: boolean, reveal?: boolean}} [options]
- * @returns {Promise<import("playwright").Locator>}
- */
-export async function expectDeploymentOutcome(page, label, options = {}) {
+export async function expectDeploymentOutcome(
+  page: Page,
+  label: string,
+  options: { folded?: boolean; reveal?: boolean } = {},
+) {
   const { folded, reveal = true } = options;
   if (reveal) {
     await showDeploymentTab(page);
@@ -92,12 +96,7 @@ export async function expectDeploymentOutcome(page, label, options = {}) {
 }
 
 // Waits until the viewed version's own deployment record shows `label`.
-/**
- * @param {import("playwright").Page} page
- * @param {string} label
- * @returns {Promise<import("playwright").Locator>}
- */
-export async function expectVersionRecord(page, label) {
+export async function expectVersionRecord(page: Page, label: string) {
   await showDeploymentTab(page);
   const record = page.locator(".version-deployment-record");
   await record.getByText(`Recorded outcome: ${label}`, { exact: true }).waitFor();

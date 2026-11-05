@@ -51,15 +51,162 @@ const postTestAsyncActivityPrefix =
   "Error: A resource generated asynchronous activity after the test ended.";
 
 // Tests publish timings with t.diagnostic(`${measurementPrefix}${JSON}`). Only the
-// allowlisted shape below survives; anything else is dropped like other diagnostics.
+// allowlisted shape below is retained in ordinary results.
 const measurementPrefix = "openclaw-ci-measurement ";
+const openShellSandboxMeasurementKind = "openshell-sandbox-phase";
+const openShellSandboxStages = new Set([
+  "installation",
+  "exposure-auth",
+  "gateway-turns",
+  "filesystem-egress",
+  "network-policy",
+  "credential-route",
+  "pod-replacement",
+  "untrusted-model-upstream",
+  "tool-upstream-outage",
+  "model-provider-outage",
+  "gateway-outage",
+  "oauth-refresh",
+  "non-model-source",
+  "credential-audit",
+  "source-withdrawal",
+  "embedded-fail-closed",
+  "native-policy-scopes",
+]);
 
-function safeMeasurement(message) {
-  let value;
+function parseMeasurement(message) {
+  if (!message.startsWith(measurementPrefix)) {
+    return undefined;
+  }
   try {
-    value = JSON.parse(message.slice(measurementPrefix.length));
+    return JSON.parse(message.slice(measurementPrefix.length));
   } catch {
     return undefined;
+  }
+}
+
+function safeMeasurement(value) {
+  if (isRecord(value) && value.kind === openShellSandboxMeasurementKind) {
+    if (
+      !openShellSandboxStages.has(value.stage) ||
+      !["passed", "failed"].includes(value.outcome) ||
+      !Number.isInteger(value.elapsedMs) ||
+      value.elapsedMs < 0 ||
+      value.elapsedMs > 2_400_000
+    ) {
+      return undefined;
+    }
+    return {
+      kind: value.kind,
+      stage: value.stage,
+      outcome: value.outcome,
+      elapsedMs: value.elapsedMs,
+    };
+  }
+  if (isRecord(value) && value.kind === "local-first-agent-setup-point") {
+    if (
+      ![
+        "database-start",
+        "cluster-start",
+        "controller-images-start",
+        "routing-start",
+        "network-check-start",
+        "openshell-assets-start",
+        "openshell-gateway-start",
+        "platform-start",
+        "controller-start",
+        "namespace-check-start",
+        "ready",
+      ].includes(value.stage) ||
+      !Number.isInteger(value.elapsedMs) ||
+      value.elapsedMs < 0 ||
+      value.elapsedMs > 7_200_000
+    ) {
+      return undefined;
+    }
+    return { kind: value.kind, stage: value.stage, elapsedMs: value.elapsedMs };
+  }
+  if (isRecord(value) && value.kind === "local-first-agent-capacity") {
+    const result = { kind: value.kind };
+    for (const key of ["cpus", "totalMiB", "minimumFreeMiB", "maximumLoadHundredths", "samples"]) {
+      if (!Number.isSafeInteger(value[key]) || value[key] < 0 || value[key] > 10_000_000) {
+        return undefined;
+      }
+      result[key] = value[key];
+    }
+    return result;
+  }
+  if (isRecord(value) && value.kind === "local-first-agent-command") {
+    if (
+      !["setup", "cleanup"].includes(value.phase) ||
+      ![
+        "runtime-build",
+        "controller-build",
+        "compose-build-and-start",
+        "compose-build",
+        "image-pull",
+        "image-export",
+        "image-import",
+        "node-image-pull",
+        "cluster-create",
+        "k3d-image-import",
+        "kubernetes-readiness",
+        "helm-install",
+      ].includes(value.stage) ||
+      !Number.isInteger(value.count) ||
+      value.count < 1 ||
+      value.count > 100_000 ||
+      !Number.isInteger(value.failed) ||
+      value.failed < 0 ||
+      value.failed > value.count ||
+      !Number.isInteger(value.elapsedMs) ||
+      value.elapsedMs < 0 ||
+      value.elapsedMs > 7_200_000
+    ) {
+      return undefined;
+    }
+    return {
+      kind: value.kind,
+      phase: value.phase,
+      stage: value.stage,
+      count: value.count,
+      failed: value.failed,
+      elapsedMs: value.elapsedMs,
+    };
+  }
+  if (isRecord(value) && value.kind === "local-first-agent-pod") {
+    if (
+      !["native-initial", "native-replacement"].includes(value.stage) ||
+      !["harness", "gateway"].includes(value.role) ||
+      !Number.isInteger(value.restarts) ||
+      value.restarts < 0 ||
+      value.restarts > 1000
+    ) {
+      return undefined;
+    }
+    const result = {
+      kind: value.kind,
+      stage: value.stage,
+      role: value.role,
+      restarts: value.restarts,
+    };
+    for (const key of [
+      "createdAfterRequestMs",
+      "scheduledMs",
+      "initializedMs",
+      "runningMs",
+      "readyMs",
+      "observedMs",
+    ]) {
+      if (
+        value[key] !== null &&
+        (!Number.isInteger(value[key]) || value[key] < -60_000 || value[key] > 7_200_000)
+      ) {
+        return undefined;
+      }
+      result[key] = value[key];
+    }
+    return result;
   }
   if (isRecord(value) && value.kind === "local-first-agent") {
     if (
@@ -527,6 +674,8 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
     "bundle-file-changed",
   ];
   const turnErrors = [
+    "session-read-changed",
+    "session-binding-changed",
     "model-authentication",
     "model-rate-or-quota",
     "model-unavailable",
@@ -542,6 +691,8 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
     "http-rate-limit",
   ];
   const vocabularies = {
+    proofRpcCode: ["UNAVAILABLE", "INVALID_REQUEST", "NOT_FOUND", "UNAUTHORIZED", "FORBIDDEN"],
+    historyExecErrorFlag: ["none", "false", "true", "absent", "other", "mixed"],
     turnStatus: ["ok", "error", "timeout", "pending"],
     turnError: turnErrors,
     proofError: turnErrors,
@@ -593,6 +744,10 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
     }
   }
   for (const field of [
+    "proofRpcResponse",
+    "historyToolProofPresent",
+    "historyFinalProofPresent",
+    "historySettleExpired",
     "workspaceReferencePresent",
     "attachedSessionMatches",
     "expectedNodeIdPresent",
@@ -606,6 +761,14 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
     }
   }
   for (const field of [
+    "placementReadRetries",
+    "historyMessageCount",
+    "historyRunMessageCount",
+    "historyExecCount",
+    "historyExplicitSuccessCount",
+    "historyToolPrefixCount",
+    "historyFinalMarkerCount",
+    "historyTerminalAssistantCount",
     "attachedSessionCount",
     "nodeCount",
     "connectedNodeCount",
@@ -1081,21 +1244,21 @@ export default async function* jsonLinesReporter(source) {
       failed = true;
     }
     if (event.type === "test:diagnostic") {
+      const message = event.data?.message;
+      if (typeof message !== "string") {
+        continue;
+      }
+      const value = parseMeasurement(message);
       // Per-test diagnostics name their file; the run summary counts do not.
-      if (typeof event.data?.message === "string" && typeof event.data.file === "string") {
-        output.diagnostic(event.data.message);
+      // OpenShell phase timings belong only in the projected measurement, even on failure.
+      if (typeof event.data.file === "string" && value?.kind !== openShellSandboxMeasurementKind) {
+        output.diagnostic(message);
       }
       // Node diagnostics can quote thrown errors; retain only this fixed failure category.
-      if (
-        typeof event.data?.message === "string" &&
-        event.data.message.startsWith(postTestAsyncActivityPrefix)
-      ) {
+      if (message.startsWith(postTestAsyncActivityPrefix)) {
         yield '{"type":"test:diagnostic","data":{"kind":"post-test-async-activity"}}\n';
-      } else if (
-        typeof event.data?.message === "string" &&
-        event.data.message.startsWith(measurementPrefix)
-      ) {
-        const measurement = safeMeasurement(event.data.message);
+      } else if (value !== undefined) {
+        const measurement = safeMeasurement(value);
         if (measurement) {
           yield `${JSON.stringify({
             type: "test:diagnostic",

@@ -487,6 +487,8 @@ function mergeEnv(...objects) {
 
 function shouldRemoveInheritedEnv(name) {
   return (
+    name === "ACTIONS_RUNTIME_TOKEN" ||
+    name === "ACTIONS_RESULTS_URL" ||
     name === "KEEP" ||
     name === "DEBUG" ||
     name === "NODE_TEST_CONTEXT" ||
