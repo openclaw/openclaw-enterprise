@@ -400,8 +400,13 @@ test("registering a provider-issued client uses a saved or newly created templat
   const selector = page.getByRole("combobox", { name: "Namespace", exact: true });
   await selector.selectOption(other.id);
   await page
-    .getByText("No OAuth clients are available for this selection.", { exact: true })
-    .waitFor();
+    .getByRole("rowheader", { name: "Engineering directory", exact: true })
+    .waitFor({ state: "hidden" });
+  await page.getByRole("rowheader", { name: "Codex native client", exact: true }).waitFor();
+  assert.equal(
+    await page.getByRole("rowheader", { name: "Second directory", exact: true }).count(),
+    0,
+  );
   assert.equal(new URL(page.url()).searchParams.get("namespace"), other.id);
   await page.getByRole("button", { name: "Register OAuth client" }).click();
   assert.equal(await templateChoice.getByRole("option", { name: /Directory OAuth/ }).count(), 0);
