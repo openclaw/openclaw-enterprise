@@ -722,6 +722,8 @@ export {
   controllerWorkDeploymentStatus,
   credentialWithdrawalWorkKey,
   isCredentialWithdrawalWork,
+  isProviderPendingReason,
+  type ProviderPendingReason,
   revisionAdmittedBeforeWork,
   runtimeFailureCause,
   validateRuntimeFailureEvidence,

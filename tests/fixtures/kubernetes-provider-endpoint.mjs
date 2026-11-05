@@ -15,6 +15,7 @@ export function providerEndpointFixture({
   }),
   providerNetwork,
   revisionOverrides,
+  isConnected = async () => true,
 } = {}) {
   const hooks = [];
   const provisions = [];
@@ -75,9 +76,7 @@ export function providerEndpointFixture({
           expiresAtMs: Date.now() + 600_000,
         };
       },
-      async isConnected() {
-        return true;
-      },
+      isConnected,
     },
   });
   const { driver, revision, namespace, core } = fixture;

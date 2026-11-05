@@ -154,20 +154,30 @@ the setting and what is accepted, never its value, before any version is created
 
 ### Pending deployment progress
 
-While a version is not ready, deployment `progress.lastAttempt.code` says why
-when Compute knows. Kubernetes reports `REVISION_UNSCHEDULABLE` when a live
-Pod is `Unschedulable`, `REVISION_IMAGE_PULL_FAILED` when a container waits on
-`ErrImagePull` or `ImagePullBackOff`, `NAMESPACE_POD_QUOTA_EXCEEDED` when a
-Deployment for that version reports a full Pod quota in `ReplicaFailure`,
-`WORKSPACE_SETUP_RETRYING` while restarting a failed workspace setup, and
-`WORKSPACE_NODE_PENDING` when only the workspace node's gateway connection is
-outstanding. Activation of a dedicated version reports
-`WORKSPACE_NODE_BINDING_PENDING` until the gateway applies the workspace node it
-was handed, then `WORKSPACE_NODE_PENDING` until that node connects. Otherwise
-the code is `REVISION_INCOMPLETE`. The version stays pending until it is ready,
-a held failure (such as `WORKSPACE_SETUP_REFUSED`) ends it, or the convergence
-deadline passes. The worker rechecks an unready
-version after 500 ms, growing with the deployment's age to 5 s at 200 s.
+While deployment is pending, `progress.lastAttempt.code` shows the worker's last
+recorded observation. Kubernetes reports `REVISION_UNSCHEDULABLE` for a live
+unschedulable Pod, `REVISION_IMAGE_PULL_FAILED` for `ErrImagePull` or
+`ImagePullBackOff`, `NAMESPACE_POD_QUOTA_EXCEEDED` for a Deployment's
+`ReplicaFailure` with a confirmed full Pod quota, and `WORKSPACE_SETUP_RETRYING`
+while Kubernetes retries failed workspace setup. For a Compute-owned Harness,
+`WORKSPACE_NODE_PENDING` means the ready workloads await the node's Gateway connection.
+
+For a provider-owned Harness, look at the first check the worker reports:
+
+| Progress code                   | What to inspect                                                                                 |
+| ------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `PROVIDER_HARNESS_POD_PENDING`  | Is there exactly one matching provider Pod, and is it Ready?                                    |
+| `WORKSPACE_NODE_PENDING`        | The Gateway is Ready. Has the workspace node enrolled and connected with the required commands? |
+| `CREDENTIAL_ATTACHMENT_PENDING` | Are all expected credential attachments ready?                                                  |
+
+Later checks may not have run. Missing or unknown detail gives the generic
+`REVISION_INCOMPLETE` message. Terminal deployments clear progress.
+
+Dedicated activation reports `WORKSPACE_NODE_BINDING_PENDING` until the Gateway
+applies the node binding, then `WORKSPACE_NODE_PENDING` until the node connects.
+Rechecks start at 500 ms and reach 5 s at deployment age 200 s. Readiness, a
+held failure such as `WORKSPACE_SETUP_REFUSED`, or the convergence deadline ends
+the wait.
 
 A dedicated gateway that refuses its own in-Pod CLI as unauthorized can never
 apply its workspace node, so activation fails at once with
@@ -176,16 +186,13 @@ apply its workspace node, so activation fails at once with
 access**) and deploy again; the gateway log's `runtime.workspace_node` line names
 OpenClaw's refusal `reason`. A rate-limited or pairing refusal still waits.
 
-A dependency that fails while it converges is pending too.
-`AGENT_GATEWAY_UNAVAILABLE` means the worker could not reach the new gateway
-through its route yet (for example, the route answers 404 until the gateway
-proxy has the new route, or 503 until it has the ready Pod), and
-`KUBERNETES_API_UNAVAILABLE` means a Kubernetes API request timed out, could not
-connect, or got 429 or 5xx. Both apply in preparation and
-activation. `SANDBOX_ADMISSION_LIMIT_REACHED` means the OpenShell gateway holds
-its limit of durable request admissions and refuses requests (see
-[OpenShell troubleshooting](../drivers/openshell-sandbox.md#troubleshooting));
-`SANDBOX_GATEWAY_UNAVAILABLE`, that it did not answer.
+During preparation or activation, `AGENT_GATEWAY_UNAVAILABLE` means the worker
+cannot reach the Gateway through its route (404 before route propagation or
+503 before Pod readiness). `KUBERNETES_API_UNAVAILABLE` covers connection
+failures, timeouts, 429 and 5xx responses. `SANDBOX_ADMISSION_LIMIT_REACHED`
+means the OpenShell gateway reached its durable request admission limit.
+`SANDBOX_GATEWAY_UNAVAILABLE` means it did not answer.
+See [OpenShell troubleshooting](../drivers/openshell-sandbox.md#troubleshooting).
 The worker retries on the same cadence without spending
 `OCC_WORKER_MAX_ATTEMPTS`. A dependency still failing at the convergence
 deadline fails the deployment with its own code.

@@ -94,6 +94,8 @@ import {
   credentialWithdrawalCompanionRevisions,
   isCredentialWithdrawalWork,
   isRepositoryCleanupWork,
+  isProviderPendingReason,
+  type ProviderPendingReason,
   isRepositoryExpiryCleanupWork,
   repositoryCleanupRevisionId,
   revisionAdmittedBeforeWork,
@@ -525,11 +527,21 @@ function activationPendingResult(error: unknown): {
   return { outcome: "pending", code: "REVISION_FINALIZATION_INCOMPLETE" };
 }
 
-function revisionPendingCode(observation: unknown): string {
+function revisionPendingEvidence(observation: unknown): {
+  code: string;
+  pendingReason?: ProviderPendingReason;
+} {
   const reason = (observation as { readonly pendingReason?: unknown }).pendingReason;
-  return typeof reason === "string" && Object.hasOwn(REVISION_PENDING_CODES, reason)
-    ? REVISION_PENDING_CODES[reason]!
-    : "REVISION_INCOMPLETE";
+  // Bootstrap retirement uses the durable readiness code. The pending observation
+  // explains progress without changing that lifecycle decision.
+  if (isProviderPendingReason(reason)) {
+    return { code: "REVISION_INCOMPLETE", pendingReason: reason };
+  }
+  const code =
+    typeof reason === "string" && Object.hasOwn(REVISION_PENDING_CODES, reason)
+      ? REVISION_PENDING_CODES[reason]!
+      : "REVISION_INCOMPLETE";
+  return { code };
 }
 
 function revisionReadinessRecheckMs(ageMs: number): number {
@@ -552,6 +564,7 @@ interface DispatchResult {
 }
 
 interface RevisionDispatchResult extends DispatchResult {
+  readonly pendingReason?: ProviderPendingReason;
   /** Terminal preparation requires durable retirement of this exact revision. */
   readonly cleanupFailedPreparation?: true;
   /** A transient dependency failure, retried until the convergence deadline. */
@@ -4688,7 +4701,7 @@ export class ControllerWorker {
             await this.finalizeActiveRevision(
               claim,
               revision,
-              revisionPendingCode(observation),
+              revisionPendingEvidence(observation),
               runtimeFailureFromObservation(observation),
             );
             return;
@@ -5335,7 +5348,7 @@ export class ControllerWorker {
         const runtimeFailure = runtimeFailureFromObservation(observation);
         return {
           outcome: "pending",
-          code: revisionPendingCode(observation),
+          ...revisionPendingEvidence(observation),
           ...(runtimeFailure === undefined ? {} : { data: { runtimeFailure } }),
         };
       }
@@ -6142,7 +6155,12 @@ export class ControllerWorker {
         const ageMs = this.workAgeMs(claim);
         await queue.defer(
           claim,
-          { code: resolved.code },
+          {
+            code: resolved.code,
+            ...(resolved.pendingReason === undefined
+              ? {}
+              : { pendingReason: resolved.pendingReason }),
+          },
           // A transient dependency failure is rechecked on the readiness cadence:
           // like an unready runtime, it waits for convergence, not for a fix.
           isStopYieldedCode(resolved.code)
@@ -6703,13 +6721,14 @@ export class ControllerWorker {
   private async finalizeActiveRevision(
     claim: ClaimedWork,
     revision: Readonly<AgentRevision>,
-    code: string,
+    pending: string | ReturnType<typeof revisionPendingEvidence>,
     runtimeFailure?: RuntimeFailureEvidence,
     failure: {
       readonly dependencyFailure?: TransientDependencyError;
       readonly failureLogFields?: Readonly<Record<string, string | number>>;
     } = {},
   ): Promise<void> {
+    const progress = typeof pending === "string" ? { code: pending } : pending;
     if (
       this.revisionMaintenanceInterval(revision) === undefined ||
       !new RegExp(`^agent_revision:${revision.id}:maintenance:(0|[1-9][0-9]*)$`).test(
@@ -6720,7 +6739,7 @@ export class ControllerWorker {
         claim,
         {
           outcome: "pending",
-          code,
+          ...progress,
           ...(runtimeFailure === undefined ? {} : { data: { runtimeFailure } }),
           ...(failure.dependencyFailure === undefined
             ? {}
@@ -6730,6 +6749,7 @@ export class ControllerWorker {
       );
       return;
     }
+    const { code } = progress;
     let superseded = false;
     if (revision.repositoryCredentials !== undefined) {
       try {

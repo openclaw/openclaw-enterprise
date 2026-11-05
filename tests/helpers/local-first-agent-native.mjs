@@ -13,11 +13,17 @@ export const nativeFirstAgentProofTimeout = 10 * 60_000;
 const workStatuses = ["queued", "running", "succeeded", "failed"];
 const provisioningPhases = ["admitted", "configuration", "transport", "handoff"];
 // A narrow subset of deploymentProgressForWork's public codes; never print arbitrary peer text.
-const deploymentProgressCodes = new Set([
+const readinessProgressCodes = new Set([
   "REVISION_INCOMPLETE",
+  "PROVIDER_HARNESS_POD_PENDING",
+  "WORKSPACE_NODE_PENDING",
+  "CREDENTIAL_ATTACHMENT_PENDING",
+]);
+const deploymentProgressCodes = new Set([
+  ...readinessProgressCodes,
   "REVISION_UNSCHEDULABLE",
   "REVISION_IMAGE_PULL_FAILED",
-  "WORKSPACE_NODE_PENDING",
+  "NAMESPACE_POD_QUOTA_EXCEEDED",
   "WORKSPACE_NODE_BINDING_PENDING",
   "REPOSITORY_GIT_MATERIAL_PENDING",
   "WORKSPACE_NODE_RECONNECT_PENDING",
@@ -494,7 +500,7 @@ export async function failNativeProvisioningDeadline({
           provisioned.phase === "handoff" &&
           ["queued", "running"].includes(provisioned.status) &&
           ["queued", "running"].includes(deployment.status) &&
-          (code === "REVISION_INCOMPLETE" || code === "WORKSPACE_NODE_PENDING")
+          readinessProgressCodes.has(code)
         ) {
           observation.runtimeAfterDeadline = "unavailable";
           const runtime = await request(
