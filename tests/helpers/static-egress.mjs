@@ -207,8 +207,10 @@ export async function staticEgressFixture(
     } else if (request.method === "GET" && previous) {
       secretReads += 1;
       if (failNextSecretGet) {
-        response.writeHead(503).end(JSON.stringify({ code: 503 }));
-        failNextSecretGet();
+        response
+          .writeHead(failNextSecretGet.status)
+          .end(JSON.stringify({ code: failNextSecretGet.status }));
+        failNextSecretGet.resolve();
         failNextSecretGet = undefined;
         return;
       }
@@ -1080,9 +1082,9 @@ export async function staticEgressFixture(
         },
       };
     },
-    failOneSecretGet() {
+    failOneSecretGet(status = 503) {
       const failed = Promise.withResolvers();
-      failNextSecretGet = failed.resolve;
+      failNextSecretGet = { status, resolve: failed.resolve };
       return failed.promise;
     },
     pauseSecretReads() {

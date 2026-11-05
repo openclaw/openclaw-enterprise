@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: 2026-11-05
-last_updated_session: authoring-run/4f657203-a2dd-4392-84b3-f5019d83db5f
+last_updated_session: authoring-run/30343d21-03ee-4bb6-8bc2-64c565e32c0e
 ---
 
 # Protected credential request flow
@@ -185,8 +185,8 @@ without material.
 
 For request-time static reads, OCC pins the selected Secret Driver and read method.
 `apps/controller/src/drivers/secret/kubernetes/index.ts:readCredentialInput` passes the selection
-check to the shared Kubernetes transport before each material GET, including retries, and discards
-material if the selection changed in flight. OCC rechecks on return. See the
+check to the shared Kubernetes dispatcher before each material GET, including SDK and fetch retries,
+and discards material if the selection changed in flight. OCC rechecks on return. See the
 [Secret Driver contract](../reference/drivers/secret.md#interface) for optional-reader limits.
 The Driver verifies the backend UID and returns its resourceVersion.
 Static and prepared GitHub reads share `{ signal, deadlineAt }`. Kubernetes propagates cancellation
@@ -344,12 +344,10 @@ None.
 
 ## Changelog
 
+- 2026-11-05 11:53: Guard fetch-internal Secret retries at dispatch. (authoring-run/30343d21-03ee-4bb6-8bc2-64c565e32c0e - 5c2da10f84772f6c366cd4a1a425b3501cd9126f)
+
 - 2026-11-05 11:46: Reconcile selection checks with the current request flow. (authoring-run/4f657203-a2dd-4392-84b3-f5019d83db5f - b8e47057c619ed3d281488c6d507315ec97de1b0)
 
 - 2026-11-05 02:35: Refresh model observation after Git credential rotation. (authoring-run/cdb62c1d-61db-4f65-985f-7b44e64f10d0 - 261e4b54cbd0366ff0cba0dc6a00b7890b8e39f2)
-
-- 2026-11-04 08:59: Validate effective image policy in streamed response envelopes. (authoring-run/62d369a1-b693-49c9-badd-c92eeda35a6b - 54ad9dad2610ed99ab8ce8134fb03d3b10ed6be4)
-
-- 2026-11-04 05:11: Separate response metadata validation. (authoring-run/aa69859c-0fd2-4688-97b0-b99dbbd65f95 - b9741c28dacdd6012790be431b97872de6611969)
 
 [Protected credential request documentation history](credential-source-egress/history.md) preserves the older dated entries.

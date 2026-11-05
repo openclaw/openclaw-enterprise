@@ -390,6 +390,29 @@ test("credential exchange checks the registered Secret reader before retrying a 
   assert.equal(f.providerRequests.length, 0);
 });
 
+test("credential exchange checks the registered Secret reader before an automatic HTTP 421 retry", async (t) => {
+  const f = await staticEgressFixture(t);
+  assert.ok("egress" in f);
+  // A current reader may complete fetch's internal retry and return material.
+  const initialReads = f.secretReads;
+  f.failOneSecretGet(421);
+  assert.ok((await f.resolve(f.capture())).ready);
+  assert.equal(f.secretReads, initialReads + 2);
+  const driver = f.controller.selectedDriver("secret");
+  const reads = f.secretReads;
+  const failed = f.failOneSecretGet(421);
+  const resolution = f.resolve(f.capture());
+  await failed;
+  // Fetch retries HTTP 421 below the SDK request loop. Changing the reader after
+  // that response must prevent the transport from issuing another material GET.
+  const replacement = t.mock.method(driver, "readCredentialInput");
+  const result = await resolution;
+  assert.equal(f.secretReads, reads + 1, "the rejected attempt must be the only GET");
+  assert.ok(result.refused);
+  assert.equal(replacement.mock.callCount(), 0);
+  assert.equal(f.providerRequests.length, 0);
+});
+
 test("OCC withholds a changed reader's result when the driver ignores the selection check", async (t) => {
   const f = await staticEgressFixture(t);
   assert.ok("egress" in f);

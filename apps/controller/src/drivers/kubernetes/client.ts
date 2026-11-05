@@ -9,7 +9,14 @@ import type {
   RequestContext,
   ResponseContext,
 } from "@kubernetes/client-node";
-import { Agent, type buildConnector, type Dispatcher, fetch, ProxyAgent } from "undici";
+import {
+  Agent,
+  type buildConnector,
+  type Dispatcher,
+  fetch,
+  getGlobalDispatcher,
+  ProxyAgent,
+} from "undici";
 import {
   currentComputeAbortSignal,
   currentComputeOperationLifetime,
@@ -143,15 +150,23 @@ export function nonRedirectingHttpLibrary(sdk: KubernetesSdk): HttpLibrary {
           "TimeoutError",
         );
       }
-      requestGuards.getStore()?.();
-      const dispatcher = request.getDispatcher();
+      const guard = requestGuards.getStore();
+      guard?.();
+      const dispatcher = request.getDispatcher() ?? getGlobalDispatcher();
+      // Fetch can retry HTTP 421 internally, without returning to the SDK or our retry loop.
+      const guardedDispatcher = guard
+        ? dispatcher.compose((dispatch) => (options, handler) => {
+            guard();
+            return dispatch(options, handler);
+          })
+        : dispatcher;
       const response = await fetch(request.getUrl(), {
         method: request.getHttpMethod().toString(),
         body: request.getBody() ?? null,
         headers: request.getHeaders(),
         signal: request.getSignal() ?? null,
         redirect: "manual",
-        ...(dispatcher === undefined ? {} : { dispatcher }),
+        dispatcher: guardedDispatcher,
       });
       const headers: Record<string, string> = {};
       response.headers.forEach((value, name) => {
