@@ -76,7 +76,7 @@ import {
   agentStopRequests,
   replyWithDifferentAgentId,
   configurationPatchRequests,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
 import {
   AGENT_CREATE_DENIED,
   AGENT_DEPLOY_NOT_INCLUDED,

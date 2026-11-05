@@ -19,7 +19,7 @@ import {
   createControlAdmission,
   handleControl,
 } from "../../apps/controller/src/drivers/repo/credentials/control.ts";
-import { createCredentialService } from "../../apps/controller/src/drivers/repo/credentials/service.ts";
+import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
 import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { createPreparedGitHubRegistryFactory } from "../../apps/controller/src/drivers/repo/github/credentials/warm-registry-factory.ts";
@@ -144,7 +144,6 @@ async function fixture(t: TestContext) {
       },
       config,
       clock,
-      factory.resolveBound !== undefined,
       "createPrepared" in factory,
     );
     const stop = service.observeDisposal(admissions.observe);

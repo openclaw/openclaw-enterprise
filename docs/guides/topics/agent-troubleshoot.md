@@ -10,6 +10,10 @@ If a dedicated Codex Agent on OpenShell reports `Codex did not grant the request
 
 Successful login, a ready credential source, or a model reply under another permission profile does not prove compatibility. Use an approved compatible credential or an administrator-approved policy change. For copied API-key or PAT credentials, [update the source](../../reference/credential-sources.md#update-a-source) and redeploy the Agent. Device-login sources reject updates: sign in again, replace the Agent binding and redeploy, following the same reference. Then [verify a model response from the actual Agent](../operate/model-verification.md). Keep managed policy, the Gateway permission check and OpenShell isolation intact.
 
+## Deploy requires a Sandbox Driver that supports protected Codex artifact admission
+
+OCE stops before creating an Agent version when the selected Sandbox Driver cannot validate artifact access for protected Codex repository execution. Ask your Installation administrator to check the `drivers.sandbox` selection and whether the installed Driver version provides [protected Codex artifact admission](../../reference/drivers/sandbox.md#methods). For OpenShell, see [how to configure the artifact rules](../../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules).
+
 ## The configured model is unavailable
 
 Open the failed version in the Agent’s **Deployment** tab. If the startup model check reports an unavailable model, [choose a model ID for the same credential](../operate/model-verification.md#choose-a-model-for-dedicated-codex).
@@ -34,6 +38,19 @@ Once access is fixed, refresh and confirm the Namespace is `ready`.
 <span id="deployment-is-blocked-or-has-no-selected-revision" class="anchor-alias"></span>
 
 ## Deployment is blocked or has no selected version
+
+`active` is the Agent lifecycle, not workload health. An Agent can be
+`active` without a selected version. If you did not retain the version ID,
+inspect the latest deployment you can read:
+
+```bash
+occ --namespace NAMESPACE_ID agent deployment-status AGENT_ID --output json
+```
+
+Without a deployment ID, this command returns the status of the latest readable
+Agent revision. Inspect the deployment error before changing credentials. If it
+failed, follow the next step in `error.message`. See the
+[deployment status reference](../../reference/agents.md#deployment-status).
 
 On Kubernetes, open the Agent's **Open draft** draft, then
 **Credentials**. Select **Reload authentication source**, then confirm under

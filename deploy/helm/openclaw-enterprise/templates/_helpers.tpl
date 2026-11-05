@@ -1031,3 +1031,7 @@ is set.
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{- define "openclaw.installationSecretNamespace" -}}
+{{- printf "oce-installation-secrets-%s" (printf "%s/%s" .Release.Namespace .Release.Name | sha256sum | trunc 15) -}}
+{{- end -}}

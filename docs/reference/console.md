@@ -46,7 +46,7 @@ HTML.
 
 ## Browse and select a Namespace
 
-The sidebar opens **Agents**, **Secrets**, or **Namespaces**; **Refresh** repeats the read.
+The sidebar opens **Agents**, **Credentials**, or **Namespaces**. **Credentials** opens the Secrets tab for the selected Namespace. Installation administrators can also open [Connection templates](connection-templates.md). **Refresh** repeats the read.
 Configure models during creation. [Experimental Backends](backends.md) stay
 hidden. Namespace rows open their Agents.
 

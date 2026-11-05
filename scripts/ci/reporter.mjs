@@ -792,6 +792,55 @@ function failureDiagnostic(error) {
   if (!isRecord(diagnostic)) {
     return undefined;
   }
+  if (diagnostic.kind === "openshell-startup-process") {
+    const keys = Reflect.ownKeys(diagnostic);
+    if (!keys.includes("kind") || !keys.includes("outcome")) {
+      return undefined;
+    }
+    const { kind, outcome, exitCode, signal, code } = diagnostic;
+    if (outcome === "output-limit" && keys.length === 2) {
+      return { kind, outcome };
+    }
+    if (keys.length !== 3) {
+      return undefined;
+    }
+    if (
+      outcome === "exit" &&
+      keys.includes("exitCode") &&
+      Number.isInteger(exitCode) &&
+      exitCode > 0 &&
+      exitCode <= 255
+    ) {
+      return { kind, outcome, exitCode };
+    }
+    if (
+      outcome === "signal" &&
+      keys.includes("signal") &&
+      typeof signal === "string" &&
+      Object.hasOwn(process.getBuiltinModule("node:os").constants.signals, signal)
+    ) {
+      return { kind, outcome, signal };
+    }
+    if (
+      outcome === "launch-error" &&
+      keys.includes("code") &&
+      [
+        "E2BIG",
+        "EACCES",
+        "EAGAIN",
+        "EMFILE",
+        "ENFILE",
+        "ENOENT",
+        "ENOEXEC",
+        "ENOMEM",
+        "ENOTDIR",
+        "EPERM",
+      ].includes(code)
+    ) {
+      return { kind, outcome, code };
+    }
+    return undefined;
+  }
   if (diagnostic.kind === "native-first-agent-proof") {
     return nativeFirstAgentProofDiagnostic(diagnostic.failureStage, diagnostic.worker);
   }

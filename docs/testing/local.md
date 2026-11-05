@@ -83,7 +83,7 @@ Drivers. It does not prove persistence, routing through a deployed gateway, or
 Agent runtime behavior. The API checks can run without a browser:
 
 ```sh
-node --test tests/integration/console-api.test.mjs
+node --test tests/integration/console-api.test.ts
 ```
 
 ### Browser failure diagnostics
@@ -101,12 +101,14 @@ After changing API routes or schemas, run `pnpm openapi:generate`, then
 OpenAPI contract without controller dependencies, run:
 
 ```sh
-node scripts/generate-occ-api-reference.mjs --check
+node scripts/generate-occ-api-reference.ts --check
 ```
 
 Run `pnpm hooks:install` to reinstall the managed pre-push hook. It refuses to
-replace an unmanaged hook and preserves `core.hooksPath`. The hook checks files
-on disk in the active checkout, including unstaged edits. To verify formatting
+replace an unmanaged hook and preserves `core.hooksPath`. The hook requires the
+Bun version in `.bun-version` and invokes that executable's formatter directly,
+without running package scripts. It checks files on disk in the active checkout,
+including unstaged edits. To verify formatting
 for a trusted outgoing commit, run `pnpm format:check` in a clean, isolated
 checkout of its exact commit ID with matching dependencies already installed.
 

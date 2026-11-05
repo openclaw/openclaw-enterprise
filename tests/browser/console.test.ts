@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cp, readFile } from "node:fs/promises";
+import { cp } from "node:fs/promises";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import type { ServerResponse } from "node:http";
@@ -14,7 +14,7 @@ import { apiErrorResponse } from "../helpers/api-error.mjs";
 import {
   describePendingBrowserRequests,
   noteBrowserEvent,
-} from "../helpers/browser-failure-diagnostics.mjs";
+} from "../helpers/browser-failure-diagnostics.ts";
 import {
   createConsoleAppFixture as createBaseConsoleAppFixture,
   fileConsoleApp,
@@ -32,6 +32,7 @@ import {
   nextFrames,
   nonAuthWriteRequests,
   settledView,
+  shippedPreset,
   settlePageRequests,
   waitForEnabled,
   writeRequests,
@@ -73,9 +74,7 @@ function namedResource(value: unknown): Pick<Namespace, "id" | "name"> {
   return { id: resource.id, name: resource.name };
 }
 
-const defaultCodexPreset: unknown = JSON.parse(
-  await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
-);
+const defaultCodexPreset = await shippedPreset("default-codex");
 const createConsoleAppFixture = (
   t: TestContext,
   options: {
@@ -2878,7 +2877,7 @@ test("compact navigation preserves the page position while its drawer can still 
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
   await toggle.click();
-  await page.getByRole("link", { name: "Secrets", exact: true }).click();
+  await page.getByRole("link", { name: "Credentials", exact: true }).click();
   await page.locator(settledView).waitFor();
   const returned = await page.evaluate(() => {
     const heading = globalThis.document.querySelector("h1");

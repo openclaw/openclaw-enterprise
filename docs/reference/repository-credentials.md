@@ -3,6 +3,8 @@
 Configure approved HTTPS repository access with the [operator guide](../guides/repository-credentials.md).
 OpenClaw Control Plane (OCC) saves each grant with the Agent revision.
 
+For the OpenShell path, see the [Git setup and request diagrams](../design/credential-proxy-architecture.md#how-does-openshell-authorize-a-git-request).
+
 ## Native Git from the Agent to GitHub
 
 Prepared native Git requires a dedicated Codex Harness (API key or ChatGPT service

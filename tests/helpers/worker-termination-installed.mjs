@@ -259,12 +259,23 @@ export async function verifyInstalledWorkerRestarts(f, readLogs, kind) {
         "-e",
         "process.kill(1, 'SIGTERM')",
       );
+      let observed;
       const exit = await f.waitFor(
-        "same worker Pod restarted with termination evidence",
+        () =>
+          `same worker Pod restarted with termination evidence (${kind}, expected restart count ${initial + index + 1}, observed ${JSON.stringify(observed)})`,
         async () => {
           const current = await f.get("pod", pod.metadata.name);
           assert.equal(current.metadata.uid, pod.metadata.uid);
           const worker = status(current);
+          // Keep only lifecycle fields; Pod payloads and termination messages can contain secrets.
+          observed = {
+            restartCount: worker.restartCount,
+            ready: worker.ready,
+            running: Boolean(worker.state?.running),
+            waiting: Boolean(worker.state?.waiting),
+            exitCode: worker.state?.terminated?.exitCode,
+            previousExitCode: worker.lastState?.terminated?.exitCode,
+          };
           // Restart count and readiness alone do not establish that the previous
           // exit is available. Require the replacement and its termination record.
           return worker.restartCount === initial + index + 1 &&

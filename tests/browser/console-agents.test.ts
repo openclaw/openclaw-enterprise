@@ -80,7 +80,7 @@ import {
   nativeSandboxDriver,
   agentPostRequests,
   createRepositoryLaunchFixture,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
 import {
   expectDeploymentOutcome,
   openFailureDetails,
@@ -1735,7 +1735,9 @@ test("Dedicated Agent creation uses regular create when provisioning is unsuppor
   await page.getByRole("button", { name: "Start with default Preset" }).click();
   await page.getByText("This installation creates draft Agents for later deployment.").waitFor();
   await assert.rejects(
-    page.getByRole("heading", { name: "Secrets" }).waitFor({ state: "visible", timeout: 300 }),
+    page
+      .getByRole("heading", { name: "Credentials", exact: true })
+      .waitFor({ state: "visible", timeout: 300 }),
     /Timeout/,
   );
 
