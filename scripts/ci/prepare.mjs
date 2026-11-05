@@ -63,6 +63,7 @@ const allowedLanes = new Set(Object.keys(laneDefinitions));
 const fixtureLanes = new Set([
   "k3d-fixture-configuration",
   "k3d-fixture-state",
+  "k3d-fixture-network",
   "k3d-fixture-plugins",
 ]);
 // These lanes' tests use no Ingress, LoadBalancer Service, metrics API or
@@ -3014,6 +3015,7 @@ async function prepareLane({ lane, statePath, file }) {
       break;
     case "k3d-fixture-configuration":
     case "k3d-fixture-state":
+    case "k3d-fixture-network":
     case "k3d-fixture-plugins": {
       // PostgreSQL, cluster creation and the fixture build are independent.
       const [, cluster, built] = await timedPreparation(

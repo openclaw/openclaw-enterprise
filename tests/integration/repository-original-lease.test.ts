@@ -14,7 +14,7 @@ import type {
   RepositoryBackend,
   RepositoryBackendFactory,
 } from "../../apps/controller/src/drivers/repo/credentials/backend-contracts.ts";
-import { createCredentialService } from "../../apps/controller/src/drivers/repo/credentials/service.ts";
+import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
 import { startListeners } from "../../apps/controller/src/drivers/repo/credentials/server.ts";
 import type { DispatchGate } from "../../apps/controller/src/drivers/repo/credentials/internal-contracts.ts";
 import { within } from "../helpers/wait-for.mjs";
@@ -148,7 +148,7 @@ test(
     await within(replacementEntered.promise, "replacementEntered");
     assert.equal(refs.length, 2);
     assert.notEqual(refs[0], refs[1]);
-    assert.equal(service.status(opened.session.sessionId).activeUses, 2);
+    assert.equal(service.status(opened.session.sessionId)?.activeUses, 2);
 
     // A detached caller holding either live ref has no authentication reader, and
     // a fabricated retirement attempt cannot turn the ref into access bytes.

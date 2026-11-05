@@ -97,7 +97,7 @@ test(
 
     await t.test(
       "the public OpenShell quickstart preserves scoped management access across tenants",
-      async () => {
+      async (t) => {
         // Real listeners, Services, renderer output and CNI enforce this boundary. These
         // probes do not run OpenShell, an Agent lifecycle, or a model turn.
         await access.installOpenShellManagement(0);
@@ -138,6 +138,64 @@ test(
         });
 
         await access.confirmManagementPortControls();
+
+        await t.test(
+          "Git-enabled management egress preserves DNS and current API endpoints",
+          async () => {
+            await access.installManagementRepositoryAccess();
+            const allowed = [
+              "dns",
+              "dnsTcp",
+              "kubernetesApi",
+              "managementApi",
+              "withdrawnManagementApi",
+              "managementGit",
+              "managementGitService",
+            ];
+            const denied = [
+              "managementApiWrongPort",
+              "withdrawnManagementApiWrongPort",
+              "managementGitWrongPort",
+              "unexpected",
+            ];
+            await access.verify({ source: "management", allow: allowed, deny: denied });
+            // The Agent's tenant gateway must not inherit management-only API or Git
+            // grants even though repository_network also emits supervisor policies.
+            await access.verify({
+              source: "gateway0",
+              deny: [
+                "managementApi",
+                "withdrawnManagementApi",
+                "managementGit",
+                "managementGitService",
+              ],
+            });
+            await access.withdrawManagementApiEndpoint();
+            await access.verify({
+              source: "management",
+              allow: allowed.filter((name) => name !== "withdrawnManagementApi"),
+              deny: [...denied, "withdrawnManagementApi"],
+            });
+            // A controlled discovery snapshot contains only the acknowledged
+            // proxy slice; the native cluster API endpoints remain unchanged.
+            // Re-admit both backends before each withdrawal: readiness=false and
+            // an empty placeholder slice must each remove previously live grants.
+            for (const empty of [false, true]) {
+              await access.useOwnedManagementApiDiscovery();
+              await access.verify({
+                source: "management",
+                allow: allowed.filter((name) => name !== "kubernetesApi"),
+                deny: denied,
+              });
+              await access.withdrawAllManagementApiEndpoints({ empty });
+              await access.verify({
+                source: "management",
+                allow: ["dns", "dnsTcp", "managementGit", "managementGitService"],
+                deny: [...denied, "managementApi", "withdrawnManagementApi"],
+              });
+            }
+          },
+        );
 
         // Withdrawing one supervisor policy must preserve both the other tenant and
         // the independent per-Agent gateway grant.

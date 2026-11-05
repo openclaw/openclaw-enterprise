@@ -329,6 +329,7 @@ process.stdout.write(JSON.stringify({
   migrated: schema(shared).version,
   backups: backups.map((name) => ({ name, ...schema(state + "/state/" + name) })),
   current,
+  ancestor: { uid: statSync("/home/node").uid, mode: statSync("/home/node").mode & 0o7777 },
 }));
 `;
 
@@ -400,6 +401,24 @@ async function upgradeWorkspaceNode(t, entrypoint, children, environment = {}) {
     seed: "tar -xzf /workspace-node-state.tar.gz -C /home/node",
     seedVolumes: [`${olderWorkspaceNodeState}:/workspace-node-state.tar.gz:ro`],
   });
+  // OpenShell's fsGroup mount roots are root-owned and group-writable. The
+  // workload owns its private children, but cannot tighten the shared ancestor.
+  // Doctor must use its private temporary cache rather than HOME/.cache here.
+  await runDocker([
+    "run",
+    "--rm",
+    "--user",
+    "0:0",
+    "--network",
+    "none",
+    "--volume",
+    `${volume}:/home/node`,
+    "--entrypoint",
+    "sh",
+    image,
+    "-c",
+    "chown 0:1000 /home/node && chmod 2775 /home/node",
+  ]);
   // Doctor's full repair pass takes about 20 s, and over a minute on a busy runner.
   const startMs = 240_000 * imageSmokeTimeoutMultiplier;
   const { stdout } = await runDocker(
@@ -441,6 +460,7 @@ async function upgradeWorkspaceNode(t, entrypoint, children, environment = {}) {
 // matching `started`; the node keeps its identity; the second start runs no Doctor.
 function assertWorkspaceNodeMigratedOnce(outcome, phases, started, count) {
   const { upgraded, current } = outcome;
+  assert.deepEqual(outcome.ancestor, { uid: 0, mode: 0o2775 });
   assert.equal(upgraded.status, 0, upgraded.output);
   assert.match(upgraded.output, /from schema 20 to \d+ with openclaw doctor --fix/);
   for (const phase of ["state-migration", ...phases]) {

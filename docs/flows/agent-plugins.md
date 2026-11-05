@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
 updated: 2026-11-05
-last_updated_session: 01a169f0-a851-7b81-8e83-ff597893aa21
+last_updated_session: authoring-run/9cb771c4-f1a8-44ec-a4ef-7c914a5ddb6e
 ---
 
 # Agent Plugin Deployment Flow
@@ -107,10 +107,15 @@ whose tools `tools.deny`, the sole `agents.entries` entry's list, the primary pr
 sole entry's `alsoAllow` hides under a profile. With an OpenClaw Harness,
 [`openClawPluginSettingConflict`](../../apps/controller/src/drivers/plugin/openclaw-plugin-settings.ts)
 first refuses [plugin settings the Gateway refuses](../reference/drivers/plugin-bundled.md#native-mappings-and-limits).
-Unsupported controls and incompatible selections return `400 INVALID_REQUEST`. Startup checks native app mapping, authentication, and release metadata. Agent updates store desired state and audit evidence atomically. Omission preserves selections, `{}` clears them, and a nonempty map replaces them. Clear selections with an unknown or different owner before changing catalogs.
+Unsupported controls and incompatible selections return `400 INVALID_REQUEST`. Agent updates store desired state and audit evidence atomically. Omission preserves selections, `{}` clears them, and a nonempty map replaces them. Clear selections with an unknown or different owner before changing catalogs.
 
-Installation uses `GET /installation`; Agent editors use
-`GET .../plugins/capabilities` with Agent read/update. Both return policy capabilities.
+[`validatePolicies`](../../apps/controller/src/drivers/plugin/runtime-translator.ts) marks conflicting enablement defaults.
+`BundledPluginDriverBase.validate` allowlists this reason; OCC's `PluginPolicyValidationError`
+supplies fixed recovery advice. The Console preserves rejected drafts.
+Unrecognized failures retain the generic refusal.
+
+Policy capabilities come from `GET /installation` or, with Agent read/update,
+`GET .../plugins/capabilities`.
 
 ### 2. Admit an immutable plugin deployment
 
@@ -350,6 +355,8 @@ establish starvation.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 13:37: Trace plugin-policy refusal recovery. (authoring-run/9cb771c4-f1a8-44ec-a4ef-7c914a5ddb6e - a8259883139ac831b32c0a7b0fe872f6db4ee290)
 
 - 2026-11-05 01:02: Select the Harness catalog and recheck its identity before cutover. (01a169f0-a851-7b81-8e83-ff597893aa21 - 0e9575278)
 

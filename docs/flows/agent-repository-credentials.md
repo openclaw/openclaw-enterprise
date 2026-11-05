@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
 updated: "2026-11-05"
-last_updated_session: authoring-run/507ebdda-c10f-4840-acd7-1667d5919fab
+last_updated_session: authoring-run/1247283d-6d2a-4d1f-9804-287f1ae13518
 ---
 
 # Agent repository credential flow
@@ -270,15 +270,13 @@ Custom hook paths and API writes remain outside this
 [guardrail](../reference/repository-credentials/push-ref-guardrail.md).
 
 `apps/controller/src/drivers/repo/github/credentials/client/router.ts:routeRepositoryClient`
-routes supported `gh` commands using explicit targets or effective Git remotes. It pins
-generation, reference and session, selects private `gh` configuration and preserves HOME
-without changing shared selection.
-
-See [draft creation from a prepared Git session](../reference/repository-credentials/protected-openshell-git.md#use-the-admitted-repository).
+routes supported `gh` using explicit targets or effective Git remotes. It pins generation,
+reference and session, selects private configuration and preserves HOME and shared selection.
 
 OpenShell's
 `apps/controller/src/drivers/egress-proxy/openshell-online-git-authority.ts:requestHead`
-validates [CLI metadata](../reference/repository-credentials/protected-openshell-git.md#use-the-admitted-repository).
+validates [CLI metadata](../reference/repository-credentials/protected-openshell-git.md#use-the-admitted-repository);
+cache hints never replace authorization.
 `apps/controller/src/drivers/egress-proxy/openshell-online-git-authority.ts:validBinding`
 uses `normalizePushRefAllowlist` for Git-only policies, including terminal `/*`
 patterns. Draft-pull heads remain concrete refs. Receive-pack rejects any disallowed
@@ -291,10 +289,10 @@ fresh installation tokens under the same grant until the version deadline.
 
 ### 6. Maintain, recover and retire ownership
 
-The [worker](../../apps/controller/src/worker.mjs) gives the selected `ProtectedRepositoryGitAuthority`
+The [worker](../../apps/controller/src/worker.mjs) gives `ProtectedRepositoryGitAuthority`
 to the [sender binder](../../apps/controller/src/composition/repository-credentials/transport.ts)
 and owns maintenance and shutdown. Missing authority or mismatched Drivers stop binding
-before route-store or sender calls. OpenShell connects the store first; bare Sandboxes have no Git.
+before store or sender calls. OpenShell connects the store first; bare Sandboxes have no Git.
 
 If supplied, external `reconcile` runs serially with a 25-second abort signal and one second
 between calls. Close aborts and joins. Independent readback settles the original delivery
@@ -393,6 +391,8 @@ denied before reaching the provider, and chat continues.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 13:46: Admit CLI cache hints without caching authorization. (authoring-run/1247283d-6d2a-4d1f-9804-287f1ae13518 - a825988313)
 
 - 2026-11-05 11:46: Document OpenShell configuration ownership. (authoring-run/507ebdda-c10f-4840-acd7-1667d5919fab - f960b469e2c6dfb6653fd72ba1c1a39b97a9bcf0)
 
