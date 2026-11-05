@@ -77,8 +77,14 @@ With permission to update the Agent and operate the saved source, use
 `POST /namespaces/{namespaceId}/agents/{agentId}/connections/{credentialSourceId}`.
 The account stays in its Namespace and its owner can grant other Agents access.
 
-To withdraw access, clear any plugin or Harness binding that uses the source,
-then use `DELETE /namespaces/{namespaceId}/agents/{agentId}/connections/{credentialSourceId}`.
-The worker removes access from deployed revisions. Other Agents retain their grants.
-For an empty Google Workspace slot, the Console can also [connect and attach
-an account](../guides/topics/plugins-configure.md#use-the-console) in one visit.
+Saving the selection requires permission to update the Agent and operate the saved credential. A completed connection from a plugin can replace that slot when its release and previous selection still match. The account remains available to its owner when the slot changes during consent. See [configure plugins](../guides/topics/plugins-configure.md#use-the-console).
+
+To withdraw a saved account, clear the bindings that use it and call `DELETE /namespaces/{namespaceId}/agents/{agentId}/connections/{credentialSourceId}`. OCC queues access removal from deployed revisions. Other Agents keep their own grants.
+
+OpenShell gives a worker a reference for each credential when the process starts.
+Changing the sender’s host, port or path invalidates that reference. After the
+updated policy loads, a newly started worker can use the same account at its
+current destinations. A process that kept the old reference needs to restart.
+The account owner can keep the original OAuth grant.
+
+For Google Workspace, include the packaged Google CLI in the Installation’s OpenShell `toolBinaries`. One saved account can serve multiple Google APIs. For example, to read Gmail and Calendar, the current template must allow both destinations, the account must have the necessary provider scopes, and the Agent policy must allow each operation. Public API discovery stays separate from credentialed requests. Every approved executable uses the same guarded Google routes. A metadata-only Gmail grant can read message metadata from the CLI or an approved script. Reading a full message requires the corresponding grant.
