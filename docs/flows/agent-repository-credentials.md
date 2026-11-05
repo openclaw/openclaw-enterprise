@@ -312,6 +312,10 @@ The [GitHub registry](../../apps/controller/src/drivers/repo/github/credentials/
 includes canonical permissions and exact repository identity in `github-repository`
 approval scopes. Delivery rechecks both registry opt-ins and the current exact
 grant before material selection; standing delivery requires one binding.
+After a mandatory-hook launch is acknowledged, the [OpenShell observer](../../apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts)
+can verify its expired predecessor for renewal. It rechecks the hook policy and
+recipient; this identity-only path cannot authorize an expired Git request or an
+unacknowledged launch.
 
 Prepared native Git issues the first token after activation publishes the version. Deployment runs
 `apps/controller/src/worker.ts:ControllerWorker.assertRepositoryGitMaterial`

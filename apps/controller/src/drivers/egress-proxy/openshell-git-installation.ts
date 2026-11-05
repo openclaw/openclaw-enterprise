@@ -369,7 +369,7 @@ export async function observeOpenShellGitInstallation(
   const admitted = entry.installed;
   if (
     predecessor &&
-    !entry.preview &&
+    (!entry.preview || entry.preview.release === "acknowledged") &&
     entry.opened &&
     entry.revision.repositoryCredentials?.standingApprovalId &&
     entry.supervisor?.sandboxId === sandbox.id &&
@@ -379,6 +379,27 @@ export async function observeOpenShellGitInstallation(
     // Identity only. Lookup and the post-rotation installation check never take this path.
     const last = entry.supervisor;
     if (await entry.provider.observePredecessor(entry.binding, last, signal)) {
+      if (entry.preview) {
+        // Expiry removes credentials, not the released launch's mandatory request hook.
+        // Recheck its policy and exact recipient before authorizing another session.
+        const recipient =
+          entry.continuity &&
+          (await previewPolicyAndRecipient({
+            ...(entry.preview.mandatory && { mandatory: true }),
+            client: entry.client,
+            sandbox,
+            observed: last,
+            registration: configuration.registrationName,
+            audience: configuration.authority.audience,
+            gitRule: entry.provider.previewNetworkRule(),
+            modelProvider: entry.continuity.model,
+            workload: entry.continuity.workload,
+            signal,
+          }));
+        if (!recipient || recipient !== entry.preview.recipient) {
+          return;
+        }
+      }
       if (adopt) {
         entry.unverified = undefined;
       }

@@ -512,7 +512,11 @@ async function repositoryGitJourney(
       }
     },
   };
-  const workerEvents: { event?: string; code?: string; outcome?: string }[] = [];
+  const workerEvents: {
+    event: string | undefined;
+    code: string | undefined;
+    outcome: string | undefined;
+  }[] = [];
   const start = () =>
     f.start(compute, {
       emit: ({ event, code, outcome }: { event?: string; code?: string; outcome?: string }) => {
@@ -650,6 +654,16 @@ async function repositoryGitJourney(
       // running Sandbox and provider; only the worker is restarted.
       await delay(Math.max(0, credentials.deadlineWallMs + 100 - Date.now()));
       assert.equal((await evaluate(probe)).decision, 2, "expired session fails closed");
+      // A changed middleware recipient cannot inherit the expired session's authority.
+      const registration = state.middleware[0]!;
+      const audience = registration.audience;
+      registration.audience = "different-recipient";
+      assert.equal(await runtime.verifyExecution(revision, t.signal), undefined);
+      registration.audience = audience;
+      assert.deepEqual(await runtime.verifyExecution(revision, t.signal), {
+        executionId: execution.executionId,
+        fingerprint: execution.fingerprint,
+      });
       await start();
       await waitForRevisionPass(
         "selected repository successor installed",
