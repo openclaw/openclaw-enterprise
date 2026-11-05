@@ -44,9 +44,8 @@ import {
   routeInstallationProvisioning,
   raceAgentName,
   routeInstallationWithoutProvisioning,
-  routeProvisioningJob,
-  provisioningJob,
 } from "./console-agents-test-support.mjs";
+import { provisioningJob, routeProvisioningJob } from "./console-provisioning-job-fixture.ts";
 import {
   AGENT_CREATE_RESTRICTED,
   AGENT_NAME_CONFLICT,
@@ -1067,7 +1066,7 @@ test("a refused read of an admitted provisioning job keeps no draft", async (t) 
   await routeInstallationProvisioning(page, fixture);
   // The job is admitted, then its status read is refused: the request ID stays the job's.
   const work = provisioningJob(namespace.id, "work_1");
-  await routeProvisioningJob(page, work, null);
+  await routeProvisioningJob(page, fixture, work, null);
   await page.route(`**${work.url}`, (route) =>
     route.fulfill(apiErrorResponse(404, "NOT_FOUND", RESOURCE_NOT_FOUND)),
   );
@@ -1086,7 +1085,7 @@ test("a failed provisioning job that names its Agent keeps no draft", async (t) 
   // The job created its Agent and first version, then the deployment failed: no Retry, and a
   // kept draft would create the Agent again.
   const work = provisioningJob(namespace.id, "work_1");
-  await routeProvisioningJob(page, work, [
+  await routeProvisioningJob(page, fixture, work, [
     work.job("failed", {
       phase: "handoff",
       agentId: "agt_00000000-0000-4000-8000-000000001965",

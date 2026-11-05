@@ -67,9 +67,8 @@ import {
   routeInstallationWithoutProvisioning,
   agentPostRequests,
   raceAgentName,
-  routeProvisioningJob,
-  provisioningJob,
 } from "./console-agents-test-support.mjs";
+import { provisioningJob, routeProvisioningJob } from "./console-provisioning-job-fixture.ts";
 import {
   AGENT_NAME_CONFLICT,
   CONSOLE_NAMESPACE_NOT_READY,
@@ -240,7 +239,7 @@ for (const malformed of ["revision ID", "error message"] as const) {
     await routeDedicatedProvisioning(page, fixture, namespace);
     const root = `/namespaces/${namespace.id}/agents/provision`;
     const work = provisioningJob(namespace.id, `work_${randomUUID()}`);
-    const served = await routeProvisioningJob(page, work, null);
+    const served = await routeProvisioningJob(page, fixture, work, null);
     const meta = { requestId: `req_${randomUUID()}` };
     const malformedMessage = { detail: "Unreadable provisioning message" };
     await page.route(`${fixture.origin}${work.url}`, (route) => {
@@ -957,6 +956,7 @@ test("Dedicated Agent creation distinguishes stopped, superseded and failed firs
   // A versioned job already identifies its revision when Create admits it.
   await routeProvisioningJob(
     page,
+    fixture,
     {
       ...work,
       job: (status, extra) =>
@@ -1075,7 +1075,7 @@ test("Dedicated Agent creation keeps the first revision observed after admission
         error: { code: "REVISION_SUPERSEDED", message: "Deployment was superseded." },
       }),
     ];
-    const served = await routeProvisioningJob(page, work, (index) => {
+    const served = await routeProvisioningJob(page, fixture, work, (index) => {
       const observation = observations[index];
       assert.ok(observation, "unexpected additional provisioning poll");
       return observation;
@@ -1294,7 +1294,7 @@ test("Dedicated Agent creation keeps one provisioning label while the job retrie
   const { url, job, failed } = work;
   // The worker starts the job, waits to retry it, then retries it twice before it fails.
   const reads = [job("running"), job("queued"), job("running"), job("running"), failed()];
-  const served = await routeProvisioningJob(page, work, reads);
+  const served = await routeProvisioningJob(page, fixture, work, reads);
 
   await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
@@ -1354,7 +1354,7 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
       job("running", handedOff),
       failed(handedOff),
     ];
-    const served = await routeProvisioningJob(page, work, reads);
+    const served = await routeProvisioningJob(page, fixture, work, reads);
     const attempts: (ProvisioningMessage | "stalled" | "unavailable")[] =
       mode === "interrupted"
         ? [
@@ -1582,7 +1582,7 @@ test("Dedicated Agent creation names the first deployment's wait while it provis
       job("queued", waiting(null)),
       failed(handedOff),
     ];
-    const served = await routeProvisioningJob(page, work, reads);
+    const served = await routeProvisioningJob(page, fixture, work, reads);
     await page.route(
       `**/namespaces/${namespace.id}/agents/${agentId}/deployments/${revisionId}`,
       (route) => {
