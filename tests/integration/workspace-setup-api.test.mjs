@@ -13,6 +13,8 @@ import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { CODEX_PLACEMENT_REFUSAL, EMBEDDED_API_KEY_REQUIRED } from "../helpers/refusal-text.mjs";
 
+const GATEWAY_PASSWORD = { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" };
+
 async function setup(t, options = {}) {
   const audit = new InMemoryAuditSink();
   const state = new InMemoryPlatformState({ auditSink: audit });
@@ -362,15 +364,7 @@ test("Agent save refuses initial workspace files in a Sandbox with a 409 that na
     ["openclaw", "openai/gpt-4.1"],
     ["codex", "codex/gpt-5.1"],
   ]) {
-    const stored = await f.request("POST", `/namespaces/${f.namespace.id}/configurations`, {
-      body: {
-        kind: "agent",
-        values: {
-          agents: { defaults: { model, models: { [model]: { agentRuntime: { id: runtime } } } } },
-        },
-      },
-    });
-    assert.equal(stored.status, 201, JSON.stringify(stored.body));
+    const stored = await storeConfiguration(f, runtime, model);
     const refused = await f.create(`Sandboxed ${runtime}`, {
       configurationId: stored.data.id,
       executionMode: "dedicated",
@@ -392,13 +386,18 @@ test("Agent save refuses initial workspace files in a Sandbox with a 409 that na
   );
 });
 
-/** Saves an Agent Configuration that selects `model` on the `runtime` Harness. */
+/**
+ * Saves an Agent Configuration that selects `model` on the `runtime` Harness. A Codex one carries
+ * the generated Gateway password, which its Gateway needs to apply the workspace node (finding
+ * 3132).
+ */
 async function storeConfiguration(f, runtime, model) {
   const stored = await f.request("POST", `/namespaces/${f.namespace.id}/configurations`, {
     body: {
       kind: "agent",
       values: {
         agents: { defaults: { model, models: { [model]: { agentRuntime: { id: runtime } } } } },
+        ...(runtime === "codex" ? { gateway: { auth: { password: GATEWAY_PASSWORD } } } : {}),
       },
     },
   });

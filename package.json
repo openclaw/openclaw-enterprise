@@ -48,7 +48,7 @@
     "test:standing-git-conversation": "OCC_TEST_REQUIRE_STANDING_GIT_CONVERSATION=1 node --test tests/integration/postgres-openshell-standing-git-transfer.test.ts",
     "test:postgres": "node scripts/verify-workspace-boundary.mjs && node --test --test-concurrency=1 'tests/integration/postgres-*.test.{mjs,ts}'",
     "docs:build": "node scripts/docs-site/build.mjs && scripts/docs-site/node_modules/.bin/pagefind --site dist/docs",
-    "docs:dev": "node scripts/docs-site/serve.mjs --watch",
+    "docs:dev": "node scripts/docs-site/serve.ts --watch",
     "docs:check-length": "node scripts/docs-site/word-count.mjs",
     "docs:check": "node scripts/docs-site/word-count.mjs && node scripts/docs-site/build.mjs --check && node scripts/check-specs.mjs",
     "docs:install": "pnpm --dir scripts/docs-site install --frozen-lockfile --ignore-scripts",
@@ -66,8 +66,8 @@
     "storybook:install": "pnpm --dir scripts/console-storybook install --frozen-lockfile",
     "storybook": "pnpm --dir scripts/console-storybook dev",
     "storybook:build": "pnpm --dir scripts/console-storybook build",
-    "analyze:modules": "node scripts/verify-module-boundaries.mjs",
-    "check:modules": "node scripts/verify-module-boundaries.mjs --policy scripts/module-boundaries/policy.json --exceptions scripts/module-boundaries/exceptions.json"
+    "analyze:modules": "node scripts/verify-module-boundaries.ts",
+    "check:modules": "node scripts/verify-module-boundaries.ts --policy scripts/module-boundaries/policy.json --exceptions scripts/module-boundaries/exceptions.json"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
@@ -81,6 +81,7 @@
     "pg": "8.23.1",
     "playwright": "1.64.1",
     "prettier": "3.9.10",
+    "typebox": "1.4.3",
     "typescript": "npm:@typescript/typescript6@6.0.2",
     "typescript-compiler-api": "npm:typescript@6.0.3",
     "typescript-eslint": "8.72.0"

@@ -111,7 +111,9 @@ for (const outcome of ["unsent", "lost-reply"] as const) {
           authorizeOnlineRequest: async () => assert.fail("installation is not a recorded use"),
         };
         const prepare = () =>
-          runtime.prepare(revision, client, workspace, sandbox, signal, [model]);
+          runtime.prepare(revision, client, workspace, sandbox, signal, "/sandbox/enterprise", [
+            model,
+          ]);
         const bind = () =>
           runtime.bind(
             revision.id,
@@ -156,7 +158,7 @@ for (const outcome of ["unsent", "lost-reply"] as const) {
       const invalid = { ...revision, id: "unknown-revision" };
       assert.equal(await cold.runtime.verifyExecution(invalid, signal, context), undefined);
       await assert.rejects(
-        cold.runtime.prepare(invalid, client, workspace, sandbox, signal),
+        cold.runtime.prepare(invalid, client, workspace, sandbox, signal, "/sandbox/enterprise"),
         /repository_expired/,
       );
       assert.equal(
@@ -410,7 +412,8 @@ test(
       );
       value["routes"] = routes;
       value["owner"] = {
-        readOpenShellMaterial: peer.prepared.readOpenShellMaterial,
+        readOpenShellMaterial: async () =>
+          assert.fail("an unresolved reservation must not read prepared material"),
         authorizeOnlineRequest: async () =>
           assert.fail("reservation recovery is not a recorded use"),
       };
@@ -419,7 +422,7 @@ test(
     };
     const first = runtime();
     const prepare = (value: OpenShellGitRuntime) =>
-      value.prepare(revision, client, workspace, sandbox, t.signal, [model]);
+      value.prepare(revision, client, workspace, sandbox, t.signal, "/sandbox/enterprise", [model]);
     await assert.rejects(prepare(first), { name: "OpenShellGitObservationError" });
     assert.equal(lostAcknowledgements, 1);
     assert.ok(releases.includes(true), "the uncertain connection is discarded");
@@ -450,8 +453,6 @@ test(
       reason: "write_unknown",
     });
     await peer.prepared.maintain();
-    const material = await peer.prepared.readOpenShellMaterial(revision.id, t.signal);
-    assert.ok(!material || "absent" in material);
     for (const value of [first, cold]) {
       assert.equal(
         await value.lookup(

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
-updated: "2026-11-03"
-last_updated_session: authoring-run/91f06442-80cf-47b7-9473-cc87a5256fc7
+updated: "2026-11-05"
+last_updated_session: authoring-run/f65a98dd-79e1-45e2-a740-b7e73c1d9dd3
 ---
 
 # Agent repository credential flow
@@ -254,19 +254,18 @@ verification stay in force.
 
 ### 5. Authenticate native Git and route GitHub CLI commands
 
-Stock Git owns commands, remotes, push URLs, worktrees and settings. Configuration
-rewrites canonical HTTPS hosts to their gateway origin. The scoped helper checks host/path,
-generation and deadline before supplying the bearer. `OCE_REPOSITORY_REF` disambiguates
-bindings, not destinations. Local identity, hooks, aliases, overrides and other helpers
-remain available; there is no whole-command preflight or egress confinement.
+Stock Git retains commands, remotes, settings and hooks. Configuration rewrites
+canonical HTTPS hosts to their gateway origin. The helper checks host/path,
+generation and deadline before supplying a bearer. `OCE_REPOSITORY_REF` selects
+bindings, not destinations. There is no whole-command preflight or egress confinement.
 See the [routing limits](../reference/repository-credentials.md#client-routing-and-limits).
 `pushRefAllowlist` selects image-owned hooks.
+`scripts/build-repository-credentials.ts:stage` emits Node launchers that resolve the
+dispatcher from their module URL, supporting symlink chains and package relocation.
 `apps/controller/src/drivers/repo/github/credentials/client/hook-dispatch.ts:checkPush`
-checks every destination ref and rejects the whole push before updates, though discovery may
-contact the service. It delegates original arguments and input to common-directory hooks.
+rejects disallowed destination refs before updates; discovery may contact the service. It delegates arguments and input to common-directory hooks.
 Custom hook paths and API writes remain outside this
-[best-effort guardrail](../reference/repository-credentials/push-ref-guardrail.md), which
-also describes matching and linked worktrees.
+[guardrail](../reference/repository-credentials/push-ref-guardrail.md).
 
 `apps/controller/src/drivers/repo/github/credentials/client/router.ts:routeRepositoryClient`
 routes supported `gh` commands using explicit targets or effective Git remotes. It pins
@@ -275,14 +274,13 @@ without changing shared selection.
 
 See [draft creation from a prepared Git session](../reference/repository-credentials/protected-openshell-git.md#use-the-admitted-repository).
 
-`apps/controller/src/drivers/repo/github/credentials/profiles.ts` defines Reader,
-Contributor and Collaborator permissions. REST uses profile-selected operations;
-GraphQL uses token permissions. Every GraphQL POST can write; Reader's token
-enforces read-only access.
 OpenShell's
 `apps/controller/src/drivers/egress-proxy/openshell-online-git-authority.ts:requestHead`
 validates [CLI metadata](../reference/repository-credentials/protected-openshell-git.md#use-the-admitted-repository).
-Route, JSON and current-authority checks remain. See
+`apps/controller/src/drivers/egress-proxy/openshell-online-git-authority.ts:validBinding`
+uses `normalizePushRefAllowlist` for Git-only policies, including terminal `/*`
+patterns. Draft-pull heads remain concrete refs. Receive-pack rejects any disallowed
+destination before durable approval. See
 [access levels](../reference/repository-credentials/access-levels.md).
 
 The [service exchange flow](repository-credentials.md#4-reserve-acquire-and-dispatch)
@@ -395,6 +393,10 @@ denied before reaching the provider, and chat continues.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 01:05: Trace Git-only branch-pattern authorization. (authoring-run/f65a98dd-79e1-45e2-a740-b7e73c1d9dd3 - dde29ac47a)
+
+- 2026-11-04 07:04: Trace symlink-safe native Git hook launchers. (authoring-run/e75a374f-d42f-4f95-bbfc-4e708fcaa195 - e122eaced28cdaff6cbf9d78e0fab4d038f9c380)
 
 - 2026-11-03 16:24: Document bound repository admission. (authoring-run/91f06442-80cf-47b7-9473-cc87a5256fc7 - 47a126079e6037a1ad1d27db1b514fde1cde345c)
 

@@ -71,7 +71,7 @@ export const credentialSourceFieldRequired = (type, field) =>
     : `Credential source type ${type} requires ${field}: add it.`;
 // Agent save, provisioning and deploy (packages/occ/src/errors.ts RepositoryBindingSelectionError).
 export const REPOSITORY_SELECTION_NOT_APPROVED =
-  "These repository selections are not approved for this Namespace: each repository must be approved here for its profile and listed once, at most 16. Choose from the repository options, or ask an Installation administrator to approve it.";
+  "Choose up to 16 distinct repositories approved for this Namespace and profile. For github-repository, all selections must have the same configured permissions. Ask an Installation administrator to check the available options.";
 export const REPOSITORY_ACCESS_OR_BINDINGS =
   "Send repositoryAccess or repositoryBindings, not both. In repositoryAccess, list each repository once, at most 16, with a defaultProfile other than github-installation.";
 export const COMPUTE_REPOSITORY_UNSUPPORTED =
@@ -387,6 +387,12 @@ export const kubernetesGatewayPasswordRequirement = (alias = "default") =>
   `must be the environment reference {source: "env", provider: "${alias}", id: "OPENCLAW_GATEWAY_PASSWORD"}, whose value Kubernetes Compute generates`;
 export const KUBERNETES_GATEWAY_PASSWORD_REQUIREMENT = kubernetesGatewayPasswordRequirement();
 export const KUBERNETES_GATEWAY_PASSWORD_REFUSAL = `Configuration setting gateway.auth.password ${KUBERNETES_GATEWAY_PASSWORD_REQUIREMENT}.`;
+// A Dedicated Codex Configuration without gateway.auth.password, where the Installation applies the
+// workspace node at runtime: every activation failed AGENT_GATEWAY_UNAUTHORIZED (finding 3132), so
+// save, preflight, provisioning and deploy admission refuse it.
+export const kubernetesWorkspaceNodePasswordRefusal = (alias = "default") =>
+  `Configuration setting gateway.auth.password must be the environment reference {source: "env", provider: "${alias}", id: "OPENCLAW_GATEWAY_PASSWORD"} on a Dedicated Codex Agent: its Gateway uses it to apply the workspace node.`;
+export const KUBERNETES_WORKSPACE_NODE_PASSWORD_REFUSAL = kubernetesWorkspaceNodePasswordRefusal();
 // Kubernetes Configuration save, provisioning and deploy admission refuse a trusted-proxy allowlist
 // and a device auto-approval the Gateway would refuse, naming no submitted identity (finding 3032).
 // The allowlist text says which identities match case-insensitively, so a case duplicate reads as

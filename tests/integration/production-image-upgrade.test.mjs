@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -201,6 +201,22 @@ fi
     PATH: `${bin}:${dirname(process.execPath)}:/bin:/usr/bin`,
   };
 
+  async function assertCompletedRunCannotResume(evidence, images, options) {
+    const commands = await readFile(commandLog, "utf8");
+    const files = await readdir(evidence, { recursive: true });
+    const parameters = await readFile(join(evidence, "parameters.json"));
+    // The maintenance window can close after success. Repeating the command must
+    // not contact the cluster or run Doctor against serving Agents again.
+    await assert.rejects(
+      execute(upgradeScript, [...upgradeArguments(evidence, images), "--resume"], options),
+      /completion marker.*cannot be resumed/u,
+    );
+    assert.equal(await readFile(commandLog, "utf8"), commands);
+    assert.deepEqual(await readdir(evidence, { recursive: true }), files);
+    assert.deepEqual(await readFile(join(evidence, "parameters.json")), parameters);
+    assert.equal((await stat(join(evidence, "completed"))).mode & 0o777, 0o600);
+  }
+
   await assert.rejects(
     execute(upgradeScript, upgradeArguments(join(directory, "http-evidence")), {
       cwd: repository,
@@ -249,7 +265,9 @@ fi
     },
   );
 
-  // Preserve ordered mapping documents, but refuse a scalar hidden before them.
+  // This fixture's yq only cats JSON streams; jq's object validation is real.
+  // Explicit null is the JSON output real yq emits for a trailing empty document.
+  // Preserve ordered mapping documents, but refuse non-mappings anywhere.
   const installationDocuments = `${installationDocument}\n${JSON.stringify({ name: "second" })}\n`;
   try {
     await writeFile(liveInstallation, installationDocuments, { mode: 0o600 });
@@ -265,9 +283,14 @@ fi
       },
     );
 
-    await writeFile(protectedFiles.installation, `42\n${installationDocuments}`, { mode: 0o600 });
+    // Two valid maps in a different order remain a genuine baseline difference.
+    await writeFile(
+      protectedFiles.installation,
+      `${JSON.stringify({ name: "second" })}\n${installationDocument}\n`,
+      { mode: 0o600 },
+    );
     await assert.rejects(
-      execute(upgradeScript, upgradeArguments(join(directory, "scalar-document-evidence")), {
+      execute(upgradeScript, upgradeArguments(join(directory, "different-mappings-evidence")), {
         cwd: repository,
         env: environment,
       }),
@@ -277,6 +300,25 @@ fi
         return true;
       },
     );
+
+    for (const [name, documents] of [
+      ["scalar", `42\n${installationDocuments}`],
+      ["trailing-null", `${installationDocuments}null\n`],
+    ]) {
+      await writeFile(protectedFiles.installation, documents, { mode: 0o600 });
+      await assert.rejects(
+        execute(upgradeScript, upgradeArguments(join(directory, `${name}-document-evidence`)), {
+          cwd: repository,
+          env: environment,
+        }),
+        (error) => {
+          assert.equal(error.code, 1);
+          assert.match(error.stderr, /Cannot compare upgrade YAML:.*only YAML mappings/);
+          assert.doesNotMatch(error.stderr, /differs from the live Secret|jq:|Error:/);
+          return true;
+        },
+      );
+    }
   } finally {
     await writeFile(liveInstallation, installationDocument, { mode: 0o600 });
     await writeFile(protectedFiles.installation, installationDocument, { mode: 0o600 });
@@ -440,22 +482,25 @@ esac
 
   // A controller release changes only the Helm-owned image. It must not replace
   // the Installation Secret, request fleet inventory, or create Agent revisions.
+  const controllerEvidence = join(directory, "controller-evidence");
+  const controllerOptions = {
+    cwd: repository,
+    env: {
+      ...environment,
+      COMMAND_LOG: commandLog,
+      OBSERVED_CONTROLLER_IMAGE: controllerImage,
+    },
+  };
   const controllerOnly = await execute(
     upgradeScript,
-    upgradeArguments(join(directory, "controller-evidence"), ["controller"]),
-    {
-      cwd: repository,
-      env: {
-        ...environment,
-        COMMAND_LOG: commandLog,
-        OBSERVED_CONTROLLER_IMAGE: controllerImage,
-      },
-    },
+    upgradeArguments(controllerEvidence, ["controller"]),
+    controllerOptions,
   );
   assert.match(controllerOnly.stdout, /no Agent deployments were requested/u);
   const controllerCommands = await readFile(commandLog, "utf8");
   assert.doesNotMatch(controllerCommands, /deployment-inventory|agent deploy|apply --filename/u);
   assert.equal(await readFile(protectedFiles.installation, "utf8"), installationDocument);
+  await assertCompletedRunCannotResume(controllerEvidence, ["controller"], controllerOptions);
   await rm(commandLog);
 
   // Kubernetes readiness does not cover OpenClaw's own state and configuration
@@ -478,6 +523,9 @@ esac
     ),
     /OpenClaw Doctor failed for at least one replacement gateway/u,
   );
+  await assert.rejects(readFile(join(directory, "doctor-failure-evidence", "completed")), {
+    code: "ENOENT",
+  });
   await writeFile(protectedFiles.values, valuesDocument, { mode: 0o600 });
   await writeFile(protectedFiles.installation, installationDocument, { mode: 0o600 });
   await rm(commandLog, { force: true });
@@ -525,7 +573,7 @@ esac
   // Durable deployment completion can precede Kubernetes readiness. The
   // command must observe a ready revision before reporting fleet success.
   const readyEvidence = join(directory, "ready-evidence");
-  const completed = await execute(upgradeScript, upgradeArguments(readyEvidence, ["runtime"]), {
+  const runtimeOptions = {
     cwd: repository,
     env: {
       ...environment,
@@ -534,7 +582,12 @@ esac
       READINESS_COUNTER: readinessCounter,
       RUNTIME_COUNT_COUNTER: runtimeCountCounter,
     },
-  });
+  };
+  const completed = await execute(
+    upgradeScript,
+    upgradeArguments(readyEvidence, ["runtime"]),
+    runtimeOptions,
+  );
   assert.match(
     completed.stdout,
     /runtime image; controller image remained unchanged and 1 running Agents selected new revisions/u,
@@ -553,6 +606,9 @@ esac
     await readFile(commandLog, "utf8"),
     /exec gateway-test --container gateway -- env NODE_OPTIONS=--max-old-space-size=384 node \/app\/openclaw\.mjs doctor --lint --json --severity-min error/u,
   );
+  const journal = await readFile(readyEvidence + ".dispatch-state");
+  await assertCompletedRunCannotResume(readyEvidence, ["runtime"], runtimeOptions);
+  assert.deepEqual(await readFile(readyEvidence + ".dispatch-state"), journal);
 });
 
 // Argument validation precedes file and cluster access. Keep the kubeconfig

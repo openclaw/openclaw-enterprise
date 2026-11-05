@@ -7,7 +7,7 @@ import type { RepositoryCredentialBoundSessionInput } from "../../../credentials
 import { readPrivateFile } from "./private-files.ts";
 import { hasControlCharacter } from "../../../credentials/client-contracts.ts";
 import type { ControlRequest, ControlResponse } from "../../../credentials/control-contracts.ts";
-import { writeClientConfiguration } from "./config.ts";
+import { assertClientDirectoryAvailable, writeClientConfiguration } from "./config.ts";
 
 export async function callControl(
   socket: string,
@@ -172,7 +172,19 @@ const outputDirectoryRefusals = new Map([
     "the --output parent must be a real directory you own with no group or other access (0700); no ancestor may be a symbolic link, or group- or world-writable without the sticky bit",
   ],
   ["client-directory-exists", "the --output directory must not exist yet; choose a new path"],
+  [
+    "client-parent-missing",
+    "the --output parent directory must exist; create it first with mode 0700",
+  ],
 ]);
+
+function writeOutputRefusal(error: unknown): void {
+  const code = error instanceof Error ? error.message : "";
+  const reason = outputDirectoryRefusals.get(code);
+  if (reason !== undefined) {
+    process.stderr.write(`${code}: ${reason}\n`);
+  }
+}
 
 async function main(): Promise<void> {
   const [operation, ...args] = process.argv.slice(2);
@@ -231,6 +243,13 @@ async function main(): Promise<void> {
     if (!/^[0-9]{13}-[0-9a-f-]{36}$/.test(admissionId)) {
       throw new Error("invalid-admission-id");
     }
+    // Refuse an unusable --output before admission; the publish below checks again for races.
+    try {
+      await assertClientDirectoryAvailable(directory);
+    } catch (error) {
+      writeOutputRefusal(error);
+      throw error;
+    }
     process.stderr.write(
       `credential-admission ${admissionId}; if the outcome is uncertain, inspect the original owner and use status for any known session\n`,
     );
@@ -269,11 +288,7 @@ async function main(): Promise<void> {
       process.stderr.write(
         `client-configuration-failed session=${result.session.sessionId}; inspect cleanup status\n`,
       );
-      const code = error instanceof Error ? error.message : "";
-      const reason = outputDirectoryRefusals.get(code);
-      if (reason !== undefined) {
-        process.stderr.write(`${code}: ${reason}\n`);
-      }
+      writeOutputRefusal(error);
       throw new Error("client-configuration-failed", { cause: error });
     }
     process.stdout.write(

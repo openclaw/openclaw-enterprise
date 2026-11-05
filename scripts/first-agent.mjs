@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { accessSync, constants } from "node:fs";
-import { lstat, open, readFile, realpath, rename, unlink } from "node:fs/promises";
+import { open, readFile, realpath, rename, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -9,8 +9,9 @@ import { Writable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
+import { privateOwned } from "./lib/private-owned-path.mjs";
 import { findFirstAgentSecret, grantFirstAgentSecret } from "./first-agent-database.mjs";
-import { defaultAgentModel } from "../apps/controller/src/console/agents/starter-model.mjs";
+import { defaultAgentModel } from "../apps/controller/src/console/agents/starter-model.mts";
 import { deriveNativeAdminHost } from "../apps/controller/src/gateway/native-admin-host.mjs";
 import { isName, NAME_RULE } from "../packages/contracts/src/api/plain-text.ts";
 import {
@@ -100,17 +101,6 @@ function parseArguments(argv) {
     throw new Error("--harness must be openclaw or codex.");
   }
   return result;
-}
-
-async function privateOwned(path, directory = false) {
-  const info = await lstat(path);
-  if (
-    info.uid !== process.geteuid?.() ||
-    (info.mode & 0o077) !== 0 ||
-    (directory ? !info.isDirectory() : !info.isFile())
-  ) {
-    throw new Error(`${path} must be private and owned by the current user.`);
-  }
 }
 
 async function exists(path) {
@@ -1161,12 +1151,44 @@ async function main(options) {
       }
       await save(record);
     }
+    // A later deploy, such as the `occ agent deploy` that Stop's notice suggests, supersedes
+    // the recorded revision, which then never becomes active again (finding 3131). Follow the
+    // newest revision when it passes the same drift check.
+    async function followNewestRevision() {
+      const [newest] = await api("GET", `${agentPath}/revisions?limit=1`);
+      if (newest === undefined || newest.id === record.revisionId) {
+        return false;
+      }
+      const revision = await api("GET", `${agentPath}/revisions/${encodeURIComponent(newest.id)}`);
+      if (assertManagedRevision(revision, record, expectedConfiguration, revision.id)) {
+        priorPatRevisions.add(revision.id);
+      }
+      progress(
+        `Revision ${record.revisionId} was superseded; following revision ${revision.id}...`,
+      );
+      record.revisionId = revision.id;
+      await save(record);
+      return true;
+    }
+    await followNewestRevision();
     progress("Waiting for the selected revision and Kubernetes gateway...");
     await waitFor("the Agent revision to become active", async () => {
       const [observed, deployment] = await Promise.all([
         api("GET", agentPath),
         api("GET", `${agentPath}/deployments/${record.revisionId}`),
       ]);
+      if (observed.desiredRuntimeState === "stopped") {
+        throw new Error(
+          `Agent ${options.name} is stopped. Run "occ --namespace ${namespace.id} agent deploy ${agent.id}" to start it, then rerun this command with the same Agent name.`,
+        );
+      }
+      if (
+        deployment.status === "failed" &&
+        deployment.error?.code === "REVISION_SUPERSEDED" &&
+        (await followNewestRevision())
+      ) {
+        return false;
+      }
       if (deployment.status === "failed") {
         const code = /^[A-Z0-9_]+$/.test(deployment.error?.code ?? "")
           ? ` (${deployment.error.code})`

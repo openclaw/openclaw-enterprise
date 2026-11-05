@@ -173,8 +173,7 @@ revision to change artifact authority. Live Agent policy apply remains unavailab
 
 Optional readiness observes a Service and Pods in the OCC namespace (a paired
 Gateway normally uses a Backend `endpoint`). It needs a positive `timeoutMs`;
-`pollIntervalMs` (default 1000) is at most `2147483647`. Development retains
-the 30-second `startupDelayMs`.
+`pollIntervalMs` (default 1000) is at most `2147483647`. Development uses Harness readiness with the optional `startupDelayMs` unset.
 
 Install OpenShell's gateway separately. Required `gateway.workspaceMode`
 accepts `operator` or `managed`; deferred managed mode fails before Kubernetes
@@ -237,10 +236,12 @@ For dedicated Codex, OpenShell's `configureAgent` hook removes
 }
 ```
 
-OpenShell isolates every login mode. The bridge
-requests `:danger-full-access` with `user` review, subject to native account policy.
-The Gateway refuses constrained threads before turns. Restricted profiles,
-including the proxy's, require nested bubblewrap namespaces, which OpenShell blocks.
+<a id="codex-permission-profile"></a>
+
+Dedicated Codex requires account policy permitting `:danger-full-access` with `user` review.
+OpenShell isolates every login mode; restricted profiles, including the proxy's,
+require nested bubblewrap namespaces, which OpenShell blocks. The Gateway refuses
+constrained threads before turns; see [permission-profile troubleshooting](../../guides/topics/agent-troubleshoot.md#codex-refuses-the-required-permission-profile).
 Native OpenClaw already disables inner isolation. Its hook sets
 `agents.defaults.workspace` and any
 `agents.entries.main.workspace` to the approved `sandboxDataMount.mountPath`,

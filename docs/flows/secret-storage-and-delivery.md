@@ -182,8 +182,10 @@ process umask. It closes the temporary file before renaming and removes a
 failed temporary output without replacing the previous record.
 
 The tool provisions runtime credentials and requests deployment through
-OCC. The check requires the local OpenShell profile's Driver-owned
-workspace, `/sandbox/enterprise`, and frozen Codex policy:
+OCC. A rerun follows a newer revision from a later deploy, after the same
+drift check. If the Agent is stopped, it fails at once and prints the
+`occ agent deploy` command. The check requires the local OpenShell profile's
+Driver-owned workspace, `/sandbox/enterprise`, and frozen Codex policy:
 `sandbox: "danger-full-access"` with `approvalsReviewer: "user"` for either API-key
 or PAT sources. It can recognize a prior PAT Agent revision frozen with
 `workspace-write`; a new deployment uses the current policy. Other workspace or

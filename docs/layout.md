@@ -18,8 +18,8 @@ The configuration excludes `legacy/`; do not import archived implementations.
 The Go CLI uses the root [Go module](../go.mod). The documentation renderer in
 `scripts/docs-site/` has its own package manifest, pnpm workspace, and lockfile;
 keep its dependency installation separate from the root workspace.
-API example metadata and export enrichment live in `scripts/api-examples.mjs`
-and `scripts/document-api-examples.mjs`; `scripts/docs-site/` owns the explorer
+API example metadata and export enrichment live in `scripts/api-examples.ts`
+and `scripts/document-api-examples.ts`; `scripts/docs-site/` owns the explorer
 and OpenAPI lint configuration. The controller route schemas remain the source
 of truth for HTTP behavior.
 
@@ -202,10 +202,15 @@ architecture pages for every feature.
 Put contributor workflows for documentation in `docs/contributing/`, starting
 with the [writing guide](contributing/documentation.md). Existing site-tooling
 guides and inventories may remain directly under `docs/`; `docs/testing/` owns
-code verification and test setup. The [documentation taxonomy](taxonomy.md) maps page kinds to their templates.
+code verification and test setup. Per-check coverage pages live in
+`docs/testing/ci/` and use the [CI check template](contributing/ci-check-template.md).
+The CI index links to those pages; shared configuration and lane procedures have
+their own pages in that directory.
+The [documentation taxonomy](taxonomy.md) maps page kinds to their templates.
 
-The [documentation map](README.md) has six menus. **Getting Started**, **Topics**,
+The [documentation map](README.md) has seven menus. **Getting Started**, **Topics**,
 **Integrations**, **Deploy & Operate**, and **Reference** serve product users and operators;
+**Testing & CI** serves contributors running and interpreting checks;
 **Contribute** serves people changing the platform. A menu opens its sidebar.
 Register every Markdown page once in [docs/docs.json](docs.json) and link it from
 its owning overview. Deep implementation and testing pages can use the owning

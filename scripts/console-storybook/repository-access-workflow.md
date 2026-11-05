@@ -50,3 +50,17 @@ simulated API data, not Controller persistence, authorization, or runtime Git
 access. Existing `tests/browser/console-agent-repositories.test.ts` cases cover
 explicit Read-only, fresh collaborator selection, and saved inheritance through
 the Controller fixture.
+
+## Missing repositories
+
+Open **Pages / Create Agent** in Storybook:
+
+| Story ID                                    | Fixture scenario              | Check                                                      |
+| ------------------------------------------- | ----------------------------- | ---------------------------------------------------------- |
+| `pages-create-agent--repository-empty`      | `createRepositoriesEmpty`     | An empty catalog offers help and allows an ordinary draft. |
+| `pages-create-agent--repository-no-matches` | `createRepositoriesNoMatches` | A search with no matches offers help.                      |
+
+Both states direct you to your Namespace operator. In the search story, replace
+the query with `application`. Matching repository choices return and the help
+disappears. Compare with **Repository discovery pending** and **Repository
+discovery denied**, which display their own status instead.

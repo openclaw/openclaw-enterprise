@@ -360,6 +360,18 @@ p {
      400 ms (finding 1519). Visibility, not opacity: it appears whole, never half-faded. */
   animation: loading-delay 400ms;
 }
+#app > p.startup[role="status"]:has(+ .startup-recovery > button:not([hidden])) {
+  padding-block-end: var(--space-4);
+}
+#app > .startup-recovery {
+  padding: 0 var(--space-8) var(--space-8);
+  color: var(--muted);
+  text-align: center;
+  animation: loading-delay 400ms;
+}
+#app > .startup-recovery > button {
+  margin-bottom: var(--space-4);
+}
 /* A page held on screen, inert, while a navigation's reads run. Past 300 ms it dims and shows
    a progress cursor, so a slow return does not look stuck; opacity and cursor only, so nothing
    moves (finding 1447). A refocus recheck does not set .holding and keeps its look. */
@@ -1682,6 +1694,10 @@ p {
      A real classic scrollbar still gets its space, including while a sheet is open. */
   :root {
     scrollbar-gutter: auto;
+  }
+  /* Inert content still scrolls with keyboard or wheel. Keep the page in place under the drawer. */
+  :root:has(.shell.drawer-open) {
+    overflow: hidden;
   }
   .shell {
     /* A flow root keeps the menu button's margin inside the shell; collapsing through body,
@@ -3924,7 +3940,8 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   display: grid;
   align-content: start;
   flex: 1;
-  min-height: 0;
+  /* Keep a catalog choice readable while short windows scroll the surrounding browser. */
+  min-height: 8rem;
   overflow: auto;
   gap: var(--space-2);
   padding: var(--space-1);
