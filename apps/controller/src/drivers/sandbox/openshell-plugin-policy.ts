@@ -1,3 +1,5 @@
+import { loadSync, type MessageTypeDefinition } from "@grpc/proto-loader";
+import { OPEN_SHELL_MIDDLEWARE_CONFIG_BYTES } from "../egress-proxy/openshell-online-authority.ts";
 import type { AgentRevision, HarnessWorkloadRequirements } from "@openclaw-enterprise/contracts";
 import { SandboxRevisionUnsupportedError } from "@openclaw-enterprise/occ";
 import { asRecord, numericLastLabel } from "@openclaw-enterprise/utils";
@@ -11,6 +13,7 @@ import {
   eligibleGoogleOperations,
   googleDiscoveryRequests,
   googleAccountScopes,
+  googleAccountScopeConfig,
   type GoogleRequestScope,
 } from "../plugin/google-workspace/operations.ts";
 import { managedPluginGuardVersion } from "../plugin/managed-request-policies.ts";
@@ -23,6 +26,9 @@ import {
 } from "../plugin/managed-catalog.ts";
 import { managedGoogleInstall } from "../plugin/google-workspace/install.ts";
 
+const protobufStruct = loadSync("google/protobuf/struct.proto")[
+  "google.protobuf.Struct"
+] as MessageTypeDefinition<unknown, unknown>;
 const googleRequestRuleName = "oce-google-requests";
 
 function unsupported(message: string): never {
@@ -166,7 +172,7 @@ export function googleRequestPolicy(accounts: Record<string, GoogleRequestScope>
       config: {
         fields: {
           binding_id: { stringValue: managedGoogleInstall.releaseSha256 },
-          request_scope: { stringValue: JSON.stringify(accounts) },
+          request_scope: { stringValue: googleAccountScopeConfig(accounts) },
         },
       },
       on_error: "fail_closed",
@@ -174,6 +180,12 @@ export function googleRequestPolicy(accounts: Record<string, GoogleRequestScope>
       order: 2_147_483_647,
     },
   };
+  const config = middlewares[managedPluginMiddleware].config;
+  if (protobufStruct.serialize(config).length > OPEN_SHELL_MIDDLEWARE_CONFIG_BYTES) {
+    unsupported(
+      "The combined Google account request policy exceeds OpenShell's 64 KiB middleware configuration limit.",
+    );
+  }
   const networks = {
     [googleRequestRuleName]: {
       name: googleRequestRuleName,
@@ -189,7 +201,7 @@ export function googleRequestPolicy(accounts: Record<string, GoogleRequestScope>
   };
   return {
     hosts,
-    accounts,
+    accounts: googleAccountScopes(config.fields.request_scope.stringValue)!,
     middlewares,
     networks,
   };

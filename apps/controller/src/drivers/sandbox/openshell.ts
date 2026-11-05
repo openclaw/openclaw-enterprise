@@ -2319,7 +2319,7 @@ function sandboxSpec(
   plugin?: ReturnType<typeof openShellPluginPolicy>,
   mcpPolicies: ReturnType<typeof openShellManagedMcpPolicies> = [],
 ) {
-  const independentGoogleKeys = revision.plugins?.plugins[managedGoogleInstall.id]?.enabled
+  const independentGoogleKeys = managedSlotBinding(revision.plugins?.plugins, managedGoogleInstall)
     ? []
     : (revision.credentialSources ?? [])
         .filter(({ sourceType }) => sourceType === "oauth2-refresh-token")

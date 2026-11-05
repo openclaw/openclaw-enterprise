@@ -1,3 +1,4 @@
+import { googleAccountScopes } from "../../apps/controller/src/drivers/plugin/google-workspace/operations.ts";
 import { managedPluginGuardVersion } from "../../apps/controller/src/drivers/plugin/managed-request-policies.ts";
 import { verifyOpenShellPushNegotiation } from "../helpers/openshell-git-push-negotiation.mjs";
 import { runDocker, image, imageTestOptions } from "../helpers/runtime-image-startup.mjs";
@@ -1358,7 +1359,7 @@ test("selected Google accounts retain independent providers and share the reques
   const guard = created.spec.policy.network_middlewares[registration];
   assert.equal(guard.config.fields.binding_id.stringValue, managedGoogleInstall.releaseSha256);
   assert.deepEqual(
-    JSON.parse(guard.config.fields.request_scope.stringValue)[secondGoogleId].scopes,
+    googleAccountScopes(guard.config.fields.request_scope.stringValue)[secondGoogleId].scopes,
     [secondGoogle.config.scope],
   );
   assert.equal(guard.on_error, "fail_closed");
@@ -1473,6 +1474,10 @@ test("a standalone Codex tool receives the declared Google variable from its att
     sourceId,
     ref: openShellProviderName(sourceId),
   }));
+  revision.plugins = {
+    driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+    plugins: { [managedGoogleInstall.id]: { enabled: true } },
+  };
   requirements.command = googleEnvironmentProbe;
   requirements.workspaceMounts = requirements.workspaceMounts.slice(0, 1);
   let command;

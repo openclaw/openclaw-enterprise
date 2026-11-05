@@ -190,6 +190,9 @@ function httpRequestView(
   };
 }
 
+// Stock OpenShell applies this ceiling to the complete protobuf Struct.
+export const OPEN_SHELL_MIDDLEWARE_CONFIG_BYTES = 64 * 1024;
+
 function bindingId(config: unknown, scoped = false): string | undefined {
   const fields = record(record(config).fields);
   const value = record(fields.binding_id);
@@ -200,7 +203,7 @@ function bindingId(config: unknown, scoped = false): string | undefined {
       Object.keys(fields).length === 2 &&
       scope.kind === "stringValue" &&
       typeof scope.stringValue === "string" &&
-      scope.stringValue.length <= 16384);
+      Buffer.byteLength(scope.stringValue) <= OPEN_SHELL_MIDDLEWARE_CONFIG_BYTES);
   return validFields &&
     Object.keys(value).every((key) => key === "stringValue" || key === "kind") &&
     value.kind === "stringValue" &&

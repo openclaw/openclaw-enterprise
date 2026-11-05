@@ -1,3 +1,4 @@
+import { googleAccountScopeConfig } from "../../apps/controller/src/drivers/plugin/google-workspace/operations.ts";
 import { managedPluginGuardVersion } from "../../apps/controller/src/drivers/plugin/managed-request-policies.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -71,7 +72,7 @@ test("the signed OpenShell request guard intersects the source envelope with the
   const accountsConfig = (accounts: Record<string, ReturnType<typeof accountScope>>) => ({
     fields: {
       binding_id: { stringValue: managedGoogleInstall.releaseSha256 },
-      request_scope: { stringValue: JSON.stringify(accounts) },
+      request_scope: { stringValue: googleAccountScopeConfig(accounts) },
     },
   });
   const scopeConfig = (host: string, path: string, scope: string, port = 443) =>
@@ -117,6 +118,45 @@ test("the signed OpenShell request guard intersects the source envelope with the
     ],
   );
   assert.equal((await invoke(client, "ValidateConfig", request, gateway)).valid, true);
+  // All 64 admitted sources can share a released grant and retain their full, distinct
+  // 256-character Google paths. The guard must match each source beyond the former 16 KiB limit.
+  const sourcePaths = Array.from(
+    { length: 64 },
+    (_, index) => target.path + "/" + String(index).padStart(255 - target.path.length, "a"),
+  );
+  const many = accountsConfig(
+    Object.fromEntries(
+      sourcePaths.map((path, index) => [
+        "cs_00000000-0000-4000-8000-" + String(index).padStart(12, "0"),
+        accountScope(target.host, path, gmail),
+      ]),
+    ),
+  );
+  assert.ok(Buffer.byteLength(many.fields.request_scope.stringValue) > 16384);
+  assert.equal(
+    (await invoke(client, "ValidateConfig", { ...request, config: many }, gateway)).valid,
+    true,
+  );
+  for (const path of sourcePaths) {
+    assert.equal(
+      await evaluate({
+        ...request,
+        config: many,
+        target: { ...target, path, query: "format=metadata" },
+      }),
+      1,
+    );
+  }
+  const oversized = {
+    fields: {
+      ...many.fields,
+      request_scope: { stringValue: many.fields.request_scope.stringValue.padEnd(65537, " ") },
+    },
+  };
+  assert.equal(
+    (await invoke(client, "ValidateConfig", { ...request, config: oversized }, gateway)).valid,
+    false,
+  );
   const stale = {
     ...request,
     config: { fields: { ...config.fields, binding_id: { stringValue: "0".repeat(64) } } },

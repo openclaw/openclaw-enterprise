@@ -791,67 +791,13 @@ test("runtime wrapper status servers answer 400 to a request target that is not 
   await t.test(
     "the dedicated OpenClaw worker readiness port answers before any route check",
     () => {
-      const stop = new Error("stop after the readiness server starts");
-      let handler;
-      const directory = temporaryDirectorySync(t, "native-worker-readiness-");
-      assert.throws(
-        () =>
-          vm.runInNewContext(NATIVE_WORKER_ENTRYPOINT, {
-            URL,
-            Buffer,
-            console: { error() {} },
-            process: {
-              execPath: process.execPath,
-              env: {
-                OPENCLAW_RUNTIME_STATUS_PORT: "18789",
-                OPENCLAW_NATIVE_INFERENCE_CONFIG: "{}",
-                OPENCLAW_NODE_STATE_DIR: join(directory, "state"),
-                OPENCLAW_NODE_SETUP_CODE: "fixture-setup-code",
-                OPENCLAW_WORKSPACE_DIR: join(directory, "workspace"),
-                TMPDIR: join(directory, "tmp"),
-                OPENCLAW_NATIVE_WORKER_CAPACITY: "1",
-              },
-            },
-            require(specifier) {
-              if (specifier === "node:http") {
-                return {
-                  createServer(value) {
-                    handler = value;
-                    return { on() {}, listen() {} };
-                  },
-                };
-              }
-              if (specifier === "node:fs") {
-                // The worker starts its readiness server, then prepares its private TMPDIR
-                // with mkdirSync; stopping there leaves only the readiness server running.
-                return {
-                  ...nodeRequire("node:fs"),
-                  mkdirSync() {
-                    throw stop;
-                  },
-                };
-              }
-              return nodeRequire(specifier);
-            },
-          }),
-        (error) => error === stop,
-      );
-      assert.equal(typeof handler, "function");
-      let status;
-      let body = "";
-      handler(
-        { method: "GET", url: "//", headers: {} },
-        {
-          writeHead(code) {
-            status = code;
-          },
-          end(chunk) {
-            body += chunk ?? "";
-          },
-        },
-      );
-      assert.equal(status, 400);
-      assert.deepEqual(JSON.parse(body), badRequest);
+      const { servers } = runNativeWorkerEntrypoint({
+        env: { OPENCLAW_RUNTIME_STATUS_PORT: "18789" },
+      });
+      const { handler } = servers.find((server) => server.listening?.port === 18789);
+      const answer = call(handler, { url: "//" });
+      assert.equal(answer.status, 400);
+      assert.deepEqual(answer.body, badRequest);
     },
   );
 
