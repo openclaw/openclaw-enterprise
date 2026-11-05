@@ -27,8 +27,8 @@ import {
   waitFor,
   watchCluster,
 } from "../../scripts/ci/first-agent-smoke.mjs";
-import { withEnvironment } from "../helpers/environment.mjs";
-import { commandPath } from "../helpers/fake-commands.mjs";
+import { withEnvironment } from "../helpers/environment.ts";
+import { commandPath } from "../helpers/fake-commands.ts";
 import { listen } from "../helpers/listen.mjs";
 
 const revision = "rev_00000000-0000-4000-8000-000000000001";

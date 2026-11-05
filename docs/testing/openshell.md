@@ -44,6 +44,15 @@ This deletes the owned cluster and its database. It does not delete unrelated
 clusters. For the Compose control-plane variant, set
 `OCC_DEVELOPMENT_CONTROL_PLANE=compose` before startup.
 
+## Imported plugins on dedicated OpenClaw
+
+The OpenShell lane runs two plugin import cases in separate databases. Select one of these files with the lane runner’s `--file` option:
+
+- `tests/integration/openshell-imported-skill-real.test.ts` deploys, upgrades, and removes a published skill. The worker executes its script, and the managed Gateway refuses native installation.
+- `tests/integration/openshell-imported-mcp-real.test.ts` verifies a selected call reaches the hosted server, an excluded call receives HTTP 403, and changing the release changes the active credential and tools.
+
+Both cases use a dedicated OpenClaw worker with an authorized model and the real OpenShell cluster. See [running Kubernetes model turns](kubernetes.md#kubernetes-model-turns-and-secrets) for the runtime prerequisites.
+
 ## Codex plugin installation
 
 The `plugin-install` QA scenario deploys a dedicated Codex Agent with the selected

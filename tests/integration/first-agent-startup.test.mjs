@@ -14,7 +14,7 @@ import {
   firstAgentRevisionValuesMatch,
 } from "../../scripts/first-agent-model.mjs";
 import { listen } from "../helpers/listen.mjs";
-import { commandPath, writeCommand } from "../helpers/fake-commands.mjs";
+import { commandPath, writeCommand } from "../helpers/fake-commands.ts";
 import { servedAs } from "../helpers/agent-identity.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
