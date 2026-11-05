@@ -9,6 +9,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import type { Static } from "typebox";
 import { type RequestOptions, requestFailure } from "../api-client.mjs";
+import { deletionStatusPage, requestAgentDeletion } from "./deletion-status.mjs";
 import { resourceActionIcon } from "../resource-actions.mjs";
 import {
   button,
@@ -208,7 +209,8 @@ function retireHidden<Read>(
 }
 
 function agentNameLink(item: AgentRead, context: AgentNavigation) {
-  const node = link(item.name, `agents/${item.id}`, context);
+  const target = item.status === "deleting" ? deletionStatusPage(item) : `agents/${item.id}`;
+  const node = link(item.name, target, context);
   if (hasUnbrokenRun(item.name)) {
     node.classList.add("agent-name-unbroken");
   }
@@ -726,21 +728,16 @@ export function renderAgentList(context: AgentListContext) {
 
   async function deleteAgent(item: AgentRead) {
     try {
-      const deleting = (await context.request(agentRequestPath(item.id), {
-        method: "DELETE",
-      })) as AgentRead;
-      if (!context.isCurrent()) {
-        return;
+      const receipt = await requestAgentDeletion(context, agentRequestPath(item.id), item);
+      if (context.isCurrent()) {
+        if (notReady?.missing) {
+          showOutcome({
+            notice: "Deletion request accepted. This Namespace is no longer available.",
+          });
+          return;
+        }
+        context.navigate(deletionStatusPage(item, receipt));
       }
-      if (deleting?.status !== "deleting") {
-        throw new Error("Invalid deletion response");
-      }
-      replaceItem(item.id, deleting);
-      showOutcome({
-        notice: notReady?.missing
-          ? "Deletion request accepted. This Namespace is no longer available."
-          : `Deletion requested for ${item.name}. It leaves this list once cleanup finishes; select Refresh to check.`,
-      });
     } catch (error) {
       reportFailure(item, error, "delete");
     }
@@ -842,7 +839,7 @@ export function renderAgentList(context: AgentListContext) {
 
   // Every disabled icon has a visible reason: a badge, the alert above the table, or a note.
   function rowActions(item: AgentRead) {
-    // A deleting Agent keeps its retry and status controls on its detail page.
+    // A deleting Agent opens its progress page from the Agent name or status link.
     const available = item.status !== "deleting" && !unsettled.has(item.id);
     const stopped = item.desiredRuntimeState === "stopped";
     // A failed readable deployment can hide a newer queued one. Agent operate is sufficient
@@ -1103,11 +1100,10 @@ export function renderAgentList(context: AgentListContext) {
           name,
           element("span", { className: "resource-id" }, item.id),
           item.status === "deleting"
-            ? element(
-                "span",
-                { className: "badge", "data-tone": "warning", id: `agent-row-badge-${item.id}` },
-                "Deleting",
-              )
+            ? Object.assign(link("View deletion progress", deletionStatusPage(item), context), {
+                id: `agent-row-badge-${item.id}`,
+                className: "agent-deletion-link",
+              })
             : null,
           // New Agents start stopped; only a stop with a selected version awaits shutdown.
           item.status === "active" &&

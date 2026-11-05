@@ -764,6 +764,7 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
       if (
         resource === "agents" ||
         resource === "agents/validate" ||
+        /^agents\/[^/]+\/deletion-status$/.test(resource) ||
         resource.startsWith("agents/provision")
       ) {
         const reply = await lifecycle.serve(resource, method, body, url);

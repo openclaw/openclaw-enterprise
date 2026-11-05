@@ -1,33 +1,21 @@
 import type { AgentRead } from "@openclaw-enterprise/contracts";
 import { requestFailure, responseFields } from "../api-client.mjs";
-import {
-  button,
-  element,
-  replaceChildrenIfChanged,
-  setHidden,
-  setText,
-  setUnavailable,
-  statusBlock,
-  requestIdLine,
-} from "../dom.mjs";
+import { button, element, setHidden, setText, setUnavailable, requestIdLine } from "../dom.mjs";
 import {
   type AgentLifecycleContext,
   DELETE_CONFIRMATION,
-  type LifecycleError,
   grantRefusal,
   keptResources,
 } from "./lifecycle-confirmation.mjs";
-import { AGENT_DELETE_DENIED, deleteRefused } from "./access-reasons.mjs";
 import { AGENT_STATUS_READ_NEED, describeFailure } from "./list.mjs";
-
-// Deletion finishes in the background; poll until the Agent is gone, then return to the list.
-export const DELETION_POLL_MS = 3000;
+import { AGENT_DELETE_DENIED, deleteRefused } from "./access-reasons.mjs";
+import { requestAgentDeletion } from "./deletion-status.mjs";
 
 export function createAgentDeletion(
   context: AgentLifecycleContext,
   path: string,
   agent: AgentRead,
-  onDeleting: () => void,
+  onDeleting: (options?: { receiptId?: string }) => void,
   allowed?: Promise<boolean | undefined>,
   permissionReadsStarted: () => number = () => 0,
 ) {
@@ -37,10 +25,11 @@ export function createAgentDeletion(
     "aria-labelledby": "agent-deletion-title",
   });
   const permissionNotice = AGENT_DELETE_DENIED;
-  let restrictConfirmation: (() => void) | undefined;
-  // The count of the page's permission reads started before the last refused Delete. Only a read
-  // started after it can lift the refusal (finding 2966).
   let refusedAfterReads = 0;
+  let refused = false;
+  let feedbackKind: "permission" | "status" | "error" | undefined;
+  let deleteAnswered = false;
+  let restrictConfirmation: (() => void) | undefined;
   const feedback = element("div", { className: "danger-zone-feedback" });
   const actions = element("div", { className: "danger-zone-actions" });
   const remove = button("Delete Agent", openConfirmation, { className: "danger" });
@@ -48,39 +37,7 @@ export function createAgentDeletion(
     tone: "ghost",
     size: "sm",
   });
-  const state: {
-    deleting: boolean;
-    pending: boolean;
-    polling: boolean;
-    forbidden: boolean;
-    needsRefresh: boolean;
-    accessEnded: boolean;
-    notice: string;
-    error: LifecycleError | null;
-    used: boolean;
-  } = {
-    deleting: agent.status === "deleting",
-    pending: false,
-    // A background poll's read, which the page does not show as a check.
-    polling: false,
-    forbidden: false,
-    needsRefresh: false,
-    // Finishing the deletion removes the bindings that target this Agent, so a deleter whose
-    // only grants came from them can no longer read it.
-    accessEnded: false,
-    notice: "",
-    error: null,
-    // Set once this viewer opens the confirmation, so the row never vanishes under them.
-    used: false,
-  };
-  let pollTimer: number | undefined;
-  // A repeat confirmed while a quiet poll reads. Reads and writes stay serialized, so it is sent
-  // when that read ends instead of being dropped (finding 1975).
-  let queuedDelete: {
-    dialog: HTMLDialogElement;
-    cancel: HTMLButtonElement;
-    confirm: HTMLButtonElement;
-  } | null = null;
+  const state = { pending: false, forbidden: false, needsRefresh: false, used: false };
   const heading = element("h3", { id: "agent-deletion-title", tabindex: "-1" }, "Delete Agent");
 
   section.append(
@@ -98,199 +55,95 @@ export function createAgentDeletion(
     feedback,
   );
 
-  function render() {
-    // A background poll is quiet: its button keeps its label and the notices are rebuilt only
-    // when their text changes, so each 3 s poll neither flashes "Checking…" nor re-announces
-    // the status (finding 1409).
-    const checking = state.pending && !state.polling;
-    const status = state.accessEnded
-      ? "Deletion was accepted. You can no longer read this Agent’s status, so this page cannot tell whether cleanup has finished."
-      : state.deleting
-        ? "Deletion was requested. The Agent cannot be edited or deployed. If cleanup has stopped after a failure, fix the cause and request deletion again."
-        : state.notice;
-    replaceChildrenIfChanged(feedback, [
-      ...(status ? [statusBlock("info", null, status)] : []),
-      ...(state.forbidden && !state.accessEnded
-        ? [statusBlock("info", null, permissionNotice, [], { id: "agent-deletion-refused" })]
-        : []),
-      ...(state.error
-        ? [
-            element(
-              "div",
-              {
-                className: "status",
-                "data-tone": "danger",
-                role: "alert",
-                id: "agent-deletion-error",
-              },
-              element("p", { className: "status-body" }, state.error.text),
-              state.error.requestId ? requestIdLine(state.error.requestId) : null,
-            ),
-          ]
-        : []),
-    ]);
-    setText(remove, state.deleting ? "Request deletion again" : "Delete Agent");
-    // A refused Delete, or one that waits for Refresh after a failure, stays in the Tab order,
-    // described by the note or alert that says why (finding 2935). The shown nodes are read back:
-    // an unchanged render keeps the earlier ones. While checking it stays natively disabled.
-    // A permission refusal keeps it unavailable, described by its alert, until a newer
-    // permission answer allows delete (finding 2951).
-    const removeUnavailable =
-      checking || state.needsRefresh || state.forbidden || state.error?.refused === true;
-    const removeReason = checking
-      ? null
-      : feedback.querySelector<HTMLElement>(
-          state.forbidden ? "#agent-deletion-refused" : "#agent-deletion-error",
-        );
-    setUnavailable(remove, removeUnavailable && removeReason !== null, removeReason);
-    if (removeUnavailable && removeReason === null) {
-      remove.disabled = true;
-    }
-    refresh.disabled = checking;
-    setText(refresh, checking ? "Checking…" : "Refresh deletion status");
-    // A viewer whose permission answer denies Agent delete has no row (UX spec 3.9). A missing
-    // answer keeps it, and the API still decides. A deleting Agent keeps it: the row is the
-    // page's only report of the cleanup.
-    setHidden(section, state.forbidden && !state.used && !state.deleting);
-    const shown = state.accessEnded
-      ? []
-      : state.deleting || state.needsRefresh
-        ? [remove, refresh]
-        : [remove];
-    // Reinserting the same buttons would drop focus from them.
-    if (
-      actions.children.length !== shown.length ||
-      shown.some((node, index) => actions.children[index] !== node)
-    ) {
-      actions.replaceChildren(...shown);
-    }
-  }
-
-  function setDeleting({ notifyPage = true } = {}) {
-    state.deleting = true;
-    state.needsRefresh = false;
-    state.notice = "";
-    schedulePoll();
-    if (notifyPage) {
-      onDeleting();
-    }
-  }
-
-  function schedulePoll() {
-    clearTimeout(pollTimer);
-    pollTimer = setTimeout(() => {
-      if (context.isCurrent() && state.deleting && !state.accessEnded) {
-        void refreshStatus({ poll: true });
-      }
-    }, DELETION_POLL_MS);
-  }
-
-  // Whether the running check returns focus to this section when it ends.
-  let focusedHere = false;
-  const focusIsHere = () =>
-    section.contains(document.activeElement) || document.activeElement === document.body;
-
-  async function refreshStatus({ poll = false } = {}) {
-    if (!poll && state.polling && context.isCurrent()) {
-      // Refresh during a quiet poll shows that poll as the requested check.
-      focusedHere = focusIsHere();
-      state.polling = false;
-      render();
-      return;
-    }
+  // Only an uncertain or conflicting initial write needs to reread the Agent itself. If it
+  // did enter deletion, follow the status endpoint without inventing the receipt we did not get.
+  async function refreshStatus() {
     if (state.pending || !context.isCurrent()) {
-      if (poll && state.deleting && context.isCurrent()) {
-        schedulePoll();
-      }
       return;
     }
-    // Disabling or detaching Refresh can drop focus to body without leaving the check.
-    // A new focus outside the section relinquishes that return, even if later blurred.
-    focusedHere = focusIsHere();
-    const trackFocus = ({ target }: FocusEvent) => {
-      if (target instanceof Node && target !== document.body && !section.contains(target)) {
-        focusedHere = false;
-      }
-    };
     state.pending = true;
-    state.polling = poll;
-    state.error = null;
-    render();
-    document.addEventListener("focusin", trackFocus, true);
+    setText(refresh, "Checking…");
     try {
       const current = responseFields(await context.request(path, { expectedStatus: 200 }));
       if (!context.isCurrent()) {
         return;
       }
       if (current.id !== agent.id || current.namespaceId !== agent.namespaceId) {
-        throw new Error("Deletion status did not identify this Agent");
+        throw new Error("The response did not identify this Agent.");
       }
       if (current.status === "deleting") {
-        if (state.deleting) {
-          // A confirmed deleting read settles an uncertain repeat request, too.
-          state.needsRefresh = false;
-          state.notice = "";
-          schedulePoll();
-        } else {
-          setDeleting();
-        }
-      } else if (current.status === "active" && !state.deleting) {
+        onDeleting();
+      } else if (current.status === "active") {
         state.needsRefresh = false;
-        state.notice = "The Agent is still active. You can try deleting it again.";
+        state.pending = false;
+        render("The Agent is still active. You can try deleting it again.", "info");
+        if (document.activeElement === document.body) {
+          remove.focus();
+        }
       } else {
-        throw new Error("Invalid deletion status");
+        throw new Error("The response did not identify this Agent’s status.");
       }
     } catch (cause) {
       if (!context.isCurrent()) {
         return;
       }
-      const error = requestFailure(cause);
-      if (error.status === 401) {
+      const { status } = requestFailure(cause);
+      if (status === 401) {
         context.onExpired();
-      } else if (error.status === 404) {
-        context.navigate("agents");
-      } else if (error.status === 403 && state.deleting) {
-        // Cleanup can remove this reader’s grants; access can also end before cleanup finishes.
-        // Stop following the deletion without treating this denial as a not-found response.
-        state.accessEnded = true;
-        clearTimeout(pollTimer);
+      } else if (status === 403 || status === 404) {
+        onDeleting();
       } else {
-        state.error = {
-          text: `Could not refresh deletion status. ${describeFailure(cause, { need: AGENT_STATUS_READ_NEED })}`,
-          requestId: error.requestId,
-        };
-        // Stop polling on errors; the reader can retry with Refresh deletion status.
+        render(
+          "Could not refresh deletion status. " +
+            describeFailure(cause, { need: AGENT_STATUS_READ_NEED }),
+          "danger",
+        );
       }
     } finally {
-      document.removeEventListener("focusin", trackFocus, true);
-      const queued = queuedDelete;
-      queuedDelete = null;
+      state.pending = false;
+      setText(refresh, "Refresh deletion status");
       if (context.isCurrent()) {
-        const quiet = state.polling;
-        state.pending = false;
-        state.polling = false;
         render();
-        // The reader may still be deciding in the repeat dialog, or may have confirmed a repeat
-        // we have not sent. Close either before returning focus; the modal makes the page inert.
-        const dropQueued = state.accessEnded || state.forbidden || state.needsRefresh;
-        if (state.accessEnded || (queued && dropQueued)) {
-          section.querySelector<HTMLDialogElement>("dialog[open]")?.close();
-        }
-        if (state.accessEnded) {
-          // Refresh is gone, so keep focus in this section on its heading.
-          if (focusedHere) {
-            heading.focus({ preventScroll: true });
-          }
-        } else if (!quiet && focusedHere) {
-          (state.deleting || state.needsRefresh ? refresh : remove).focus({ preventScroll: true });
-        }
-        if (queued && !dropQueued) {
-          // Sent even after a failed read: the reader confirmed it, and its outcome replaces
-          // the read's error.
-          void deleteAgent(queued.dialog, queued.cancel, queued.confirm);
-        }
       }
     }
+  }
+
+  function render(text?: string, tone: "info" | "danger" = "info", requestId?: string) {
+    // Apply the same precedence whether permission or Agent readback arrives last.
+    // Preserve failure diagnostics, but never offer a retry while access is denied.
+    const showPermission =
+      state.forbidden && state.used && (text ? tone === "info" : feedbackKind !== "error");
+    if (showPermission) {
+      text = permissionNotice;
+      tone = "info";
+      requestId = undefined;
+    }
+    if (text) {
+      feedbackKind = tone === "danger" ? "error" : "status";
+      if (showPermission) {
+        feedbackKind = "permission";
+      }
+      feedback.replaceChildren(
+        element(
+          "div",
+          {
+            className: "status",
+            "data-tone": tone,
+            role: tone === "danger" ? "alert" : "status",
+            id: "agent-deletion-error",
+          },
+          element("p", { className: "status-body" }, text),
+          requestId ? requestIdLine(requestId) : null,
+        ),
+      );
+    }
+    setUnavailable(
+      remove,
+      state.needsRefresh || state.forbidden || state.pending || refused,
+      state.pending ? null : (feedback.firstElementChild as HTMLElement | null),
+    );
+    setHidden(refresh, !state.needsRefresh);
+    setHidden(section, state.forbidden && !state.used);
   }
 
   function showSending(cancel: HTMLButtonElement, confirm: HTMLButtonElement) {
@@ -306,46 +159,21 @@ export function createAgentDeletion(
     cancel: HTMLButtonElement,
     confirm: HTMLButtonElement,
   ) {
-    if (state.accessEnded || state.forbidden || state.needsRefresh || !context.isCurrent()) {
-      return;
-    }
-    if (state.pending) {
-      // A quiet poll is reading: show the repeat as sent and send it when the read ends.
-      if (state.polling && !queuedDelete) {
-        queuedDelete = { dialog, cancel, confirm };
-        showSending(cancel, confirm);
-      }
+    if (state.pending || state.forbidden || state.needsRefresh || refused || !context.isCurrent()) {
       return;
     }
     state.pending = true;
-    state.error = null;
-    state.notice = "";
     showSending(cancel, confirm);
     render();
     try {
-      const current = responseFields(
-        await context.request(path, { method: "DELETE", expectedStatus: 202 }),
-      );
-      if (!context.isCurrent()) {
-        return;
+      const receiptId = await requestAgentDeletion(context, path, agent);
+      if (context.isCurrent()) {
+        dialog.close();
+        onDeleting({ receiptId });
       }
-      if (
-        current.id !== agent.id ||
-        current.namespaceId !== agent.namespaceId ||
-        current.status !== "deleting"
-      ) {
-        throw new Error("Invalid deletion response");
-      }
-      dialog.close();
-      setDeleting();
     } catch (cause) {
       if (!context.isCurrent()) {
         return;
-      }
-      // The pending guard serializes status reads and writes. Cancel any poll rearmed
-      // while this repeat was pending, so only a manual read can clear its failure.
-      if (state.deleting) {
-        clearTimeout(pollTimer);
       }
       const error = requestFailure(cause);
       if (error.status === 401) {
@@ -354,54 +182,42 @@ export function createAgentDeletion(
       }
       dialog.close();
       let text;
-      let refused = false;
       if (error.status === 403) {
-        // The API's named denial (finding 2534) names the grant by Agent ID; the console's
-        // sentence names the same grant and who gives it, with the Agent's name, as Stop and the
-        // Agents list do (finding 2951). Another refusal shows as written. The request ID stays
-        // below either. A refused repeat that is not about grants, such as another actor's
-        // deletion, can change without this viewer's access changing, so only it stays available.
-        const grant = grantRefusal(cause);
-        text = (!grant && error.serverMessage) || deleteRefused(agent.name);
-        refused = grant || !state.deleting;
+        refused = true;
         refusedAfterReads = permissionReadsStarted();
+        text = (!grantRefusal(cause) && error.serverMessage) || deleteRefused(agent.name);
       } else if (error.status === 404) {
         state.needsRefresh = true;
         text =
-          "This Agent is no longer available for deletion. Refresh its status to return to the Agents list if it is gone.";
-      } else if (error.status === 400 || error.status === 409 || error.status === 429) {
-        // The API's own reason for a 400 or 409, such as a lifecycle change during deletion.
-        state.needsRefresh = error.status === 409;
+          "This Agent is no longer available for deletion. Refresh its status to check what happened.";
+      } else if (error.status === 409) {
+        state.needsRefresh = true;
         text = describeFailure(cause, {
           mutation: true,
           conflict: "This Agent could not be deleted in its current state.",
           next: "Refresh deletion status before trying again.",
         });
+      } else if (error.status === 400 || error.status === 429) {
+        text = describeFailure(cause, { mutation: true });
       } else {
         state.needsRefresh = true;
         text =
           "Outcome unknown. Deletion may have started. Refresh deletion status before trying again.";
       }
-      state.error = { text, requestId: error.requestId, refused };
+      render(text, "danger", error.requestId);
     } finally {
       if (context.isCurrent()) {
         state.pending = false;
         render();
-        (state.deleting || state.needsRefresh ? refresh : remove).focus();
+        (state.needsRefresh ? refresh : remove).focus();
       }
     }
   }
 
   function openConfirmation() {
-    if (
-      state.accessEnded ||
-      state.forbidden ||
-      (state.pending && !state.polling) ||
-      state.needsRefresh
-    ) {
+    if (state.forbidden || state.pending || state.needsRefresh || refused) {
       return;
     }
-    const retry = state.deleting;
     state.used = true;
     const dialog = element("dialog", {
       className: "dialog agent-delete-dialog",
@@ -410,7 +226,7 @@ export function createAgentDeletion(
     });
     const cancel = button("Cancel", () => dialog.close());
     const confirm = button(
-      retry ? "Request deletion again" : "Permanently delete Agent",
+      "Permanently delete Agent",
       () => void deleteAgent(dialog, cancel, confirm),
       {
         className: "danger",
@@ -419,41 +235,28 @@ export function createAgentDeletion(
     const description = element(
       "p",
       { id: "agent-delete-confirm-description", "aria-live": "polite" },
-      retry
-        ? "Request cleanup again for this Agent already marked for deletion. Cleanup that is queued or running continues unchanged. Removed data cannot be restored."
-        : DELETE_CONFIRMATION,
+      DELETE_CONFIRMATION,
     );
     const showRestriction = () => {
       // A late answer cannot undo a request already sent.
-      if (!dialog.open || (state.pending && !state.polling)) {
-        return;
-      }
-      if (queuedDelete?.dialog === dialog) {
-        // The waiting repeat was never sent: drop it with its dialog.
-        queuedDelete = null;
-        dialog.close();
+      if (!dialog.open || state.pending) {
         return;
       }
       description.textContent = permissionNotice;
-      // The confirmation stays in the Tab order, described by the refusal (finding 2935).
       setUnavailable(confirm, true, description);
       cancel.focus();
     };
     restrictConfirmation = showRestriction;
     const kept = keptResources(agent);
     dialog.append(
-      element(
-        "h2",
-        { id: "agent-delete-confirm-title" },
-        retry ? `Request deletion again for ${agent.name}?` : `Delete ${agent.name}?`,
-      ),
+      element("h2", { id: "agent-delete-confirm-title" }, `Delete ${agent.name}?`),
       description,
       kept.summary,
       kept.commands,
       element("div", { className: "dialog-actions" }, cancel, confirm),
     );
     dialog.addEventListener("cancel", (event) => {
-      if ((state.pending && !state.polling) || queuedDelete?.dialog === dialog) {
+      if (state.pending) {
         event.preventDefault();
       }
     });
@@ -464,20 +267,10 @@ export function createAgentDeletion(
           restrictConfirmation = undefined;
         }
         dialog.remove();
-        // The close event comes after a sent request has already placed focus on its outcome
-        // (finding 1421: it moved back to "Request deletion again"), and after Cancel the browser
-        // returns focus to the invoker. Only take focus that was dropped to the page.
-        if (
-          context.isCurrent() &&
-          !(state.pending && !state.polling) &&
-          document.activeElement === document.body
-        ) {
-          (state.forbidden || state.accessEnded
-            ? heading
-            : state.needsRefresh
-              ? refresh
-              : remove
-          ).focus();
+        // After Cancel the browser returns focus to the invoker. A sent request may already
+        // have focused its outcome or opened the deletion status page.
+        if (context.isCurrent() && !state.pending && document.activeElement === document.body) {
+          (state.forbidden ? heading : state.needsRefresh ? refresh : remove).focus();
         }
       },
       { once: true },
@@ -487,39 +280,25 @@ export function createAgentDeletion(
     cancel.focus();
   }
 
-  // The row follows the newest permission answer: a page that reads it again, such as after its
-  // Installation administration ended, hides or restores the row without a reload (finding D795).
-  // A refused Delete stays unavailable until an answer read after it allows Agent delete
-  // (findings 2951, 2966): `read` is the page's count of permission reads when this answer's read
-  // started.
   function applyDelete(permitted: boolean | undefined, read: number) {
     if (!context.isCurrent()) {
       return;
     }
-    const regranted =
-      permitted === true && state.error?.refused === true && read > refusedAfterReads;
-    const forbidden = permitted === false;
-    if (forbidden === state.forbidden && !regranted) {
-      return;
-    }
-    state.forbidden = forbidden;
-    if (forbidden) {
+    const regranted = permitted === true && refused && read > refusedAfterReads;
+    state.forbidden = permitted === false;
+    if (state.forbidden) {
       restrictConfirmation?.();
-    } else if (regranted) {
-      // The refusal no longer describes this viewer's access.
-      state.error = null;
+    } else if (regranted || (permitted === true && feedbackKind === "permission")) {
+      refused = false;
+      feedbackKind = undefined;
+      feedback.replaceChildren();
     }
     render();
   }
-  // Once the page has passed a newer answer, a late first answer must not replace it.
-  let deleteAnswered = false;
 
+  actions.append(remove, refresh);
   render();
-  if (state.deleting) {
-    schedulePoll();
-  }
   void allowed?.then((permitted) => {
-    // The first answer was requested before any Delete, so it never lifts a refusal.
     if (!deleteAnswered && permitted === false) {
       applyDelete(permitted, 0);
     }
@@ -529,16 +308,6 @@ export function createAgentDeletion(
     applyDelete(permitted: boolean | undefined, read: number) {
       deleteAnswered = true;
       applyDelete(permitted, read);
-    },
-    // The page found the Agent deleting through another read and now shows only this row.
-    showOnPage({ focus = false } = {}) {
-      if (!state.deleting) {
-        setDeleting({ notifyPage: false });
-      }
-      render();
-      if (focus) {
-        refresh.focus();
-      }
     },
   };
 }

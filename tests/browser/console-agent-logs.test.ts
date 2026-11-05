@@ -103,6 +103,7 @@ const initialDriver = { ...computeDriver, state: structuredClone(computeDriver.s
 // The app's own State, so a test can record what the worker records (a completed stop).
 const logsState: { state?: InMemoryPlatformState } = {};
 const logsApp = fileConsoleApp({
+  recordOperations: true,
   computeDriver,
   agentRuntimeLogs: { enabled: true, cursorSecret: `console-logs-${randomUUID()}` },
   wrapState: (base: InMemoryPlatformState) => (logsState.state = base),
@@ -1717,7 +1718,7 @@ test("Logs of a version replaced while the Agent runs name the new version and k
 
 // The same poll shows a deletion from elsewhere. A stopped Agent being deleted keeps its version
 // and requested runtime state, so the deleting status alone must update the page, which then
-// shows only its deletion row.
+// replaces Logs with deletion progress.
 test("Logs of a stopped version show a deletion from elsewhere", async (t) => {
   const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
@@ -1741,7 +1742,7 @@ test("Logs of a stopped version show a deletion from elsewhere", async (t) => {
   const agentReads = await settledFetches(page, agentPath);
   await page.clock.runFor(10_000);
   await waitForSettledFetches(page, agentPath, agentReads + 1);
-  await page.locator(".badge").filter({ hasText: "Deleting" }).waitFor();
+  await page.getByRole("heading", { name: "Deletion queued", exact: true }).waitFor();
   assert.equal(await page.getByRole("log", { name: "Runtime log output" }).count(), 0);
 });
 

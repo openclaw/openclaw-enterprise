@@ -2,7 +2,7 @@ import { waitForLiveControls } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import test, { type TestContext } from "node:test";
+import test from "node:test";
 
 import type { Locator, Page } from "playwright";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
@@ -19,11 +19,11 @@ import type {
 import type { ControllerWorkspaceFilesAccess } from "../../apps/controller/src/gateway/contracts.ts";
 
 import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
-import { DELETION_POLL_MS } from "../../apps/controller/src/console/agents/deletion.mjs";
+import { DELETION_POLL_MS } from "../../apps/controller/src/console/agents/deletion-status.mts";
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
-import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture, type fileConsoleApp } from "../helpers/console-app.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -51,7 +51,6 @@ import {
   waitForCondition,
   waitForEnabled,
   waitForInputValue,
-  statusTone,
 } from "./console-agents-browser-helpers.ts";
 import {
   trackSettledFetches,
@@ -70,14 +69,12 @@ import {
 import {
   callerDenied,
   DEPENDENCY_UNAVAILABLE,
-  GENERIC_DENIAL,
   MALFORMED_REQUEST,
   RESOURCE_CONFLICT,
   SANDBOX_POLICY_READ_DENIED,
   STOP_REPEAT_CONFIRMATION,
   STOPPED_NO_VERSION,
   WORKSPACE_FILES_UNAVAILABLE,
-  askForGrant,
   BOUND_SECRET_UNLISTED,
   notIncluded,
   deleteRefused,
@@ -134,6 +131,107 @@ async function slackSelectionValue(locator: Locator): Promise<string> {
 }
 
 export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof fileConsoleApp>) {
+  test("losing Namespace access stops deletion receipt polling and respects focus moved during the read", async (t) => {
+    const fixture = await createConsoleAppFixture(t, {
+      provisionedPeople: ["scoped-deleter"],
+      recordOperations: true,
+    });
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Delete scoped", { ready: true });
+    const agent = await fixture.createAgent(
+      namespace.id,
+      "Scoped Candidate",
+      nativeValues("scoped"),
+    );
+    const person = fixture.provisionedAccounts[0];
+    assert.ok(person);
+    const policyPath = `/namespaces/${namespace.id}/iam`;
+    const bind = async (
+      permissions: Permission[],
+      resourceKind: ResourceKind,
+      resourceId: string,
+    ) => {
+      const role = await fixture.request("POST", `${policyPath}/roles`, { body: { permissions } });
+      assert.equal(role.status, 201);
+      const binding = await fixture.request("POST", `${policyPath}/access-bindings`, {
+        body: {
+          subjectKind: "identity",
+          subjectId: person.principal.id,
+          roleId: role.data.id,
+          resourceKind,
+          resourceId,
+        },
+      });
+      assert.equal(binding.status, 201);
+      return binding.data;
+    };
+    // A member whose only Agent grants target this Agent, as a Namespace administrator shares it.
+    const namespaceBinding = await bind(
+      [{ action: "read", resourceKind: "namespace" }],
+      "namespace",
+      namespace.id,
+    );
+    const agentBinding = await bind(
+      [
+        { action: "read", resourceKind: "agent" },
+        { action: "delete", resourceKind: "agent" },
+      ],
+      "agent",
+      agent.id,
+    );
+    const { page } = await newPage(t, fixture);
+    const requests = apiRequests(page, fixture.origin);
+    const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+    await page.clock.install({ time: new Date("2026-10-04T12:00:00Z") });
+
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+      person.credentials,
+    );
+    await page.getByRole("heading", { name: "Scoped Candidate" }).first().waitFor();
+    await page.getByRole("button", { name: "Delete Agent" }).click();
+    const dialog = page.getByRole("dialog", { name: "Delete Scoped Candidate?" });
+    await dialog.getByRole("button", { name: "Permanently delete Agent" }).click();
+    await page.getByRole("heading", { name: "Deletion queued" }).waitFor();
+    const receiptId = new URL(page.url()).searchParams.get("receiptId");
+    assert.ok(receiptId);
+    const statusPath = agentPath + "/deletion-status?receiptId=" + receiptId;
+    const reads = () => pathRequests(requests, "GET", statusPath).length;
+
+    // The same requester's receipt survives loss of this exact Agent grant, while Namespace read holds.
+    const removed = await fixture.request(
+      "DELETE",
+      `${policyPath}/access-bindings/${agentBinding.id}`,
+    );
+    assert.ok([200, 204].includes(removed.status), `binding removal answered ${removed.status}`);
+    const refresh = page.getByRole("button", { name: "Refresh deletion status" });
+    const stillReadable = page.waitForResponse(fixture.origin + statusPath);
+    await refresh.click();
+    assert.equal((await stillReadable).status(), 200);
+    const removedNamespace = await fixture.request(
+      "DELETE",
+      `${policyPath}/access-bindings/${namespaceBinding.id}`,
+    );
+    assert.ok([200, 204].includes(removedNamespace.status));
+
+    const denied = await holdNextStatusResponse(page, fixture.origin + statusPath);
+    await page.clock.runFor(DELETION_POLL_MS);
+    assert.equal(await denied.status, 403);
+    const back = page.getByRole("link", { name: "← Agents", exact: true });
+    await back.focus();
+    denied.release();
+    await page.getByRole("heading", { name: "Deletion status unavailable" }).waitFor();
+    assert.equal(await page.getByRole("list", { name: "Deletion progress" }).isVisible(), false);
+    assert.equal(await back.evaluate((node) => node.matches(":focus")), true);
+    assert.equal(agentDeleteRequests(requests, namespace.id, agent.id).length, 1);
+    // Polling stops: no further reads, however long the page stays open.
+    const settled = reads();
+    await page.clock.runFor(DELETION_POLL_MS * 3);
+    assert.equal(reads(), settled);
+    assert.equal((await fixture.request("GET", agentPath)).data.status, "deleting");
+  });
   test("Agent delete confirmation can be canceled without sending a write request", async (t) => {
     const fixture = await detailApp(t);
     const namespace = await fixture.createNamespace("Delete cancellation", { ready: true });
@@ -221,214 +319,9 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
     assert.equal(responseData(current).status, "active");
   });
 
-  test("Agent delete confirmation sends the real delete API and leaves visible queued state", async (t) => {
-    const fixture = await detailApp(t);
-    const namespace = await fixture.createNamespace("Delete success", { ready: true });
-    const agent = await fixture.createAgent(namespace.id, "Success Candidate", nativeValues("go"));
-    const { page } = await newPage(t, fixture);
-    const requests = apiRequests(page, fixture.origin);
-
-    await login(
-      page,
-      fixture,
-      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
-    );
-    await page.getByRole("heading", { name: "Success Candidate" }).waitFor();
-    requests.length = 0;
-
-    await page.getByRole("button", { name: "Delete Agent" }).click();
-    const dialog = page.getByRole("dialog", { name: "Delete Success Candidate?" });
-    await dialog.getByText(/Agent, its version history, and its workspace data/i).waitFor();
-    const deleteResponse = page.waitForResponse(
-      (response) =>
-        response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}` &&
-        response.request().method() === "DELETE",
-    );
-    await dialog.getByRole("button", { name: "Permanently delete Agent" }).click();
-    const response = await deleteResponse;
-    assert.equal(response.status(), 202);
-    assert.equal(record(record(await response.json()).data).status, "deleting");
-
-    assert.match(page.url(), new RegExp(`/console/agents/${agent.id}`));
-    await page.getByRole("status").getByText("Deletion was requested").waitFor();
-    // Queued deletion is an info notice, not a warning (finding 2006).
-    assert.deepEqual(await statusTone(page.getByText(/^Deletion was requested\. /)), {
-      className: "status",
-      tone: "info",
-      role: "status",
-    });
-    await page.getByRole("button", { name: "Refresh deletion status" }).waitFor();
-    // The dialog's close event arrives after the request put focus on the status check. It must
-    // not move focus back to the relabelled danger button "Request deletion again" (finding 1421).
-    // A closed dialog has no dialog role, so wait for the close handler to remove the element.
-    await page.locator("dialog.agent-delete-dialog").waitFor({ state: "detached" });
-    assert.equal(
-      await page.evaluate(() => globalThis.document.activeElement?.textContent),
-      "Refresh deletion status",
-    );
-    assert.deepEqual(
-      agentDeleteRequests(requests, namespace.id, agent.id).map((request) => [
-        request.method,
-        request.path,
-        request.body,
-      ]),
-      [["DELETE", `/namespaces/${namespace.id}/agents/${agent.id}`, null]],
-    );
-    const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
-    assert.equal(responseData(current).status, "deleting");
-
-    await page.getByRole("link", { name: "← Agents" }).click();
-    await page.getByRole("heading", { name: "Agents" }).waitFor();
-    await page
-      .getByRole("row")
-      .filter({ hasText: "Success Candidate" })
-      .getByText("Deleting", { exact: true })
-      .waitFor();
-  });
-
-  test("A deletion status denial closes an open repeat confirmation without sending it", (t) =>
-    checkScopedDeletionEnd(t, { moveFocusDuringPoll: false }));
-
-  test("A deletion status poll that ends scoped access respects focus moved during the read", (t) =>
-    checkScopedDeletionEnd(t, { moveFocusDuringPoll: true }));
-
-  async function checkScopedDeletionEnd(
-    t: TestContext,
-    { moveFocusDuringPoll }: { moveFocusDuringPoll: boolean },
-  ) {
-    const fixture = await createConsoleAppFixture(t, { provisionedPeople: ["scoped-deleter"] });
-    await fixture.bootstrap();
-    const namespace = await fixture.createNamespace("Delete scoped", { ready: true });
-    const agent = await fixture.createAgent(
-      namespace.id,
-      "Scoped Candidate",
-      nativeValues("scoped"),
-    );
-    const person = fixture.provisionedAccounts[0];
-    assert.ok(person);
-    const policyPath = `/namespaces/${namespace.id}/iam`;
-    const bind = async (
-      permissions: Permission[],
-      resourceKind: ResourceKind,
-      targetId: string,
-    ) => {
-      const role = await fixture.request("POST", `${policyPath}/roles`, { body: { permissions } });
-      assert.equal(role.status, 201);
-      const binding = await fixture.request("POST", `${policyPath}/access-bindings`, {
-        body: {
-          subjectKind: "identity",
-          subjectId: person.principal.id,
-          roleId: resourceId(role.data),
-          resourceKind,
-          resourceId: targetId,
-        },
-      });
-      assert.equal(binding.status, 201);
-      return { id: resourceId(binding.data) };
-    };
-    // A member whose only Agent grants target this Agent, as a Namespace administrator shares it.
-    await bind([{ action: "read", resourceKind: "namespace" }], "namespace", namespace.id);
-    const agentBinding = await bind(
-      [
-        { action: "read", resourceKind: "agent" },
-        { action: "delete", resourceKind: "agent" },
-      ],
-      "agent",
-      agent.id,
-    );
-    const { page } = await newPage(t, fixture);
-    const requests = apiRequests(page, fixture.origin);
-    const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
-    await page.clock.install({ time: new Date("2026-10-04T12:00:00Z") });
-
-    await login(
-      page,
-      fixture,
-      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
-      person.credentials,
-    );
-    await page.getByRole("heading", { name: "Scoped Candidate" }).first().waitFor();
-    await page.getByRole("button", { name: "Delete Agent" }).click();
-    const dialog = page.getByRole("dialog", { name: "Delete Scoped Candidate?" });
-    await dialog.getByRole("button", { name: "Permanently delete Agent" }).click();
-    await page.getByRole("status").getByText("Deletion was requested").waitFor();
-    const reads = () => pathRequests(requests, "GET", agentPath).length;
-    const accepted = reads();
-
-    // While cleanup runs, the member's grants still hold and the poll follows the deletion.
-    const followed = page.waitForResponse(
-      (response) =>
-        response.url() === `${fixture.origin}${agentPath}` && response.request().method() === "GET",
-    );
-    await page.clock.runFor(DELETION_POLL_MS);
-    assert.equal((await followed).status(), 200);
-    assert.equal(reads(), accepted + 1);
-    // Refresh is enabled again once that poll finished and scheduled the next one.
-    await page.waitForFunction(() => {
-      const refresh = [...globalThis.document.querySelectorAll("button")].find(
-        (node) => node.textContent === "Refresh deletion status",
-      );
-      return refresh !== undefined && !refresh.disabled;
-    });
-    await page.getByRole("status").getByText("Deletion was requested").waitFor();
-
-    // An administrator removes the member’s grant while cleanup is still pending. In the dialog
-    // case the member has opened the repeat confirmation, but has not confirmed a second request.
-    const repeatDialog = page.getByRole("dialog", {
-      name: "Request deletion again for Scoped Candidate?",
-    });
-    if (moveFocusDuringPoll) {
-      await page.getByRole("button", { name: "Refresh deletion status" }).focus();
-    } else {
-      await page.getByRole("button", { name: "Request deletion again", exact: true }).click();
-      await repeatDialog.getByRole("button", { name: "Cancel", exact: true }).waitFor();
-    }
-    const removed = await fixture.request(
-      "DELETE",
-      `${policyPath}/access-bindings/${agentBinding.id}`,
-    );
-    assert.ok([200, 204].includes(removed.status), `binding removal answered ${removed.status}`);
-    const denied = await holdNextStatusResponse(page, `${fixture.origin}${agentPath}`);
-    await page.clock.runFor(DELETION_POLL_MS);
-    const status = await denied.status;
-    const expectedFocus = moveFocusDuringPoll
-      ? page.getByRole("link", { name: "← Agents", exact: true })
-      : page.getByRole("heading", { name: "Delete Agent", exact: true });
-    if (moveFocusDuringPoll) {
-      await expectedFocus.focus();
-    }
-    denied.release();
-    assert.equal(status, 403);
-    // Wait for the page to handle the denial, even if a stale modal still makes the page inert.
-    await page
-      .getByText(
-        "You can no longer read this Agent’s status, so this page cannot tell whether cleanup has finished.",
-        { exact: false },
-      )
-      .waitFor({ state: "attached" });
-    assert.equal(
-      await repeatDialog.isVisible(),
-      false,
-      "the stale deletion confirmation must close",
-    );
-    assert.equal(
-      agentDeleteRequests(requests, namespace.id, agent.id).length,
-      1,
-      "only the original deletion was requested",
-    );
-    assert.equal(await page.getByRole("alert").count(), 0);
-    assert.equal(await page.getByRole("button", { name: "Refresh deletion status" }).count(), 0);
-    assert.equal(await expectedFocus.evaluate((node) => node.matches(":focus")), true);
-
-    // Polling stops: no further reads, however long the page stays open.
-    const settled = reads();
-    await page.clock.runFor(DELETION_POLL_MS * 3);
-    assert.equal(reads(), settled);
-    assert.equal(responseData(await fixture.request("GET", agentPath)).status, "deleting");
-  }
-
   test("Agent delete uncertainty requires refresh before another destructive request", async (t) => {
-    const fixture = await detailApp(t);
+    const fixture = await createConsoleAppFixture(t, { recordOperations: true });
+    await fixture.bootstrap();
     const namespace = await fixture.createNamespace("Delete uncertainty", { ready: true });
     const agent = await fixture.createAgent(
       namespace.id,
@@ -491,126 +384,10 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
     );
     await page.getByRole("button", { name: "Refresh deletion status" }).click();
     assert.equal((await refresh).status(), 200);
-    await page.getByRole("status").getByText("Deletion was requested").waitFor();
-    // The confirmed read clears the wait: the repeat is offered, with no stale reason.
-    const repeat = page.getByRole("button", { name: "Request deletion again", exact: true });
-    await waitForEnabled(repeat);
-    assert.deepEqual(
-      await repeat.evaluate((node) => ({
-        ariaDisabled: node.getAttribute("aria-disabled"),
-        describedby: node.getAttribute("aria-describedby"),
-      })),
-      { ariaDisabled: null, describedby: null },
-    );
+    await page.getByRole("heading", { name: "Deletion queued" }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Retry cleanup" }).isVisible(), false);
     assert.equal(interceptedDeletes, 1);
     assert.equal(agentDeleteRequests(requests, namespace.id, agent.id).length, 1);
-  });
-
-  test("An already deleting Agent permits only a confirmed manual repeat DELETE", async (t) => {
-    const fixture = await detailApp(t);
-    const namespace = await fixture.createNamespace("Deletion repeat", { ready: true });
-    const agent = await fixture.createAgent(namespace.id, "Repeat cleanup", nativeValues("repeat"));
-    const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
-    assert.equal((await fixture.request("DELETE", path)).status, 202);
-    const { page } = await newPage(t, fixture);
-    const requests = apiRequests(page, fixture.origin);
-    await login(page, fixture, detailUrl(fixture, namespace.id, agent.id));
-    await page.getByRole("button", { name: "Request deletion again", exact: true }).waitFor();
-    requests.length = 0;
-    await checkStatusRefreshFocus(page, `${fixture.origin}${path}`, "Refresh deletion status");
-    const open = () =>
-      page.getByRole("button", { name: "Request deletion again", exact: true }).click();
-    await open();
-    let dialog = page.getByRole("dialog", { name: "Request deletion again for Repeat cleanup?" });
-    await dialog
-      .getByText("Cleanup that is queued or running continues unchanged.", { exact: false })
-      .waitFor();
-    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
-    assert.deepEqual(nonAuthWriteRequests(requests), []);
-    assert.equal(
-      await page
-        .getByRole("button", { name: "Request deletion again", exact: true })
-        .evaluate((node) => node === node.ownerDocument.activeElement),
-      true,
-    );
-    await open();
-    dialog = page.getByRole("dialog", { name: "Request deletion again for Repeat cleanup?" });
-    const response = page.waitForResponse(
-      (response) =>
-        response.url() === fixture.origin + path && response.request().method() === "DELETE",
-    );
-    await dialog.getByRole("button", { name: "Request deletion again", exact: true }).click();
-    assert.equal((await response).status(), 202);
-    assert.deepEqual(
-      agentDeleteRequests(requests, namespace.id, agent.id).map(({ method, path, body }) => [
-        method,
-        path,
-        body,
-      ]),
-      [["DELETE", path, null]],
-    );
-    assert.equal(responseData(await fixture.request("GET", path)).status, "deleting");
-  });
-
-  test("Repeat deletion preserves bounded retry ownership feedback and ordinary denial guidance", async (t) => {
-    const fixture = await detailApp(t);
-    const namespace = await fixture.createNamespace("Retry refusal feedback", {
-      ready: true,
-    });
-    const agent = await fixture.createAgent(namespace.id, "Owned cleanup", nativeValues("repeat"));
-    const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
-    assert.equal((await fixture.request("DELETE", path)).status, 202);
-    const { page } = await newPage(t, fixture);
-    await trackSettledFetches(page);
-    await page.clock.install();
-    await login(page, fixture, detailUrl(fixture, namespace.id, agent.id));
-    const ownership =
-      "Only the actor that started this deletion can retry it while that actor still holds delete. Retry as that actor, or remove its delete permission first.";
-    let serverMessage = ownership;
-    let writes = 0;
-    // Exercise the bounded API-client error consumer independently of durable worker admission.
-    await page.route(fixture.origin + path, async (route) => {
-      if (route.request().method() !== "DELETE") {
-        await route.continue();
-        return;
-      }
-      writes += 1;
-      await route.fulfill({
-        status: 403,
-        contentType: "application/json",
-        body: JSON.stringify({ error: { code: "FORBIDDEN", message: serverMessage } }),
-      });
-    });
-    const confirm = async () => {
-      await page.getByRole("button", { name: "Request deletion again", exact: true }).click();
-      await page
-        .getByRole("dialog", { name: "Request deletion again for Owned cleanup?" })
-        .getByRole("button", { name: "Request deletion again", exact: true })
-        .click();
-    };
-    await confirm();
-    await page.getByRole("alert").getByText(ownership, { exact: true }).waitFor();
-    await expectNoText(page, askForGrant("Agent delete on it"), () => waitForIdleFetches(page));
-    assert.equal(writes, 1);
-    await page.clock.fastForward(DELETION_POLL_MS * 2);
-    await page.getByRole("alert").getByText(ownership, { exact: true }).waitFor();
-    assert.equal(writes, 1);
-    serverMessage = GENERIC_DENIAL;
-    await confirm();
-    await page
-      .getByRole("alert")
-      .getByText(deleteRefused("Owned cleanup"), { exact: false })
-      .waitFor();
-    assert.equal(writes, 2);
-    await page.clock.fastForward(DELETION_POLL_MS * 2);
-    await page
-      .getByRole("alert")
-      .getByText(deleteRefused("Owned cleanup"), { exact: false })
-      .waitFor();
-    await page.getByRole("button", { name: "Refresh deletion status", exact: true }).click();
-    await page.getByRole("alert").waitFor({ state: "hidden" });
-    assert.equal(writes, 2);
-    assert.equal(responseData(await fixture.request("GET", path)).status, "deleting");
   });
 
   // The API's 400 and 409 answers for Stop (contractMessage and occ's stopAgent). Stop has no form,
@@ -671,283 +448,56 @@ export function registerDeletionAndNavigationCases(detailApp: ReturnType<typeof 
     }
   });
 
-  test("failed repeat deletion preserves feedback when a poll was rearmed during its request", async (t) => {
-    // The API's 400 and 409 answers for this route (contractMessage and occ's deleteAgent). Delete
-    // has no form, so a schema refusal does not ask to check entered values, and the API's typed
-    // 409 sentence shows with the step that recovers (finding 2538).
-    for (const [status, text, guarded, serverMessage] of [
-      [400, MALFORMED_REQUEST, false, "The request does not match the operation contract."],
-      [
-        409,
-        "The Agent lifecycle changed during deletion. Refresh deletion status before trying again.",
-        true,
-        "The Agent lifecycle changed during deletion.",
-      ],
-      [429, "Too many requests. Wait before trying again.", false],
-    ] as const) {
-      await t.test(`HTTP ${status}`, async (t) => {
-        const fixture = await detailApp(t);
-        const namespace = await fixture.createNamespace(`Pending repeat poll ${status}`, {
-          ready: true,
-        });
-
-        const agent = await fixture.createAgent(
-          namespace.id,
-          "Failed repeat",
-          nativeValues("repeat"),
-        );
-
-        const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
-        assert.equal((await fixture.request("DELETE", path)).status, 202);
-        const { page } = await newPage(t, fixture);
-        await page.clock.install();
-        const { promise: gate, resolve: release } = deferred<void>();
-        t.after(() => release());
-        const { promise: pending, resolve: entered } = deferred<void>();
-        let writes = 0;
-        await page.route(fixture.origin + path, async (route) => {
-          if (route.request().method() !== "DELETE") {
-            await route.continue();
-            return;
-          }
-          writes += 1;
-          entered();
-          await gate;
-          // The Agent DELETE route sends 400 and 409 itself; it has no 429, which comes from a
-          // rate limit in front of the API.
-          await route.fulfill(
-            status === 429
-              ? proxyErrorResponse(429)
-              : apiErrorResponse(
-                  status,
-                  status === 409 ? "RESOURCE_CONFLICT" : "INVALID_REQUEST",
-                  serverMessage,
-                ),
-          );
-        });
-        await login(page, fixture, detailUrl(fixture, namespace.id, agent.id));
-        const repeat = page.getByRole("button", { name: "Request deletion again", exact: true });
-        await repeat.click();
-        await page
-          .getByRole("dialog")
-          .getByRole("button", { name: "Request deletion again", exact: true })
-          .click();
-        await pending;
-        // Poll callbacks see pending and rearm. Failure must cancel the rearmed timer too.
-        await page.clock.fastForward(DELETION_POLL_MS * 2);
-        release();
-        await page.getByRole("alert").getByText(text, { exact: true }).waitFor();
-        await page.clock.fastForward(DELETION_POLL_MS * 2);
-        await page.getByRole("alert").getByText(text, { exact: true }).waitFor();
-        assert.equal(await repeat.isDisabled(), guarded);
-        assert.equal(writes, 1);
-        await page.getByRole("button", { name: "Refresh deletion status", exact: true }).click();
-        await page.getByRole("alert").waitFor({ state: "hidden" });
-        await page.waitForFunction(() =>
-          [...globalThis.document.querySelectorAll("button")].some(
-            (node) => node.textContent === "Request deletion again" && !node.disabled,
-          ),
-        );
-        assert.equal(writes, 1, "manual readback does not replay a write");
-      });
-    }
-  });
-
-  test("a repeat confirmed during a deletion status read waits for it, shows as sending, then sends once", (t) =>
-    checkRepeatDuringRead(t, { endsAccess: false }));
-
-  test("a deletion status read that ends access drops a repeat confirmed while it ran", (t) =>
-    checkRepeatDuringRead(t, { endsAccess: true }));
-
-  // A read that fails still sends the repeat the reader confirmed, and its outcome replaces the
-  // read's error (finding 1985; dropping it would bring back finding 1975's lost request).
-  test("a deletion status read that fails still sends a repeat confirmed while it ran", (t) =>
-    checkRepeatDuringRead(t, { endsAccess: false, readFails: true }));
-
-  async function checkRepeatDuringRead(
-    t: TestContext,
-    { endsAccess, readFails = false }: { endsAccess: boolean; readFails?: boolean },
-  ) {
+  test("Agent delete conflict preserves the API reason and requires readback before retry", async (t) => {
     const fixture = await detailApp(t);
-    const namespace = await fixture.createNamespace(
-      `Read before repeat${endsAccess ? " ending access" : ""}${readFails ? " failing" : ""}`,
-      { ready: true },
-    );
+    const namespace = await fixture.createNamespace("Delete conflict", { ready: true });
     const agent = await fixture.createAgent(
       namespace.id,
-      "Read guarded repeat",
-      nativeValues("repeat"),
+      "Conflicted Agent",
+      nativeValues("conflict"),
     );
-    const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
-    assert.equal((await fixture.request("DELETE", path)).status, 202);
-    const { page } = await newPage(t, fixture);
-    await page.clock.install();
-    let holdRead = false;
-    const { promise: gate, resolve: release } = deferred<void>();
-    t.after(() => release());
-    const { promise: pending, resolve: entered } = deferred<void>();
-    let writes = 0;
-    await page.route(fixture.origin + path, async (route) => {
-      if (route.request().method() === "DELETE") {
-        writes += 1;
-      }
-      if (route.request().method() !== "GET" || !holdRead) {
-        await route.continue();
-        return;
-      }
-      holdRead = false;
-      const response = await route.fetch();
-      entered();
-      await gate;
-      if (endsAccess) {
-        // Finishing the deletion removed the reader's only grants on this Agent.
-        await route.fulfill({
-          status: 403,
-          contentType: "application/json",
-          body: JSON.stringify({ error: { code: "FORBIDDEN", message: "Forbidden." } }),
-        });
-        return;
-      }
-      if (readFails) {
-        await route.fulfill({
-          status: 503,
-          contentType: "application/json",
-          body: JSON.stringify({
-            error: { code: "DEPENDENCY_UNAVAILABLE", message: "Deletion status unavailable." },
-          }),
-        });
-        return;
-      }
-      await route.fulfill({ response });
-    });
-    await login(page, fixture, detailUrl(fixture, namespace.id, agent.id));
-    await page.getByRole("button", { name: "Request deletion again", exact: true }).click();
-    const dialog = page.getByRole("dialog");
-    const confirm = dialog.getByRole("button", { name: "Request deletion again", exact: true });
-    holdRead = true;
-    await page.clock.fastForward(DELETION_POLL_MS);
-    await pending;
-    await confirm.click();
-    // The confirmed repeat waits for the read instead of being dropped (finding 1975), and says so.
-    const sending = dialog.getByRole("button", { name: "Deleting…", exact: true });
-    await sending.waitFor();
-    assert.equal(await sending.getAttribute("aria-busy"), "true");
-    assert.equal(await sending.isDisabled(), true);
-    assert.equal(
-      await dialog.getByRole("button", { name: "Cancel", exact: true }).isDisabled(),
-      true,
-    );
-    await page.keyboard.press("Escape");
-    assert.equal(await dialog.isVisible(), true, "Escape keeps a confirmed repeat");
-    assert.equal(writes, 0, "pending read prevents delete admission");
-    if (endsAccess) {
-      release();
-      await dialog.waitFor({ state: "detached" });
-      await page
-        .getByRole("status")
-        .getByText(
-          "Deletion was accepted. You can no longer read this Agent’s status, so this page cannot tell whether cleanup has finished.",
-        )
-        .waitFor();
-      assert.equal(
-        await page
-          .getByRole("heading", { name: "Delete Agent", exact: true })
-          .evaluate((node) => node.matches(":focus")),
-        true,
-      );
-      assert.equal(writes, 0, "a read that ended access sends no repeat");
-      return;
-    }
-    const accepted = page.waitForResponse(
-      (response) =>
-        response.url() === fixture.origin + path && response.request().method() === "DELETE",
-    );
-    release();
-    assert.equal((await accepted).status(), 202);
-    await dialog.waitFor({ state: "detached" });
-    await page.waitForFunction(() =>
-      [...globalThis.document.querySelectorAll("button")].some(
-        (node) => node.textContent === "Refresh deletion status" && !node.disabled,
-      ),
-    );
-    assert.equal(writes, 1);
-    if (readFails) {
-      assert.equal(
-        await page.getByText("Could not refresh deletion status.", { exact: false }).count(),
-        0,
-        "the repeat's outcome replaces the read's error",
-      );
-    }
-  }
-
-  test("An uncertain repeat deletion stays blocked until a successful deleting readback", async (t) => {
-    const fixture = await detailApp(t);
-    const namespace = await fixture.createNamespace("Repeat deletion uncertainty", {
-      ready: true,
-    });
-    const agent = await fixture.createAgent(
-      namespace.id,
-      "Uncertain repeat",
-      nativeValues("repeat"),
-    );
-    const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
-    assert.equal((await fixture.request("DELETE", path)).status, 202);
     const { page } = await newPage(t, fixture);
     const requests = apiRequests(page, fixture.origin);
-    await page.clock.install();
-    let writes = 0;
-    await page.route(`**${path}`, async (route, request) => {
-      if (request.method() !== "DELETE" || ++writes > 1) {
+    const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+    await page.route(fixture.origin + path, async (route) => {
+      if (route.request().method() === "DELETE") {
+        await route.fulfill(
+          apiErrorResponse(
+            409,
+            "RESOURCE_CONFLICT",
+            "The Agent lifecycle changed during deletion.",
+          ),
+        );
+      } else {
         await route.continue();
-        return;
       }
-      await route.fetch();
-      await route.fulfill({
-        status: 503,
-        contentType: "application/json",
-        body: JSON.stringify({
-          error: { code: "DEPENDENCY_UNAVAILABLE", message: "masked repeat response" },
-          meta: { requestId: "req_00000000-0000-4000-8000-000000000503" },
-        }),
-      });
     });
-    await login(page, fixture, detailUrl(fixture, namespace.id, agent.id));
-    const repeat = page.getByRole("button", { name: "Request deletion again", exact: true });
-    await repeat.waitFor();
-    requests.length = 0;
-    await repeat.click();
-    let dialog = page.getByRole("dialog", { name: "Request deletion again for Uncertain repeat?" });
-    await dialog.getByRole("button", { name: "Request deletion again", exact: true }).click();
-    await page.getByText("Outcome unknown. Deletion may have started.").waitFor();
-    assert.equal(await repeat.isDisabled(), true);
-    assert.equal(writes, 1);
-    assert.equal(agentDeleteRequests(requests, namespace.id, agent.id).length, 1);
-    await page.clock.fastForward(DELETION_POLL_MS * 2);
-    assert.equal(
-      await repeat.isDisabled(),
-      true,
-      "a background poll cannot settle this unknown write",
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
     );
-    await page.getByText("Outcome unknown. Deletion may have started.").waitFor();
-    assert.equal(writes, 1);
+    const remove = page.getByRole("button", { name: "Delete Agent", exact: true });
+    await remove.click();
+    await page
+      .getByRole("dialog", { name: "Delete Conflicted Agent?" })
+      .getByRole("button", { name: "Permanently delete Agent", exact: true })
+      .click();
+    const alert = page
+      .getByRole("region", { name: "Delete Agent", exact: true })
+      .getByRole("alert");
+    await alert
+      .getByText(
+        "The Agent lifecycle changed during deletion. Refresh deletion status before trying again.",
+        { exact: true },
+      )
+      .waitFor();
+    await expectReachableReason(page, remove, (await alert.textContent())?.trim());
+    assert.equal(agentDeleteRequests(requests, namespace.id, agent.id).length, 1);
+    // The real read still finds an active Agent; only that read permits a fresh attempt.
     await page.getByRole("button", { name: "Refresh deletion status", exact: true }).click();
-    await repeat.waitFor({ state: "visible" });
-    await page.waitForFunction(() =>
-      [...globalThis.document.querySelectorAll("button")].some(
-        (node) => node.textContent === "Request deletion again" && !node.disabled,
-      ),
-    );
-    assert.equal(writes, 1);
+    await waitForEnabled(remove);
     assert.equal(agentDeleteRequests(requests, namespace.id, agent.id).length, 1);
-    await repeat.click();
-    dialog = page.getByRole("dialog", { name: "Request deletion again for Uncertain repeat?" });
-    const response = page.waitForResponse(
-      (response) =>
-        response.url() === fixture.origin + path && response.request().method() === "DELETE",
-    );
-    await dialog.getByRole("button", { name: "Request deletion again", exact: true }).click();
-    assert.equal((await response).status(), 202);
-    assert.equal(writes, 2);
   });
 
   test("Agent deletion recovery returns a missing Agent detail to its Namespace list", async (t) => {

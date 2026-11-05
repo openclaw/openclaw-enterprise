@@ -336,6 +336,26 @@ export const QA_STOP_TIMEOUT_MS = GATEWAY_STOP_TIMEOUT_MS + 10_000 + 3 * 60_000;
 // lines name the work it waits for (finding 1076).
 export const QA_SLOW_STOP_MS = 60_000;
 
+// Scenario cleanup and installation teardown share one stop attempt for this Agent. A lost
+// response or an unfinished observation must retain the installation, never issue a second stop.
+export async function stopQaAgentForCleanup(f, agent) {
+  if (agent.stopped) {
+    return false;
+  }
+  if (agent.cleanupStopAttempted) {
+    f.retained = true;
+    return false;
+  }
+  agent.cleanupStopAttempted = true;
+  try {
+    await stopQaAgent(f, agent);
+    return true;
+  } catch (error) {
+    f.retained = true;
+    throw error;
+  }
+}
+
 // `now` is the clock for both the slow-stop threshold and the timeout; tests pass a
 // fake one with `interval: 0`, so neither bound costs real time.
 export async function stopQaAgent(

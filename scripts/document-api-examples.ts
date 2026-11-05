@@ -147,7 +147,11 @@ export function documentApiExamples<T>(document: T): T {
             }
             const data = lookup(responseExamples, name);
             const responseMeta =
-              name === "listAgentRevisions" ? { ...meta, nextCursor: null } : meta;
+              name === "listAgentRevisions"
+                ? { ...meta, nextCursor: null }
+                : name === "deleteAgent"
+                  ? { ...meta, deletionReceiptId: parameterExamples.receiptId }
+                  : meta;
             const examples: Record<string, unknown> = example(
               { data, meta: responseMeta },
               "Example response",

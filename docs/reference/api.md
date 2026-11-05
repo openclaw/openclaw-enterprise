@@ -85,7 +85,7 @@ the paths.
 | [Backends](#backends) | 1 operation |
 | [Installation](#installation) | 5 operations |
 | [Namespaces](#namespaces) | 6 operations |
-| [Agents](#agents) | 50 operations |
+| [Agents](#agents) | 51 operations |
 | [Agent deployments](#agent-deployments) | 4 operations |
 | [Agent revisions](#agent-revisions) | 2 operations |
 | [Configurations](#configurations) | 4 operations |
@@ -2555,6 +2555,7 @@ Example response
 | [`PATCH /namespaces/{namespaceId}/agents/{agentId}`](#patch-namespacesnamespaceidagentsagentid) | Replace an exact Namespace-owned Agent's editable draft |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/credential-sources/{credentialSourceId}/withdraw`](#post-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdraw) | Revoke one credential source from the selected Agent revision |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/credential-sources/{credentialSourceId}/withdrawal`](#get-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdrawal) | Get the withdrawal state of a credential source for an Agent |
+| [`GET /namespaces/{namespaceId}/agents/{agentId}/deletion-status`](#get-namespacesnamespaceidagentsagentiddeletionstatus) | Follow an Agent deletion, including its confirmed completion with your receipt |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/deploy`](#post-namespacesnamespaceidagentsagentiddeploy) | Save an Agent revision from the Agent's saved settings |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/deploy-first`](#post-namespacesnamespaceidagentsagentiddeployfirst) | Admit the first deployment of an exact reviewed Configuration; requires Configuration read |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/deploy-first/{key}/{expectedConfigurationId}/{expectedGeneration}`](#get-namespacesnamespaceidagentsagentiddeployfirstkeyexpectedconfigurationidexpectedgeneration) | Read an exact first-deployment receipt; null does not prove failure; requires Configuration read |
@@ -4031,6 +4032,7 @@ Begin or retry deletion of the requested Agent and its Agent revisions
 | `data.servicePrincipalId` | `string` | Yes | min length: 1; max length: 200 |
 | `data.status` | `"active" or "deleting"` | Yes | — |
 | `meta` | `object` | Yes | — |
+| `meta.deletionReceiptId` | `string` | Yes | pattern: `^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
 Example response
@@ -4058,6 +4060,7 @@ Example response
     "status": "deleting"
   },
   "meta": {
+    "deletionReceiptId": "aud_123e4567-e89b-42d3-a456-426614174000",
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
   }
 }
@@ -4426,6 +4429,69 @@ Example response
     "revisionId": "rev_123e4567-e89b-42d3-a456-426614174000",
     "state": "pending",
     "withdrawalInProgress": true
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `GET /namespaces/{namespaceId}/agents/{agentId}/deletion-status`
+
+<span id="get-namespacesnamespaceidagentsagentiddeletionstatus"></span>
+
+Follow an Agent deletion, including its confirmed completion with your receipt
+
+**Operation ID:** `getAgentDeletionStatus`
+
+**Permissions:** Without receiptId, requires read permission on the requested Agent and reports only deletion still recorded on that Agent. With receiptId, requires current read permission on the requested Namespace and the caller's own accepted DELETE receipt for that exact Agent. The receipt remains readable after Agent grants are removed and grants no access to the Agent or audit events.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `read` | `agent` | `requested` |
+| `read` | `namespace` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `receiptId` | query | `string` | No | pattern: `^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "aud_123e4567-e89b-42d3-a456-426614174000" |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "agt_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `500` | The platform request could not be completed. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.agentId` | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.nextAttemptAt` | `string (date-time)` | No | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
+| `data.receiptId` | `string` | No | pattern: `^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.status` | `"queued" or "running" or "waiting" or "failed" or "deleted"` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "agentId": "agt_123e4567-e89b-42d3-a456-426614174000",
+    "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
+    "receiptId": "aud_123e4567-e89b-42d3-a456-426614174000",
+    "status": "deleted"
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"

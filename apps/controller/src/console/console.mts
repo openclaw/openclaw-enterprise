@@ -27,6 +27,7 @@ import {
   renderCreateAgent,
   renderAgentDetail,
 } from "./agents.mjs";
+import { clearDeletionReceipts, renderDeletionStatus } from "./agents/deletion-status.mjs";
 import { clearRuntimeDenials, forgetRuntimeDenials } from "./agents/logs.mjs";
 import {
   ASK_INSTALLATION_ADMINISTRATOR,
@@ -1319,6 +1320,7 @@ function clearPrivate() {
   installationAdmin = null;
   clearRetainedViews();
   clearResolvedSecretNames();
+  clearDeletionReceipts();
   clearRuntimeDenials();
 }
 
@@ -1598,6 +1600,7 @@ async function loadPage({
   // Set only by Back and Forward (popstate).
   restoreHistory = null,
   openingAgent = false,
+  focusTarget: navigationFocusId,
   // Set only by the load that follows a chat-link lookup that failed (finding 1450).
   chatLinkFailure = null,
 }: {
@@ -1606,6 +1609,7 @@ async function loadPage({
   fromRefresh?: boolean;
   restoreHistory?: ((url: string) => void) | null;
   openingAgent?: boolean;
+  focusTarget?: string;
   chatLinkFailure?: keyof typeof chatLinkFailures | null;
 } = {}) {
   noteConsoleLoad();
@@ -1923,6 +1927,7 @@ async function loadPage({
     }
     if (!owner || previousOwner !== owner || draftUserId !== owner) {
       clearRetainedViews();
+      clearDeletionReceipts();
       observabilityUrl = null;
       observabilityOwner = null;
       installationAdmin = null;
@@ -2052,7 +2057,12 @@ async function loadPage({
     // Awaited after the first reads; a first read that fails first leaves it unawaited.
     accessRead?.catch(() => {});
     let firstPermissions: NamespacePermissions | null = null;
-    if (!scopedNamespaceUnavailable && current.feature !== "settings" && !current.creating) {
+    if (
+      !scopedNamespaceUnavailable &&
+      current.feature !== "settings" &&
+      !current.creating &&
+      !current.deletion
+    ) {
       if (agentPath !== null) {
         firstAgent = (await request(agentPath)) as AgentRead;
       } else if (itemsPath !== null) {
@@ -2211,7 +2221,7 @@ async function loadPage({
     // so nothing is focused twice (finding 1528). A fresh load whose reads beat the loading
     // delay has no shell yet: its startup status stands in, until the overview reveals or the
     // delay passes and the loading page takes its place (finding 1537).
-    const agentEntry = current.agentId && !current.creating && !scopedNamespaceUnavailable;
+    const agentEntry = current.agentId && !current.deletion && !scopedNamespaceUnavailable;
     const startupStandIn =
       agentEntry && !shell && loadingTimer !== null
         ? app.querySelector<HTMLParagraphElement>(":scope > .startup")
@@ -2523,6 +2533,18 @@ async function loadPage({
         },
       };
       renderCreateAgent(createContext, agentContext.drafts.get("create"));
+      markMountedRoute(current);
+      return;
+    }
+    if (current.deletion && current.agentId && namespaceId !== null) {
+      // The receipt can outlive Agent access. Read only deletion status, and never reuse a
+      // previous result after navigation, account changes, or a failed access recheck.
+      viewState.reusable = false;
+      renderDeletionStatus(
+        { ...agentContext, namespaceId },
+        current.agentId,
+        current.url.searchParams.get("receiptId"),
+      );
       markMountedRoute(current);
       return;
     }
@@ -2866,6 +2888,15 @@ async function loadPage({
         document.activeElement === document.body
       ) {
         // A deployment being reread can receive return focus, but is not a link until it settles.
+        const requestedFocus = navigationFocusId
+          ? document.getElementById(navigationFocusId)
+          : null;
+        const navigationFocus =
+          requestedFocus &&
+          shell.view.contains(requestedFocus) &&
+          requestedFocus.getClientRects().length
+            ? requestedFocus
+            : null;
         const focusTarget =
           agentReturnHref &&
           Array.from(
@@ -2873,7 +2904,11 @@ async function loadPage({
               "a[href], [data-return-focus-href]",
             ),
           ).find((item) => (item.dataset.returnFocusHref ?? item.href) === agentReturnHref);
-        (focusTarget || app.querySelector<HTMLHeadingElement>(".content h1"))?.focus({
+        (
+          navigationFocus ||
+          focusTarget ||
+          app.querySelector<HTMLHeadingElement>(".content h1")
+        )?.focus({
           preventScroll: true,
         });
       }
@@ -3182,7 +3217,7 @@ function resumePage() {
   const current = route();
   // Agent detail rechecks in place and keeps its forms, so their input must not skip the
   // check. Other pages reload the view, which would discard an unfinished form.
-  const inPlace = current.agentId && mountedRouteKey === routeKey(current);
+  const inPlace = current.agentId && !current.deletion && mountedRouteKey === routeKey(current);
   if (!inPlace && app.querySelector("form")) {
     return;
   }

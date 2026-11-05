@@ -80,6 +80,7 @@ const CONSOLE_ASSETS = new Map([
       "agents/deployment-diagnostics.mts",
       "agents/deployment-recovery.mts",
       "agents/deletion.mts",
+      "agents/deletion-status.mts",
       "agents/stop.mts",
       "agents/native-admin.mts",
       "agents/harness-auth.mts",
@@ -304,7 +305,8 @@ function canonicalConsolePath(pathname: string) {
 
 function isConsolePage(pathname: string) {
   return (
-    CONSOLE_SHELL_ROUTES.has(pathname) || /^\/console\/agents\/(new|agt_[a-f0-9-]+)$/.test(pathname)
+    CONSOLE_SHELL_ROUTES.has(pathname) ||
+    /^\/console\/agents\/(new|agt_[a-f0-9-]+(?:\/deletion)?)$/.test(pathname)
   );
 }
 

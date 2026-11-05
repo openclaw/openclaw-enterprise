@@ -374,7 +374,11 @@ async function openWorkspaceVersions(
   workspaceFilesAccess: ControllerWorkspaceFilesAccess,
   count = 2,
 ) {
-  const fixture = await createConsoleAppFixture(t, { publicOrigin: true, workspaceFilesAccess });
+  const fixture = await createConsoleAppFixture(t, {
+    publicOrigin: true,
+    workspaceFilesAccess,
+    recordOperations: true,
+  });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace(name, { ready: true });
   const agent = await fixture.createAgent(namespace.id, name, nativeValues("reread"));
@@ -903,7 +907,7 @@ test("an Agent read answered after deletion was requested leaves the Workspace f
     .getByRole("dialog", { name: `Delete ${name}?` })
     .getByRole("button", { name: "Permanently delete Agent" })
     .click();
-  await page.getByRole("status").getByText("Deletion was requested").waitFor();
+  await page.getByRole("heading", { name: "Deletion queued", exact: true }).waitFor();
   const workspaceReads = () =>
     requests.filter((r) => r.method === "GET" && r.path.startsWith(`${agentPath}/workspace/`))
       .length;
@@ -913,7 +917,7 @@ test("an Agent read answered after deletion was requested leaves the Workspace f
   await waitForIdleFetches(page);
   await settlePageRequests(page);
   assert.equal(workspaceReads(), 4);
-  await page.getByRole("status").getByText("Deletion was requested").waitFor();
+  await page.getByRole("heading", { name: "Deletion queued", exact: true }).waitFor();
 });
 
 test("explicit missing-file readback settles an uncertain workspace create without replaying it", async (t) => {

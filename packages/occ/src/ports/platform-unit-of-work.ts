@@ -189,6 +189,7 @@ export function bindPlatformUnitOfWork(
       "append",
       "list",
       "findWork",
+      "findAgentDeletionStatus",
       "findWorkAttempt",
       "hasOutstandingCredentialWithdrawalWork",
       "retryFailedAgentDeletion",

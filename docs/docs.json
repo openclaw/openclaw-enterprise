@@ -132,6 +132,10 @@
                     "label": "Gateway managed mode"
                   },
                   {
+                    "page": "reference/agents/deletion",
+                    "label": "Deletion"
+                  },
+                  {
                     "page": "guides/topics/agent-presets",
                     "label": "Presets"
                   },

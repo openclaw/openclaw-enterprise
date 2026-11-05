@@ -157,12 +157,12 @@ stateDiagram-v2
   method, renews its lease before each effect, and keeps renewing while it runs.
   Consecutive short effects must not starve renewal. Only the current claim
   token can publish lifecycle state, audit evidence, or completion.
-- **`succeeded`:** The exact Namespace or Agent operation completed
-  successfully. Namespace transitions finalize with their audit; an Agent
-  version is selected and its route is enabled before the worker commits its
-  activation audit and queue completion together. These terminal records remain
-  available for idempotency. Successful Agent deletion instead removes its work
-  rows after recording lifecycle evidence because the owner no longer exists.
+- **`succeeded`:** The Namespace or Agent operation completed. Namespace transitions
+  commit with their audit. Agent activation selects the version and enables its
+  route before committing activation audit and queue completion together. These
+  records remain for idempotency. Agent deletion instead removes work rows after
+  recording lifecycle success. Its [status read](../agents/deletion.md#follow-deletion)
+  reports `deleted` from that transaction, never from missing Agent or work rows.
 - **`failed_permanent`:** Processing stopped because authorization failed, an
   unrecoverable error occurred, or the retry limit was exhausted. The failure
   is audited, and the terminal operation is never retried automatically.

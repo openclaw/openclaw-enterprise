@@ -1999,6 +1999,7 @@ test(
       [65, "preAgentDeployIntent"],
       [66, "preAgentCredentialSourceLimit"],
       [67, "preAgentPluginDriver"],
+      [68, "preAgentDeletionCompletion"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2441,6 +2442,7 @@ test(
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
+      [68, "preAgentDeletionCompletion"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2696,6 +2698,7 @@ test(
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
+      [68, "preAgentDeletionCompletion"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2715,8 +2718,9 @@ test(
         // 0057 replaces the Harness validator, so reject that function replacement.
         // 0058 creates the policy table; 0059 has no DDL, so later prefixes reach custody.
         // Fail the common reduction grant after admission backfill and repository authority.
-        // All three pending receipts, schema changes and main-row annotations roll back.
+        // Prefix 68 has only 0069's completion index left to apply; it issues no GRANT.
         const rollbackTag = [
+          [68, "CREATE INDEX"],
           [58, "GRANT"],
           [57, "CREATE TABLE"],
           [56, "CREATE FUNCTION"],
@@ -2874,7 +2878,7 @@ test(
     // A valid first and last receipt cannot vouch for the interior 0061 receipt.
     // Start each fault from accepted history so rejection cannot pass merely because
     // a retired preview hash was already unsupported.
-    const middle = completed.receipts.at(-3);
+    const middle = completed.receipts[60];
     for (const [label, sql] of [
       ["changed interior hash", "UPDATE drizzle.__drizzle_migrations SET hash=$2 WHERE id=$1"],
       [

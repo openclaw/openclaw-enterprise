@@ -179,6 +179,7 @@ const authAccount = {
 const sessionKey = "example-session-binding-not-a-credential";
 
 export const parameterExamples = {
+  receiptId: id("aud"),
   key: "review-1",
   expectedConfigurationId: configurationId,
   expectedGeneration: "1",
@@ -350,6 +351,7 @@ export const responseExamples = {
   deleteNamespace: { ...namespace, status: "deleting" },
   listAgents: [agent],
   getAgent: agent,
+  getAgentDeletionStatus: { agentId, namespaceId, receiptId: id("aud"), status: "deleted" },
   createAgent: agent,
   updateAgent: agent,
   deleteAgent: { ...agent, status: "deleting" },

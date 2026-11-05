@@ -61,7 +61,8 @@
     "tests/integration/credential-proxy-revision-currentness.test.ts",
     "tests/integration/postgres-egress-policy-transaction.test.ts",
     "tests/integration/postgres-credential-source-revision-owner.test.ts",
-    "tests/integration/postgres-worker-process-shutdown.test.ts"
+    "tests/integration/postgres-worker-process-shutdown.test.ts",
+    "tests/integration/postgres-agent-deletion-status.test.ts"
   ],
   "files": [
     {
@@ -591,6 +592,12 @@
       "path": "tests/integration/postgres-worker-process-shutdown.test.ts",
       "expectedTests": [
         "worker.mjs exits cleanly on SIGTERM after stopping the worker and its metrics listener"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-agent-deletion-status.test.ts",
+      "expectedTests": [
+        "Agent deletion receipts follow real work through lost claims, takeover and removal of Agent access"
       ]
     }
   ]

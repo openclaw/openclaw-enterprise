@@ -154,3 +154,17 @@ Previous row feedback disappears. No empty-list message appears beside the
 unavailable warning. Submitted requests report generic acceptance, refusal or
 unknown outcomes without Agent details or replay. Browser tests also cover session
 expiry. Use the late Stop response story to inspect its generic result.
+
+For **Components / Deletion / Permission denied** and **Components / Stop Agent /
+Permission denied**, move focus to another window and back. The later permission
+answer confirms denial. The attempted action's refusal and Request ID must remain
+visible and describe the unavailable control, without a duplicate permission notice.
+
+In **Components / Deletion / Outcome unknown**, choose **Refresh deletion status**,
+then move to another window and back. The active Agent readback initially permits
+a retry; the later negative permission answer must replace that advice with the
+current access reason and leave Delete unavailable.
+
+Reload **Outcome unknown** and reverse those actions: refocus before refreshing
+the Agent status. The same permission notice must remain after the active readback;
+neither ordering may suggest retrying while access is denied.
