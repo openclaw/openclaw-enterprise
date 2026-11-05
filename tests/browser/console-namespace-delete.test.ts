@@ -4,7 +4,7 @@ import type { Locator } from "playwright";
 import type { AuditEvent } from "../../packages/contracts/src/index.ts";
 import { DeletionRetryOwnedError } from "../../packages/occ/src/index.ts";
 
-import { apiErrorResponse } from "../helpers/api-error.mjs";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { restrict } from "../helpers/iam-grants.mjs";
 import { NAMESPACE_DELETE_DENIED, NAMESPACE_DELETE_RESTRICTED } from "../helpers/refusal-text.mjs";
 import { createConsoleAppFixture, grantMember, memberRole } from "../helpers/console-app.mjs";
@@ -476,3 +476,145 @@ test("a refused Namespace deletion retry keeps its reason through a background p
     faded: 0.6,
   });
 });
+
+for (const outcome of [
+  "unavailable",
+  "external focus",
+  "access ended",
+  "still deleting",
+] as const) {
+  test(`an open Namespace retry handles a background status result: ${outcome}`, async (t) => {
+    const { fixture, namespace } = await createReadyConsoleNamespace(t, "Observed cleanup");
+    const other = await fixture.createNamespace("Unaffected team", { ready: true });
+    const { page } = await newPage(t, fixture, { browser });
+    const requests = apiRequests(page, fixture.origin);
+    const path = `/namespaces/${namespace.id}`;
+    const url = `${fixture.origin}${path}`;
+    await trackSettledFetches(page);
+    await login(page, fixture, `/console/namespaces?namespace=${namespace.id}`);
+    await page.getByRole("button", { name: "Delete Observed cleanup", exact: true }).click();
+    const accepted = page.waitForResponse(
+      (response) => response.url() === url && response.request().method() === "DELETE",
+    );
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: "Delete Namespace", exact: true })
+      .click();
+    assert.equal((await accepted).status(), 202);
+    const retry = page.getByRole("button", { name: "Request deletion again", exact: true });
+    await retry.waitFor();
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    t.after(() => release.resolve());
+    await page.route(
+      url,
+      async (route) => {
+        assert.equal(route.request().method(), "GET");
+        started.resolve();
+        await release.promise;
+        if (outcome === "still deleting") {
+          await route.continue();
+        } else if (outcome === "access ended") {
+          await route.fulfill(apiErrorResponse(403, "FORBIDDEN", "Access denied"));
+        } else {
+          await route.fulfill(proxyErrorResponse(503));
+        }
+      },
+      { times: 1 },
+    );
+    // The normal background poll is already running when the operator opens retry.
+    await started.promise;
+    await retry.click();
+    const dialog = page.getByRole("dialog", {
+      name: "Retry deletion of Observed cleanup?",
+      exact: true,
+    });
+    const confirm = await dialog
+      .getByRole("button", { name: "Request deletion again", exact: true })
+      .elementHandle();
+    assert.ok(confirm);
+    if (outcome === "external focus") {
+      // A consumer of the native close event deliberately moves focus before the owner's
+      // queued close listener. Recovery must not steal it back.
+      await dialog.evaluate((node) =>
+        node.addEventListener(
+          "close",
+          () => {
+            document
+              .querySelector<HTMLButtonElement>('button[aria-label="Delete Unaffected team"]')
+              ?.focus();
+          },
+          { capture: true, once: true },
+        ),
+      );
+    }
+    const observed = (await settledFetches(page, path)) + 1;
+    const response = page.waitForResponse(
+      (answer) => answer.url() === url && answer.request().method() === "GET",
+    );
+    release.resolve();
+    assert.equal(
+      (await response).status(),
+      {
+        "still deleting": 200,
+        "access ended": 403,
+        unavailable: 503,
+        "external focus": 503,
+      }[outcome],
+    );
+    await waitForSettledFetches(page, path, observed);
+    if (outcome === "still deleting") {
+      assert.equal(await dialog.isVisible(), true);
+      assert.equal(
+        await dialog
+          .getByRole("button", { name: "Request deletion again", exact: true })
+          .isEnabled(),
+        true,
+      );
+      assert.equal(
+        await hasFocus(dialog.getByRole("button", { name: "Cancel", exact: true })),
+        true,
+      );
+      await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+      await dialog.waitFor({ state: "detached" });
+    } else {
+      assert.equal(
+        await dialog.isVisible(),
+        false,
+        "failed status must close the live confirmation",
+      );
+      await dialog.waitFor({ state: "detached" });
+      const recovery = page.getByRole("button", {
+        name: "Refresh Observed cleanup deletion status",
+        exact: true,
+      });
+      const otherDelete = page.getByRole("button", { name: "Delete Unaffected team", exact: true });
+      assert.equal(await hasFocus(outcome === "external focus" ? otherDelete : recovery), true);
+      assert.equal(await retry.count(), 0);
+      // A retained DOM event must not revive a closed prompt, even after a successful read
+      // makes a fresh deliberate retry available again.
+      await confirm.evaluate((node) =>
+        node.dispatchEvent(new MouseEvent("click", { bubbles: true })),
+      );
+      await waitForIdleFetches(page);
+      assert.equal(pathRequests(requests, "DELETE", path).length, 1);
+      await recovery.click();
+      await retry.waitFor();
+      await confirm.evaluate((node) =>
+        node.dispatchEvent(new MouseEvent("click", { bubbles: true })),
+      );
+      await waitForIdleFetches(page);
+      assert.equal(pathRequests(requests, "DELETE", path).length, 1);
+      await retry.click();
+      await dialog.waitFor();
+      await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+      await dialog.waitFor({ state: "detached" });
+    }
+    assert.equal(pathRequests(requests, "DELETE", path).length, 1);
+    assert.equal((await fixture.request("GET", `/namespaces/${other.id}`)).data.status, "ready");
+    assert.equal(
+      await page.getByRole("button", { name: "Delete Unaffected team", exact: true }).isEnabled(),
+      true,
+    );
+  });
+}
