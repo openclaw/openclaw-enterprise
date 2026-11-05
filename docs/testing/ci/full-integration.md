@@ -47,7 +47,7 @@ Job links use the exact names shown in GitHub Actions and open their manifests.
 
 `all` selects the workflow's supported lanes, not every lane registered in the
 repository. [Manually prepared lanes](../manual-tests.md)
-remain excluded. QA's default `all` also excludes its four
+remain excluded. QA's default `all` also excludes its five
 [explicit scenario selectors](qa-advisory.md#select-scenarios).
 
 In the hosted QA matrix, the CI account can select only built-in Codex
@@ -70,6 +70,8 @@ commit, then dispatch the selected lane or `all` on `main`:
 ```sh
 gh workflow run full-integration.yml --ref main -f lane=all
 ```
+
+Use `qa_scenarios` to select a QA scenario subset for `qa-matrix` or `all`.
 
 ### Run the hosted local installation lane
 

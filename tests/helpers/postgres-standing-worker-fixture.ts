@@ -32,6 +32,7 @@ export function observationGateway(): CredentialGatewayDriver {
     implementation: "credential-gateway-worker-fixture",
     capability: "credential_gateway",
     validateSourceConfig() {},
+    describeSourceDestinations: () => ({}),
     listSourceTypes: async () => [],
     registerSource: unused,
     updateSource: unused,

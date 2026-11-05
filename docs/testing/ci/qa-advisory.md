@@ -69,6 +69,7 @@ is in the [QA manifest](../../../scripts/ci/test-suites/qa-matrix.json).
 | `git-push-denied`       | No                   | Codex           | Reject a push to any other branch and dispose credentials.                                                                                                 |
 | `slack`                 | No                   | Codex           | Threaded reply and new root message.                                                                                                                       |
 | `openshell-linear-read` | No                   | Codex           | Opt-in shipped OpenShell setup, Linear installation and verified native read.                                                                              |
+| `custom-responses`      | No                   | OpenClaw, Codex | Opt-in endpoint-authorized API-key creation, streaming response, and real shell read; runtime qualification remains unverified.                            |
 | `codex-search-config`   | No                   | Codex           | API-key Agent user configuration with omitted, false and true capability declarations; persistence after supported stop/deploy.                            |
 
 The [QA matrix test](../../../tests/integration/qa-matrix-real.test.mjs) implements
@@ -153,9 +154,16 @@ OpenShell files or the local installation suite. For those suites, follow
 `OCC_TEST_QA_PRESET` accepts `all` (default), `OpenClaw`, `Codex`.
 `OCC_TEST_QA_SCENARIOS` accepts `all` (default) or comma-separated selectors.
 `all` excludes the explicit `sandbox-policy`, `plugin-install`,
-`openshell-linear-read`, and `codex-search-config` selectors.
+`openshell-linear-read`, `custom-responses`, and `codex-search-config`
+selectors.
 Invalid or wholly inapplicable selections fail before provisioning; missing
 inputs fail selected checks. Omitting `OCC_TEST_QA_MATRIX=1` skips the suite.
+
+Select `custom-responses` alone. It requires an exclusive scenario selection,
+`OCC_TEST_QA_RESPONSES_BASE_URL`, `OCC_TEST_QA_RESPONSES_MODEL`, and a private
+key file through `OCC_TEST_QA_RESPONSES_KEY_FILE`. The endpoint and key must
+belong to the same authorized destination. The scenario is excluded from default
+and advisory runs until runtime qualification is recorded.
 
 Select `codex-search-config` alone. It requires `OCC_TEST_QA_CODEX_MODEL_BASE_URL`,
 `OCC_TEST_QA_CODEX_MODEL`, and an API key through `OCC_TEST_QA_MODEL_API_KEY` or

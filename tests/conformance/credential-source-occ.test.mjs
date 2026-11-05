@@ -66,6 +66,13 @@ function createTestCredentialGateway(options = {}) {
       }
     },
     validateSourceConfig() {},
+    describeSourceDestinations: () =>
+      options.destinations ?? {
+        api_key: { endpoint: "https://api.openai.com/v1", isDefault: true },
+        access_token: { endpoint: "https://chatgpt.com/backend-api", isDefault: true },
+        client_secret: { endpoint: "https://issuer.example.test/token", isDefault: true },
+        refresh_token: { endpoint: "https://issuer.example.test/token", isDefault: true },
+      },
     async listSourceTypes() {
       return [
         {
@@ -438,6 +445,37 @@ async function refreshSource(context, name = "oauth-client") {
   });
   return { secret, source };
 }
+
+test("a single-endpoint Secret cannot authorize a multi-destination profile", async () => {
+  const context = await fixture({
+    gateway: {
+      destinations: {
+        api_key: {
+          endpoint: "https://allowed.example.test/v1",
+          additionalEndpoints: ["https://other.example.test/v1"],
+          isDefault: false,
+        },
+      },
+    },
+  });
+  await context.makeReady();
+  const secret = await context.controller.createSecret(administrator, {
+    namespaceId: context.namespace.id,
+    name: `model-key-${crypto.randomUUID()}`,
+    value: "synthetic-model-key",
+    authorizedEndpoint: "https://allowed.example.test/v1",
+  });
+  // Matching one described destination cannot authorize the profile's other destination.
+  await assert.rejects(
+    context.controller.createCredentialSource(administrator, {
+      namespaceId: context.namespace.id,
+      name: "multi-destination",
+      type: "openai",
+      secrets: { api_key: secret.ref },
+    }),
+    /does not authorize its destination/,
+  );
+});
 
 test("a refresh source is ready only after its first mint, and its material is not a gateway value", async () => {
   const context = await fixture();

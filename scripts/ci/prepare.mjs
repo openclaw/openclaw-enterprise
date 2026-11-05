@@ -1298,8 +1298,6 @@ async function buildRuntimeImages(
   }
   if (runtime) {
     const tag = `${tagBase}/runtime:local`;
-    const sourceArguments =
-      openclawSource === undefined ? openclawBuildArguments(await readOpenclawSource()) : [];
     builds.push({
       role: "runtime",
       tag,
@@ -1309,7 +1307,7 @@ async function buildRuntimeImages(
               ...imageBuildArgs(state, "runtime", localStore),
               ...plainProgress,
               ...revisionArgs,
-              ...sourceArguments,
+              ...openclawBuildArguments(await readOpenclawSource()),
               "--pull=false",
               "-f",
               runtimeDockerfile,
@@ -1334,9 +1332,6 @@ async function buildRuntimeImages(
         OCC_DOCKER_GATEWAY_IMAGE: tag,
         OCC_DOCKER_AGENT_IMAGE: tag,
         OCC_TEST_KUBERNETES_RUNTIME_IMAGE: tag,
-        ...(openclawSource === undefined
-          ? {}
-          : { OCC_K3D_OPENCLAW_COMMIT: process.env.OCC_K3D_OPENCLAW_COMMIT }),
       },
     });
   }
@@ -2579,11 +2574,7 @@ async function prepareK3dRuntimeImages(
   if (needsController || needsRuntime) {
     const images = [
       needsController ? "controller" : undefined,
-      needsRuntime
-        ? process.env.OCC_K3D_OPENCLAW_SOURCE === undefined
-          ? "gateway and Codex runtime"
-          : "gateway and native OpenClaw runtime"
-        : undefined,
+      needsRuntime ? "gateway and Codex runtime" : undefined,
     ]
       .filter(Boolean)
       .join(", ");
@@ -2609,12 +2600,7 @@ async function prepareK3dRuntimeImages(
       env.OCC_TEST_KUBERNETES_AGENT_IMAGE ?? process.env.OCC_TEST_KUBERNETES_AGENT_IMAGE,
   };
   requireEnv(Object.keys(inputs), inputs);
-  progress(
-    state.lane,
-    process.env.OCC_K3D_OPENCLAW_SOURCE === undefined
-      ? "Importing the gateway and Codex runtime images into k3d."
-      : "Importing the native OpenClaw runtime image into k3d.",
-  );
+  progress(state.lane, "Importing the gateway and Codex runtime images into k3d.");
   for (const [name, value] of Object.entries(inputs)) {
     const image = await registerImageInK3d(statePath, state, cluster, value, name);
     env[name] = image.reference;
@@ -2631,7 +2617,7 @@ async function prepareK3dRuntimeImages(
   }
   // Replace the build tag with its imported digest before publishing the next step's inputs.
   env.OCC_TEST_KUBERNETES_RUNTIME_IMAGE = env.OCC_TEST_KUBERNETES_GATEWAY_IMAGE;
-  if (lanePrepare(state.lane).codexSeccomp && process.env.OCC_K3D_OPENCLAW_SOURCE === undefined) {
+  if (lanePrepare(state.lane).codexSeccomp) {
     progress(state.lane, "Deriving and installing the dedicated Codex seccomp profile.");
     const seccomp = await prepareCodexSeccompProfile({
       cluster,

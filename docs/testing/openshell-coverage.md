@@ -206,3 +206,16 @@ The selected workflow must pass without skips. Its sanitized runtime log is
 written to the matrix artifacts directory. Cleanup remains with the owner of the
 prepared OpenShell lane; run the documented cleanup even on failure. The existing
 OpenShell advisory job exercises this workflow with the rest of its runtime suite.
+
+The exclusive `authority-recovery` scenario uses the same production setup. It
+first proves that an admitted model source is attached through Compute and the
+OpenShell Gateway. It then stops the worker, withdraws the source, requests a
+replacement revision while the worker is stopped, and starts a replacement
+worker. The replacement revision must fail with `CREDENTIAL_WITHDRAWN` before
+Compute creates a Sandbox or provider Harness Pod. Select it with:
+
+```sh
+OCC_TEST_QA_MATRIX=1 OCC_TEST_QA_INSTALLATION=kubernetes \
+OCC_TEST_QA_PRESET=Codex OCC_TEST_QA_SCENARIOS=authority-recovery \
+  node --test tests/integration/qa-matrix-real.test.mjs
+```

@@ -198,6 +198,14 @@ test(
 
 test("QA selection keeps prerequisite credentials and reports omitted coverage", async () => {
   const { selectQaMatrix, validateQaInputs } = await import("../helpers/qa-selection.mjs");
+  const custom = selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "custom-responses" });
+  assert.deepEqual(custom.requiredEnv, [
+    "OCC_TEST_QA_RESPONSES_KEY_FILE",
+    "OCC_TEST_QA_RESPONSES_BASE_URL",
+    "OCC_TEST_QA_RESPONSES_MODEL",
+  ]);
+  assert.ok(!selectQaMatrix({}).scenarios.includes("custom-responses"));
+  assert.throws(() => validateQaInputs(custom, {}), /RESPONSES_KEY_FILE is required/);
   const selected = selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "model-ui,console-secrets" });
   assert.equal(selected.scope, "partial:selected");
   assert.deepEqual(
@@ -209,18 +217,8 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
       { cell: "kubernetes/Codex", scenarios: ["console-secrets"] },
     ],
   );
-  assert.deepEqual(selected.cells[1].unselected, [
-    "codex-search-config",
-    "git-write",
-    "git-push-denied",
-    "slack",
-  ]);
-  assert.deepEqual(selected.cells[0].notApplicable, [
-    "codex-search-config",
-    "git-write",
-    "git-push-denied",
-    "slack",
-  ]);
+  assert.deepEqual(selected.cells[1].unselected, ["git-write", "git-push-denied", "slack"]);
+  assert.deepEqual(selected.cells[0].notApplicable, ["git-write", "git-push-denied", "slack"]);
   assert.throws(() => validateQaInputs(selected, {}), /OPENAI_KEY_FILE is required/);
   assert.throws(
     () => selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "model-ui,typo" }),
@@ -278,10 +276,7 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
     OCC_TEST_QA_PRESET: "Codex",
     OCC_TEST_QA_INSTALLATION: "kubernetes",
   });
-  assert.deepEqual(searchConfig.requiredEnv, [
-    "OCC_TEST_QA_OPENAI_KEY_FILE",
-    "OCC_TEST_QA_CODEX_MODEL_BASE_URL",
-  ]);
+  assert.deepEqual(searchConfig.requiredEnv, ["OCC_TEST_QA_CODEX_MODEL_BASE_URL"]);
   assert.equal(searchConfig.browser, false);
   const injectedSearch = selectQaMatrix({
     OCC_TEST_QA_SCENARIOS: "codex-search-config",

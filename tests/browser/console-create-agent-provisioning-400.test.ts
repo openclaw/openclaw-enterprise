@@ -242,6 +242,26 @@ async function modelSourceFixture(
     capability: "credential_gateway",
     implementation: "test-model-source",
     validateSourceConfig() {},
+    describeSourceDestinations(input) {
+      if (input.type === "openai") {
+        const endpoint = input.config.authorized_base_url ?? "https://api.openai.com/v1";
+        return Object.freeze({
+          api_key: Object.freeze({
+            endpoint,
+            isDefault: endpoint === "https://api.openai.com/v1",
+          }),
+        });
+      }
+      if (input.type === "codex-pat") {
+        return Object.freeze({
+          access_token: Object.freeze({
+            endpoint: "https://api.openai.com/v1",
+            isDefault: true,
+          }),
+        });
+      }
+      return Object.freeze({});
+    },
     async listSourceTypes() {
       return [
         {

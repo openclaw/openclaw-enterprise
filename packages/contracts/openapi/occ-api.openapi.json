@@ -596,6 +596,7 @@
           "data": {
             "additionalProperties": false,
             "properties": {
+              "authorizedEndpoint": { "format": "uri", "maxLength": 2048, "type": "string" },
               "id": {
                 "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                 "type": "string"
@@ -13601,6 +13602,7 @@
                             "agentProvisioning": {
                               "additionalProperties": false,
                               "properties": {
+                                "codexApiKeyBaseUrl": { "format": "uri", "type": "string" },
                                 "executionModes": {
                                   "items": {
                                     "anyOf": [
@@ -14025,6 +14027,7 @@
                             "agentProvisioning": {
                               "additionalProperties": false,
                               "properties": {
+                                "codexApiKeyBaseUrl": { "format": "uri", "type": "string" },
                                 "executionModes": {
                                   "items": {
                                     "anyOf": [
@@ -15685,6 +15688,11 @@
                                       {
                                         "additionalProperties": false,
                                         "properties": {
+                                          "authorizedEndpoint": {
+                                            "format": "uri",
+                                            "maxLength": 2048,
+                                            "type": "string"
+                                          },
                                           "method": { "const": "api_key", "type": "string" },
                                           "source": {
                                             "additionalProperties": false,
@@ -16179,6 +16187,11 @@
                           {
                             "additionalProperties": false,
                             "properties": {
+                              "authorizedEndpoint": {
+                                "format": "uri",
+                                "maxLength": 2048,
+                                "type": "string"
+                              },
                               "method": { "const": "api_key", "type": "string" },
                               "source": {
                                 "additionalProperties": false,
@@ -16478,6 +16491,11 @@
                                 {
                                   "additionalProperties": false,
                                   "properties": {
+                                    "authorizedEndpoint": {
+                                      "format": "uri",
+                                      "maxLength": 2048,
+                                      "type": "string"
+                                    },
                                     "method": { "const": "api_key", "type": "string" },
                                     "source": {
                                       "additionalProperties": false,
@@ -18590,6 +18608,11 @@
                           {
                             "additionalProperties": false,
                             "properties": {
+                              "authorizedEndpoint": {
+                                "format": "uri",
+                                "maxLength": 2048,
+                                "type": "string"
+                              },
                               "method": { "const": "api_key", "type": "string" },
                               "source": {
                                 "additionalProperties": false,
@@ -19978,6 +20001,11 @@
                           {
                             "additionalProperties": false,
                             "properties": {
+                              "authorizedEndpoint": {
+                                "format": "uri",
+                                "maxLength": 2048,
+                                "type": "string"
+                              },
                               "method": { "const": "api_key", "type": "string" },
                               "source": {
                                 "additionalProperties": false,
@@ -20060,17 +20088,27 @@
                         ]
                       },
                       {
-                        "additionalProperties": false,
-                        "properties": {
-                          "method": {
-                            "anyOf": [
-                              { "const": "api_key", "type": "string" },
-                              { "const": "codex_pat", "type": "string" }
-                            ]
+                        "anyOf": [
+                          {
+                            "additionalProperties": false,
+                            "properties": {
+                              "authorizedEndpoint": {
+                                "format": "uri",
+                                "maxLength": 2048,
+                                "type": "string"
+                              },
+                              "method": { "const": "api_key", "type": "string" }
+                            },
+                            "required": ["method"],
+                            "type": "object"
+                          },
+                          {
+                            "additionalProperties": false,
+                            "properties": { "method": { "const": "codex_pat", "type": "string" } },
+                            "required": ["method"],
+                            "type": "object"
                           }
-                        },
-                        "required": ["method"],
-                        "type": "object"
+                        ]
                       },
                       { "type": "null" }
                     ],
@@ -20367,6 +20405,11 @@
                                 {
                                   "additionalProperties": false,
                                   "properties": {
+                                    "authorizedEndpoint": {
+                                      "format": "uri",
+                                      "maxLength": 2048,
+                                      "type": "string"
+                                    },
                                     "method": { "const": "api_key", "type": "string" },
                                     "source": {
                                       "additionalProperties": false,
@@ -20800,6 +20843,11 @@
                                     {
                                       "additionalProperties": false,
                                       "properties": {
+                                        "authorizedEndpoint": {
+                                          "format": "uri",
+                                          "maxLength": 2048,
+                                          "type": "string"
+                                        },
                                         "method": { "const": "api_key", "type": "string" },
                                         "source": {
                                           "additionalProperties": false,
@@ -21309,6 +21357,11 @@
                           {
                             "additionalProperties": false,
                             "properties": {
+                              "authorizedEndpoint": {
+                                "format": "uri",
+                                "maxLength": 2048,
+                                "type": "string"
+                              },
                               "method": { "const": "api_key", "type": "string" },
                               "source": {
                                 "additionalProperties": false,
@@ -21633,6 +21686,11 @@
                                 {
                                   "additionalProperties": false,
                                   "properties": {
+                                    "authorizedEndpoint": {
+                                      "format": "uri",
+                                      "maxLength": 2048,
+                                      "type": "string"
+                                    },
                                     "method": { "const": "api_key", "type": "string" },
                                     "source": {
                                       "additionalProperties": false,
@@ -22631,6 +22689,11 @@
                             {
                               "additionalProperties": false,
                               "properties": {
+                                "authorizedEndpoint": {
+                                  "format": "uri",
+                                  "maxLength": 2048,
+                                  "type": "string"
+                                },
                                 "method": { "const": "api_key", "type": "string" },
                                 "source": {
                                   "additionalProperties": false,
@@ -29349,6 +29412,11 @@
                                 {
                                   "additionalProperties": false,
                                   "properties": {
+                                    "authorizedEndpoint": {
+                                      "format": "uri",
+                                      "maxLength": 2048,
+                                      "type": "string"
+                                    },
                                     "method": { "const": "api_key", "type": "string" },
                                     "source": {
                                       "additionalProperties": false,
@@ -31968,6 +32036,11 @@
                                 {
                                   "additionalProperties": false,
                                   "properties": {
+                                    "authorizedEndpoint": {
+                                      "format": "uri",
+                                      "maxLength": 2048,
+                                      "type": "string"
+                                    },
                                     "method": { "const": "api_key", "type": "string" },
                                     "source": {
                                       "additionalProperties": false,
@@ -32685,6 +32758,11 @@
                                 {
                                   "additionalProperties": false,
                                   "properties": {
+                                    "authorizedEndpoint": {
+                                      "format": "uri",
+                                      "maxLength": 2048,
+                                      "type": "string"
+                                    },
                                     "method": { "const": "api_key", "type": "string" },
                                     "source": {
                                       "additionalProperties": false,
@@ -40178,6 +40256,11 @@
                       "items": {
                         "additionalProperties": false,
                         "properties": {
+                          "authorizedEndpoint": {
+                            "format": "uri",
+                            "maxLength": 2048,
+                            "type": "string"
+                          },
                           "id": {
                             "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                             "type": "string"
@@ -40333,6 +40416,7 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "authorizedEndpoint": { "format": "uri", "maxLength": 2048, "type": "string" },
                   "name": {
                     "maxLength": 200,
                     "minLength": 1,
@@ -40656,6 +40740,11 @@
                     "data": {
                       "additionalProperties": false,
                       "properties": {
+                        "authorizedEndpoint": {
+                          "format": "uri",
+                          "maxLength": 2048,
+                          "type": "string"
+                        },
                         "callerPermissions": {
                           "additionalProperties": false,
                           "description": "What the selected IAM Driver allows you to do to this Secret now. Checking it records no authorization denial. Returned by the exact Secret read only.",

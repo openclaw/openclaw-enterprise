@@ -13,6 +13,9 @@ function clientSecret(secret: Readonly<SecretMetadata>): Record<string, unknown>
     namespaceId: secret.namespaceId,
     name: secret.name,
     ref: secret.ref,
+    ...(secret.authorizedEndpoint === undefined
+      ? {}
+      : { authorizedEndpoint: secret.authorizedEndpoint }),
   };
 }
 
@@ -40,6 +43,9 @@ export const secretHandlers = {
           namespaceId,
           name: body?.name as string,
           value: body?.value as string,
+          ...(body?.authorizedEndpoint === undefined
+            ? {}
+            : { authorizedEndpoint: body.authorizedEndpoint as string }),
         }),
       );
       await unit.audit.append(mutationEvent({ kind: "secret", id: created.id, namespaceId }));

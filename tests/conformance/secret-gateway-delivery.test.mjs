@@ -271,6 +271,10 @@ test("embedded custom providers retain model identity and exact Secret ownership
     },
   };
   const candidate = revision(driver, { configuration });
+  candidate.harnessAuth = {
+    ...candidate.harnessAuth,
+    authorizedEndpoint: "https://router.example.test/v1",
+  };
   const namespace = { name: kubernetesNamespaceName(tenant.id), plane: "execution" };
   const context = {
     harnessAuth: {

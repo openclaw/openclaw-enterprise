@@ -182,10 +182,23 @@ async function fixture(
   const toolSecret = toolSources
     ? await app.createSecret(namespace.id, "tool-material", "synthetic-tool-material")
     : undefined;
-  const create = (name, config = {}) =>
-    app.request("POST", path, {
-      body: { name, type: "openai", config, secrets: { api_key: secret.ref } },
+  const create = async (name, config = {}, authorizedEndpoint) => {
+    const selected =
+      authorizedEndpoint === undefined
+        ? secret
+        : (
+            await app.request("POST", `/namespaces/${namespace.id}/secrets`, {
+              body: {
+                name: `endpoint-key-${randomUUID()}`,
+                value: "synthetic-model-key",
+                authorizedEndpoint,
+              },
+            })
+          ).data;
+    return app.request("POST", path, {
+      body: { name, type: "openai", config, secrets: { api_key: selected.ref } },
     });
+  };
   return {
     ...app,
     driver,
@@ -1320,4 +1333,23 @@ test("offered OpenShell source values return field-specific HTTP 400 before effe
   });
   assert.equal(unavailable.status, 409, JSON.stringify(unavailable.body));
   await f.assertNothingSaved();
+});
+
+test("Gateway destination authorization refuses mismatched Secret redirection before value reads", async (t) => {
+  const endpoint = "https://models.example.test/v1";
+  const f = await fixture(t, {
+    modelProvider: { protocol: "openai-responses", baseUrl: endpoint },
+  });
+  const mismatch = await f.create(
+    "mismatched",
+    { authorized_base_url: endpoint },
+    "https://other.example.test/v1",
+  );
+  assert.equal(mismatch.status, 400, JSON.stringify(mismatch.body));
+  await f.assertNothingSaved();
+  const sourceOwned = await f.create("source-owned", { authorized_base_url: endpoint });
+  assert.equal(sourceOwned.status, 201, JSON.stringify(sourceOwned.body));
+  const accepted = await f.create("authorized", { authorized_base_url: endpoint }, endpoint);
+  assert.equal(accepted.status, 201, JSON.stringify(accepted.body));
+  assert.equal(accepted.data.status.state, "ready");
 });

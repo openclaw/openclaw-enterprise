@@ -25,6 +25,14 @@ export interface CredentialSourceInput {
   readonly secrets: Readonly<Record<string, string>>;
 }
 
+/** A Driver-normalized destination; default permits existing provider-default Secrets. */
+export interface CredentialSourceDestination {
+  readonly endpoint: string;
+  /** Additional fixed destinations of a credential used across several service endpoints. */
+  readonly additionalEndpoints?: readonly string[];
+  readonly isDefault: boolean;
+}
+
 export interface CredentialSourceStatus {
   readonly state: "ready" | "pending" | "failed" | "absent";
   readonly reason?: string;
@@ -106,6 +114,10 @@ export interface CredentialGatewayDriver extends Driver {
   validateSourceConfig(
     input: Pick<CredentialSourceInput, "type" | "config">,
   ): Readonly<Record<string, string>> | void;
+  /** No I/O or Secret values. Report each supplied credential field's destination. */
+  describeSourceDestinations(
+    input: Pick<CredentialSourceInput, "type" | "config">,
+  ): Readonly<Record<string, CredentialSourceDestination>>;
   registerSource(
     context: CredentialSourceContext,
     input: CredentialSourceInput,

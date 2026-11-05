@@ -97,6 +97,7 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
     return [
       "listSourceTypes",
       "validateSourceConfig",
+      "describeSourceDestinations",
       "registerSource",
       "updateSource",
       "sourceStatus",

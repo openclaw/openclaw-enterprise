@@ -290,6 +290,10 @@ test("a stored binding's denial names its Secret only to a caller who may read t
     capability: "credential_gateway",
     implementation: "test-ready-gateway",
     validateSourceConfig() {},
+    describeSourceDestinations: () => ({
+      api_key: { endpoint: "https://api.openai.com/v1", isDefault: true },
+      access_token: { endpoint: "https://chatgpt.com/backend-api", isDefault: true },
+    }),
     async listSourceTypes() {
       return [
         {

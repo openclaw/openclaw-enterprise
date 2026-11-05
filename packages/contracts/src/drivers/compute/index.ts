@@ -168,6 +168,7 @@ export interface ComputeAgentProvisioningInput {
 }
 
 export interface ComputeAgentProvisioningCapabilities {
+  readonly codexApiKeyBaseUrl?: string;
   readonly executionModes: readonly HarnessExecutionMode[];
 }
 

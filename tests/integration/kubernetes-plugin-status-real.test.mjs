@@ -39,6 +39,7 @@ const transportSecretPrefix = "transport";
 const pluginStatusProxyCidrs = parsePluginStatusProxyCidrs(
   process.env.OCC_TEST_KUBERNETES_PLUGIN_STATUS_PROXY_CIDRS,
 );
+const stubbedProviderEndpoint = "https://model.stub.invalid/v1";
 
 function hash(value, length = 12) {
   return sha256Hex(value, length);
@@ -253,6 +254,7 @@ async function provisionHarnessAuth(owner) {
   const backendRef = await driver.create(identity, `fixture-only-${randomUUID()}`);
   const snapshot = {
     method: "api_key",
+    authorizedEndpoint: stubbedProviderEndpoint,
     source: { kind: "secret", namespaceId: owner.id, id: identity.id },
     secretDriverId: driver.id,
   };

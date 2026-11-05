@@ -78,7 +78,7 @@ import {
 const executeFile = promisify(execFile);
 const selectedScenario = process.env.OCC_TEST_OPENSHELL_SCENARIO ?? "full";
 assert.ok(
-  ["full", "network-policy", "plugin-install"].includes(selectedScenario),
+  ["full", "network-policy", "plugin-install", "authority-recovery"].includes(selectedScenario),
   "Unknown OpenShell scenario.",
 );
 const networkPolicyOnly = selectedScenario === "network-policy";
@@ -4420,6 +4420,76 @@ async function assertCredentialSourceUpdateAndLiveWithdrawal(topology) {
   assert.equal(deletion.status, 409, JSON.stringify(deletion.error));
 }
 
+async function assertRecoveredModelSourceWithdrawal(context, topology) {
+  const request = topology.request;
+  const agentPath = `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}`;
+  const sourceId = topology.agent.harnessAuth.sourceId;
+  const withdrawalPath = `${agentPath}/credential-sources/${sourceId}`;
+
+  await requestGatewayTurns(context, topology, selectedHarness);
+
+  await topology.pauseWorker();
+  const requested = await request("POST", `${withdrawalPath}/withdraw`);
+  assert.equal(requested.status, 202, JSON.stringify(requested.error));
+  await topology.resumeWorker();
+  const withdrawal = await waitFor(
+    "the replacement worker to revoke the model source",
+    async () => {
+      const observed = await request("GET", `${withdrawalPath}/withdrawal`);
+      assert.equal(observed.status, 200, JSON.stringify(observed.error));
+      return observed.data.state === "revoked" ? observed.data : undefined;
+    },
+    180_000,
+  );
+  assert.equal(withdrawal.reason, "CREDENTIALS_WITHDRAWN");
+
+  await topology.pauseWorker();
+  const deployed = await request("POST", `${agentPath}/deploy`);
+  assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
+  assert.notEqual(deployed.data.id, topology.revision.id);
+  await topology.resumeWorker();
+
+  const deploymentPath = `${agentPath}/deployments/${deployed.data.id}`;
+  const failed = await waitFor(
+    `withdrawn model source to refuse revision ${deployed.data.id}`,
+    async () => {
+      const observed = await request("GET", deploymentPath);
+      if (observed.status === 408 || observed.status === 429 || observed.status >= 500) {
+        return undefined;
+      }
+      assert.equal(observed.status, 200, JSON.stringify(observed.error));
+      return observed.data.status === "failed" ? observed.data : undefined;
+    },
+    240_000,
+  );
+  assert.equal(failed.error.code, "CREDENTIAL_WITHDRAWN");
+  assert.equal(
+    (await request("GET", agentPath)).data.activeRevisionId,
+    topology.revision.id,
+    "the refused replacement must not become active",
+  );
+  assert.equal(topology.provisioningFailure(deployed.data.id), undefined);
+  assert.equal(
+    (await fixture.customResources("sandboxes.agents.x-k8s.io", topology.placement)).some(
+      (sandbox) =>
+        sandbox.metadata?.labels?.["openshell.ai/sandbox-name"] ===
+        `os-${hash(deployed.data.id, 16)}`,
+    ),
+    false,
+    "a refused revision must not create an OpenShell Sandbox",
+  );
+  assert.equal(
+    (await resources("pods", topology.placement)).some(
+      (pod) => pod.metadata?.labels?.["openclaw.dev/revision"] === deployed.data.id,
+    ),
+    false,
+    "a refused revision must not create a provider Harness Pod",
+  );
+  process.stderr.write(
+    "OpenShell authority recovery: first revision attached through Compute and Gateway; replacement worker refused the withdrawn source before Sandbox or Harness creation.\n",
+  );
+}
+
 // Each section keeps its newest matching lines within its own budget, so the Harness and
 // OpenShell supervisor lines still fit the 16 KiB failure message after the Gateway's.
 // Workspace-node disconnects (finding 1496) need the node host's close line and the
@@ -8283,7 +8353,12 @@ export function registerGatewayToolPolicyTest() {
 }
 
 export function registerProviderLifecycleTest(workflow) {
-  assert.ok(["policy", "credentials", "withdrawal", "upstream", "refresh"].includes(workflow));
+  assert.ok(
+    ["policy", "credentials", "withdrawal", "upstream", "refresh", "authority-recovery"].includes(
+      workflow,
+    ),
+  );
+  const authorityRecovery = workflow === "authority-recovery";
   if (selected && workflow !== "policy") {
     assert.equal(selectedHarness, "codex", "This security workflow requires the Codex Harness.");
   }
@@ -8291,6 +8366,7 @@ export function registerProviderLifecycleTest(workflow) {
     {
       "plugin-install": "OpenShell installs selected Codex plugins before WebSocket startup",
       "network-policy": "OpenShell Agent network policy lifecycle",
+      "authority-recovery": "OpenShell recovered model-source authority after worker restart",
       full: {
         policy: "OpenShell enforces provider delivery and authenticated Codex exposure",
         credentials: "OpenShell credential replacement preserves isolation",
@@ -8321,7 +8397,8 @@ export function registerProviderLifecycleTest(workflow) {
         const topology = await measureOpenShellStage(testContext, "installation", () =>
           prepareProductionInstallation(context, {
             harnessId: selectedHarness,
-            ...(pluginInstallOnly ? { withOAuthToolSources: false } : {}),
+            ...(pluginInstallOnly || authorityRecovery ? { withOAuthToolSources: false } : {}),
+            ...(authorityRecovery ? { enableCompatibilityBridges: false } : {}),
             ...(demoStatePath === undefined ? {} : { controllerPort: demoConsolePort }),
           }),
         );
@@ -8330,6 +8407,12 @@ export function registerProviderLifecycleTest(workflow) {
           openShellAgentName(topology.agent.id),
         );
         assert.ok(topology.sandbox.metadata.name);
+        if (authorityRecovery) {
+          await measureOpenShellStage(testContext, "authority-recovery", () =>
+            assertRecoveredModelSourceWithdrawal(context, topology),
+          );
+          return;
+        }
         if (selectedHarness === "openclaw") {
           // A native worker exposes held startup failures only until its node enrolls.
           // Confirm Workspace visibility before treating an absent service as withdrawn.

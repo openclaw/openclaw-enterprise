@@ -63,6 +63,7 @@ export const DEPLOYMENT_FAILURE_STEPS: Readonly<Record<string, DeploymentFailure
     CREDENTIAL_WITHDRAWN: "change",
     EGRESS_PROVIDER_UNAVAILABLE: "change",
     HARNESS_AUTH_REQUIRED: "change",
+    HARNESS_AUTH_ENDPOINT_MISMATCH: "change",
     HARNESS_AUTH_SOURCE_UNAVAILABLE: "change",
     INVALID_ACTIVE_REVISION: "change",
     INVALID_ADMITTED_REVISION: "change",

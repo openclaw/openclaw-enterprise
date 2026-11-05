@@ -2,15 +2,25 @@ import assert from "node:assert/strict";
 
 const scenarioPresets = {
   "sandbox-policy": ["Codex"],
+  "authority-recovery": ["Codex"],
   "plugin-install": ["Codex"],
   "openshell-linear-read": ["Codex"],
   "model-ui": ["OpenClaw"],
   "codex-search-config": ["Codex"],
+  "custom-responses": ["OpenClaw", "Codex"],
   "console-secrets": ["OpenClaw", "Codex"],
   "git-write": ["Codex"],
   "git-push-denied": ["Codex"],
   slack: ["Codex"],
 };
+const separatelySelectedScenarios = new Set([
+  "sandbox-policy",
+  "authority-recovery",
+  "plugin-install",
+  "openshell-linear-read",
+  "codex-search-config",
+  "custom-responses",
+]);
 
 // One selection contract serves local execution and hosted credential setup.
 // Dependencies (installation, preset, Agent and cleanup) are always included.
@@ -23,24 +33,19 @@ export function selectQaMatrix(env = process.env) {
   const preset = env.OCC_TEST_QA_PRESET ?? "all";
   assert.ok(["all", "OpenClaw", "Codex"].includes(preset), "invalid QA preset selection");
   const allScenarios = Object.keys(scenarioPresets);
+  const ordinaryScenarios = allScenarios.filter((name) => !separatelySelectedScenarios.has(name));
   const input = env.OCC_TEST_QA_SCENARIOS ?? "all";
   const scenarios =
-    input === "all"
-      ? allScenarios.filter(
-          (name) =>
-            ![
-              "sandbox-policy",
-              "plugin-install",
-              "openshell-linear-read",
-              "codex-search-config",
-            ].includes(name),
-        )
-      : input.split(",").map((name) => name.trim());
+    input === "all" ? ordinaryScenarios : input.split(",").map((name) => name.trim());
   assert.ok(
     scenarios.length > 0 && scenarios.every((name) => allScenarios.includes(name)),
     "invalid QA scenario selection",
   );
   assert.equal(new Set(scenarios).size, scenarios.length, "duplicate QA scenario selection");
+  const customResponses = scenarios.includes("custom-responses");
+  if (customResponses) {
+    assert.equal(scenarios.length, 1, "custom-responses requires an exclusive QA selection");
+  }
   const codexSearchConfig = scenarios.includes("codex-search-config");
   if (codexSearchConfig) {
     assert.equal(scenarios.length, 1, "codex-search-config requires an exclusive QA selection");
@@ -60,19 +65,17 @@ export function selectQaMatrix(env = process.env) {
       preset: name,
       scenarios: scenarios.filter(
         (scenario) =>
-          !["sandbox-policy", "plugin-install", "openshell-linear-read"].includes(scenario) &&
-          scenarioPresets[scenario].includes(name),
+          !separatelySelectedScenarios.has(scenario) && scenarioPresets[scenario].includes(name),
       ),
       unselected: allScenarios.filter(
         (scenario) =>
-          !["sandbox-policy", "plugin-install", "openshell-linear-read"].includes(scenario) &&
+          !separatelySelectedScenarios.has(scenario) &&
           scenarioPresets[scenario].includes(name) &&
           !scenarios.includes(scenario),
       ),
       notApplicable: allScenarios.filter(
         (scenario) =>
-          !["sandbox-policy", "plugin-install", "openshell-linear-read"].includes(scenario) &&
-          !scenarioPresets[scenario].includes(name),
+          !separatelySelectedScenarios.has(scenario) && !scenarioPresets[scenario].includes(name),
       ),
     })),
   );
@@ -96,11 +99,17 @@ export function selectQaMatrix(env = process.env) {
   );
   const activeScenarios = [...new Set(cells.flatMap((cell) => cell.scenarios))];
   const repository = activeScenarios.some((name) => name.startsWith("git-"));
-  const requiredEnv = activePresets.map((name) =>
-    name === "Codex" && !codexSearchConfig
-      ? "OCC_TEST_QA_CODEX_TOKEN_FILE"
-      : "OCC_TEST_QA_OPENAI_KEY_FILE",
-  );
+  const requiredEnv = customResponses
+    ? [
+        "OCC_TEST_QA_RESPONSES_KEY_FILE",
+        "OCC_TEST_QA_RESPONSES_BASE_URL",
+        "OCC_TEST_QA_RESPONSES_MODEL",
+      ]
+    : activePresets.map((name) =>
+        name === "Codex" && !codexSearchConfig
+          ? "OCC_TEST_QA_CODEX_TOKEN_FILE"
+          : "OCC_TEST_QA_OPENAI_KEY_FILE",
+      );
   if (codexSearchConfig) {
     if (env.OCC_TEST_QA_MODEL_API_KEY !== undefined) {
       requiredEnv.splice(
@@ -112,12 +121,14 @@ export function selectQaMatrix(env = process.env) {
     requiredEnv.push("OCC_TEST_QA_CODEX_MODEL_BASE_URL");
   }
   const sandboxPolicy = scenarios.includes("sandbox-policy");
+  const authorityRecovery = scenarios.includes("authority-recovery");
   const pluginInstall = scenarios.includes("plugin-install");
   const linearRead = scenarios.includes("openshell-linear-read");
   assert.ok(
     exclusions.length === 0 ||
       activeScenarios.length > 0 ||
       sandboxPolicy ||
+      authorityRecovery ||
       pluginInstall ||
       linearRead,
     "All selected QA scenarios require a custom Codex permission profile",
@@ -134,7 +145,7 @@ export function selectQaMatrix(env = process.env) {
       "OCC_TEST_CODEX_LINEAR_RESULT_EXPECT",
     );
   }
-  if (sandboxPolicy || pluginInstall) {
+  if (sandboxPolicy || authorityRecovery || pluginInstall) {
     if (!requiredEnv.includes("OCC_TEST_QA_CODEX_TOKEN_FILE")) {
       requiredEnv.push("OCC_TEST_QA_CODEX_TOKEN_FILE");
     }
@@ -164,6 +175,7 @@ export function selectQaMatrix(env = process.env) {
     installations,
     exclusions,
     sandboxPolicy,
+    authorityRecovery,
     pluginInstall,
     linearRead,
     cells,
@@ -175,7 +187,7 @@ export function selectQaMatrix(env = process.env) {
       exclusions.length === 0 &&
       installation === "all" &&
       preset === "all" &&
-      scenarios.length === allScenarios.length - 4
+      scenarios.length === ordinaryScenarios.length
         ? "full"
         : "partial:selected",
   };

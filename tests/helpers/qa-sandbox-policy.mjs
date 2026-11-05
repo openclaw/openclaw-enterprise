@@ -25,8 +25,12 @@ export async function verifyQaSandboxPolicy(artifacts, scenario = "network-polic
     "--test-reporter=tap",
     ...(scenario === "plugin-install"
       ? ["--test-name-pattern=^OpenShell installs selected Codex plugins"]
-      : []),
-    "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
+      : scenario === "authority-recovery"
+        ? ["--test-name-pattern=^OpenShell recovered model-source authority after worker restart"]
+        : []),
+    scenario === "authority-recovery"
+      ? "tests/integration/openshell-authority-recovery-real.test.ts"
+      : "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
   ];
   let output;
   let failed = false;
@@ -64,7 +68,9 @@ export async function verifyQaSandboxPolicy(artifacts, scenario = "network-polic
     text,
     scenario === "plugin-install"
       ? /ok 1 - OpenShell installs selected Codex plugins before WebSocket startup/
-      : /ok 1 - OpenShell Agent network policy lifecycle/,
+      : scenario === "authority-recovery"
+        ? /ok 1 - OpenShell recovered model-source authority after worker restart/
+        : /ok 1 - OpenShell Agent network policy lifecycle/,
   );
   assert.match(text, /# pass 1\b/);
   assert.match(text, /# skipped 0\b/);
@@ -73,6 +79,8 @@ export async function verifyQaSandboxPolicy(artifacts, scenario = "network-polic
     outcome:
       scenario === "plugin-install"
         ? "real Agent plugin installation, native restart discovery, and selection removal"
-        : "real Agent defaults, preview, save, apply, revoke and isolation",
+        : scenario === "authority-recovery"
+          ? "real model-source attachment and post-withdrawal worker recovery"
+          : "real Agent defaults, preview, save, apply, revoke and isolation",
   };
 }

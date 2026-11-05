@@ -21,7 +21,8 @@ test(
     validateQaInputs(selection);
     const { createQaInstallation, prepareQaPluginCatalogs, createQaAgent } =
       await import("../helpers/qa-installation.mjs");
-    const { protectedText } = await import("../helpers/qa-secrets.mjs");
+    const { protectedText, grantQaSecret } = await import("../helpers/qa-secrets.mjs");
+    const { verifyQaCustomResponses } = await import("../helpers/qa-custom-responses.mjs");
     const { createQaReport } = await import("../helpers/qa-report.mjs");
     const { createQaBrowser } = await import("../helpers/qa-browser.mjs");
     const { prepareQaRepository, verifyQaRepository, stopQaAgent } =
@@ -66,6 +67,16 @@ test(
         "kubernetes/Codex/OpenShell",
         "shared Driver configuration and real network enforcement",
         () => verifyQaSandboxPolicy(artifacts),
+      );
+    }
+    if (selection.authorityRecovery) {
+      const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
+      await stage(
+        context,
+        "kubernetes/Codex/OpenShell",
+        "recovered worker model-source authority chain",
+        () => verifyQaSandboxPolicy(artifacts, "authority-recovery"),
+        "authority-recovery",
       );
     }
     if (selection.pluginInstall) {
@@ -144,26 +155,30 @@ test(
               `Standard ${preset}`,
               { timeout: 3_000_000 },
               async (cellContext) => {
-                const ready = await stage(
-                  cellContext,
-                  cell,
-                  "check preset prerequisites",
-                  async () => {
-                    assert.ok(f, "blocked by installation startup failure");
-                    assert.ok(
-                      !f.retained && f.pendingRepositories.size === 0,
-                      "blocked by unresolved repository cleanup",
-                    );
-                    if (selectedCell.scenarios.includes("codex-search-config")) {
-                      f.configuration.drivers.compute.configuration.runtime.modelProvider = {
-                        protocol: "openai-responses",
-                        baseUrl: process.env.OCC_TEST_QA_CODEX_MODEL_BASE_URL,
-                      };
-                      await f.saveInstallation(f.configuration);
-                    }
-                    return true;
-                  },
-                );
+                const ready = await stage(cellContext, cell, "prepare preset runtime", async () => {
+                  assert.ok(f, "blocked by installation startup failure");
+                  assert.ok(
+                    !f.retained && f.pendingRepositories.size === 0,
+                    "blocked by unresolved repository cleanup",
+                  );
+                  if (selectedCell.scenarios.includes("codex-search-config")) {
+                    f.configuration.drivers.compute.configuration.runtime.modelProvider = {
+                      protocol: "openai-responses",
+                      baseUrl: process.env.OCC_TEST_QA_CODEX_MODEL_BASE_URL,
+                    };
+                    await f.saveInstallation(f.configuration);
+                  }
+                  if (selectedCell.scenarios.includes("custom-responses")) {
+                    // Dedicated Codex routes through the Installation model provider, so the
+                    // custom destination must be the Installation destination for admission.
+                    f.configuration.drivers.compute.configuration.runtime.modelProvider = {
+                      protocol: "openai-responses",
+                      baseUrl: process.env.OCC_TEST_QA_RESPONSES_BASE_URL,
+                    };
+                    await f.saveInstallation(f.configuration);
+                  }
+                  return true;
+                });
                 async function runScenario(parent, name, work) {
                   // Keep the preset's overall deadline; a shorter worker deadline
                   // could interrupt cleanup after individually valid stage durations.
@@ -178,6 +193,7 @@ test(
                           assert.ok(ready, "blocked by preset preparation failure");
                           return createQaAgent(f, preset, browser?.nativeOrigin, suffix, {
                             apiKeyAuth: name === "codex-search-config",
+                            customResponses: name === "custom-responses",
                           });
                         },
                       );
@@ -207,6 +223,14 @@ test(
                   });
                 }
                 const scenarios = [
+                  [
+                    "custom-responses",
+                    async (agent, step) => {
+                      await step("streaming custom Responses model and real shell tool", () =>
+                        verifyQaCustomResponses(f, agent, preset),
+                      );
+                    },
+                  ],
                   [
                     "console-secrets",
                     async (agent, step) => {
@@ -282,7 +306,7 @@ test(
                       await step(
                         "embedded configured-provider Secret and real model turn",
                         async () => {
-                          // Keep the admitted model and Secret, changing only the logical provider.
+                          // Supplying an endpoint-specific key authorizes the new custom provider binding.
                           const values = structuredClone(agent.configuration.values);
                           const selected = values.agents.defaults.model;
                           const primary =
@@ -310,6 +334,30 @@ test(
                             "PATCH",
                             `/namespaces/${agent.namespaceId}/configurations/${agent.configuration.id}`,
                             { values },
+                          );
+                          const customSecret = await f.api(
+                            "POST",
+                            `/namespaces/${agent.namespaceId}/secrets`,
+                            {
+                              name: `custom-model-${randomUUID()}`,
+                              value: await protectedText(
+                                process.env.OCC_TEST_QA_OPENAI_KEY_FILE,
+                                "model credential",
+                              ),
+                              authorizedEndpoint: values.models.providers.configured.baseUrl,
+                            },
+                          );
+                          await grantQaSecret(f, agent, customSecret.id, `custom-${randomUUID()}`);
+                          await f.api(
+                            "PATCH",
+                            `/namespaces/${agent.namespaceId}/agents/${agent.id}`,
+                            {
+                              harnessAuth: {
+                                method: "api_key",
+                                source: customSecret.ref,
+                                authorizedEndpoint: values.models.providers.configured.baseUrl,
+                              },
+                            },
                           );
                           await f.deployAndWait(agent);
                           const gateway = await f.gatewayUrl(agent);
