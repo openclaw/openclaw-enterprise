@@ -25,6 +25,11 @@ export function providerReadinessFixture({
   tenant = defaultTenant,
   sandboxDriver,
   credentialGatewayDriver,
+  servicePrincipalCredentials = {
+    mode: "projectedServiceAccountToken",
+    audience: "openclaw-controller",
+    expirationSeconds: 900,
+  },
   provisionHarness,
   harnessEndpoint,
   providerNetwork = {
@@ -44,11 +49,7 @@ export function providerReadinessFixture({
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
       },
-      servicePrincipalCredentials: {
-        mode: "projectedServiceAccountToken",
-        audience: "openclaw-controller",
-        expirationSeconds: 900,
-      },
+      servicePrincipalCredentials,
       ...(harnessEndpoint === undefined
         ? {}
         : {

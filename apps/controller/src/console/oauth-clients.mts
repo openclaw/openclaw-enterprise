@@ -1,6 +1,7 @@
-import type { ConnectionTemplate, Namespace } from "@openclaw-enterprise/contracts";
+import type { ConnectionTemplate, Namespace, OAuthClient } from "@openclaw-enterprise/contracts";
 import { refusedAsNonAdministrator } from "./api-client.mjs";
 import { button, element } from "./dom.mjs";
+import { oauthCatalog } from "./oauth-catalog.mjs";
 import { oauthDeleteButton } from "./oauth-deletion.mjs";
 import type { ConsolePageContext } from "./page-context.mjs";
 import {
@@ -9,7 +10,6 @@ import {
   oauthClients,
   oauthFailure,
   openOAuthClientRegistration,
-  type PublicClient,
 } from "./oauth-client-registration.mjs";
 import { connectionTemplates, openConnectionTemplateEditor } from "./connection-templates.mjs";
 
@@ -20,26 +20,18 @@ export function renderOAuthClients(
   namespaces: readonly Namespace[],
   currentNamespace: string | null,
 ) {
-  const section = element("section", { className: "card" });
-  const rows = element("div");
-  const notice = element("p", { className: "hint", role: "status" });
   const create = button("Register OAuth client", () => edit(), { tone: "primary", size: "sm" });
-  section.append(
-    element(
-      "div",
-      { className: "driver-configurations-heading" },
-      element("h2", {}, "OAuth clients"),
-      create,
-    ),
-    rows,
-    notice,
-  );
+  const { section, list, notice, showRows } = oauthCatalog("OAuth clients", create, "Client", [
+    "Issuer",
+    "Availability",
+    "Token endpoint authentication method",
+  ]);
   let redirectUri: string | undefined;
-  let clients: PublicClient[] = [];
+  let clients: OAuthClient[] = [];
   let templates: ConnectionTemplate[] = [];
   async function refresh(message?: string) {
     create.disabled = true;
-    rows.replaceChildren();
+    list.replaceChildren();
     notice.textContent = "Loading OAuth clients…";
     try {
       const [available, saved] = await Promise.all([
@@ -56,30 +48,24 @@ export function renderOAuthClients(
       );
       const visibleClients = data.filter((item) => availableInNamespace(item, currentNamespace));
       redirectUri = meta?.redirectUri;
-      const auth = {
-        none: "Public client",
-        client_secret_basic: "Client secret in Authorization header",
-        client_secret_post: "Client secret in request body",
-      };
-      for (const item of visibleClients) {
-        const scope = availabilityLabel(item, namespaces);
-        rows.append(
-          element(
-            "section",
-            { className: "connection-template-row" },
-            element("h3", {}, item.displayName),
-            element("p", {}, item.issuer),
-            element("p", { className: "hint" }, scope + " · " + auth[item.tokenEndpointAuthMethod]),
-            element(
-              "div",
-              { className: "resource-row-actions" },
-              item.builtIn
-                ? element("span", { className: "hint" }, "Built-in public client")
-                : oauthDeleteButton(context, "OAuth client", item, scope, refresh, create),
-            ),
-          ),
-        );
-      }
+      showRows(
+        visibleClients.map((item) => {
+          const scope = availabilityLabel(item, namespaces);
+          return {
+            name: item.displayName,
+            details: [item.issuer, scope, element("code", {}, item.tokenEndpointAuthMethod)],
+            actions: item.builtIn
+              ? [
+                  element(
+                    "span",
+                    { className: "hint", title: "Built-in public client" },
+                    "Built-in",
+                  ),
+                ]
+              : [oauthDeleteButton(context, "OAuth client", item, scope, refresh, create)],
+          };
+        }),
+      );
       notice.textContent =
         message ??
         (visibleClients.length ? "" : "No OAuth clients are available for this selection.");
@@ -93,7 +79,7 @@ export function renderOAuthClients(
         return;
       }
       notice.textContent = oauthFailure(cause, "the OAuth client list");
-      rows.append(button("Reload OAuth clients", () => void refresh(), { size: "sm" }));
+      list.append(button("Reload OAuth clients", () => void refresh(), { size: "sm" }));
     }
   }
 

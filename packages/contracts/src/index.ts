@@ -1453,7 +1453,11 @@ export type {
   IAMManagedServicePrincipalInput,
 } from "./drivers/iam/index.ts";
 export type { ServiceAccountDriver } from "./drivers/service-account/index.ts";
-export type { SecretDriver } from "./drivers/secret/index.ts";
+export type {
+  InstallationSecretRef,
+  InstallationSecretStore,
+  SecretDriver,
+} from "./drivers/secret/index.ts";
 export type {
   CredentialGatewayDriver,
   CredentialGatewayContext,
@@ -1468,7 +1472,6 @@ export type {
   CredentialSourceToken,
 } from "./drivers/credential-gateway/index.ts";
 export type {
-  CredentialClientRegistrationContext,
   CredentialBrowserAuthorizationRequest,
   CredentialSourceBrowserAuthorization,
   CredentialBrowserAuthorizationCallback,

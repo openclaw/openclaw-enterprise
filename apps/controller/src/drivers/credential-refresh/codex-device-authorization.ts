@@ -13,11 +13,10 @@ import {
 import { randomUUID } from "node:crypto";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { DeviceAuthorizationStartError } from "@openclaw-enterprise/occ";
+import { CODEX_OAUTH_TYPE } from "../../backends/openshell-refresh-sources.ts";
 
-export const CODEX_OAUTH_TYPE = "codex-oauth";
 export const CODEX_OAUTH_CLIENT_ID = codexPublicRegistration.clientId;
 export const CODEX_OAUTH_TOKEN_URL = codexPublicRegistration.tokenUrl;
-export const CODEX_ACCESS_TOKEN_ENV = "CODEX_ACCESS_TOKEN";
 // Login-time metadata is separate from rotating credentials. The PoC does not
 // update this snapshot on refresh; account/plan changes require reconnecting.
 export const CODEX_ACCOUNT_CONFIG = "oce.codex.account";

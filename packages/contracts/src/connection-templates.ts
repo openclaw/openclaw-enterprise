@@ -26,8 +26,6 @@ export interface OAuthClient {
   readonly revocationUrl?: string;
   readonly clientId: string;
   readonly tokenEndpointAuthMethod: OAuthClientAuthMethod;
-  /** Selected Driver for an operator registration. The native public client has no private registration to manage. */
-  readonly credentialRefreshDriverId?: string;
   readonly createdAt: string;
 }
 
@@ -103,7 +101,7 @@ export class ConnectionTemplateValidationError extends Error {
   }
 }
 
-/** Validate immutable OAuth settings before the Refresh Driver stages a client secret. */
+/** Validate immutable OAuth settings before OCC registers a client. */
 export function validateConnectionTemplateAuthorization(
   values: Pick<
     ConnectionTemplateValues,

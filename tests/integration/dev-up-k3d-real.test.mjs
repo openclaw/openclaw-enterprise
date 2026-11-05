@@ -93,12 +93,9 @@ test(
   },
 );
 
-// The refusal comes after dev-up builds and imports the runtime image, verifies the Codex sandbox
-// (that refusal deliberately precedes controller work), installs the routing controllers, builds
-// the controller image the network probe runs and polls the policy for up to 90 s. As the file's
-// first dev-up it pays both cold image builds: p50 947 s and max 994 s over 35 passes, one slow
-// runner past 1,100 s (finding 1709). 1,400 s is about 48% over p50 and 41% over that max.
-const refusalDevUpTimeoutMs = 1_400_000;
+// This first dev-up builds and imports both cold images. Two hosted runners reached
+// the previous 1,400 s launcher limit before the 90 s NetworkPolicy probe started.
+const refusalDevUpTimeoutMs = 30 * 60_000;
 
 test(
   "dev-up refuses gateway trust when Kubernetes does not enforce NetworkPolicy",
@@ -172,6 +169,7 @@ process.exit(result.status ?? 1);
 
     // The launcher must reject a functioning cluster with ineffective policy
     // before configuring proxy trust or bootstrapping any Agent credentials.
+    const launchStarted = performance.now();
     await assert.rejects(
       execute(join(repository, "scripts", "dev-up"), [], {
         cwd: repository,
@@ -180,12 +178,51 @@ process.exit(result.status ?? 1);
         maxBuffer: 16 * 1024 * 1024,
       }),
       (error) => {
-        assert.match(
-          error.stdout,
-          /Verifying Kubernetes network isolation before configuring gateway trust/,
+        // A cold build can fail before the policy probe. Preserve its category
+        // without including launcher output, which can contain private state.
+        const output = [error.stdout, error.stderr]
+          .filter((value) => typeof value === "string")
+          .map((value) => value.slice(-65_536))
+          .join("\n");
+        const buildError =
+          [
+            ["space", /no space left on device|\bENOSPC\b/i],
+            ["oom", /out of memory|cannot allocate memory|\boom[- ]kill(?:ed|er)?\b/i],
+            ["download", /failed to (?:download|fetch)|download failed/i],
+            ["compile", /\berror TS\d{4}\b|compilation failed|failed to compile/i],
+          ].find(([, pattern]) => pattern.test(output))?.[0] ?? "unknown";
+        const exit = Number.isSafeInteger(error.code) ? error.code : "unknown";
+        let signal = "unknown";
+        if (error.signal == null) {
+          signal = "none";
+        } else if (
+          ["SIGTERM", "SIGKILL", "SIGABRT", "SIGSEGV", "SIGINT", "SIGHUP"].includes(error.signal)
+        ) {
+          signal = error.signal;
+        }
+        const elapsedSeconds = Math.round((performance.now() - launchStarted) / 1_000);
+        const stages = [
+          ["cluster creation", "Creating Kubernetes-only k3d cluster"],
+          ["image import", "Importing the controller and PostgreSQL images"],
+          ["network isolation check", "Verifying Kubernetes network isolation"],
+        ];
+        const stage =
+          stages.findLast(([, marker]) => error.stdout?.includes(marker))?.[0] ?? "unknown";
+        const diagnostic = `dev-up exit ${exit}, signal ${signal}, build-error ${buildError}, stage ${stage}, elapsed ${elapsedSeconds}s.`;
+        assert.ok(
+          /Verifying Kubernetes network isolation before configuring gateway trust/.test(
+            error.stdout,
+          ),
+          `Launcher did not reach the network isolation guard; ${diagnostic}`,
         );
-        assert.match(error.stderr, /Kubernetes NetworkPolicy enforcement could not be verified/);
-        assert.doesNotMatch(error.stdout, /Installing OCE in Namespace/);
+        assert.ok(
+          /Kubernetes NetworkPolicy enforcement could not be verified/.test(error.stderr),
+          `Launcher did not report failed NetworkPolicy enforcement; ${diagnostic}`,
+        );
+        assert.ok(
+          !/Installing OCE in Namespace/.test(error.stdout),
+          `Launcher installed OCE despite failed NetworkPolicy enforcement; ${diagnostic}`,
+        );
         return true;
       },
     );

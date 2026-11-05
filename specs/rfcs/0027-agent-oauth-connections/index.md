@@ -208,8 +208,8 @@ Preset stays valid. Deployment requires a ready, authorized binding for each ent
 These changes require review of this RFC before implementation. The
 [companion](contracts.md) defines their inputs, results, and failure behavior.
 
-1. **`CredentialRefreshDriver`** exposes browser authorization, client registration,
-   and OIDC provider verification to OCC. After exchange, the Driver hands the
+1. **`CredentialRefreshDriver`** exposes browser authorization
+   and OIDC provider verification to OCC. OCC manages client registrations through its Secret Driver. After exchange, the Driver hands the
    source's grant and first access token to the OCE Token Service for refresh.
 2. **Protected egress** uses the [RFC-0023 contract](../0023-egress-proxy-credential-lifecycle/contracts.md).
    The sender checks the authorized execution, destination and request policy
@@ -308,9 +308,7 @@ integration, real-cluster, and live-provider outcomes.
 - **OCC exchanges the code and stores the refresh token as a Secret.** This needs no
   new Refresh Driver methods, but it puts a rotating refresh token in OCC storage
   and inherits the `issuerRotated` update hazards.
-- **Installation-owned Secrets for the OAuth client secret.** The Driver already
-  manages the client registration. Adding an Installation Secret would introduce
-  a new Secret scope solely for this feature.
+- **Store OAuth client secrets in a Credential Gateway.** This would require a Gateway before an administrator could configure a template. OCC can hold a private reference in the Installation's existing Secret Driver. The Token Service takes custody when a user connects an account.
 - **A Google-specific Gateway type.** Each new provider would need an OCE release.
 - **Executable-specific consent.** RFC-0023 authenticates the execution. A
   process name adds no evidence that a request is authorized. Restricting the

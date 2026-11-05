@@ -16,6 +16,7 @@ export function providerEndpointFixture({
   tenant = defaultTenant,
   sandboxDriver,
   credentialGatewayDriver,
+  servicePrincipalCredentials,
   provisionHarness,
   harnessEndpoint = async () => ({
     url: "ws://tenant--sandbox.openshell.localhost:8080/",
@@ -34,6 +35,7 @@ export function providerEndpointFixture({
     tenant,
     sandboxDriver,
     credentialGatewayDriver,
+    servicePrincipalCredentials,
     providerNetwork,
     revisionOverrides,
     // The Sandbox, and so its relay Pod's labels, exists only once provisioned.

@@ -1102,17 +1102,29 @@ cmp -s "$evidence_dir/values-guard.json" "$evidence_dir/candidate-values-guard.j
 project_yaml "$evidence_dir/before-installation.yaml" '.' "$evidence_dir/installation-guard.json"
 project_yaml "${candidate_installation}.requested" '.' "$evidence_dir/candidate-installation-guard.json"
 if ! cmp -s "$evidence_dir/installation-guard.json" "$evidence_dir/candidate-installation-guard.json"; then
-  # Construct the only permitted candidate from the installed configuration.
+  # Compare the explicit candidate with the existing registration in canonical
+  # form. Do not rewrite the baseline or silently convert an installed object.
   jq -e --slurpfile candidate "$evidence_dir/candidate-installation-guard.json" '
-    .drivers.plugin //= [] |
-    if any(.drivers.plugin[]; .id == "codex-plugin") then
-      (.drivers.plugin[] | select(.id == "codex-plugin") | .configuration.catalogSource) = "openai-curated"
+    (.drivers.plugin | type == "object") as $single |
+    if $single then
+      .drivers.plugin |= (
+        if keys == ["configuration", "id"] and
+          (.id == "occ-plugin" or .id == "codex-plugin") and
+          (.configuration | type == "object")
+        then [.] else error("invalid installed Plugin Driver registration") end
+      )
+    else .drivers.plugin //= [] end |
+    if $single and . == $candidate[0] then true
     else
-      .drivers.plugin += [{id: "codex-plugin", configuration: {catalogSource: "openai-curated"}}]
-    end |
-    (.drivers.plugin |= sort_by(.id)) == ($candidate[0] | .drivers.plugin |= sort_by(.id))
+      if any(.drivers.plugin[]; .id == "codex-plugin") then
+        (.drivers.plugin[] | select(.id == "codex-plugin") | .configuration.catalogSource) = "openai-curated"
+      else
+        .drivers.plugin += [{id: "codex-plugin", configuration: {catalogSource: "openai-curated"}}]
+      end |
+      (.drivers.plugin |= sort_by(.id)) == ($candidate[0] | .drivers.plugin |= sort_by(.id))
+    end
   ' "$evidence_dir/installation-guard.json" >/dev/null ||
-    die "candidate Installation changes a protected setting; only the curated Plugin Driver selection may change."
+    die "candidate Installation changes a protected setting; only an unchanged Plugin Driver registration wrapped in an array or the curated Plugin Driver selection may change."
 fi
 mv "${candidate_values}.requested" "$candidate_values"
 mv "${candidate_installation}.requested" "$candidate_installation"

@@ -22,22 +22,23 @@ export const connectionTemplateScenarios = {
     group: "Pages/Credentials",
     name: "OAuth connection templates",
     steps: [
-      "Open Secrets, then Connection templates. Edit the installed Google OAuth template or create a template. Switch the header Namespace to see its templates alongside Installation-wide templates. Check its current Namespace under Template availability, or choose Installation-wide to share it across Namespaces. Choose a scope limit. Select a compatible client, or use Create template and register OAuth client to register provider-issued credentials.",
+      "Compare availability, assigned OAuth client, and current version for Google OAuth and Support MCP. Open Edit on either row and check the selected template.",
+      "Switch the Namespace in the header. Installation-wide templates remain available in every Namespace.",
     ],
     path: "/console/credentials/connection-templates",
     oauthCatalog: "ready",
     description:
-      "Create an OAuth template manually or discover a server’s metadata. The OAuth client and approved scopes are selected separately.",
+      "An Installation-wide Google template and a Namespace MCP template with an assigned OAuth client.",
   },
   credentialsOAuthClientCatalog: {
     group: "Pages/Credentials",
     name: "OAuth client catalog",
     path: "/console/credentials/oauth-clients",
     oauthCatalog: "ready",
-    description:
-      "Register provider-issued OAuth clients for the availability and endpoints of a saved connection template.",
+    description: "Public and confidential OAuth clients with different issuers and availability.",
     steps: [
-      "Open Credentials → OAuth clients. Switch the header Namespace to see its clients alongside Installation-wide clients. Choose Register OAuth client. Choose a saved connection template from the list or use Create connection template. Save the template to return to registration. Enter the client details issued for the displayed redirect URI.",
+      "Compare each client’s issuer, availability, and token endpoint authentication method. Open a delete confirmation and check the name and availability, then cancel.",
+      "Choose Register OAuth client and select the connection template that defines its issuer.",
     ],
   },
   credentialsDeleteTemplate: {
@@ -84,7 +85,8 @@ export const connectionTemplateScenarios = {
         value: "ctp_00000000-0000-4000-8000-000000000003",
       },
     ],
-    description: "Register a provider-issued client against the installed Google OAuth template.",
+    description:
+      "The Google template defaults to client_secret_post for confidential clients. Selecting Public sets the method to none.",
   },
   credentialsRegisterFromMcp: {
     group: "Pages/Credentials",
@@ -99,7 +101,7 @@ export const connectionTemplateScenarios = {
       },
     ],
     description:
-      "The template supplies the callback context and limits client authentication to the methods its authorization server advertised.",
+      "This MCP server advertises client_secret_basic for confidential clients and none for public clients. Select a client type to see its method.",
   },
   credentialsMemberAccess: {
     group: "Pages/Credentials",

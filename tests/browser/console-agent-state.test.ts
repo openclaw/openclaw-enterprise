@@ -55,7 +55,7 @@ import {
   openFailureDetails,
   showDeploymentTab,
 } from "./console-deployment-activity-helpers.ts";
-import { agentDeleteRequests, agentStopRequests } from "./console-agents-test-support.mjs";
+import { agentDeleteRequests, agentStopRequests } from "./console-agents-test-support.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   ACCESS_TAB_UNAVAILABLE,

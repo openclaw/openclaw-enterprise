@@ -1027,6 +1027,7 @@ function renderAgentForm(
     "aria-describedby": "configuration-json-hint",
   });
   const configurationError = fieldError(configuration);
+  let catalogErrorMessage: string | undefined;
   const primary = configuredModelSelection(rendered.configuration?.values);
   const initialModel = modelPrimary(primary);
   const nativeProvider = element(
@@ -1121,7 +1122,7 @@ function renderAgentForm(
       }
     } else {
       const values = readModelConfiguration();
-      if (values === "invalid-allow") {
+      if (values === "invalid-allow" || !canMergeModelCatalog(values, model.value)) {
         return;
       }
       manualModel = true;
@@ -1148,11 +1149,12 @@ function renderAgentForm(
     selectedModel = "",
     values = readModelConfiguration(),
   ) {
-    if (values === "invalid-allow") {
+    const nextModel = modelChoices().includes(selectedModel) ? selectedModel : "";
+    if (values === "invalid-allow" || !canMergeModelCatalog(values, nextModel, resetTransport)) {
       return false;
     }
     manualModel = !useModelChoices;
-    model.value = modelChoices().includes(selectedModel) ? selectedModel : "";
+    model.value = nextModel;
     modelChoice.replaceChildren(
       element("option", { value: "" }, "Choose a model"),
       ...modelChoices().map((id) => element("option", { value: id }, id)),
@@ -1165,7 +1167,7 @@ function renderAgentForm(
   if (useModelChoices) {
     modelChoice.addEventListener("change", () => {
       const values = readModelConfiguration();
-      if (values === "invalid-allow") {
+      if (values === "invalid-allow" || !canMergeModelCatalog(values, modelChoice.value)) {
         // The native select has already changed; keep the last applied choice visible.
         modelChoice.value = model.value;
         return;
@@ -1392,8 +1394,31 @@ function renderAgentForm(
     focusConfiguration();
     return "invalid-allow";
   }
+  function canMergeModelCatalog(
+    values: ReturnType<typeof readModelConfiguration>,
+    selectedModel: string,
+    resetTransport = false,
+  ): boolean {
+    // Transport replacement and clearing a selection do not read the existing catalog.
+    if (typeof values === "string" || resetTransport || !selectedModel.trim()) {
+      return true;
+    }
+    const providerId = harness.value === "codex" ? "codex" : nativeProvider.value;
+    const catalog: unknown = values.models?.providers?.[providerId]?.models;
+    if (
+      catalog === undefined ||
+      (Array.isArray(catalog) &&
+        catalog.every((entry: unknown) => isObject(entry) && typeof entry.id === "string"))
+    ) {
+      return true;
+    }
+    catalogErrorMessage = `Set models.providers.${providerId}.models to an array of model objects with an id, or remove the field.`;
+    configurationError.show(catalogErrorMessage);
+    focusConfiguration();
+    return false;
+  }
   function updateModelConfiguration(resetTransport = false, values = readModelConfiguration()) {
-    if (typeof values === "string") {
+    if (typeof values === "string" || !canMergeModelCatalog(values, model.value, resetTransport)) {
       return;
     }
     retainPendingModel(values);
@@ -1587,6 +1612,16 @@ function renderAgentForm(
       !selectedModel && sharedPrimary
         ? modelSelections(JSON.parse(configuration.value) as LaunchValues)
         : undefined;
+    // Clear only our catalog remedy; other validation shares this field-error node.
+    // Clearing the model alone retains its catalog, including any reported invalid list.
+    if (
+      (resetTransport || selectedModel) &&
+      catalogErrorMessage !== undefined &&
+      configurationError.node.textContent === catalogErrorMessage
+    ) {
+      configurationError.clear();
+      catalogErrorMessage = undefined;
+    }
     configuration.setCustomValidity("");
     feedback.textContent = "";
     renderChannelEditor();

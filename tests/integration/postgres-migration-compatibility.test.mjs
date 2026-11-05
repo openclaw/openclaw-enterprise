@@ -2018,9 +2018,9 @@ test(
         if (history === "preCodexSavedAccounts") {
           await db.app.query(
             `INSERT INTO occ.oauth_clients (id,display_name,issuer,client_id,token_url,
-              token_endpoint_auth_method,credential_refresh_driver_id,created_at)
+              token_endpoint_auth_method,created_at)
               VALUES ($1,'Operator client','https://auth.openai.com','app_EMoamEEZ73f0CkXaXp7hrann',
-                'https://accounts.example.test/token','none','operator-refresh',now())`,
+                'https://accounts.example.test/token','none',now())`,
             [operatorClientId],
           );
         }
@@ -2055,8 +2055,8 @@ test(
           try {
             await db.app.query(
               `INSERT INTO occ.oauth_clients
-                 (id,namespace_id,display_name,issuer,client_id,token_url,token_endpoint_auth_method,credential_refresh_driver_id,created_at)
-               VALUES ($1,$2,'Namespace client','https://issuer.example.test','shared-client','https://issuer.example.test/token','none','refresh',now())`,
+                 (id,namespace_id,display_name,issuer,client_id,token_url,token_endpoint_auth_method,created_at)
+               VALUES ($1,$2,'Namespace client','https://issuer.example.test','shared-client','https://issuer.example.test/token','none',now())`,
               [registrationId, namespaceId],
             );
             await db.app.query(
@@ -2083,7 +2083,7 @@ test(
         }
         if (history === "preCodexSavedAccounts") {
           const registrations = await db.app.query(
-            `SELECT (id = $1) AS operator_owned, token_url, credential_refresh_driver_id
+            `SELECT (id = $1) AS operator_owned, token_url, secret_driver_id
               FROM occ.oauth_clients WHERE issuer = 'https://auth.openai.com'
                 AND client_id = 'app_EMoamEEZ73f0CkXaXp7hrann'
               ORDER BY operator_owned DESC`,
@@ -2093,12 +2093,12 @@ test(
             {
               operator_owned: true,
               token_url: "https://accounts.example.test/token",
-              credential_refresh_driver_id: "operator-refresh",
+              secret_driver_id: null,
             },
             {
               operator_owned: false,
               token_url: "https://auth.openai.com/oauth/token",
-              credential_refresh_driver_id: null,
+              secret_driver_id: null,
             },
           ]);
         }

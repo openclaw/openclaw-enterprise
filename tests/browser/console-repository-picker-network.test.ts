@@ -4,7 +4,7 @@ import type { Page } from "playwright";
 import type { GitHubRepositoryRegistration } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import type { RepositoryOptionListResponse } from "../../packages/contracts/src/api/resources.ts";
 import { login, newPage, repositoryCheckbox } from "./console-agents-browser-helpers.ts";
-import { createRepositoryLaunchFixture } from "./console-agents-test-support.mjs";
+import { createRepositoryLaunchFixture } from "./console-agents-test-support.ts";
 
 // Advance through the former polling delays and wait for a real browser response after each.
 async function passDescriptionWindow(page: Page) {

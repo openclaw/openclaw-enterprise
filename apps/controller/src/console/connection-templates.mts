@@ -3,6 +3,7 @@ import type {
   ConnectionTemplate,
   McpAuthorizationMetadata,
   Namespace,
+  OAuthClient,
 } from "@openclaw-enterprise/contracts";
 import { refusedAsNonAdministrator, requestFailure } from "./api-client.mjs";
 import {
@@ -12,10 +13,10 @@ import {
   availableInNamespace,
   oauthClients,
   oauthFailure as failure,
-  type PublicClient,
 } from "./oauth-client-registration.mjs";
 import { button, element, field, validateFields } from "./dom.mjs";
 import { resourceActionIcon } from "./resource-actions.mjs";
+import { oauthCatalog } from "./oauth-catalog.mjs";
 import { oauthDeleteButton } from "./oauth-deletion.mjs";
 import type { ConsolePageContext } from "./page-context.mjs";
 
@@ -166,34 +167,23 @@ export function renderConnectionTemplates(
   namespaces: readonly Namespace[],
   currentNamespace: string | null,
 ) {
-  const section = element("section", { className: "card" });
-  const catalog = element("div");
-  const notice = element("p", { className: "hint", role: "status" });
   const create = button("Create connection template", () => edit(), {
     tone: "primary",
     size: "sm",
   });
-  section.append(
-    element(
-      "div",
-      { className: "driver-configurations-heading" },
-      element("h2", {}, "Connection templates"),
-      create,
-    ),
-    element(
-      "p",
-      {},
-      "Choose which OAuth providers, scopes, and destinations people can use to connect accounts.",
-    ),
-    catalog,
-    notice,
+  const { section, list, notice, showRows } = oauthCatalog(
+    "Connection templates",
+    create,
+    "Template",
+    ["Availability", "OAuth client", "Version"],
   );
-  let clients: PublicClient[] = [];
+  section.classList.add("connection-template-catalog");
+  let clients: OAuthClient[] = [];
   let savedTemplates: ConnectionTemplate[] = [];
   let redirectUri: string | undefined;
   async function refresh(saved?: string) {
     create.disabled = true;
-    catalog.replaceChildren();
+    list.replaceChildren();
     notice.textContent = "Loading connection templates…";
     try {
       const [templates, available] = await Promise.all([
@@ -206,39 +196,42 @@ export function renderConnectionTemplates(
       clients = available.data;
       savedTemplates = templates.filter((item) => availableInNamespace(item, currentNamespace));
       redirectUri = available.meta?.redirectUri;
-      for (const template of savedTemplates) {
-        const scope = availabilityLabel(template, namespaces);
-        const client = clients.find((item) => item.id === template.current.oauthClientId);
-        catalog.append(
-          element(
-            "section",
-            { className: "connection-template-row" },
-            element("h3", {}, template.displayName),
-            element(
-              "p",
-              { className: "hint" },
-              `${scope} · Version ${template.current.version} · ${client?.displayName ?? "No OAuth client assigned"}`,
-            ),
-            element(
-              "div",
-              { className: "resource-row-actions" },
-              ...(template.builtIn
-                ? [element("span", { className: "hint" }, "Built-in device sign-in")]
-                : [
-                    button(`Edit ${template.displayName}`, () => edit(template), { size: "sm" }),
-                    oauthDeleteButton(
-                      context,
-                      "connection template",
-                      template,
-                      scope,
-                      refresh,
-                      create,
-                    ),
-                  ]),
-            ),
-          ),
-        );
-      }
+      showRows(
+        savedTemplates.map((template) => {
+          const scope = availabilityLabel(template, namespaces);
+          const client = clients.find((item) => item.id === template.current.oauthClientId);
+          return {
+            name: template.displayName,
+            details: [
+              scope,
+              client?.displayName ?? "No OAuth client assigned",
+              String(template.current.version),
+            ],
+            actions: template.builtIn
+              ? [
+                  element(
+                    "span",
+                    { className: "hint", title: "Built-in device sign-in" },
+                    "Built-in",
+                  ),
+                ]
+              : [
+                  button("Edit", () => edit(template), {
+                    size: "sm",
+                    "aria-label": `Edit ${template.displayName}`,
+                  }),
+                  oauthDeleteButton(
+                    context,
+                    "connection template",
+                    template,
+                    scope,
+                    refresh,
+                    create,
+                  ),
+                ],
+          };
+        }),
+      );
       notice.textContent =
         saved ||
         (savedTemplates.length ? "" : "No connection templates are available for this selection.");
@@ -253,7 +246,7 @@ export function renderConnectionTemplates(
         return;
       }
       notice.textContent = failure(cause, "the connection template list");
-      catalog.append(button("Reload connection templates", () => void refresh(), { size: "sm" }));
+      list.append(button("Reload connection templates", () => void refresh(), { size: "sm" }));
     }
   }
 
@@ -298,7 +291,7 @@ export function openConnectionTemplateEditor(
     parent: HTMLElement;
     namespaces: readonly Namespace[];
     currentNamespace: string | null;
-    clients: readonly PublicClient[];
+    clients: readonly OAuthClient[];
     template?: ConnectionTemplate | undefined;
     onSaved: (saved: ConnectionTemplate) => void;
     onUnconfirmed: () => void;
