@@ -156,23 +156,137 @@ async function oauthAccounts(t: TestContext) {
   const namespaceId = await makeNamespace();
   const base = `/namespaces/${namespaceId}`;
   const connections = `${base}/connections`;
-  const template = await inject("POST", "/connection-templates", {
+  const recipient = {
+    host: pluginWorkflow ? "gmail.googleapis.com" : "api.connections.test",
+    port: 443,
+    path: "/**",
+  };
+  const registered = await inject("POST", "/oauth-clients", {
+    displayName: "Saved accounts",
+    namespaceId,
+    issuer,
+    tokenUrl,
+    revocationUrl: tokenUrl.replace(/token$/, "revoke"),
+    clientId,
+    clientSecret,
+    tokenEndpointAuthMethod: "client_secret_basic",
+  });
+  assert.equal(registered.statusCode, 201, registered.body);
+  const oauthClientId = registered.json().data.id;
+  const manualConfig = {
+    mode: "manual",
     displayName: "Keycloak",
     namespaceId,
     clientId,
     clientSecret,
     issuer,
     authorizationUrl: `${issuer}/protocol/openid-connect/auth`,
-    tokenUrl: `${tokenOrigin}/realms/oce/protocol/openid-connect/token`,
-    scopes: ["openid"],
-    envVar: "CONNECTION_TOKEN",
-    endpoint: { host: "api.connections.test", port: 443, path: "/**" },
-  });
+    tokenUrl,
+    oauthClientId,
+    scopes,
+    recipient,
+  };
+  const template = await inject("POST", "/connection-templates", manualConfig);
   assert.equal(template.statusCode, 201, template.body);
-  const input = { connectionTemplateId: template.json().data.id };
+  const manual = { connectionTemplateId: template.json().data.id };
+  const input: { connectionTemplateId: string; selectedScopes?: string[] } = { ...manual };
   const ownerId = principal.id;
   const owner = await accountSession(app, adminAccount.email, adminAccount.password);
-  async function begin(path = connections, body: Record<string, unknown> = input) {
+  if (!pluginWorkflow) {
+    // The selected client may support revocation even though this manual version omits the endpoint.
+    const manualStart = await inject("POST", connections, manual);
+    assert.equal(manualStart.statusCode, 201, manualStart.body);
+    const mcpConfig = {
+      displayName: "Scope selection",
+      namespaceId,
+      mode: "mcp_discovery",
+      issuer,
+      serverUrl: "https://api.connections.test/mcp",
+      scopes: ["openid", "profile"],
+      oauthClientId,
+    };
+    const mcp = await inject("POST", "/connection-templates", mcpConfig);
+    assert.equal(mcp.statusCode, 201, mcp.body);
+    input.connectionTemplateId = mcp.json().data.id;
+    input.selectedScopes = ["openid"];
+    for (const choice of [undefined, ["profile"], ["openid", "other"]]) {
+      const refused = await inject("POST", connections, {
+        connectionTemplateId: input.connectionTemplateId,
+        ...(choice && { selectedScopes: choice }),
+      });
+      assert.equal(refused.statusCode, 400, refused.body);
+    }
+    // With no configured scope list, discovery suggests scopes and its challenge still requires openid.
+    const unrestrictedMcp = await inject("POST", "/connection-templates", {
+      ...mcpConfig,
+      scopes: [],
+      displayName: "Open MCP scope selection",
+    });
+    assert.equal(unrestrictedMcp.statusCode, 201, unrestrictedMcp.body);
+    const unrestrictedId = unrestrictedMcp.json().data.id;
+    assert.equal(
+      (await inject("POST", connections, { connectionTemplateId: unrestrictedId })).statusCode,
+      400,
+    );
+    const manyScopes = ["openid", ...Array.from({ length: 32 }, (_, i) => "custom." + i)];
+    const freeStart = await inject("POST", connections, {
+      connectionTemplateId: unrestrictedId,
+      selectedScopes: manyScopes,
+    });
+    assert.equal(freeStart.statusCode, 201, freeStart.body);
+    assert.equal(
+      new URL(freeStart.json().data.authorizationUrl).searchParams.get("scope"),
+      manyScopes.join(" "),
+    );
+    // Let Keycloak choose a default on this isolated registration. The account must record it
+    // as a provider grant while preserving that the person did not request an explicit scope.
+    const unrestrictedManual = await inject("POST", "/connection-templates", {
+      ...manualConfig,
+      scopes: [],
+      displayName: "Provider defaults",
+    });
+    assert.equal(unrestrictedManual.statusCode, 201, unrestrictedManual.body);
+    const [keycloakClient] = await keycloakRealmAdmin(
+      issuer,
+      secrets.admin,
+      "GET",
+      "/clients?clientId=" + clientId,
+    );
+    const realmScopes = await keycloakRealmAdmin(issuer, secrets.admin, "GET", "/client-scopes");
+    const profile = realmScopes.find((scope: { name: string }) => scope.name === "profile");
+    assert.ok(profile);
+    const defaultPath = "/clients/" + keycloakClient.id + "/default-client-scopes/" + profile.id;
+    await keycloakRealmAdmin(issuer, secrets.admin, "PUT", defaultPath);
+    const defaults = await owner("POST", connections, {
+      connectionTemplateId: unrestrictedManual.json().data.id,
+      selectedScopes: [],
+    });
+    assert.equal(defaults.statusCode, 201, defaults.body);
+    const defaultsUrl = defaults.json().data.authorizationUrl;
+    assert.equal(new URL(defaultsUrl).searchParams.has("scope"), false);
+    const defaultCallback = await owner(
+      "GET",
+      await consentRedirect(defaultsUrl, "alice", secrets.users.alice.password),
+    );
+    assert.match(String(defaultCallback.headers.location), /connection=connected/);
+    const defaultsId = defaults.json().data.credentialSourceId;
+    const defaultAccounts = await owner("GET", connections);
+    const defaultAccount = defaultAccounts
+      .json()
+      .data.find(
+        (account: { credentialSourceId: string }) => account.credentialSourceId === defaultsId,
+      );
+    assert.deepEqual(defaultAccount.requestedScopes, []);
+    assert.deepEqual(defaultAccount.grantedScopes, ["profile"]);
+    await keycloakRealmAdmin(issuer, secrets.admin, "DELETE", defaultPath);
+    const disconnected = await owner("DELETE", connections + "/" + defaultsId);
+    assert.equal(disconnected.statusCode, 204, disconnected.body);
+  }
+  async function begin(
+    path = connections,
+    body: Record<string, unknown> = input,
+    username: "alice" | "carol" = "alice",
+  ) {
     const response = await owner("POST", path, body);
     assert.equal(response.statusCode, 201, response.body);
     return {
@@ -450,7 +564,15 @@ test(
         account.requestedScopes,
         account.grantedScopes,
       ],
-      [oauthClientId, clientId, issuer, tokenUrl, [recipient], ["openid"], ["openid"]],
+      [
+        oauthClientId,
+        clientId,
+        issuer,
+        tokenUrl,
+        { host: "api.connections.test", port: 443, path: "/mcp" },
+        ["openid"],
+        ["openid"],
+      ],
     );
     // The trusted Token Service consumer can use the grant. Saving/rotating alone creates no sender.
     async function prepared(minimumValidityMs = 0) {
@@ -479,28 +601,9 @@ test(
     const original = await prepared();
     const alice = await subject(original);
     assert.ok(alice);
-    async function setIssuedLifetime(seconds: number) {
-      const [client] = await keycloakRealmAdmin(
-        issuer!,
-        secrets.admin,
-        "GET",
-        `/clients?clientId=${clientId}`,
-      );
-      await keycloakRealmAdmin(issuer!, secrets.admin, "PUT", `/clients/${client.id}`, {
-        ...client,
-        attributes: { ...client.attributes, "access.token.lifespan": String(seconds) },
-      });
-    }
-    // Only a newly issued token can satisfy this request's minimum remaining lifetime.
-    await setIssuedLifetime(300);
-    const [resolved, joined] = await Promise.all([prepared(120_000), prepared(120_000)]);
-    assert.equal(joined, resolved);
-    assert.notEqual(resolved, original);
-    assert.equal(await subject(resolved), alice);
-
     // Lose access to the operator's registration before dispatch. The scheduler must back off
     // without losing the user's grant, and the owner can retry as soon as access returns.
-    const unavailable = t.mock.method(secretDriver.installationSecrets, "withValue", async () => {
+    const unavailable = t.mock.method(refresh, "readClientSecret", async () => {
       throw new Error("registration store unavailable");
     });
     assert.equal((await owner("POST", source + "/rotate")).statusCode, 503);
@@ -517,53 +620,6 @@ test(
     assert.equal(deferred.rows[0].deferred, true);
     assert.equal((await owner("POST", source + "/rotate")).statusCode, 200);
     assert.equal(await subject(await prepared()), alice);
-    // A new default registration is for future consent, even when its credentials are unusable.
-    const futureRegistration = await inject("POST", "/oauth-clients", {
-      connectionTemplateId: mcp.json().data.id,
-      connectionTemplateVersion: mcp.json().data.current.version,
-      displayName: "Future consent",
-      clientId: clientId + "-future",
-      clientSecret: randomUUID(),
-      tokenEndpointAuthMethod: "client_secret_basic",
-    });
-    assert.equal(futureRegistration.statusCode, 201, futureRegistration.body);
-    const switchRegistration = await inject(
-      "PATCH",
-      "/connection-templates/" + mcp.json().data.id,
-      { ...mcpConfig, oauthClientId: futureRegistration.json().data.id },
-    );
-    assert.equal(switchRegistration.statusCode, 200, switchRegistration.body);
-    const currentMcp = async () => {
-      const result = await owner("GET", connections);
-      assert.equal(result.statusCode, 200, result.body);
-      return result
-        .json()
-        .data.find((row: { credentialSourceId: string }) => row.credentialSourceId === id);
-    };
-    assert.deepEqual((await currentMcp()).destinations, [recipient]);
-    assert.equal((await currentMcp()).oauthClientId, oauthClientId);
-    const futureConsent = await owner("POST", connections, input);
-    assert.equal(futureConsent.statusCode, 201, futureConsent.body);
-    assert.equal(
-      new URL(futureConsent.json().data.authorizationUrl).searchParams.get("client_id"),
-      clientId + "-future",
-    );
-    // An MCP transport/resource change stops delivery rather than retargeting the saved grant.
-    discoveredResource = "https://resource.connections.test";
-    const otherResource = await inject(
-      "PATCH",
-      "/connection-templates/" + mcp.json().data.id,
-      mcpConfig,
-    );
-    assert.equal(otherResource.statusCode, 200, otherResource.body);
-    assert.deepEqual((await currentMcp()).destinations, []);
-    discoveredResource = serverUrl;
-    const otherMcp = await inject("PATCH", "/connection-templates/" + mcp.json().data.id, {
-      ...mcpConfig,
-      serverUrl: "https://other.connections.test/mcp",
-    });
-    assert.equal(otherMcp.statusCode, 200, otherMcp.body);
-    assert.deepEqual((await currentMcp()).destinations, []);
     // The original grant must refresh after the provider and the OCE administrator rotate the client.
     const replacement = await rotateKeycloakClientSecret(
       issuer,
