@@ -6,7 +6,7 @@ rfc: index.md
 
 ## First implementation PR
 
-For the first integration, give a running Agent read/write access to repository A and read access to B. The operator makes repositories eligible in the Namespace and the Agent owner selects them in `repositoryBindings`. The current profile requires one permission map. Give A and B separate maps for code and issues. GitHub enforces branch and tag rules. [Current enrollment](../../../docs/guides/repository-credentials/openshell-enrollment.md)
+For the first integration, give a running Agent read/write access to repository A and read access to B. The operator makes repositories eligible in the Namespace and the Agent owner selects them in `repositoryBindings`. Today, one permission map applies to all repositories in an Agent’s selection. For the installed test, resolve separate permissions for A and B, covering both code and issues. GitHub enforces branch and tag rules. [Current enrollment](../../../docs/guides/repository-credentials/openshell-enrollment.md)
 
 Start with one repository and one permission tier. Port OCE’s [scope construction](../../../apps/controller/src/drivers/repo/github/credentials/provider-transport/request-options.ts), [candidate capture](../../../apps/controller/src/drivers/repo/github/credentials/prepared-owner.ts) and [response validation](../../../apps/controller/src/drivers/repo/github/credentials/installation-token-response.ts). Use an issuer-owned fixture key to verify the App JWT exchange and the failure cases below. This library change can land before the remote transport. The connected integration runs it in the separate issuer. Keep the OCC repository grant usable for GitLab. App JWTs and GitHub permission names belong in the GitHub strategy.
 
