@@ -13,13 +13,7 @@ for setup.
 | `OCC_AUTH_OIDC_TOKEN_AUTH`                                   | `auth.oidc.tokenAuth`                               | `client_secret_post` (default, not rendered) or `client_secret_basic`.                      |
 | `OCC_AUTH_OIDC_DISPLAY_NAME`                                 | `auth.oidc.displayName`                             | Optional Console label, 1–40 printable characters.                                          |
 
-With `auth.oidc.enabled`, the chart adds the API-only egress policy
-`openclaw-enterprise-api-oidc-login-egress` on TCP 443. Empty `auth.oidc.egressCidrs`
-allows any address except link-local `169.254.0.0/16`. The port is the destination Pod's
-port; an IdP inside the cluster on another target port needs
-[its own egress policy](../../guides/deploy/oidc-sign-in.md#configure-the-chart). Rendering fails on values the API refuses,
-a Secret shared with GitHub, Google or any other chart Secret, `agentNativeAdmin.enabled`
-with OIDC, or an HTTP base URL.
+The API Server must reach the configured token and JWKS URLs. If the cluster restricts egress, permit the IdP’s destination address and port. Rendering rejects invalid OIDC settings, a shared Secret, native administration with OIDC, or an HTTP base URL.
 
 `auth.oidc.caSecretName` and `auth.oidc.caSecretKey` optionally select a public PEM
 CA bundle from a Secret in the release namespace. Both default to empty; set both

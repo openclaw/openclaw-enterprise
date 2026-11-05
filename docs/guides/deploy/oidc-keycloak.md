@@ -55,11 +55,7 @@ For a private CA, set `auth.oidc.caSecretName` and `auth.oidc.caSecretKey`; see
 the Keycloak root with any selected Gateway CA for the API only. Do not set
 `NODE_EXTRA_CA_CERTS` separately.
 
-The chart's OIDC NetworkPolicy permits API egress on TCP 443. For an in-cluster
-Keycloak endpoint behind a Service with a non-443 `targetPort`, add a separate
-[egress policy](oidc-sign-in.md#configure-the-chart) for the destination Pod port;
-`auth.oidc.egressCidrs` alone cannot change that port. Verify the selected topology
-and policy in your deployment.
+The API Server must reach Keycloak’s token and JWKS endpoints. If your cluster restricts this traffic, check the destination port after the Service forwards it and the ingress policy on the receiving Pods.
 
 ## Create the OCE client
 

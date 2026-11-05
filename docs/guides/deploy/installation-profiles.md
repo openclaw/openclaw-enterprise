@@ -164,8 +164,7 @@ ChatGPT Backend admin credential path:
     "managedServiceAccounts": {
       "workspaceId": "11111111-1111-4111-8111-111111111111",
       "adminSecretName": "occ-chatgpt-admin",
-      "adminSecretKey": "admin-key",
-      "providerCidr": "198.51.100.30/32"
+      "adminSecretKey": "admin-key"
     }
   }
 }
@@ -194,20 +193,6 @@ set `controlPlane.observabilityUrl`. The renderer writes it as
 [`observability.url`](../../reference/configuration.md#installation-startup-configuration)
 and rejects URLs the controller would reject at startup, including any `@` before the host and a tab, newline, or a backslash before the query.
 
-### Hosted discovery egress
-
-With hosted `codex-plugin`, omitted `codex.modelDiscoveryCidrs` resolves
-`auth.openai.com` and `chatgpt.com` from the renderer host into Helm
-`api.modelDiscoveryCidrs`. This grants only release API Pods TCP 443 to those
-IPv4 `/32` hosts.
-
-Supplied lists stay unchanged without DNS queries; `[]` requires an external
-HTTPS policy for both hosts. DNS failure leaves both YAML files absent.
-
-Verify API Pod DNS/NAT destinations and **Load plugins** with an authorized PAT.
-Rerender and upgrade Helm after address changes; this initial snapshot does not
-refresh itself.
-
 ### External sign-in and trusted proxies
 
 Activation of GitHub, Google or OIDC sign-in is one-way, so keep these inputs in every
@@ -232,8 +217,7 @@ as behind a source-preserving NLB, needs none.
   "controlPlane": {
     "recoveryUserId": "<administrator user ID>",
     "github": {
-      "secretName": "occ-github-login",
-      "egressCidrs": ["140.82.112.0/20"]
+      "secretName": "occ-github-login"
     },
     "google": { "allowedDomains": ["example.com"] },
     "trustedProxy": { "preset": "ingress-nginx", "cidrs": ["10.42.0.0/16"] }
@@ -254,8 +238,7 @@ short release names) and root CA (`occ-gateway-<hash>-root`) Secrets the chart
 generates, and, with `controlPlane.loggingCollector.enabled`, from
 `occ-otel-collector-config` and `occ-otel-collector-exporter`.
 
-`github`, `google` and `oidc` also accept `secretName`, `clientIdKey`, `clientSecretKey`
-and `egressCidrs`; `github` also accepts `allowedOrgs` and `allowedTeams`
+`github`, `google` and `oidc` also accept `secretName`, `clientIdKey`, `clientSecretKey`; `github` also accepts `allowedOrgs` and `allowedTeams`
 ([allowlist](../../reference/authentication/external-sign-in.md#organization-and-team-allowlist));
 `oidc` also accepts `tokenAuth` and `displayName`;
 `trustedProxy` accepts `clientAddressHeader`, required for the `generic` preset.
@@ -387,7 +370,7 @@ the install as ready:
   `runtimeProxyUrl` and `directoryProxyUrl` inputs.
 - For Codex hosted plugin discovery and runtime authentication, a
   same-Namespace `codex_pat` token Secret or a PAT entered during Agent creation.
-  See [discovery egress](#hosted-discovery-egress).
+  The API Server needs HTTPS access to `auth.openai.com` and `chatgpt.com`.
 - For optional OCE-managed ChatGPT service-account runtime credentials, the
   admin Secret, workspace authority, and app connections described in
   [Configure the ChatGPT Backend](../integrations/chatgpt.md). Treat managed

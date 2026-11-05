@@ -107,8 +107,6 @@ policy(args.tenant, "oce-supervisor-services", supervisor, "egress",
 policy(envoy, "oce-proxy-control", proxy, "egress", service_edges(envoy, controller, 18000))
 policy(envoy, "oce-control-from-proxy", {"matchLabels": controller["spec"]["selector"]}, "ingress",
        [{"from": [peer(envoy, private["spec"]["selector"])], "ports": [port(18000)]}])
-policy(system, "oce-api-private-route", {"matchLabels": api["spec"]["selector"]}, "egress",
-       service_edges(envoy, private, 443))
 policy(envoy, "oce-private-route-from-api", proxy, "ingress",
        [{"from": [peer(system, api["spec"]["selector"])], "ports": [port(10443)]}])
 dns_service = resource("kube-system", "service", "kube-dns")["spec"]

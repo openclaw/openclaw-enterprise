@@ -45,7 +45,7 @@ Install cert-manager, Gateway API, Envoy Gateway and the matching Agent Sandbox 
 
 The templates below enable private Envoy routing with a `ClusterIP` Service and a separate routing key. OCC checks Agent permissions; the browser connects to OCC’s HTTPS origin. The deployment helpers verify actual Envoy peers and apply Agent network policies. Preserve certificate/hostname verification, exact proxy CIDRs and the fixed native identity’s `operator.admin` grant. Keep model and channel credentials separate from routing credentials. See [private routing](workspace-routing.md#configure-private-routing) for the configuration contract and [existing-resource preparation](workspace-routing.md#enable-routing-for-existing-namespaces-and-agents) when updating an existing installation.
 
-Use an OpenShell-compatible kernel, restricted tenant Pod Security and a `runc` RuntimeClass named `openshell-sandbox` pinned to the Agent group. Check Landlock, seccomp and no-new-privileges before enrolling credentials. For optional Slack support, configure [both required CONNECT proxies](../integrations/slack.md#configure-both-slack-proxies); NAT alone is insufficient.
+Use an OpenShell-compatible kernel, restricted tenant Pod Security and a `runc` RuntimeClass named `openshell-sandbox` pinned to the Agent group. Check Landlock, seccomp and no-new-privileges before enrolling credentials. For optional Slack support, configure the [gateway CONNECT proxy](../integrations/slack.md#configure-both-slack-proxies) and verify that the API Server can reach Slack.
 
 ## 1. Prepare the cluster and images
 

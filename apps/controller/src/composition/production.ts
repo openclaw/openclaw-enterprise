@@ -69,10 +69,7 @@ export interface ProductionConfig {
   readonly gatewayApiKeyPath?: string;
   readonly channelDirectoryProxyUrl?: string;
   readonly channelDirectoryManagedProxyHost?: string;
-  /**
-   * OCC_API_HTTPS_EGRESS_OPEN: a sign-in egress rule lets the API reach any address on TCP 443,
-   * so Slack can answer without a proxy. Default: closed.
-   */
+  /** Direct API HTTPS egress is available. This controls diagnostics for an unanswered Slack check. */
   readonly apiHttpsEgressOpen?: boolean;
   readonly nativeAdmin?: NativeAdminAccessConfig;
   /** Default: enabled. `false` makes both runtime routes answer 501. */
@@ -290,8 +287,6 @@ export async function composeProduction(
           config.channelDirectoryManagedProxyHost === undefined
             ? []
             : [config.channelDirectoryManagedProxyHost],
-        // A closed egress reaches Slack only through a proxy; an open one may reach it
-        // directly, so a timeout there stays a retryable outage (finding 2533).
         expectProxy: config.apiHttpsEgressOpen !== true,
       },
     );

@@ -11237,10 +11237,7 @@ test("Slack validation with no Slack proxy names the setting at provision and de
   const app = await makeSecret("app", "xapp-synthetic-app");
   const bot = await makeSecret("bot", "xoxb-synthetic-bot");
   const model = await makeSecret("model", "synthetic-model");
-  // Finding 2521: production composition builds the Driver with expectProxy, since its API
-  // egress is default-deny unless sign-in settings open it. With no proxy URL, a check that gets
-  // no answer from Slack usually means the Installation has no Slack route: a fixed refusal names
-  // the setting, and still allows a retry for an open route that timed out (finding 2531).
+  // This Installation expects a proxy. If a direct check gets no answer, report the missing route.
   // The rejection has the shape Node's fetch gives a connection that timed out.
   const timedOut = () =>
     new TypeError("fetch failed", {

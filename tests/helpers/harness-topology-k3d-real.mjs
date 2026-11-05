@@ -403,6 +403,8 @@ async function startInClusterControllers(
   assert.equal(Number.isInteger(kubernetesPort), true, "Kubernetes API endpoint port is required");
   const name = "openclaw-enterprise-api";
   const labels = workspaceGateway.apiPodLabels;
+  const workerName = "openclaw-enterprise-worker";
+  const workerLabels = { ...labels, "app.kubernetes.io/component": "worker" };
   const configurationSecret = `${name}-installation`;
   const databaseSecret = `${name}-database`;
   const authSecretName = `${name}-auth`;
@@ -609,8 +611,14 @@ async function startInClusterControllers(
         apiVersion: "networking.k8s.io/v1",
         kind: "NetworkPolicy",
         metadata: { name: `${name}-isolation`, namespace: platformNamespace },
+        spec: { podSelector: { matchLabels: labels }, policyTypes: ["Ingress"] },
+      },
+      {
+        apiVersion: "networking.k8s.io/v1",
+        kind: "NetworkPolicy",
+        metadata: { name: `${workerName}-isolation`, namespace: platformNamespace },
         spec: {
-          podSelector: { matchLabels: labels },
+          podSelector: { matchLabels: workerLabels },
           policyTypes: ["Ingress", "Egress"],
           ingress: [],
           egress: [
@@ -645,8 +653,6 @@ async function startInClusterControllers(
   // Gateway route, with the worker's own identity and only its required mounts.
   const apiPodSpec = manifests.items.find(({ kind }) => kind === "Deployment").spec.template.spec;
   const apiContainer = apiPodSpec.containers[0];
-  const workerName = "openclaw-enterprise-worker";
-  const workerLabels = { ...labels, "app.kubernetes.io/component": "worker" };
   const workerVolumes = ["installation", "gateway-api-key", "gateway-ca"];
   manifests.items.push({
     apiVersion: "apps/v1",
@@ -717,17 +723,10 @@ async function startInClusterControllers(
       },
     },
   });
-  const workerIsolation = structuredClone(
-    manifests.items.find(({ kind }) => kind === "NetworkPolicy"),
-  );
-  workerIsolation.metadata.name = `${workerName}-isolation`;
-  workerIsolation.spec.podSelector.matchLabels = workerLabels;
-  manifests.items.push(workerIsolation);
   const channels = apiConfiguration.drivers.compute.configuration.runtime?.channels;
   if (channels !== undefined) {
     assert.ok(channels.managedProxy, "Slack topology requires the chart-managed proxy");
-    // Admission validates Slack credentials before deployment. The chart grants
-    // only the API this proxy route; the worker keeps its existing isolation.
+    // The API uses the same managed proxy as the installed chart for Slack admission.
     apiContainer.env.push(
       { name: "OCC_CHANNEL_DIRECTORY_PROXY_URL", value: channels.proxyUrl },
       { name: "OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST", value: channels.managedProxy.hostname },

@@ -207,7 +207,9 @@ pools. Sharing a namespace trusts its workload managers with both roles; credent
 mounts and NetworkPolicies do not restrict a namespace administrator.
 
 Kubernetes uses restricted Pod security, scoped ServiceAccounts, and
-NetworkPolicies. Controller credentials remain trusted within their granted
+NetworkPolicies. The chart restricts API Server ingress and leaves outbound connectivity
+to the cluster operator. Worker and Agent egress use separate policies. See
+[network isolation](guides/operate/network-isolation.md). Controller credentials remain trusted within their granted
 tenant namespaces: workload-write authority can expose Secrets indirectly.
 Model credentials currently reach the executing Harness, and same-cluster
 Codex transport uses capability-token `ws://`, not mutually authenticated TLS.

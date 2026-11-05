@@ -74,10 +74,6 @@ function codexInput(overrides = {}) {
       codexSeccompProfile: "profiles/codex.json",
       ...(overrides.runtime ?? {}),
     },
-    codex: {
-      modelDiscoveryCidrs: ["192.0.2.20/32"],
-      ...(overrides.codex ?? {}),
-    },
   };
 }
 
