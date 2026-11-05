@@ -8,7 +8,7 @@ tags: [human_verified]
 
 Check published controller and runtime images with trusted startup tests before
 considering a staging installation. This workflow qualifies container startup on
-amd64; it does not install or promote a release. See the [release guides](../../release/README.md)
+amd64; it does not install or promote a release. See the [release guides](README.md)
 for publication and recovery procedures.
 
 <a id="when-it-runs"></a>
@@ -27,7 +27,7 @@ publication evidence and image identity before executing those startup checks.
 
 ### Source and credential constraints
 
-The [workflow command](../../../scripts/ci/staging-qualification.ts) checks the
+The [workflow command](../../scripts/ci/staging-qualification.ts) checks the
 trusted checkout against the workflow SHA, protected same-repository `main`,
 local workflow ancestry in `main`, and release ancestry in the workflow commit.
 It requires the exact successful Enterprise Containers run and attempt, a
@@ -74,11 +74,11 @@ fixture mounts, not the runner workspace, Docker socket, or Actions credentials.
 
 ## Execution
 
-Run [Staging Release Qualification](../../../.github/workflows/staging-qualification.yml)
+Run [Staging Release Qualification](../../.github/workflows/staging-qualification.yml)
 with the trusted `main` workflow. Supply `installation`, the full `source_sha`,
 `publication_run_id`, and its exact `publication_attempt`. The publication must be
 a successful manual Enterprise Containers run for that source on `main`.
-The [Enterprise Containers publisher](../../release/containers.md#source-visibility)
+The [Enterprise Containers publisher](containers.md#source-visibility)
 issues receipts only for public GitHub Container Registry (GHCR) packages.
 Private and internal packages are ineligible even if the package names match or
 the qualification token has read access.
@@ -120,7 +120,7 @@ success receipt or invented suite results.
 This is **container startup qualification on amd64**, not an installation or
 rollout. The installed private Git test lane builds a separate repository-service
 image and a runtime with a test CA through
-[first-agent-smoke](../../../scripts/ci/first-agent-smoke.mjs); the two-image
+[first-agent-smoke](../../scripts/ci/first-agent-smoke.mjs); the two-image
 publication receipt cannot supply that installation unchanged. Full Integration
 and QA Advisory retain their existing installation and provider requirements.
 This workflow does not promote to production or prove staging readiness,
@@ -128,7 +128,7 @@ installed Agent workflows, or arm64 behavior.
 
 ## Files
 
-- [Workflow](../../../.github/workflows/staging-qualification.yml): trusted source, inputs, and artifact retention.
-- [Qualification command](../../../scripts/ci/staging-qualification.ts): publication validation, image selection, and startup checks.
-- [Command tests](../../../tests/integration/staging-qualification.test.ts): local Git and transport fixtures.
-- [Packaging manifest](../../../scripts/ci/test-suites/images-packaging.json) and [startup manifest](../../../scripts/ci/test-suites/images-runtime-startup.json): runtime test inventories.
+- [Workflow](../../.github/workflows/staging-qualification.yml): trusted source, inputs, and artifact retention.
+- [Qualification command](../../scripts/ci/staging-qualification.ts): publication validation, image selection, and startup checks.
+- [Command tests](../../tests/integration/staging-qualification.test.ts): local Git and transport fixtures.
+- [Packaging manifest](../../scripts/ci/test-suites/images-packaging.json) and [startup manifest](../../scripts/ci/test-suites/images-runtime-startup.json): runtime test inventories.

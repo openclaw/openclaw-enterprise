@@ -152,7 +152,7 @@ manual profile. Production node provisioning remains outside CI ownership; see
 [Codex sandbox setup](../guides/deploy/codex-sandbox.md).
 
 `scripts/ci/staging-qualification.ts:pull` verifies release metadata and
-[isolates pull credentials](../testing/ci/staging-qualification.md).
+[isolates pull credentials](../release/staging-qualification.md).
 `smoke` runs trusted workflow code against the release images. Results identify
 both commits.
 
