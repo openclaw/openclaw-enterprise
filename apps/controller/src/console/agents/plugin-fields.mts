@@ -1028,7 +1028,14 @@ export function createPluginFields({
       const credentialSlots =
         capabilities?.credentialSlots?.filter((slot) => slot.pluginId === entry.id) ?? [];
       const hasManagedTools = credentialSlots.some((slot) => slot.toolDiscovery);
-      if (selected?.enabled) {
+      if (selected?.enabled && credentialSlots.length) {
+        const accountSection = element(
+          "section",
+          { className: "plugin-accounts", "aria-label": "Accounts" },
+          element("h4", {}, "Accounts"),
+          element("p", { className: "hint" }, "Select the accounts this Agent can use."),
+        );
+        details.append(accountSection);
         for (const slot of credentialSlots) {
           const bindings = selected.driverPolicy?.credentials;
           const current = isObject(bindings) ? bindings[slot.id] : undefined;
@@ -1110,30 +1117,21 @@ export function createPluginFields({
             );
             accounts.append(element("label", { className: "plugin-toggle" }, checkbox, name));
           }
-          details.append(accounts);
-          if (slotConnection && !stale) {
-            const control = pluginConnectionControl(slot, slotConnection, ids);
-            if (control) {
-              details.append(control);
-            }
-          }
-          if (slot.sources.some((source) => !source.authorization)) {
-            details.append(
-              element(
-                "p",
-                { className: "hint" },
-                "Save plugin selections to grant this Agent access to the checked accounts.",
-              ),
-            );
-          }
+          accountSection.append(accounts);
           if (!slot.sources.length) {
-            details.append(
+            accounts.append(
               element(
                 "p",
                 { className: "hint" },
-                "No compatible saved account or attached credential is available for this slot.",
+                "No compatible saved accounts are available for this slot.",
               ),
             );
+          }
+          if (slotConnection && !stale) {
+            const control = pluginConnectionControl(slot, slotConnection, ids, entry.name, dialog);
+            if (control) {
+              accounts.append(control);
+            }
           }
           if (slot.toolDiscovery && !ids.length && slot.sources.length > 0) {
             details.append(element("p", { className: "hint" }, "Select an account to load tools."));

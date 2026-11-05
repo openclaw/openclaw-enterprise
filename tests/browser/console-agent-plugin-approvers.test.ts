@@ -1696,12 +1696,17 @@ test("plugin account selection and additional OAuth consent retain the other acc
     const releaseSha256 = "0".repeat(64);
     const source = { id: "cs_00000000-0000-4000-8000-000000000001", name: "Service desk" };
     const input = document.createElement("textarea");
-    input.value = JSON.stringify({
-      [pluginId]: {
-        enabled: true,
-        driverPolicy: { releaseSha256, credentials: { support: source.id } },
+    const savedPluginSelections = JSON.stringify(
+      {
+        [pluginId]: {
+          enabled: true,
+          driverPolicy: { releaseSha256, credentials: { support: [source.id] } },
+        },
       },
-    });
+      null,
+      2,
+    );
+    input.value = savedPluginSelections;
     const picker = createPluginFields({
       input,
       capabilities: {
@@ -1717,6 +1722,7 @@ test("plugin account selection and additional OAuth consent retain the other acc
             toolDiscovery: true,
             sources: [
               source,
+              { id: "cs_00000000-0000-4000-8000-000000000003", name: "On-call" },
               {
                 id: "cs_00000000-0000-4000-8000-000000000002",
                 name: "Reporting",
@@ -1745,7 +1751,10 @@ test("plugin account selection and additional OAuth consent retain the other acc
         ],
       },
       slotConnection: {
-        unavailable: () => undefined,
+        unavailable: () =>
+          canConnect && input.value !== savedPluginSelections
+            ? "Save your plugin selections before connecting an account."
+            : undefined,
         async list() {
           return [
             {
@@ -1766,10 +1775,24 @@ test("plugin account selection and additional OAuth consent retain the other acc
               offeredScopes: [],
               requiredScopes: [],
             },
+            {
+              id: "fixed",
+              displayName: "Support read only",
+              version: 1,
+              mode: "manual",
+              scopes: ["tickets.read", "messages.read"],
+              offeredScopes: [],
+              requiredScopes: [],
+            },
           ];
         },
-        async start(_slot, _template, selected, accountName) {
-          output.value = JSON.stringify({ selected, accountName });
+        async start(slot, template, selected, accountName) {
+          output.value = JSON.stringify({
+            slot: slot.id,
+            template: template.id,
+            selected,
+            accountName,
+          });
         },
       },
     });
@@ -1803,33 +1826,76 @@ test("plugin account selection and additional OAuth consent retain the other acc
     await editor.getByText("No tools listed for this plugin.", { exact: true }).count(),
     0,
   );
-  await editor.getByRole("button", { name: "Connect another account", exact: true }).click();
-  await editor.getByRole("button", { name: "Connect and attach", exact: true }).waitFor();
-  await editor.getByText(/add it to the Support account slot/).waitFor();
-
-  // Clearing the selected account restores the authorization action before a new connection.
-  await editor.getByRole("checkbox", { name: "Service desk", exact: true }).uncheck();
-  await editor.getByRole("button", { name: "Authorize for this server", exact: true }).click();
-  const template = page.getByRole("combobox", { name: "Connection template for Support account" });
+  const accounts = editor.getByRole("region", { name: "Accounts" });
+  const slot = accounts.getByRole("group", { name: "Support account", exact: true });
+  const connectNew = slot.getByRole("button", { name: "Connect new account", exact: true });
+  const dialog = page.getByRole("dialog", { name: "Connect new account", exact: true });
+  const template = dialog.getByRole("combobox", {
+    name: "Connection template for Support account",
+  });
+  const accountName = dialog.getByLabel("Account name (optional)");
+  const connect = dialog.getByRole("button", { name: "Connect and attach", exact: true });
+  assert.equal(
+    await editor.getByRole("combobox", { name: "Connection template for Support account" }).count(),
+    0,
+  );
+  // A saved Agent must use its persisted account selection before provider consent can start.
+  const onCall = slot.getByRole("checkbox", { name: "On-call" });
+  await onCall.check();
+  assert.equal(await connectNew.isDisabled(), true);
+  await slot.getByText("Save your plugin selections before connecting an account.").waitFor();
+  await onCall.uncheck();
+  assert.equal(await connectNew.isEnabled(), true);
+  await connectNew.click();
+  await dialog.getByText("Support · Support account", { exact: true }).waitFor();
   await template.selectOption("mcp");
-  const required = page.getByRole("checkbox", { name: "read (required)" });
+  await accountName.fill("Discard this name");
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await dialog.waitFor({ state: "hidden" });
+  assert.equal(await slot.getByRole("checkbox", { name: "Service desk" }).isChecked(), true);
+  assert.equal(await onCall.isChecked(), false);
+  assert.equal(await page.locator("#chosen-scopes").textContent(), "");
+
+  await connectNew.click();
+  await template.selectOption("mcp");
+  assert.equal(await accountName.inputValue(), "");
+  const required = dialog.getByRole("checkbox", { name: "read (required)" });
   assert.ok((await required.isDisabled()) && (await required.isChecked()));
-  assert.equal(await page.getByRole("checkbox", { name: "write" }).isChecked(), false);
-  const extra = page.getByLabel("Additional scopes");
-  const connect = page.getByRole("button", { name: "Connect and attach" });
-  await editor.getByLabel("Account name (optional)").fill("Work");
+  assert.equal(await dialog.getByRole("checkbox", { name: "write" }).isChecked(), false);
+  const extra = dialog.getByLabel("Additional scopes");
+  await accountName.fill("Work");
   await extra.fill('bad"scope');
   assert.equal(await connect.isEnabled(), false);
   await extra.fill("archive read archive");
   await connect.click();
+  await dialog.waitFor({ state: "hidden" });
   assert.deepEqual(JSON.parse((await page.locator("#chosen-scopes").textContent())!), {
+    slot: "support",
+    template: "mcp",
     selected: ["read", "archive"],
     accountName: "Work",
   });
+  await connectNew.click();
   await template.selectOption("manual");
   await connect.click();
+  await dialog.waitFor({ state: "hidden" });
   assert.deepEqual(JSON.parse((await page.locator("#chosen-scopes").textContent())!), {
+    slot: "support",
+    template: "manual",
     selected: [],
-    accountName: "Work",
+  });
+
+  // Fixed template permissions are disclosed but the server owns their exact scopes.
+  await connectNew.click();
+  await template.selectOption("fixed");
+  const fixed = dialog.getByRole("group", { name: "Permissions set by this template" });
+  await fixed.getByText("tickets.read", { exact: true }).waitFor();
+  await fixed.getByText("messages.read", { exact: true }).waitFor();
+  assert.equal(await fixed.getByRole("checkbox").count(), 0);
+  await connect.click();
+  await dialog.waitFor({ state: "hidden" });
+  assert.deepEqual(JSON.parse((await page.locator("#chosen-scopes").textContent())!), {
+    slot: "support",
+    template: "fixed",
   });
 });

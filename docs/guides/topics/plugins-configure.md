@@ -20,9 +20,9 @@ OpenClaw Agent on Kubernetes with the bundled OpenClaw Plugin Driver, choose
 use, or leave every box clear to install the CLI without a credential.
 Use distinct account names such as “Work mail” and “Personal mail”. Save and deploy.
 
-Each plugin declares its credential slots. Select the saved accounts you want in a slot, then select **Save plugin selections**. OCC grants the Agent access to each selected OAuth account. To add another account through the browser, save the enabled plugin, choose its connection template, enter an account name, review the permissions, and select **Connect and attach**. The provider asks which account to authorize. When consent completes, OCC adds the account to the slot.
+Under **Accounts**, each slot lists compatible saved accounts. Select the accounts you want the Agent to use, then select **Save plugin selections**. OCC grants the Agent access to each selected OAuth account. To add an account, save the enabled plugin and select **Connect new account** in the intended slot. In the dialog, choose a connection template, enter an optional account name, review the permissions and select **Connect and attach**. The provider asks which account to authorize. When consent completes, OCC adds the account to the slot.
 
-If an account needs consent for this MCP server, select **Authorize for this server**. Required scopes are already selected. If the slot or your permission to update the Agent changes during consent, the account stays saved in the Namespace. Select it later and deploy to apply the change.
+For an account marked **authorization required for this server**, use the same dialog to authorize it with the provider. Required scopes are already selected. If the slot or your permission to update the Agent changes during consent, the account stays saved in the Namespace. Select it later and deploy to apply the change.
 
 With one Google account, run `gog` as usual. With several, use the account ID in the `oce-plugin-accounts` skill and run `gog --oce-account <source-id> ...`. The worker supplies that account’s placeholder. OCE checks the shared operation and destination policy. Google enforces the selected account’s OAuth grant. [Enable the Google request guard](../credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
 
@@ -92,7 +92,7 @@ selected tools its server offers. Additional tools require selection and deploym
 can use them. An empty selection leaves the worker server disabled.
 With one account, call the tool with its native arguments. With several, match the account name in the `oce-plugin-accounts` skill to an ID allowed by the tool’s `account` field. If the choice is ambiguous, ask the user. For example, the two-account worker fixture calls `fixture_shared` with `{"account":"cs_a_west","arguments":{"account":"native-account"}}`. The upstream `shared` tool receives only `{"account":"native-account"}`.
 
-Each discovered definition has its own description and eligible IDs. If two accounts give an upstream tool different descriptions, select the tool whose description and eligible IDs match the request. A mismatched ID fails before the worker sends a call.
+Accounts with identical tool definitions share one tool. If any field differs, even when the descriptions look the same, choose the tool whose description fits the request and whose eligible IDs include the intended account. A mismatched ID fails before the worker sends a call.
 
 Removing the plugin keeps its independently attached
 credential; [withdraw the source](../../reference/credential-sources/withdrawal.md)

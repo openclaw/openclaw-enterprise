@@ -70,7 +70,7 @@ and the worker can finish an interrupted disconnect.
 
 ## Use a saved account in an Agent plugin
 
-In the Agent's plugin settings, select the accounts you want in each named slot. When connecting through the browser, enter an optional account name so the Agent can distinguish accounts that use the same issuer. The picker shows accounts you can use from an issuer that the slot accepts. **Authorize for this server** starts consent for the required protected resource and destination. For an MCP template you select the scopes for this consent. The provider and the plugin's request policy enforce operations.
+The **Accounts** section in the Agent's plugin settings lists saved accounts from an issuer that each slot accepts. **Connect new account** opens that slot’s dialog for the connection template, optional account name and permissions. **Connect and attach** starts browser consent for the required protected resource and destination. For an MCP template you select the scopes for this consent. The provider and the plugin's request policy enforce operations.
 
 Saving the selection requires permission to update the Agent and operate the saved credential. A completed connection from a plugin adds the new account when the release and previously selected account IDs still match. The account remains available to its owner when the slot changes during consent. See [configure plugins](../guides/topics/plugins-configure.md#use-the-console).
 

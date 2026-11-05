@@ -111,14 +111,18 @@ if (scenario.component === "plugins") {
   input.id = "agent-plugins";
   input.rows = 6;
   input.spellcheck = false;
-  input.value = scenario.pluginSelections ?? "{}";
+  const savedPluginSelections = scenario.pluginSelections ?? "{}";
+  input.value = savedPluginSelections;
   const fields = createPluginFields({
     input,
     catalog: scenario.pluginCatalog ?? null,
     ...(scenario.connectionPreview && {
       saveHint: "Changes are saved when you choose Save plugin selections.",
       slotConnection: {
-        unavailable: () => undefined,
+        unavailable: () =>
+          input.value === savedPluginSelections
+            ? undefined
+            : "Save your plugin selections before connecting an account.",
         async list() {
           if (scenario.connectionPreview === "denied") {
             throw Object.assign(new Error("Access denied"), { status: 403 });
