@@ -12,8 +12,37 @@ import {
 } from "./postgres-backend-state.mjs";
 import { waitFor } from "./wait-for.mjs";
 import { installationDriverConfigurations } from "../../apps/controller/src/composition/installation-config.ts";
+import { freezeAgentRevision } from "../../packages/contracts/src/index.ts";
 
 export const CREDENTIAL_GATEWAY_FIXTURE_ID = "credential-gateway-worker-fixture";
+
+// Keep the two worker roles distinct. Tests can still replace the boundary's methods
+// after a worker starts to simulate a lost response or a changed grant.
+function repositoryWorkerRoles(driver) {
+  if (driver === undefined) {
+    return {};
+  }
+  const { id, implementation } = driver;
+  return {
+    repositoryPolicy: {
+      id,
+      implementation,
+      capability: driver.capability,
+      listOptions: (input) => driver.listOptions(input),
+      resolve: (input) => driver.resolve(input),
+    },
+    nativeRepositorySender: {
+      id,
+      implementation,
+      maintenanceIntervalMs: driver.maintenanceIntervalMs,
+      durableBrokerReceipts: driver.durableBrokerReceipts,
+      checkAdmissionReady: (signal) => driver.checkAdmissionReady(signal),
+      open: (input, signal) => driver.open(input, signal),
+      status: (sessionId, signal) => driver.status(sessionId, signal),
+      close: (sessionId, signal) => driver.close(sessionId, signal),
+    },
+  };
+}
 
 // Admission locks a Namespace, then its Agent. Every worker transaction that locks a claim's
 // Agent must already hold the Namespace (#1742), or it deadlocks with a concurrent deploy,
@@ -237,6 +266,7 @@ export function createWorkerRevisionFixtures(
       metrics,
       repoDriver,
       driverSelections = {},
+      backends = /** @type {import("../../packages/contracts/src/index.ts").BackendDefinition[]} */ ([]),
       secretAuthMethod = "api_key",
       // Shorter teardown step limits, for a test of the teardown itself.
       disposeLimitsMs: limitsMs,
@@ -314,7 +344,7 @@ export function createWorkerRevisionFixtures(
     const controller = createBackendController(
       { installation, state },
       {
-        backends: [],
+        backends,
         driverConfigurations: installationDriverConfigurations({ drivers: driverSelections }),
       },
     );
@@ -555,6 +585,7 @@ export function createWorkerRevisionFixtures(
         namespaceId: namespace.id,
         agentId: owner.id,
         revision: number,
+        gatewayManagedMode: owner.gatewayManagedMode,
         backendId: owner.backendId,
         configuration: { revision: String(number) },
         configurationId: owner.configurationId,
@@ -574,7 +605,7 @@ export function createWorkerRevisionFixtures(
       if (protectedRepositoryDriver) {
         const sandbox = protectedRepositoryDriver.require("sandbox");
         await state.transact(async (unit) => {
-          const auth = await controller.admitHarnessAuth(unit, actorId, owner);
+          const [auth] = await controller.admitHarnessAuth(unit, actorId, owner);
           assert.deepEqual(auth, harnessAuth);
           const sources = await controller.admitCredentialSources(unit, actorId, owner, sandbox);
           assert.deepEqual(sources, credentialSources);
@@ -623,6 +654,10 @@ export function createWorkerRevisionFixtures(
         // cannot deadlock with a worker holding the Namespace while locking the Agent.
         await unit.namespaces.lockNamespace(namespace.id);
         await unit.agents.lockAgent(namespace.id, owner.id);
+        const admission = compute.admitRevision?.(freezeAgentRevision(candidate));
+        if (admission !== undefined) {
+          candidate.compute = { ...candidate.compute, admission };
+        }
         admitted = await unit.revisions.createRevision(candidate);
         await unit.agents.transitionAgentDesiredRuntimeState(
           namespace.id,
@@ -700,6 +735,7 @@ export function createWorkerRevisionFixtures(
         providers,
         pool = workerPool,
         transformDrivers = (drivers) => drivers,
+        repositoryGitMaterial,
       } = {},
     ) {
       const configuredDrivers = createBackendWorkerDrivers(computeDriver, providers ?? []);
@@ -710,9 +746,7 @@ export function createWorkerRevisionFixtures(
           drivers: { ...configuredDrivers.installation.drivers, ...driverSelections },
         },
         secretDriver,
-        ...(repoDriver === undefined
-          ? {}
-          : { repositoryPolicy: repoDriver, nativeRepositorySender: repoDriver }),
+        ...repositoryWorkerRoles(repoDriver),
       });
       worker = createControllerWorker({
         metrics,
@@ -724,6 +758,7 @@ export function createWorkerRevisionFixtures(
         onProgress,
         ...(drivers === undefined ? { computeDriver } : { drivers }),
         ...(convergenceTimeoutMs === undefined ? {} : { convergenceTimeoutMs }),
+        ...(repositoryGitMaterial === undefined ? {} : { repositoryGitMaterial }),
         emit,
       });
       database.workers.add(worker);

@@ -20,6 +20,7 @@ case "$operation" in
         [ -f "$unit" ]
         unit=$(basename "$unit")
         ;;
+      *) [ "$operation" != link ] || exit 1 ;;
     esac
     ;;
 esac
@@ -51,7 +52,7 @@ case "$operation" in
   link) : > "$linked" ;;
   enable)
     if [ "$unit" != "${1:-}" ]; then : > "$linked"; fi
-    if ! loaded; then
+    if [ ! -f "$linked" ]; then
       printf 'Failed to enable unit: Unit file %s does not exist.\n' "$unit" >&2
       exit 1
     fi

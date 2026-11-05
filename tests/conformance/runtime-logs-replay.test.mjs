@@ -444,6 +444,68 @@ test("an IPv6 placeholder keeps its port apart and resolves through its mapping 
   assert.deepEqual([real.fields.dst_host, real.decision.port], ["2001:db8::9", 443]);
 });
 
+test("a placeholder address takes its latest mapping and never a placeholder-shaped name", async () => {
+  // Synthetic lines in OpenShell's real record format, replayed through the Driver parser and
+  // the sanitizer, so the decision below is what the API and CLI return.
+  const { fixtures } = await manifest();
+  const ocsf = (time, message) => ({
+    time,
+    sandboxId: "3f2b8c1e-5d4a-4b6f-9e21-7a0c9d8e6f54",
+    level: "OCSF",
+    target: "ocsf",
+    message,
+    source: "sandbox",
+    fields: {},
+  });
+  const denied = (time, address) =>
+    ocsf(
+      time,
+      `NET:OPEN [MED] DENIED /usr/bin/curl(0) -> ${address}:443 [reason:transparent_tcp_policy_denied]`,
+    );
+  const { records } = await replay({
+    ...fixtures.find(({ file }) => file === "sandbox-openshell-placeholder-denials.json"),
+    lines: () => [
+      ocsf(
+        "2026-10-26T20:50:00.000000000Z",
+        "CONFIG:PUBLISHED [INFO] Policy DNS mapped old.example.com resolved=192.0.2.10 synthetic=198.18.0.10 ports=443 mapping_id=0d6f6a52-0b8e-4a55-9a3b-4c1f1f0e2a10",
+      ),
+      // A remap: the latest record for an address names its host, not the first.
+      ocsf(
+        "2026-10-26T20:50:01.000000000Z",
+        "CONFIG:PUBLISHED [INFO] Policy DNS mapped new.example.com resolved=192.0.2.11 synthetic=198.18.0.10 ports=443 mapping_id=6b0f2c4e-8d1a-4f3e-b5a7-2e9c8d7f6a11",
+      ),
+      denied("2026-10-26T20:50:01.100000000Z", "198.18.0.10"),
+      // A workload looked up `198.18.0.5.`: policy DNS stages that name like any other, but a
+      // placeholder is no destination, so the denial must name no host (and no rule proposal).
+      ocsf(
+        "2026-10-26T20:50:02.000000000Z",
+        "CONFIG:OBSERVATION [INFO] Policy DNS staged unapproved name 198.18.0.5 synthetic=198.18.0.12 for TCP policy review",
+      ),
+      denied("2026-10-26T20:50:02.100000000Z", "198.18.0.12"),
+      // The same with the presentation trailing dot, after a real host held the address.
+      ocsf(
+        "2026-10-26T20:50:03.000000000Z",
+        "CONFIG:PUBLISHED [INFO] Policy DNS mapped db.example.com resolved=192.0.2.12 synthetic=198.18.0.14 ports=443 mapping_id=9a3e1c7b-2f4d-4e8a-8c6b-1d0e5f4a3b14",
+      ),
+      ocsf(
+        "2026-10-26T20:50:03.500000000Z",
+        "CONFIG:PUBLISHED [INFO] Policy DNS mapped 198.18.0.6. resolved=192.0.2.13 synthetic=198.18.0.14 ports=443 mapping_id=4c2b8e6d-1a3f-4b7c-9d5e-0f8a6b4c2d15",
+      ),
+      denied("2026-10-26T20:50:03.600000000Z", "198.18.0.14"),
+    ],
+  });
+  assert.deepEqual(
+    records
+      .filter(({ decision }) => decision?.decision === "denied")
+      .map(({ decision, fields }) => [fields.dst_placeholder_ip, decision.host ?? null]),
+    [
+      ["198.18.0.10", "new.example.com"],
+      ["198.18.0.12", null],
+      ["198.18.0.14", null],
+    ],
+  );
+});
+
 test("real Kubernetes Events mask node, image and object names before they reach the status", async () => {
   const { fixtures } = await manifest();
   const { events } = await replay(fixtures.find(({ source }) => source === "events"));

@@ -21,7 +21,9 @@ import {
   updateConfiguration,
   waitForNamespaceReady,
 } from "../helpers/postgres-platform-state.mjs";
+import { jsonLines } from "../helpers/json-lines.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
+import { servedAs } from "../helpers/agent-identity.mjs";
 
 // Revision lists return summaries, newest first (finding 1323), each with its deployment's
 // status. An activated revision's deployment is finishing or has finished, with no error.
@@ -92,8 +94,32 @@ stateCase(
     cleanupKubernetesNamespaces(context, [namespace.data.id]);
 
     const worker = await startKubernetesWorker(context);
+    // The worker has created the Kubernetes namespace but cannot reconcile tenant resources
+    // until its tenant-local RoleBinding exists. Inspect only this Namespace's own pass.
+    const completion = (matches) =>
+      jsonLines(worker.output(), { lenient: true }).find(
+        (line) =>
+          line.event === "worker.completed" &&
+          line.operation === "namespace.ensure" &&
+          line.namespaceId === namespace.data.id &&
+          matches(line),
+      );
+    const denied = await pollUntil(
+      "the worker to report the denied tenant request",
+      () => completion((line) => line.hintCode === "KUBERNETES_TENANT_ACCESS_DENIED"),
+      { worker, timeoutMs: 60_000 },
+    );
+    assert.equal(denied.code, "NAMESPACE_INCOMPLETE");
+    assert.equal(denied.result, "pending");
     await grantTenantAccess(context, namespace.data.id);
     const readyNamespace = await waitForNamespaceReady(first, namespace.data.id, worker);
+    const ready = await pollUntil(
+      "the worker to finish the authorized pass",
+      () => completion((line) => line.result === "success"),
+      { worker },
+    );
+    assert.equal(ready.code, "NAMESPACE_RECONCILED");
+    assert.equal(ready.hintCode, undefined);
 
     const { agent } = await createConfiguredAgent(
       pool,
@@ -208,11 +234,13 @@ stateCase(
         name: `first-${randomUUID()}`,
         configurationId: firstConfiguration.id,
         harnessAuth: await createKubernetesHarnessAuth(process, namespace.data.id),
+        gatewayManagedMode: false,
       }),
       request(process, "POST", `/namespaces/${namespace.data.id}/agents`, {
         name: `second-${randomUUID()}`,
         configurationId: secondConfiguration.id,
         harnessAuth: await createKubernetesHarnessAuth(process, namespace.data.id),
+        gatewayManagedMode: false,
       }),
     ]);
     assert.equal(first.status, 201);
@@ -288,7 +316,7 @@ stateCase(
       method: "api_key",
       source: first.data.harnessAuth.source,
     });
-    assert.deepEqual(revision.configuration, admitted(firstValues));
+    assert.deepEqual(revision.configuration, admitted(servedAs(firstValues, first.data.name)));
     assert.deepEqual(revision.harness, { id: "openclaw", version: "1.0.0", mode: "embedded" });
     assert.deepEqual(revision.compute, {
       id: "compute-kubernetes",
@@ -351,7 +379,7 @@ stateCase(
       configuration_id: revision.configurationId,
       configuration_kind: revision.configurationKind,
       configuration_generation: revision.configurationGeneration,
-      draft_spec: admitted(firstValues),
+      draft_spec: admitted(servedAs(firstValues, first.data.name)),
       harness_auth: {
         method: "api_key",
         source: first.data.harnessAuth.source,
@@ -705,6 +733,7 @@ stateCase(
       "configurationId",
       "configurationKind",
       "createdAt",
+      "gatewayManagedMode",
       "harness",
       "harnessAuth",
       "id",
@@ -721,7 +750,10 @@ stateCase(
       method: "api_key",
       source: primary.harnessAuth.source,
     });
-    assert.deepEqual(firstRevision.configuration, admitted(persistedConfigValues));
+    assert.deepEqual(
+      firstRevision.configuration,
+      admitted(servedAs(persistedConfigValues, primary.name)),
+    );
     assert.deepEqual(firstRevision.harness, { id: "openclaw", version: "1.0.0", mode: "embedded" });
     assert.deepEqual(firstRevision.compute, {
       id: "compute-kubernetes",
@@ -766,7 +798,10 @@ stateCase(
     assert.equal(secondRevision.configurationId, primaryConfiguration.id);
     assert.equal(secondRevision.configurationGeneration, 3);
     assert.deepEqual(secondRevision.harnessAuth, firstRevision.harnessAuth);
-    assert.deepEqual(secondRevision.configuration, admitted(replacementConfigValues));
+    assert.deepEqual(
+      secondRevision.configuration,
+      admitted(servedAs(replacementConfigValues, primary.name)),
+    );
 
     for (const [namespaceId, agent, revision] of [
       [namespaceA, primary, secondRevision],
@@ -828,7 +863,7 @@ stateCase(
       configuration_id: firstRevision.configurationId,
       configuration_kind: firstRevision.configurationKind,
       configuration_generation: firstRevision.configurationGeneration,
-      draft_spec: admitted(persistedConfigValues),
+      draft_spec: admitted(servedAs(persistedConfigValues, primary.name)),
       harness_auth: {
         method: "api_key",
         source: primary.harnessAuth.source,
@@ -842,7 +877,7 @@ stateCase(
       configuration_id: secondRevision.configurationId,
       configuration_kind: secondRevision.configurationKind,
       configuration_generation: secondRevision.configurationGeneration,
-      draft_spec: admitted(replacementConfigValues),
+      draft_spec: admitted(servedAs(replacementConfigValues, primary.name)),
       harness_auth: {
         method: "api_key",
         source: primary.harnessAuth.source,

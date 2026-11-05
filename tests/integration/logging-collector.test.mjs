@@ -31,7 +31,8 @@ async function docker(args) {
 // had stopped.
 async function waitFor(outcome, check, fixture) {
   const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline) {
+  // The deadline is checked after each check, so the last check happens at or past it.
+  for (;;) {
     let done;
     try {
       done = await check();
@@ -44,6 +45,9 @@ async function waitFor(outcome, check, fixture) {
     if (done) {
       return;
     }
+    if (Date.now() >= deadline) {
+      break;
+    }
     await delay(100);
   }
   const state = fixture ? ` ${await fixture.describe()}` : "";
@@ -52,7 +56,7 @@ async function waitFor(outcome, check, fixture) {
 
 function attributes(entries = []) {
   return Object.fromEntries(
-    entries.map(({ key, value }) => [key, value.stringValue ?? value.intValue]),
+    entries.map(({ key, value }) => [key, value.stringValue ?? value.intValue ?? value.boolValue]),
   );
 }
 
@@ -74,12 +78,28 @@ async function collectorFixture(t, prefix) {
     join(directory, "backend.yaml"),
     `receivers:\n  otlp:\n    protocols:\n      http:\n        endpoint: 0.0.0.0:4318\nexporters:\n  file:\n    path: /out/logs.jsonl\nservice:\n  telemetry:\n    logs:\n      level: error\n  pipelines:\n    logs:\n      receivers: [otlp]\n      exporters: [file]\n`,
   );
+  let networkCreated = false;
+  // node:test runs after hooks in registration order, so this hook runs before any hook a
+  // test adds for a container it attaches to the network later. Remove every container on
+  // the network (backend, Collector and those test fixtures) before the network itself:
+  // Docker refuses to remove a network with attached containers, and each leaked network
+  // keeps an address pool until Compose networks on the host find none left. A failed
+  // removal fails the test instead of leaking silently.
   t.after(async () => {
-    await docker(["rm", "--force", collector, backend]).catch(() => {});
-    await docker(["network", "rm", network]).catch(() => {});
-    await rm(directory, { recursive: true, force: true });
+    try {
+      if (networkCreated) {
+        const attached = await docker(["ps", "--all", "--quiet", "--filter", `network=${network}`]);
+        if (attached.length > 0) {
+          await docker(["rm", "--force", ...attached.split("\n")]);
+        }
+        await docker(["network", "rm", network]);
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
   await docker(["network", "create", network]);
+  networkCreated = true;
   await docker([
     "run",
     "--detach",
@@ -319,7 +339,10 @@ test("the Collector exports every OCC API and worker event the docs name", async
   ]) {
     // The Kubernetes Compute Driver renders this file's events into Gateway and Codex
     // Pods; the Collector classifies those runtime wrapper diagnostics separately.
-    if (path.endsWith("drivers/compute/kubernetes/runtime-entrypoints.ts")) {
+    if (
+      path.endsWith("drivers/compute/kubernetes/runtime-entrypoints.ts") ||
+      path.endsWith("drivers/compute/harness-egress-enrollment.ts")
+    ) {
       continue;
     }
     const text = await readFile(join(root, path), "utf8");
@@ -1244,6 +1267,9 @@ test(
               }),
               line(phase("agent", "codex-login", "ok")),
               line(phase("agent", "codex-login", "ok"), "stdout"),
+              line({ event: "runtime.protected_startup", startupHash: "b".repeat(64) }),
+              line({ event: "runtime.protected_startup", startupHash: canary }),
+              line({ event: "runtime.protected_startup", startupHash: "b".repeat(64) }, "stdout"),
               // A failed phase keeps a bounded cause code; an unbounded one is dropped.
               line({
                 ...phase("agent", "plugin-install", "failed"),
@@ -1301,6 +1327,11 @@ test(
         gateway("WARN", phaseEvent),
         codex("WARN", { "event.name": "codex.model_probe", "occ.code": "AUTHENTICATION_FAILED" }),
         codex("INFO", { ...phaseEvent, "occ.startup.phase": "codex-login" }),
+        codex("INFO", {
+          "event.name": "runtime.protected_startup",
+          "occ.startup.hash": "b".repeat(64),
+        }),
+        codex("INFO", { "event.name": "runtime.protected_startup" }),
         codex("WARN", {
           ...phaseEvent,
           "occ.startup.phase": "plugin-install",
@@ -1669,6 +1700,39 @@ function codeFieldCases({ canary, identity, exportedIdentity }) {
   const kept = [
     {
       record: {
+        event: "worker.openshell-git-continuity-refused",
+        check: "held-startup-recorded",
+        keyHash: "a".repeat(64),
+      },
+      exported: { "occ.check": "held-startup-recorded", "occ.continuity.key_hash": "a".repeat(64) },
+    },
+    {
+      record: {
+        event: "worker.openshell-git-continuity-refused",
+        check: "sandbox-restart-count",
+        result: 7,
+      },
+      exported: { "occ.check": "sandbox-restart-count", "occ.continuity.result": "7" },
+    },
+    {
+      record: { event: "worker.openshell-git-continuity-refused", result: false, keyHash: canary },
+      exported: { "occ.continuity.result": false },
+    },
+    {
+      record: {
+        event: "worker.openshell-git-continuity-refused",
+        result: canary,
+        keyHash: "A".repeat(64),
+      },
+      exported: {},
+    },
+    { record: { event: "worker.openshell-git-continuity-refused", result: 7.5 }, exported: {} },
+    {
+      record: { event: "worker.openshell-git-continuity-refused", result: 2147483648 },
+      exported: {},
+    },
+    {
+      record: {
         event: "worker.openshell-git-expiry",
         ...identity,
         outcome: "pending",
@@ -1894,7 +1958,7 @@ test(
         record.attributes.map(({ key, value }) => [
           key,
           // OTLP JSON carries an int64 as a string; a JSON number may arrive as either.
-          value.stringValue ?? String(value.intValue ?? value.doubleValue),
+          value.stringValue ?? value.boolValue ?? String(value.intValue ?? value.doubleValue),
         ]),
       ),
     }));
@@ -2243,8 +2307,8 @@ test(
   },
   async (t) => {
     const fixture = await collectorFixture(t, "sync");
+    // The fixture's cleanup removes this container with the rest of its network.
     const api = `oce-otel-sync-api-${fixture.suffix}`;
-    t.after(() => docker(["rm", "--force", api]).catch(() => {}));
     const namespace = `system-${fixture.suffix}`;
     const podName = `openclaw-enterprise-worker-${fixture.suffix}`;
     const podUid = randomUUID();

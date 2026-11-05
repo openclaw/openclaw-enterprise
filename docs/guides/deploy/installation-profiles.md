@@ -1,13 +1,15 @@
 # Render installation profiles
 
-Installation profiles generate the two trusted files used by a production
-OpenClaw Enterprise install: a Helm values overlay and the Installation startup
-YAML mounted into the controller. Use a profile when you want the standard
-OpenClaw or Codex defaults without editing the production examples by hand.
+For a [custom production installation](production-installation.md), choose a
+profile and [render Helm values and Installation YAML](#render-files) from JSON.
+For OpenShell, use [Kubernetes setup](kubernetes-setup.md) or
+[EKS setup](eks-openshell-setup.md) and its first-Agent session.
 
-Profiles only render configuration for an already prepared environment. They do
-not create clusters, Secrets, databases, DNS, certificates, hosted plugin
+Profiles render configuration; they do not create clusters, Secrets, databases,
+DNS, certificates, hosted plugin
 credentials, ChatGPT service accounts, repository registries, or Slack consumers.
+Prepare [routing prerequisites](workspace-routing.md#requirements) before installation;
+rendering does not verify cluster readiness.
 
 ## Choose a profile
 
@@ -42,19 +44,21 @@ neighbors, and a `limits.cpu` namespace quota counts the whole limit.
 Memory requests cover the use measured between turns, so the scheduler reserves
 what each Agent actually holds; limits cover measured peaks:
 
-| Pod                             | Request  | Limit | Measured                                                                                                                                                             |
-| ------------------------------- | -------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Gateway (embedded or dedicated) | `1792Mi` | `3Gi` | 1.2 to 1.6 GiB between turns, peaks of 1.8 to 2.2 GiB; a dedicated Codex Gateway serving native admin chat was OOM-killed at `2Gi`                                   |
-| Codex Harness                   | `768Mi`  | `6Gi` | 0.45 to 0.57 GiB between turns, 1 GiB running a test suite, 1.9 GiB running `tsc`; lint, `tsc` and tests together were OOM-killed at `2Gi` and reached a `4Gi` limit |
-| Container default               | `128Mi`  | `2Gi` | containers that set no resources                                                                                                                                     |
+| Pod                             | Request  | Limit | Measured                                                                                                                                                                                                                                                                    |
+| ------------------------------- | -------- | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Gateway (embedded or dedicated) | `2560Mi` | `4Gi` | embedded: 1.4 GiB at ready, 2.1 to 2.2 GiB between turns, peaks of 2.2 to 2.4 GiB on the first turn (no swap); dedicated Codex: 1.75 to 1.8 GiB between turns, peaks of 1.95 to 2 GiB on a short first turn, but native admin chat was OOM-killed at `2Gi` on a coding turn |
+| Codex Harness                   | `768Mi`  | `6Gi` | 0.45 to 0.57 GiB between turns, 1 GiB running a test suite, 1.9 GiB running `tsc`; lint, `tsc` and tests together were OOM-killed at `2Gi` and reached a `4Gi` limit                                                                                                        |
+| Container default               | `128Mi`  | `2Gi` | containers that set no resources                                                                                                                                                                                                                                            |
 
-Plan node memory per Agent: an embedded OpenClaw Agent reserves `1792Mi`, and a
-dedicated Codex Agent reserves `2560Mi`: `1792Mi` for its Gateway on the
+Plan node memory per Agent: an embedded OpenClaw Agent reserves `2560Mi`, and a
+dedicated Codex Agent reserves `3328Mi`: `2560Mi` for its Gateway on the
 `runtime.gatewayNodeSelector` pool and `768Mi` for its Harness on the
-`runtime.nodeSelector` pool. A Harness runs
-the Agent's shell commands, so builds and test suites in large repositories can
-need more than `6Gi`; raise `resources.agent.limits.memory` in the Installation
-for such workloads. Limits reserve no node memory, so Harnesses building at the
+`runtime.nodeSelector` pool. With initial workspace files, the Harness Pod also
+runs a setup init container that requests `2560Mi`. Kubernetes reserves the
+larger init or app request, so the Agent reserves `5120Mi`. A Harness runs the
+Agent's shell commands, so builds and test suites in large repositories can need
+more than `6Gi`; raise `resources.agent.limits.memory` in the Installation for
+such workloads. Limits reserve no node memory, so Harnesses building at the
 same time on one node can together exhaust it, and the kubelet then evicts Pods
 using more than their requests first; size agents nodes for the turns
 you expect to run concurrently.
@@ -87,12 +91,11 @@ then rerender with `repository.enabled: true`.
 ## Prepare inputs
 
 Create a JSON file outside the repository or under an ignored local output
-directory. The renderer rejects any field it does not consume: unsupported
-fields fail preflight. `controlPlane.releaseName` must satisfy Helm's lowercase
+directory. The renderer rejects any field it does not consume.
+`controlPlane.releaseName` must satisfy Helm's lowercase
 release-name syntax and be at most 53 characters. Image references in
 `controlPlane.controllerImage`, `runtime.image`, and enabled `repository.image`
-must use literal `sha256` and 64 lowercase hexadecimal characters. Invalid digest
-casing fails preflight without emitting deployable files. All three must also be
+must use literal `sha256` and 64 lowercase hexadecimal characters. All three must also be
 references Kubernetes can pull, as the chart and Compute check: only the registry
 host and tag may use uppercase, and an IPv6 registry host is allowed. `controlPlane.adminEmail`
 must be an administrator email the bootstrap Job accepts after trim and lowercase:
@@ -143,13 +146,13 @@ For the `codex` profile, add the reviewed Codex seccomp profile to the base inpu
 ```json
 {
   "runtime": {
-    "codexSeccompProfile": "openclaw/codex-0.163.0-alpha.2-<profile-sha256>.json"
+    "codexSeccompProfile": "openclaw/codex-0.164.0-<profile-sha256>.json"
   }
 }
 ```
 
-The `codex` profile also accepts `runtime.codexModelBaseUrl` for `api_key` Agents;
-preflight applies [Compute's endpoint rule](../../reference/drivers/kubernetes-compute.md#configuration).
+Both profiles accept [`runtime.modelProvider`](../../reference/drivers/kubernetes-compute/model-provider.md)
+for API-key inference. Preflight validates its endpoint.
 
 To have OCE issue managed ChatGPT service-account runtime credentials, add the
 optional managed ServiceAccount binding. Do this only after you qualify the
@@ -261,8 +264,7 @@ Preflight refuses `x-occ-client-ip`, `cookie`, `forwarded`, `authorization`, `ho
 `x-forwarded-for` or `x-real-ip`.
 Each `google.allowedDomains` entry must be a lowercase DNS name of at most 253
 characters, such as `example.com`, and its last label must start with a letter.
-Preflight refuses `example.123` and any longer name, which the chart and the API
-also refuse.
+The chart and the API also refuse `example.123` and any longer name.
 
 If you opt in to repositories, add the broker inputs:
 
@@ -284,8 +286,7 @@ If you opt in to repositories, add the broker inputs:
 ```
 
 The repository registry ConfigMap and all four repository Secret names must be
-Kubernetes DNS-subdomain resource names of at most 253 characters. Invalid names
-fail preflight before deployable files are written.
+Kubernetes DNS-subdomain resource names of at most 253 characters.
 
 `serviceName` is optional. When omitted, the renderer leaves it out of
 `values.yaml`: a new installation gets the chart's `git` Service, and a Helm
@@ -294,12 +295,11 @@ Service has another name, set `serviceName` to that current name so TLS and
 active repository sessions keep working, then switch it deliberately after
 sessions drain. A set name must be a DNS-1035 label of at most 63 characters:
 a lowercase letter, then lowercase letters, digits, or hyphens, ending in a
-letter or digit. Preflight refuses any other spelling, which the chart also
-refuses.
+letter or digit. The chart refuses any other spelling too.
 
 ## Render files
 
-Run the renderer from the repository root with Node.js 24 or newer. With native
+Run the renderer from the repository root with Node.js 24.22.1 or newer. With native
 admin, run `pnpm install` first: the public suffix check uses the API's list.
 
 ```sh
@@ -319,12 +319,13 @@ On success, the output directory contains:
 - `preflight.json`: rendered output paths, warnings, prerequisites, and next
   steps.
 
-After validating the CLI arguments, the renderer deletes these three files from
-the output directory before it reads the input. It keeps other files. If
-required input is missing or unsupported input is present, it writes
-`preflight.json` with `ok: false` and only the report path in `outputs`, leaves
-both YAML files absent, and exits nonzero. If the input JSON is unreadable or
-malformed, it exits without writing a preflight report.
+Use a separate input file. Symbolic or hard links to these outputs are also
+refused without changing existing files. An `input.json` can remain in the output directory.
+
+After these checks, the renderer clears the three outputs before reading input;
+other files stay. Invalid settings produce only `preflight.json` with `ok: false`
+and its path in `outputs`. Unreadable or malformed JSON produces no report.
+Both failures exit nonzero and leave no YAML outputs.
 
 ## Use rendered files
 
@@ -403,7 +404,7 @@ the install as ready:
 ## Related
 
 - [Production installation](production-installation.md)
-- [Amazon EKS](eks.md)
+- [Amazon EKS](eks-openshell-setup.md)
 - [Codex sandbox setup](codex-sandbox.md)
 - [ChatGPT Backend](../integrations/chatgpt.md)
 - [Repository credential installation](../repository-credentials/installation.md)

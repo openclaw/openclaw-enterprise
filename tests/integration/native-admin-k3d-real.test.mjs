@@ -269,7 +269,8 @@ async function redeployWithNativeAdminAccess(topology, publicOrigin, nativeDomai
       ...(values.gateway?.auth ?? {}),
       trustedProxy: {
         ...(values.gateway?.auth?.trustedProxy ?? {}),
-        deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
+        // Identity grants supply administration; device enrollment need not grant it.
+        deviceAutoApprove: { enabled: true, scopes: ["operator.read", "operator.write"] },
       },
     },
   };
@@ -362,7 +363,7 @@ async function assertServiceWorkerRegistrationBlockedByCsp(page) {
 }
 
 async function openNativeAdminConsole(page, nativeOrigin) {
-  const link = page.getByRole("link", { name: "Open admin console", exact: true });
+  const link = page.getByRole("link", { name: "Open Agent UI", exact: true });
   const root = new URL("/", nativeOrigin).href;
   assert.equal(await link.getAttribute("href"), root);
   const [nativePage] = await Promise.all([page.waitForEvent("popup"), link.click()]);
@@ -371,7 +372,7 @@ async function openNativeAdminConsole(page, nativeOrigin) {
   const documentUrl = await nativePage.evaluate(
     () => performance.getEntriesByType("navigation")[0]?.name,
   );
-  assert.equal(documentUrl, root, "Open admin console must load the native root document");
+  assert.equal(documentUrl, root, "Open Agent UI must load the native root document");
   assert.equal(new URL(nativePage.url()).origin, nativeOrigin);
   assert.equal(await nativePage.evaluate(() => globalThis.window.opener === null), true);
   return nativePage;
@@ -463,6 +464,50 @@ async function leaveNativeAccentDrift(page, nativeOrigin) {
   return driftAccent;
 }
 
+async function assertManagedNativeConfigWriteRejected(page, nativeOrigin, topology) {
+  let saveRequestId;
+  let saveResponse;
+  // Observe the real raw-editor write and its matching Gateway response; a
+  // toast's placement or lifetime must not substitute for rejecting the write.
+  page.on("websocket", (socket) => {
+    socket.on("framesent", (frame) => {
+      const message = JSON.parse(textFromFrame(frame));
+      if (message.method === "config.set") {
+        saveRequestId = message.id;
+      }
+    });
+    socket.on("framereceived", (frame) => {
+      const message = JSON.parse(textFromFrame(frame));
+      if (saveRequestId !== undefined && message.id === saveRequestId) {
+        saveResponse = message;
+      }
+    });
+  });
+  const { editor, parsed } = await readRawConfig(page, nativeOrigin);
+  const originalAccent = configAccent(parsed);
+  parsed.ui = {
+    ...(parsed.ui ?? {}),
+    prefs: {
+      ...(parsed.ui?.prefs ?? {}),
+      accent: `#${randomUUID().replaceAll("-", "").slice(0, 6)}`,
+    },
+  };
+  await editor.fill(serializeConfig(parsed));
+  // The pinned Gateway includes the policy identifier in the save status's accessible name.
+  const retryReadOnlySave = page
+    .locator("openclaw-settings-save-indicator")
+    .getByRole("status", { name: /\bOPENCLAW_CONFIG_READONLY\b/ })
+    .getByRole("button", { name: "Retry", exact: true })
+    .first();
+  await retryReadOnlySave.waitFor({ state: "hidden" });
+  await page.locator(".config-raw-actions button.primary").first().click();
+  const rejected = await waitFor("managed raw-editor write response", () => saveResponse);
+  assert.equal(rejected.ok, false);
+  assert.match(rejected.error?.message ?? "", /Config is externally managed/);
+  await retryReadOnlySave.waitFor();
+  assert.equal(await readRuntimeAccent(topology), originalAccent);
+}
+
 async function readRuntimeAccent(topology) {
   const raw = await kubectl(
     "exec",
@@ -479,6 +524,17 @@ async function readRuntimeAccent(topology) {
 
 function agentPath(topology, suffix = "") {
   return `/namespaces/${topology.agent.namespaceId}/agents/${topology.agent.id}${suffix}`;
+}
+
+async function saveGatewayManagedMode(topology, gatewayManagedMode) {
+  const updated = await topology.adminRequest("PATCH", agentPath(topology), {
+    configurationId: topology.agent.configurationId,
+    gatewayManagedMode,
+  });
+  assert.equal(updated.status, 200, JSON.stringify(updated.error));
+  assert.equal(updated.data.gatewayManagedMode, gatewayManagedMode);
+  assert.equal(updated.data.activeRevisionId, topology.revision.id);
+  topology.agent = { ...topology.agent, ...updated.data };
 }
 
 function workspaceFilePath(topology, name) {
@@ -502,6 +558,7 @@ async function assertStopRedeployPreservesWorkspaceFile(
   const beforeStop = await topology.workspaceRequest("GET", workspacePath);
   assert.equal(beforeStop.status, 200, JSON.stringify(beforeStop.error));
   assert.deepEqual(beforeStop.data, { name: filename, content });
+  await saveGatewayManagedMode(topology, true);
 
   const stopEventStart = topology.events.length;
   const stopped = await topology.request("POST", agentPath(topology, "/stop"));
@@ -534,6 +591,7 @@ async function assertStopRedeployPreservesWorkspaceFile(
   const deployEventStart = topology.events.length;
   const redeployed = await topology.request("POST", agentPath(topology, "/deploy"));
   assert.equal(redeployed.status, 202, JSON.stringify(redeployed.error));
+  assert.equal(redeployed.data.gatewayManagedMode, true);
   assert.notEqual(
     redeployed.data.id,
     previousRevisionId,
@@ -614,7 +672,40 @@ async function assertNativeAdminAudit(topology) {
   }
 }
 
-async function assertSharedNativeSessions(context, { topology, browser, ingress, status }) {
+async function enrolledDeviceScopes(topology, deviceId) {
+  assert.ok(deviceId, "the real native connection must present a device identity");
+  // Inspect only enrollment metadata in the running Gateway's database. Do not
+  // export device tokens, public keys, or other runtime state into test output.
+  const script = `
+    const { DatabaseSync } = require("node:sqlite");
+    const db = new DatabaseSync("/home/node/.openclaw/state/openclaw.sqlite", { readOnly: true });
+    try {
+      db.exec("PRAGMA busy_timeout=5000");
+      const row = db.prepare("SELECT approved_scopes_json FROM device_pairing_paired WHERE device_id = ?").get(${JSON.stringify(deviceId)});
+      process.stdout.write(JSON.stringify({ enrolled: !!row, scopes: row ? JSON.parse(row.approved_scopes_json) : [] }));
+    } finally { db.close(); }
+  `;
+  const result = JSON.parse(
+    await kubectl(
+      "exec",
+      topology.gatewayPod.metadata.name,
+      "--namespace",
+      topology.gatewayPlacement,
+      "--",
+      "node",
+      "-e",
+      script,
+    ),
+  );
+  assert.equal(result.enrolled, true);
+  assert.ok(result.scopes.length > 0, "the enrolled device must retain its approved scopes");
+  return result.scopes.sort();
+}
+
+async function assertSharedNativeSessions(
+  context,
+  { topology, browser, ingress, status, artifacts },
+) {
   // Enrollment is a precondition: this existing Role permits Installation discovery,
   // but no Namespace or Agent access. Sharing itself uses ordinary policy APIs.
   const readerRoleId = `role-native-reader-${randomUUID()}`;
@@ -638,6 +729,13 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
         { action: "administer", resourceKind: "agent" },
       ],
     ],
+    [
+      "Agent operator",
+      [
+        { action: "read", resourceKind: "agent" },
+        { action: "operate", resourceKind: "agent" },
+      ],
+    ],
   ]) {
     const role = await topology.adminRequest("POST", `${policyPath}/roles`, { name, permissions });
     assert.equal(role.status, 201);
@@ -645,11 +743,28 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
   }
   const sibling = await topology.adminRequest("POST", `${namespacePath}/agents`, {
     name: `private-sibling-${randomUUID()}`,
+    executionMode: topology.agent.executionMode,
     configurationId: topology.agent.configurationId,
   });
-  assert.equal(sibling.status, 201);
+  assert.equal(sibling.status, 201, JSON.stringify(sibling.error));
   const people = [];
-  for (const label of ["withdrawn", "unaffected"]) {
+  const deniedProbes = [];
+  let operatorPage;
+  async function nativeProbe(page, expectedStatus) {
+    const probe = `native-access-${randomUUID()}`;
+    const probePage = await page.context().newPage();
+    try {
+      const response = await probePage.goto(`${status.origin}/healthz?probe=${probe}`);
+      assert.equal(response.status(), expectedStatus);
+      return probe;
+    } finally {
+      await probePage.close();
+    }
+  }
+  async function assertNativeDenied(page) {
+    deniedProbes.push(await nativeProbe(page, 403));
+  }
+  for (const label of ["operator", "withdrawn", "unaffected"]) {
     const credentials = {
       email: `native-${label}-${randomUUID()}@example.test`,
       password: `native-sharing-${randomUUID()}`,
@@ -663,7 +778,7 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
     let agentBinding;
     for (const [resourceKind, resourceId, roleId] of [
       ["namespace", topology.agent.namespaceId, roles[0].id],
-      ["agent", topology.agent.id, roles[1].id],
+      ["agent", topology.agent.id, roles[label === "operator" ? 2 : 1].id],
     ]) {
       const binding = await topology.adminRequest("POST", `${policyPath}/access-bindings`, {
         subjectKind: "identity",
@@ -680,9 +795,16 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
     const personContext = await browser.newContext();
     context.after(() => personContext.close());
     const frames = [];
+    const deviceIds = new Map();
     personContext.on("page", (observedPage) =>
       observedPage.on("websocket", (socket) => {
         if (new URL(socket.url()).origin === status.origin.replace(/^http/, "ws")) {
+          socket.on("framesent", (frame) => {
+            const message = JSON.parse(textFromFrame(frame));
+            if (message.method === "connect") {
+              deviceIds.set(socket, message.params?.device?.id);
+            }
+          });
           socket.on("framereceived", (frame) =>
             frames.push({ ...frame, socket, page: observedPage }),
           );
@@ -713,6 +835,15 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
     ]) {
       assert.equal((await request(path)).status, 403);
     }
+    if (label === "operator") {
+      assert.equal(
+        (await request(`${namespacePath}/agents/${topology.agent.id}/native-admin`)).status,
+        403,
+      );
+      await assertNativeDenied(page);
+      operatorPage = page;
+      continue;
+    }
     // Configuration remains denied, but exact Agent administer must still launch
     // the regular native UI. A fixture URL must not stand in for the Console link.
     const nativePage = await openNativeAdminConsole(page, status.origin);
@@ -726,7 +857,20 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
     // Records from previous page navigations do not establish a current stream.
     const socket = terminalFrame.socket;
     assert.ok(socket && !socket.isClosed(), "recipient has a confirmed active native stream");
+    const deviceId = deviceIds.get(socket);
+    // Identity grants supply administration independently of device scopes. Retaining
+    // this enrollment must not bypass later permission withdrawal or session expiry.
+    const deviceScopes = await enrolledDeviceScopes(topology, deviceId);
+    if (label === "withdrawn") {
+      await nativePage.screenshot({
+        path: join(artifacts, "native-chat-before-withdrawal.png"),
+        fullPage: true,
+      });
+    }
     people.push({
+      page,
+      deviceId,
+      deviceScopes,
       request,
       nativePage,
       frames,
@@ -738,6 +882,7 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
     });
   }
   const [withdrawn, unaffected] = people;
+  await assertNativeDenied(operatorPage);
   assert.equal(withdrawn.socket.isClosed(), false);
   assert.equal(unaffected.socket.isClosed(), false);
   // Observe real existing sockets before policy mutation. No artificial abort,
@@ -787,6 +932,11 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
     200,
   );
   assert.equal((await withdrawn.request(namespacePath)).status, 200, "discovery grant remains");
+  assert.deepEqual(
+    await enrolledDeviceScopes(topology, withdrawn.deviceId),
+    withdrawn.deviceScopes,
+  );
+  await assertNativeDenied(withdrawn.page);
   const lastReply = await submitChatTurnWithAssistantProof(
     unaffected.nativePage,
     `sharing-after-withdrawal-${randomUUID()}`,
@@ -814,6 +964,11 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
       .then(({ rowCount }) => assert.equal(rowCount, 1, "expired this recipient's session")),
   ]);
   assert.equal(health.status(), 403, "the open native tab observed the session refusal");
+  assert.deepEqual(
+    await enrolledDeviceScopes(topology, unaffected.deviceId),
+    unaffected.deviceScopes,
+  );
+  await assertNativeDenied(unaffected.page);
 
   const reconnect = nativePage.getByRole("link", {
     name: "Reconnect in browser",
@@ -850,6 +1005,32 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
         JSON.parse(textFromFrame(frame)).payload?.type === "hello-ok",
     ),
   );
+  // A positive ingress-log control proves the observer sees real upstream I/O.
+  // Denied requests precede it and must never reach Envoy or the native Gateway.
+  const allowedProbe = await nativeProbe(reopened, 200);
+  const routing = topology.workspaceGateway.routing;
+  const ingressLog = await waitFor("authorized native probe in Envoy access log", async () => {
+    const log = await kubectl(
+      "logs",
+      "--namespace",
+      routing.envoyNamespace,
+      "--selector",
+      `gateway.envoyproxy.io/owning-gateway-namespace=${topology.platformNamespace},gateway.envoyproxy.io/owning-gateway-name=${routing.gatewayName}`,
+      "--all-containers=true",
+      "--tail=-1",
+    );
+    return log.includes(allowedProbe) ? log : undefined;
+  });
+  for (const deniedProbe of deniedProbes) {
+    assert.equal(
+      ingressLog.includes(deniedProbe),
+      false,
+      "refused native request reached upstream",
+    );
+  }
+  context.diagnostic(
+    "Read/operate-only and revoked callers were refused before upstream I/O; both browser devices remained enrolled with unchanged approved scopes.",
+  );
 }
 
 test(
@@ -866,28 +1047,36 @@ test(
       publicOrigin: ingress.origin,
       gatewayPassword: true,
       nativeAdmin: { domain: nativeDomain, sharedCookieDomain },
+      provisionNativeAdmin: true,
       nativeOptions: {
         controlUi: { enabled: true },
       },
       workspaceGateway: true,
     });
     ingress.setUpstream(topology.controllerUrl);
+    assert.equal(topology.revision.gatewayManagedMode, true);
     await assertActualModelTurn(topology);
 
-    const unadmittedTarget = expectedNativeAdminTarget(topology, ingress.origin, nativeDomain);
-    assert.match(unadmittedTarget.host, hostSuffixPattern(nativeDomain));
     const initialStatus = await nativeAdminStatus(topology);
-    assert.notEqual(
-      initialStatus.status,
-      "available",
-      "native admin must fail closed before the active runtime admits the exact browser origin and device approval policy",
-    );
+    assert.equal(initialStatus.status, "available", "creation opt-in enables the first revision");
+    assert.equal(initialStatus.activeRevisionId, topology.revision.id);
+    assert.equal((await readOceControlState(topology)).configuration.generation, 1);
+    const browser = await launchBrowser(context, ingress);
+    await assertSharedNativeSessions(context, {
+      topology,
+      browser,
+      ingress,
+      status: initialStatus,
+      artifacts,
+    });
 
+    await saveGatewayManagedMode(topology, false);
     const expectedTarget = await redeployWithNativeAdminAccess(
       topology,
       ingress.origin,
       nativeDomain,
     );
+    assert.equal(topology.revision.gatewayManagedMode, false);
     const status = await nativeAdminStatus(topology);
     assert.equal(status.status, "available");
     assert.equal(status.host, expectedTarget.host, "Agent native host must be deterministic");
@@ -917,7 +1106,6 @@ test(
       "Compute must route same-Agent native UI suffixes through the private Gateway route",
     );
 
-    const browser = await launchBrowser(context, ingress);
     const browserContext = await browser.newContext();
     context.after(() => browserContext.close());
     const nativeResponses = [];
@@ -948,9 +1136,7 @@ test(
     await login(page, topology.credentials);
     await page.getByRole("heading", { name: topology.agent.name }).waitFor();
     await page
-      .getByText(
-        "Manage configuration in OCE. Changes in the admin console aren’t saved to Agent versions",
-      )
+      .getByText("Gateway managed mode restricts administrative changes by default.")
       .waitFor();
     const nativePage = await openNativeAdminConsole(page, status.origin);
 
@@ -958,6 +1144,14 @@ test(
     const deepLinkResponse = await nativePage.goto(deepLink.href);
     assert.ok(deepLinkResponse?.status() < 400, "stock UI deep link must be served");
     await waitForStockUi(nativePage);
+    // The Gateway embeds the stock UI's bootstrap configuration in the document it serves,
+    // and the UI boots from it. The OCC Agent name must replace the stock "Assistant"; the
+    // Gateway cuts a display name to 50 characters.
+    const bootstrap = await nativePage.evaluate(() =>
+      globalThis.document.documentElement.getAttribute("data-openclaw-bootstrap-config"),
+    );
+    assert.ok(bootstrap, "the Gateway must serve the stock UI's bootstrap configuration");
+    assert.equal(JSON.parse(bootstrap).assistantName, topology.agent.name.slice(0, 50));
     await nativePage.locator(".page-title").getByText("Advanced", { exact: true }).waitFor();
     await nativePage.getByRole("button", { name: "Raw", exact: true }).waitFor();
     await nativePage.screenshot({
@@ -1056,9 +1250,22 @@ test(
       "the shared native admin session must reconnect to the current redeployed revision",
     );
     await waitForStockUi(currentSessionPage);
+    const banner = currentSessionPage.getByRole("paragraph").filter({
+      hasText: "edit and save the Agent’s draft Configuration, then select Deploy new version",
+    });
+    await banner.waitFor();
+    assert.equal(
+      await banner.getByRole("link", { name: "Learn more", exact: true }).getAttribute("href"),
+      "https://docs-enterprise.openclaw.org/reference/agents/gateway-managed-mode/",
+    );
+    await assertManagedNativeConfigWriteRejected(
+      currentSessionPage,
+      currentStatus.origin,
+      topology,
+    );
     await currentSessionPage.close();
     context.diagnostic(
-      "Native admin browser proof loaded stock assets, opened a deep link, established a WebSocket, sent a real chat turn, made/reverted a native config edit, proved OCE redeploy restores managed config after native drift, denied a sibling host, preserved a workspace file across OCE stop/redeploy, wrote human connect/close audit evidence, reconnected to the current redeployed revision, and reloaded after gateway Pod replacement.",
+      "Native admin browser proof loaded stock assets, opened a deep link, established a WebSocket, sent a real chat turn, made/reverted a native config edit with managed mode off, restored OCE config and rejected a native config write after managed mode was re-enabled, denied a sibling host, preserved a workspace file across OCE stop/redeploy, wrote human connect/close audit evidence, reconnected to the current redeployed revision, and reloaded after gateway Pod replacement.",
     );
   },
 );
@@ -1083,10 +1290,17 @@ test(
       workspaceGateway: true,
     });
     ingress.setUpstream(topology.controllerUrl);
+    const unadmittedTarget = expectedNativeAdminTarget(topology, ingress.origin, nativeDomain);
+    assert.match(unadmittedTarget.host, hostSuffixPattern(nativeDomain));
+    assert.notEqual(
+      (await nativeAdminStatus(topology)).status,
+      "available",
+      "without opt-in the runtime must admit the exact origin and device policy before access",
+    );
     await redeployWithNativeAdminAccess(topology, ingress.origin, nativeDomain);
     const status = await nativeAdminStatus(topology);
     assert.equal(status.status, "available");
     const browser = await launchBrowser(context, ingress);
-    await assertSharedNativeSessions(context, { topology, browser, ingress, status });
+    await assertSharedNativeSessions(context, { topology, browser, ingress, status, artifacts });
   },
 );

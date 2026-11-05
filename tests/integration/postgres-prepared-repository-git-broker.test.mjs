@@ -19,6 +19,7 @@ import {
   createTestAuthPrincipal,
 } from "../helpers/auth-session.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { relaySockets } from "../helpers/socket-relay.mjs";
 import { fixture, prepare } from "../fixtures/prepared-repository-git.mjs";
 import {
   cleanEnvironment,
@@ -55,10 +56,7 @@ async function startBroker(
     if (socket.destroyed) {
       return;
     }
-    const upstream = connect(Number(new URL(origin.origin).port), "127.0.0.1");
-    socket.once("close", () => upstream.destroy());
-    upstream.once("error", () => socket.destroy());
-    socket.pipe(upstream).pipe(socket);
+    relaySockets(socket, connect(Number(new URL(origin.origin).port), "127.0.0.1"));
   });
   const gitOrigin = await listen(t, tcp);
   const clock = createSystemClock();
@@ -499,11 +497,10 @@ for (const mode of [
         tunnels.push(req.url);
         const upstream = connect(Number(new URL(b.address).port), "127.0.0.1", () => {
           socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-          upstream.write(early);
-          socket.pipe(upstream).pipe(socket);
         });
-        upstream.on("error", () => socket.destroy());
-        socket.on("error", () => upstream.destroy());
+        // Bytes the client sent after CONNECT go first; the socket queues them until connected.
+        upstream.write(early);
+        relaySockets(socket, upstream);
       });
       const proxyAddress = (await listen(t, proxy)).replace(/^https:/, "http:");
       const client = new URL(

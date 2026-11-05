@@ -7,7 +7,6 @@ to deploy; while it provisions, drafts needing no new Secret or sign-in still sa
 [adopts](../namespaces.md#lifecycle) an existing namespace. Creating tokens requires Secret creation permission. Provisioning grants accepted
 Secret access; drafts also need Installation `administer` to grant Agent key access; members without it save drafts an administrator finishes. After deployment, [verify the same
 Agent and version](../../guides/deploy/production-agents.md#verify-production-workloads).
-The [local walkthrough](../../guides/first-agent.md) creates a separate Agent.
 
 ## Create an Agent
 
@@ -15,9 +14,11 @@ Starters enable native Control UI at `http://127.0.0.1:18789` and
 `http://localhost:18789`. Compute renders gateway authentication from Installation
 trust; starters supply no token and reference only the generated
 `OPENCLAW_GATEWAY_PASSWORD`. Do not expose the gateway publicly.
-**Open admin console** requires [native admin setup](../../guides/deploy/native-admin.md):
-trusted-proxy authentication and the exact Agent HTTPS origin. Loopback origins alone
-are insufficient. Presets and edited Configuration JSON retain their settings.
+For browser access, select **Enable Native admin UI** (initially unchecked).
+It requires [installation setup](../../guides/deploy/native-admin.md) and supported
+Dedicated provisioning; opening the UI requires Agent `administer`.
+See [creation-time preparation](../agent-native-admin.md#enable-during-creation)
+for the exact Agent HTTPS origin, trusted-proxy settings, and refused conflicts.
 
 Experimental Dedicated OpenClaw requires [native worker support](../harness-execution.md#native-worker-support)
 and full-facet Sandbox provisioning. The pinned runtime enables it. Compute
@@ -51,18 +52,9 @@ as the reason Dedicated OpenClaw is disabled.
    requires another selection. Other settings remain.
    No model is preselected.
 4. Confirm Installation, credential, and runtime support for the model. Primary
-   and fallback models must share a supported provider and Harness. For custom settings,
-   open **Advanced settings**. Selection changes preserve unrelated JSON edits;
+   and fallback models must share a supported provider and Harness. Use **Advanced settings** for custom settings. Selection changes preserve unrelated JSON edits;
    **Reset template** replaces them.
-   Harness switches preserve `plugins.allow` and `plugins.deny`, including
-   unrestricted missing/empty allowlists; only Codex’s runtime entry changes.
-   An explicit `plugins.entries.codex.enabled: false` also survives switches.
-   To use Codex, set it to `true` in **Configuration JSON**; creation stays blocked
-   until you resolve the conflict. An absent entry gets enabled runtime defaults.
-   If the Codex Preset's `["codex"]` allowlist blocks OpenClaw's OpenAI provider,
-   explicitly change it to `["codex", "openai"]` in **Configuration JSON**, or keep
-   the policy and choose a compatible Harness/provider. See
-   [OCE's admission policy](../harness-execution.md#native-runtime-selection).
+   Harness switches preserve `plugins.allow`/`plugins.deny`; runtime enablement is unchanged.
 5. Under **Repository access**, optionally select up to 16 approved repositories
    and set their [access levels](repository-access.md). Kubernetes supports Codex (Dedicated) and Embedded
    OpenClaw without a Sandbox Driver, not Dedicated OpenClaw. Use Codex for repositories
@@ -88,7 +80,7 @@ as the reason Dedicated OpenClaw is disabled.
    and offers no retry or link. The job identifies only the deployment that ended.
    For a failed deployment, open the linked Agent and version and follow its recovery
    guidance. After a Stop, deploy again when ready.
-   Ordinary creation saves Configuration first and opens a draft on **Create new version**,
+   Ordinary creation saves Configuration first and opens a draft on **Open draft**,
    without a workload. After deployment, use the
    [workspace editor](../console.md#edit-workspace-files). Pending inputs have no
    update API; see [workspace recovery](../../guides/topics/workspace-files.md#set-files-when-creating-an-agent).
@@ -185,12 +177,12 @@ If the Console cannot confirm a ChatGPT OAuth sign-in started, it blocks another
 start in that form. Without the session reference it cannot poll or cancel the
 attempt. Follow [interrupted sign-in recovery](../../guides/deploy/credential-lifecycle.md#recover-an-interrupted-codex-sign-in).
 
-After a lost admission response, **Retry provisioning request** resubmits the same
-request ID and saved Secret references. Retry acknowledged jobs through their URL;
-if refused after an unknown outcome, **Create Agent** resends
-the same request. If the result changes or omits a previously observed first deployment
-version, the Console keeps the outcome unknown and offers Retry. A refused retry of a failed job shows the API's reason when it names
-one, such as a deleted Secret; **Create Agent** then submits a new request. Saved
+**Retry provisioning request** targets the accepted job, or resends the same
+request ID and Secret references if admission was unconfirmed. An invalid Agent
+or version ID, or a changed or missing known version, leaves **Outcome unknown**
+without a recovery link. If retry is refused during recovery, **Create Agent**
+resends the original request. A refused retry of a confirmed failure names the
+reason when available; **Create Agent** then starts a new request. Saved
 Secrets are reused, never deleted automatically. After a lost Secret save, check
 existing Namespace Secrets before starting again.
 **Check credential registration** recovers an uncertain source. If absent,
@@ -198,9 +190,11 @@ existing Namespace Secrets before starting again.
 `registering`/`deleting`, requiring source `delete`. Retry removal after the gateway's
 registration safety window if needed. See the [provisioning flow](../../flows/agent-provisioning.md) for the API sequence.
 
-A failed or stopped first deployment keeps the Agent and its name. Follow the failed
-version's recovery guidance. After a Stop, including a Stop before deployment
-(`PROVISIONING_CANCELLED`), open the Agent and deploy when ready.
+If the first deployment fails with valid Agent and version IDs, follow the linked
+version's recovery guidance even without an error message. A stopped or superseded
+deployment follows the separate guidance above.
+After a Stop, including `PROVISIONING_CANCELLED` before deployment, open the
+Agent and deploy when ready.
 
 If Agent creation is rejected after Configuration saves, correct the ordinary
 zero-binding Agent's editable fields and retry. The retry reuses Configuration
@@ -213,6 +207,16 @@ starting again.
 
 Repository discovery, default and custom access levels, policy checks, and save
 recovery are in [Choose repository access in the console](repository-access.md).
+
+If a password Preset's model Secret name already exists, the form offers
+**Choose existing Secret** or **Use another Secret name** under **Model provider**.
+The notice names the attempted collision. Name edits and new attempts clear old
+feedback, preserving an edited alternate. Credential changes clear
+recovery; switching back does not restore it. Select a readable Secret deliberately,
+or enter a valid **New Secret name** and select **Create Agent** again. Other draft fields stay unchanged. Selecting an existing
+Secret clears the entered key and uses metadata only; it does not read or replace
+the stored value. An Agent-name conflict still requires a different Agent name.
+An uncertain Secret write does not enable this recovery or another create attempt.
 
 ## Use repositories and Slack on the same Agent
 
@@ -263,17 +267,17 @@ provider acceptance, runtime readiness, or a channel connection.
 
 ## Deploy a new version
 
-Open **Create new version** and select **Deploy new version** after storing
+Open **Open draft** and select **Deploy new version** after storing
 credentials, saving channel Secret bindings, and selecting harness authentication.
 To change plugins, edit **Plugins**, select **Save plugin selections**, then
-deploy. Deployment uses saved Configuration and the Agent plugin map; it does
-not redeploy or roll back viewed snapshots. Every accepted request creates an
-immutable Agent revision, even with unchanged Configuration generation. Earlier versions
+deploy. Deployment uses saved Configuration, plugins, and [Gateway managed mode](../agent-native-admin.md#gateway-managed-mode); it does
+not redeploy or roll back viewed snapshots. Each accepted deployment creates a new
+Agent revision, even when the Configuration generation is unchanged. Earlier versions
 retain their snapshots; see the
 [Plugins tab guide](../../guides/console/configuration-plugins-and-files.md#plugins-tab).
 
 The console rereads Agent and Configuration before admission. Refresh if
-generation, association, authentication, or plugins changed since loading.
+generation, association, authentication, plugins, or managed mode changed since loading.
 These reads are not atomic with admission.
 Teams-enabled drafts cannot deploy through this console path because Teams credential
 readiness is not exposed; use the operator deployment workflow for those Agents.

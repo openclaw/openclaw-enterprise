@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
-updated: 2026-10-25
-last_updated_session: fix-2469
+updated: 2026-11-05
+last_updated_session: authoring-run/878b2a70-223a-4813-9763-0f2a7051f8bd
 ---
 
 # Console Agent creation
@@ -67,16 +67,13 @@ none before any answer.
 
 ### 2. Choose a model and starter Configuration
 
-`create.mts:updateModelConfiguration` preserves `plugins.allow` and `plugins.deny`,
-changing Codex’s runtime wiring without replacing an explicit disabled entry's
-`enabled: false`. Switching away retains that disable; an absent entry gets enabled
-defaults when Codex is selected. `harnessPluginPolicyConflict` refuses blocked
-runtime/provider plugins before validation or creation requests. A disabled-entry
-refusal names the `enabled: true` repair. An allowlist refusal directs the operator
-to add the named plugin in **Advanced settings → Configuration JSON**, keeping
-existing entries. Kubernetes Compute’s `validateHarnessAuth` enforces
-[OCE's admission policy](../../reference/harness-execution.md#native-runtime-selection)
-for API callers.
+`create.mts:updateModelConfiguration` preserves authored `plugins.allow` and
+`plugins.deny` while changing Codex runtime wiring. Missing and empty allowlists
+remain unrestricted. An explicit `plugins.entries.codex.enabled: false` survives
+a round trip; the Dedicated Codex runtime overlay enables that required plugin
+at startup. The form uses the existing server preflight and provisioning admission
+rather than imposing a separate browser policy. A refusal leaves the editable
+Configuration unchanged. See [runtime admission](../../reference/harness-execution.md#native-runtime-selection).
 
 `create.mts:MODEL_CHOICES` supplies unauthenticated static lists and manual entry.
 `renderAgentForm` toggles `manualModel`, invoking `updateModelConfiguration` and
@@ -95,7 +92,9 @@ Compute supplies gateway authentication; Presets replace the starter unchanged.
 ### 3. Load repository options
 
 `agents/repositories.mts:createRepositoryFields` loads `GET /namespaces/:namespaceId/agents/repository-options`,
-then requests optional descriptions for visible refs. [Repository admission](../agent-repository-credentials.md) resolves the
+which authorizes Agent create. Create Agent holds this read until the permission answer allows
+Agent create, or the Installation read succeeds without an answer; after a known refusal it
+reads none and says so, without a retry. After the read it requests optional descriptions for visible refs. [Repository admission](../agent-repository-credentials.md) resolves the
 submitted `repositoryAccess`. Retained drafts keep selections through failed
 discovery; retries recheck current policy. Only `503 REPOSITORY_OPTIONS_UNAVAILABLE`
 or `meta.notConfigured` (no `repository` settings) permits creation without bindings, and only without retained selections; other
@@ -152,8 +151,11 @@ Agent/Configuration for [workspace setup](../workspace-files.md).
 same-Namespace `env` bindings. Failure retains the Agent; **Retry credential access**
 rereads grants without duplication. Grants are Installation administration: a session
 known not to administer the Installation sends no IAM request and names the administrator
-step, and a member's refused grant offers no retry. After a refused Installation read, a
-failed permission read offers **Retry permission check**, which rereads only that answer. Failed Agent writes retain Configuration ID
+step, and a member's refused grant offers no retry. After a refused Installation read, the
+"Your access" status block above the form gives the permission answer: create allowed,
+refused, or not checked. A failed permission read adds **Retry permission check**, which
+rereads only that answer. A retry that refuses create shows the refusal a fresh load shows,
+without the form. Failed Agent writes retain Configuration ID
 and lock JSON/Harness for explicit reuse. Writes never retry automatically; drafts
 save no version and start no runtime.
 
@@ -182,6 +184,7 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
+- 2026-11-05 08:55: Preserve Harness-switch permissions and use existing server admission, including disabled Codex entry acceptance. (authoring-run/878b2a70-223a-4813-9763-0f2a7051f8bd - 65dc3e90e)
 - 2026-10-25: The per-Secret `operate` remedy names an exact-Secret grant; the Agents list gives Create Agent's next step when Agent create is denied. (findings 2507, 2508)
 - 2026-10-25: Refuse a typed model key, and disable the Preset's **Create new Secret**, where `operate` is denied on a readable Secret. (fix-2492, finding 2492)
 - 2026-10-25: An inline Secret create rereads the `operate` answer before staging. (finding 2486)

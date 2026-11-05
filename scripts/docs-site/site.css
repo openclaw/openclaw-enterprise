@@ -56,7 +56,7 @@ button {
   border-radius: 7px;
   padding: 8px 12px;
 }
-header {
+body > header {
   position: sticky;
   top: 0;
   z-index: 10;
@@ -843,4 +843,31 @@ dialog::backdrop {
   display: block;
   height: auto;
   margin: auto;
+}
+
+/* The OpenAPI explorer owns its endpoint navigation within the article. */
+.layout:has(#occ-api-explorer) {
+  grid-template-columns: 230px minmax(0, 1fr);
+}
+.layout:has(#occ-api-explorer) > .toc {
+  display: none;
+}
+.doc:has(#occ-api-explorer) {
+  max-width: none;
+  min-width: 0;
+}
+#occ-api-explorer {
+  margin: 2rem -1rem 0;
+  min-height: 70vh;
+}
+@media (max-width: 900px) {
+  .layout:has(#occ-api-explorer) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Set fonts before Scalar mounts to avoid its default remote font request. */
+:root {
+  --scalar-font: system-ui, sans-serif;
+  --scalar-font-code: ui-monospace, monospace;
 }

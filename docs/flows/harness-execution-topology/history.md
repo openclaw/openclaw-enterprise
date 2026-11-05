@@ -8,6 +8,10 @@ This record preserves the dated changes to the harness execution topology flow. 
 
 ## Changelog
 
+- 2026-10-30 02:30: A shared `/readyz` check that does not end within 5 seconds answers not ready and frees the slot, so one hung check cannot hold every later probe. (fix-2941)
+
+- 2026-10-30 00:40: Concurrent `/readyz` requests share the running readiness check, so callers cannot start one identity process or app-server WebSocket per request. (fix-1789)
+
 - 2026-10-23 13:33: Trace protected Codex connection failure behavior and condense the activation flow. (authoring-run/d909ff44-894e-4e57-91e2-ab5bea7532c7 - 162c9131f3dacb48979fba68bec7e88af317e6b3)
 
 - 2026-10-23 07:40: Resolve documentation conflicts. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - 13f38c6206926541c354a50e92200502dae52130)
@@ -18,7 +22,7 @@ This record preserves the dated changes to the harness execution topology flow. 
 
 - 2026-10-21 05:00: Validate execution peer label types. (authoring-run/9c5e8c34-6292-465b-a82a-7b56e03b535d - e8185dac805b737363c7178d3068b310a53a7c24)
 
-- 2026-10-20 12:09: Preserve native plugin policy and reject required-plugin conflicts during Harness admission. (Codex/01a12fe8-d0c6-7df1-937d-364a1301566a - 61140f671)
+- 2026-10-20 00:53: Record Gateway managed-mode deployment, launch, and replacement. (Codex/01a1558e-c27f-7bc0-a403-af59e9364ddf - cde9a870aa0be0e168a8eabb2c031369fc8508ff)
 
 - 2026-10-17 17:48: Restrict custom native endpoints to CredentialSources and retain upstream temporary-directory ownership. (authoring-run/b639668e-1ef2-4d43-bed4-ed1a6a4be5d6 - 7eebfc12c)
 

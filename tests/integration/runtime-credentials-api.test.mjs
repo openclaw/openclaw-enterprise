@@ -17,6 +17,7 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
+import { jsonRequestInit } from "../helpers/inject-json.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createReadyComputeDriver, registerAndSelectDrivers } from "../helpers/development.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
@@ -248,15 +249,13 @@ async function createSharedApp(implementation) {
     { session = adminSession, body, origin: requestOrigin = origin } = {},
   ) {
     const mutation = ["POST", "PATCH", "PUT", "DELETE"].includes(method);
-    const response = await fetch(`${origin}${path}`, {
-      method,
-      headers: {
+    const response = await fetch(
+      `${origin}${path}`,
+      jsonRequestInit(method, body, {
         ...authenticatedHeaders(session),
         ...(mutation ? { origin: requestOrigin } : {}),
-        ...(body === undefined ? {} : { "content-type": "application/json" }),
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
+      }),
+    );
     const text = await response.text();
     const payload = text.length === 0 ? undefined : JSON.parse(text);
     if (payload !== undefined) {
@@ -454,30 +453,30 @@ test("first draft deployment provisions generated credentials and later revision
 
 test("Kubernetes without managed runtime credentials admits a draft deployment", async () => {
   const fixture = await createFixture({ computeDriver: createKubernetesComputeDriver() });
-  const { namespace, agent } = await fixture.bootstrapAgent();
+  const { agent, agentPath } = await fixture.bootstrapAgent();
+  // This credential-admission fixture has no Gateway runtime to apply managed mode.
+  const updated = await fixture.request("PATCH", agentPath, {
+    body: { configurationId: agent.configurationId, gatewayManagedMode: false },
+  });
+  assert.equal(updated.status, 200, JSON.stringify(updated.body));
 
-  const admitted = await fixture.request(
-    "POST",
-    `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
-  );
+  const admitted = await fixture.request("POST", `${agentPath}/deploy`);
   assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
   assert.equal(admitted.data.revision, 1);
 });
 
-test("Kubernetes deploy names an unsupported Harness authentication model provider", async () => {
+test("Kubernetes deploy names an unconfigured Harness authentication model provider", async () => {
   const fixture = await createFixture({ computeDriver: createKubernetesComputeDriver() });
   const { namespace, agent } = await fixture.bootstrapAgent();
   const values = createHarnessConfiguration("openclaw", "gpt-4.1");
-  const { openai } = values.models.providers;
   values.agents.defaults = {
     model: "zai/glm-5",
     models: { "zai/glm-5": { agentRuntime: { id: "openclaw" } } },
   };
-  values.models.providers = {
-    zai: { ...openai, models: [{ ...openai.models[0], id: "glm-5", name: "glm-5" }] },
-  };
-  // The Configuration alone is valid: only the Agent's api_key binding, which the Kubernetes
-  // Driver projects only for providers it knows, makes the pair undeliverable.
+  // A custom provider needs an explicit catalog and credential reference. Keep this
+  // unsupported-binding scenario unconfigured; configured providers are supported.
+  values.models.providers = {};
+  // The draft Configuration can be stored, but its model has no deliverable provider.
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const stored = await fixture.request("GET", agentPath);
   const replaced = await fixture.request(
@@ -511,6 +510,46 @@ test("Kubernetes deploy names an unsupported Harness authentication model provid
   assert.equal(created.body.error.message, message);
   // The stored Agent still reads.
   assert.equal((await fixture.request("GET", agentPath)).status, 200);
+});
+
+test("Kubernetes names a model provider reference the startup model check cannot resolve", async () => {
+  const fixture = await createFixture({ computeDriver: createKubernetesComputeDriver() });
+  const { namespace, agent } = await fixture.bootstrapAgent();
+  const values = createHarnessConfiguration("openclaw", "gpt-4.1");
+  values.models.providers.openai.baseUrl = "${MODEL_HOST}";
+  // Configuration save accepts the reference: another Compute's runtime may resolve it.
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const stored = await fixture.request("GET", agentPath);
+  const replaced = await fixture.request(
+    "PATCH",
+    `/namespaces/${namespace.id}/configurations/${stored.data.configurationId}`,
+    { body: { values } },
+  );
+  assert.equal(replaced.status, 200, JSON.stringify(replaced.body));
+  // Kubernetes probes the model with only the api_key binding's credential, so deploy and the
+  // Agent's saves name the setting and the reason, not a generic topology conflict (finding 2828).
+  const message =
+    "Configuration setting models.providers.openai.baseUrl must not hold an environment or Secret reference: the startup model check on Kubernetes gets only the Harness credential.";
+  const refused = (response) => {
+    assertApiError(response, 400, "INVALID_REQUEST");
+    assert.equal(response.body.error.message, message);
+  };
+  refused(await fixture.request("POST", `${agentPath}/deploy`));
+  refused(
+    await fixture.request("PATCH", agentPath, {
+      body: { configurationId: stored.data.configurationId },
+    }),
+  );
+  refused(
+    await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+      body: {
+        name: "Probe reference Agent",
+        configurationId: stored.data.configurationId,
+        executionMode: "embedded",
+        harnessAuth: stored.data.harnessAuth,
+      },
+    }),
+  );
 });
 
 test("Kubernetes names a Harness authentication method the execution mode cannot use, at save and deploy", async () => {
@@ -841,8 +880,7 @@ test("runtime credential driver and audit failures stay sanitized and recoverabl
   const failed = await driverFailureFixture.request("POST", failedPath, {
     body: {},
   });
-  assert.equal(failed.status, 503);
-  assert.equal(failed.body.error.code, "DEPENDENCY_UNAVAILABLE");
+  assertApiError(failed, 503, "DEPENDENCY_UNAVAILABLE");
   assert.equal(JSON.stringify(failed.body).includes(leakedDriverValue), false);
   assert.equal(
     JSON.stringify(driverFailureFixture.auditSink.events).includes(leakedDriverValue),
@@ -868,8 +906,7 @@ test("runtime credential driver and audit failures stay sanitized and recoverabl
   const auditFailed = await auditFailureFixture.request("POST", auditPath, {
     body: {},
   });
-  assert.equal(auditFailed.status, 503);
-  assert.equal(auditFailed.body.error.code, "DEPENDENCY_UNAVAILABLE");
+  assertApiError(auditFailed, 503, "DEPENDENCY_UNAVAILABLE");
   assert.equal(JSON.stringify(auditFailed.body).includes(leakedAuditValue), false);
   assert.equal(
     JSON.stringify(auditFailureFixture.auditSink.events).includes(leakedAuditValue),
@@ -963,8 +1000,7 @@ for (const [name, diagnostics] of [
       "POST",
       `${agentPath}/deployments/${revision.data.id}/diagnostics`,
     );
-    assert.equal(result.status, 503);
-    assert.equal(result.body.error.code, "DEPENDENCY_UNAVAILABLE");
+    assertApiError(result, 503, "DEPENDENCY_UNAVAILABLE");
     assert.equal(JSON.stringify(result.body).includes(marker), false);
     assert.equal(JSON.stringify(fixture.auditSink.events).includes(marker), false);
   });
@@ -1024,8 +1060,7 @@ test("deployment diagnostics reject invalid Driver evidence", async () => {
   ]) {
     diagnosticOptions.diagnosticsResult = diagnosticsResult;
     const result = await fixture.request("POST", path);
-    assert.equal(result.status, 503, name);
-    assert.equal(result.body.error.code, "DEPENDENCY_UNAVAILABLE", name);
+    assertApiError(result, 503, "DEPENDENCY_UNAVAILABLE", name);
     assert.equal(JSON.stringify(result.body).includes("private token value"), false, name);
   }
 });

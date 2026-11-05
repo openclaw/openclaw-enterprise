@@ -368,9 +368,10 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" (toString .Values.database.port))) (gt (int .Values.database.port) 65535) -}}
 {{- fail "database.port must be an integer TCP port from 1 to 65535" -}}
 {{- end -}}
-{{- /* The server reads OCC_PORT with decimal Number(); Kubernetes YAML reads an unquoted leading zero as octal. Sprig int returns 0 past int64, and this check used to treat that 0 as in range, then emit the original digits. */ -}}
-{{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" (toString .Values.api.port))) (gt (int .Values.api.port) 65535) -}}
-{{- fail "api.port must be an integer TCP port from 1 to 65535" -}}
+{{- /* The server reads OCC_PORT with decimal Number(); Kubernetes YAML reads an unquoted leading zero as octal. Sprig int returns 0 past int64, and this check used to treat that 0 as in range, then emit the original digits.
+     The API runs as UID 1000 without capabilities, so a port below 1024 fails to bind where the runtime keeps privileged ports. */ -}}
+{{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" (toString .Values.api.port))) (lt (int .Values.api.port) 1024) (gt (int .Values.api.port) 65535) -}}
+{{- fail "api.port must be an integer TCP port from 1024 to 65535: the API runs as a non-root user without capabilities" -}}
 {{- end -}}
 {{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" (toString .Values.cluster.port))) (gt (int .Values.cluster.port) 65535) -}}
 {{- fail "cluster.port must be an integer TCP port from 1 to 65535" -}}
@@ -552,8 +553,8 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (gt (len $proxy.serviceName) 63) (not (regexMatch "^[a-z]([-a-z0-9]*[a-z0-9])?$" $proxy.serviceName)) -}}
 {{- fail "slackProxy.serviceName must be a DNS-1035 Service name" -}}
 {{- end -}}
-{{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $proxy.port))) (lt (int $proxy.port) 1) (gt (int $proxy.port) 65535) -}}
-{{- fail "slackProxy.port must be an integer TCP port from 1 to 65535" -}}
+{{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $proxy.port))) (lt (int $proxy.port) 1024) (gt (int $proxy.port) 65535) -}}
+{{- fail "slackProxy.port must be an integer TCP port from 1024 to 65535: the proxy runs as a non-root user without capabilities" -}}
 {{- end -}}
 {{- include "openclaw.resourceRequirements" (dict "name" "slackProxy.resources" "requirements" $proxy.resources) -}}
 {{- end -}}
@@ -872,6 +873,14 @@ capabilities:
 {{- printf "occ-gateway-%s" (include "openclaw.gatewayRouting.routeNamespaceLabel" .) -}}
 {{- end -}}
 
+{{- define "openclaw.gatewayRouting.defaultHostname" -}}
+{{- printf "%s.%s.svc" (include "openclaw.gatewayRouting.serviceName" .) .Values.gatewayRouting.envoyNamespace -}}
+{{- end -}}
+
+{{- define "openclaw.gatewayRouting.hostname" -}}
+{{- default (include "openclaw.gatewayRouting.defaultHostname" .) .Values.gatewayRouting.hostname -}}
+{{- end -}}
+
 
 {{- define "openclaw.gatewayRouting.rootSecretName" -}}
 {{- printf "%s-root" (include "openclaw.gatewayRouting.serviceName" .) -}}
@@ -907,11 +916,16 @@ capabilities:
 {{/* Each listener the chart routes through a Service: its port, or disabled. API and worker
      startup and the upgrade check refuse an Installation listener on another port, not on
      all addresses, without the chart listener (finding 2213), or naming TLS or issuer files
-     other than the chart's mounts. */}}
+     other than the chart's mounts. The chart-owned private Gateway expectation also checks
+     selected Kubernetes routing against the rendered resource identity and hostname. */}}
 {{- define "openclaw.listenerEnv" -}}
 {{- range $listener := list (dict "name" "OCC_EGRESS_AUTHORITY_PORT" "label" "egressAuthority.port" "values" .Values.egressAuthority) (dict "name" "OCC_OPENSHELL_GIT_PORT" "label" "openshellGit.port" "values" .Values.openshellGit) }}
 - name: {{ $listener.name }}
   value: {{ if $listener.values.enabled }}{{ include "openclaw.positiveSafeInteger" (dict "name" $listener.label "value" $listener.values.port "port" true) | quote }}{{ else }}"disabled"{{ end }}
+{{- end }}
+{{- if .Values.gatewayRouting.enabled }}
+- name: OCC_CHART_GATEWAY_ROUTING
+  value: {{ dict "gatewayName" (include "openclaw.gatewayRouting.gatewayName" .) "gatewayNamespace" .Release.Namespace "envoyNamespace" .Values.gatewayRouting.envoyNamespace "hostname" (include "openclaw.gatewayRouting.hostname" .) "defaultHostname" (include "openclaw.gatewayRouting.defaultHostname" .) | toJson | quote }}
 {{- end }}
 {{- end -}}
 

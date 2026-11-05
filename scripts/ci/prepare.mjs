@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createServer, isIPv4 } from "node:net";
 import {
+  appendFile,
   chmod,
   lstat,
   mkdir,
@@ -21,7 +22,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { openclawBuildArguments, readOpenclawSource } from "../lib/openclaw-source.mjs";
 import { loadTestSuites } from "./test-suites.mjs";
 import { cleanupResourceIds, deleteOwnedK3dCluster } from "./cleanup.mjs";
-import { withStateLock } from "./state-lock.mjs";
+import { withStateLock } from "./state-lock.ts";
 import { runPostgresAdmin } from "./postgres-admin.mjs";
 import {
   ANSI_COLOR,
@@ -31,10 +32,11 @@ import {
 } from "./k3d-diagnostics.mjs";
 import { prepareGatewayRouting } from "./routing.mjs";
 import { prepareLogging, readDefaultCollectorImage } from "./logging.mjs";
-import { ownedName, randomSuffix, slug } from "./resource-names.mjs";
-import { pullImage } from "./image-pull.mjs";
+import { recordLoggingSetupTiming } from "./logging-setup-timing.ts";
+import { ownedName, randomSuffix, slug } from "./resource-names.ts";
+import { pullImage } from "./image-pull.ts";
 import { keycloakResourceKind, prepareKeycloak, readKeycloakImage } from "./keycloak.mjs";
-import { imageInventory, laneImagesResourceKind } from "./lane-images.mjs";
+import { imageInventory, laneImagesResourceKind } from "./lane-images.ts";
 import { metricsMonitoringImages } from "./metrics-monitoring-images.mjs";
 import {
   prepareRepositoryCredentials,
@@ -152,12 +154,35 @@ function progress(lane, message) {
 
 async function timedPreparation(lane, phase, operation) {
   const started = performance.now();
+  let succeeded = false;
   try {
-    return await operation();
+    const result = await operation();
+    succeeded = true;
+    return result;
   } finally {
     const elapsedMs = Math.round(performance.now() - started);
     // Labels are fixed by the runner; never include commands, paths, or credentials.
     process.stderr.write(`[ci-timing] lane=${lane} phase=${phase} duration_ms=${elapsedMs}\n`);
+    if (lane === "logging-collector" && phase === "image-pulls") {
+      await recordLoggingSetupTiming("image-pulls", succeeded ? "success" : "failure", elapsedMs);
+    }
+    if (
+      process.env.OPENCLAW_CI_NATIVE_PREPARATION_SUMMARY === "1" &&
+      process.env.GITHUB_STEP_SUMMARY &&
+      lane === "images-packaging" &&
+      ["k3d-create", "runtime-image-import", "codex-seccomp-profile"].includes(phase) &&
+      Number.isSafeInteger(elapsedMs) &&
+      elapsedMs >= 0
+    ) {
+      try {
+        await appendFile(
+          process.env.GITHUB_STEP_SUMMARY,
+          `- ${phase}: ${elapsedMs} ms (elapsed; see step outcome)\n`,
+        );
+      } catch {
+        // Summary output is best effort; preserve the operation's result and stderr.
+      }
+    }
   }
 }
 
@@ -798,22 +823,37 @@ async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
   if (prepare.k3d && name !== "openshell" && effectiveEnv.OPENCLAW_CI_K3S_IMAGE) {
     assertImmutableImageReference(effectiveEnv.OPENCLAW_CI_K3S_IMAGE, "OPENCLAW_CI_K3S_IMAGE");
   }
-  // Native-only file preparation and the k3d helper bootstrap need no Codex token.
-  // Other OpenShell files and full-lane preparation still include a Codex Agent.
-  const nativeOnly =
+  const openShellGatewayFile =
+    file === "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs";
+  const openShellApiKey =
     name === "openshell" &&
-    effectiveEnv.OCC_TEST_OPENSHELL_HARNESS === "openclaw" &&
-    (file === "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs" ||
-      (file === undefined && effectiveEnv.OCC_K3D_HARNESS === "openclaw"));
-  const requiredInputs = nativeOnly
-    ? ["OPENAI_API_KEY", "OCC_TEST_OPENAI_MODEL"]
-    : (prepare.requireEnv ?? []);
-  requireEnv(requiredInputs, effectiveEnv);
+    ((effectiveEnv.OCC_TEST_OPENSHELL_HARNESS === "openclaw" &&
+      (openShellGatewayFile ||
+        (file === undefined && effectiveEnv.OCC_K3D_HARNESS === "openclaw"))) ||
+      (openShellGatewayFile && Boolean(effectiveEnv.OCC_TEST_OPENSHELL_MODEL_BASE_URL?.trim())));
+  requireEnv(
+    (prepare.requireEnv ?? []).map((input) =>
+      openShellApiKey && input === "CODEX_ACCESS_TOKEN" ? "OPENAI_API_KEY" : input,
+    ),
+    effectiveEnv,
+  );
   if (prepare.nodeBaseImage) {
     assertNodeBaseImage(effectiveEnv.NODE_BASE_IMAGE);
   }
   assertImmutableEnvImages(prepare.immutableEnvImages ?? [], effectiveEnv);
   assertImmutableOptionalEnvImages(prepare.immutableOptionalEnvImages ?? [], effectiveEnv);
+  const runtimeImageInputs = [
+    "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
+    "OCC_TEST_KUBERNETES_AGENT_IMAGE",
+  ];
+  if (
+    runtimeImageInputs.every((input) => prepare.immutableOptionalEnvImages?.includes(input)) &&
+    runtimeImageInputs.filter((input) => effectiveEnv[input]).length === 1
+  ) {
+    throw new Error(
+      "OCC_TEST_KUBERNETES_GATEWAY_IMAGE and OCC_TEST_KUBERNETES_AGENT_IMAGE must be supplied together; omit both to build the runtime images.",
+    );
+  }
   if (prepare.mode0600Env) {
     await requirePathMode0600(
       effectiveEnv[prepare.mode0600Env],
@@ -922,15 +962,9 @@ function imageCache(role) {
   return `type=gha,version=2,scope=oce-ci-${role}-${process.platform}-${process.arch}-v1`;
 }
 
-// Only main's warm job (ci-image-cache.yml) writes the cache. It runs for every
-// image input change and on a schedule from main's newest commit, in order and
-// never cancelled, so the newest commit's export lands last. CI lanes only
-// restore: a lane export on main could land after a newer commit's warm export
-// and replace it, and on a pull request it cost about 40 s and filled only the
-// merge ref's scope. The warm job exports in a second build after the image is
-// built and loaded: the same arguments without --load or the tag, so BuildKit
-// reuses the steps it just ran and only uploads the cache.
-function imageCacheExportArgs(role, buildArgs) {
+// The hosted cache build's arguments without --load or the tag, writing only
+// to BuildKit's cache, with the given options first.
+function imageCacheOnlyArgs(buildArgs, ...options) {
   if (buildArgs.slice(0, 3).join(" ") !== "buildx build --load") {
     throw new Error("Only a hosted cache build can export the image cache.");
   }
@@ -942,16 +976,28 @@ function imageCacheExportArgs(role, buildArgs) {
       rest.push(buildArgs[index]);
     }
   }
-  return [
-    "buildx",
-    "build",
-    "--output",
-    "type=cacheonly",
-    "--cache-to",
-    `${imageCache(role)},mode=max,timeout=10m`,
-    ...rest,
-  ];
+  return ["buildx", "build", "--output", "type=cacheonly", ...options, ...rest];
 }
+
+// Only main's warm job (ci-image-cache.yml) writes the cache. It runs for every
+// image input change and on a schedule from main's newest commit, in order and
+// never cancelled, so the newest commit's export lands last. CI lanes only
+// restore: a lane export on main could land after a newer commit's warm export
+// and replace it, and on a pull request it cost about 40 s and filled only the
+// merge ref's scope. The warm job exports in a second build after the image is
+// built and loaded: the same arguments without --load or the tag, so BuildKit
+// reuses the steps it just ran and only uploads the cache.
+function imageCacheExportArgs(role, buildArgs) {
+  return imageCacheOnlyArgs(buildArgs, "--cache-to", `${imageCache(role)},mode=max,timeout=10m`);
+}
+
+// The runtime Dockerfile builds OpenClaw beside its bridge tests (openclaw-build
+// and openclaw-bridge-tests). OpenClaw's build refuses to start unless about 5 GiB
+// is available, and the warm runner has 7.65 GiB: with the tests beside it, it
+// found 2.2-3.9 GiB. The warm job builds that stage alone first, so the image
+// build after it reuses the result and runs the tests then. Image lanes run on
+// larger runners and keep both stages in parallel.
+const warmRuntimeFirstStage = "openclaw-build";
 
 // The warm job's limit for one image's cache export. Exports that reuse the
 // OpenClaw layers took 25-65 s. A change to those layers (an OpenClaw pin, patch
@@ -1033,6 +1079,8 @@ function imageBuildOutOfTime(role, limitMs) {
   return Object.assign(new Error(message), { imageBuildOutOfTime: true });
 }
 
+const imageBuildTailLines = 40;
+
 // Runs a lane image build command within the lane's budget (unbounded without one).
 async function laneImageCommand(role, args, budgetMs = imageBuildBudgetMs()) {
   if (budgetMs !== undefined && budgetMs < 1_000) {
@@ -1042,6 +1090,14 @@ async function laneImageCommand(role, args, budgetMs = imageBuildBudgetMs()) {
     return await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, { timeoutMs: budgetMs });
   } catch (error) {
     if (budgetMs !== undefined && error.timedOut) {
+      // The build's progress names the step that was running (finding 2710: a cold
+      // build stopped after 1305 s with no clue which step stalled).
+      const tail = (error.stderr ?? "").trimEnd().split("\n").slice(-imageBuildTailLines);
+      if (tail.join("").trim()) {
+        process.stderr.write(
+          `[image-build] the ${role} image build's last output:\n${tail.join("\n")}\n`,
+        );
+      }
       throw imageBuildOutOfTime(role, budgetMs);
     }
     throw error;
@@ -1181,8 +1237,17 @@ async function buildRuntimeImages(
       return laneImageCommand(role, args);
     }
     const exportArgs = imageCacheExportArgs(role, args);
-    // A failed or overrunning build fails the job and keeps nothing.
-    await warmCommand(`${role} build`, args, 20 * 60_000);
+    // A failed or overrunning build fails the job and keeps nothing. The first
+    // stage and the image build share one 20-minute limit.
+    const deadline = performance.now() + 20 * 60_000;
+    if (role === "runtime") {
+      await warmCommand(
+        `runtime ${warmRuntimeFirstStage} build`,
+        imageCacheOnlyArgs(args, "--target", warmRuntimeFirstStage),
+        20 * 60_000,
+      );
+    }
+    await warmCommand(`${role} build`, args, Math.max(1, Math.round(deadline - performance.now())));
     // The export is best effort with its own limit. Without it, image lanes restore
     // the previous cache: content-addressed steps that still match are reused and
     // the rest rebuild, so a missed export makes builds slower, never wrong.
@@ -2492,7 +2557,8 @@ async function prepareNativeWorkspaceEnvoyImage(state, env) {
   env.OCC_TEST_WORKSPACE_ENVOY_IMAGE = image;
 }
 
-export async function prepareRuntimeImageSmoke({ image, statePath }) {
+/** @param {{ image: string, statePath: string, codexVersion?: string }} options */
+export async function prepareRuntimeImageSmoke({ image, statePath, codexVersion }) {
   assertDockerImageId(image, "Runtime smoke image");
   const path = normalizeStatePath(statePath);
   if (await readState(path)) {
@@ -2501,6 +2567,9 @@ export async function prepareRuntimeImageSmoke({ image, statePath }) {
   const state = baseState("images-packaging", path);
   const tag = `localhost/${ownedName("openclaw-ci-image", state.prefix, { maxLength: 48 })}/runtime-smoke:local`;
   const env = { ...baseEnv(path, state), OCC_TEST_KUBERNETES_RUNTIME_IMAGE: tag };
+  if (codexVersion !== undefined) {
+    env.OCC_TEST_KUBERNETES_CODEX_VERSION = codexVersion;
+  }
   const resource = addResource(state, "image-tag", { name: tag });
   await writeState(path, state);
   try {
@@ -2610,9 +2679,16 @@ async function prepareLaneLogging(statePath, state, env, cluster) {
   await markResourceReady(statePath, state, logging.resource);
 }
 
-async function prepareLane({ lane, statePath }) {
+async function prepareLane({ lane, statePath, file }) {
   const name = assertLane(lane);
-  await validateLaneInputsBeforeSideEffects(name);
+  const relativeFile = file === undefined ? undefined : toRepositoryRelative(filePath(file));
+  if (
+    relativeFile !== undefined &&
+    !laneDefinition(name).files.some((entry) => entry.path === relativeFile)
+  ) {
+    throw new Error("Selected file must belong to the lane manifest.");
+  }
+  await validateLaneInputsBeforeSideEffects(name, { file: relativeFile });
   const resolvedStatePath = normalizeStatePath(statePath);
   const existingState = await readState(resolvedStatePath);
   if (existingState) {
@@ -2621,6 +2697,7 @@ async function prepareLane({ lane, statePath }) {
     );
   }
   const state = baseState(name, resolvedStatePath);
+  state.selectedFile = relativeFile;
   const env = baseEnv(resolvedStatePath, state);
   await writeState(resolvedStatePath, state);
 
@@ -3012,6 +3089,11 @@ async function prepareLane({ lane, statePath }) {
       await prepareK3dModelLane(resolvedStatePath, state, env, { buildRuntime: true });
       break;
     case "openshell": {
+      // These files exercise the installer in their own Local Setup. Preparing a
+      // second stack here builds the same images and installs unused services.
+      if (lanePrepare(name).selfProvisionedFiles.includes(relativeFile)) {
+        break;
+      }
       await commandAvailable(process.env.OCC_HELM_BIN ?? "helm", ["version", "--short"]);
       await ensurePostgresServer(resolvedStatePath, state);
       const cluster = await prepareK3dModelLane(resolvedStatePath, state, env, {
@@ -3051,8 +3133,16 @@ async function prepareLane({ lane, statePath }) {
       // The tests start these containers themselves under 60–120 s command
       // timeout, so pull the pinned images here, where a slow or failed pull
       // is retried. An unpinned local override is still pulled by the test.
+      let collectorImage;
+      try {
+        collectorImage = await readDefaultCollectorImage();
+      } catch (error) {
+        // The prepare step fails before the image pulls start.
+        await recordLoggingSetupTiming("image-pulls", "skipped");
+        throw error;
+      }
       const images = {
-        OCC_TEST_LOGGING_COLLECTOR_IMAGE: await readDefaultCollectorImage(),
+        OCC_TEST_LOGGING_COLLECTOR_IMAGE: collectorImage,
         OCC_TEST_LOGGING_NODE_IMAGE: effectiveLaneEnv(name, env).OCC_TEST_LOGGING_NODE_IMAGE,
         ...metricsMonitoringImages,
       };
@@ -3072,7 +3162,7 @@ async function prepareLane({ lane, statePath }) {
     }
     case "qa-matrix":
       // On a hosted runner, record the starting images so cleanup can return the
-      // shared image store to them (lane-images.mjs, finding 1345). A workstation's
+      // shared image store to them (lane-images.ts, finding 1345). A workstation's
       // launcher tags are the developer's own and stay as the run leaves them. A
       // failed inventory only skips that: the QA run itself does not need it.
       if (process.env.GITHUB_ACTIONS === "true") {
@@ -3166,6 +3256,9 @@ async function prepareFile({ lane, file, statePath, template }) {
 async function prepareFileWithState({ name, relativeFile, resolvedStatePath, template }) {
   const state = await readState(resolvedStatePath);
   const prepare = lanePrepare(name);
+  if (state?.selectedFile !== undefined && state.selectedFile !== relativeFile) {
+    throw new Error("Selected file must match the prepared lane state.");
+  }
   if (!state && prepare.requiresPreparedStateForFile) {
     throw new Error(
       `prepareFile for ${name} requires a prior prepareLane call using the same state path.`,
@@ -3215,7 +3308,7 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
     return { env: { ...env, ...prepared.env }, cleanup: prepared.cleanup };
   }
 
-  if (prepare.postgres) {
+  if (prepare.postgres && !prepare.selfProvisionedFiles?.includes(relativeFile)) {
     const dbKind = prepare.k3d ? "k8s" : "ci";
     const database = await createAndMigrateDatabase(resolvedStatePath, effectiveState, {
       kind: dbKind,
@@ -3225,7 +3318,12 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
     });
     resourceIds.push(database.resourceId);
     env.OCC_TEST_DATABASE_URL = database.appUrl;
-    if (relativeFile === "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs") {
+    if (
+      [
+        "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
+        "tests/integration/openshell-plugin-install-real.test.ts",
+      ].includes(relativeFile)
+    ) {
       env.OCC_TEST_OPENSHELL_POLICY_MIGRATION_DATABASE_URL = database.migrationUrl;
     }
     if (name === "postgres-application" && relativeFile === nativeIAMBarrierFile) {
@@ -3381,7 +3479,7 @@ async function main() {
   }
   const result = args.file
     ? await prepareFile({ lane: args.lane, file: args.file, statePath: args.state })
-    : await prepareLane({ lane: args.lane, statePath: args.state });
+    : await prepareLane({ lane: args.lane, statePath: args.state, file: args["selected-file"] });
   await appendGithubEnv(args["github-env"] ?? process.env.GITHUB_ENV, result.env);
   process.stdout.write(
     `${JSON.stringify({ envNames: Object.keys(result.env).sort() }, null, 2)}\n`,

@@ -1,13 +1,11 @@
 # Agent identity and deployment
 
-Use this reference to select an [Agent](../agents.md) execution mode and understand its stable identity, immutable version, and asynchronous deployment. Creating or editing an Agent alone does not start a workload.
+Select an [Agent](../agents.md) execution mode. Creating or editing an Agent does not start a workload.
 
 ## Agent service principal and workload credentials
 
-Every Agent owns exactly one stable, platform-owned service principal.
-Separate Agents receive separate service principals, even when they share a
-Namespace. The service principal is immutable, belongs to its exact Agent and
-Namespace, and remains the same across every version of that Agent.
+Each Agent has one immutable, platform-owned service principal for all its
+versions. Agents in the same Namespace have distinct service principals.
 
 Inheriting the creator's identity, permissions, session cookie, or provider
 credentials is not yet supported. An Agent service principal cannot assume
@@ -56,8 +54,7 @@ The Agent's native Configuration selects a Harness through model/provider
 owns supported runtime selections, model catalogs, transport, and credential
 boundaries. OCC rejects conflicting, unknown, missing, or mode-incompatible
 selections before admitting a version: deploy returns `400 INVALID_REQUEST`
-with the specific reason, such as "The configured Agent model requires an
-explicit supported Harness runtime." A selected SandboxDriver currently requires
+with a reason that names the setting to change. A selected SandboxDriver currently requires
 `dedicated` Codex execution; it does not support embedded OpenClaw.
 
 An Agent update may include `executionMode`, `harnessAuth`, and `backendId`
@@ -82,14 +79,12 @@ runtime selection, identity boundaries, and activation.
 
 ## Versions and deployment
 
-An Agent revision (`AgentRevision`) records one Agent deployment's saved
-configuration and execution settings. It cannot change. The Agent keeps an
-ordered version history and at most one selected version, identified by
-`activeRevisionId`. Saving a version does not select it or prove workload
-readiness. See [Agent revisions](../../guides/topics/agent-revisions.md).
+[Agent revisions](../../guides/topics/agent-revisions.md) preserve configuration
+and execution settings in immutable, ordered history. `activeRevisionId` identifies
+the selected version; saving a revision does not select it or prove readiness.
 
 The Agent revision records the source `configurationId`, `configurationKind`, and
-`configurationGeneration`, its complete saved native `configuration`
+`configurationGeneration`, [`gatewayManagedMode`](../agent-native-admin.md#gateway-managed-mode), its complete saved native `configuration`
 document, the approved Harness identity/version/mode, selected Compute identity,
 nullable `backendId`, and `harnessAuth` with its resolved internal source snapshot.
 The auth snapshot contains no credential bytes; public Agent revisions omit private
@@ -98,13 +93,15 @@ unresolved inline SecretRefs because the saved document is persisted and
 returned through the API; see [secret boundaries](../configuration/secrets.md#secret-boundaries).
 Nested objects and arrays are immutable.
 
-When a SandboxDriver is selected, its `configureAgent` hook can transform a
-copy of the source document before OCC checks and saves it; it does not
-update the reusable Configuration or its generation. The saved version
-therefore records the source generation and the effective document after that
-transformation. Its SandboxDriver selection and the Agent's stable service
-principal remain internal; the current HTTP Agent revision schema omits them.
+A selected SandboxDriver's `configureAgent` hook can transform a copy before OCC
+checks and saves it. The revision records that effective document and the unchanged
+source generation. The reusable Configuration remains unchanged. HTTP revisions omit
+the SandboxDriver selection and Agent service principal.
 See [SandboxDriver](../drivers/sandbox.md).
+
+Deployment saves the Agent `name` as the sole roster entry's `identity.name`,
+under `agents.entries.main` if no roster exists. The native admin UI shows up to
+50 characters. OCC preserves configured names and does not name larger rosters.
 
 The bodyless `POST /namespaces/:namespaceId/agents/:agentId/deploy` requires a
 `ready` Namespace, exact-Agent `deploy`, exact
@@ -112,12 +109,10 @@ Configuration `read`, and, for managed credentials, the selected
 [harness source permissions](../agents.md#harness-authentication). If the selected
 Compute Driver requires generated transport credentials and they are missing
 before any Agent revision, deployment also requires exact-Agent `read` and
-`operate` to create them. Missing credentials after any Agent revision
-block deployment and require operator investigation. A
-`202` confirms OCC saved the version and queued deployment work;
-it does not mean the workload is ready. Later Configuration edits or changes to
-an account's selected credential reference affect only future deployments. A
-snapshot freezes a Secret reference, not its stored value.
+`operate` to create them. Missing credentials after any revision
+block deployment and require operator investigation. A `202` confirms a saved
+version and queued work, not readiness. Configuration or account credential-reference
+edits affect future deployments. Snapshots freeze Secret references, not their values.
 
 The PostgreSQL worker prepares the Agent gateway and the
 workload for that version, sets `activeRevisionId`, activates its route, and retires its
@@ -209,10 +204,11 @@ continues, or past its convergence deadline stops the candidate and fails
 newer version supersedes still finishes the stop, even of a lifted refusal,
 then ends superseded.
 
-`AGENT_STOP_YIELDED` means the Agent was stopped and its gateway is
-still draining; `PREDECESSOR_STOP_YIELDED` means a dedicated replacement waits for
-the previous version's gateway to drain. Meanwhile the worker runs other due work,
-then repeats the stop without spending attempts.
+`AGENT_STOP_YIELDED` (the Agent was stopped), `PREDECESSOR_STOP_YIELDED` (a
+dedicated replacement waits for the previous version) and
+`SUPERSEDED_STOP_YIELDED` (a newer version replaced this dedicated one) mean a
+gateway is still draining. Meanwhile the worker runs other due work, then
+repeats the stop without spending attempts.
 
 ### Model check failure cause
 
@@ -221,12 +217,12 @@ the runtime component, check, time and, when classified, a `cause`: a `kind` and
 an optional `detail` token from this closed vocabulary. A Codex `detail` ending
 `-attempt2` comes from a check retried once.
 
-| `kind`           | Meaning                                                    | `detail`                                                                                                                                                                         |
-| ---------------- | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PROCESS_EXIT`   | The check process exited nonzero, was killed, or never ran | `exit-<status>`, `signal-<SIGNAL>`, or `error-<ERRNO>`, such as `error-ENOBUFS` (oversized output); others are dropped                                                           |
-| `PROBE_STATUS`   | The check ran and reported the model unusable              | OpenClaw `format`, `rate_limit`, `billing`, `unknown`, `no_model`, or `other`; Codex `rate_limit`, `turn-failed`, `error-event`, `tool-event`, `unexpected-event`, or `no-reply` |
-| `INVALID_OUTPUT` | The check's output was not what the runtime expects        | `json` (unparseable) or `shape` (an unexpected result, such as another provider's)                                                                                               |
-| `WRAPPER_ERROR`  | The runtime wrapper could not prepare or read the check    | none                                                                                                                                                                             |
+| `kind`           | Meaning                                                    | `detail`                                                                                                                                                                                            |
+| ---------------- | ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PROCESS_EXIT`   | The check process exited nonzero, was killed, or never ran | `exit-<status>`, `signal-<SIGNAL>`, or `error-<ERRNO>`, such as `error-ENOBUFS` (oversized output); others are dropped                                                                              |
+| `PROBE_STATUS`   | The check ran and reported the model unusable              | OpenClaw `format`, `rate_limit`, `billing`, `unknown`, `no_model`, or `other`; Codex `rate_limit`, `model_not_found`, `turn-failed`, `error-event`, `tool-event`, `unexpected-event`, or `no-reply` |
+| `INVALID_OUTPUT` | The check's output was not what the runtime expects        | `json` (unparseable) or `shape` (an unexpected result, such as another provider's)                                                                                                                  |
+| `WRAPPER_ERROR`  | The runtime wrapper could not prepare or read the check    | none                                                                                                                                                                                                |
 
 OpenClaw's `format` covers an unknown model or a request the provider rejected
 as malformed, such as invalid provider settings. A 429 or usage limit is
@@ -246,26 +242,29 @@ inspection reads its containers. It is not a health result; each version's [depl
 is. Unless Compute activates before commit, the worker sets the pointer before
 activation finishes.
 
-If a version fails before the worker sets the pointer, the pointer is
-unchanged. After a failed first deployment, the Agent has no selected version.
+Failure before the worker sets the pointer leaves it unchanged: unset for a
+first deployment.
 With [exclusive replacement](../drivers/compute.md#production-revision-stages),
 the unchanged pointer names a predecessor that was already stopped, so nothing
 serves until a new version activates. When the worker refuses such a candidate
-or any first deployment, for example because its deploying actor lost `deploy`
+or a first deployment, for example because its deploying actor lost `deploy`
 or a credential source was revoked, it stops the candidate's workload and
 records the refusal only after the stop succeeds (until then it waits as
 [`REFUSED_CANDIDATE_STOP_PENDING`](#pending-deployment-progress)). Other refused
-candidates stay until a later successful deployment, stop or delete. A candidate
-whose runtime failed by itself, such as `RUNTIME_MODEL_PROBE_FAILED` or
-`CONVERGENCE_DEADLINE_EXCEEDED`, keeps its Pods so its version's Logs tab can
-show the cause; the next deployment stops them.
+candidates stay until a later successful deployment, stop, deletion or
+[repository cleanup](../repository-credentials.md#deletion-and-restart).
+After runtime failures such as `RUNTIME_MODEL_PROBE_FAILED` or
+`CONVERGENCE_DEADLINE_EXCEEDED`, existing workloads remain for diagnosis until
+redeployment, stop, deletion or repository cleanup removes them. Container logs
+require Pods. Repository cleanup clears a stopped revision's pointer only if
+it remains selected; credential disposal may remain pending.
 Kubernetes embedded replacement reports ready while the predecessor still
 serves, so the worker sets the pointer first. Activation then replaces the
 shared gateway, and the new gateway runs the startup model probe. If that
 probe rejects the credential, the deployment fails with
 `RUNTIME_AUTHENTICATION_FAILED` (or, for a probe that timed out after its retries,
-`RUNTIME_MODEL_PROBE_TIMEOUT`). The failed version stays selected because its
-workload is the only one left; the predecessor has already been replaced. OCC
+`RUNTIME_MODEL_PROBE_TIMEOUT`). Unless cleanup stops it, the failed version stays selected;
+its predecessor has already been replaced. OCC
 never rolls back to an earlier version. To recover, correct the cause and
 deploy a new version, or stop the Agent.
 
@@ -273,6 +272,23 @@ Agent revision list and read operations are scoped beneath the exact Namespace a
 Agent. Each returned Agent revision requires its own authorized read; substituting a
 parent does not grant access to another Agent's history. Public response shapes
 are defined by the [API reference](../api.md).
+
+## Guarded first deployment
+
+`POST /namespaces/:namespaceId/agents/:agentId/deploy-first` accepts `key`,
+`expectedConfigurationId`, and `expectedGeneration`. Fresh admission requires
+`active` status, stopped desired state, no history, the reviewed Configuration, and
+ordinary deployment validation. `202` returns an admission receipt; conflicts create no revision.
+
+Receipts bind those inputs, Installation, caller, Namespace, Agent, and operation.
+The bodyless `GET /namespaces/:namespaceId/agents/:agentId/deploy-first/:key/:expectedConfigurationId/:expectedGeneration`
+returns the receipt or `null`, with `Cache-Control: no-store`. Recovery requires
+current exact Agent `deploy` and reviewed Configuration `read`.
+
+A matching POST or GET adds no Secret, provider, model, or work calls. Concurrent
+fresh POSTs can repeat channel credential preparation before committing.
+A miss does not authorize a resend. Follow the
+[recovery procedure](../../guides/topics/agent-revisions.md#guarded-first-deployment-and-receipt-recovery).
 
 ## Stop and resume
 
@@ -286,8 +302,7 @@ finished. The worker reauthorizes the original actor, invokes the selected
 Compute Driver's idempotent `stopRevision`, and clears the exact
 `activeRevisionId` only after shutdown succeeds.
 
-Stop terminates inbound routing and execution while retaining the immutable
-Agent revision, Agent credentials, gateway state, and workspace. It neither creates an
+Stop terminates inbound routing and execution while retaining the Agent revision, Agent credentials, gateway state, and workspace. It neither creates an
 Agent revision nor calls destructive version retirement. Repeated stop requests
 converge safely, and one Agent's stop does not affect siblings.
 

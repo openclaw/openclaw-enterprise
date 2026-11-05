@@ -88,7 +88,8 @@ Codex `config.toml` or a reasoning-effort override.
 selected Namespace. Its shipped template has no variables, model, name, or
 credential; the ordinary form collects them. An operator-customized copy with
 variables opens the variable chooser first. Missing or unreadable defaults
-disable quick-start; other readable Presets remain selectable. Install the file
+disable quick-start, and the text beside it says why; other readable Presets
+remain selectable. Install the file
 through `includeDefaults`, `presets.files`, or Preset POST to enable it.
 **Start without Preset** is independent of Namespace Presets; it uses the
 console's shared configuration base and ordinary creation permissions.

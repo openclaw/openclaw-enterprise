@@ -49,7 +49,6 @@ import {
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
 import {
-  allowNativeProvider,
   openCreateSecretDialog,
   createModelCredentialSecret,
   enterManualModel,
@@ -79,6 +78,7 @@ import {
   IMAGE_PULL_FAILING,
   codexApiKeyRefusal,
 } from "../helpers/refusal-text.mjs";
+import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
 
 const defaultCodexPreset = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
@@ -220,6 +220,170 @@ test("Create keeps provisioning reads and retries on the admitted job", async (t
   assert.equal(pathRequests(requests, "POST", `${url}/retry`).length, 1);
   assert.equal(pathRequests(requests, "POST", `${other}/retry`).length, 0);
 });
+
+for (const malformed of ["revision ID", "error message"] as const) {
+  test(`Create handles a terminal provisioning reply with malformed ${malformed}`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace(`Malformed ${malformed}`, { ready: true });
+    // The job has already handed off a real saved Agent/version. Corrupt only its HTTP reply.
+    const agent = await fixture.createAgent(
+      namespace.id,
+      "Malformed reply Agent",
+      nativeValues("reply"),
+    );
+    const revision = await fixture.deployAgent(namespace.id, agent.id);
+    const { page } = await newPage(t, fixture);
+    await routeDedicatedProvisioning(page, fixture, namespace);
+    const root = `/namespaces/${namespace.id}/agents/provision`;
+    const work = provisioningJob(namespace.id, `work_${randomUUID()}`);
+    const served = await routeProvisioningJob(page, work, null);
+    const meta = { requestId: `req_${randomUUID()}` };
+    const malformedMessage = { detail: "Unreadable provisioning message" };
+    await page.route(`${fixture.origin}${work.url}`, (route) => {
+      if (
+        route.request().method() !== "GET" ||
+        new URL(route.request().url()).pathname !== work.url
+      ) {
+        return route.continue();
+      }
+      return route.fulfill({
+        status: 200,
+        json: {
+          data: work.job("failed", {
+            requestId: served.requestId,
+            phase: "handoff",
+            agentId: agent.id,
+            revisionId: malformed === "revision ID" ? 17 : revision.id,
+            error: {
+              code: "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED",
+              message:
+                malformed === "error message"
+                  ? malformedMessage
+                  : "Credential initialization failed.",
+            },
+          }),
+          meta,
+        },
+      });
+    });
+    const retryPath = `${work.url}/retry`;
+    await page.route(`${fixture.origin}${retryPath}`, (route) => {
+      if (
+        route.request().method() !== "POST" ||
+        new URL(route.request().url()).pathname !== retryPath
+      ) {
+        return route.continue();
+      }
+      return route.fulfill(
+        apiErrorResponse(
+          409,
+          "RESOURCE_CONFLICT",
+          "The Agent lifecycle does not allow provisioning retry.",
+        ),
+      );
+    });
+    await trackSettledFetches(page);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByRole("button", { name: "Start without Preset" }).click();
+    await page.getByLabel("Agent name").fill(agent.name);
+    await enterManualModel(page, "test-malformed-reply-key");
+    // Start the write trace after credential setup: submission must only admit this one job.
+    const requests = apiRequests(page, fixture.origin);
+    const responseAt = (method: string, path: string) =>
+      page.waitForResponse(
+        (response) =>
+          response.request().method() === method && response.url() === `${fixture.origin}${path}`,
+      );
+    const admittedResponse = responseAt("POST", root);
+    const terminalResponse = responseAt("GET", work.url);
+    const create = page.getByRole("button", { name: "Create Agent", exact: true });
+    await runProvisioningPolls(page, () => create.click(), work.url, 1);
+    const admitted = await admittedResponse;
+    assert.equal(admitted.status(), 202);
+    const accepted = await admitted.json();
+    const submitted = pathRequests(requests, "POST", root)[0];
+    const body = submitted?.body;
+    assert.ok(body && typeof body === "object" && "requestId" in body);
+    assert.equal(typeof body.requestId, "string");
+    assert.equal(accepted.data.provisioning.requestId, body.requestId);
+    assert.equal(accepted.data.provisioning.url, work.url);
+    const httpRequestId: unknown = accepted.meta.requestId;
+    assert.ok(
+      typeof httpRequestId === "string" && httpRequestId.trim().length > 0,
+      "admission includes a nonempty HTTP request ID",
+    );
+    assert.notEqual(
+      httpRequestId,
+      body.requestId,
+      "HTTP request metadata is not the original provisioning request identity",
+    );
+    const terminal = await terminalResponse;
+    assert.equal(terminal.status(), 200);
+    const reply = await terminal.json();
+    assert.equal(reply.data.status, "failed");
+    assert.equal(reply.data.requestId, body.requestId);
+    assert.equal(reply.data.workId, work.workId);
+    assert.equal(reply.data.url, work.url);
+    assert.equal(reply.data.agentId, agent.id);
+    assert.equal(reply.meta.requestId, meta.requestId);
+    assert.notEqual(reply.meta.requestId, body.requestId);
+    assert.equal(reply.data.error.code, "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED");
+    assert.deepEqual(reply.data.revisionId, malformed === "revision ID" ? 17 : revision.id);
+    assert.deepEqual(
+      reply.data.error.message,
+      malformed === "error message" ? malformedMessage : "Credential initialization failed.",
+    );
+    const writePaths = () =>
+      nonAuthWriteRequests(requests).map(({ method, path }) => [method, path]);
+    assert.deepEqual(writePaths(), [["POST", root]]);
+    assert.equal(served.submitted, 1);
+    const alert = page.locator("#create-agent-form ~ p[role=alert]");
+    const retry = page.getByRole("button", { name: "Retry provisioning request", exact: true });
+    const link = page.getByRole("link", { name: "Open Agent and deployment details", exact: true });
+    await alert.filter({ hasText: /\S/ }).waitFor();
+    const feedback = await alert.innerText();
+    if (malformed === "revision ID") {
+      assert.match(feedback, /^Outcome unknown after provisioning admission/);
+      assert.equal(await create.isDisabled(), true);
+      assert.equal(
+        await alert.getByRole("link").count(),
+        0,
+        "an invalid version must not offer recovery for a different or absent version",
+      );
+      assert.equal(await retry.isVisible(), true);
+      const refusedResponse = responseAt("POST", retryPath);
+      await retry.click();
+      const refused = await refusedResponse;
+      assert.equal(refused.status(), 409);
+      assert.equal(
+        (await refused.json()).error.message,
+        "The Agent lifecycle does not allow provisioning retry.",
+      );
+      await alert.filter({ hasText: "resend the same request ID" }).waitFor();
+      await waitForEnabled(create);
+      assert.deepEqual(writePaths(), [
+        ["POST", root],
+        ["POST", retryPath],
+      ]);
+      assert.equal(served.submitted, 1, "retry refusal must not admit another job");
+    } else {
+      assert.match(feedback, /^Provisioning did not complete\./);
+      assert.doesNotMatch(
+        feedback,
+        /\[object Object\]|Unreadable provisioning message|Outcome unknown|submit a new request/,
+      );
+      const href = await link.getAttribute("href");
+      assert.ok(href);
+      const target = new URL(href, fixture.origin);
+      assert.equal(target.pathname, `/console/agents/${agent.id}`);
+      assert.equal(target.searchParams.get("namespace"), namespace.id);
+      assert.equal(target.searchParams.get("revision"), revision.id);
+      assert.equal(await retry.isVisible(), false);
+      assert.deepEqual(writePaths(), [["POST", root]]);
+    }
+  });
+}
 
 test("Dedicated Agent creation offers Retry only for a transient provisioning failure", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -1735,7 +1899,6 @@ test("Agent creation offers mainline Anthropic models before credentials and sav
     ],
   );
   assert.equal(await choice.inputValue(), "");
-  await allowNativeProvider(page, "anthropic");
   await choice.selectOption("claude-fable-5-1");
   const selectedConfiguration = await page.getByLabel("Configuration JSON").inputValue();
   await page.getByLabel("Agent name").fill("Anthropic Agent");
@@ -1762,7 +1925,6 @@ test("Agent creation offers mainline Anthropic models before credentials and sav
     `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
   );
   assert.equal(configuration.data.values.agents.defaults.model, "anthropic/claude-fable-5-1");
-  assert.deepEqual(configuration.data.values.plugins.allow, ["codex", "anthropic"]);
   assert.deepEqual(configuration.data.values.models.providers.anthropic, {
     baseUrl: "https://api.anthropic.com",
     api: "anthropic-messages",
@@ -2087,8 +2249,8 @@ test("Agent creation recognizes its saved Configuration when JSON serializes neg
   assert.equal(response.status(), 201);
   const { data } = await response.json();
   assert.equal(data.values.agents.defaults.models[model].params.temperature, 0);
-  const details = page.getByRole("button", {
-    name: "View new version, editable Configuration",
+  const details = page.getByRole("combobox", {
+    name: "Viewing version",
     exact: true,
   });
   await details.or(page.getByRole("alert").filter({ hasText: "Outcome unknown" })).waitFor();
@@ -2098,7 +2260,9 @@ test("Agent creation recognizes its saved Configuration when JSON serializes neg
     1,
     "the matching saved Configuration was recognized",
   );
-  await details.waitFor();
+  await details
+    .getByRole("option", { name: "Draft · Editable Configuration", exact: true, selected: true })
+    .waitFor({ state: "attached" });
 });
 
 test("Agent creation names the Configuration field that holds an inline model credential without showing it", async (t) => {
@@ -2570,12 +2734,8 @@ test("Agent creation retries a denied credential grant without duplicating its s
   await page.getByRole("button", { name: "Start with default Preset" }).click();
   // Native IAM denies the administrator's grant authority after the session found it allowed. A
   // session that already knows it is refused sends no grant at all (finding 2109).
-  fixture.policy.restrictions.push({
-    id: "deny-credential-grant",
-    resourceKind: "installation",
+  const deniedGrant = restrict(fixture.policy, "administer", "installation", {
     resourceId: installation.id,
-    action: "administer",
-    effect: "deny",
   });
   await page.getByLabel("Agent name").fill("Grant retry Agent");
   await enterManualModel(page, "grant-retry-key", "gpt-4.1");
@@ -2591,10 +2751,7 @@ test("Agent creation retries a denied credential grant without duplicating its s
   assert.equal(await page.getByLabel("Agent name").isDisabled(), true);
   const bindingPath = `/namespaces/${namespace.id}/iam/access-bindings`;
   assert.equal(pathRequests(requests, "POST", bindingPath).length, 0);
-  fixture.policy.restrictions.splice(
-    fixture.policy.restrictions.findIndex((item) => item.id === "deny-credential-grant"),
-    1,
-  );
+  liftRestriction(fixture.policy, deniedGrant);
 
   // The binding is really committed; only its response is lost before the browser sees it.
   await page.route(`**${bindingPath}`, async (route) => {
@@ -2668,9 +2825,7 @@ for (const swapped of ["Agent", "service principal"]) {
     });
     // If creation incorrectly continues to Agent details, inspect the actual grant before failing.
     await warning
-      .or(
-        page.getByRole("button", { name: "View new version, editable Configuration", exact: true }),
-      )
+      .or(page.getByRole("combobox", { name: "Viewing version", exact: true }))
       .waitFor();
     const saved = await fixture.request("GET", bindings);
     assert.equal(saved.status, 200);

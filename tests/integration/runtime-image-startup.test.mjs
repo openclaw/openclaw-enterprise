@@ -21,6 +21,7 @@ import {
   REPOSITORY_MATERIAL_INIT_ENTRYPOINT,
   REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/repository-material-init.ts";
+import { GATEWAY_TOOL_POLICY_SOURCE_COMMIT } from "../../apps/controller/src/drivers/compute/gateway-tool-policy.ts";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
 import { startCredentialServiceFixture } from "../fixtures/repository-credentials/service.mjs";
 import {
@@ -45,6 +46,15 @@ import {
   reviewedCodexSeccompSecurityOptions,
   assertGatewayLogEntry,
 } from "../helpers/runtime-image-startup.mjs";
+import { relaySockets } from "../helpers/socket-relay.mjs";
+
+// Only the trusted staging verifier selects the reviewed historical expectations.
+const stagingCodexVersion = process.env.OCC_TEST_STAGING_CODEX_VERSION ?? "0.164.0";
+assert.ok(["0.164.0", "0.163.0-alpha.2"].includes(stagingCodexVersion));
+const historicalCodex = stagingCodexVersion === "0.163.0-alpha.2";
+if (historicalCodex) {
+  assert.equal(process.env.EXPECTED_OCC_REVISION, "54bfa7fc1b99e362450beb5f9211e164991fa7b4");
+}
 
 const syntheticCodexApiKey = "sk-openclaw-runtime-image-smoke-synthetic";
 
@@ -52,7 +62,7 @@ test("runtime image seccomp option requires the CI-prepared profile record", asy
   const directory = await temporaryDirectory(t, "oce-runtime-seccomp-profile-");
   const contents = Buffer.from(`${JSON.stringify({ defaultAction: "SCMP_ACT_ERRNO" })}\n`);
   const digest = createHash("sha256").update(contents).digest("hex");
-  const profile = join(directory, `codex-0.163.0-alpha.2-${digest}.json`);
+  const profile = join(directory, `codex-${stagingCodexVersion}-${digest}.json`);
   const statePath = join(directory, "state.json");
   await writeFile(profile, contents);
   await writeFile(
@@ -67,15 +77,23 @@ test("runtime image seccomp option requires the CI-prepared profile record", asy
     }),
   );
 
-  assert.deepEqual(await reviewedCodexSeccompSecurityOptions({ profile, ciStatePath: statePath }), [
+  const options = { profile, ciStatePath: statePath, codexVersion: stagingCodexVersion };
+  assert.deepEqual(await reviewedCodexSeccompSecurityOptions(options), [
     "--security-opt",
     "no-new-privileges",
     "--security-opt",
     `seccomp=${profile}`,
   ]);
+  await assert.rejects(
+    reviewedCodexSeccompSecurityOptions({
+      ...options,
+      codexVersion: historicalCodex ? "0.164.0" : "0.163.0-alpha.2",
+    }),
+    /must point to codex-/,
+  );
 
   await assert.rejects(
-    reviewedCodexSeccompSecurityOptions({ profile, ciStatePath: "" }),
+    reviewedCodexSeccompSecurityOptions({ ...options, ciStatePath: "" }),
     /must be prepared by image CI state/,
   );
 
@@ -108,7 +126,7 @@ test("runtime image seccomp option requires the CI-prepared profile record", asy
     }),
   );
   await assert.rejects(
-    reviewedCodexSeccompSecurityOptions({ profile, ciStatePath: statePath }),
+    reviewedCodexSeccompSecurityOptions(options),
     /must match the CI-prepared Codex seccomp profile path/,
   );
 
@@ -124,7 +142,7 @@ test("runtime image seccomp option requires the CI-prepared profile record", asy
     }),
   );
   await assert.rejects(
-    reviewedCodexSeccompSecurityOptions({ profile, ciStatePath: statePath }),
+    reviewedCodexSeccompSecurityOptions(options),
     /must match the CI-prepared Codex seccomp profile digest/,
   );
 });
@@ -584,6 +602,10 @@ const timeout = setTimeout(() => { native.kill("SIGKILL"); process.exitCode = 1;
     await rpc("initialize", { clientInfo: { name: "repository-runtime-smoke", version: "1.0.0" }, capabilities: { experimentalApi: true } });
     native.stdin.write(JSON.stringify({ method: "initialized" }) + "\\n");
     const { config } = await rpc("config/read", {});
+    // Native metrics have a separate upstream exporter default from logs.
+    if (!${historicalCodex}) {
+      assert.equal(config.otel.metrics_exporter, "none");
+    }
     assert.equal(config.allow_login_shell, false);
     assert.equal(config.shell_environment_policy.set.PATH, environment.PATH);
     assert.equal(config.shell_environment_policy.set.NODE_EXTRA_CA_CERTS, environment.OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS);
@@ -650,7 +672,6 @@ test(
     });
 
     const { logs } = await runGatewaySmoke(t, "openclaw", {
-      collectPlugins: false,
       configuration,
       extraEnvironment: ["OPENCLAW_LOG_LEVEL=error"],
     });
@@ -685,7 +706,9 @@ test(
   "runtime image discovers the bundled Codex plugin from a fresh gateway home",
   imageTestOptions,
   async (t) => {
-    const { logs, containerName, pluginList } = await runGatewaySmoke(t, "codex");
+    const { logs, containerName, pluginList } = await runGatewaySmoke(t, "codex", {
+      collectPlugins: true,
+    });
 
     const entries = jsonLogEntries(logs);
     assertGatewayReadyLog(entries);
@@ -987,6 +1010,8 @@ function run(args, env, readinessUrl, limitMs = startupMs) {
         "none",
         "--volume",
         `${configurationPath}:/etc/openclaw/openclaw.json:ro`,
+        "--volume",
+        `${configurationPath}:/etc/openclaw-managed/openclaw.json:ro`,
         "--entrypoint",
         "node",
         image,
@@ -1090,27 +1115,27 @@ const config = {
 };
 const profile = ":danger-full-access";
 const providerEnv = { OPENCLAW_CODEX_PROVIDER_PERMISSION_PROFILE: profile };
-function permissionFields(appServer, sandboxPolicy) {
+async function permissionFields(appServer, sandboxPolicy) {
   const thread = threadPermissions(appServer);
-  const turn = buildTurnStartParams({ prompt: "policy check", hostCapabilities: {}, config }, {
+  const turn = await buildTurnStartParams({ prompt: "policy check", hostCapabilities: {}, config }, {
     appServer, sandboxPolicy, cwd: "/tmp", preserveNativeTurnSettings: true,
   });
   return [thread, turn.permissions ?? turn.sandboxPolicy?.type];
 }
-const results = JSON.parse(process.argv[1]).map(({ appServer, modelProvider }) => {
+const results = await Promise.all(JSON.parse(process.argv[1]).map(async ({ appServer, modelProvider }) => {
   const resolve = (env) => resolveCodexAppServerRuntimeOptions({
     pluginConfig: { appServer }, modelProvider, model: "gpt-6-astra", config, env, requirementsToml: null,
   });
   const runtime = resolve(providerEnv);
-  assert.deepEqual(permissionFields(runtime), [{ permissions: profile }, profile]);
+  assert.deepEqual(await permissionFields(runtime), [{ permissions: profile }, profile]);
   const local = resolve({});
-  assert.deepEqual(permissionFields(local), [{ sandbox: "danger-full-access" }, "dangerFullAccess"]);
+  assert.deepEqual(await permissionFields(local), [{ sandbox: "danger-full-access" }, "dangerFullAccess"]);
   const restricted = { ...runtime, sandbox: "workspace-write" };
-  assert.deepEqual(permissionFields(restricted), [{ sandbox: "workspace-write" }, "workspaceWrite"]);
-  assert.deepEqual(permissionFields({ ...runtime, networkProxy: {} }), [{}, undefined]);
-  assert.equal(permissionFields(runtime, { type: "readOnly" })[1], "readOnly");
+  assert.deepEqual(await permissionFields(restricted), [{ sandbox: "workspace-write" }, "workspaceWrite"]);
+  assert.deepEqual(await permissionFields({ ...runtime, networkProxy: {} }), [{}, undefined]);
+  assert.equal((await permissionFields(runtime, { type: "readOnly" }))[1], "readOnly");
   return { sandbox: runtime.sandbox, approvalsReviewer: runtime.approvalsReviewer };
-});
+}));
 
 // A real Codex can accept thread/start yet constrain its effective sandbox. The bundled
 // Gateway client must surface that refusal before the caller can use the thread for a turn.
@@ -1283,17 +1308,15 @@ try {
     await runRepositoryMaterialInitProbe(materialVolumeName, descriptor);
 
     await runDocker(["network", "create", "--driver", "bridge", networkName]);
+    // The container runs the shared relay's own source, so a clean single-use upstream close
+    // still delivers bytes queued for the slower sandbox proxy (finding 2186).
     const forwarder = String.raw`
 const net = require("node:net");
 const targetHost = process.argv[1];
 const targetPort = Number(process.argv[2]);
+${relaySockets}
 const server = net.createServer((client) => {
-  const upstream = net.connect(targetPort, targetHost);
-  client.on("error", () => upstream.destroy());
-  client.on("close", () => upstream.destroy());
-  upstream.on("error", () => client.destroy());
-  upstream.on("close", () => client.destroy());
-  client.pipe(upstream).pipe(client);
+  relaySockets(client, net.connect(targetPort, targetHost));
 });
 server.listen(443, "0.0.0.0", () => console.log("broker-forwarder-ready"));
 `;
@@ -1410,7 +1433,9 @@ assert.equal(allowed.endsWith("\n200") && allowed.includes("# service=git-upload
 assert.equal(request("fixture/unadmitted.git/info/refs?service=git-upload-pack", true) === '{"error":{"code":"invalid-credential"}}\n401', true, "unadmitted repository must return 401 invalid-credential");
 console.log("broker-denial-codes-confirmed");
 NODE`;
-    const probeSecurityOptions = await reviewedCodexSeccompSecurityOptions();
+    const probeSecurityOptions = await reviewedCodexSeccompSecurityOptions({
+      codexVersion: stagingCodexVersion,
+    });
     const probe = `
 const assert = require("node:assert/strict");
 const cp = require("node:child_process");
@@ -1752,9 +1777,15 @@ const timeout = setTimeout(() => {
 );
 
 test(
-  "runtime image shares Codex 0.163.0-alpha.2 between the plugin and Dedicated command",
+  "runtime image shares the reviewed Codex version between the plugin and Dedicated command",
   imageTestOptions,
   async () => {
+    const source = await readOpenclawSource();
+    assert.equal(
+      source.commit,
+      GATEWAY_TOOL_POLICY_SOURCE_COMMIT,
+      "expected a policy-qualified runtime",
+    );
     const defaultPluginPolicy = codexRuntimeArtifact({}, []).configuration.plugins;
     const codexExecutableSource = AGENT_RUNTIME_ENTRYPOINT.match(
       /^function codexExecutable\(\) \{\n[\s\S]*?\n\}\n/m,
@@ -1769,27 +1800,39 @@ const { realpathSync, readFileSync } = require("node:fs");
 const { execFileSync } = require("node:child_process");
 const plugin = createRequire("/app/dist/extensions/codex/package.json");
 const installed = plugin.resolve("@openai/codex/package.json");
-assert.equal(JSON.parse(readFileSync(installed, "utf8")).version, "0.163.0-alpha.2");
+assert.equal(JSON.parse(readFileSync(installed, "utf8")).version, ${JSON.stringify(stagingCodexVersion)});
 const bundledCommand = plugin.resolve("@openai/codex/bin/codex.js");
 assert.equal(realpathSync("/app/node_modules/.bin/codex"), realpathSync(bundledCommand));
-assert.equal(execFileSync("codex", ["--version"], {encoding: "utf8"}).trim(), "codex-cli 0.163.0-alpha.2");
-assert.equal(execFileSync(process.execPath, [bundledCommand, "--version"], {encoding: "utf8"}).trim(), "codex-cli 0.163.0-alpha.2");
+assert.equal(execFileSync("codex", ["--version"], {encoding: "utf8"}).trim(), ${JSON.stringify(`codex-cli ${stagingCodexVersion}`)});
+assert.equal(execFileSync(process.execPath, [bundledCommand, "--version"], {encoding: "utf8"}).trim(), ${JSON.stringify(`codex-cli ${stagingCodexVersion}`)});
 const provenance = JSON.parse(readFileSync("/opt/oce/runtime/provenance.json", "utf8"));
 assert.equal(provenance.source, "https://github.com/openclaw/openclaw");
 const expectedSource = JSON.parse(process.argv[2]);
 assert.equal(provenance.commit, expectedSource.commit);
 assert.equal(provenance.sourceArchiveSha256, expectedSource.sourceArchiveSha256);
-assert.equal(provenance.openclawBridgePatchSha256, "1d8b670e7029872262375a21da7222768c2fe2390ff7a159ed1616ee9c9de1ca");
-assert.equal(provenance.openclawConnectPatchSha256, "906fd14d2d36b98c4308d4db65f30092f27b84a69e5509cf04de2041f6e975d2");
-assert.equal(provenance.codexDependencyPinPatchSha256, "7bb0ae29bf3259b245d7675b2c6a3abe521c8139095f75ce0c532188162de5e9");
-assert.equal(provenance.openclawRequiredWorkerAuthorityPatchSha256, "d07be9735250a5fb8be69086a96d4959f02caaeec6dc31990c03eed959bd17d8");
-// The patches the per-patch fields above omit; runtime-assets.test.mjs checks the full set.
-assert.equal(provenance.patches["openclaw-codex-preserve-on-request.patch"], "ef50d1e635be0a9afd970ee1ea95c3468c307759fedd3783180ac2a676fa015b");
-assert.equal(provenance.patches["openclaw-codex-full-access-profile.patch"], "bf0e9cd6d1d2420f42a33af130d534e1de6d1fe17701517c676824f5e80ec931");
-assert.equal(provenance.patches["openclaw-required-worker-authority-regression.patch"], "1998cdd2321a68f97afb96470dcfb989a1460484c831b113b3af22dcabbf6189");
-assert.equal(provenance.patches["openclaw-control-ui-browser-reconnect.patch"], "964c500f981f343d8c131a213aad65ea47e2de4a9a5d11dbb57c3f30bead7065");
-assert.equal(Object.keys(provenance.patches).length, 8);
-assert.equal(provenance.codex.version, "0.163.0-alpha.2");
+assert.equal(provenance.openclawBridgePatchSha256, "f8d1e51706f59964839d231818909ffb2ee5f6b951385a353a1a4fd07c45e2cc");
+assert.equal(Object.hasOwn(provenance, "openclawConnectPatchSha256"), false);
+if (${historicalCodex}) {
+  assert.equal(provenance.codexDependencyPinPatchSha256, "d7eea3944eaaf4469ede0261d4f706148cd672f29f1efedd59e325c46c90d119");
+} else {
+  assert.equal(Object.hasOwn(provenance, "codexDependencyPinPatchSha256"), false);
+}
+assert.equal(provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256, "4d7b31957dab6e8427eeb9a8cce0a8013f0f96b999e2692fdd6903595c3c4804");
+assert.deepEqual(provenance.patches, {
+  "openclaw-codex-read-only-paths.patch": provenance.openclawBridgePatchSha256,
+  "openclaw-codex-full-access-profile.patch": ${historicalCodex} ? "7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a" : "37d79564f56e068c6ac982e5524a58e9da65172ac96177debca81d51442deccc",
+  "openclaw-required-worker-authority-regression.patch": provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256,
+  "openclaw-control-ui-browser-reconnect.patch": "f281242922bcd1e3349aef18e24d77e95ddf3e3d1dacbea30b26c759e0f5f947",
+  "openclaw-terminated-gateway-namespace.patch": "570fb99e849442793eeb0e59417b4b4b2b282e7d236392a022258753b353263b",
+  "openclaw-google-worker-placeholder.patch": "55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31",
+  ...(${historicalCodex} ? {
+    "stock-codex-0.163.0-alpha.2-dependency-pin.patch": "d7eea3944eaaf4469ede0261d4f706148cd672f29f1efedd59e325c46c90d119",
+  } : {
+    "openclaw-linux-private-store-setgid.patch": "e97b0274d925f886638b0d8508d88842886b7ac3d84eacd29d76baf6cc487c8c",
+    "openclaw-plugin-config-startup-report.patch": "47519811aed229a451b6df394b7d7823814da2046616268f4f0aed2e433a8f93",
+  }),
+});
+assert.equal(provenance.codex.version, ${JSON.stringify(stagingCodexVersion)});
 assert.equal(Object.hasOwn(provenance, "codexPatchSha256"), false);
 assert.equal(Object.hasOwn(provenance, "codexVersion"), false);
 const contents = readFileSync("/opt/oce/runtime/contents.json");
@@ -1925,6 +1968,13 @@ const deadline = setTimeout(() => {
   try {
     await rpc("initialize", { clientInfo: { name: "oce-plugin-defaults-proof", version: "1.0.0" }, capabilities: { experimentalApi: true } });
     native.stdin.write(JSON.stringify({ method: "initialized" }) + "\n");
+    // Production startup uses this experimental API. An empty query proves protocol
+    // support without authentication, remote catalog access, or a model request.
+    if (!${historicalCodex}) {
+      const emptySearch = await rpc("plugin/search", { searchTerm: "" });
+      assert.deepEqual(emptySearch.data, []);
+      assert.equal(emptySearch.nextCursor ?? null, null);
+    }
     for (const pluginName of names) await rpc("plugin/install", { marketplacePath, pluginName });
     const defaultPolicy = JSON.parse(process.argv[1]);
     for (const stage of ["installed", "default-off", "selected"]) {
@@ -1950,7 +2000,7 @@ const deadline = setTimeout(() => {
       assert.deepEqual(fixtureSkills.sort((a, b) => a.name.localeCompare(b.name)),
         enabledNames.map((name) => ({ name: name + ":inspect", pluginId: name + "@marketplace" })));
     }
-    process.stdout.write("shared-codex-0.163.0-alpha.2-ready\n");
+    process.stdout.write("shared-reviewed-codex-ready\n");
   } finally {
     clearTimeout(deadline);
     lines.close();
@@ -1970,8 +2020,8 @@ const deadline = setTimeout(() => {
       "-e",
       script,
       JSON.stringify(defaultPluginPolicy),
-      JSON.stringify(await readOpenclawSource()),
+      JSON.stringify(source),
     ]);
-    assert.match(stdout, /shared-codex-0.163.0-alpha.2-ready/);
+    assert.match(stdout, /shared-reviewed-codex-ready/);
   },
 );

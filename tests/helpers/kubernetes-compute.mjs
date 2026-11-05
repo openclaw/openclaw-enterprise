@@ -6,20 +6,28 @@ import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compu
  * @param {Pick<NonNullable<ConstructorParameters<typeof KubernetesComputeDriver>[1]>,
  *   "sandboxDriver" | "credentialGatewayDriver" | "protectedDriver"> & {
  *   authentication?: import("../../apps/controller/src/drivers/compute/kubernetes/index.ts").KubernetesComputeDriverOptions["authentication"],
- *   repositoryCredentials?: boolean, channelRuntime?: boolean, gatewayTrustedProxyCidrs?: string[],
+ *   repositoryCredentials?: boolean, gatewayRuntime?: boolean, channelRuntime?: boolean,
+ *   routed?: boolean, privateStatus?: boolean, gatewayTrustedProxyCidrs?: string[],
+ *   modelProvider?: import("../../apps/controller/src/drivers/compute/model-provider.ts").ModelProviderConfiguration,
  * }} [options]
  */
 export function createTestKubernetesComputeDriver(
   id,
   {
     repositoryCredentials = false,
+    gatewayRuntime = false,
     // An Installation with runtime.channels: isolated channel credentials and a reviewed proxy.
     channelRuntime = false,
     // false: runtime storage without gateway routing or node enrollment, which dedicated Agents
     // cannot use (provisioning and deployment admission refuse them).
     routed = true,
+    // With runtime and routing: network.pluginStatusProxySourceCidrs, as `occ dev up` sets it, so
+    // the controller reads Gateway private status and a Dedicated Codex Gateway applies its
+    // workspace node at runtime.
+    privateStatus = false,
     authentication = { mode: "inCluster" },
     gatewayTrustedProxyCidrs = ["127.0.0.1/32"],
+    modelProvider,
     sandboxDriver,
     credentialGatewayDriver,
     protectedDriver,
@@ -32,7 +40,8 @@ export function createTestKubernetesComputeDriver(
 
   // Runtime storage that dedicated Agents can use needs gateway routing, node enrollment and a
   // Gateway node selector; deployment admission refuses dedicated Agents otherwise.
-  const runtime = repositoryCredentials || channelRuntime;
+  const runtime =
+    repositoryCredentials || channelRuntime || gatewayRuntime || modelProvider !== undefined;
   const placed = runtime && routed;
   return new KubernetesComputeDriver(
     {
@@ -60,6 +69,7 @@ export function createTestKubernetesComputeDriver(
         ...(placed
           ? {}
           : { gatewayClients: [{ namespace: "controller", podLabels: { app: "controller" } }] }),
+        ...(placed && privateStatus ? { pluginStatusProxySourceCidrs: ["10.42.0.1/32"] } : {}),
         ...(repositoryCredentials
           ? {
               repositoryCredentials: {
@@ -75,6 +85,7 @@ export function createTestKubernetesComputeDriver(
         ? {
             runtime: {
               transportSecretPrefix: "transport",
+              ...(modelProvider === undefined ? {} : { modelProvider }),
               gatewayStorageClassName: "local-path",
               ...(placed ? { gatewayNodeSelector: { "oce-role": "control" } } : {}),
               ...(channelRuntime ? { channels: { proxyUrl: "http://10.42.0.15:3128" } } : {}),

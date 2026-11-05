@@ -686,6 +686,15 @@ function redact(value, redactions) {
     .reduce((current, secret) => current.split(secret).join("<redacted>"), value);
 }
 
+// The disposable k3d cluster that OCC_TEST_KUBERNETES_KUBECONFIG and OCC_TEST_KUBERNETES_CONTEXT
+// select, read at the call. Check it with validateExplicitK3dLoopbackContext before use.
+export function explicitK3dSelection() {
+  return {
+    kubeconfigPath: process.env.OCC_TEST_KUBERNETES_KUBECONFIG,
+    kubernetesContext: process.env.OCC_TEST_KUBERNETES_CONTEXT,
+  };
+}
+
 export async function validateExplicitK3dLoopbackContext(selection) {
   const { kubeconfigPath, kubernetesContext } = selection;
   assert.ok(
@@ -716,6 +725,13 @@ export async function validateExplicitK3dLoopbackContext(selection) {
 export function kubernetesHash(value, length = 12) {
   return sha256Hex(value, length);
 }
+
+// The production Gateway memory limit (deploy/examples/production/installation.yaml,
+// docs/guides/deploy/installation-profiles.md). Fixtures that run a real Gateway
+// turn set it, so they hold the Gateway to what production allows: OpenClaw
+// starts most of its worker threads on the first turn (finding 2700).
+export const productionGatewayMemoryLimitGi = 4;
+export const productionGatewayMemoryLimit = `${productionGatewayMemoryLimitGi}Gi`;
 
 export function createKubernetesInstallationConfiguration({
   authentication,

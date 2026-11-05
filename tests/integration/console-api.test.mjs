@@ -16,7 +16,7 @@ import {
   memberRole,
 } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
+import { bindRole, grantRole, restrict } from "../helpers/iam-grants.mjs";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
 import {
   authenticatedHeaders,
@@ -190,6 +190,7 @@ test("the Namespace Secret create answer matches what Secret creation checks", a
     fixture.request("POST", secretsPath, { session, body: { name, value: "synthetic-value" } });
 
   assert.deepEqual(await answer(), {
+    delete: false,
     agents: { create: true },
     secrets: { create: false },
     installation: { administer: false },
@@ -245,26 +246,14 @@ test("the Namespace Installation administer answer matches what Installation-wid
   // An administrator whose Restriction denies Agent create in this Namespace still administers
   // the Installation: Agent create says nothing about it. The Restriction is Namespace-wide, so
   // it applies to the member too; her answer was read above.
-  fixture.policy.restrictions.push({
-    id: "deny-agent-create-here",
-    namespaceId: namespace.id,
-    resourceKind: "agent",
-    action: "create",
-    effect: "deny",
-  });
+  restrict(fixture.policy, "create", "agent", { namespaceId: namespace.id });
   const restricted = await answer();
   assert.deepEqual(restricted.agents, { create: false });
   assert.deepEqual(restricted.installation, { administer: true });
   assert.equal((await backends()).status, 200);
 
   // A Restriction on Installation administer changes the answer as it changes the read.
-  fixture.policy.restrictions.push({
-    id: "deny-installation-administer",
-    resourceKind: "installation",
-    resourceId: installation.id,
-    action: "administer",
-    effect: "deny",
-  });
+  restrict(fixture.policy, "administer", "installation", { resourceId: installation.id });
   assert.deepEqual((await answer()).installation, { administer: false });
   assertApiError(await backends(), 403, "FORBIDDEN");
 });
@@ -311,13 +300,7 @@ test("the Secret read's caller answer matches what Secret replace and delete che
   // A Restriction on Secret update overrides an administrator's grant, in the answer and the
   // write alike.
   assert.deepEqual(await answer(), { update: true, delete: true });
-  fixture.policy.restrictions.push({
-    id: "deny-secret-update-here",
-    namespaceId: namespace.id,
-    resourceKind: "secret",
-    action: "update",
-    effect: "deny",
-  });
+  restrict(fixture.policy, "update", "secret", { namespaceId: namespace.id });
   assert.deepEqual(await answer(), { update: false, delete: true });
   assertApiError(await replace(), 403, "FORBIDDEN");
 
@@ -376,13 +359,9 @@ test("the Agent readLogs answer matches what the runtime log read checks", async
 
   // A Restriction on read_logs denies log text even to an administrator: administer cannot
   // bypass it.
-  fixture.policy.restrictions.push({
-    id: "deny-log-text",
+  restrict(fixture.policy, "read_logs", "agent", {
     namespaceId: namespace.id,
-    resourceKind: "agent",
     resourceId: agent.id,
-    action: "read_logs",
-    effect: "deny",
   });
   assert.equal(await readLogs(), false);
   assert.equal(await readLogs(readerSession), false);
@@ -421,6 +400,7 @@ test("caller permission summaries report primary IAM decisions without authorizi
   const adminNamespace = await fixture.request("GET", namespacePath);
   assert.equal(adminNamespace.status, 200);
   assert.deepEqual(adminNamespace.data, {
+    delete: true,
     agents: { create: true },
     secrets: { create: true },
     installation: { administer: true },
@@ -496,6 +476,7 @@ test("caller permission summaries report primary IAM decisions without authorizi
   const namespaceSummary = await fixture.request("GET", namespacePath, { session });
   assert.equal(namespaceSummary.status, 200);
   assert.deepEqual(namespaceSummary.data, {
+    delete: false,
     agents: { create: false },
     secrets: { create: false },
     installation: { administer: false },
@@ -927,11 +908,12 @@ test("the Agent Secret answer names the readable Secrets a binding save would be
   for (const secret of [app, spares[0]]) {
     await fixture.grantAgentSecretOperate(agent, secret.ref);
   }
-  // Every authorization check passes: this fixture's Compute Driver then refuses the topology,
-  // which is no authorization denial.
+  // Every authorization check passes: Kubernetes Compute then refuses the draft, which selects
+  // no model (finding 3022), and that is no authorization denial.
   const deniedBeforeDeploy = denials().length;
   const admitted = await fixture.request("POST", deployPath, { session: blind.session });
-  assertApiError(admitted, 409, "RESOURCE_CONFLICT");
+  assertApiError(admitted, 400, "INVALID_REQUEST");
+  assert.match(admitted.body.error.message, /agents\.defaults\.model is required/);
   assert.equal(denials().length, deniedBeforeDeploy);
   const deniedAfterDeploy = denials().length;
   // A reader who may not deploy or update gets no count.
@@ -1408,6 +1390,13 @@ test("console static routes expose only public assets and preserve API JSON fail
     "/console/agents/new",
     "/console/agents/agt_00000000-0000-4000-8000-000000000000",
     "/console/settings",
+    // A page path with trailing slashes is that page; the console drops them (finding 1906).
+    "/console//",
+    "/console/agents/",
+    "/console/agents//?namespace=ns",
+    "/console/agents/new/",
+    "/console/agents/agt_00000000-0000-4000-8000-000000000000//?tab=channels",
+    "/console/settings/",
   ]) {
     const result = await fixture.rawRequest("GET", path);
     assert.equal(result.response.status, 200, path);
@@ -1444,6 +1433,10 @@ test("console static routes expose only public assets and preserve API JSON fail
     "/console/index.ts",
     "/console/%2e%2e/index.ts",
     "/console/missing.css",
+    // An asset, or no page, with a trailing slash is still not a page.
+    "/console/console.css/",
+    "/console/missing/",
+    "/console/agents/x/",
   ]) {
     const result = await fixture.rawRequest("GET", path);
     assert.equal(result.response.status, 404, path);
@@ -1815,155 +1808,6 @@ test("public Agent revisions return the selected binding without private credent
   assert.deepEqual(historical.data.harnessAuth, agent.harnessAuth);
 });
 
-for (const providerId of ["codex", "openai", "anthropic"]) {
-  test(`REST ${providerId} Agent admission rejects blocked native plugin policy without changing Configuration`, async (t) => {
-    const harnessId = providerId === "codex" ? "codex" : "openclaw";
-    const executionMode = harnessId === "codex" ? "dedicated" : "embedded";
-    const configurationValues = () => {
-      const values = createHarnessConfiguration(harnessId, "gpt-5.1");
-      values.plugins ??= {};
-      if (providerId === "anthropic") {
-        const ref = "anthropic/claude-sonnet-4-5";
-        values.agents.defaults = {
-          model: ref,
-          models: { [ref]: { agentRuntime: { id: "openclaw" } } },
-        };
-        values.models.providers = {
-          anthropic: { api: "anthropic-messages", models: [{ id: "claude-sonnet-4-5" }] },
-        };
-      }
-      return values;
-    };
-    const fixture = await createConsoleAppFixture(t, {
-      filesystemConfiguration: true,
-      channelRuntime: true,
-    });
-    await fixture.bootstrap();
-    const namespace = await fixture.createNamespace(`REST ${providerId} native plugin policy`, {
-      ready: true,
-    });
-    const secret = await fixture.createSecret(namespace.id, "Model key", "synthetic-model-key");
-    const policies = [
-      [{ allow: ["knowledge"] }, "plugins.allow"],
-      [{ deny: [` ${providerId.toUpperCase()} `] }, "plugins.deny"],
-      [{ enabled: false }, "plugins.enabled"],
-      [{ entries: { [providerId]: { enabled: false } } }, `plugins.entries.${providerId}.enabled`],
-      [
-        { entries: { [providerId.toUpperCase()]: { enabled: false } } },
-        `plugins.entries.${providerId}.enabled`,
-      ],
-      // Required-plugin aliases are ambiguous in either order, even with equal enablement.
-      ...[true, false].flatMap((enabled) =>
-        [false, true].map((reverse) => {
-          const entries = [
-            [providerId, { enabled: true }],
-            [` ${providerId.toUpperCase()} `, { enabled }],
-          ];
-          return [
-            { entries: Object.fromEntries(reverse ? entries.reverse() : entries) },
-            "plugins.entries must contain at most one entry",
-          ];
-        }),
-      ),
-      [{ allow: providerId }, "plugins.allow"],
-      [{ deny: [42] }, "plugins.deny"],
-    ];
-    for (const [policy, setting] of policies) {
-      const values = configurationValues();
-      Object.assign(values.plugins, policy);
-      // Configuration may be staged; binding an Agent must reject policy that blocks its runtime or provider.
-      const configuration = await fixture.createConfiguration(namespace.id, values);
-      const response = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
-        body: {
-          name: `Blocked ${providerId} Agent`,
-          executionMode,
-          configurationId: configuration.id,
-          harnessAuth: { method: "api_key", source: secret.ref },
-        },
-      });
-      assert.equal(response.status, 400, JSON.stringify(response.body));
-      assert.equal(response.body.error.code, "INVALID_REQUEST");
-      assert.ok(response.body.error.message.includes(setting), response.body.error.message);
-      const saved = await fixture.request(
-        "GET",
-        `/namespaces/${namespace.id}/configurations/${configuration.id}`,
-      );
-      assert.deepEqual(saved.data.values.plugins, values.plugins);
-      assert.deepEqual(
-        (await fixture.request("GET", `/namespaces/${namespace.id}/agents`)).data,
-        [],
-      );
-    }
-    // Missing/empty allowlists are unrestricted; explicit permission remains valid without rewriting it.
-    for (const allow of [
-      undefined,
-      [],
-      ["knowledge", providerId],
-      [` ${providerId.toUpperCase()} `],
-    ]) {
-      const values = configurationValues();
-      delete values.plugins.allow;
-      if (allow !== undefined) {
-        values.plugins.allow = allow;
-      }
-      values.plugins.deny = ["blocked-plugin"];
-      const configuration = await fixture.createConfiguration(namespace.id, values);
-      const response = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
-        body: {
-          name: `Allowed ${providerId} ${JSON.stringify(allow)}`,
-          executionMode,
-          configurationId: configuration.id,
-          harnessAuth: { method: "api_key", source: secret.ref },
-        },
-      });
-      assert.equal(response.status, 201, JSON.stringify(response.body));
-      const saved = await fixture.request(
-        "GET",
-        `/namespaces/${namespace.id}/configurations/${configuration.id}`,
-      );
-      assert.deepEqual(saved.data.values.plugins, values.plugins);
-    }
-
-    const existing = await fixture.createAgent(
-      namespace.id,
-      "Policy update Agent",
-      configurationValues(),
-      {
-        executionMode,
-        harnessAuth: { method: "api_key", source: secret.ref },
-      },
-    );
-    const blocked = configurationValues();
-    blocked.plugins.allow = ["knowledge"];
-    // Staged Configuration edits cannot bypass validation through an existing Agent or deployment.
-    await fixture.updateConfiguration(namespace.id, existing.configurationId, blocked);
-    for (const [method, path, body] of [
-      [
-        "PATCH",
-        `/namespaces/${namespace.id}/agents/${existing.id}`,
-        { configurationId: existing.configurationId },
-      ],
-      ["POST", `/namespaces/${namespace.id}/agents/${existing.id}/deploy`, undefined],
-    ]) {
-      const response = await fixture.request(method, path, { body });
-      assert.equal(response.status, 400, `${method} ${path}: ${JSON.stringify(response.body)}`);
-      assert.equal(response.body.error.code, "INVALID_REQUEST");
-      assert.ok(response.body.error.message.includes("plugins.allow"), response.body.error.message);
-    }
-    const saved = await fixture.request(
-      "GET",
-      `/namespaces/${namespace.id}/configurations/${existing.configurationId}`,
-    );
-    assert.deepEqual(saved.data.values.plugins, blocked.plugins);
-    const unchanged = await fixture.request(
-      "GET",
-      `/namespaces/${namespace.id}/agents/${existing.id}`,
-    );
-    assert.equal(unchanged.data.name, "Policy update Agent");
-    assert.equal(unchanged.data.activeRevisionId, existing.activeRevisionId);
-  });
-}
-
 // The Agent page skips its native admin status probe when this answer is false (review of
 // #3600), so the answer must be the decision that probe makes: Agent administer on the exact
 // Agent, not any other Agent action. Each step proves the answer against the real probe.
@@ -2065,6 +1909,7 @@ test("an IAM failure on any caller permission decision fails the whole answer in
     assertApiError(await outage(agentPermissions, failing), 503, "DEPENDENCY_UNAVAILABLE", label);
   }
   for (const [label, failing] of [
+    ["namespace.delete", decision("delete", "namespace", namespace.id)],
     ["agents.create", decision("create", "agent", namespace.id)],
     ["secrets.create", decision("create", "secret", namespace.id)],
   ]) {

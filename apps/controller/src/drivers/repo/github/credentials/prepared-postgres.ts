@@ -7,7 +7,11 @@ import {
 } from "./driver/lifetime.ts";
 import type { PreparedGitHubEgressSource, Secret } from "@openclaw-enterprise/contracts";
 import { preparedGitHubLive as live, readPreparedGitHubMetadata } from "@openclaw-enterprise/occ";
-import type { PostgresClient, PostgresPool } from "@openclaw-enterprise/occ";
+import type {
+  PostgresClient,
+  PostgresPool,
+  PreparedGitHubMetadataAdmission,
+} from "@openclaw-enterprise/occ";
 import type {
   GitHubPreparationAdmission as Admission,
   GitHubPreparationAttempt as Attempt,
@@ -155,7 +159,11 @@ export class PreparedGitHubPostgres {
     }
   }
 
-  async enroll(source: Source, issuer: Readonly<Secret>, admission: Admission) {
+  async enroll(
+    source: Source,
+    issuer: Readonly<Secret>,
+    admission: PreparedGitHubMetadataAdmission,
+  ) {
     const key = source.key.source.id;
     await this.transaction(async (c) => {
       await c.query(
@@ -260,11 +268,12 @@ export class PreparedGitHubPostgres {
         AND enabled AND worker_claim=$3 AND admission->>'issuerAuthority'=$4 AND ${active} FOR UPDATE OF f`,
         [key, source, claim, this.issuerAuthority],
       );
-      const old = (rows[0] as { admission: Admission } | undefined)?.admission;
+      const old = (rows[0] as { admission: PreparedGitHubMetadataAdmission } | undefined)
+        ?.admission;
       if (!old || old.inputVersion === version) {
         return old;
       }
-      const admission: Admission = {
+      const admission: PreparedGitHubMetadataAdmission = {
         ...old,
         inputVersion: version,
         ownerEpoch: old.ownerEpoch + 1,
@@ -278,10 +287,9 @@ export class PreparedGitHubPostgres {
     });
   }
 
-  async metadata(source: Source) {
+  async metadata(source: Source): ReturnType<typeof readPreparedGitHubMetadata> {
     return this.transaction(async (c) => {
-      return (await readPreparedGitHubMetadata(c, source, this.issuerAuthority)) as
-        Omit<AttemptRow, "sealed"> | undefined;
+      return readPreparedGitHubMetadata(c, source, this.issuerAuthority);
     });
   }
 

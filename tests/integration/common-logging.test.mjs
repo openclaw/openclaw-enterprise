@@ -718,6 +718,25 @@ test("worker log keeps fixed codes and route fences, and drops anything shaped o
     },
     { event: "worker.openshell-git-route", status: "adopted", fence: 7 },
     { event: "worker.completed", code: "REPOSITORY_EXECUTION_UNVERIFIED", harnessState: "lost" },
+    {
+      event: "worker.error",
+      code: "PREPARED_GITHUB_ISSUANCE_DIAGNOSTIC",
+      attemptId: randomUUID(),
+      stage: "publication",
+      firstFailureStage: "validation",
+      errorClass: "validation-failed",
+      httpStatus: 401,
+      responseComplete: true,
+      candidateIdentified: false,
+      requestEndCalled: true,
+      admissionCurrent: true,
+      inBounds: true,
+      stale: false,
+      clockTolerance: true,
+      validationKind: "reauthorization-required",
+      validationCode: "authority-unavailable",
+      publication: "unknown",
+    },
   ];
   for (const event of kept) {
     emit(event);
@@ -746,6 +765,14 @@ test("worker log keeps fixed codes and route fences, and drops anything shaped o
     ["fence", 1.5],
     ["fence", "3"],
     ["fence", Number.MAX_SAFE_INTEGER + 1],
+    ["httpStatus", "401"],
+    ["httpStatus", 99],
+    ["httpStatus", 600],
+    ["responseComplete", "true"],
+    ["candidateIdentified", "sentinel-secret"],
+    ["requestEndCalled", 1],
+    ["firstFailureStage", "sentinel private message"],
+    ["validationCode", "sentinel private message"],
   ];
   for (const [key, value] of rejected) {
     emit({ event: "worker.openshell-git-expiry", outcome: "pending", [key]: value });
@@ -770,7 +797,7 @@ function bindDeliveryTransport(reconcile, emit, pendingLog) {
   };
   return bindRepositoryGitTransport(
     { repositoryGitDriver: driver, protectedDriver: driver },
-    { protectedGit: {} },
+    {},
     undefined,
     emit,
     { pendingLog },
@@ -779,7 +806,8 @@ function bindDeliveryTransport(reconcile, emit, pendingLog) {
 
 test("logs keep OCC-assigned IDs, maintenance commands and guidance codes, never other shapes", async () => {
   // The shapes the bootstrap and auth:maintain scripts and the worker emit (finding 2245).
-  const installationId = `ins_${randomUUID()}`;
+  // Fixed, because a random v4 UUID can be all digits and then its uppercase form equals itself.
+  const installationId = "ins_3f9d2c4e-7a1b-4c5d-8e6f-0a1b2c3d4e5f";
   const configurationId = `cfg_${randomUUID()}`;
   const kept = [
     { event: "installation.bootstrapped", installationId },
