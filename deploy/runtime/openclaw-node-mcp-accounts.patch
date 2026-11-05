@@ -421,7 +421,7 @@ index 12cfdc5..93fedbe 100644
              options,
 diff --git a/src/node-host/node-worker-mcp-accounts.integration.test.ts b/src/node-host/node-worker-mcp-accounts.integration.test.ts
 new file mode 100644
-index 0000000..c2917d9
+index 0000000..b82ea60
 --- /dev/null
 +++ b/src/node-host/node-worker-mcp-accounts.integration.test.ts
 @@ -0,0 +1,148 @@
@@ -445,7 +445,7 @@ index 0000000..c2917d9
 +it("routes one admitted worker tool to its chosen account on the same HTTP endpoint", async ({
 +  onTestFinished,
 +}) => {
-+  const credentials = { cs_west: randomUUID(), cs_east: randomUUID() };
++  const credentials = { cs_a_west: randomUUID(), cs_b_east: randomUUID() };
 +  const identities = new Map(
 +    Object.entries(credentials).map(([name, token]) => ["Bearer " + token, name]),
 +  );
@@ -477,13 +477,13 @@ index 0000000..c2917d9
 +          type: "object",
 +          $id: schemaId,
 +          $defs: {
-+            target: { type: identity === "cs_west" ? "string" : "integer" },
++            target: { type: identity === "cs_a_west" ? "string" : "integer" },
 +          },
 +          properties: { account: { $ref: schemaId + "#/$defs/target" } },
 +          required: ["account"],
 +        },
 +      };
-+      const tools = identity === "cs_east" ? [probe, { ...probe, name: "east_only" }] : [probe];
++      const tools = identity === "cs_b_east" ? [probe, { ...probe, name: "east_only" }] : [probe];
 +      replyMcpFixtureResult(response, message, { tools });
 +    } else if (message.method === "tools/call") {
 +      calls.push({ identity, name: message.params?.name, arguments: message.params?.arguments });
@@ -548,28 +548,28 @@ index 0000000..c2917d9
 +  const result = (identity: string) => ({
 +    result: { content: [{ type: "text", text: identity }] },
 +  });
-+  const west = { account: "cs_west", arguments: { account: "native-account" } };
-+  const east = { account: "cs_east", arguments: { account: 17 } };
++  const west = { account: "cs_a_west", arguments: { account: "native-account" } };
++  const east = { account: "cs_b_east", arguments: { account: 17 } };
 +  const replies = await Promise.all([both.invoke(west), both.invoke(east)]);
-+  expect(replies).toMatchObject([result("cs_west"), result("cs_east")]);
++  expect(replies).toMatchObject([result("cs_a_west"), result("cs_b_east")]);
 +  // The union advertised to the model accepts both native shapes. The dispatcher
 +  // still checks this particular account's own catalog and schema before I/O.
 +  expect(await both.invoke({ ...east, arguments: west.arguments })).toHaveProperty("error");
-+  expect(await both.invoke(east, "east_only")).toMatchObject(result("cs_east"));
-+  expect(await both.invoke({ ...east, account: "cs_west" }, "east_only")).toHaveProperty("error");
++  expect(await both.invoke(east, "east_only")).toMatchObject(result("cs_b_east"));
++  expect(await both.invoke({ ...east, account: "cs_a_west" }, "east_only")).toHaveProperty("error");
 +  expect(await both.invoke({ arguments: west.arguments })).toHaveProperty("error");
 +  expect(await both.invoke({ ...west, account: "cs_unknown" })).toHaveProperty("error");
 +  await both.manager.close();
 +
-+  const remaining = await start({ cs_east: credentials.cs_east });
++  const remaining = await start({ cs_b_east: credentials.cs_b_east });
 +  expect(await remaining.invoke(west)).toHaveProperty("error");
-+  expect(await remaining.invoke(east)).toMatchObject(result("cs_east"));
-+  expect(calls.filter(({ identity }) => identity === "cs_west")).toEqual([
-+    { identity: "cs_west", name: "probe", arguments: west.arguments },
++  expect(await remaining.invoke(east)).toMatchObject(result("cs_b_east"));
++  expect(calls.filter(({ identity }) => identity === "cs_a_west")).toEqual([
++    { identity: "cs_a_west", name: "probe", arguments: west.arguments },
 +  ]);
-+  expect(calls.filter(({ identity }) => identity === "cs_east")).toEqual([
-+    { identity: "cs_east", name: "probe", arguments: east.arguments },
-+    { identity: "cs_east", name: "east_only", arguments: east.arguments },
-+    { identity: "cs_east", name: "probe", arguments: east.arguments },
++  expect(calls.filter(({ identity }) => identity === "cs_b_east")).toEqual([
++    { identity: "cs_b_east", name: "probe", arguments: east.arguments },
++    { identity: "cs_b_east", name: "east_only", arguments: east.arguments },
++    { identity: "cs_b_east", name: "probe", arguments: east.arguments },
 +  ]);
 +});

@@ -1919,7 +1919,10 @@ async function verifyManagedRelease({
       });
     }
   }
-  const accountNames = { cs_test_account: "Work", cs_second_account: "Personal" };
+  const accountNames = {
+    cs_test_account: "Work $(OPENCLAW_CONFIG_PATH)",
+    cs_second_account: "Personal $$",
+  };
   if (kind === "mcp" && managedMcpInstalls.find((install) => install.id === id)?.repeatable) {
     selectionCases.push({
       enabled: true,
@@ -2016,7 +2019,11 @@ async function verifyManagedRelease({
       JSON.parse(workerSettings ?? "[]"),
       expected.filter((pkg) => pkg.releaseSha256).map(({ id, ...pkg }) => pkg),
     );
-    assert.deepEqual(JSON.parse(variable(gatewayEnv, "OPENCLAW_MANAGED_PLUGIN_JSON")), expected);
+    const gatewaySettings = variable(gatewayEnv, "OPENCLAW_MANAGED_PLUGIN_JSON");
+    assert.deepEqual(JSON.parse(gatewaySettings), expected);
+    // The kubelet expands dollar signs before the runtime parses the account labels.
+    assert.doesNotMatch(gatewaySettings, /\$/u);
+    assert.doesNotMatch(workerSettings ?? "", /\$/u);
     // An Agent editor cannot replace deployment inputs with Secret bindings.
     for (const { name } of gatewayEnv.filter(({ name }) => name.startsWith("OPENCLAW_MANAGED_"))) {
       assert.throws(

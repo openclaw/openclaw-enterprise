@@ -1869,7 +1869,7 @@ assert.deepEqual(provenance.patches, {
     "openclaw-terminated-gateway-namespace.patch": "570fb99e849442793eeb0e59417b4b4b2b282e7d236392a022258753b353263b",
     "stock-codex-0.163.0-alpha.2-dependency-pin.patch": "d7eea3944eaaf4469ede0261d4f706148cd672f29f1efedd59e325c46c90d119",
   } : {
-    "openclaw-node-mcp-accounts.patch": "481cfdeae67811bc07e2eff42849ca14e6cb1042403e51a14d1e45a50488a4ff",
+    "openclaw-node-mcp-accounts.patch": "b9b50e5593bbb7e3b4304420c62b9e211ca09b9de8e229715ea813e3e1a4d4b0",
     "openclaw-control-ui-browser-reconnect.patch": "21fef3589702683a173dd2967d852954e1bfa56ea9d9e9a99bdaa28159ff5d2c",
     "openclaw-terminated-gateway-namespace.patch": "1ed77577d53d43619f7c8fb33dbcdcf6a728351821abfe1b0beee947bd6eb456",
   }),

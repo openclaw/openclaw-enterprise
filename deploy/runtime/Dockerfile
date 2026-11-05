@@ -214,7 +214,7 @@ RUN echo '55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31  /tmp
 
 # TODO: Drop this bridge when the pinned node host can present one tool for several accounts.
 COPY deploy/runtime/openclaw-node-mcp-accounts.patch /tmp/openclaw-node-mcp-accounts.patch
-RUN echo '481cfdeae67811bc07e2eff42849ca14e6cb1042403e51a14d1e45a50488a4ff  /tmp/openclaw-node-mcp-accounts.patch' | sha256sum --check --strict \
+RUN echo 'b9b50e5593bbb7e3b4304420c62b9e211ca09b9de8e229715ea813e3e1a4d4b0  /tmp/openclaw-node-mcp-accounts.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-node-mcp-accounts.patch
 
 # Run the bridge tests alongside the build using the same patched source.

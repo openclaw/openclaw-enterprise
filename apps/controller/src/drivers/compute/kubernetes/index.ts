@@ -16247,7 +16247,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         });
       }
       if (packages.length > 0) {
-        variables.push({ name: MANAGED_PLUGIN_ENVIRONMENT, value: JSON.stringify(packages) });
+        // Kubelet expands $(VAR) and $$ in literal env values, including inside account names.
+        const value = JSON.stringify(packages).replaceAll("$", "\\u0024");
+        variables.push({ name: MANAGED_PLUGIN_ENVIRONMENT, value });
       }
     }
     const needsPluginRuntime =
