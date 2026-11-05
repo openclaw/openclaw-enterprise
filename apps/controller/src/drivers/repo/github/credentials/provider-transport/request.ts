@@ -4,7 +4,6 @@ import type { Clock } from "../../../credentials/backend-contracts.ts";
 import type { ProviderAttempt, ProviderResponse } from "../provider-transport.ts";
 import type { ProviderScope } from "./request-options.ts";
 import { providerRequestOptions } from "./request-options.ts";
-import { createProviderResponseBody } from "./response-body.ts";
 import {
   observeProvider,
   providerErrorClass,
@@ -18,7 +17,6 @@ interface ProviderRequestDependencies {
   readonly operation: "issue" | "revoke";
   readonly authorization: string;
   readonly attempt: ProviderAttempt;
-  readonly onDispatch: () => void;
   readonly assertMaterialCurrent: () => void;
   readonly observeResponse: (response: ProviderResponse) => void;
   readonly observe?: (observation: ProviderObservation) => void;
@@ -31,13 +29,13 @@ export function sendProviderRequest({
   operation,
   authorization,
   attempt,
-  onDispatch,
   assertMaterialCurrent,
   observeResponse,
   observe,
 }: ProviderRequestDependencies): Promise<ProviderResponse> {
   return new Promise((resolve, reject) => {
-    const responseBody = createProviderResponseBody();
+    const responseChunks: Buffer[] = [];
+    let responseBytes = 0;
     let request: ClientRequest | undefined;
     let response: IncomingMessage | undefined;
     let result: ProviderResponse | undefined;
@@ -50,6 +48,13 @@ export function sendProviderRequest({
       observeProvider(observe, observation);
     };
 
+    const discardResponseChunks = () => {
+      for (const chunk of responseChunks) {
+        chunk.fill(0);
+      }
+      responseChunks.length = 0;
+    };
+
     // A dispatched request settles only after its actual close event.
     const settle = () => {
       if (settled) {
@@ -58,7 +63,7 @@ export function sendProviderRequest({
       settled = true;
       cancelDeadline();
       attempt.signal.removeEventListener("abort", cancel);
-      responseBody.discard();
+      discardResponseChunks();
       if (failed || !result) {
         if (!failed) {
           report({ stage, error: "response-error" });
@@ -100,21 +105,27 @@ export function sendProviderRequest({
       incoming.on("data", function receiveChunk(chunk: Buffer) {
         if (failed) {
           chunk.fill(0);
-        } else if (!responseBody.append(chunk)) {
-          fail("response-limit");
+          return;
         }
+        responseBytes += chunk.length;
+        if (responseBytes > 262144) {
+          chunk.fill(0);
+          fail("response-limit");
+          return;
+        }
+        responseChunks.push(chunk);
       });
       incoming.on("end", function completeResponse() {
         if (!failed) {
           report({ stage: "complete", responseComplete: incoming.complete });
-          result = { status: incoming.statusCode ?? 0, body: responseBody.assemble() };
+          result = { status: incoming.statusCode ?? 0, body: Buffer.concat(responseChunks) };
           try {
             observeResponse(result);
           } catch {
             fail("observer-error");
           }
         }
-        responseBody.discard();
+        discardResponseChunks();
       });
     };
 
@@ -135,7 +146,6 @@ export function sendProviderRequest({
         }
         try {
           attempt.observeDispatch();
-          onDispatch();
         } catch {
           fail("admission-fenced");
         }

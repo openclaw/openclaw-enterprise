@@ -17,9 +17,24 @@ npm run docs:dev
 ```
 
 Open [the local preview](http://127.0.0.1:4173). The server binds only to loopback.
-Stop it with Ctrl+C. Generated output lives in `dist/docs/` and is ignored by Git.
-After an edit, run `npm run docs:build` in another terminal and refresh the browser.
-The preview serves the latest build; it does not watch source files.
+Save an edit to rebuild the site and refresh connected tabs automatically. Each
+tab keeps its URL and heading anchor. The preview watches `docs/`, including
+shared snippets, assets, and `docs.json`, plus `scripts/docs-site/`, OpenAPI
+contracts, and deployment examples under `deploy/examples/`. File creation,
+deletion, and renames also trigger a rebuild.
+Markdown files elsewhere in the repository are also watched to keep checks for
+links to their headings current.
+
+The preview combines rapid edits and runs one build at a time. It publishes pages
+and their search index together after both succeed. A failed build shows the
+error in the terminal and open tabs; the last successful site stays available.
+Fix the source and save it to resume updates. If the first build fails, the
+preview shows a waiting page with the error until a build succeeds.
+
+Use `npm run docs:dev -- --port 4174` to select another port. Stop with Ctrl+C;
+this stops the watcher and build process and removes temporary preview output
+under `dist/.docs-preview-*/`. Generated output and installed dependencies do not
+trigger rebuilds. Restart the command after editing the preview server itself.
 
 The `npm run` commands dispatch scripts without installing the controller
 workspace. `docs:install` uses the pinned pnpm version and frozen docs lockfile.
@@ -40,6 +55,8 @@ assets, and historical specs outside `docs/` link to the Enterprise repository
 on GitHub. These links require repository access. External URLs are not fetched.
 `docs:check` checks word limits, navigation, and links without writing the site or
 running a test suite.
+The standalone build writes `dist/docs/` without a watcher or live-refresh script.
+To inspect that output without rebuilding, run `node scripts/docs-site/serve.ts`.
 Do not add or run tests for documentation changes, including docs-site
 presentation; use the build, formatting, link checks, and visual inspection.
 
@@ -51,7 +68,7 @@ contract with `node scripts/generate-occ-api-reference.mjs --check`.
 ## Edit the source
 
 Keep Markdown links relative so pages remain readable on GitHub. The
-[documentation map](README.md) links the six menu sections; [`docs/docs.json`](docs.json)
+[documentation map](README.md) links the seven menu sections; [`docs/docs.json`](docs.json)
 defines each sidebar. Register each published page once, and link it from its
 owning overview. Groups may nest. A page entry can set a short sidebar label using
 `{"page": "guides/quickstart", "label": "Local Setup"}`; the article and browser
@@ -120,22 +137,9 @@ any future hosting policy must allow its own required assets and scripts.
 
 ## Publish privately with GitHub Pages
 
-In repository **Settings → Pages**, select **GitHub Actions** as the source and
-confirm visibility is **Private** before publishing. A private repository alone
-does not make a Pages site private. GitHub restricts the private site to readers
-of this repository and enforces HTTPS on its assigned domain.
-
-The [publishing workflow](../.github/workflows/docs-pages.yml) builds the docs and
-Pagefind index with the frozen docs lockfile, then publishes only `dist/docs/`.
-It runs on pushes to `main` or a manual dispatch from `main`. The `github-pages`
-environment also restricts deployments to `main`; pull requests must pass normal
-review and merge requirements before their content is published.
-
-After a successful **Publish private documentation** run, open the deployment URL
-in the Actions summary or **Settings → Pages**. Verify a deep page, search, and
-the interactive matrix while signed in with repository access. For a failed
-publication, inspect the failed Actions step, fix the source, and rerun from
-`main`. No controller services, model credentials, or custom domain are needed.
+Follow [Deploy private documentation](contributing/documentation-hosting.md#deploy-private-documentation)
+for Pages setup, publication, access checks, and recovery. The hosting guide owns
+both automatic and manual deployment procedures.
 
 ## Troubleshoot
 

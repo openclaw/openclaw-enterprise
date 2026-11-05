@@ -155,7 +155,7 @@ const GATEWAY_LOCAL_CODEX_DYNAMIC_TOOLS = [
 
 // Reviewed core, automation and Codex adapter enforcement. Update together
 // with the runtime source pin and archive provenance.
-export const GATEWAY_TOOL_POLICY_SOURCE_COMMIT = "554f0b886bde6c089578c49967227f8b50d1cf16";
+export const GATEWAY_TOOL_POLICY_SOURCE_COMMIT = "513c12703ad9a9161cc123e0b8ed4ecb811aa6b3";
 
 type SettingError = (setting: string, requirement: string) => Error;
 
@@ -292,7 +292,13 @@ export function managedGatewayConfiguration(
   const tools = object(next.tools ?? undefined, "tools");
   const pluginGrants = reviewedPluginTools.filter((tool) => allow.includes(tool));
   if (pluginGrants.length && (tools.alsoAllow === undefined || Array.isArray(tools.alsoAllow))) {
-    tools.alsoAllow = [...new Set([...(tools.alsoAllow ?? []), ...pluginGrants])];
+    // Native allow and alsoAllow are mutually exclusive. Extend the configured
+    // form without changing the operator's deny list.
+    if (Array.isArray(tools.allow) && tools.allow.length > 0) {
+      tools.allow = [...new Set([...tools.allow, ...pluginGrants])];
+    } else {
+      tools.alsoAllow = [...new Set([...(tools.alsoAllow ?? []), ...pluginGrants])];
+    }
   }
   tools.gatewayPolicy = {
     allow,

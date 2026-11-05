@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-10-30
-last_updated_session: b03beb3e-57d1-47cf-829f-e31955a47d3c
+updated: 2026-11-03
+last_updated_session: authoring-run/4b6abf1f-bb48-4679-b2b0-4a62ba2834f6
 ---
 
 # Platform console request flow
@@ -182,7 +182,8 @@ first ready/readable Namespace. Unreadable IDs remain unavailable; selection
 never becomes an API query selector. `shell.mts:namespaceSelector` hides choices
 during session/Namespace checks, naming known selections; retained-view reads do
 not extend this. Widening past 760px closes the drawer, releases `main.inert`, and
-avoids focusing its hidden toggle. `createShell` preserves primary navigation
+avoids focusing its hidden toggle. While `drawer-open`, `console.css` prevents
+background scrolling. `createShell` preserves primary navigation
 presses across replacement renders. Empty lists explain access. Namespace
 navigation sends Agent detail/creation to Agents; global pages stay open and
 recovered warnings disappear.
@@ -354,7 +355,7 @@ gateway startup and file availability.
   worker leases, or Compute effects.
 - `node --test tests/browser/console-secrets.test.ts` exercises Secret mutation,
   Agent references, denials, and lost replies with passive test Secret storage.
-  The `console-secrets` [QA scenario](../testing/ci.md#qa-matrix) selects real
+  The `console-secrets` [QA scenario](../testing/ci/qa-advisory.md) selects real
   shipped storage; it requires the documented runtime and credential setup.
 - API tests cover safe discovery, permission boundaries, empty versus missing
   wiring, static MIME/allowlisting, and unchanged API JSON errors. See
@@ -370,6 +371,8 @@ gateway startup and file availability.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-03 15:16: Preserve page position during navigation. (authoring-run/4b6abf1f-bb48-4679-b2b0-4a62ba2834f6 - 44c2f77b611207eef71a69f82ab692c26dbea2bc)
 
 - 2026-10-30 14:30: Keep Deploy's last Secret operate answer while a recheck rereads it. (bughunt-1030g - a382326dde)
 

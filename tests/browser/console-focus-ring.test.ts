@@ -1,3 +1,4 @@
+import { openAdvancedSettings } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
@@ -17,11 +18,8 @@ import {
   selectSecret,
   settledView,
 } from "./console-agents-browser-helpers.mjs";
-import {
-  createRepositoryLaunchFixture,
-  openAdvancedSettings,
-} from "./console-agents-test-support.mjs";
-import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { createRepositoryLaunchFixture } from "./console-agents-test-support.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();

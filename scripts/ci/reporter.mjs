@@ -61,6 +61,137 @@ function safeMeasurement(message) {
   } catch {
     return undefined;
   }
+  if (isRecord(value) && value.kind === "local-first-agent-setup-point") {
+    if (
+      ![
+        "database-start",
+        "cluster-start",
+        "controller-images-start",
+        "routing-start",
+        "network-check-start",
+        "openshell-assets-start",
+        "openshell-gateway-start",
+        "platform-start",
+        "controller-start",
+        "namespace-check-start",
+        "ready",
+      ].includes(value.stage) ||
+      !Number.isInteger(value.elapsedMs) ||
+      value.elapsedMs < 0 ||
+      value.elapsedMs > 7_200_000
+    ) {
+      return undefined;
+    }
+    return { kind: value.kind, stage: value.stage, elapsedMs: value.elapsedMs };
+  }
+  if (isRecord(value) && value.kind === "local-first-agent-capacity") {
+    const result = { kind: value.kind };
+    for (const key of ["cpus", "totalMiB", "minimumFreeMiB", "maximumLoadHundredths", "samples"]) {
+      if (!Number.isSafeInteger(value[key]) || value[key] < 0 || value[key] > 10_000_000) {
+        return undefined;
+      }
+      result[key] = value[key];
+    }
+    return result;
+  }
+  if (isRecord(value) && value.kind === "local-first-agent-command") {
+    if (
+      !["setup", "cleanup"].includes(value.phase) ||
+      ![
+        "runtime-build",
+        "controller-build",
+        "compose-build-and-start",
+        "compose-build",
+        "image-pull",
+        "image-export",
+        "image-import",
+        "node-image-pull",
+        "cluster-create",
+        "k3d-image-import",
+        "kubernetes-readiness",
+        "helm-install",
+      ].includes(value.stage) ||
+      !Number.isInteger(value.count) ||
+      value.count < 1 ||
+      value.count > 100_000 ||
+      !Number.isInteger(value.failed) ||
+      value.failed < 0 ||
+      value.failed > value.count ||
+      !Number.isInteger(value.elapsedMs) ||
+      value.elapsedMs < 0 ||
+      value.elapsedMs > 7_200_000
+    ) {
+      return undefined;
+    }
+    return {
+      kind: value.kind,
+      phase: value.phase,
+      stage: value.stage,
+      count: value.count,
+      failed: value.failed,
+      elapsedMs: value.elapsedMs,
+    };
+  }
+  if (isRecord(value) && value.kind === "local-first-agent-pod") {
+    if (
+      !["native-initial", "native-replacement"].includes(value.stage) ||
+      !["harness", "gateway"].includes(value.role) ||
+      !Number.isInteger(value.restarts) ||
+      value.restarts < 0 ||
+      value.restarts > 1000
+    ) {
+      return undefined;
+    }
+    const result = {
+      kind: value.kind,
+      stage: value.stage,
+      role: value.role,
+      restarts: value.restarts,
+    };
+    for (const key of [
+      "createdAfterRequestMs",
+      "scheduledMs",
+      "initializedMs",
+      "runningMs",
+      "readyMs",
+      "observedMs",
+    ]) {
+      if (
+        value[key] !== null &&
+        (!Number.isInteger(value[key]) || value[key] < -60_000 || value[key] > 7_200_000)
+      ) {
+        return undefined;
+      }
+      result[key] = value[key];
+    }
+    return result;
+  }
+  if (isRecord(value) && value.kind === "local-first-agent") {
+    if (
+      ![
+        "setup",
+        "cleanup",
+        "initial-deploy-and-model",
+        "reuse-model",
+        "native-deploy",
+        "native-model",
+        "native-redeploy",
+        "native-resumed-model",
+      ].includes(value.stage) ||
+      !["passed", "failed"].includes(value.outcome) ||
+      !Number.isInteger(value.elapsedMs) ||
+      value.elapsedMs < 0 ||
+      value.elapsedMs > 7_200_000
+    ) {
+      return undefined;
+    }
+    return {
+      kind: value.kind,
+      stage: value.stage,
+      outcome: value.outcome,
+      elapsedMs: value.elapsedMs,
+    };
+  }
   if (isRecord(value) && value.kind === "runtime-model-probe") {
     return safeModelProbeMeasurement(value);
   }
@@ -501,6 +632,8 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
     "bundle-file-changed",
   ];
   const turnErrors = [
+    "session-read-changed",
+    "session-binding-changed",
     "model-authentication",
     "model-rate-or-quota",
     "model-unavailable",
@@ -516,6 +649,8 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
     "http-rate-limit",
   ];
   const vocabularies = {
+    proofRpcCode: ["UNAVAILABLE", "INVALID_REQUEST", "NOT_FOUND", "UNAUTHORIZED", "FORBIDDEN"],
+    historyExecErrorFlag: ["none", "false", "true", "absent", "other", "mixed"],
     turnStatus: ["ok", "error", "timeout", "pending"],
     turnError: turnErrors,
     proofError: turnErrors,
@@ -567,6 +702,10 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
     }
   }
   for (const field of [
+    "proofRpcResponse",
+    "historyToolProofPresent",
+    "historyFinalProofPresent",
+    "historySettleExpired",
     "workspaceReferencePresent",
     "attachedSessionMatches",
     "expectedNodeIdPresent",
@@ -580,6 +719,14 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
     }
   }
   for (const field of [
+    "placementReadRetries",
+    "historyMessageCount",
+    "historyRunMessageCount",
+    "historyExecCount",
+    "historyExplicitSuccessCount",
+    "historyToolPrefixCount",
+    "historyFinalMarkerCount",
+    "historyTerminalAssistantCount",
     "attachedSessionCount",
     "nodeCount",
     "connectedNodeCount",

@@ -1,37 +1,134 @@
-# Run a dedicated OpenShell Agent on EKS
+---
+tags: [human_verified, nolimit]
+# Backfilled from the verification tag recorded in a66a9cdfd.
+last_verified: "2026-11-02"
+---
 
-Install OpenClaw Enterprise (OCE) with OpenShell, connect a Codex service account to its managed Linear plugin, and give one Agent access to one GitHub repository through the Credential Proxy. Start on the owner’s laptop in a checkout containing this guide and its assets. Select images, chart and installation schema from compatible recorded source revisions. Keep the records from each step in an owner-only directory.
+# Set up OCE on Amazon EKS
+
+Install OpenClaw Enterprise (OCE), configure browser access, on Amazon Elastic Kubernetes Service (EKS). Start in the matching OCE checkout on the operator’s laptop. Use Bash, AWS CLI, version-compatible kubectl, Helm, OpenSSL, jq, Node.js 24.22.1 or newer, Python 3, yq v4, PostgreSQL client tools and the [OCC CLI](../cli.md). Image selection needs Git and Docker; builds also need Buildx. Select compatible source, chart and image revisions.
+
+After installation, [deploy your first Agent](deploy-first-agent.md). Git and plugins are optional.
+
+## Before you start
+
+### Prepare AWS infrastructure
+
+Provision the following through your reviewed AWS infrastructure workflow. The OCE chart does not create the EKS cluster, VPC, IAM roles, database or storage add-ons.
+
+Use an authorized AWS account and role. The Kubernetes operator needs permission to create namespaces, RBAC, Secrets and storage claims; Kubernetes access does not replace OCC IAM grants.
+
+- An IPv4 EKS cluster running Kubernetes 1.35 or later, with private worker subnets and an API reachable by the operator and controller Pods. The chart uses exact IPv4 `/32` API and database egress rules; [IPv4 policies do not apply to IPv6 clusters](https://docs.aws.amazon.com/eks/latest/userguide/cni-network-policy.html).
+- Separate EC2 managed node groups labeled `oce-role=control` and `oce-role=agents`. OCC and Agent Gateways use the control group; Codex workloads use the Agent group. Reserve capacity for volume reattachment in each volume’s availability zone. Verify the [Codex node requirements](../../reference/drivers/kubernetes-compute.md#requirements), including the reviewed seccomp profile on replacement nodes. The EKS-managed Kubernetes control plane is separate from OCC’s Pods.
+- NetworkPolicy enforcement, encrypted EBS storage and narrowly scoped IAM permissions for their add-ons, as described below.
+- Private PostgreSQL with separate application and migrator roles. Permit traffic only from intended clients, using the security group of the actual source interface.
+- Image registries reachable by every eligible node. Authorize builder pushes and node pulls separately. Provide approved NAT or endpoint access for image pulls and model requests. AWS IAM access does not grant model access.
+
+The prior validated configuration used EKS 1.36, AL2023, kernel 6.18, VPC CNI 1.22.4, EBS CSI 1.67.2 and PostgreSQL 18.6. These are prior runtime results, not verification of this rewritten procedure. Check versions and NAT capacity in your selected region.
+
+### Configure network enforcement and storage
+
+Enable Amazon VPC CNI NetworkPolicy support with `NETWORK_POLICY_ENFORCING_MODE=strict` in the managed add-on configuration. Strict mode denies traffic while policies initialize. Prepare DNS and system-service policies first, then verify allowed and denied paths using [AWS’s setup procedure](https://docs.aws.amazon.com/eks/latest/userguide/cni-network-policy-configure.html). Enforcement can be unreliable for standalone Pods: if the bootstrap volume helper’s isolation cannot be verified, use the storage-administrator preparation path in [production installation](production-installation.md#provision-system-secrets-and-install).
+
+Install the [EBS CSI driver](https://docs.aws.amazon.com/eks/latest/userguide/ebs-csi.html). Allow its controller to reach Kubernetes, DNS and regional EC2, STS and credential endpoints. The node plugin needs Kubernetes and DNS when instance metadata is unavailable. Keep workload access to instance metadata disabled. Require ready CSI Pods and topology labels on every eligible node before creating claims.
+
+Create encrypted `encrypted-gp3` RWO filesystem storage with `WaitForFirstConsumer` for Gateway and bootstrap claims. Configure a default StorageClass that supports dedicated Agents’ `40Gi` RWO claims and UID/GID 1000; review other workloads before changing the default. Keep eligible capacity in the claim’s availability zone. Replacement stops the predecessor before disk reattachment, so allow downtime. Validate storage failover and node fencing separately. See the [storage contract](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage).
+
+### Enable Console workspace files
+
+Private gateway routing is enabled by default. Prepare its controllers, CRDs, GatewayClass and service-key Secret before installing OCC; the Helm chart does not install these prerequisites.
+
+Install cert-manager, Gateway API, Envoy Gateway and the matching Agent Sandbox controller on the control pool. Before rollout, prepare policies for controllers and certificate Jobs: DNS and API Service VIPs, API EndpointSlice addresses, API-server admission to webhooks and Envoy data-plane access to xDS. Match installed labels and ports on both sides. Include all private EKS control-plane interface addresses for webhook callers; one Service endpoint or public DNS answer may omit them. Require ready controllers before installing OCE.
+
+The templates below enable private Envoy routing with a `ClusterIP` Service and a separate routing key. OCC checks Agent permissions; the browser connects to OCC’s HTTPS origin. The deployment helpers verify actual Envoy peers and apply Agent network policies. Preserve certificate/hostname verification, exact proxy CIDRs and the fixed native identity’s `operator.admin` grant. Keep model and channel credentials separate from routing credentials. See [private routing](workspace-routing.md#configure-private-routing) for the configuration contract and [existing-resource preparation](workspace-routing.md#enable-routing-for-existing-namespaces-and-agents) when updating an existing installation.
+
+Use an OpenShell-compatible kernel, restricted tenant Pod Security and a `runc` RuntimeClass named `openshell-sandbox` pinned to the Agent group. Check Landlock, seccomp and no-new-privileges before enrolling credentials. For optional Slack support, configure [both required CONNECT proxies](../integrations/slack.md#configure-both-slack-proxies); NAT alone is insufficient.
 
 ## 1. Prepare the cluster and images
 
-Follow [Kubernetes setup](../kubernetes-setup.md) and [EKS infrastructure preparation](eks.md#prepare-aws-infrastructure). Select an IPv4 cluster, two private EC2 node groups labeled `oce-role=control` and `oce-role=agents`, strict VPC CNI NetworkPolicy enforcement, encrypted gp3 RWO storage with `WaitForFirstConsumer`, and private PostgreSQL with separate application and migration roles and verified TLS. The validated configuration used EKS 1.36, AL2023, kernel 6.18, VPC CNI 1.22.4, EBS CSI 1.67.2 and PostgreSQL 18.6. Check versions and NAT capacity in your chosen region.
-
-Install cert-manager, Gateway API, Envoy Gateway and the matching Agent Sandbox controller. Under strict CNI, prepare component policies before rollout. Include DNS and API Service VIPs alongside the intended Pod peers and API EndpointSlice addresses. Verify EBS CSI reaches its regional EC2 and STS endpoints. For RDS, authorize the security group of the actual source interface. Verify both database roles with `sslmode=verify-full`. [EKS network and storage](eks.md#configure-network-enforcement-and-storage)
+### Select the cluster
 
 ```bash
 set -euo pipefail
 set +x
 umask 077
+export AWS_REGION='<aws-region>'
+export EKS_CLUSTER='<lowercase cluster name>'
 run_root=${XDG_STATE_HOME:-$HOME/.local/state}/oce
 install -d -m 700 "$run_root"
 RUN_DIR=$(mktemp -d "$run_root/eks.XXXXXXXX")
-install -m 600 docs/snippets/openshell-quickstart/codex-configuration.jq "$RUN_DIR/codex-configuration.jq"
-install -m 600 docs/snippets/openshell-quickstart/inspect-linear-transcript.mjs "$RUN_DIR/inspect-linear-transcript.mjs"
+source docs/snippets/openshell-quickstart/stage-session.sh
+cp -R docs/snippets/openshell-quickstart/kubernetes "$RUN_DIR/kubernetes"
+install -m 600 docs/snippets/openshell-quickstart/platform-kubernetes.sh "$RUN_DIR/platform.sh"
+PLATFORM=eks
+CLUSTER_NAME="${EKS_CLUSTER:?Set the target cluster name}"
+STORAGE_CLASS=encrypted-gp3
+export CLUSTER_NAME STORAGE_CLASS
 printf 'Keep this session directory: %s\n' "$RUN_DIR"
 export KUBECONFIG="$RUN_DIR/kubeconfig"
 export PLATFORM_NS=oce-system
+RELEASE=oce
 export CONTEXT="oce-${EKS_CLUSTER:?Set the target cluster name}"
 [[ $EKS_CLUSTER =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || { echo "Use a lowercase DNS-label cluster name" >&2; exit 1; }
 aws sts get-caller-identity --query '[Account,Arn]'
 aws eks update-kubeconfig --name "$EKS_CLUSTER" --region "${AWS_REGION:?}" \
   --alias "$CONTEXT" --kubeconfig "$KUBECONFIG"
+```
+
+For a private-only API, connect from the VPC or a connected network. If needed, prepare [private EKS access](eks-private-access.md#open-a-tunnel) with this kubeconfig before continuing.
+
+```bash
+kubectl version
 kubectl get nodes -L oce-role
 kubectl get storageclass encrypted-gp3
 ```
 
 Confirm the account and role, then test Kubernetes TLS from the operator host. Successive connections through shared NAT can use different public IP addresses. For a public API allowlist change, authorize only the exact stable egress addresses or CIDRs listed for that host in the authoritative NAT inventory. A single observed IP address cannot establish or justify a broader prefix. Preserve existing allowlist entries, public and private endpoint settings, and AWS and Kubernetes authentication.
 
-[Build the controller and runtime](production-installation.md#build-and-publish-production-images) from one release or [copy verified images](private-registry-images.md) into a registry the nodes can pull from. Set `CONTROLLER_IMAGE` and `RUNTIME_IMAGE` to the resulting immutable references. The templates target AMD64 nodes, OpenShell 0.1.6 and Codex 0.164.0. Mirror the stock Gateway, supervisor and Sandbox runtime AMD64 manifests into the repository selected below, retaining their digests. Have the matching stock chart archive, the OCE chart and the qualified Envoy proxy image available. Create the system namespace before its policies and chart jobs. Use the source commit and image digests in the build or publication receipt. A documentation branch head alone does not identify the images. Use an OpenShell-compatible kernel, a restricted workload Namespace and a `runc` RuntimeClass named `openshell-sandbox` pinned to the Agent node group. Check Landlock, seccomp and no-new-privileges on that pool before enrolling credentials.
+### Refresh API network policies after the node groups join
+
+EKS can add an API endpoint after the first EndpointSlice appears. Once both node groups are ready, collect the current addresses below. Repeat this check immediately before installing OCC or when certificate admission times out.
+
+```bash
+# API clients can reach the Service IP or a backing endpoint.
+api_service=$(kubectl --context "$CONTEXT" -n default get service kubernetes -o json |
+  jq -er '.spec.clusterIP')
+API_CIDRS=$(kubectl --context "$CONTEXT" -n default get endpointslices \
+  -l kubernetes.io/service-name=kubernetes -o json |
+  jq -ce --arg svc "$api_service" '[.items[] | select(.addressType=="IPv4") |
+    .endpoints[].addresses[]] | select(length > 0) | . + [$svc] | unique | map(. + "/32")')
+export API_CIDRS
+
+# Webhook callers can use any control-plane interface for this cluster.
+vpc_config=$(aws eks describe-cluster --region "$AWS_REGION" --name "$EKS_CLUSTER" \
+  --query cluster.resourcesVpcConfig --output json)
+vpc_id=$(jq -er .vpcId <<<"$vpc_config")
+cluster_sg=$(jq -er .clusterSecurityGroupId <<<"$vpc_config")
+webhook_cidrs=$(aws ec2 describe-network-interfaces --region "$AWS_REGION" \
+  --filters "Name=vpc-id,Values=$vpc_id" "Name=group-id,Values=$cluster_sg" \
+  "Name=description,Values=Amazon EKS $EKS_CLUSTER" --output json |
+  jq -ce '[.NetworkInterfaces[].PrivateIpAddresses[].PrivateIpAddress] |
+    select(length > 0) | unique | map(. + "/32")')
+printf 'API egress: %s\nWebhook ingress: %s\n' "$API_CIDRS" "$webhook_cidrs"
+```
+
+Update and apply the affected prerequisite NetworkPolicies through the infrastructure workflow. Use the API CIDRs for clients that need Kubernetes API egress, including controllers, certificate Jobs and storage components. Allow the verified control-plane interface CIDRs to reach the admission webhook ports. Use the refreshed `API_CIDRS` when rendering OCC values. Confirm that cert-manager can admit a certificate request and issue a Ready certificate under strict NetworkPolicy before continuing.
+
+### Authenticate the image builder to ECR
+
+For private ECR, create `openclaw-enterprise/controller` and `openclaw-enterprise/runtime` repositories, then authenticate the builder with [ECR’s authorization flow](https://docs.aws.amazon.com/AmazonECR/latest/userguide/registry_auth.html):
+
+```bash
+export OCC_IMAGE_REGISTRY="<aws-account-id>.dkr.ecr.$AWS_REGION.amazonaws.com"
+export OCC_IMAGE_REPOSITORY="$OCC_IMAGE_REGISTRY/openclaw-enterprise"
+export OCC_IMAGE_PLATFORM=linux/amd64
+aws ecr get-login-password --region "$AWS_REGION" | \
+  docker login --username AWS --password-stdin "$OCC_IMAGE_REGISTRY"
+```
+
+Retain these values for image publication. Builder login does not authorize node pulls.
+
+[Build the controller and runtime](production-installation.md#build-and-publish-production-images) from one release or [copy verified images](private-registry-images.md) into a registry the nodes can pull from. Set `CONTROLLER_IMAGE` and `RUNTIME_IMAGE` to the resulting immutable references. The templates target AMD64 nodes, OpenShell 0.1.6 and Codex 0.164.0. Mirror the stock Gateway, supervisor and Sandbox runtime AMD64 manifests into the repository selected below, retaining their digests. Set `OPENSHELL_CHART` and `OCE_CHART` to the matching absolute chart archives or directories, `ENVOY_IMAGE` to the qualified proxy image, and `SANDBOX_REGISTRY`/`SANDBOX_REPOSITORY` to the stock-image mirror. Set `ADMIN_EMAIL`, `DATABASE_CIDRS` and `API_CIDRS` from the owner and network inventory. Create the system namespace before its policies and chart jobs. Use the source commit and image digests in the publication receipt.
 
 Register the GatewayClass before installing OCC. Installing the Envoy Gateway controller does not create a class named `eg`. On a fresh cluster, create the class only when absent. Stop if an existing class belongs to another controller.
 
@@ -52,231 +149,41 @@ kubectl --context "$CONTEXT" get gatewayclass eg -o json |
 kubectl --context "$CONTEXT" wait gatewayclass/eg --for=condition=Accepted --timeout=3m
 ```
 
-## 2. Install OpenShell and bootstrap OCC
+### Check the prepared resources
 
-These templates select the `oce` OCE release, the `openshell-gateway` OpenShell release, the `oce-system` namespace, the `eg` GatewayClass and the `envoy-gateway-system` namespace. They include the stock workspace resources, dedicated Codex settings and binary-scoped plugin artifact rules used for verification. [Manual Installation configuration](production-installation.md#advanced-copy-manual-yaml-examples)
-
-```bash
-assets=docs/assets/eks-openshell
-jq -n --arg registry "${SANDBOX_REGISTRY:?}" \
-  --arg repository "${SANDBOX_REPOSITORY:?}" -f "$assets/openshell-values.jq" \
-  > "$RUN_DIR/openshell.json"
-helm upgrade --install openshell-gateway "${OPENSHELL_CHART:?}" \
-  -n "$PLATFORM_NS" -f "$RUN_DIR/openshell.json" --wait
-os_ip=$(kubectl -n "$PLATFORM_NS" get svc openshell-gateway -o jsonpath='{.spec.clusterIP}')
-route_host=occ-gateway-362888b35fce.envoy-gateway-system.svc.cluster.local
-
-# Bootstrap has no Agents. Replace the loopback placeholder with the exact Envoy peers before deployment.
-# API_CIDRS includes the API Service and endpoint /32s.
-jq -n --arg cluster "$EKS_CLUSTER" --arg runtime "${RUNTIME_IMAGE:?}" \
-  --arg hostname "$route_host" --arg openshellIP "$os_ip" \
-  --argjson proxyCidrs '["127.0.0.1/32"]' -f "$assets/installation.jq" \
-  > "$RUN_DIR/installation.json"
-jq -n --arg cluster "$EKS_CLUSTER" --arg controller "${CONTROLLER_IMAGE:?}" --arg email "${ADMIN_EMAIL:?}" \
-  --arg hostname "$route_host" --argjson databaseCidrs "${DATABASE_CIDRS:?}" \
-  --argjson apiCidrs "${API_CIDRS:?}" -f "$assets/values.jq" > "$RUN_DIR/values.json"
-```
-
-Check the browser values **before** the first Helm install. These origins, including port 18443, are distinct from the private Envoy hostname.
+Run [prerequisite diagnosis](prerequisite-diagnosis.md) after preparing the target
+namespace and controllers. Save its plan as `$RUN_DIR/prerequisites.json`, using
+`$KUBECONFIG`, `$CONTEXT`, `$PLATFORM_NS`, the installed controller names, and the
+reviewed API/webhook CIDRs above. Set `peakAdditional` from the candidate chart
+and put the intended cluster ARN in `eks.clusterArn`.
 
 ```bash
-jq -e --arg d "$EKS_CLUSTER.oce.localhost" '
-  .auth.baseUrl==("https://console."+$d+":18443") and .agentNativeAdmin.enabled
-  and .agentNativeAdmin.domain==("agents."+$d) and .agentNativeAdmin.sharedCookieDomain==$d' "$RUN_DIR/values.json"
+node scripts/diagnose-kubernetes-prerequisites.mjs --config "$RUN_DIR/prerequisites.json"
 ```
 
-Use the cluster’s full DNS suffix in the route hostname and serving certificate. A short `.svc` hostname resolved in an ordinary Pod but produced `policy_dns_upstream_nxdomain` in the stock supervisor. Keep operator mTLS enabled and retain the existing OpenShell PKI and JWT signing material through upgrades.
+Resolve failed and unknown checks before installing. Matching address inventory
+does not prove that deployed NetworkPolicies or admission webhooks work; retain
+the network and certificate checks above.
 
-Use a fresh application database on private RDS. Provision separate login roles `occ_migrator` and `occ_app` using deployment-managed passwords. Neither role needs superuser, role creation, database creation, replication or row-security bypass. As the database administrator, prepare the following in the **application database**. The migrator needs database CREATE for its migration schema; the application connects with the permissions assigned by the migrations.
+<a id="configure-the-protected-copies-and-install"></a>
 
-```sql
--- Run in psql connected to the fresh database as an administrator allowed to assign these owners.
-SELECT current_database() AS database_name \gset
-GRANT CONNECT ON DATABASE :"database_name" TO occ_migrator, occ_app;
-GRANT CREATE ON DATABASE :"database_name" TO occ_migrator;
-CREATE SCHEMA occ AUTHORIZATION occ_migrator;
-CREATE SCHEMA drizzle AUTHORIZATION occ_migrator;
-REVOKE CREATE ON SCHEMA public FROM PUBLIC;
-```
+Confirm the database endpoint from your infrastructure outputs; EKS does not select RDS automatically. For RDS, obtain its [approved CA bundle](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/PostgreSQL.Concepts.General.SSL.html). The templates use Secret `occ-database-ca`, key `ca.pem`, mounted at `/etc/openclaw/database-ca`. Both database URLs must use the database hostname and `sslmode=verify-full&sslrootcert=/etc/openclaw/database-ca/ca.pem`. Use the provider’s verified CA for other PostgreSQL services. Keep exact database and API egress addresses current through failover; security groups do not replace NetworkPolicies.
 
-Configure `occ-database` with separate protected `migration-url` and `application-url` files for that same RDS endpoint and database. Both URLs use `sslmode=verify-full&sslrootcert=/etc/openclaw/database-ca/ca.pem`. Mount the RDS CA as `occ-rds-ca` with key `ca.pem`. Migrations use the migrator; bootstrap, API and worker use the application login. Before Helm installation, connect as each login from the approved RDS network and check the database, role and TLS result. With two protected libpq service entries that use the laptop or verifier host’s CA path:
+<Snippet file="../../snippets/openshell-quickstart/cluster-installation.md" />
 
-```bash
-for role in occ_migrator occ_app; do
-  psql "service=$role" -XAt -v ON_ERROR_STOP=1 \
-    -c 'SELECT current_database(),current_user,ssl FROM pg_stat_ssl WHERE pid=pg_backend_pid()'
-done
-```
+<a id="4-enroll-linear-and-protected-git"></a>
+<a id="5-deploy-and-open-the-owners-agent"></a>
 
-Expect the target database, the named login and `t` for both connections. Keep the administrator connection outside the controller.
+## 4. Prepare the operator session
 
-Provision the other Secret references in the rendered values. Use distinct OCE authentication and private routing keys, protected RDS connection files and CA, and the OpenShell client TLS Secret. The private routing Secret uses the key `occ`. Create and prepare the bootstrap PVC once with the chart’s expected UID/GID 1000 and directory mode 0700. The stock native runtime uses UID/GID 10001. [System Secrets and bootstrap volume](production-installation.md#provision-system-secrets-and-install)
+Continue in the same Bash shell to [Deploy your first Agent](deploy-first-agent.md).
 
-```bash
-# Under strict VPC CNI, also allow the initialization hook to reach the DNS Service VIP.
-dns_ip=$(kubectl -n kube-system get svc kube-dns -o jsonpath='{.spec.clusterIP}')
-jq -n --arg ns "$PLATFORM_NS" --arg ip "$dns_ip" '{
-  apiVersion:"networking.k8s.io/v1",kind:"NetworkPolicy",
-  metadata:{namespace:$ns,name:"oce-initialization-dns-vip"},
-  spec:{podSelector:{matchLabels:{"app.kubernetes.io/name":"openclaw-enterprise","app.kubernetes.io/instance":"oce","app.kubernetes.io/component":"initialization"}},
-    policyTypes:["Egress"],egress:[{to:[{ipBlock:{cidr:($ip+"/32")}}],
-      ports:[{protocol:"UDP",port:53},{protocol:"TCP",port:53}]}]}}' |
-  kubectl --context "$CONTEXT" create -f -
-kubectl -n "$PLATFORM_NS" create secret generic occ-installation-startup \
-  --from-file="installation.yaml=$RUN_DIR/installation.json"
-helm install oce "${OCE_CHART:?}" -n "$PLATFORM_NS" -f "$RUN_DIR/values.json" --wait --timeout 5m
-kubectl -n "$PLATFORM_NS" rollout status deploy/openclaw-enterprise-api
-# Pin the Envoy data plane through its supported resource field.
-kubectl -n "$PLATFORM_NS" patch envoyproxy oce-agent-gateways --type=merge \
-  -p "$(jq -nc --arg image "${ENVOY_IMAGE:?}" '{spec:{provider:{type:"Kubernetes",kubernetes:{envoyDeployment:{container:{image:$image}}}}}}')"
-kubectl -n "$PLATFORM_NS" wait gateway/oce-agent-gateways --for=condition=Programmed --timeout=5m
-kubectl -n envoy-gateway-system wait --for=create service/occ-gateway-362888b35fce --timeout=3m
-kubectl -n envoy-gateway-system get svc occ-gateway-362888b35fce -o json |
-  jq -e '.spec.type=="ClusterIP" and (.spec.clusterIP|test("^[0-9]+(\\.[0-9]+){3}$")) and any(.spec.ports[];.port==443 and .protocol=="TCP") and
-    .metadata.labels["gateway.envoyproxy.io/owning-gateway-name"]=="oce-agent-gateways" and
-    .metadata.labels["gateway.envoyproxy.io/owning-gateway-namespace"]=="oce-system"'
-```
+## Verify workspace routing
 
-The worker starts at zero. Helm runs the installation check, migration and bootstrap hooks. [Read the owner password and service key from the protected claim](eks-openshell-browser.md#read-the-protected-initial-owner-files), then [install the private TLS listener and start the laptop forward](eks-openshell-browser.md#install-the-loopback-tls-listener). Keep the same session directory and kubeconfig.
+After activation, check accepted/programmed Gateway and HTTPRoute status, ready certificates and an accepted API-key SecurityPolicy. Follow the [routing checks](workspace-routing.md#verify-routing-and-file-access) to verify invalid operator keys are rejected and dedicated Harnesses cannot bypass Envoy to reach the native Gateway.
 
-## 3. Authenticate and prepare the Namespace
+In the Console **Workspace files** tab, read all four paths, save and reload a harmless change, then restore the original. Previously absent files should report `NOT_FOUND` with editable fields, not `DEPENDENCY_UNAVAILABLE`. A bound PVC or healthy OCC API alone does not prove routing. Across Pod replacement, compare PVC identities and existing session IDs to verify retained Gateway state. Record resource ownership, backups, credential renewal and recovery responsibilities using [production handoff](production-handoff.md).
 
-Use the installation’s private API endpoint. If direct port forwarding returns a connection refusal on Pod loopback while the API readiness probe passes, the following Bash helper calls the same authenticated REST routes at the API Pod IP. Kubernetes carries the request over its TLS exec stream. The helper takes bodyless calls, `--data '{}'`, or `--data-binary @-` for JSON from stdin.
+For later upgrades, use [Upgrade production images](production-upgrade.md), its [checklist](upgrade-checklist.md) and [baseline](upgrade-baseline.md). Helm rollback does not undo committed migrations or restore Agent-volume data; use [upgrade recovery](production-upgrade-recovery.md) after a failure.
 
-```bash
-request() {
-  local method=$1 path=$2 pod ip
-  shift 2
-  if (( $# == 0 )); then printf 'null' > "$RUN_DIR/body.json"
-  elif [[ $1 == --data-binary && $2 == @- ]]; then cat > "$RUN_DIR/body.json"
-  elif [[ $1 == --data && $2 == '{}' ]]; then printf '{}' > "$RUN_DIR/body.json"
-  else return 2
-  fi
-  read -r pod ip < <(kubectl -n "$PLATFORM_NS" get pods \
-    -l 'app.kubernetes.io/instance=oce,app.kubernetes.io/component=api' -o json |
-    jq -er '[.items[]|select(.metadata.deletionTimestamp==null and any(.status.containerStatuses[]?;.ready))]|first|[.metadata.name,.status.podIP]|@tsv')
-  jq -nc --arg m "$method" --arg p "$path" --arg ip "$ip" \
-    --slurpfile k "$OCC_SERVICE_KEY_FILE" --slurpfile b "$RUN_DIR/body.json" \
-    '{method:$m,path:$p,ip:$ip,key:$k[0].data.key} + (if $b[0]==null then {} else {body:$b[0]} end)' |
-    kubectl -n "$PLATFORM_NS" exec -i "$pod" -c api -- \
-      node --input-type=module -e "$(cat "$assets/request.mjs")"
-}
-api='' # Shared commands use paths relative to this API root.
-namespace=$(request GET /namespaces | jq -er '.data[]|select(.name=="default")|.id')
-base="/namespaces/$namespace"
-export ENVOY_IMAGE
-bash "$assets/trusted-envoy-peers.sh" > "$RUN_DIR/trusted-peers.json"
-jq --slurpfile peers "$RUN_DIR/trusted-peers.json" \
-  '.drivers.compute.configuration.network.gatewayTrustedProxyCidrs=$peers[0]' \
-  "$RUN_DIR/installation.json" > "$RUN_DIR/installation-with-peers.json"
-peer_secret="occ-installation-peers-$(date +%s)"
-kubectl -n "$PLATFORM_NS" create secret generic "$peer_secret" \
-  --from-file="installation.yaml=$RUN_DIR/installation-with-peers.json"
-jq --arg secret "$peer_secret" '.installation.secretName=$secret | .worker.replicaCount=1' \
-  "$RUN_DIR/values.json" > "$RUN_DIR/worker.json"
-helm upgrade oce "$OCE_CHART" -n "$PLATFORM_NS" -f "$RUN_DIR/worker.json" --wait
-```
-
-Wait for Compute to create the backing Namespace. Discover it with `kubectl get ns -l "openclaw.dev/namespace=$namespace"` and set `TENANT_NAMESPACE` to its name. Verify restricted Pod Security. Grant the worker Role/RoleBinding CRUD there and restrict Role `bind` and `escalate` to `openshell-workspace-sandbox`. Bind the API’s Secret and Configuration ClusterRoles next, then bind the ordinary tenant-worker ClusterRole last. Require `request GET "$base"` to report `ready`. [Tenant binding commands](production-agents.md#prepare-each-namespace)
-
-```bash
-TENANT_NAMESPACE=$(kubectl get ns -l "openclaw.dev/namespace=$namespace" -o json |
-  jq -er '.items|select(length==1)|first.metadata.name')
-worker_sa="$PLATFORM_NS:openclaw-enterprise-worker"
-api_sa="$PLATFORM_NS:openclaw-enterprise-api"
-kubectl -n "$TENANT_NAMESPACE" create role oce-workspace-provisioner \
-  --verb=get,list,watch,create,update,patch,delete --resource=roles,rolebindings \
-  --dry-run=client -o json |
-  jq '.rules += [{apiGroups:["rbac.authorization.k8s.io"],resources:["roles"],
-    resourceNames:["openshell-workspace-sandbox"],verbs:["bind","escalate"]}]' | kubectl create -f -
-kubectl -n "$TENANT_NAMESPACE" create rolebinding oce-workspace-provisioner \
-  --role=oce-workspace-provisioner --serviceaccount="$worker_sa"
-kubectl -n "$TENANT_NAMESPACE" create rolebinding oce-api-secrets \
-  --clusterrole=oce-openclaw-tenant-api --serviceaccount="$api_sa"
-kubectl -n "$TENANT_NAMESPACE" create rolebinding oce-api-configuration \
-  --clusterrole=oce-openclaw-tenant-configuration --serviceaccount="$api_sa"
-kubectl -n "$TENANT_NAMESPACE" create rolebinding openclaw-enterprise-worker \
-  --clusterrole=oce-openclaw-tenant-worker --serviceaccount="$worker_sa"
-```
-
-## 4. Enroll Linear and protected Git
-
-Keep the EKS `request` function, `base` and `RUN_DIR` from step 3. Use the model Secret and CredentialSource registration commands in [local OpenShell setup](local-setup.md#4-connect-to-the-api-and-register-the-model-credential). Set `MODEL` to the authorized model ID. Supply a private PAT file for a service account with an authorized Linear connection. Keep `name` and `modelSource` from registration for step 5. Verify the source is `ready`, type `codex-pat`, and owned by `credential_gateway` before enabling the repository Credential Proxy.
-
-Use `installation-with-peers.json` as the base for the protected Installation. Keep the verified Envoy Pod /32s when merging the repository fragment. Re-read the peer set after a data-plane rollout. If it changes, update the versioned Installation and reconcile it before another Agent deployment.
-
-Enroll one repository and Namespace under `github-repository`. Prepare [two immutable registry ConfigMaps](../repository-credentials/openshell-git-push.md#1-enroll-one-repository-in-the-installation) for this same repository ID and Namespace. Mount the Contents read/Metadata read map first. Reserve Contents write/Metadata read for the single push. Set `READ_REGISTRY` and `WRITE_REGISTRY` to the two ConfigMap names. Mount the App signing key and a dedicated persistent 32-byte custody key only in the worker. Add the GitHub Backend owner, its `repo` Driver, `repository.preparedGitHub` and `repository.openShell` to the Installation. Select the Sandbox Driver ID in **both** `drivers.credential_proxy` and the OpenShell Backend’s `drivers.credential_proxy`. A missing owner fails the chart’s installation check. [Registry, Installation and deployment inputs](../repository-credentials/openshell-enrollment.md)
-
-Obtain the current GitHub.com worker API IPv4 inventory from the official Meta endpoint. If anonymous access is rate-limited, use the operator’s authenticated GitHub CLI. Save the CIDRs without response or authentication headers. Review them before setting the protected worker’s `repositoryCredentials.upstreamCidrs`.
-
-```bash
-gh api --hostname github.com /meta --jq '[.api[]|select(contains(":")|not)] | unique' > "$RUN_DIR/github-api-cidrs.json"
-jq -e 'type=="array" and length>0 and all(.[];test("^[0-9]+(\\.[0-9]+){3}/[0-9]+$"))' "$RUN_DIR/github-api-cidrs.json"
-```
-
-Issue a serving certificate for `openclaw-enterprise-openshell-git.oce-system.svc`. Supply the worker with the Gateway’s public JWT key and key ID. Upgrade OCE first with the versioned Installation Secret, protected listener on 8445 and reviewed GitHub API egress ranges. Check that the Service has a ready worker endpoint. Verify the Envoy image pin after Helm upgrades. Review and apply the service peers before enabling the hook:
-
-```bash
-python3 "$assets/service-policies.py" --tenant "$TENANT_NAMESPACE" --namespace-id "$namespace" \
-  > "$RUN_DIR/protected-service-peers.json"
-kubectl apply -f "$RUN_DIR/protected-service-peers.json"
-```
-
-Mount the listener’s public CA on the stock OpenShell Gateway. Register the mandatory `oce-prepared-git` middleware using TLS verification, the audience, allowlist and `http_request_pre_credentials` binding. Retain the Gateway’s existing PKI. Run the documented worker installation GET and require a verified TLS connection, HTTP 200, and matching App and installation IDs before deployment. [Register the protected request-phase service](../../reference/repository-credentials/protected-openshell-git.md#register-the-request-phase-service)
-
-## 5. Deploy and open the owner’s Agent
-
-Prepare these EKS inputs **before** running any shared local-setup commands. Keep the EKS `request` helper; its paths are relative to the API root.
-
-```bash
-api=''
-state="$RUN_DIR/browser-state"
-mkdir -m 700 "$state"
-jq '{browserOrigin:.auth.baseUrl,nativeAdminDomain:.agentNativeAdmin.domain}' \
-  "$RUN_DIR/values.json" > "$state/state.json"
-```
-
-For the scripted workflow, run [local setup step 5](local-setup.md#5-create-the-configuration-and-agent) once, including **Bind the origin before deployment**. It creates the dedicated Gateway-managed Agent and patches its browser origin. Do not repeat the origin patch: it expects Configuration generation 1. Run the model-source grant and transport provisioning block from [step 6](local-setup.md#6-grant-model-access-and-deploy), but use `deploy_owner_revision` below instead of the local deployment helper.
-
-Before deployment, discover the managed Linear plugin and add it and the approved repository binding to the same draft. Run only the selection and draft-update commands in [Linear selection](../integrations/codex-plugins.md) and [Git binding](../repository-credentials/openshell-git-push.md#2-bind-the-agent-and-deploy-once); defer their deployment commands. Native process and file tools have full access inside OpenShell with approval set to `on-request` and reviewer `user`.
-
-For an Agent created through the [Console workflow](eks-openshell-owner-session.md#choose-a-console-deployment-action), use its saved Configuration and Agent IDs; do not run step 5 to create another Agent. Check its exact browser origin before deployment.
-
-The patch checks `expectedGeneration`, preserves the Gateway password SecretRef, and enables the native UI for this Agent’s exact origin. The device policy grants `operator.read` and `operator.write`. OCC supplies the authorized `occ-workspace-files` identity. Keep `skipBootstrap` unset in a new workspace.
-
-```bash
-deploy_owner_revision() {
-  local revision result phase i peers
-  peers=$(bash "$assets/trusted-envoy-peers.sh") || return 1
-  jq -e --argjson actual "$peers" '.==$actual' "$RUN_DIR/trusted-peers.json" >/dev/null || return 1
-  revision=$(request POST "$base/agents/$agent/deploy" | jq -er .data.id) || return 1
-  printf '%s\n' "$revision" > "$RUN_DIR/requested-revision"
-  # The Agent Service can be recreated with a new VIP. Re-read its selectors and ports.
-  for ((i=0;i<120;i++)); do
-    if python3 "$assets/service-policies.py" --tenant "$TENANT_NAMESPACE" \
-      --namespace-id "$namespace" --agent-id "$agent" > "$RUN_DIR/agent-service-peers.json"; then
-      kubectl apply -f "$RUN_DIR/agent-service-peers.json" || return 1
-      break
-    fi
-    sleep 3
-  done
-  if (( i == 120 )); then
-    printf 'Could not render Gateway Service policies for Agent %s in Namespace %s after %d attempts (revision %s).\n' \
-      "$agent" "$TENANT_NAMESPACE" "$i" "$revision" >&2
-    return 1
-  fi
-  for ((i=0;i<120;i++)); do
-    result=$(request GET "$base/agents/$agent/deployments/$revision") || return 1
-    phase=$(jq -er .data.status <<<"$result") || return 1
-    case "$phase" in
-      failed|cancelled) return 1 ;;
-      succeeded) if [[ $(request GET "$base/agents/$agent" | jq -er .data.activeRevisionId) == "$revision" ]]; then return 0; fi ;;
-    esac
-    sleep 5
-  done
-  return 1
-}
-deploy_owner_revision
-```
-
-If a call times out, inspect the saved revision and current state before repeating a mutation. Validate the actual Gateway and native Pod images and the Sandbox’s runtime identity. Use the [owner’s browser verification and return to read-only Git](eks-openshell-owner-session.md) to finish. Keep the Agent running and retain its volumes for the next owner session.
+To finish, [delete the Agent](quickstart-delete-agent.md), then clean up the installation with [Amazon EKS cleanup](eks-cleanup.md).

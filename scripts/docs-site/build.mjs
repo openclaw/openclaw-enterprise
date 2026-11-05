@@ -2,8 +2,9 @@ import fs from "node:fs";
 import GithubSlugger from "github-slugger";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgs } from "node:util";
 import { createMarkdownRenderer, renderMdxish } from "./vendor/mdx-ish.mjs";
-import { renderComputeMatrixBlocks } from "./compute-matrix.mjs";
+import { renderComputeMatrixBlocks } from "./compute-matrix.ts";
 import {
   parseDocsDocument,
   parseFrontmatter,
@@ -12,13 +13,26 @@ import {
 import { createGithubAnchorReader, githubHeadingVisibleText } from "./github-anchors.mjs";
 import { publicMarkdown } from "./public-markdown.mjs";
 
-if (process.argv.slice(2).some((arg) => arg !== "--check")) {
-  throw new Error("Usage: build.mjs [--check]");
-}
-const checkOnly = process.argv.includes("--check");
+const { values } = parseArgs({
+  options: { check: { type: "boolean" }, output: { type: "string" } },
+});
+const checkOnly = values.check;
 const root = process.cwd();
 const docs = path.join(root, "docs");
-const output = path.join(root, "dist/docs");
+const output = path.resolve(root, values.output ?? "dist/docs");
+if (values.output !== undefined) {
+  const previewPath = path.relative(path.join(root, "dist"), output).split(path.sep).join("/");
+  if (!/^\.docs-preview-[a-zA-Z0-9]{6}\/[1-9]\d*$/.test(previewPath)) {
+    throw new Error("Preview output must be a new build directory under dist/.docs-preview-*/");
+  }
+  const parent = path.dirname(output);
+  if (
+    fs.realpathSync(parent) !==
+    path.join(fs.realpathSync(path.join(root, "dist")), path.basename(parent))
+  ) {
+    throw new Error("Preview output cannot use a linked directory");
+  }
+}
 const assets = path.dirname(fileURLToPath(import.meta.url));
 const repository = "https://github.com/openclaw/openclaw-enterprise";
 const themeBootstrap =
@@ -79,6 +93,21 @@ for (const file of walk(docs)) {
     unpublished.add(source);
     continue;
   }
+  const humanVerified =
+    Array.isArray(frontmatter?.tags) && frontmatter.tags.includes("human_verified");
+  const lastVerified = frontmatter?.last_verified;
+  if (humanVerified || lastVerified !== undefined) {
+    if (
+      typeof lastVerified !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(lastVerified) ||
+      !Number.isFinite(Date.parse(lastVerified)) ||
+      new Date(lastVerified).toISOString().slice(0, 10) !== lastVerified
+    ) {
+      throw new Error(
+        source + ": last_verified must be a valid YYYY-MM-DD date for human verification",
+      );
+    }
+  }
   const text = publicMarkdown(authored, md);
   const parsed = parseDocsDocument(text, md, { sourceFile: file, root: docs });
   const githubAliases = new Map();
@@ -106,6 +135,8 @@ for (const file of walk(docs)) {
     title,
     route: route(source),
     searchable: frontmatter?.searchable !== false,
+    humanVerified,
+    lastVerified,
     ids,
     githubAliases,
     parsed,
@@ -344,6 +375,23 @@ for (const page of pages.values()) {
     const alias = page.githubAliases.get(md.utils.unescapeAll(id ?? ""));
     return tag + (alias ? '<span class="anchor-alias" id="' + escape(alias) + '"></span>' : "");
   });
+  if (page.humanVerified) {
+    page.html = page.html.replace(
+      /<\/h1>/,
+      '$&<details class="human-verification" data-pagefind-ignore>' +
+        '<summary><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></svg>' +
+        '<span>Human verified</span><span aria-hidden="true">·</span>' +
+        '<time datetime="' +
+        escape(page.lastVerified) +
+        '" aria-label="Last verified: ' +
+        escape(page.lastVerified) +
+        '">' +
+        escape(page.lastVerified) +
+        "</time>" +
+        '<span class="verification-info" aria-hidden="true">ⓘ</span></summary>' +
+        "<p>A human reviewed this page, but it may be out of date. Later edits may not have been reviewed.</p></details>",
+    );
+  }
 }
 for (const page of pages.values()) {
   if (page.source === "reference/api-explorer.md") {
@@ -356,7 +404,12 @@ if (checkOnly) {
   process.exit(0);
 }
 
-fs.rmSync(output, { recursive: true, force: true });
+if (values.output === undefined) {
+  fs.rmSync(output, { recursive: true, force: true });
+} else {
+  // Preview builds only create a fresh directory; never delete a caller's path.
+  fs.mkdirSync(output);
+}
 fs.mkdirSync(path.join(output, "assets"), { recursive: true });
 if (fs.existsSync(path.join(docs, "assets"))) {
   fs.cpSync(path.join(docs, "assets"), path.join(output, "assets"), { recursive: true });
@@ -573,4 +626,11 @@ location.replace(target.href);
 </script></head><body><p>This page moved. <a href="${escape(redirect.to)}">Continue to the current guide</a>.</p></body></html>`,
   );
 }
-console.log("Built " + pages.size + " pages; validated " + linkCount + " links → dist/docs");
+console.log(
+  "Built " +
+    pages.size +
+    " pages; validated " +
+    linkCount +
+    " links → " +
+    path.relative(root, output),
+);

@@ -1,16 +1,25 @@
 # Deploy OpenClaw Enterprise
 
-Install OpenClaw Enterprise on Kubernetes, verify access to the OpenClaw
-Control Plane (OCC), then deploy an Agent and check its model response. Use
-[Local Setup](quickstart.md) for a first installation on your machine. The
-production guides below are for operators using an existing cluster; [Kubernetes Setup](kubernetes-setup.md) gives a short introduction. Run
-repository commands from the repository root. Starting OCC needs no model
-credential; an Agent needs one to send a model request.
+Install OpenClaw Enterprise (OCE), verify access to the OpenClaw Control Plane
+(OCC), then deploy an Agent and check its model response. Choose one installation
+path below and keep its operator shell and protected files for the next step.
+Run repository commands from the matching release checkout's root. Starting OCC
+needs no model credential; an Agent needs one to send a model request.
+
+| Task                                                     | Start here                                                           | Continue with                                                                                                       |
+| -------------------------------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Try OCE on your machine                                  | [Local Setup](quickstart.md)                                         | [Deploy an Agent](quickstart.md#deploy-an-agent)                                                                    |
+| Try OpenShell locally                                    | [Local k3d setup](deploy/local-setup.md)                             | [Deploy your first Agent](deploy/deploy-first-agent.md)                                                             |
+| Install on an existing Kubernetes cluster with OpenShell | [Kubernetes setup](deploy/kubernetes-setup.md)                       | [Deploy your first Agent](deploy/deploy-first-agent.md)                                                             |
+| Install on Amazon EKS with OpenShell                     | [EKS setup](deploy/eks-openshell-setup.md)                           | [Deploy your first Agent](deploy/deploy-first-agent.md)                                                             |
+| Configure a custom Helm installation                     | [Standard Kubernetes](deploy/kubernetes.md)                          | [Production installation](deploy/production-installation.md), then [production Agents](deploy/production-agents.md) |
+| Upgrade an existing Helm installation                    | [Upgrade checklist](deploy/upgrade-checklist.md)                     | [Production image upgrades](deploy/production-upgrade.md)                                                           |
+| Recover an interrupted image upgrade                     | [Production upgrade recovery](deploy/production-upgrade-recovery.md) | Reconcile the original run before any retry                                                                         |
 
 ## Development
 
 Use [Local Setup](quickstart.md) to start the platform with Kubernetes and
-verify authenticated access. Then [deploy your first Agent](first-agent.md).
+verify authenticated access. Then [prepare the local Agent session](quickstart.md#deploy-an-agent).
 The [local Kubernetes development guide](deploy/local-kubernetes-development.md)
 explains the profile for contributors working on the platform.
 
@@ -18,7 +27,7 @@ explains the profile for contributors working on the platform.
 
 Follow [Local Setup](quickstart.md) to verify the control plane. That check
 proves authenticated access; it does not prove an Agent can answer a model
-request. Complete [Deploy your first Agent](first-agent.md) for that result.
+request. Follow [model verification](operate/model-verification.md) for that result.
 For local Kubernetes images and cleanup, see
 [local operations](deploy/local-operations.md).
 
@@ -31,15 +40,11 @@ The [console reference](../reference/console.md) covers browser behavior and lim
 
 ## Production
 
-Choose the guide for your cluster:
-
-- [Standard Kubernetes](deploy/kubernetes.md): prepare an existing Kubernetes
-  cluster, storage, networking, and PostgreSQL.
-- [Amazon EKS](deploy/eks.md): prepare AWS managed Kubernetes, node groups,
-  VPC networking, EBS storage, and optional RDS PostgreSQL.
-
-Both paths use the same Helm chart and shared installation procedure. Cluster
-hosting does not select the Agent model provider.
+The Kubernetes and EKS setup guides install OCE with OpenShell and prepare the
+shared operator session for **Deploy your first Agent**. Do not repeat the custom
+installation sequence below after either setup guide. Installation profiles and
+the custom Helm procedure use a separate configuration and Agent deployment path.
+Cluster hosting does not select the Agent model provider.
 
 ### Production prerequisites
 
@@ -47,9 +52,9 @@ hosting does not select the Agent model provider.
 
 ### Production installation sequence
 
-Follow these pages in order in the same operator shell:
+For a custom Helm installation, follow these pages in order in the same operator shell:
 
-1. [Build images and install the control plane](deploy/production-installation.md).
+1. [Select images and install the control plane](deploy/production-installation.md).
    Generate configuration from an
    [installation profile](deploy/installation-profiles.md) (recommended) or copy
    the manual YAML examples, then create system Secrets, prepare the fresh

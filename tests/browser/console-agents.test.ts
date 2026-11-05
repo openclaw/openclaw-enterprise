@@ -1,5 +1,18 @@
 /// <reference lib="es2024.promise" />
 
+import {
+  openCreateSecretDialog,
+  createModelCredentialSecret,
+  enterManualModel,
+  openAdvancedSettings,
+  optionValues,
+  runProvisioningPolls,
+  waitForCreateFormReads,
+  submitCreateAgent,
+  createAgentThroughForm,
+  expectCreateAccess,
+  expectCreateRefused,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -60,29 +73,18 @@ import {
 } from "./console-agents-browser-helpers.mjs";
 import {
   STARTER_CONTROL_UI,
-  openCreateSecretDialog,
-  createModelCredentialSecret,
-  enterManualModel,
-  openAdvancedSettings,
   configurationPostRequests,
   agentProvisionPostRequests,
   routeInstallationProvisioning,
   routeInstallationWithoutProvisioning,
   nativeSandboxDriver,
   agentPostRequests,
-  optionValues,
   createRepositoryLaunchFixture,
-  runProvisioningPolls,
-  waitForCreateFormReads,
-  submitCreateAgent,
-  createAgentThroughForm,
-  expectCreateAccess,
-  expectCreateRefused,
 } from "./console-agents-test-support.mjs";
 import {
   expectDeploymentOutcome,
   openFailureDetails,
-} from "./console-deployment-activity-helpers.mjs";
+} from "./console-deployment-activity-helpers.ts";
 import {
   ADMINISTRATOR_ACCESS_DENIED,
   AGENT_CREATE_DENIED,
@@ -206,6 +208,7 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   assert.equal(await page.getByRole("link", { name: "OpenAI admin", exact: true }).count(), 0);
   await page.getByLabel("Agent name").fill("Console-created Agent");
   const secret = await enterManualModel(page, key, "gpt-5.1");
+  assert.ok(secret, "Expected the created model credential Secret");
   for (const [filename, content] of Object.entries(WORKSPACE_DEFAULTS)) {
     assert.equal(await page.getByLabel(filename, { exact: true }).inputValue(), content);
   }
@@ -609,7 +612,7 @@ test("Dedicated repository Agent keeps its bindings through a Slack save that bi
   assert.deepEqual(agent.repositoryBindings, [
     { repositoryRef: "application", profile: "git-full" },
   ]);
-  assert.equal(agent.harnessAuth.method, "api_key");
+  assert.equal(agent.harnessAuth?.method, "api_key");
   assert.equal(agent.harnessAuth.source.namespaceId, namespace.id);
   assert.notEqual(agent.harnessAuth.source.id, modelSecret.id);
   await page.getByRole("tab", { name: "Channels", exact: true }).click();
@@ -2638,6 +2641,7 @@ test("Agent creation saves native models for dedicated and embedded harnesses", 
       page,
       `test-${mode}-${selectedModel}-key`,
     );
+    assert.ok(selectedSecret, "Expected the created model credential Secret");
     const agent = await createAgentThroughForm(page, fixture, namespace.id);
     assert.equal(agent.executionMode, mode);
     assert.deepEqual(agent.harnessAuth, { method: "api_key", source: selectedSecret.ref });

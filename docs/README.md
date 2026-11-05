@@ -11,8 +11,11 @@ The OpenClaw Control Plane (OCC) adds multi-tenancy, governance, and hard securi
 
 Choose where to install:
 
-- **Local k3d:** [Set up OCE with OpenShell and Codex](guides/deploy/local-setup.md). Then [add Git support](guides/repository-credentials/openshell-git-push.md), [add Codex plugins](guides/integrations/codex-plugins.md) on the same Agent, then [clean up](guides/deploy/local-cleanup.md). For a local installation without OpenShell, follow the [Kubernetes-only quickstart](guides/quickstart.md).
-- [Kubernetes Setup](guides/kubernetes-setup.md): install the control plane on a cluster you already operate, then [deploy and verify an Agent on that installation](guides/deploy/production-agents.md).
+- [Local k3d](guides/deploy/local-setup.md)
+- [Kubernetes](guides/deploy/kubernetes-setup.md)
+- [Amazon EKS](guides/deploy/eks-openshell-setup.md)
+
+After installation, [deploy your first Agent](guides/deploy/deploy-first-agent.md), complete browser onboarding, and save the operator session. Use the shared [Add Git](guides/repository-credentials/openshell-git-push.md), [Add Plugin](guides/integrations/codex-plugins.md), and [Delete Agent](guides/deploy/quickstart-delete-agent.md) instructions. Installation cleanup is separate for each platform.
 
 If you are still learning the product, start with [Concepts](guides/concepts.md).
 
@@ -26,6 +29,7 @@ If you are still learning the product, start with [Concepts](guides/concepts.md)
 | [Integrations](guides/integrations/README.md) | Choose and configure Drivers, experimental Backends, and channels.       |
 | [Deploy & Operate](guides/operate/README.md)  | Install and run the platform, manage credentials, and diagnose failures. |
 | [Reference](reference/README.md)              | Look up OCC CLI commands and HTTP API operations.                        |
+| [Testing & CI](testing/README.md)             | Run tests, inspect CI coverage, and interpret check results.             |
 | [Contribute](contributing/README.md)          | Set up a development environment and change the platform or its docs.    |
 
 <a id="platform-developer-guide"></a>

@@ -6,8 +6,7 @@
 // Ephemeral native worker reconnect is in runtime-image-startup-probe.test.mjs.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -15,13 +14,16 @@ import {
   cpuScaledImageTimeoutMs,
   imageSmokeTimeoutMultiplier,
 } from "../helpers/image-smoke-timeout.mjs";
-import { assertAllPassed } from "../helpers/node-test-summary.mjs";
+import { assertAllPassed } from "../helpers/node-test-summary.ts";
 import { GATEWAY_RUNTIME_ENTRYPOINT as DOCKER_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/docker/index.ts";
 import {
   GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
   NATIVE_WORKER_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import {
+  managedInstalls,
+  managedMcpInstalls,
+} from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import {
@@ -35,6 +37,7 @@ import {
   temporaryGatewayConfiguration,
   runGatewaySmoke,
 } from "../helpers/runtime-image-startup.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const slack = managedMcpInstalls.find(({ id }) => id === "occ-plugin:slack@1.0.0");
 
@@ -126,6 +129,13 @@ ${NATIVE_WORKER_ENTRYPOINT}`;
   );
 }
 
+async function workerPackageDirectory(t, prefix) {
+  const directory = await temporaryDirectory(t, prefix);
+  // The image's non-root worker may have a different UID from the fixture owner.
+  await chmod(directory, 0o755);
+  return directory;
+}
+
 // Each case uses a private container and run-owned fixtures. Two run at a time.
 describe("runtime image native worker", { concurrency: 2 }, () => {
   test(
@@ -208,8 +218,7 @@ process.exit(r.error ? 0 : r.status);`;
     "the dedicated worker loads a different CLI package with its declared credential slot",
     imageTestOptions,
     async (t) => {
-      const directory = await mkdtemp(join(tmpdir(), "oce-managed-cli-"));
-      t.after(() => rm(directory, { recursive: true, force: true }));
+      const directory = await workerPackageDirectory(t, "oce-managed-cli-");
       await mkdir(join(directory, "ai.openclaw.oce"));
       const { version, artifacts } = managedGoogleInstall.release;
       const runtimeDirectory = "/usr/local/lib/oce/plugins/documents";
@@ -368,8 +377,7 @@ console.log(require("node:fs").readFileSync(process.env.OPENCLAW_CONFIG_PATH, "u
     "the dedicated worker configures two MCP servers with their own credentials and tool selections",
     imageTestOptions,
     async (t) => {
-      const directory = await mkdtemp(join(tmpdir(), "oce-managed-mcp-"));
-      t.after(() => rm(directory, { recursive: true, force: true }));
+      const directory = await workerPackageDirectory(t, "oce-managed-mcp-");
       await mkdir(join(directory, "ai.openclaw.oce"));
       const url = "https://documents.example.test/services/mcp";
       const manifest = JSON.stringify({
@@ -552,7 +560,11 @@ console.log(require("node:fs").readFileSync(process.env.OPENCLAW_CONFIG_PATH, "u
         "tests/helpers/reuse-port-preload.mjs",
         "apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
         "apps/controller/src/drivers/compute/kubernetes/codex-plugin-stdio.ts",
-        "apps/controller/plugins/oce-google-workspace/ai.openclaw.oce/release.json",
+        "apps/controller/plugins/marketplace.json",
+        ...managedInstalls.map(
+          ({ packageName }) =>
+            `apps/controller/plugins/${packageName}/ai.openclaw.oce/release.json`,
+        ),
         "apps/controller/src/drivers/compute/embedded-gateway-owner.ts",
         "apps/controller/src/drivers/compute/gateway-tool-policy.ts",
         "apps/controller/src/drivers/compute/harness-egress-enrollment.ts",
@@ -560,6 +572,7 @@ console.log(require("node:fs").readFileSync(process.env.OPENCLAW_CONFIG_PATH, "u
         "apps/controller/src/drivers/compute/openclaw-config-issues.ts",
         "apps/controller/src/drivers/compute/runtime-startup.ts",
         "apps/controller/src/drivers/plugin/runtime-translator.ts",
+        "apps/controller/src/drivers/sandbox/openshell-plugin-runtime.ts",
         "packages/contracts/src/runtime-failure.mjs",
       ];
       const files = await Promise.all(

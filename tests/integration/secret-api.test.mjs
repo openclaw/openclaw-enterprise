@@ -1214,20 +1214,42 @@ test("Harness source admission rejects foreign references and superseded model s
   await fixture
     .controller()
     .handleNamespaceLifecycle(fixture.principal.id, foreign.data.id, "ready");
+  const foreignValue = `synthetic-${randomUUID()}`;
   const key = await request(fixture.app, "POST", `/namespaces/${foreign.data.id}/secrets`, {
-    body: { name: "Foreign key", value: `synthetic-${randomUUID()}` },
+    body: { name: "Foreign key", value: foreignValue },
   });
   assert.equal(key.status, 201, JSON.stringify(key.body));
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
-  const rejected = await request(fixture.app, "PATCH", path, {
-    body: {
-      configurationId: configuration.id,
-      harnessAuth: { method: "api_key", source: key.data.ref },
-    },
+  const localKey = await request(fixture.app, "POST", `/namespaces/${namespace.id}/secrets`, {
+    body: { name: "Local model key", value: `synthetic-${randomUUID()}` },
   });
-  // A foreign Secret reference is an invalid request (#1033), not a scope miss.
-  assert.equal(rejected.status, 400, JSON.stringify(rejected.body));
-  assert.equal(rejected.body.error.message, "Secret references cannot cross Namespaces.");
+  assert.equal(localKey.status, 201);
+  const patch = (source) =>
+    request(fixture.app, "PATCH", path, {
+      body: { configurationId: configuration.id, harnessAuth: { method: "api_key", source } },
+    });
+  assert.equal((await patch(localKey.data.ref)).status, 200);
+  const before = await request(fixture.app, "GET", path);
+  assert.equal(before.status, 200);
+  assert.deepEqual(before.data.harnessAuth, { method: "api_key", source: localKey.data.ref });
+
+  // Foreign references fail validation before OCC looks up either Secret.
+  for (const source of [key.data.ref, { ...key.data.ref, id: `sec_${randomUUID()}` }]) {
+    const denied = await patch(source);
+    assert.equal(
+      JSON.stringify(denied.body).includes(foreignValue),
+      false,
+      "a denied binding must not disclose the Secret value",
+    );
+    assert.equal(denied.status, 400);
+    assert.deepEqual(denied.body, {
+      error: { code: "INVALID_REQUEST", message: "Secret references cannot cross Namespaces." },
+      meta: { requestId: denied.body.meta.requestId },
+    });
+    const after = await request(fixture.app, "GET", path);
+    assert.equal(after.status, 200);
+    assert.deepEqual(after.data, before.data);
+  }
   for (const method of ["POST", "PATCH"]) {
     const rejected = await request(
       fixture.app,
@@ -1243,10 +1265,6 @@ test("Harness source admission rejects foreign references and superseded model s
     );
     assert.equal(rejected.status, 400);
   }
-  const localKey = await request(fixture.app, "POST", `/namespaces/${namespace.id}/secrets`, {
-    body: { name: "Local model key", value: `synthetic-${randomUUID()}` },
-  });
-  assert.equal(localKey.status, 201);
   const malformed = await request(fixture.app, "PATCH", path, {
     body: {
       configurationId: configuration.id,

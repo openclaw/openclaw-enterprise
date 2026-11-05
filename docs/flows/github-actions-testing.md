@@ -1,19 +1,19 @@
 ---
 created: 2026-09-04
-updated: 2026-10-29
-last_updated_session: authoring-run/01a17fae-f253-7d71-af12-d3f259c4faf0
+updated: 2026-11-03
+last_updated_session: authoring-run/c1bf6b1d-bea1-4de7-b3af-4a2ea197ba06
 ---
 
 # GitHub Actions testing flow
 
 ## Overview
 
-The [ordinary CI lanes](../testing/ci.md#ci) reject missing or skipped coverage. Docs-only runs check documentation and Suite Audit. Neither proves credentialed integrations.
+The [ordinary CI lanes](../testing/ci/required-checks.md) reject missing or skipped coverage. Docs-only runs check documentation and Suite Audit. Neither proves credentialed integrations.
 
 ## Entry Points
 
 - `.github/workflows/ci.yml:jobs`: PR, main push, merge-group and manual checks on ephemeral runners.
-- `.github/workflows/qa-advisory.yml:jobs`: 6-hourly QA on `main`, and post-merge QA when `QA_ADVISORY_ON_PUSH` is `true`; trusted pull requests select [full or focused advisory QA](../testing/ci.md#qa-matrix).
+- `.github/workflows/qa-advisory.yml:jobs`: 6-hourly QA on `main`, and post-merge QA when `QA_ADVISORY_ON_PUSH` is `true`; trusted pull requests select [full or focused advisory QA](../testing/ci/qa-advisory.md).
 - `.github/workflows/full-integration.yml:jobs`: manual integrations from main or approved Kubernetes model/OpenShell branches, pinned to the dispatched commit.
 
 ## Flow
@@ -52,8 +52,6 @@ graph TD
 
 ### 1. Select one source commit and coverage group
 
-`scripts/ci/run-tests.mjs:main` audits, runs and aggregates both locally and in CI.
-
 `.github/workflows/ci.yml:jobs`, `.github/workflows/full-integration.yml:jobs`,
 `scripts/ci/full-integration-preflight.mjs:validateFullIntegrationPreflight`, and
 `scripts/ci/test-suites.mjs:loadTestSuites`
@@ -68,7 +66,7 @@ preparation. `runLane` uses the same selector and retains the file's expected
 cases, environment and cleanup. Results carry `scope: focused`;
 `validateLaneEvidence` rejects them for full-lane aggregation, even for a one-file lane.
 
-CI uses the event checkout without external service credentials. Impact and Suite Audit start independently. In every mode, `static-checks` verifies checkout identity and runs workspace, lint, format, OpenAPI and docs checks (no product tests), alone in docs mode. The [coverage map](../testing/ci.md#tests-in-each-workflow) lists matrix jobs and the separate `runtime-image-fixture`; tests mode runs only selected lanes. Image startup parts 1 and 2, PostgreSQL Application and the `checks-baseline` and `checks-browser` parts use `blacksmith-32vcpu-ubuntu-2404` for its 8 CPUs, k3d fixture and observability for its NetworkPolicy-enforcing kernel; `runtime-image-fixture` uses `ubuntu-22.04`. Other lanes, Static Checks and audit use `blacksmith-16vcpu-ubuntu-2404`.
+CI uses the event checkout without external service credentials. Impact and Suite Audit start independently. In every mode, `static-checks` verifies checkout identity and runs workspace, lint, format, OpenAPI and docs checks (no product tests), alone in docs mode. The [coverage map](../testing/ci/required-checks.md#scenarios) lists matrix jobs and the separate `runtime-image-fixture`; tests mode runs only selected lanes. Image startup parts 1 and 2, PostgreSQL Application and the `checks-baseline` and `checks-browser` parts use `blacksmith-32vcpu-ubuntu-2404` for its 8 CPUs, k3d fixture and observability for its NetworkPolicy-enforcing kernel; `runtime-image-fixture` uses `ubuntu-22.04`. Other lanes, Static Checks and audit use `blacksmith-16vcpu-ubuntu-2404`.
 
 The selector verifies that the tested merge has the event head as its second parent. It
 compares that tree with its first parent, the current base, using policy from the base.
@@ -108,11 +106,11 @@ PostgreSQL migration and application suites own separate servers; each Kubernete
 
 The application lane gives the native IAM barrier test its own migrated PostgreSQL database; only that test receives its application and migrator connection details, which the CLI keeps out of `GITHUB_ENV`. Its unregistered supplier stays in that disposable database. This fixture does not establish production writer participation in the barrier.
 
-Full CI and Full Integration call the [run-ci-lane action](../../.github/actions/run-ci-lane/action.yml) for setup, selected baseline checks, preparation, execution, unconditional cleanup, and sanitized result upload. Callers own the commit, protected environment, explicit credentials and timeout; tests stop five minutes earlier.
+The [run-ci-lane action](../../.github/actions/run-ci-lane/action.yml) prepares, runs, and cleans up lanes and uploads sanitized results. Callers set the commit, environment, credentials, and timeout. Tests stop five minutes early.
 
 PR dependency caches stay within GitHub's PR merge-ref scope; main caches stay main-scoped. Results and credential-bearing state are not caches; protected jobs do not promote PR artifacts.
 
-The provider job uses the shared `blacksmith-8vcpu-ubuntu-2404` runner for image-build and k3d-import disk headroom; standard Ubuntu reached `DiskPressure` and evicted the seccomp probe before startup. Preparation copies the archive to each owned k3d node for node-local `ctr image import`; k3d `tools-node` can report success despite logged per-node failures. Imported manifest and CRI checks remain required before tests.
+The provider job uses `blacksmith-8vcpu-ubuntu-2404` for image-build and k3d-import disk space. Standard Ubuntu hit `DiskPressure` and evicted the seccomp probe. Preparation uses `ctr image import` on each owned node and verifies its manifest and CRI records. The k3d `tools-node` can report success despite per-node failures.
 
 ### 2. Prepare resources under the job owner
 
@@ -120,7 +118,7 @@ The provider job uses the shared `blacksmith-8vcpu-ubuntu-2404` runner for image
 
 [CI resource preparation](github-actions-testing/preparation.md) traces tool setup, image and cluster preparation, protected credentials, and resource ownership. Continue below when preparation has produced the lane state.
 
-For `logging-collector`, `scripts/ci/prepare.mjs:prepareLane` pre-pulls the pinned Collector, Node, Prometheus and Grafana images before publishing lane inputs. The metrics test and preparation share the digests in `scripts/ci/metrics-monitoring-images.mjs:metricsMonitoringImages`. `scripts/ci/prepare.mjs:ensureDockerSourceImage` reuses a verified local repository digest or pulls through `scripts/ci/image-pull.mjs:pullImage`, then verifies that digest before tests start containers. Registry 5xx and rate limits retry within the shared pull budget; missing manifests and authorization refusals fail preparation immediately. Explicit unpinned Node overrides keep the existing test-owned pull behavior.
+For `logging-collector`, `scripts/ci/prepare.mjs:prepareLane` pre-pulls the pinned Collector, Node, Prometheus and Grafana images before publishing lane inputs. The metrics test and preparation share the digests in `scripts/ci/metrics-monitoring-images.mjs:metricsMonitoringImages`. `scripts/ci/prepare.mjs:ensureDockerSourceImage` reuses a verified local repository digest or pulls through `scripts/ci/image-pull.ts:pullImage`, then verifies that digest before tests start containers. Registry 5xx and rate limits retry within the shared pull budget; missing manifests and authorization refusals fail preparation immediately. Explicit unpinned Node overrides keep the existing test-owned pull behavior.
 
 `checks-browser`, `checks-browser-2`, `postgres-auth`, `postgres-platform`, `images-runtime-startup`, `images-runtime-startup-2` and `images-runtime-startup-3` use separate runners and required artifacts. `scripts/ci/prepare.mjs:imageBuildArgs` enables scoped BuildKit caches for hosted image jobs: packaging exports; runtime startup restores. Images load into the job's Docker engine; cache credentials stay in preparation.
 
@@ -152,6 +150,11 @@ Native runtime-image tests trust a dynamic Codex Docker seccomp profile only whe
 that state is not CI proof; the standalone fallback remains the pinned reviewed
 manual profile. Production node provisioning remains outside CI ownership; see
 [Codex sandbox setup](../guides/deploy/codex-sandbox.md).
+
+`scripts/ci/staging-qualification.ts:pull` verifies release metadata and
+[isolates pull credentials](../testing/ci/staging-qualification.md).
+`smoke` runs trusted workflow code against the release images. Results identify
+both commits.
 
 ### 3. Execute and account for actual cases
 
@@ -216,7 +219,7 @@ On POSIX, `scripts/ci/cleanup-command.mjs` leads each group. Caller exit,
 including SIGKILL or `process.exit()`, closes its private IPC channel;
 the supervisor kills its group. Completion drains output, kills grouped
 descendants, and returns command status.
-At its [deadline](../testing/ci.md#cleanup-command-deadlines), TERM then KILL
+At its [deadline](../testing/ci/configuration.md#runner-overrides), TERM then KILL
 bound the group despite direct-child exit. Escaped groups receive no signals;
 retained streams close after another grace. Windows provides direct-child
 termination and stream bounds, without this supervisor.
@@ -258,6 +261,10 @@ External reconciliation awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-03 01:07: Bind staging tests to release source. (authoring-run/c1bf6b1d-bea1-4de7-b3af-4a2ea197ba06 - d2fc28e1d6d70292e462956cedef0dae9281c48c)
+
+- 2026-11-02 23:56: Trace staging authentication. (authoring-run/5817dfd2-487d-44bc-a2f7-2d57659ea0fc - db2cc11c4fd767c47394d680ef46bf26e1202fbc)
 
 - 2026-10-29 02:11: Add focused Compose OpenShell selection and sanitized native worker observations. (authoring-run/01a17fae-f253-7d71-af12-d3f259c4faf0 - aa2cfe543b3bba361679e7e1a3028c3327d2c388)
 

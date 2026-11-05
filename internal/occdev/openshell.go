@@ -36,7 +36,9 @@ const (
 	openShellSandboxImage           = "ghcr.io/nvidia/openshell/sandbox:0.1.6@sha256:1038eb5c1f191fa3c34684fd7041b891c78ec570979d487f36e06e08f91bfb63"
 	openShellSupervisorImage        = "ghcr.io/nvidia/openshell/supervisor:0.1.6@sha256:ce859a7d77ee515d3fe0b3c7dc61286516f402eb1d25c761d806d9ae5ed96c0b"
 	openShellAdmissionContainerPath = "/etc/openclaw-development/openshell-pod-security-admission.yaml"
-	openShellAllowedPodLabelsValue  = `--set-json=gatewayConfig.openshell\.drivers\.kubernetes.allowed_pod_labels=["openclaw.dev/*","app.kubernetes.io/name","app.kubernetes.io/managed-by"]`
+	// Keep in step with OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST in the OpenShell Sandbox Driver;
+	// TestKubernetesOnlyOpenShellGatewayInstallsImportedImagesBehindAClusterIP compares them.
+	openShellAllowedPodLabelsValue = `--set-json=gatewayConfig.openshell\.drivers\.kubernetes.allowed_pod_labels=["openclaw.dev/*","app.kubernetes.io/name","app.kubernetes.io/managed-by"]`
 )
 
 type openShellDevelopmentAssets struct {
@@ -301,18 +303,9 @@ func (r *runner) importOpenShellImage(ctx context.Context, state *developmentSta
 	if !strings.HasPrefix(platform, "linux/") {
 		return "", fmt.Errorf("OpenShell %s image must contain a Linux platform", component)
 	}
-	// Docker's containerd image store cannot save a manifest-list reference
-	// as one complete image (see resolveDevelopmentImageSource), so point the
-	// staging tag at the platform child the list names for this host when there
-	// is one.
-	resolved, err := r.resolveDevelopmentImageSource(ctx, source, platform)
+	childStaged, err := r.stageDevelopmentPlatformChild(ctx, source, platform, stagingTag)
 	if err != nil {
 		return "", err
-	}
-	if resolved != source {
-		if err := r.run(ctx, r.engine, "tag", resolved, stagingTag); err != nil {
-			return "", err
-		}
 	}
 	archive := filepath.Join(root, component+"-image.tar")
 	defer func() {
@@ -325,7 +318,7 @@ func (r *runner) importOpenShellImage(ctx context.Context, state *developmentSta
 	// child, keep the platform filter: it still works where the engine can
 	// resolve it, and names the failure otherwise.
 	saveArgs := []string{"image", "save"}
-	if r.engine == "docker" && resolved == source {
+	if r.engine == "docker" && !childStaged {
 		saveArgs = append(saveArgs, "--platform", platform)
 	}
 	saveArgs = append(saveArgs, "--output", archive, recorded)
@@ -376,8 +369,8 @@ func (r *runner) importOpenShellImage(ctx context.Context, state *developmentSta
 	return runtimeReference, nil
 }
 
-// Kubernetes-only installations always authenticate the Gateway, independently
-// of the optional static-inference authority. Compose keeps its existing profile.
+// Kubernetes-only installations always authenticate the Gateway.
+// Compose keeps its existing profile.
 func (state *developmentState) authenticatedOpenShell() bool {
 	return state.DeploymentMode == "k3d" && state.SandboxDriver == "openshell"
 }
@@ -402,11 +395,7 @@ func (r *runner) installOpenShellGateway(ctx context.Context, state *development
 		}
 	}
 	args := []string{"upgrade", "--install", openShellGatewayService, assets.gatewayChart, "--namespace", namespace, "--kubeconfig", filepath.Join(state.directory, "kubeconfig"), "--kube-context", "k3d-" + state.Cluster, "--timeout", timeout.String()}
-	// The registry contacts OCC at startup. Install both releases before waiting
-	// for the protected Gateway; native PKI hooks still complete synchronously.
-	if !state.ProtectedEgress {
-		args = append(args, "--wait")
-	}
+	args = append(args, "--wait")
 	args = append(args, openShellGatewayValues(state, assets, gatewayValues)...)
 	if err := r.run(ctx, "helm", args...); err != nil {
 		return err

@@ -48,13 +48,50 @@ import {
 } from "../helpers/runtime-image-startup.mjs";
 import { relaySockets } from "../helpers/socket-relay.mjs";
 
+// Only the trusted staging verifier selects the reviewed historical expectations.
+const stagingCodexVersion = process.env.OCC_TEST_STAGING_CODEX_VERSION ?? "0.164.0";
+assert.ok(["0.164.0", "0.163.0-alpha.2"].includes(stagingCodexVersion));
+const historicalCodex = stagingCodexVersion === "0.163.0-alpha.2";
+const historicalRelease = "54bfa7fc1b99e362450beb5f9211e164991fa7b4";
+let historicalController;
+if (historicalCodex) {
+  assert.equal(process.env.EXPECTED_OCC_REVISION, historicalRelease);
+  const imageId = process.env.OCC_TEST_PRODUCTION_IMAGE;
+  assert.match(imageId ?? "", /^sha256:[a-f0-9]{64}$/);
+  // Staging verified this controller and runtime as a pair. Its launchers check its own
+  // OpenClaw pin. Read them inside the controller and execute them only in the runtime.
+  const { stdout } = await runDocker([
+    "run",
+    "--rm",
+    "--pull=never",
+    "--network=none",
+    "--read-only",
+    "--cap-drop=ALL",
+    "--security-opt=no-new-privileges",
+    "--user=1000:1000",
+    "--entrypoint=node",
+    imageId,
+    "--input-type=module",
+    "-e",
+    `
+      import { GATEWAY_RUNTIME_ENTRYPOINT as docker } from "./apps/controller/src/drivers/compute/docker/index.ts";
+      import { GATEWAY_RUNTIME_ENTRYPOINT as kubernetes } from "./apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+      import { GATEWAY_TOOL_POLICY_SOURCE_COMMIT as commit } from "./apps/controller/src/drivers/compute/gateway-tool-policy.ts";
+      console.log(JSON.stringify({ docker, kubernetes, commit }));
+    `,
+  ]);
+  historicalController = JSON.parse(stdout);
+}
+const kubernetesGatewayEntrypoint =
+  historicalController?.kubernetes ?? KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT;
+
 const syntheticCodexApiKey = "sk-openclaw-runtime-image-smoke-synthetic";
 
 test("runtime image seccomp option requires the CI-prepared profile record", async (t) => {
   const directory = await temporaryDirectory(t, "oce-runtime-seccomp-profile-");
   const contents = Buffer.from(`${JSON.stringify({ defaultAction: "SCMP_ACT_ERRNO" })}\n`);
   const digest = createHash("sha256").update(contents).digest("hex");
-  const profile = join(directory, `codex-0.164.0-${digest}.json`);
+  const profile = join(directory, `codex-${stagingCodexVersion}-${digest}.json`);
   const statePath = join(directory, "state.json");
   await writeFile(profile, contents);
   await writeFile(
@@ -69,15 +106,23 @@ test("runtime image seccomp option requires the CI-prepared profile record", asy
     }),
   );
 
-  assert.deepEqual(await reviewedCodexSeccompSecurityOptions({ profile, ciStatePath: statePath }), [
+  const options = { profile, ciStatePath: statePath, codexVersion: stagingCodexVersion };
+  assert.deepEqual(await reviewedCodexSeccompSecurityOptions(options), [
     "--security-opt",
     "no-new-privileges",
     "--security-opt",
     `seccomp=${profile}`,
   ]);
+  await assert.rejects(
+    reviewedCodexSeccompSecurityOptions({
+      ...options,
+      codexVersion: historicalCodex ? "0.164.0" : "0.163.0-alpha.2",
+    }),
+    /must point to codex-/,
+  );
 
   await assert.rejects(
-    reviewedCodexSeccompSecurityOptions({ profile, ciStatePath: "" }),
+    reviewedCodexSeccompSecurityOptions({ ...options, ciStatePath: "" }),
     /must be prepared by image CI state/,
   );
 
@@ -110,7 +155,7 @@ test("runtime image seccomp option requires the CI-prepared profile record", asy
     }),
   );
   await assert.rejects(
-    reviewedCodexSeccompSecurityOptions({ profile, ciStatePath: statePath }),
+    reviewedCodexSeccompSecurityOptions(options),
     /must match the CI-prepared Codex seccomp profile path/,
   );
 
@@ -126,7 +171,7 @@ test("runtime image seccomp option requires the CI-prepared profile record", asy
     }),
   );
   await assert.rejects(
-    reviewedCodexSeccompSecurityOptions({ profile, ciStatePath: statePath }),
+    reviewedCodexSeccompSecurityOptions(options),
     /must match the CI-prepared Codex seccomp profile digest/,
   );
 });
@@ -587,7 +632,9 @@ const timeout = setTimeout(() => { native.kill("SIGKILL"); process.exitCode = 1;
     native.stdin.write(JSON.stringify({ method: "initialized" }) + "\\n");
     const { config } = await rpc("config/read", {});
     // Native metrics have a separate upstream exporter default from logs.
-    assert.equal(config.otel.metrics_exporter, "none");
+    if (!${historicalCodex}) {
+      assert.equal(config.otel.metrics_exporter, "none");
+    }
     assert.equal(config.allow_login_shell, false);
     assert.equal(config.shell_environment_policy.set.PATH, environment.PATH);
     assert.equal(config.shell_environment_policy.set.NODE_EXTRA_CA_CERTS, environment.OPENCLAW_SHELL_NODE_EXTRA_CA_CERTS);
@@ -654,6 +701,7 @@ test(
     });
 
     const { logs } = await runGatewaySmoke(t, "openclaw", {
+      entrypoint: historicalController?.docker,
       configuration,
       extraEnvironment: ["OPENCLAW_LOG_LEVEL=error"],
     });
@@ -670,6 +718,7 @@ test(
   imageTestOptions,
   async (t) => {
     const { logs, pluginList } = await runGatewaySmoke(t, "openclaw", {
+      entrypoint: historicalController?.docker,
       collectPlugins: true,
       configuration: createAdmittedRuntimeImageConfiguration("openclaw", {
         enableSlack: true,
@@ -689,6 +738,7 @@ test(
   imageTestOptions,
   async (t) => {
     const { logs, containerName, pluginList } = await runGatewaySmoke(t, "codex", {
+      entrypoint: historicalController?.docker,
       collectPlugins: true,
     });
 
@@ -808,7 +858,7 @@ test(
     const configurationPath = await temporaryGatewayConfiguration(t, "codex");
     const { logs, containerName } = await runGatewaySmoke(t, "codex", {
       configurationPath: "/etc/openclaw/openclaw.json",
-      entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+      entrypoint: kubernetesGatewayEntrypoint,
       extraEnvironment: ["OPENCLAW_WORKSPACE_DIR=/home/node/workspace", "OPENCLAW_LOG_LEVEL=error"],
       tmpfs: [
         "/home/node:size=1024m,uid=1000,gid=1000,mode=700",
@@ -1005,7 +1055,7 @@ function run(args, env, readinessUrl, limitMs = startupMs) {
           3 * startupMs + harnessRunMs + 2 * validateMs + 60_000 * imageSmokeTimeoutMultiplier,
       },
       JSON.stringify({
-        gatewayArgs: nodeProgramArguments(KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT),
+        gatewayArgs: nodeProgramArguments(kubernetesGatewayEntrypoint),
         harness: NATIVE_WORKER_ENTRYPOINT,
         workspaceNodeId: randomBytes(32).toString("hex"),
         startupMs,
@@ -1415,7 +1465,9 @@ assert.equal(allowed.endsWith("\n200") && allowed.includes("# service=git-upload
 assert.equal(request("fixture/unadmitted.git/info/refs?service=git-upload-pack", true) === '{"error":{"code":"invalid-credential"}}\n401', true, "unadmitted repository must return 401 invalid-credential");
 console.log("broker-denial-codes-confirmed");
 NODE`;
-    const probeSecurityOptions = await reviewedCodexSeccompSecurityOptions();
+    const probeSecurityOptions = await reviewedCodexSeccompSecurityOptions({
+      codexVersion: stagingCodexVersion,
+    });
     const probe = `
 const assert = require("node:assert/strict");
 const cp = require("node:child_process");
@@ -1757,13 +1809,18 @@ const timeout = setTimeout(() => {
 );
 
 test(
-  "runtime image shares Codex 0.164.0 between the plugin and Dedicated command",
+  "runtime image shares the reviewed Codex version between the plugin and Dedicated command",
   imageTestOptions,
   async () => {
-    const source = await readOpenclawSource();
+    const source = historicalCodex
+      ? {
+          commit: "554f0b886bde6c089578c49967227f8b50d1cf16",
+          sourceArchiveSha256: "1532c8e1baf84ecae6080aee6d15003afd2458aeaaeaa30b0504818b000c82d9",
+        }
+      : await readOpenclawSource();
     assert.equal(
       source.commit,
-      GATEWAY_TOOL_POLICY_SOURCE_COMMIT,
+      historicalController?.commit ?? GATEWAY_TOOL_POLICY_SOURCE_COMMIT,
       "expected a policy-qualified runtime",
     );
     const defaultPluginPolicy = codexRuntimeArtifact({}, []).configuration.plugins;
@@ -1780,11 +1837,11 @@ const { realpathSync, readFileSync } = require("node:fs");
 const { execFileSync } = require("node:child_process");
 const plugin = createRequire("/app/dist/extensions/codex/package.json");
 const installed = plugin.resolve("@openai/codex/package.json");
-assert.equal(JSON.parse(readFileSync(installed, "utf8")).version, "0.164.0");
+assert.equal(JSON.parse(readFileSync(installed, "utf8")).version, ${JSON.stringify(stagingCodexVersion)});
 const bundledCommand = plugin.resolve("@openai/codex/bin/codex.js");
 assert.equal(realpathSync("/app/node_modules/.bin/codex"), realpathSync(bundledCommand));
-assert.equal(execFileSync("codex", ["--version"], {encoding: "utf8"}).trim(), "codex-cli 0.164.0");
-assert.equal(execFileSync(process.execPath, [bundledCommand, "--version"], {encoding: "utf8"}).trim(), "codex-cli 0.164.0");
+assert.equal(execFileSync("codex", ["--version"], {encoding: "utf8"}).trim(), ${JSON.stringify(`codex-cli ${stagingCodexVersion}`)});
+assert.equal(execFileSync(process.execPath, [bundledCommand, "--version"], {encoding: "utf8"}).trim(), ${JSON.stringify(`codex-cli ${stagingCodexVersion}`)});
 const provenance = JSON.parse(readFileSync("/opt/oce/runtime/provenance.json", "utf8"));
 assert.equal(provenance.source, "https://github.com/openclaw/openclaw");
 const expectedSource = JSON.parse(process.argv[2]);
@@ -1792,20 +1849,31 @@ assert.equal(provenance.commit, expectedSource.commit);
 assert.equal(provenance.sourceArchiveSha256, expectedSource.sourceArchiveSha256);
 assert.equal(provenance.openclawBridgePatchSha256, "f8d1e51706f59964839d231818909ffb2ee5f6b951385a353a1a4fd07c45e2cc");
 assert.equal(Object.hasOwn(provenance, "openclawConnectPatchSha256"), false);
-assert.equal(Object.hasOwn(provenance, "codexDependencyPinPatchSha256"), false);
-assert.equal(provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256, "4d7b31957dab6e8427eeb9a8cce0a8013f0f96b999e2692fdd6903595c3c4804");
+if (${historicalCodex}) {
+  assert.equal(provenance.codexDependencyPinPatchSha256, "d7eea3944eaaf4469ede0261d4f706148cd672f29f1efedd59e325c46c90d119");
+} else {
+  assert.equal(Object.hasOwn(provenance, "codexDependencyPinPatchSha256"), false);
+}
+assert.equal(provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256, ${JSON.stringify(
+      historicalCodex
+        ? "4d7b31957dab6e8427eeb9a8cce0a8013f0f96b999e2692fdd6903595c3c4804"
+        : "fe61a9c3bd9d2c777db5ce7b6272c0db8b12da4a97a07fb7a42cc879a10dbf0e",
+    )});
 assert.deepEqual(provenance.patches, {
   "openclaw-codex-read-only-paths.patch": provenance.openclawBridgePatchSha256,
-  "openclaw-codex-full-access-profile.patch": "7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a",
+  "openclaw-codex-full-access-profile.patch": ${historicalCodex} ? "7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a" : "37d79564f56e068c6ac982e5524a58e9da65172ac96177debca81d51442deccc",
   "openclaw-required-worker-authority-regression.patch": provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256,
-  "openclaw-control-ui-browser-reconnect.patch": "f281242922bcd1e3349aef18e24d77e95ddf3e3d1dacbea30b26c759e0f5f947",
-  "openclaw-terminated-gateway-namespace.patch": "570fb99e849442793eeb0e59417b4b4b2b282e7d236392a022258753b353263b",
   "openclaw-google-worker-placeholder.patch": "55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31",
-  "openclaw-linux-private-store-setgid.patch": "e97b0274d925f886638b0d8508d88842886b7ac3d84eacd29d76baf6cc487c8c",
-  "openclaw-plugin-config-startup-report.patch": "47519811aed229a451b6df394b7d7823814da2046616268f4f0aed2e433a8f93",
-  "openclaw-same-node-mcp.patch": "656340049eb6515388f54e5b3529beec7cb27ba9d1c2dc292bdb811ab307216c",
+  ...(${historicalCodex} ? {
+    "openclaw-control-ui-browser-reconnect.patch": "f281242922bcd1e3349aef18e24d77e95ddf3e3d1dacbea30b26c759e0f5f947",
+    "openclaw-terminated-gateway-namespace.patch": "570fb99e849442793eeb0e59417b4b4b2b282e7d236392a022258753b353263b",
+    "stock-codex-0.163.0-alpha.2-dependency-pin.patch": "d7eea3944eaaf4469ede0261d4f706148cd672f29f1efedd59e325c46c90d119",
+  } : {
+    "openclaw-control-ui-browser-reconnect.patch": "21fef3589702683a173dd2967d852954e1bfa56ea9d9e9a99bdaa28159ff5d2c",
+    "openclaw-terminated-gateway-namespace.patch": "1ed77577d53d43619f7c8fb33dbcdcf6a728351821abfe1b0beee947bd6eb456",
+  }),
 });
-assert.equal(provenance.codex.version, "0.164.0");
+assert.equal(provenance.codex.version, ${JSON.stringify(stagingCodexVersion)});
 assert.equal(Object.hasOwn(provenance, "codexPatchSha256"), false);
 assert.equal(Object.hasOwn(provenance, "codexVersion"), false);
 const contents = readFileSync("/opt/oce/runtime/contents.json");
@@ -1943,9 +2011,11 @@ const deadline = setTimeout(() => {
     native.stdin.write(JSON.stringify({ method: "initialized" }) + "\n");
     // Production startup uses this experimental API. An empty query proves protocol
     // support without authentication, remote catalog access, or a model request.
-    const emptySearch = await rpc("plugin/search", { searchTerm: "" });
-    assert.deepEqual(emptySearch.data, []);
-    assert.equal(emptySearch.nextCursor ?? null, null);
+    if (!${historicalCodex}) {
+      const emptySearch = await rpc("plugin/search", { searchTerm: "" });
+      assert.deepEqual(emptySearch.data, []);
+      assert.equal(emptySearch.nextCursor ?? null, null);
+    }
     for (const pluginName of names) await rpc("plugin/install", { marketplacePath, pluginName });
     const defaultPolicy = JSON.parse(process.argv[1]);
     for (const stage of ["installed", "default-off", "selected"]) {
@@ -1971,7 +2041,7 @@ const deadline = setTimeout(() => {
       assert.deepEqual(fixtureSkills.sort((a, b) => a.name.localeCompare(b.name)),
         enabledNames.map((name) => ({ name: name + ":inspect", pluginId: name + "@marketplace" })));
     }
-    process.stdout.write("shared-codex-0.164.0-ready\n");
+    process.stdout.write("shared-reviewed-codex-ready\n");
   } finally {
     clearTimeout(deadline);
     lines.close();
@@ -1993,6 +2063,6 @@ const deadline = setTimeout(() => {
       JSON.stringify(defaultPluginPolicy),
       JSON.stringify(source),
     ]);
-    assert.match(stdout, /shared-codex-0.164.0-ready/);
+    assert.match(stdout, /shared-reviewed-codex-ready/);
   },
 );

@@ -13,16 +13,14 @@ select **Open Agent UI** on the Agent detail page. Your account needs
 The checkbox requires supported Dedicated provisioning and installation native
 admin access. For an existing Agent, follow [Configure each Agent](#configure-each-agent).
 
-With Kubernetes Compute and OpenShell on either local control plane, the
-[first-Agent command](../first-agent.md) can prepare native admin access with
-`--control-ui`. Other local profiles require the console workflow above.
-The helper refuses to reuse its Agent after outside Configuration edits.
+The [local OpenShell quickstart](local-setup.md) includes native admin setup,
+browser onboarding and reopening the same conversation.
 
 <a id="requirements"></a>
 
 ## Production requirements
 
-- Private workspace routing already works for the target Agents. Helm rejects `agentNativeAdmin.enabled: true` unless `gatewayRouting.enabled: true` is also set.
+- Private workspace routing already works for the target Agents. Private routing is enabled by default, but its controllers, GatewayClass, service-key Secret, and matching Installation settings must be ready. Helm rejects an explicit routing opt-out while native admin is enabled.
 - A public wildcard DNS name and HTTPS certificate route traffic to the OCC API Service, not to Envoy. Use a previously unused `agentNativeAdmin.domain` for the first pilot rollout; do not reuse a domain from prior native UI experiments because OCC does not evict already registered browser service workers.
 - The configured Agent domain is separate from the console host and does not include a wildcard, scheme, port, or path.
 - The configured `agentNativeAdmin.sharedCookieDomain` is the shared OCE session cookie parent domain. The console host and Agent domain must both be inside it on DNS-label boundaries, for example `console.oce.example.com`, `agents.oce.example.com`, and cookie domain `oce.example.com`. All matching subdomains that can receive the OCE session cookie must be trusted OCE ingress endpoints.

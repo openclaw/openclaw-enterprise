@@ -15,10 +15,21 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { chmod, mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  cp,
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { createServer } from "node:https";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import test, { describe } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -27,6 +38,7 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { bashString, commandShim, startCommandServer } from "../helpers/fixture-command-server.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { runDeployedCapability } from "../helpers/deployed-repository-capability.ts";
+import { registerDispatchRestoreTests } from "../helpers/production-upgrade-dispatch-restore.ts";
 
 const execute = promisify(execFile);
 const readyCapability = { status: 200, body: '{"durableAdmissionVersion":1}' };
@@ -298,7 +310,7 @@ async function runPreflight(root, cwd, state, pod) {
 
 // One command of one fixture. `io` (fixture-command-server.mjs) writes its output and
 // ends it; returning without an exit ends it with status 0.
-async function fakeCommand(root, { command: tool, args, cwd }, io) {
+async function fakeCommand(root, { command: tool, args, cwd }, io, afterDeploy) {
   const stateFile = join(root, "state.json");
   const state = JSON.parse(readFileSync(stateFile, "utf8"));
   const save = () => writeFileSync(stateFile, JSON.stringify(state));
@@ -743,7 +755,7 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
       });
     } else if (args.includes("get") && args.includes("pods")) {
       const initialization = args.some((a) => a.includes("component=initialization"));
-      const revision = args.some((a) => a.includes("openclaw.dev/revision=rev_new"));
+      const revision = args.some((a) => a === `openclaw.dev/revision=${state.activeRevision}`);
       const pairComponent = args.some((a) => a.includes("app.kubernetes.io/component=worker"))
         ? "worker"
         : args.some((a) => a.includes("app.kubernetes.io/component=api"))
@@ -979,13 +991,20 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
         log(`agent-deploy-failed ${agentId}`);
         return fail(1, failure);
       }
-      state.activeRevision = "rev_new";
+      const { id, status } = state.nextDeployment ?? { id: "rev_new", status: "succeeded" };
+      delete state.nextDeployment;
+      if (status === "succeeded") {
+        state.activeRevision = id;
+      }
+      const deployment = [fileArg("--namespace"), agentId, id].join("/");
+      state.deployments[deployment] = status;
       save();
       log(`agent-deploy ${agentId}`);
+      await afterDeploy?.();
       if (take("lost-agent-response")) {
         return fail(9);
       }
-      out({ id: "rev_new" });
+      out({ id });
     } else if (args.includes("agent") && args.includes("get")) {
       out({
         id: "agt_test",
@@ -994,7 +1013,22 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
         activeRevisionId: state.activeRevision ?? "rev_old",
       });
     } else if (args.includes("deployment-status")) {
-      out({ status: "succeeded" });
+      const namespaceId = fileArg("--namespace");
+      const agentId = args.at(-2);
+      const deploymentId = args.at(-1);
+      const status = state.deployments[[namespaceId, agentId, deploymentId].join("/")];
+      if (!status) {
+        return fail(1, "deployment not found");
+      }
+      const response = state.deploymentStatusResponses?.[deploymentId];
+      if (response) {
+        out(response.stdout);
+        return io.exit(response.exitCode ?? 0);
+      }
+      out({ namespaceId, agentId, deploymentId, status });
+      if (take("fail-deployment-status-after-output")) {
+        return fail(9);
+      }
     } else {
       out({ id: "ins_test", name: state.installationName });
     }
@@ -1183,16 +1217,19 @@ async function fixture(
     configurationValues = null,
     olderDraftRules = false,
     unavailableDraftResolver = false,
+    afterDeploy,
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), "occ-upgrade-recovery-"));
   const bin = join(directory, "bin");
   await mkdir(bin);
+  const commands = [];
   let upgradeProcess;
   let interrupted = false;
   const server = await startCommandServer({
     forwardedEnv: [],
     handle: ({ command, args, cwd, io }) => {
+      commands.push(command);
       if (
         preflightFault?.mode === "interrupt" &&
         !interrupted &&
@@ -1203,7 +1240,7 @@ async function fixture(
         interrupted = true;
         upgradeProcess.kill("SIGTERM");
       }
-      return fakeCommand(directory, { command, args, cwd }, io);
+      return fakeCommand(directory, { command, args, cwd }, io, afterDeploy);
     },
   });
   t.after(() => server.close());
@@ -1310,7 +1347,6 @@ async function fixture(
       secretName: "occ-installation-startup",
       key: "installation.yaml",
     };
-    values = JSON.stringify(chart.values ? chart.values(exampleValues) : exampleValues);
     const exampleInstallation = await example("installation.yaml");
     exampleInstallation.drivers.compute.configuration.network.gatewayTrustedProxyCidrs = [
       "10.42.0.0/16",
@@ -1325,6 +1361,8 @@ async function fixture(
       executionCluster,
     );
     const compute = exampleInstallation.drivers.compute.configuration;
+    // The example's Gateway namespace must follow this fixture's Helm release.
+    compute.gatewayRouting.gatewayNamespace = "system";
     compute.authentication = {
       mode: "kubeconfig",
       kubeconfigPath: api.kubeconfig,
@@ -1334,6 +1372,7 @@ async function fixture(
       // The experimental two-cluster profile: the same kubeconfig selects the
       // execution stand-in, with documentation-range endpoint CIDRs.
       compute.gatewayRouting.hostname = "gateway.example.test";
+      exampleValues.gatewayRouting.hostname = compute.gatewayRouting.hostname;
       compute.executionCluster = {
         authentication: {
           mode: "kubeconfig",
@@ -1349,6 +1388,8 @@ async function fixture(
         },
       };
     }
+    // Apply case-specific changes after constructing a consistent release baseline.
+    values = JSON.stringify(chart.values ? chart.values(exampleValues) : exampleValues);
     installation = JSON.stringify(chart.installation(exampleInstallation));
   }
   const state = {
@@ -1376,6 +1417,7 @@ async function fixture(
     capabilityReplies,
     capabilityProbes: [],
     dispatches: 0,
+    deployments: {},
     initActive: false,
     collectorSecretName,
     collectorSecret: await collectorConfigSecret(collectorSecretName, collector),
@@ -1461,6 +1503,16 @@ async function fixture(
   return {
     directory,
     evidence,
+    commands,
+    deploy: (namespaceId, agentId) =>
+      execute(
+        join(bin, "occ"),
+        ["--output", "json", "--namespace", namespaceId, "agent", "deploy", agentId],
+        {
+          cwd: repository,
+          env,
+        },
+      ),
     kubernetesReads: api?.reads ?? [],
     executionReads: api?.executionReads ?? [],
     accessReviews: api?.reviews ?? [],
@@ -1489,6 +1541,8 @@ async function fixture(
     failNext: (name) => writeFile(join(directory, name), ""),
   };
 }
+
+registerDispatchRestoreTests(fixture, injectedFault);
 
 test("resume reads an accepted Secret write before Helm and preserves its other data", async (t) => {
   const f = await fixture(t);
@@ -1656,25 +1710,175 @@ test("failed Helm migration keeps old writers stopped and requires checked histo
   assert.equal((await f.events()).filter((event) => event === "migration").length, 2);
 });
 
-test("resume reads back and stops on an unknown Agent deployment instead of retrying", async (t) => {
+test("resume stops on an unknown Agent deployment until an accepted revision is confirmed", async (t) => {
   const f = await fixture(t, { agent: true });
   await f.failNext("lost-agent-response");
   await assert.rejects(f.run(), /deployment outcome is unknown/);
+  const calls = f.commands.length;
   await assert.rejects(f.run("--resume"), /unknown deployment outcome/);
+  assert.equal(f.commands.length, calls);
   assert.equal((await f.state()).dispatches, 1);
-  const readback = JSON.parse(
-    await readFile(join(f.evidence, "dispatch/ns_test--agt_test.readback.json"), "utf8"),
-  );
-  assert.equal(readback.id, "agt_test");
-  assert.equal(readback.activeRevisionId, "rev_new");
+  const receipt = join(f.evidence, "dispatch/ns_test--agt_test.json");
+  // An arbitrary or baseline revision cannot resolve the pending dispatch.
+  for (const id of ["rev_missing", "rev_old"]) {
+    await writeFile(receipt, JSON.stringify({ id }), { mode: 0o600 });
+    await assert.rejects(f.run("--resume"), /unknown deployment outcome/);
+    assert.equal((await f.state()).dispatches, 1);
+  }
   // Simulate the operator confirming this revision in durable history and
   // recording the accepted request before resuming the readiness checks.
-  await writeFile(
-    join(f.evidence, "dispatch/ns_test--agt_test.json"),
-    JSON.stringify({ id: "rev_new" }),
-  );
+  await writeFile(receipt, JSON.stringify({ id: "rev_new" }), { mode: 0o600 });
   await f.run("--resume");
   assert.equal((await f.state()).dispatches, 1);
+});
+
+describe("resume evidence directory ownership", { concurrency: 2 }, () => {
+  test("resume binds stale prepared copies to the original evidence directory before live access", async (t) => {
+    const f = await fixture(t, { agent: true });
+    await f.failNext("fail-rollout-worker");
+    await assert.rejects(f.run(), injectedFault);
+    const copy = join(f.directory, "stale-copy");
+    await cp(f.evidence, copy, { recursive: true });
+
+    // The copy predates dispatch. The original records a later accepted request
+    // whose response was lost; replay from the stale copy would deploy twice.
+    await f.failNext("lost-agent-response");
+    await assert.rejects(f.run("--resume"), /deployment outcome is unknown/);
+    assert.equal((await f.state()).dispatches, 1);
+    const lock = join(f.evidence, ".upgrade-lock");
+    await mkdir(lock);
+    const calls = f.commands.length;
+    const refusal = await f.run("--resume", "--evidence-dir", copy).then(
+      () => null,
+      (error) => error,
+    );
+    assert.equal(
+      (await f.state()).dispatches,
+      1,
+      "a stale copy must not replay the accepted dispatch",
+    );
+    assert.match(refusal?.stderr ?? "", /resume evidence directory/);
+    assert.equal(f.commands.length, calls, "reject before external commands, including reads");
+    assert.ok(existsSync(lock), "a copy must not remove the original's held lock");
+    await rm(lock, { recursive: true });
+    await assert.rejects(f.run("--resume"), /unknown deployment outcome/);
+    assert.equal((await f.state()).dispatches, 1);
+  });
+
+  test("resume binds moved and replaced evidence directories before live access", async (t) => {
+    for (const change of ["move", "replacement", "missing identity"]) {
+      await t.test(change, async (t) => {
+        const f = await fixture(t, { agent: true });
+        await f.failNext("fail-scale-worker");
+        await assert.rejects(f.run(), injectedFault);
+        const moved = join(f.directory, "moved-evidence");
+        if (change === "missing identity") {
+          const path = join(f.evidence, "parameters.json");
+          const parameters = JSON.parse(await readFile(path, "utf8"));
+          delete parameters.evidenceDirectory;
+          await writeFile(path, JSON.stringify(parameters));
+        } else {
+          await rename(f.evidence, moved);
+          if (change === "replacement") {
+            await cp(moved, f.evidence, { recursive: true });
+          }
+        }
+        const calls = f.commands.length;
+        await assert.rejects(
+          f.run("--resume", "--evidence-dir", change === "move" ? moved : f.evidence),
+          /resume evidence directory/,
+        );
+        assert.equal(f.commands.length, calls, "reject before external commands, including reads");
+        assert.equal((await f.state()).dispatches, 0);
+        if (change === "move") {
+          await rename(moved, f.evidence);
+          await f.run("--resume");
+          assert.equal((await f.state()).dispatches, 1);
+        }
+      });
+    }
+  });
+
+  test("resume accepts the original evidence directory and canonical aliases", async (t) => {
+    for (const alias of ["original", "relative", "parent symlink"]) {
+      await t.test(alias, async (t) => {
+        const f = await fixture(t, { agent: true });
+        await f.failNext("fail-scale-worker");
+        await assert.rejects(f.run(), injectedFault);
+        let evidence = f.evidence;
+        if (alias === "relative") {
+          evidence = relative(repository, f.evidence);
+        } else if (alias === "parent symlink") {
+          const parent = join(f.directory, "parent-alias");
+          symlinkSync(f.directory, parent, "dir");
+          evidence = join(parent, "evidence");
+        } else {
+          // Canonicalization must not bypass the existing leaf-symlink or mode guards.
+          const leaf = join(f.directory, "leaf-alias");
+          symlinkSync(f.evidence, leaf, "dir");
+          const calls = f.commands.length;
+          await assert.rejects(
+            f.run("--resume", "--evidence-dir", leaf),
+            /requires the original evidence directory/,
+          );
+          await chmod(f.evidence, 0o755);
+          await assert.rejects(f.run("--resume"), /must not grant group or other permissions/);
+          await chmod(f.evidence, 0o700);
+          assert.equal(f.commands.length, calls);
+        }
+        // Aliases must still share the original lock, not create another lock.
+        const lock = join(f.evidence, ".upgrade-lock");
+        await mkdir(lock);
+        const calls = f.commands.length;
+        await assert.rejects(
+          f.run("--resume", "--evidence-dir", evidence),
+          /evidence directory is locked/,
+        );
+        assert.equal(f.commands.length, calls);
+        await rm(lock, { recursive: true });
+        await f.run("--resume", "--evidence-dir", evidence);
+        assert.equal((await f.state()).dispatches, 1);
+        assert.equal(existsSync(lock), false);
+      });
+    }
+  });
+
+  test("newline-suffixed evidence paths never use the existing sibling directory", async (t) => {
+    const f = await fixture(t, { agent: true });
+    const evidence = f.evidence + "\n";
+    const siblingParameters = join(f.evidence, "parameters.json");
+    const sentinel = "Preserve the unrelated sibling's evidence.\n";
+    await mkdir(f.evidence, { mode: 0o700 });
+    await writeFile(siblingParameters, sentinel, { mode: 0o600 });
+
+    // Shell command substitution would strip the newline, redirecting both
+    // the lock and evidence writes into the pre-existing sibling directory.
+    await f.failNext("fail-scale-worker");
+    await assert.rejects(f.run("--evidence-dir", evidence), injectedFault);
+    assert.equal(await readFile(siblingParameters, "utf8"), sentinel);
+    assert.deepEqual(await readdir(f.evidence), ["parameters.json"]);
+    assert.ok(existsSync(join(evidence, "prepared")));
+
+    const lock = join(evidence, ".upgrade-lock");
+    await mkdir(lock);
+    const calls = f.commands.length;
+    await assert.rejects(
+      f.run("--resume", "--evidence-dir", evidence),
+      /evidence directory is locked/,
+    );
+    assert.equal(f.commands.length, calls);
+    await rm(lock, { recursive: true });
+
+    // A lock held by the sibling must neither block this resume nor be removed.
+    const siblingLock = join(f.evidence, ".upgrade-lock");
+    await mkdir(siblingLock);
+    await f.run("--resume", "--evidence-dir", evidence);
+    assert.equal((await f.state()).dispatches, 1);
+    assert.equal(existsSync(lock), false);
+    assert.ok(existsSync(siblingLock));
+    assert.equal(await readFile(siblingParameters, "utf8"), sentinel);
+    assert.deepEqual((await readdir(f.evidence)).sort(), [".upgrade-lock", "parameters.json"]);
+  });
 });
 
 // OCC admits a deploy in one transaction, so a 4xx answer with an OCC error code saved
@@ -2364,9 +2568,82 @@ test("resume rejects malformed protected inputs before another mutation", async 
   const f = await fixture(t);
   await f.failNext("lost-secret-response");
   await assert.rejects(f.run(), injectedFault);
-  await writeFile(join(f.directory, "values.json"), "");
-  await assert.rejects(f.run("--resume"), /protected Helm values changed/);
+  const path = join(f.directory, "values.json");
+  const original = await readFile(path, "utf8");
+  const events = await f.events();
+  // Real yq parses these files. An empty document or non-mapping must stop
+  // recovery before it tries the candidate alternative or repeats a write.
+  for (const content of ["", `${original}\n---\n`, `42\n---\n${original}`]) {
+    await writeFile(path, content);
+    await assert.rejects(f.run("--resume"), (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /Cannot compare upgrade YAML:.*only YAML mappings/);
+      assert.doesNotMatch(error.stderr, /protected Helm values changed|jq:|Error:/);
+      return true;
+    });
+    assert.deepEqual(await f.events(), events);
+  }
   assert.equal((await f.events()).filter((event) => event === "migration").length, 0);
+});
+
+test("resume preserves protected edits when comparison evidence is write-only or unwritable", async (t) => {
+  // Root bypasses file permissions; this regression needs an unprivileged owner.
+  assert.notEqual(
+    process.getuid?.(),
+    0,
+    "comparison-file permissions require an unprivileged user",
+  );
+  const f = await fixture(t, { controllerOnly: true });
+  await f.failNext("fail-scale-worker");
+  await assert.rejects(f.run(), injectedFault);
+  const path = join(f.directory, "values.json");
+  const values = JSON.parse(await readFile(path, "utf8"));
+  const changed = JSON.stringify({ ...values, outsideReviewedUpgrade: true });
+  await writeFile(path, changed);
+  const events = await f.events();
+  // Both valid inputs differ. Evidence permissions cannot make them equal or
+  // permit recovery to overwrite the operator's protected file.
+  for (const mode of [0o600, 0o200, 0o400]) {
+    for (const name of ["compare-actual.json", "compare-expected.json"]) {
+      const output = join(f.evidence, name);
+      await chmod(output, mode);
+      if (mode === 0o200) {
+        await assert.rejects(readFile(output), { code: "EACCES" });
+      }
+    }
+    await assert.rejects(f.run("--resume"), (error) => {
+      assert.equal(error.code, 1);
+      assert.match(
+        error.stderr,
+        mode === 0o400 ? /Cannot compare upgrade YAML/ : /protected Helm values changed/,
+      );
+      assert.doesNotMatch(error.stderr, /jq:|Permission denied/);
+      return true;
+    });
+    assert.equal(await readFile(path, "utf8"), changed);
+    assert.deepEqual(await f.events(), events);
+  }
+});
+
+test("preparation rejects non-mapping candidate documents before protected-setting comparisons", async (t) => {
+  for (const name of ["candidate-values.json", "candidate-installation.json"]) {
+    await t.test(name, async (t) => {
+      const f = await fixture(t, { candidates: true, controllerOnly: true });
+      const path = join(f.directory, name);
+      const content = `${await readFile(path, "utf8")}\n---\n`;
+      // Real yq must reject the trailing empty document before a projection
+      // misreports it as a protected-setting or Plugin Driver change.
+      await writeFile(path, content);
+      await assert.rejects(f.run(), (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /Cannot compare upgrade YAML:.*only YAML mappings/);
+        assert.doesNotMatch(error.stderr, /protected setting|Plugin Driver|jq:|Error:/);
+        return true;
+      });
+      assert.equal(await readFile(path, "utf8"), content);
+      assert.deepEqual(await f.events(), []);
+    });
+  }
 });
 
 test("reviewed settings survive an interrupted controller upgrade without losing unrelated Secret data", async (t) => {
@@ -3613,6 +3890,18 @@ test("an Installation the selected controller image loads passes the preflight a
     .split("\n")
     .filter((line) => line.trim().startsWith("{"))
     .map((line) => JSON.parse(line));
+  const initialization = rendered.find(
+    (document) =>
+      document?.apiVersion === "batch/v1" &&
+      document.kind === "Job" &&
+      document.metadata.name === "oce-initialization",
+  );
+  assert.ok(
+    initialization?.spec.template.spec.initContainers?.some(
+      (container) => container.name === "installation-check",
+    ),
+    "the upgrade initialization Job includes the installation-check init container",
+  );
   assert.deepEqual(
     policy.spec.egress,
     rendered.find(

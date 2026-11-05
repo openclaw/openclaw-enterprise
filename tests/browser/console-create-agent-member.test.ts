@@ -1,3 +1,8 @@
+import {
+  expectCreateAccess,
+  expectCreateRefused,
+  waitForCreateFormReads,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import type { Page, Route } from "playwright";
@@ -11,7 +16,7 @@ import type {
 
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { authorizationDenials, createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { restrict } from "../helpers/iam-grants.mjs";
 import {
   deniedCreateSecretOption,
@@ -33,12 +38,7 @@ import {
   waitForCondition,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
-import { responseTo } from "./console-action-helpers.mjs";
-import {
-  expectCreateAccess,
-  expectCreateRefused,
-  waitForCreateFormReads,
-} from "./console-agents-test-support.mjs";
+import { responseTo } from "./console-action-helpers.ts";
 import { refocus } from "./console-refocus-helpers.mjs";
 import {
   ADMINISTRATOR_ACCESS_DENIED,

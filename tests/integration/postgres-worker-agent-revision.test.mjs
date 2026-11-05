@@ -2418,11 +2418,11 @@ revisionTest(
     // and then hold the container unready with nothing to restart it, so the
     // default 900-second deadline could only report the same failure later.
     const probeStatusFailure = {
-      component: "gateway",
+      component: "agent",
       check: "model-probe",
       checkedAt: "2026-10-01T08:00:00.000Z",
       code: "MODEL_PROBE_FAILED",
-      cause: { kind: "PROBE_STATUS", detail: "format" },
+      cause: { kind: "PROBE_STATUS", detail: "model_not_found" },
     };
     const wrapperFailure = {
       ...probeStatusFailure,
@@ -2622,6 +2622,31 @@ revisionTest(
           code: "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED",
           message:
             "The Sandbox Driver cannot deliver Secret-backed environment variables to the Harness. Use credential sources instead of Secret bindings, or ask an Installation administrator for a Sandbox Driver that supports them, then deploy again.",
+        },
+      },
+    });
+    assert.equal(preparations, 1);
+  },
+);
+
+revisionTest(
+  "a Sandbox gateway that refuses the Harness Pod labels fails deployment without retrying",
+  async (fixture) => {
+    // The OpenShell gateway rejects label keys missing from its allowed_pod_labels on every
+    // CreateSandbox, so retrying cannot help until an operator changes its configuration.
+    // The gateway wire test proves the client raises this error for the gateway's refusal.
+    const preparations = await runPreparationFailureCase(fixture, {
+      label: "sandbox-pod-labels",
+      failure: () =>
+        new SandboxRevisionUnsupportedError(
+          "SANDBOX_POD_LABELS_NOT_PERMITTED",
+          "OpenShell refused the Harness Pod labels app.kubernetes.io/managed-by; add them to the gateway's Kubernetes driver allowed_pod_labels.",
+        ),
+      expected: {
+        error: {
+          code: "SANDBOX_POD_LABELS_NOT_PERMITTED",
+          message:
+            "The Sandbox gateway refuses this revision's Harness Pod labels. Ask an admin to allow them in the gateway configuration, then deploy again.",
         },
       },
     });

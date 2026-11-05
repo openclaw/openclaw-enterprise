@@ -20,7 +20,9 @@ const runtimeOnlyRoots = [
 ];
 const minimumRuntimeAvailableBytes = 36 * 1024 ** 3;
 const largeImageLane = [
+  "openshell",
   "container-runtime-build",
+  "k3d-quickstart",
   "k3d-observability",
   "k3d-observability-demo",
 ].includes(process.env.OPENCLAW_CI_HEADROOM_LANE);
@@ -156,11 +158,7 @@ async function main() {
       /^\d+$/.test(process.env.GITHUB_RUN_ID ?? "") &&
       /^\d+$/.test(process.env.GITHUB_RUN_ATTEMPT ?? ""),
   );
-  assert(
-    ["container-runtime-build", "k3d-observability", "k3d-observability-demo"].includes(
-      process.env.OPENCLAW_CI_HEADROOM_LANE,
-    ) && process.argv.length === 2,
-  );
+  assert(largeImageLane && process.argv.length === 2);
   const os = await readFile("/etc/os-release", "utf8");
   const expectedVersion = process.env.ImageOS === "ubuntu22" ? "22.04" : "24.04";
   assert(/^ID=ubuntu$/m.test(os) && os.split("\n").includes(`VERSION_ID="${expectedVersion}"`));
@@ -188,6 +186,18 @@ async function main() {
   assert(await guardRemovalRoot(androidRoot, rootInfo, mounts, true));
   if (largeImageLane) {
     for (const root of runtimeOnlyRoots) {
+      // OpenShell tests still use the installed Go and Python toolchains.
+      if (
+        receipt.lane === "openshell" &&
+        [
+          "/opt/hostedtoolcache/go",
+          "/opt/hostedtoolcache/Python",
+          "/opt/hostedtoolcache/PyPy",
+        ].includes(root)
+      ) {
+        receipt.rootsSkipped.push(root);
+        continue;
+      }
       if (await guardRemovalRoot(root, rootInfo, mounts, false)) {
         removalRoots.push(root);
       } else {

@@ -309,6 +309,16 @@ const OPENSHELL_MANAGED_BY_LABEL = "app.kubernetes.io/managed-by";
 const OPENSHELL_NAMESPACE_LABEL = "openclaw.dev/namespace";
 const OPENSHELL_NAMESPACE_ID_LABEL = "openclaw.dev/namespace-id";
 const OPENSHELL_MANAGED_BY = "openclaw-enterprise";
+/**
+ * The gateway's Kubernetes driver `allowed_pod_labels` must admit every key this Driver
+ * forwards as `template.labels`: Compute's ownership and selector labels on the Harness Pod.
+ * The development profile repeats this list in internal/occdev/openshell.go.
+ */
+export const OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST: readonly string[] = Object.freeze([
+  "openclaw.dev/*",
+  "app.kubernetes.io/name",
+  "app.kubernetes.io/managed-by",
+]);
 /** OpenShell's supervisor Pod labels (pinned `sandbox_runtime.rs` `control_labels`). */
 const OPENSHELL_SANDBOX_ID_LABEL = "openshell.ai/sandbox-id";
 const OPENSHELL_BOUNDARY_ROLE_LABEL = "openshell.ai/boundary-role";
@@ -1744,6 +1754,9 @@ async function prepareNativeWorkspace(
         throw new Error("Private workspace preparation did not complete.");
       }
     }
+    // As PID 1, acknowledge termination after the synchronous writes finish.
+    // Otherwise Kubernetes must wait for the grace period and force-kill us.
+    process.on("SIGTERM", () => process.exit(0));
     fs.writeFileSync("/preparation-status/ready", "ready");
     setInterval(() => {}, 1000);
   }`;

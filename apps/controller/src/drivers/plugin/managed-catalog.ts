@@ -401,6 +401,13 @@ export function managedMcpSlotAcceptsSource(
 }
 
 export const managedPluginCredentials = {
+  mcpToolDiscovery(pluginId: string, slotId: string, source: CredentialSource) {
+    const install = managedMcpInstalls.find(({ id }) => id === pluginId);
+    if (!install || slotId !== install.slotId || !managedMcpSlotAcceptsSource(install, source)) {
+      return undefined;
+    }
+    return { endpoint: install.url };
+  },
   choices(sources: readonly CredentialSource[]) {
     return managedInstalls.flatMap((install) =>
       Object.entries(install.credentials).map(([id, slot]) => ({
@@ -408,6 +415,7 @@ export const managedPluginCredentials = {
         releaseSha256: install.releaseSha256,
         id,
         label: slot.label,
+        ...(install.kind === "mcp" && { toolDiscovery: true as const }),
         sources: sources
           .filter((source) =>
             install.kind === "mcp"

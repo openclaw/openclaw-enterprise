@@ -786,6 +786,14 @@ export function nativeWorkerTurnObservation({ outcome, error, messages, runId, h
     const detail = value.slice(0, 4096);
     const patterns = [
       [
+        "session-read-changed",
+        /^(?:Error: )?Session changed while preparing its description; retry the request$/,
+      ],
+      [
+        "session-binding-changed",
+        /^(?:Error: )?Session repository binding changed while preparing its description$/,
+      ],
+      [
         "model-authentication",
         /invalid.api.key|incorrect.api.key|authentication_error|No API key/i,
       ],
@@ -951,7 +959,9 @@ export async function collectNativeWorkerFailure({
     elapsedMs,
   });
   if (runId === undefined) {
-    return worker;
+    return error === undefined
+      ? worker
+      : { ...worker, proofError: nativeWorkerTurnObservation({ error }).proofError };
   }
   const history = await historyObservation;
   let historyLookup = "unavailable";
@@ -983,6 +993,118 @@ export function nativeWorkerSessionPlacement(description, sessionId) {
   return description.session.placement;
 }
 
+// The pinned Gateway returns this plain read-generation error through
+// UNAVAILABLE + formatForLog. The SDK separately proves response correlation.
+export function nativePlacementReadRetryable(error, correlatedResponse) {
+  return (
+    correlatedResponse === true &&
+    error?.code === "UNAVAILABLE" &&
+    error.message === "Error: Session changed while preparing its description; retry the request"
+  );
+}
+
+// Keep exact run, explicit success, standalone tool output and final-marker
+// predicates together. Only the fixed observation is retained in diagnostics.
+export function nativeWorkerHistoryEvidence({ messages: history, runId, toolPrefix, marker }) {
+  if (!Array.isArray(history)) {
+    throw new Error("Invalid native history");
+  }
+  const text = (content) =>
+    typeof content === "string"
+      ? content
+      : (content ?? [])
+          .filter((part) => part?.type === "text" && typeof part.text === "string")
+          .map((part) => part.text)
+          .join("\n");
+  const execOutput = (content) => {
+    const output = text(content);
+    try {
+      const result = JSON.parse(output);
+      if (typeof result?.value?.aggregated === "string") {
+        return result.value.aggregated;
+      }
+    } catch {
+      // Plain exec output is already the recorded tool result.
+    }
+    return output;
+  };
+  const messages = history.filter((message) => message.__openclaw?.runId === runId);
+  const tool = messages.find(
+    (message) =>
+      message.role === "toolResult" &&
+      message.toolName === "exec" &&
+      message.isError === false &&
+      // A failed command can echo the marker in its source. Only a
+      // standalone proof line identifies the command's actual output.
+      execOutput(message.content)
+        .split(/\r?\n/)
+        .some((line) => line.startsWith(toolPrefix)),
+  );
+  const final = messages.find(
+    (message) =>
+      message.role === "assistant" &&
+      text(message.content).trim() === marker &&
+      !["toolUse", "error"].includes(message.stopReason) &&
+      !(
+        Array.isArray(message.content) && message.content.some((part) => part?.type === "toolCall")
+      ),
+  );
+  const exec = messages.filter(
+    (message) => message.role === "toolResult" && message.toolName === "exec",
+  );
+  const errorFlag = (value) => {
+    if (value === false) {
+      return "false";
+    }
+    if (value === true) {
+      return "true";
+    }
+    if (value === undefined) {
+      return "absent";
+    }
+    return "other";
+  };
+  const flags = new Set(exec.map((message) => errorFlag(message.isError)));
+  let flag = "mixed";
+  if (flags.size === 0) {
+    flag = "none";
+  } else if (flags.size === 1) {
+    flag = [...flags][0];
+  }
+  const assistants = messages.filter((message) => message.role === "assistant");
+  return {
+    tool,
+    final,
+    messages,
+    output: tool ? execOutput(tool.content) : undefined,
+    observation: {
+      historyMessageCount: history.length,
+      historyRunMessageCount: messages.length,
+      historyExecCount: exec.length,
+      historyExplicitSuccessCount: exec.filter((message) => message.isError === false).length,
+      historyExecErrorFlag: flag,
+      historyToolPrefixCount: exec.filter((message) =>
+        execOutput(message.content)
+          .split(/\r?\n/)
+          .some((line) => line.startsWith(toolPrefix)),
+      ).length,
+      historyFinalMarkerCount: assistants.filter(
+        (message) => text(message.content).trim() === marker,
+      ).length,
+      historyTerminalAssistantCount: assistants.filter(
+        (message) =>
+          !["toolUse", "error"].includes(message.stopReason) &&
+          !(
+            Array.isArray(message.content) &&
+            message.content.some((part) => part?.type === "toolCall")
+          ),
+      ).length,
+      historyToolProofPresent: Boolean(tool),
+      historyFinalProofPresent: Boolean(final),
+    },
+  };
+}
+
 // Run in the existing trusted controller: it already has the private route key,
 // cluster DNS and CA. Native admin sign-in is neither enabled nor required.
 async function nativeWorkerProof({
@@ -1002,8 +1124,13 @@ async function nativeWorkerProof({
   const { setTimeout: delay } = await import("node:timers/promises");
   const { pathToFileURL } = await import("node:url");
   const require = createRequire(resolve("apps/controller/package.json"));
-  const { GatewayClient } = await import(
+  const { GatewayClient, isGatewayProtocolResponseError } = await import(
     pathToFileURL(require.resolve("@openclaw/gateway-client"))
+  );
+  assert.equal(
+    typeof isGatewayProtocolResponseError,
+    "function",
+    "The controller SDK must recognize correlated Gateway errors",
   );
   const { loadYaml } = await import(pathToFileURL(require.resolve("@kubernetes/client-node")));
   let stage = "startup";
@@ -1013,6 +1140,9 @@ async function nativeWorkerProof({
   let lastPlacement;
   let runId;
   let outcome;
+  let historyPredicates;
+  let historySignal;
+  let placementReadRetries = 0;
   const proofStarted = performance.now();
   const emit = (data) =>
     process.stdout.write("OCE_NATIVE_FIRST_AGENT_PROOF " + JSON.stringify(data) + "\n");
@@ -1059,17 +1189,35 @@ async function nativeWorkerProof({
     assert.equal(required.inference, "worker");
     assert.ok(required.executionModes.includes("worker-turn"));
     let session = existingSession;
-    collectFailure = (error) =>
-      collectNativeWorkerFailure({
-        request: (method, params, options) => client.request(method, params, options),
-        session,
-        lastPlacement,
-        expectedNodeId,
-        elapsedMs: Math.round(performance.now() - proofStarted),
-        runId,
-        outcome,
-        error,
-      });
+    collectFailure = async (error) => {
+      let proofRpcCode = "other";
+      if (error?.code == null) {
+        proofRpcCode = "absent";
+      } else if (
+        ["UNAVAILABLE", "INVALID_REQUEST", "NOT_FOUND", "UNAUTHORIZED", "FORBIDDEN"].includes(
+          error.code,
+        )
+      ) {
+        proofRpcCode = error.code;
+      }
+      return {
+        ...(await collectNativeWorkerFailure({
+          request: (method, params, options) => client.request(method, params, options),
+          session,
+          lastPlacement,
+          expectedNodeId,
+          elapsedMs: Math.round(performance.now() - proofStarted),
+          runId,
+          outcome,
+          error,
+        })),
+        ...historyPredicates,
+        historySettleExpired: historySignal?.aborted === true,
+        proofRpcCode,
+        proofRpcResponse: isGatewayProtocolResponseError(error),
+        placementReadRetries,
+      };
+    };
     if (session === undefined) {
       stage = "create";
       const key = `agent:main:first-agent-native-${randomUUID()}`;
@@ -1088,10 +1236,18 @@ async function nativeWorkerProof({
       session = { key, sessionId };
       stage = "required-placement";
       while (!signal.aborted) {
-        const described = await call("sessions.describe", { key, agentId: "main" }).catch(() => {
+        let described;
+        try {
+          described = await call("sessions.describe", { key, agentId: "main" });
+        } catch (error) {
           stage = "required-placement-describe-rejected";
-          assert.fail();
-        });
+          if (!nativePlacementReadRetryable(error, isGatewayProtocolResponseError(error))) {
+            throw error;
+          }
+          placementReadRetries++;
+          await delay(500, undefined, { signal });
+          continue;
+        }
         stage = "session-identity";
         lastPlacement = nativeWorkerSessionPlacement(described, session.sessionId);
         stage = "required-placement";
@@ -1164,47 +1320,27 @@ async function nativeWorkerProof({
     signal.throwIfAborted();
     stage = "model-outcome";
     assert.equal(outcome.status, "ok");
-    const text = (content) =>
-      typeof content === "string"
-        ? content
-        : (content ?? [])
-            .filter((part) => part?.type === "text" && typeof part.text === "string")
-            .map((part) => part.text)
-            .join("\n");
-    while (!signal.aborted) {
+    // The model turn is already terminal. Allow history delivery to settle,
+    // but do not spend the remaining model-execution budget on a missing proof.
+    historySignal = AbortSignal.any([signal, AbortSignal.timeout(30_000)]);
+    while (!historySignal.aborted) {
       stage = "model-history";
-      const history = await call("chat.history", { sessionKey: key, limit: 30 });
-      const messages = (history.messages ?? []).filter(
-        (message) => message.__openclaw?.runId === sent.runId,
+      const history = await client.request(
+        "chat.history",
+        { sessionKey: key, limit: 30 },
+        { signal: historySignal, timeoutMs: 30_000 },
       );
-      const tool = messages.find(
-        (message) =>
-          message.role === "toolResult" &&
-          message.toolName === "exec" &&
-          message.isError === false &&
-          text(message.content).includes(toolPrefix),
-      );
-      const final = messages.find(
-        (message) =>
-          message.role === "assistant" &&
-          text(message.content).trim() === marker &&
-          !["toolUse", "error"].includes(message.stopReason) &&
-          !(
-            Array.isArray(message.content) &&
-            message.content.some((part) => part?.type === "toolCall")
-          ),
-      );
+      const evidence = nativeWorkerHistoryEvidence({
+        messages: history.messages,
+        runId: sent.runId,
+        toolPrefix,
+        marker,
+      });
+      historyPredicates = evidence.observation;
+      const { tool, final, messages } = evidence;
       if (tool && final) {
         stage = "exec-proof";
-        let output = text(tool.content);
-        try {
-          const result = JSON.parse(output);
-          if (typeof result?.value?.aggregated === "string") {
-            output = result.value.aggregated;
-          }
-        } catch {
-          // Plain exec output already has the diagnostic line.
-        }
+        const output = evidence.output;
         const line = output.split(/\r?\n/).find((line) => line.startsWith(toolPrefix));
         assert.ok(line);
         const proof = JSON.parse(line.slice(toolPrefix.length));
@@ -1241,9 +1377,9 @@ async function nativeWorkerProof({
       assert.ok(
         !messages.some((message) => message.role === "assistant" && message.stopReason === "error"),
       );
-      await delay(500, undefined, { signal });
+      await delay(500, undefined, { signal: historySignal });
     }
-    signal.throwIfAborted();
+    historySignal.throwIfAborted();
   } catch (error) {
     // Dependency/RPC errors can include private headers. Preserve the failing
     // stage, never raw exceptions, keys, transcripts or controller output.
@@ -1281,7 +1417,7 @@ export async function assertNativeWorkerProofInController(
   delete safeEnvironment.OPENAI_API_KEY_FILE;
   delete safeEnvironment.CODEX_ACCESS_TOKEN;
   delete safeEnvironment.CODEX_ACCESS_TOKEN_FILE;
-  const input = `const nativeWorkerSessionPlacement = (${nativeWorkerSessionPlacement.toString()});\nconst nativeWorkerPlacementObservation = (${nativeWorkerPlacementObservation.toString()});\nconst nativeWorkerTurnObservation = (${nativeWorkerTurnObservation.toString()});\nconst collectNativeWorkerFailure = (${collectNativeWorkerFailure.toString()});\nawait (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: nativeFirstAgentProofTimeout, workspaceFile, expectedNodeId, session, sessionFile })});`;
+  const input = `const nativePlacementReadRetryable = (${nativePlacementReadRetryable.toString()});\nconst nativeWorkerHistoryEvidence = (${nativeWorkerHistoryEvidence.toString()});\nconst nativeWorkerSessionPlacement = (${nativeWorkerSessionPlacement.toString()});\nconst nativeWorkerPlacementObservation = (${nativeWorkerPlacementObservation.toString()});\nconst nativeWorkerTurnObservation = (${nativeWorkerTurnObservation.toString()});\nconst collectNativeWorkerFailure = (${collectNativeWorkerFailure.toString()});\nawait (${nativeWorkerProof.toString()})(${JSON.stringify({ namespaceId, agentId, timeout: nativeFirstAgentProofTimeout, workspaceFile, expectedNodeId, session, sessionFile })});`;
   const command = state.deploymentMode === "k3d" ? "kubectl" : state.containerEngine;
   const args =
     state.deploymentMode === "k3d"
