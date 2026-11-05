@@ -29,11 +29,11 @@ sequenceDiagram
     participant G as OpenShell gateway<br/>embedded issuer
     participant S as OpenShell<br/>sender
     participant H as GitHub
-    Note over O,G: 1 · Approve and provision
+    Note over A,H: 1 · Proposed issuance and sender-only delivery
     O->>G: Configure this Agent’s grant
     G->>H: Sign with App key and request token
     H-->>G: Scoped installation token
-    G->>S: Deliver token
+    G->>S: Install for bound execution
     Note over A,H: 2 · Send to an approved repository
     A->>S: Git request
     S->>O: Check Agent, repository and operation
