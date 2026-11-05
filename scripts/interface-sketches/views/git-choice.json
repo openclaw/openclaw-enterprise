@@ -1,0 +1,8 @@
+{
+  "title": "Named authority calls in the Git adapter",
+  "nodes": {
+    "apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts#protectedOpenShellGitOwner": "Git adapter",
+    "packages/contracts/src/protected-repository-git.ts#GitHubInstallationAuthority.authorize": "GitHub installation authority",
+    "packages/contracts/src/protected-repository-git.ts#RepositoryGitAuthority.authorize": "Explicit Git grant authority"
+  }
+}

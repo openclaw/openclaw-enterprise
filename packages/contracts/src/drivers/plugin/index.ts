@@ -2,12 +2,14 @@ import type { Driver } from "../index.ts";
 import type {
   Agent,
   AgentPluginCredentialSlot,
+  ConnectionTemplateValues,
   CredentialSource,
   Namespace,
   OpenClawConfigurationDocument,
   PluginApprovers,
   PluginCatalogEntry,
   PluginCatalogPage,
+  PluginDesiredSelection,
   PluginDesiredState,
   PluginPolicyCapabilities,
   RevisionHarnessDescriptor,
@@ -27,6 +29,12 @@ export interface PluginDiscoveryAuthentication {
   readonly isFedramp?: boolean;
 }
 
+/** Only the issuer selects candidate accounts. The receiver controls where a token may go. */
+export type PluginAccountTarget = Pick<
+  ConnectionTemplateValues,
+  "issuer" | "tokenUrl" | "destinations" | "mcp"
+>;
+
 export interface PluginDriver extends Driver {
   readonly capability: "plugin";
   /** Harness family authorized to use this catalog. */
@@ -35,6 +43,32 @@ export interface PluginDriver extends Driver {
   /** Matches only source metadata authorized by OCC. The Driver never receives credential values. */
   readonly credentials?: {
     choices(sources: readonly CredentialSource[]): readonly AgentPluginCredentialSlot[];
+    /** A saved slot that can accept an account from a compatible browser OAuth template. */
+    connectionSlot?(
+      selections: PluginDesiredState,
+      pluginId: string,
+      slotId: string,
+    ):
+      | {
+          readonly releaseSha256: string;
+          readonly credentialSourceIds: readonly string[];
+          readonly issuers: readonly string[];
+          acceptsRecipient(target: PluginAccountTarget): boolean;
+          /** The release owns protected presentation. Undefined means the current targets and grant
+           * permit no protected operation; it does not reject an issuer-compatible account choice. */
+          delivery(
+            target: PluginAccountTarget,
+            grantedScopes: readonly string[],
+            sourceId: string,
+          ):
+            | {
+                readonly type: string;
+                readonly config: Readonly<Record<string, string>>;
+              }
+            | undefined;
+          bind(sourceId: string): PluginDesiredSelection;
+        }
+      | undefined;
     /** Returns a reviewed MCP discovery target only for a compatible slot and source. */
     mcpToolDiscovery?(
       pluginId: string,

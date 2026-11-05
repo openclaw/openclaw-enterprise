@@ -1,5 +1,6 @@
 import type { PluginFieldsOptions } from "/console/agents/plugin-fields.mjs";
 import type { StoryAction } from "../story-action.mts";
+import type { ConnectionPreview } from "./scenario-groups/plugins.mts";
 import { scenarios } from "./scenarios.mts";
 import { installFixture } from "./fixtures.mts";
 
@@ -19,6 +20,7 @@ type FrameScenario = FrameScenarioBase &
     | {
         component: "plugins";
         pluginSelections?: string | undefined;
+        connectionPreview?: ConnectionPreview;
         pluginCatalog?: PluginFieldsOptions["catalog"];
         pluginCapabilities?: PluginFieldsOptions["capabilities"];
         disabled?: boolean | undefined;
@@ -113,6 +115,100 @@ if (scenario.component === "plugins") {
   const fields = createPluginFields({
     input,
     catalog: scenario.pluginCatalog ?? null,
+    ...(scenario.connectionPreview && {
+      saveHint: "Changes are saved when you choose Save plugin selections.",
+      slotConnection: {
+        unavailable: () => undefined,
+        async list() {
+          if (scenario.connectionPreview === "denied") {
+            throw Object.assign(new Error("Access denied"), { status: 403 });
+          }
+          if (scenario.connectionPreview === "loading") {
+            return await new Promise<never>(() => {});
+          }
+          if (scenario.connectionPreview === "named") {
+            return [
+              {
+                id: "support",
+                displayName: "Support server access",
+                version: 1,
+                mode: "mcp_discovery",
+                scopes: ["messages.read", "messages.write"],
+                requiredScopes: ["messages.read"],
+                offeredScopes: ["messages.read", "messages.write"],
+              },
+            ];
+          }
+          if (scenario.connectionPreview === "unrestricted") {
+            return [
+              {
+                id: "discovered-open",
+                displayName: "Support MCP",
+                version: 1,
+                mode: "mcp_discovery",
+                scopes: [],
+                requiredScopes: ["messages.read"],
+                offeredScopes: ["messages.read", "messages.write"],
+              },
+              {
+                id: "manual-open",
+                displayName: "Support OAuth",
+                version: 1,
+                mode: "manual",
+                scopes: [],
+                requiredScopes: [],
+                offeredScopes: [],
+              },
+            ];
+          }
+          if (scenario.connectionPreview === "empty") {
+            return [];
+          }
+          return [
+            {
+              id: "first",
+              displayName: "Engineering Gmail",
+              version: 2,
+              mode: "manual",
+              scopes: ["gmail.readonly"],
+              requiredScopes: [],
+              offeredScopes: [],
+            },
+            {
+              id: "second",
+              displayName: "Shared Gmail",
+              version: 1,
+              mode: "manual",
+              scopes: ["gmail.readonly"],
+              requiredScopes: [],
+              offeredScopes: [],
+            },
+          ];
+        },
+        async start(_slot, template, selectedScopes, accountName) {
+          document.querySelector<HTMLDialogElement>("dialog[open]")?.close();
+          const receipt = document.createElement("section");
+          receipt.className = "agent-card agent-form";
+          const output = document.createElement("p");
+          output.setAttribute("role", "status");
+          output.textContent = `Simulated provider handoff for ${template.displayName}. No account has been connected.`;
+          receipt.append(output);
+          if (accountName) {
+            const label = document.createElement("p");
+            label.textContent = `Account name: ${accountName}`;
+            receipt.append(label);
+          }
+          if (selectedScopes) {
+            const permissions = document.createElement("p");
+            permissions.textContent = selectedScopes.length
+              ? `Requested scopes: ${selectedScopes.join(", ")}`
+              : "Provider defaults requested.";
+            receipt.append(permissions);
+          }
+          document.getElementById("app")?.replaceChildren(receipt);
+        },
+      },
+    }),
     capabilities: scenario.pluginCapabilities ?? null,
   });
   const panel = document.createElement("section");

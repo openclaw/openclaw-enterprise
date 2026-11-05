@@ -20,6 +20,8 @@ import {
   setUnavailable,
 } from "../dom.mjs";
 
+import { pluginConnectionControl, type SlotConnection } from "./plugin-connection.mjs";
+
 export type CatalogDirection = "search" | "refresh" | "next" | "previous";
 export type ManagedToolConnection = { slot: string; sourceId: string };
 export type ManagedToolDiscovery = {
@@ -69,6 +71,7 @@ export interface PluginFieldsOptions {
   onCancelDiscovery?: (() => void) | null;
   onLoadTools?: ((id: string, managedConnection?: ManagedToolConnection) => void) | null;
   saveHint?: string;
+  slotConnection?: SlotConnection;
   createApproverField?: (options: ApproverFieldOptions) => HTMLElement & {
     refreshNames?(): void;
     pauseNames?(): void;
@@ -87,7 +90,7 @@ type WritePolicy = <Key extends keyof PluginToolPolicy>(
 type Choice<Value extends string = string> = readonly [
   value: Value,
   label: string,
-  disabled?: boolean,
+  disabled?: boolean | "explained",
 ];
 
 interface PluginTabState {
@@ -114,7 +117,7 @@ const validApprovers = (value: unknown): value is PluginApprovers =>
   value.every(
     (entry) => isObject(entry) && typeof entry.channel === "string" && typeof entry.id === "string",
   );
-function selectedSourceIds(value: unknown): string[] {
+export function selectedSourceIds(value: unknown): string[] {
   if (typeof value === "string") {
     return [value];
   }
@@ -213,6 +216,7 @@ export function createPluginFields({
   onLoadTools = null,
   saveHint = "Changes are saved when you create the Agent.",
   createApproverField,
+  slotConnection,
 }: PluginFieldsOptions) {
   let disabled = false;
   let configuredOnly = false;
@@ -620,7 +624,11 @@ export function createPluginFields({
       "select",
       { "aria-label": label },
       ...choices.map(([key, text, disabled = false]) =>
-        element("option", { value: key, disabled }, disabled ? `${text} (unsupported)` : text),
+        element(
+          "option",
+          { value: key, disabled: Boolean(disabled) },
+          disabled === true ? `${text} (unsupported)` : text,
+        ),
       ),
     );
     if (!choices.some(([key]) => key === value)) {
@@ -1040,7 +1048,17 @@ export function createPluginFields({
                 delete credentials[slot.id];
               }
               if (!Object.keys(credentials).length) {
-                delete selection.driverPolicy;
+                const {
+                  credentials: _credentials,
+                  releaseSha256: _release,
+                  toolNames: _tools,
+                  ...otherPolicy
+                } = policy ?? {};
+                if (Object.keys(otherPolicy).length) {
+                  selection.driverPolicy = otherPolicy;
+                } else {
+                  delete selection.driverPolicy;
+                }
                 return;
               }
               selection.driverPolicy = {
@@ -1064,7 +1082,14 @@ export function createPluginFields({
               button("Clear accounts", () => setAccounts([])),
             );
           }
-          const sources = new Map(slot.sources.map(({ id, name }) => [id, name]));
+          const sources = new Map(
+            slot.sources.map(({ id, name, authorization }) => [
+              id,
+              authorization === "required"
+                ? `${name} — authorization required for this server`
+                : name,
+            ]),
+          );
           const checkedIds = stale ? [] : ids;
           for (const id of checkedIds) {
             if (!sources.has(id)) {
@@ -1086,19 +1111,36 @@ export function createPluginFields({
             accounts.append(element("label", { className: "plugin-toggle" }, checkbox, name));
           }
           details.append(accounts);
+          if (slotConnection && !stale) {
+            const control = pluginConnectionControl(slot, slotConnection, ids);
+            if (control) {
+              details.append(control);
+            }
+          }
+          if (slot.sources.some((source) => !source.authorization)) {
+            details.append(
+              element(
+                "p",
+                { className: "hint" },
+                "Save plugin selections to grant this Agent access to the checked accounts.",
+              ),
+            );
+          }
           if (!slot.sources.length) {
             details.append(
               element(
                 "p",
                 { className: "hint" },
-                "No compatible, ready credential is available to both you and this Agent.",
+                "No compatible saved account or attached credential is available for this slot.",
               ),
             );
           }
           if (slot.toolDiscovery && !ids.length && slot.sources.length > 0) {
             details.append(element("p", { className: "hint" }, "Select an account to load tools."));
           }
-          const readyIds = ids.filter((id) => slot.sources.some((source) => source.id === id));
+          const readyIds = ids.filter((id) =>
+            slot.sources.some((source) => source.id === id && !source.authorization),
+          );
           if (slot.toolDiscovery && !stale && readyIds.length) {
             details.append(managedToolPicker(entry, slot, readyIds, selected));
           }
@@ -1149,50 +1191,68 @@ export function createPluginFields({
             }),
           );
         }
-        const driverFields = [];
+        const driverFields: HTMLElement[] = [];
+        const properties = capabilities?.driverPolicySchema.properties;
         for (const [key, schema] of Object.entries(
-          enablementOnly ? {} : (capabilities?.driverPolicySchema.properties ?? {}),
+          !enablementOnly && isObject(properties) ? properties : {},
         )) {
           if (!isObject(schema)) {
             continue;
           }
-          let options: Choice[];
+          let values: readonly (boolean | string)[];
           if (schema.type === "boolean") {
-            options = [
-              ["true", "Enabled"],
-              ["false", "Disabled"],
-            ];
+            values = [true, false];
           } else if (
             schema.type === "string" &&
             Array.isArray(schema.enum) &&
-            schema.enum.every((value) => typeof value === "string")
+            schema.enum.every((value: unknown): value is string => typeof value === "string")
           ) {
-            options = schema.enum.map((value) => [value, value.replaceAll("_", " ")]);
+            values = schema.enum;
           } else {
             continue;
           }
+          // JSON tokens preserve value types and keep an empty string distinct from inheritance.
+          const options: Choice[] = values.map((value) => {
+            let label: string;
+            if (typeof value === "boolean") {
+              label = value ? "Enabled" : "Disabled";
+            } else {
+              label = value === "" ? "Empty string" : value.replaceAll("_", " ");
+            }
+            return [JSON.stringify(value), label];
+          });
           const current = selected.driverPolicy?.[key];
-          driverFields.push(
-            select(
-              `${entry.name} ${schema.title ?? key}`,
-              current === undefined ? "" : String(current),
-              [["", "Inherit default policy"], ...options],
-              (value) =>
-                updateSelection(entry.id, (selection) => {
-                  const driverPolicy = { ...selection.driverPolicy };
-                  if (value === "") {
-                    delete driverPolicy[key];
-                  } else {
-                    driverPolicy[key] = schema.type === "boolean" ? value === "true" : value;
+          const field = select(
+            `${entry.name} ${typeof schema.title === "string" ? schema.title : key}`,
+            current === undefined ? "" : JSON.stringify(current),
+            [["", "Inherit default policy"], ...options],
+            (token) => {
+              updateSelection(entry.id, (selection) => {
+                const driverPolicy = { ...selection.driverPolicy };
+                if (token === "") {
+                  delete driverPolicy[key];
+                } else {
+                  const value = values.find((value) => JSON.stringify(value) === token);
+                  if (value === undefined) {
+                    return;
                   }
-                  if (Object.keys(driverPolicy).length) {
-                    selection.driverPolicy = driverPolicy;
-                  } else {
-                    delete selection.driverPolicy;
-                  }
-                }),
-            ),
+                  driverPolicy[key] = value;
+                }
+                if (Object.keys(driverPolicy).length) {
+                  selection.driverPolicy = driverPolicy;
+                } else {
+                  delete selection.driverPolicy;
+                }
+              });
+            },
           );
+          if (typeof schema.description === "string" && schema.description) {
+            const description = element("span", { className: "hint" }, schema.description);
+            description.id = `${input.id}-driver-policy-${driverFields.length}`;
+            field.querySelector("select")?.setAttribute("aria-describedby", description.id);
+            field.append(description);
+          }
+          driverFields.push(field);
         }
         if (enablementOnly || driverFields.length) {
           details.append(
@@ -1288,7 +1348,7 @@ export function createPluginFields({
           );
           details.append(load);
         }
-      } else if (!enablementOnly && tools.size === 0) {
+      } else if (!enablementOnly && !hasManagedTools && tools.size === 0) {
         details.append(element("p", { className: "hint" }, "No tools listed for this plugin."));
       }
       if (entry.toolError) {

@@ -44,6 +44,11 @@ const CONSOLE_ASSETS = new Map([
       "api-client.mts",
       "sign-in-presentation.mts",
       "configuration-fields.mts",
+      "connection-templates.mts",
+      "oauth-clients.mts",
+      "oauth-catalog.mts",
+      "oauth-deletion.mts",
+      "oauth-client-registration.mts",
       "driver-configurations.mts",
       "view-lifetime.mts",
       "request-turns.mts",
@@ -66,6 +71,7 @@ const CONSOLE_ASSETS = new Map([
       "agents/create.mts",
       "agents/provisioning-job.mts",
       "agents/plugin-discovery.mts",
+      "agents/plugin-connection.mts",
       "agents/slack-directory.mts",
       "agents/slack-approvers.mts",
       "agents/plugin-fields.mts",
@@ -170,6 +176,8 @@ const CONSOLE_SHELL_ROUTES = new Set([
   "/console/backends",
   "/console/namespaces",
   "/console/secrets",
+  "/console/credentials/connection-templates",
+  "/console/credentials/oauth-clients",
   "/console/settings",
 ]);
 
@@ -315,7 +323,12 @@ async function encodedAsset(
   acceptEncoding: string | undefined,
   cache = encodedAssets,
 ): Promise<ConsoleAsset> {
-  const identity = { body, contentType, statusCode: 200, variesByEncoding: true } as const;
+  const identity = {
+    body,
+    contentType,
+    statusCode: 200,
+    variesByEncoding: true,
+  } as const;
   const encoding = preferredEncoding(acceptEncoding);
   if (encoding === undefined) {
     return identity;

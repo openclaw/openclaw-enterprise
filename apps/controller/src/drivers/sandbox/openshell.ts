@@ -43,6 +43,8 @@ import {
   managedMcpInstalls,
   managedInstalls,
 } from "../plugin/managed-catalog.ts";
+import { googleSourceRequestScope } from "../plugin/google-workspace/credential-policy.ts";
+import { googleCredentialEndpoints } from "../plugin/google-workspace/operations.ts";
 import { managedGoogleInstall } from "../plugin/google-workspace/install.ts";
 import { openShellLogDecisions } from "./openshell-log-decisions.ts";
 import { qualifyOpenShellCodexArtifactRules } from "./openshell-codex-artifacts.ts";
@@ -63,6 +65,10 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import {
   asRecord,
+  canonicalWorkspaceNodeTlsFingerprint,
+  validateWorkspaceNodeSetupSecret,
+  WorkspaceNodeSetupValidationError,
+  type WorkspaceNodeSetupEnvelope,
   immutableCopy,
   isNonEmptyString,
   MAX_TIMER_DELAY_MS,
@@ -89,9 +95,7 @@ import {
   SandboxWorkspaceSetupRefusedError,
   TransientDependencyError,
 } from "@openclaw-enterprise/occ";
-import { isUtf8 } from "node:buffer";
 import { setTimeout as delay } from "node:timers/promises";
-import { isWorkspaceNodeDeviceId } from "../../gateway/node-enrollment-client.ts";
 import { isDeepStrictEqual } from "node:util";
 import type {
   AgentRevision,
@@ -120,6 +124,7 @@ import type {
 import {
   isOpenShellProviderName,
   openShellProviderName,
+  revisionProviderSourceId,
   openShellWorkspaceName,
   type OpenShellGateway,
 } from "../../backends/openshell.ts";
@@ -140,15 +145,16 @@ import {
   OpenShellSandboxAlreadyExistsError,
   OpenShellWorkspaceAlreadyExistsError,
   toProtobufStruct,
+  OPENSHELL_POLICY_OPERATION_ANNOTATION,
 } from "./openshell-gateway-client.ts";
 import { OpenShellServiceTransportError } from "./openshell-service-transport.ts";
 import { RUNTIME_WRAPPER_COMMAND } from "../compute/kubernetes/runtime-entrypoints.ts";
-import { harnessWorkspacePreparationScript } from "../compute/kubernetes/index.ts";
+import { harnessWorkspacePreparationScript } from "../compute/kubernetes/harness-workspace-preparation.ts";
 import {
   compareResourceQuantities,
   isResourceQuantity,
 } from "../compute/kubernetes/resource-quantities.ts";
-import { nodeProgramArguments } from "../compute/node-program.ts";
+import { nodeProgramArguments, prependNodeProgramArguments } from "../compute/node-program.ts";
 import {
   requireWorkspaceSetupConfiguration,
   WORKSPACE_SETUP_NATIVE_FAILED_EXIT_STATUS,
@@ -941,20 +947,6 @@ interface HarnessRuntimeCredentialMaterial {
   readonly binding?: WorkspaceNodeBinding;
 }
 
-function canonicalWorkspaceNodeTlsFingerprint(value: unknown): string | undefined {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-  const fingerprint = value.trim().replace(/^sha256:/iu, "");
-  if (
-    !/^[a-f0-9]{64}$/iu.test(fingerprint) &&
-    !/^(?:[a-f0-9]{2}:){31}[a-f0-9]{2}$/iu.test(fingerprint)
-  ) {
-    return undefined;
-  }
-  return fingerprint.replaceAll(":", "").toLowerCase();
-}
-
 async function harnessRuntimeCredentials(
   context: SandboxHarnessContext,
 ): Promise<HarnessRuntimeCredentialMaterial> {
@@ -978,138 +970,24 @@ async function harnessRuntimeCredentials(
       name: nonempty(reference.name, "Workspace node setup Secret name"),
     },
   });
-  const metadata = asRecord(secret?.metadata);
-  const secretLabels = asRecord(metadata?.labels);
-  if (
-    secret === undefined ||
-    metadata?.namespace !== namespaceName(context.namespace) ||
-    secretLabels?.[OPENSHELL_NAMESPACE_LABEL] !== context.revision.namespaceId ||
-    secretLabels?.["openclaw.dev/agent"] !== context.revision.agentId
-  ) {
-    throw new OpenShellSandboxConfigurationFailure(
-      "Refusing a workspace node setup Secret without exact Agent ownership.",
-    );
-  }
-  const secretData = asRecord(asRecord(secret)?.data);
-  const encoded = secretData?.[nonempty(reference.key, "Workspace node setup Secret key")];
-  if (typeof encoded !== "string") {
-    throw new OpenShellSandboxConfigurationFailure(
-      "The workspace node setup Secret has no projected value.",
-    );
-  }
-  const value = Buffer.from(encoded, "base64").toString("utf8").trim();
-  if (
-    !isNonEmptyString(value) ||
-    value.length > 65_536 ||
-    Buffer.from(value, "utf8").toString("base64").replace(/=+$/u, "") !==
-      encoded.replace(/=+$/u, "")
-  ) {
-    throw new OpenShellSandboxConfigurationFailure(
-      "The workspace node setup Secret contains invalid material.",
-    );
-  }
-  const setupCode = value.toLowerCase().startsWith("oc-pair://")
-    ? value.slice("oc-pair://".length)
-    : value;
-  if (!/^[A-Za-z0-9_-]+$/u.test(setupCode)) {
-    throw new OpenShellSandboxConfigurationFailure(
-      "The workspace node setup Secret does not contain a base64url setup code.",
-    );
-  }
-  let payload: ConfigurationRecord;
+  let setupEnvelope: WorkspaceNodeSetupEnvelope;
   try {
-    const bytes = Buffer.from(setupCode, "base64url");
-    if (!isUtf8(bytes)) {
-      throw new Error("Invalid setup encoding.");
+    setupEnvelope = validateWorkspaceNodeSetupSecret(secret, {
+      namespace: namespaceName(context.namespace),
+      namespaceId: context.revision.namespaceId,
+      agentId: context.revision.agentId,
+      key: reference.key,
+    });
+  } catch (error) {
+    if (error instanceof WorkspaceNodeSetupValidationError) {
+      throw new OpenShellSandboxConfigurationFailure(error.message);
     }
-    payload = configurationObject(
-      JSON.parse(bytes.toString("utf8")),
-      "Workspace node setup envelope",
-    );
-  } catch {
-    throw new OpenShellSandboxConfigurationFailure(
-      "The workspace node setup Secret contains a malformed setup envelope.",
-    );
+    throw error;
   }
-  const allowed = new Set(["url", "bootstrapToken", "expiresAtMs", "tlsFingerprint"]);
-  if (Object.keys(payload).some((key) => !allowed.has(key))) {
-    throw new OpenShellSandboxConfigurationFailure(
-      "The workspace node setup envelope contains unsupported fields.",
-    );
-  }
-  const bootstrapToken = nonempty(payload.bootstrapToken, "Workspace node setup bootstrap token");
-  const encodedDeviceId = secretData?.deviceId;
-  const deviceId =
-    typeof encodedDeviceId === "string"
-      ? Buffer.from(encodedDeviceId, "base64").toString("utf8")
-      : "";
-  const recordedDevice =
-    typeof encodedDeviceId === "string" &&
-    isWorkspaceNodeDeviceId(deviceId) &&
-    Buffer.from(deviceId, "utf8").toString("base64").replace(/=+$/u, "") ===
-      encodedDeviceId.replace(/=+$/u, "");
-  if (encodedDeviceId !== undefined && !recordedDevice) {
-    throw new OpenShellSandboxConfigurationFailure("The workspace node device ID is invalid.");
-  }
-  const expiresAtMs = payload.expiresAtMs;
-  // A recorded device may reconnect after bootstrap expiry. Native still has
-  // to verify its retained identity, Gateway scope, pin and device token.
-  if (
-    typeof expiresAtMs !== "number" ||
-    !Number.isSafeInteger(expiresAtMs) ||
-    expiresAtMs <= 0 ||
-    (expiresAtMs <= Date.now() && !recordedDevice)
-  ) {
-    throw new OpenShellSandboxConfigurationFailure(
-      "The workspace node setup envelope is expired or has no bounded expiry.",
-    );
-  }
-  if (
-    payload.tlsFingerprint !== undefined &&
-    canonicalWorkspaceNodeTlsFingerprint(payload.tlsFingerprint) === undefined
-  ) {
-    throw new OpenShellSandboxConfigurationFailure(
-      "The workspace node setup TLS fingerprint is invalid.",
-    );
-  }
-  let endpoint: URL;
-  try {
-    const rawUrl = nonempty(payload.url, "Workspace node setup URL").trim();
-    const hasInvalidCharacter = [...rawUrl].some(
-      (character) => character.charCodeAt(0) <= 0x20 || character === "\\",
-    );
-    if (!/^wss?:\/\/[^/\\]/iu.test(rawUrl) || hasInvalidCharacter) {
-      throw new Error("Invalid setup URL.");
-    }
-    endpoint = new URL(rawUrl);
-  } catch {
-    throw new OpenShellSandboxConfigurationFailure("The workspace node setup URL is invalid.");
-  }
-  if (
-    (endpoint.protocol !== "ws:" && endpoint.protocol !== "wss:") ||
-    endpoint.username !== "" ||
-    endpoint.password !== "" ||
-    endpoint.hash !== "" ||
-    endpoint.search !== ""
-  ) {
-    throw new OpenShellSandboxConfigurationFailure(
-      "The workspace node setup URL must be an exact ws or wss endpoint without credentials, query, or fragment.",
-    );
-  }
-  if (payload.tlsFingerprint !== undefined && endpoint.protocol !== "wss:") {
-    throw new OpenShellSandboxConfigurationFailure(
-      "The workspace node setup TLS fingerprint requires a wss endpoint.",
-    );
-  }
+  const endpoint = new URL(setupEnvelope.url);
   // TODO(openshell-workspace-node-proof-binding): Return the bootstrap token to
   // OpenShell credential storage after OpenClaw can sign a stable public binding
   // instead of the token value that OpenShell rewrites on the WebSocket.
-  const setupEnvelope = {
-    url: endpoint.href,
-    bootstrapToken,
-    expiresAtMs,
-    ...(payload.tlsFingerprint === undefined ? {} : { tlsFingerprint: payload.tlsFingerprint }),
-  };
   return Object.freeze({
     credentials: Object.freeze({}),
     credentialExpirationTimes: Object.freeze({}),
@@ -1465,11 +1343,20 @@ function sandboxCommand(
     }
   }\n`
     : "";
-  return [
+  const prelude = `${bootstrap}${googleAlias}${native ? 'process.env.TMPDIR = require("node:path").join(process.env.HOME, "tmp");\n' : ""}${workspaceSetup === undefined ? "" : WORKSPACE_SETUP_WAIT}${loginMode === "chatgptAuthTokens" ? OPENSHELL_CHATGPT_AUTH_BOOTSTRAP : ""}`;
+  const composed = [
     ...command.slice(0, loaderIndex),
-    `${bootstrap}${googleAlias}${native ? 'process.env.TMPDIR = require("node:path").join(process.env.HOME, "tmp");\n' : ""}${workspaceSetup === undefined ? "" : WORKSPACE_SETUP_WAIT}${loginMode === "chatgptAuthTokens" ? OPENSHELL_CHATGPT_AUTH_BOOTSTRAP : ""}${loader}`,
+    prelude + loader,
     ...command.slice(loaderIndex + 1),
   ];
+  // Preserve existing immutable Sandbox commands that fit. Larger preludes use
+  // the same codec as the Harness so the complete command retains its 64 KiB budget.
+  return Buffer.byteLength(JSON.stringify(composed)) <= 65_536
+    ? composed
+    : [
+        ...command.slice(0, loaderIndex),
+        ...prependNodeProgramArguments(prelude, command.slice(loaderIndex)),
+      ];
 }
 
 // OpenShell can report its Sandbox ready before the Harness starts. The Driver
@@ -2327,8 +2214,8 @@ function sandboxSpec(
   const defaults = revision.sandboxPolicy?.defaults ?? networkPolicies(options);
   const additions = openShellAgentNetworkRules(revision.sandboxPolicy?.additions ?? []);
   if (plugin) {
-    assertPluginNetworkInspection(defaults, plugin.hosts);
-    assertPluginNetworkInspection(additions, plugin.hosts);
+    assertPluginNetworkInspection(defaults, plugin.hosts, plugin.binaries);
+    assertPluginNetworkInspection(additions, plugin.hosts, plugin.binaries);
     if (Object.hasOwn(defaults, "oce-google-requests")) {
       throw new OpenShellSandboxConfigurationFailure(
         "The Google plugin network rule name is reserved.",
@@ -2809,15 +2696,17 @@ function exactStringMap(
   );
 }
 
-function exactStringMapWithReservedPrefix(
+function sandboxAnnotationsMatch(
   actual: Readonly<Record<string, string>>,
   expected: Readonly<Record<string, string>>,
-  reservedPrefix: string,
 ): boolean {
   return (
     Object.entries(expected).every(([key, value]) => actual[key] === value) &&
     Object.keys(actual).every(
-      (key) => Object.hasOwn(expected, key) || key.startsWith(reservedPrefix),
+      (key) =>
+        Object.hasOwn(expected, key) ||
+        key.startsWith("internal.openshell.ai/") ||
+        key === OPENSHELL_POLICY_OPERATION_ANNOTATION,
     )
   );
 }
@@ -2991,17 +2880,64 @@ function verifyExistingSandbox(
     existing.name !== request.name ||
     existing.workspace !== request.workspace ||
     !exactStringMap(existing.labels, request.labels) ||
-    !exactStringMapWithReservedPrefix(
-      existing.annotations,
-      request.annotations,
-      "internal.openshell.ai/",
-    ) ||
+    !sandboxAnnotationsMatch(existing.annotations, request.annotations) ||
     !isDeepStrictEqual(canonicalSandboxSpec(existing.spec), canonicalSandboxSpec(request.spec))
   ) {
     throw new OpenShellSandboxConfigurationFailure(
       `Refusing OpenShell Sandbox ${request.name} without exact AgentRevision ownership and content.`,
     );
   }
+}
+
+/** Keep the live Agent grants and saved-account guard, while verifying the immutable restrictions. */
+function liveSandboxPolicy(
+  revision: Readonly<AgentRevision>,
+  baseline: Readonly<Record<string, unknown>>,
+  value: unknown,
+): Readonly<Record<string, unknown>> {
+  if (!revision.credentialSources?.some((source) => source.accountDelivery)) {
+    return baseline;
+  }
+  const binding = managedSlotBinding(revision.plugins?.plugins, managedGoogleInstall);
+  const account =
+    binding &&
+    revision.credentialSources?.some(
+      (source) => binding.sourceIds.includes(source.sourceId) && source.accountDelivery,
+    );
+  const initialPlugin = account && googleRequestPolicyFromSandbox(baseline);
+  // Other layouts retain their existing immutable-baseline application and repair semantics.
+  // An admitted account withdrawn before launch has no mutable request guard to preserve.
+  if (!initialPlugin) {
+    return baseline;
+  }
+  const current = asRecord(canonicalProtobufValues(value));
+  const network = asRecord(current?.network_policies);
+  const originalNetwork = asRecord(baseline.network_policies);
+  if (!current || !network || !originalNetwork) {
+    throw new OpenShellSandboxConfigurationFailure("The Sandbox policy baseline is unavailable.");
+  }
+  if (!googleRequestPolicyFromSandbox(current)) {
+    throw new OpenShellSandboxConfigurationFailure(
+      "The saved account request guard is unavailable.",
+    );
+  }
+  const fixedRules = (rules: Readonly<Record<string, unknown>>) =>
+    Object.fromEntries(
+      Object.entries(rules).filter(([name]) => !name.startsWith(AGENT_POLICY_PREFIX)),
+    );
+  const comparable = {
+    ...current,
+    network_middlewares: baseline.network_middlewares,
+    network_policies: { ...fixedRules(network), ...initialPlugin.networks },
+  };
+  if (
+    !sameOpenShellPolicy(comparable, { ...baseline, network_policies: fixedRules(originalNetwork) })
+  ) {
+    throw new OpenShellSandboxConfigurationFailure(
+      "The Sandbox policy differs outside its managed network rules.",
+    );
+  }
+  return current;
 }
 
 function checkStartupConfiguration(configuration: unknown): void {
@@ -3398,6 +3334,49 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       this.options.gateway.managedPluginMiddleware,
       this.options.providers ?? [],
     );
+    const accountBinding = managedSlotBinding(
+      context.revision.plugins?.plugins,
+      managedGoogleInstall,
+    );
+    const savedGoogleAccounts = new Map(
+      context.revision.credentialSources?.flatMap((source) =>
+        source.accountDelivery && accountBinding?.sourceIds.includes(source.sourceId)
+          ? [[source.sourceId, source.accountDelivery] as const]
+          : [],
+      ),
+    );
+    // Keep the immutable launch policy reproducible while reconciling the current grants.
+    let launchPlugin = plugin;
+    if (plugin && savedGoogleAccounts.size) {
+      launchPlugin = openShellPluginPolicy(
+        context.revision,
+        {
+          ...context.requirements,
+          credentialAttachments: context.requirements.credentialAttachments.map((attachment) => {
+            const saved = savedGoogleAccounts.get(attachment.sourceId);
+            if (!saved) {
+              return attachment;
+            }
+            const scope = googleSourceRequestScope(saved.config);
+            if (!scope) {
+              throw new OpenShellSandboxConfigurationFailure(
+                "The saved account launch policy is invalid.",
+              );
+            }
+            return {
+              ...attachment,
+              requestScope: {
+                ...attachment.requestScope,
+                destinations: googleCredentialEndpoints(scope),
+                scopes: scope.scopes,
+              },
+            };
+          }),
+        },
+        this.options.gateway.managedPluginMiddleware,
+        this.options.providers ?? [],
+      );
+    }
     if (plugin) {
       await verifyManagedPluginRegistration(client, context.signal);
     }
@@ -3442,13 +3421,85 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "OpenShell Git cannot share the protected execution proxy profile.",
       );
     }
-    const checkEffectivePolicy = async (google = plugin) => {
+    const checkEffectivePolicy = async (
+      baseline: Readonly<Record<string, unknown>> = create.spec,
+      google = plugin,
+    ) => {
+      if (plugin && savedGoogleAccounts.size) {
+        if (!client.getPolicyStatus || !client.updatePolicy) {
+          throw new OpenShellSandboxConfigurationFailure(
+            "Saved accounts require live Sandbox policy reconciliation.",
+          );
+        }
+        // Capture the write precondition before reading the live policy. A concurrent
+        // policy owner must make this conditional update retry, never lose its rules.
+        const target = await client.getSandbox(
+          { workspace, name: sandbox.resourceName },
+          context.signal,
+        );
+        if (!target?.resourceVersion) {
+          throw new DependencyUnavailableError("The account Sandbox policy target is unavailable.");
+        }
+        verifyExistingSandbox(target, { ...create, spec: baseline, requestId: requestIds[0]! });
+        const baselinePolicy = asRecord(baseline.policy);
+        if (!baselinePolicy) {
+          throw new OpenShellSandboxConfigurationFailure(
+            "The Sandbox policy baseline is unavailable.",
+          );
+        }
+        let status = await client.getPolicyStatus(
+          { workspace, sandbox: sandbox.resourceName },
+          context.signal,
+        );
+        const observed = liveSandboxPolicy(context.revision, baselinePolicy, status.policy);
+        const desired = {
+          ...observed,
+          network_middlewares: plugin.middlewares,
+          network_policies: { ...asRecord(observed.network_policies), ...plugin.networks },
+        };
+        // A grant that was independent of the old account routes may overlap an added host.
+        assertPluginRequestPolicy(desired, plugin);
+        if (!sameOpenShellPolicy(observed, desired)) {
+          await client.updatePolicy(
+            {
+              workspace,
+              sandbox: sandbox.resourceName,
+              policy: desired,
+              expectedResourceVersion: target.resourceVersion,
+              requestId: `account-policy-${sha256Hex(JSON.stringify([context.revision.id, target.resourceVersion, desired]))}`,
+            },
+            context.signal,
+          );
+          status = await client.getPolicyStatus(
+            { workspace, sandbox: sandbox.resourceName },
+            context.signal,
+          );
+        }
+        if (
+          status.state !== "POLICY_STATUS_LOADED" ||
+          status.activeVersion !== status.version ||
+          !sameOpenShellPolicy(canonicalProtobufValues(status.policy), desired)
+        ) {
+          throw new DependencyUnavailableError(
+            "The saved account request policy is not loaded yet.",
+          );
+        }
+      }
       const config =
         google || mcpPolicies.length
           ? await client.getSandboxConfig?.(workspace, sandbox.resourceName, context.signal)
           : undefined;
       if (google) {
-        verifyPluginRequestGuard(config, google, workspace);
+        try {
+          verifyPluginRequestGuard(config, google, workspace);
+        } catch (error) {
+          if (savedGoogleAccounts.size) {
+            throw new DependencyUnavailableError(
+              "The saved account sender and effective request guard have not converged.",
+            );
+          }
+          throw error;
+        }
       }
       for (const policy of mcpPolicies) {
         verifyManagedMcpPolicy(config, policy, workspace);
@@ -3522,7 +3573,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         ]),
         runtimeCredentialMaterial.binding,
         egressPolicy,
-        plugin,
+        launchPlugin,
         mcpPolicies,
       ),
       serviceExposures,
@@ -3774,7 +3825,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       }
       validateHarnessServiceUrl(service.url);
     }
-    await checkEffectivePolicy(existingGoogle);
+    await checkEffectivePolicy(expectedSpec, existingGoogle);
     await this.initializeWorkspace(context, sandbox, client);
     return result;
   }
@@ -4621,9 +4672,13 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     if (baseline === undefined) {
       throw new Error("Missing policy baseline.");
     }
-    const candidate = openShellPolicyCandidate(baseline, snapshot);
     const status = await client.getPolicyStatus(request, context.signal);
-    const matches = sameOpenShellPolicy(status.policy, candidate);
+    const current = liveSandboxPolicy(context.revision, baseline, status.policy);
+    const candidate = openShellPolicyCandidate(current, snapshot);
+    const matches = sameOpenShellPolicy(
+      canonicalProtobufValues(status.policy),
+      canonicalProtobufValues(candidate),
+    );
     const state =
       status.state === "POLICY_STATUS_LOADED" && status.activeVersion === status.version
         ? "applied"
@@ -4664,16 +4719,18 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       throw new Error("Live policy application is unavailable for protected execution.");
     }
     const { client, request, sandbox } = await this.policyTarget(context);
-    if (client.updatePolicy === undefined) {
+    if (client.updatePolicy === undefined || client.getPolicyStatus === undefined) {
       throw new Error("Live policy application is unsupported.");
     }
     const baseline = asRecord(sandbox.spec?.policy);
     if (baseline === undefined) {
       throw new Error("Missing policy baseline.");
     }
-    const candidate = openShellPolicyCandidate(baseline, input.snapshot);
+    const status = await client.getPolicyStatus(request, context.signal);
+    const current = liveSandboxPolicy(context.revision, baseline, status.policy);
+    const candidate = openShellPolicyCandidate(current, input.snapshot);
     const attachedProviders = sandbox.spec?.providers;
-    const plugin = googleRequestPolicyFromSandbox(baseline);
+    const plugin = googleRequestPolicyFromSandbox(current);
     if (plugin) {
       assertPluginRequestPolicy(candidate, plugin);
     } else {
@@ -4681,7 +4738,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       if (
         binding &&
         Array.isArray(attachedProviders) &&
-        binding.sourceIds.some((id) => attachedProviders.includes(openShellProviderName(id)))
+        binding.sourceIds.some((id) =>
+          attachedProviders.includes(
+            openShellProviderName(revisionProviderSourceId(context.revision, id)),
+          ),
+        )
       ) {
         throw new SandboxNetworkPolicyConflictError(
           "The attached Google account requires its admitted request guard.",
@@ -4698,7 +4759,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         binding &&
         Array.isArray(attachedProviders) &&
         binding.sourceIds.some((sourceId) =>
-          attachedProviders.includes(openShellProviderName(sourceId)),
+          attachedProviders.includes(
+            openShellProviderName(revisionProviderSourceId(context.revision, sourceId)),
+          ),
         )
       ) {
         throw new SandboxNetworkPolicyConflictError(

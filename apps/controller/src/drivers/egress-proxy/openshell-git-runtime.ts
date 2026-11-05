@@ -2023,7 +2023,10 @@ export class OpenShellGitRuntime {
                 await this.fenced(entry, signal);
                 if (
                   entry.preview &&
-                  !isDeepStrictEqual(await this.observation(entry, signal), observed)
+                  !isDeepStrictEqual(
+                    await this.observation(entry, signal, { predecessor: true }),
+                    observed,
+                  )
                 ) {
                   throw new OpenShellGitRouteError(
                     "material_mismatch",

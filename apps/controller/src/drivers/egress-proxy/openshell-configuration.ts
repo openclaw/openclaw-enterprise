@@ -10,7 +10,39 @@ import {
 import { preparedGitHubConfiguration } from "../repo/github/credentials/prepared-configuration.ts";
 import type { OpenShellGitRuntimeConfiguration } from "./openshell-git-runtime.ts";
 
-export { openShellRepositoryConfiguration } from "../../composition/installation-fields.ts";
+/** Existing Helm listener and mounted files for the OpenShell Git adapter. */
+export const openShellGitChartListener = {
+  path: "repository.openShell.authority",
+  chart: "openshellGit",
+  variable: "OCC_OPENSHELL_GIT_PORT",
+  files: {
+    certificatePath: ["/etc/openclaw/openshell-git/tls.crt", "openshellGit.tlsSecretName"],
+    privateKeyPath: ["/etc/openclaw/openshell-git/tls.key", "openshellGit.tlsSecretName"],
+    issuerPublicKeyPath: [
+      "/etc/openclaw/openshell-git/gateway-public.pem",
+      "openshellGit.issuerPublicKeyConfigMapName",
+    ],
+  },
+} as const;
+
+export function openShellRepositoryConfiguration(
+  input: unknown,
+  mode: "development" | "production",
+) {
+  if (input === undefined) {
+    return undefined;
+  }
+  const value = object(input, "repository.openShell");
+  closed(value, ["registrationName", "authority"], "repository.openShell");
+  return {
+    registrationName: nonempty(value.registrationName, "repository.openShell.registrationName"),
+    authority: egressAuthorityConfiguration(
+      value.authority,
+      mode,
+      "repository.openShell.authority",
+    ),
+  };
+}
 
 /** The adapter selects its discovery profile from its own repository transport configuration. */
 export function openShellProxyConfiguration(

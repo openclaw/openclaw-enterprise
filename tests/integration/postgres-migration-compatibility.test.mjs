@@ -1367,6 +1367,7 @@ async function assertCompletedHistory(db, previous = []) {
     WHERE n.nspname='occ' AND p.prosecdef ORDER BY identity`)
     ).rows,
     [
+      ["occ.check_connection_registration_scope()", false, "search_path=pg_catalog, pg_temp"],
       // The app records a standing execution; only the Agent lifecycle trigger can close it.
       ["occ.close_repository_standing_execution()", false],
       ["occ.create_agent_sandbox_policy()", false, "search_path=pg_catalog, occ"],
@@ -1999,6 +2000,10 @@ test(
       [65, "preAgentDeployIntent"],
       [66, "preAgentCredentialSourceLimit"],
       [67, "preAgentPluginDriver"],
+      [68, "preConnectionTemplates"],
+      [69, "preSavedConnections"],
+      [70, "preConnectionAttachmentIntent"],
+      [71, "preConnectionIntentAccounts"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2030,6 +2035,61 @@ test(
         assert.ok(existingBindings.rows.length > 0);
         assert.ok(existingBindings.rows.every((row) => row.first_deployment_digest === null));
         await assertUpgradedAuthentication(db);
+        if (history === "preConnectionTemplates") {
+          // An Installation-wide template cannot present a Namespace client's credentials,
+          // even when an application-role writer bypasses OCC.
+          const templateId = `ctp_${randomUUID()}`;
+          const registrationId = `ccr_${randomUUID()}`;
+          await db.app.query("BEGIN");
+          try {
+            await db.app.query(
+              `INSERT INTO occ.oauth_clients
+                 (id,namespace_id,display_name,issuer,client_id,token_url,token_endpoint_auth_method,created_at)
+               VALUES ($1,$2,'Namespace client','https://issuer.example.test','shared-client','https://issuer.example.test/token','none',now())`,
+              [registrationId, namespaceId],
+            );
+            await db.app.query(
+              `INSERT INTO occ.connection_templates
+                 (id, namespace_id, display_name, current_version, created_at)
+               VALUES ($1, NULL, 'Installation template', 1, now())`,
+              [templateId],
+            );
+            await assert.rejects(
+              db.app.query(
+                `INSERT INTO occ.oauth_connection_template_versions
+                   (template_id, version, oauth_client_id, issuer, mode, authorization_url,
+                    token_url, scopes, authorization_parameters, destinations, created_at)
+                 VALUES ($1, 1, $2, 'https://issuer.example.test', 'manual',
+                    'https://issuer.example.test/auth', 'https://issuer.example.test/token',
+                    ARRAY['read'], '{}', '[{"host":"api.example.test","port":443,"path":"/"}]', now())`,
+                [templateId, registrationId],
+              ),
+              { code: "23514", message: /registration must belong to the template scope/ },
+            );
+          } finally {
+            await db.app.query("ROLLBACK");
+          }
+        }
+        if (history === "preConnectionAttachmentIntent") {
+          // The application records which gateway profile an account created. The account FK
+          // rejects foreign ownership; only deleting its owner may remove or change this receipt.
+          const privileges = await db.app.query(`SELECT
+            has_table_privilege(current_user,'occ.saved_connection_profiles','SELECT') AS read,
+            has_table_privilege(current_user,'occ.saved_connection_profiles','INSERT') AS record,
+            has_any_column_privilege(current_user,'occ.saved_connection_profiles','UPDATE') AS edit,
+            has_table_privilege(current_user,'occ.saved_connection_profiles','DELETE') AS remove,
+            has_table_privilege(current_user,'occ.saved_connection_profiles','TRUNCATE') AS truncate`);
+          assert.deepEqual(privileges.rows, [
+            { read: true, record: true, edit: false, remove: false, truncate: false },
+          ]);
+          await assert.rejects(
+            db.app.query(
+              "INSERT INTO occ.saved_connection_profiles(namespace_id,credential_source_id,profile_id,gateway_id,source_type) VALUES ($1,$2,$3,'gateway','google')",
+              [`ns_${randomUUID()}`, `crs_${randomUUID()}`, "account-" + "0".repeat(64)],
+            ),
+            { code: "23503", constraint: "saved_connection_profiles_owner" },
+          );
+        }
         if (history === "preGatewayManagedMode") {
           await db.app.query(
             `INSERT INTO occ.agent_revisions

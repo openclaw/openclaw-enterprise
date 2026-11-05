@@ -2,6 +2,7 @@ import type { CredentialRefreshStatus } from "../credential-refresh/index.ts";
 import type { Driver } from "../index.ts";
 import type {
   AgentRevision,
+  ConnectionEndpoint,
   CredentialSource,
   CredentialSourceType,
   Namespace,
@@ -74,10 +75,10 @@ export interface CredentialSourceAttachment {
   readonly ref: string;
   /** Non-secret limits of the attached OAuth provider for a Sandbox request guard. */
   readonly requestScope?: {
-    readonly host: string;
-    readonly port: number;
-    readonly path: string;
+    readonly destinations: readonly ConnectionEndpoint[];
     readonly scopes: readonly string[];
+    /** Sender-approved executables that share this saved account’s request guard. */
+    readonly binaries?: readonly string[];
   };
   /** External Codex authentication carries no refresh token into the workload. */
   readonly externalChatgptAuth?: ExternalChatgptAuth;
@@ -92,6 +93,15 @@ export interface CredentialAttachmentStatus {
 /** Holds credential sources and applies them outside the Agent workload. */
 export interface CredentialGatewayDriver extends Driver {
   readonly capability: "credential_gateway";
+  /** Prepare an empty sender, withdrawing existing material before changing its request policy. Unchanged policy retains its token. */
+  prepareConnectionSource?(context: CredentialSourceContext): Promise<void>;
+  /** Deliver only a prepared access token. The sender must stop presenting it at expiry. */
+  publishConnectionToken?(
+    context: CredentialSourceContext,
+    token: { readonly accessToken: string; readonly expiresAt: string },
+  ): Promise<void>;
+  /** Withdraw a prepared access token while retaining the source and its attached sandbox profiles. */
+  withdrawConnectionToken?(context: CredentialSourceContext): Promise<void>;
   /** The token service may refresh to ensure usability; refresh material stays there. Tokens exist only during the callback. */
   withSourceToken?<T>(
     context: CredentialSourceContext,

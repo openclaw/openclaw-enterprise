@@ -7,6 +7,8 @@ import {
   AgentRuntimeCredentialResponse,
   AgentRuntimeLogsResponse,
   AgentRuntimeResponse,
+  ConnectionTemplateSchema,
+  OAuthConnectionTemplateVersionSchema,
   CredentialSourceResponse,
   ErrorDetail as ErrorDetailSchema,
   ErrorResponse,
@@ -55,7 +57,6 @@ import {
   AgentPrincipalAuthorizationError,
   AuthorizationDeniedError,
   DeletionRetryOwnedError,
-  BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
   ComputeProvisioningRefusedError,
   createRuntimeLogCursorCodec,
   DependencyUnavailableError,
@@ -68,6 +69,7 @@ import {
   type DeployAgentAuthorization,
   type HarnessResolver,
   type OpenClawController,
+  type PlatformUnitOfWork,
 } from "@openclaw-enterprise/occ";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
 import Fastify, {
@@ -97,6 +99,8 @@ import {
   type PreparedAuthAccount,
 } from "./auth/index.ts";
 import { CONSOLE_CONTENT_SECURITY_POLICY, readConsoleAsset } from "./console-assets.ts";
+import { createBootstrapResources } from "./composition/installation-bootstrap.ts";
+import { discoverMcpAuthorization } from "./connections/mcp-discovery.ts";
 import { listManagedMcpToolNames } from "./connections/mcp-tool-discovery.ts";
 import type { ConsoleTheme } from "./console-theme.ts";
 import {
@@ -137,6 +141,14 @@ import {
   limitNativeAdminReturn,
 } from "./http/native-admin.ts";
 import { presetHandlers } from "./http/presets.ts";
+import { connectionTemplateHandlers } from "./http/connection-templates.ts";
+import {
+  CONNECTION_CALLBACK_PATH,
+  connectionCallbackOperation,
+  connectionCallbackSchema,
+  createConnectionCallback,
+  namespaceConnectionHandlers,
+} from "./http/connections.ts";
 import {
   isRuntimeLogDownload,
   RUNTIME_LOG_DOWNLOAD_ACTION,
@@ -188,6 +200,7 @@ export interface ControllerAppOptions {
   readonly auth: ControllerAuth;
   readonly workspaceFilesAccess?: ControllerWorkspaceFilesAccess;
   readonly workspaceFileRequestTimeoutMs?: number;
+  readonly discoverMcpAuthorization?: typeof discoverMcpAuthorization;
   readonly readManagedMcpToolNames?: typeof listManagedMcpToolNames;
   readonly nativeAdmin?: NativeAdminAccessConfig;
   readonly nativeAdminGatewayApiKey?: () => Promise<string>;
@@ -235,6 +248,7 @@ interface RequiredPermission {
     | "authenticated_plugin_discovery"
     | "read_logs_alternative"
     | "bound_credential_source"
+    | "unless_consent_owner"
     | "saved_sandbox_policy_additions";
 }
 
@@ -436,7 +450,10 @@ function validateConfiguration(value: unknown, depth = 0, path = ""): void {
   for (const [key, entry] of Object.entries(value)) {
     if (key === "__proto__" || key === "constructor" || key === "prototype") {
       throw failure(400, "INVALID_REQUEST", "The supplied configuration is invalid.", [
-        { path: cappedPath(`${path}/${jsonPointer(key)}`), code: "INVALID_VALUE" },
+        {
+          path: cappedPath(`${path}/${jsonPointer(key)}`),
+          code: "INVALID_VALUE",
+        },
       ]);
     }
     validateConfiguration(entry, depth + 1, `${path}/${jsonPointer(key)}`);
@@ -501,7 +518,9 @@ function operationTarget(
   }
   if (
     (operation.operationId === "createCredentialSource" ||
-      operation.operationId === "listCredentialSources") &&
+      operation.operationId === "listCredentialSources" ||
+      operation.operationId === "listUsableConnectionTemplates" ||
+      operation.operationId === "startNamespaceConnection") &&
     namespaceId
   ) {
     return { kind: "credential_source", id: namespaceId, namespaceId };
@@ -565,6 +584,43 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
   };
 
   if (
+    operation.operationId === "startAgentPluginConnection" ||
+    operation.operationId === "listAgentPluginConnectionTemplates"
+  ) {
+    return [
+      { ...permission, scope: "requested" },
+      {
+        action: "create",
+        resourceKind: "credential_source",
+        scope: "namespace",
+      },
+    ];
+  }
+  if (operation.operationId === "attachAgentConnection") {
+    return [
+      { ...permission, scope: "requested" },
+      {
+        action: "operate",
+        resourceKind: "credential_source",
+        scope: "requested",
+      },
+    ];
+  }
+  if (operation.operationId === "disconnectNamespaceConnection") {
+    return [{ ...permission, scope: "requested", condition: "unless_consent_owner" }];
+  }
+  if (operation.operationId === "listNamespaceConnections") {
+    return [
+      { ...permission, scope: "requested" },
+      {
+        action: "read",
+        resourceKind: "credential_source",
+        scope: "each_returned",
+      },
+    ];
+  }
+
+  if (
     [
       "getAgentSandboxPolicy",
       "getAgentSandboxRecommendations",
@@ -594,7 +650,11 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
   if (operation.operationId === "TEMPORARY_API_WILL_BREAK_IN_FUTURE_setAgentSandboxPolicyEditing") {
     return [
       { ...permission, scope: "requested" },
-      { action: "administer", resourceKind: "installation", scope: "installation" },
+      {
+        action: "administer",
+        resourceKind: "installation",
+        scope: "installation",
+      },
     ];
   }
 
@@ -607,7 +667,13 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
         scope: saved ? "requested" : "namespace",
       },
       ...(saved
-        ? [{ action: "read" as const, resourceKind: "agent" as const, scope: "requested" as const }]
+        ? [
+            {
+              action: "read" as const,
+              resourceKind: "agent" as const,
+              scope: "requested" as const,
+            },
+          ]
         : []),
       {
         action: operation.operationId.startsWith("start") ? "create" : "operate",
@@ -715,7 +781,11 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
 
   if (operation.operationId === "createIAMAccessBinding") {
     return [
-      { action: "administer", resourceKind: "installation", scope: "requested" },
+      {
+        action: "administer",
+        resourceKind: "installation",
+        scope: "requested",
+      },
       { action: "read", resourceKind: "namespace", scope: "requested" },
       {
         action: "read",
@@ -781,7 +851,11 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     operation.operationId === "getIAMServicePrincipal"
   ) {
     return [
-      { action: "administer", resourceKind: "installation", scope: "requested" },
+      {
+        action: "administer",
+        resourceKind: "installation",
+        scope: "requested",
+      },
       { action: "read", resourceKind: "namespace", scope: "requested" },
     ];
   }
@@ -900,7 +974,11 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     return [
       { action: "create", resourceKind: "agent", scope: "namespace" },
       { action: "create", resourceKind: "configuration", scope: "namespace" },
-      { action: "administer", resourceKind: "installation", scope: "requested" },
+      {
+        action: "administer",
+        resourceKind: "installation",
+        scope: "requested",
+      },
       ...(["read", "operate", "deploy"] as const).map((action) => ({
         action,
         resourceKind: "agent" as const,
@@ -1006,7 +1084,11 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     case "agent_collection":
       return [
         { ...permission, scope: "requested" },
-        { action: "read", resourceKind: "agent_revision", scope: "each_returned" },
+        {
+          action: "read",
+          resourceKind: "agent_revision",
+          scope: "each_returned",
+        },
       ];
     default:
       return [{ ...permission, scope: "requested" }];
@@ -1053,6 +1135,9 @@ function permissionDescription(
   const description = permissions
     .map(({ action, resourceKind, scope, condition }) => {
       const name = names[resourceKind];
+      if (condition === "unless_consent_owner") {
+        return "Requires delete permission on this CredentialSource unless the caller owns the saved connection.";
+      }
       if (condition === "associated_service_account") {
         return `Requires ${action} permission on each currently associated or newly associated ${name} when present.`;
       }
@@ -1152,7 +1237,9 @@ function clientInstallation(
     ...(agentProvisioning === undefined
       ? {}
       : {
-          agentProvisioning: { executionModes: [...agentProvisioning.executionModes] },
+          agentProvisioning: {
+            executionModes: [...agentProvisioning.executionModes],
+          },
         }),
   };
   return {
@@ -1345,7 +1432,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             in: "cookie",
             name: options.auth?.sessionCookieName ?? "openclaw_occ.session_token",
           },
-          serviceApiKey: { type: "apiKey", in: "header", name: OCC_SERVICE_KEY_HEADER },
+          serviceApiKey: {
+            type: "apiKey",
+            in: "header",
+            name: OCC_SERVICE_KEY_HEADER,
+          },
         },
       },
       security: [{ sessionCookie: [] }, { serviceApiKey: [] }],
@@ -1384,7 +1475,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             type: "object",
             additionalProperties: false,
             required: ["subject"],
-            properties: { subject: { type: "string", pattern: "^[1-9][0-9]{0,19}$" } },
+            properties: {
+              subject: { type: "string", pattern: "^[1-9][0-9]{0,19}$" },
+            },
           },
         },
       },
@@ -1499,7 +1592,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               ? {}
               : {
                   ...(outcome === "denied" && authorizationEvidence.restrictionIds.length > 0
-                    ? { decisionReason: "A matching Restriction denied the operation." }
+                    ? {
+                        decisionReason: "A matching Restriction denied the operation.",
+                      }
                     : {}),
                 }),
           }),
@@ -1642,7 +1737,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     resource: ResourceRef,
     context: RequestContext,
     filename: WorkspaceFileName,
-    result?: { readonly outcome: "success" | "failure"; readonly reasonCode?: string },
+    result?: {
+      readonly outcome: "success" | "failure";
+      readonly reasonCode?: string;
+    },
   ): AuditEvent {
     const base = event(operation, request, resource, "mutation", context, undefined, result);
     return {
@@ -1718,7 +1816,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     const selected = selectedIAMDriver();
     let decision;
     try {
-      decision = await selected.authorize({ principalId: actorId, action, resource });
+      decision = await selected.authorize({
+        principalId: actorId,
+        action,
+        resource,
+      });
     } catch {
       throw dependencyUnavailable();
     }
@@ -1731,7 +1833,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     ) {
       throw dependencyUnavailable();
     }
-    return { allowed: decision.allowed, restricted: decision.evidence.restrictionIds.length > 0 };
+    return {
+      allowed: decision.allowed,
+      restricted: decision.evidence.restrictionIds.length > 0,
+    };
   }
 
   async function callerMay(
@@ -1820,7 +1925,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     auditSink: options.auditSink,
   });
 
+  const connectionOrigin = publicOrigin ?? browserOrigin?.origin;
+  const connectionRedirectUri =
+    connectionOrigin && `${connectionOrigin}${CONNECTION_CALLBACK_PATH}`;
   const handlers: ResourceHandlers = {
+    ...namespaceConnectionHandlers(connectionRedirectUri),
     ...resourceHandlers,
     ...sandboxPolicyHandlers,
     ...createAgentHandlers({
@@ -1905,7 +2014,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       operation.operationId !== "listAgentRepositoryOptions" &&
       operation.operationId !== "getAgentDeploymentRuntimeLogs" &&
       operation.operationId !== "deleteServiceAccount" &&
-      operation.operationId !== "listAgentRevisions"
+      operation.operationId !== "listAgentRevisions" &&
+      operation !== connectionCallbackOperation
     ) {
       throw failure(
         400,
@@ -2080,6 +2190,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
     const context: RequestContext = {
       actorId: identity.id,
+      ...(admitted.method === "session" && { sessionId: admitted.session.id }),
       issuer: admitted.externalIdentity.issuer,
       subject: admitted.externalIdentity.subject,
       admissionDecisionId: admitted.decisionId,
@@ -2202,9 +2313,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           created.selectDriver("sandbox", options.sandboxDriver.id);
         }
         await created.transact(async (unit) => {
-          await created.createNamespace(context.actorId, {
-            name: BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
-          });
+          await createBootstrapResources(created, context.actorId);
           await unit.audit.append(
             event(operation, request, target, "bootstrap", context, decision.evidence),
           );
@@ -2236,6 +2345,56 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
+    const templateHandler = connectionTemplateHandlers[operation.operationId];
+    if (templateHandler) {
+      const admitted = admissions.get(request);
+      if (!admitted) {
+        throw failure(503, "DEPENDENCY_UNAVAILABLE", "The request admission is unavailable.");
+      }
+      const session = admitted.method === "session" ? admitted.session : undefined;
+      const run = () =>
+        templateHandler({
+          ...(session && {
+            holdSession: (unit: PlatformUnitOfWork) =>
+              options.auth.holdSession(unit, session, request),
+          }),
+          meta: {
+            requestId: request.id,
+            ...(connectionOrigin ? { redirectUri: `${connectionOrigin}/oauth/callback` } : {}),
+          },
+          discover: options.discoverMcpAuthorization ?? discoverMcpAuthorization,
+          controller: controller!,
+          actorId: context.actorId,
+          request,
+          reply,
+          mutationEvent: (resourceId) =>
+            event(
+              operation,
+              request,
+              { kind: "installation", id: installationId },
+              "mutation",
+              context,
+              undefined,
+              {
+                outcome: "success",
+                details: resourceId.startsWith("ccr_")
+                  ? { oauthClientId: resourceId }
+                  : { connectionTemplateId: resourceId },
+              },
+            ),
+        });
+      if (
+        session &&
+        operation.method !== "GET" &&
+        operation.operationId !== "discoverConnectionTemplate"
+      ) {
+        await options.auth.withSessionAuthority(session, run);
+      } else {
+        await run();
+      }
+      return;
+    }
+
     if (operation.operationId === "getInstallation") {
       reply.send({
         data: clientInstallation(
@@ -2263,7 +2422,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         throw dependencyUnavailable();
       }
       reply.send({
-        data: backends.map((backend) => ({ id: backend.id, type: backend.type })),
+        data: backends.map((backend) => ({
+          id: backend.id,
+          type: backend.type,
+        })),
         meta: { requestId: request.id },
       });
       return;
@@ -2325,11 +2487,22 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       // instead of an Installation-only read, which the API audits when it is refused.
       const [namespaceDelete, agentCreate, secretCreate, installationAdminister] =
         await Promise.all([
-          callerMay(context.actorId, "delete", { kind: "namespace", id: namespaceId, namespaceId }),
+          callerMay(context.actorId, "delete", {
+            kind: "namespace",
+            id: namespaceId,
+            namespaceId,
+          }),
           ...(["agent", "secret"] as const).map((kind) =>
-            callerMay(context.actorId, "create", { kind, id: namespaceId, namespaceId }),
+            callerMay(context.actorId, "create", {
+              kind,
+              id: namespaceId,
+              namespaceId,
+            }),
           ),
-          callerMay(context.actorId, "administer", { kind: "installation", id: installationId }),
+          callerMay(context.actorId, "administer", {
+            kind: "installation",
+            id: installationId,
+          }),
         ]);
       reply.send({
         data: {
@@ -2469,7 +2642,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           harnessId: body?.harnessId as "codex" | "openclaw",
           ...(body?.credentialSource === undefined
             ? {}
-            : { credentialSource: body.credentialSource as CredentialSourceReference }),
+            : {
+                credentialSource: body.credentialSource as CredentialSourceReference,
+              }),
           ...(body?.secretRef === undefined
             ? { accessToken: body?.accessToken as string }
             : { secretRef: body.secretRef as SecretReference }),
@@ -2491,7 +2666,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           harnessId: body?.harnessId as "codex" | "openclaw",
           ...(body?.credentialSource === undefined
             ? {}
-            : { credentialSource: body.credentialSource as CredentialSourceReference }),
+            : {
+                credentialSource: body.credentialSource as CredentialSourceReference,
+              }),
           ...(body?.secretRef === undefined
             ? { accessToken: body?.accessToken as string }
             : { secretRef: body.secretRef as SecretReference }),
@@ -2523,7 +2700,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         {
           ...(body?.credentialSource === undefined
             ? {}
-            : { credentialSource: body.credentialSource as CredentialSourceReference }),
+            : {
+                credentialSource: body.credentialSource as CredentialSourceReference,
+              }),
           ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
           ...(body?.q === undefined ? {} : { q: body.q as string }),
         },
@@ -2766,7 +2945,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           callerMay(context.actorId, "update", configuration),
           callerMay(context.actorId, "read", configuration),
           // Checked first, so listing the Secrets below is never a refused, audited read.
-          callerMay(context.actorId, "read", { kind: "namespace", id: namespaceId, namespaceId }),
+          callerMay(context.actorId, "read", {
+            kind: "namespace",
+            id: namespaceId,
+            namespaceId,
+          }),
         ]);
       // Binding a Secret to the Agent's Configuration, or as its Harness authentication source,
       // authorizes Secret operate on it (finding 2453), and so does deploying a draft that binds
@@ -2848,7 +3031,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             ? workspaceWithoutRunningVersion(agentId, error.stopped)
             : error;
         });
-        const target = { kind: "agent" as const, id: agent.id, namespaceId: agent.namespaceId };
+        const target = {
+          kind: "agent" as const,
+          id: agent.id,
+          namespaceId: agent.namespaceId,
+        };
         // After authorization, so a caller without the grant gets its 403, not this 503
         // (finding 2584).
         if (options.workspaceFilesAccess === undefined || signal.aborted) {
@@ -2880,7 +3067,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             throw dependencyUnavailable();
           }
           const isWellFormed = (
-            String.prototype as unknown as { isWellFormed: (this: string) => boolean }
+            String.prototype as unknown as {
+              isWellFormed: (this: string) => boolean;
+            }
           ).isWellFormed;
           if (
             Buffer.byteLength(result.file.content, "utf8") > WORKSPACE_FILE_CONTENT_LIMIT ||
@@ -3106,7 +3295,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             .send(runtimeLogDownloadBody(page, agentId, logQuery.previous));
           return;
         }
-        reply.send({ data: runtimeLogPageBody(page), meta: { requestId: request.id } });
+        reply.send({
+          data: runtimeLogPageBody(page),
+          meta: { requestId: request.id },
+        });
         return;
       } finally {
         reply.raw.off("close", onClose);
@@ -3149,7 +3341,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       },
     };
     const responses = (success: Record<string, unknown>, status = 200) => ({
-      [status]: { description: status === 201 ? "Created" : "OK", ...envelope(success) },
+      [status]: {
+        description: status === 201 ? "Created" : "OK",
+        ...envelope(success),
+      },
       401: { description: "Unauthorized", ...error },
       503: { description: "Service Unavailable", ...error },
     });
@@ -3210,7 +3405,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           tags: [...operation.tags],
           security: [{ sessionCookie: [] }, { serviceApiKey: [] }],
           "x-openclaw-permissions": [
-            { action: "administer", resourceKind: "installation", scope: "requested" },
+            {
+              action: "administer",
+              resourceKind: "installation",
+              scope: "requested",
+            },
           ],
           ...(creating
             ? {
@@ -3219,8 +3418,15 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                   additionalProperties: false,
                   required: ["servicePrincipalId", "name"],
                   properties: {
-                    servicePrincipalId: { type: "string", minLength: 1, maxLength: 200 },
-                    namespaceId: { type: "string", pattern: RESOURCE_ID.namespaceId.source },
+                    servicePrincipalId: {
+                      type: "string",
+                      minLength: 1,
+                      maxLength: 200,
+                    },
+                    namespaceId: {
+                      type: "string",
+                      pattern: RESOURCE_ID.namespaceId.source,
+                    },
                     name: {
                       type: "string",
                       minLength: 1,
@@ -3241,7 +3447,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                   type: "object",
                   additionalProperties: false,
                   required: ["keyId"],
-                  properties: { keyId: { type: "string", minLength: 1, maxLength: 200 } },
+                  properties: {
+                    keyId: { type: "string", minLength: 1, maxLength: 200 },
+                  },
                 },
               }),
           response: {
@@ -3338,7 +3546,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                       servicePrincipalId,
                       ...(creating
                         ? {}
-                        : { serviceKeyId: (request.params as { keyId: string }).keyId }),
+                        : {
+                            serviceKeyId: (request.params as { keyId: string }).keyId,
+                          }),
                     },
                   },
                 ),
@@ -3428,7 +3638,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             } catch {
               throw dependencyUnavailable();
             }
-            reply.send({ data: { id: key.id, revoked: true }, meta: { requestId: request.id } });
+            reply.send({
+              data: { id: key.id, revoked: true },
+              meta: { requestId: request.id },
+            });
           }
         },
       });
@@ -3535,7 +3748,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               "Consumes the browser-bound attempt before provider exchange. Redirects to Console after session and audit commit or with a fixed failure classification.",
             tags: ["Authentication"],
             security: [],
-            response: { 302: { description: "Redirect to Console", type: "null" } },
+            response: {
+              302: { description: "Redirect to Console", type: "null" },
+            },
           },
         },
         async (request, reply) => options.auth[`${provider.name}Callback`](request, reply),
@@ -3554,7 +3769,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               type: "object",
               additionalProperties: false,
               required: ["attemptId"],
-              properties: { attemptId: { type: "string", pattern: "^[A-Za-z0-9_-]{43}$" } },
+              properties: {
+                attemptId: { type: "string", pattern: "^[A-Za-z0-9_-]{43}$" },
+              },
             },
             response: {
               // A body without the exact attemptId fails the schema.
@@ -3682,7 +3899,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           tags: ["Authentication"],
           security: [{ sessionCookie: [] }],
           "x-openclaw-permissions": [
-            { action: "administer", resourceKind: "installation", scope: "requested" },
+            {
+              action: "administer",
+              resourceKind: "installation",
+              scope: "requested",
+            },
           ],
           params: accountParams,
           response: {
@@ -3816,7 +4037,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             tags: [...operation.tags],
             security: [{ sessionCookie: [] }],
             "x-openclaw-permissions": [
-              { action: "administer", resourceKind: "installation", scope: "requested" },
+              {
+                action: "administer",
+                resourceKind: "installation",
+                scope: "requested",
+              },
             ],
             params: operationName === "detach" ? methodParams : accountParams,
             body: {
@@ -3827,11 +4052,25 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                   ? ["subject", "expectedVersion"]
                   : ["expectedVersion"],
               properties: {
-                expectedVersion: { type: "integer", minimum: 1, maximum: 2147483647 },
+                expectedVersion: {
+                  type: "integer",
+                  minimum: 1,
+                  maximum: 2147483647,
+                },
                 ...(operationName === "github"
-                  ? { subject: { type: "string", pattern: "^[1-9][0-9]{0,19}$" } }
+                  ? {
+                      subject: {
+                        type: "string",
+                        pattern: "^[1-9][0-9]{0,19}$",
+                      },
+                    }
                   : operationName === "google" || operationName === "oidc"
-                    ? { subject: { type: "string", pattern: "^[\\x21-\\x7E]{1,255}$" } }
+                    ? {
+                        subject: {
+                          type: "string",
+                          pattern: "^[\\x21-\\x7E]{1,255}$",
+                        },
+                      }
                     : {}),
               },
             },
@@ -3865,7 +4104,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           if (!options.auth.readAccount || !options.auth.changeAccount) {
             throw accountControlsUnsupported();
           }
-          const { expectedVersion } = request.body as { expectedVersion: number };
+          const { expectedVersion } = request.body as {
+            expectedVersion: number;
+          };
           if (operationName === "github") {
             if (!options.auth.attachGitHub || !options.auth.githubEnabled) {
               throw failure(409, "RESOURCE_CONFLICT", "GitHub sign-in is not configured.");
@@ -3931,7 +4172,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           tags: ["Authentication"],
           security: [{ sessionCookie: [] }],
           "x-openclaw-permissions": [
-            { action: "administer", resourceKind: "installation", scope: "requested" },
+            {
+              action: "administer",
+              resourceKind: "installation",
+              scope: "requested",
+            },
           ],
           response: {
             ...responses(recoveryResponse),
@@ -3982,7 +4227,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           tags: ["Authentication"],
           security: [{ sessionCookie: [] }],
           "x-openclaw-permissions": [
-            { action: "administer", resourceKind: "installation", scope: "requested" },
+            {
+              action: "administer",
+              resourceKind: "installation",
+              scope: "requested",
+            },
           ],
           body: {
             type: "object",
@@ -3990,15 +4239,26 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             required: ["userId", "expectedCurrentUserId", "expectedVersion"],
             properties: {
               userId: { type: "string", minLength: 1, maxLength: 200 },
-              expectedCurrentUserId: { type: "string", minLength: 1, maxLength: 200 },
-              expectedVersion: { type: "integer", minimum: 1, maximum: 2147483647 },
+              expectedCurrentUserId: {
+                type: "string",
+                minLength: 1,
+                maxLength: 200,
+              },
+              expectedVersion: {
+                type: "integer",
+                minimum: 1,
+                maximum: 2147483647,
+              },
             },
           },
           response: {
             ...responses({
               ...recoveryResponse,
               required: [...recoveryResponse.required, "changed"],
-              properties: { ...recoveryResponse.properties, changed: { type: "boolean" } },
+              properties: {
+                ...recoveryResponse.properties,
+                changed: { type: "boolean" },
+              },
             }),
             400: { description: "Bad Request", ...error },
             403: { description: "Forbidden", ...error },
@@ -4102,7 +4362,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           tags: ["Authentication"],
           security: [{ sessionCookie: [] }],
           "x-openclaw-permissions": [
-            { action: "administer", resourceKind: "installation", scope: "requested" },
+            {
+              action: "administer",
+              resourceKind: "installation",
+              scope: "requested",
+            },
           ],
           params: accountParams,
           response: {
@@ -4140,7 +4404,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         }
         const { userId } = request.params as { userId: string };
         const enrolled = await options.auth.enrolAccount(userId, actor);
-        reply.send({ data: { userId, ...enrolled }, meta: { requestId: request.id } });
+        reply.send({
+          data: { userId, ...enrolled },
+          meta: { requestId: request.id },
+        });
       },
     );
 
@@ -4258,7 +4525,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           tags: [...createAuthAccountOperation.tags],
           security: [{ sessionCookie: [] }],
           "x-openclaw-permissions": [
-            { action: "administer", resourceKind: "installation", scope: "requested" },
+            {
+              action: "administer",
+              resourceKind: "installation",
+              scope: "requested",
+            },
           ],
           response: {
             ...responses(account, 201),
@@ -4334,7 +4605,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         const external =
           github === undefined
             ? undefined
-            : { providerId: githubProviderId!, subject: github.subject as string };
+            : {
+                providerId: githubProviderId!,
+                subject: github.subject as string,
+              };
         const prepared = await options.auth.prepareAccount({
           email,
           password,
@@ -4408,6 +4682,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     routes.addSchema(AgentRuntimeCredentialResponse);
     routes.addSchema(SecretResponse);
     routes.addSchema(CredentialSourceResponse);
+    routes.addSchema(OAuthConnectionTemplateVersionSchema);
+    routes.addSchema(ConnectionTemplateSchema);
     routes.get<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
       nativeAdminReturnOperation.path,
       {
@@ -4422,6 +4698,44 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         preHandler: async (request) => resolveIdentity(request, nativeAdminReturnOperation),
       },
       nativeAdmin.resolveReturn,
+    );
+    routes.get<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
+      CONNECTION_CALLBACK_PATH,
+      {
+        schema: connectionCallbackSchema,
+        config: { rateLimit: new RequestRateLimiter(60, 5) },
+        onRequest: async (request, reply) => {
+          reply.header("referrer-policy", "no-referrer").header("cache-control", "no-store");
+          const retryAfter = request.routeOptions.config.rateLimit.consume(request.ip);
+          if (retryAfter !== undefined) {
+            reply.header("retry-after", String(retryAfter));
+            throw failure(
+              429,
+              "RATE_LIMITED",
+              "Too many OAuth callback requests. Wait before retrying.",
+            );
+          }
+          await admit(request, connectionCallbackOperation);
+        },
+        preHandler: async (request) => resolveIdentity(request, connectionCallbackOperation),
+      },
+      createConnectionCallback({
+        withCurrentSession: (request, work) => {
+          const admitted = admissions.get(request);
+          if (admitted?.method !== "session") {
+            throw failure(403, "FORBIDDEN", "A current browser session is required.");
+          }
+          return options.auth.withSessionAuthority(admitted.session, () =>
+            work((unit) => options.auth.holdSession(unit, admitted.session, request)),
+          );
+        },
+        getController: () => controller,
+        getContext: (request) => contexts.get(request),
+        auditEvent: (request, context, target) =>
+          event(connectionCallbackOperation, request, target, "mutation", context),
+        auditFailure: (request, context, reasonCode) =>
+          rejectedMutation(connectionCallbackOperation, request, context, reasonCode),
+      }),
     );
     routes.route({
       method: "GET",
@@ -4457,7 +4771,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               ? { bodyLimit: options.maxBodyBytes ?? PRESET_BODY_LIMIT }
               : operation.operationId === "createConfiguration" ||
                   operation.operationId === "updateConfiguration"
-                ? { bodyLimit: options.maxBodyBytes ?? CONFIGURATION_BODY_LIMIT }
+                ? {
+                    bodyLimit: options.maxBodyBytes ?? CONFIGURATION_BODY_LIMIT,
+                  }
                 : {}),
         schema,
         onRequest: async (request) => {
@@ -4488,7 +4804,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         },
         ...(authorizesBeforeBody(operation)
           ? {}
-          : { preHandler: async (request: FastifyRequest) => resolveIdentity(request, operation) }),
+          : {
+              preHandler: async (request: FastifyRequest) => resolveIdentity(request, operation),
+            }),
         handler: async (request, reply) => perform(request, reply, operation),
       });
     }
@@ -4641,9 +4959,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     ) {
       return false;
     }
-    return callerMay(actorId, "administer", { kind: "installation", id: installationId }).catch(
-      () => false,
-    );
+    return callerMay(actorId, "administer", {
+      kind: "installation",
+      id: installationId,
+    }).catch(() => false);
   }
 
   app.setErrorHandler(async (error, request, reply) => {

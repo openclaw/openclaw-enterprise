@@ -27,11 +27,11 @@ const appliedPatches = [
   },
   {
     file: "openclaw-codex-full-access-profile.patch",
-    sha256: "37d79564f56e068c6ac982e5524a58e9da65172ac96177debca81d51442deccc",
+    sha256: "e942e1804475a8e828859c5ba81c20de944105a7dbe00bbba6c2275b32c0944b",
   },
   {
     file: "openclaw-required-worker-authority-regression.patch",
-    sha256: "fe61a9c3bd9d2c777db5ce7b6272c0db8b12da4a97a07fb7a42cc879a10dbf0e",
+    sha256: "5939c62bd62c323c93cd3aa6a96fbb6f4cf9d5df8f5eafffada25a58fe727494",
     field: "openclawRequiredWorkerAuthorityRegressionPatchSha256",
   },
   {
@@ -48,7 +48,7 @@ const appliedPatches = [
   },
   {
     file: "openclaw-node-mcp-accounts.patch",
-    sha256: "bbc276fbd8f402ef113a6e7e17ab245573e4222b06d5ed2eaff9a5a22753d638",
+    sha256: "e41483f724432df4d0ce14bd0ff71e20a0f38077c7ff7f95f0f8bd114e0a1fa5",
   },
   {
     file: "openclaw-node-setup-renewal.patch",

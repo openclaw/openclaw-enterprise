@@ -55,6 +55,10 @@ export {
   OpenShellWorkspaceAlreadyExistsError,
 } from "./openshell-gateway-errors.ts";
 
+// Each policy writer changes this OCC-owned annotation in the same native CAS transaction.
+// Policy-only native updates otherwise leave the Sandbox resource version unchanged.
+export const OPENSHELL_POLICY_OPERATION_ANNOTATION = "openclaw.dev/policy-update";
+
 type RecordValue = Readonly<Record<string, unknown>>;
 
 export interface OpenShellGatewayClientOptions {
@@ -541,11 +545,12 @@ export interface OpenShellGatewayClient
     signal: AbortSignal,
     credentialExpirationTimes?: Readonly<Record<string, string>>,
   ): Promise<void>;
-  /** Static credential rotation, conditional on the previously observed provider version. */
+  /** Rotate credential values, or remove keys and their expiries, at the observed provider version. */
   updateProviderCredentialsConditionally?(
     request: OpenShellProviderCreateRequest,
     expectedResourceVersion: string,
     signal: AbortSignal,
+    clearCredentialKeys?: readonly string[],
   ): Promise<OpenShellProviderResponse>;
   /** Merges nonempty configuration into an existing provider with optimistic concurrency. */
   updateProviderConfig(
@@ -1438,6 +1443,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
         workspace_scope: { workspace: request.workspace },
         policy: request.policy,
         expected_resource_version: request.expectedResourceVersion,
+        annotations: { [OPENSHELL_POLICY_OPERATION_ANNOTATION]: request.requestId },
         request_id: request.requestId,
       },
       signal,
@@ -2028,7 +2034,8 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     if (typeof profile?.id !== "string" || profile.id !== id) {
       throw new OpenShellGatewayFailure("OpenShell GetProviderProfile returned another profile.");
     }
-    return storedProviderProfile(profile, profile.id);
+    // Protobuf omits empty repeated fields. Preserve every field that was returned.
+    return storedProviderProfile({ endpoints: [], credentials: [], ...profile }, profile.id);
   }
 
   async listProviderProfiles(
@@ -2248,12 +2255,18 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     request: OpenShellProviderCreateRequest,
     expectedResourceVersion: string,
     signal: AbortSignal,
+    clearCredentialKeys?: readonly string[],
   ): Promise<OpenShellProviderResponse> {
-    if (
-      !/^[1-9]\d*$/u.test(expectedResourceVersion) ||
-      Object.keys(request.credentials).length === 0 ||
-      Object.values(request.credentials).some((value) => !isNonEmptyString(value))
-    ) {
+    const clearing = clearCredentialKeys !== undefined;
+    const validPayload = clearing
+      ? clearCredentialKeys.length > 0 &&
+        clearCredentialKeys.every(isNonEmptyString) &&
+        new Set(clearCredentialKeys).size === clearCredentialKeys.length &&
+        Object.keys(request.credentials).length === 0 &&
+        Object.keys(request.credentialExpirationTimes ?? {}).length === 0
+      : Object.keys(request.credentials).length > 0 &&
+        Object.values(request.credentials).every(isNonEmptyString);
+    if (!/^[1-9]\d*$/u.test(expectedResourceVersion) || !validPayload) {
       throw new OpenShellGatewayFailure(
         "OpenShell credential rotation requires values and a positive resource version.",
       );
@@ -2268,7 +2281,9 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
           },
           type: request.type,
           profile_workspace: request.workspace,
-          credentials: { ...request.credentials },
+          credentials: clearing
+            ? Object.fromEntries(clearCredentialKeys.map((key) => [key, ""]))
+            : { ...request.credentials },
         },
         workspace_scope: { workspace: request.workspace },
         credential_expiration_times: Object.fromEntries(
@@ -2277,6 +2292,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
             timestampMessage(value),
           ]),
         ),
+        ...(clearing && { clear_credential_expiration_keys: clearCredentialKeys }),
         request_id: randomUUID(),
       },
       signal,

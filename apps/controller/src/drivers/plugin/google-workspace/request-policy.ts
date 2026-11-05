@@ -215,7 +215,11 @@ function validGoogleRequest(
       )
     );
   }
-  if (host !== scope.host || !googleSourcePathMatches(scope.path, path)) {
+  if (
+    !scope.destinations.some(
+      (row) => row.host === host && row.port === port && googleSourcePathMatches(row.path, path),
+    )
+  ) {
     return false;
   }
   if (
@@ -295,9 +299,11 @@ export const googleWorkspaceRequestPolicy = {
       return false;
     }
     const scopes = Object.values(accounts);
-    const { host, path } = request.target;
-    const protectedScopes = scopes.filter(
-      (scope) => scope.host === host && googleSourcePathMatches(scope.path, path),
+    const { host, port, path } = request.target;
+    const protectedScopes = scopes.filter((scope) =>
+      scope.destinations.some(
+        (row) => row.host === host && row.port === port && googleSourcePathMatches(row.path, path),
+      ),
     );
     // Authorization is stripped from the supervisor's request view. The shared guard admits
     // released operations for this destination; Google authorizes the actual account token.

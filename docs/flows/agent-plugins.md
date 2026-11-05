@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
 updated: 2026-11-05
-last_updated_session: authoring-run/4c357458-b5ce-4192-b0ae-621ecd03c699
+last_updated_session: authoring-run/761a86ac-3c67-497c-8e4f-556f1ee836b5
 ---
 
 # Agent Plugin Deployment Flow
@@ -35,8 +35,8 @@ graph TD
   D6 -->|unsupported| D7["Unsupported"]
   D6 -->|token or none| D4["Call PluginDriver"]
   D6 -->|Secret| D3["Read and recheck"] --> D4
-  D6 -->|CredentialSource| D9["Read unless canceled"]
-  D9 -->|success| D10["Recheck authority"]
+  D6 -->|CredentialSource| D9["Check source and exact Gateway owner; read unless canceled"]
+  D9 -->|success| D10["Recheck authority, source and catalog"]
   D10 -->|allowed and connected| D4
   D9 -->|canceled or failed| D12["Stop"]
   D10 -->|denied or disconnected| D12
@@ -69,58 +69,39 @@ graph TD
 
 ### Credential-scoped discovery
 
-[Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) requires
-the target Harness, Agent `create` and caller `operate` on stored sources.
-A wrong Namespace returns `400`, a missing Secret `404`, and an unavailable
-explicit CredentialSource `409`.
+[Create discovery](../reference/drivers/plugin.md#selection-and-catalogs) requires a Harness, Agent `create` and caller `operate` on stored sources. A wrong Namespace returns `400`, a missing Secret `404`, and an unavailable explicit CredentialSource `409`.
 
-Saved discovery requires a dedicated Agent with caller `read` and `update`.
-OCC offers admissible plugins. It rechecks attachment and both caller and Agent
-`operate` for bound sources, and caller `operate` for explicit sources.
-Missing or unready bound sources return `404`. Hosted catalogs use the saved
-bearer; curated catalogs need none.
+Saved discovery requires dedicated-Agent `read` and `update`. Bound sources require caller and Agent `operate`. Explicit sources require caller `operate`. Missing or unready bound sources return `404`. Curated catalogs skip authentication.
 
-Before provider access, OCC rechecks grants and catalog. Cancellation discards late credentials.
+The OpenShell Backend exports through operator mTLS. External Gateways support optional `withSourceToken`. OCC rechecks the source, Gateway owner, attachment, authority and catalog before dispatch.
 
 `packages/occ/src/index.ts:OpenClawController.discoverManagedMcpTools`
 
-For each selected MCP account, OCC checks grants and attachment before authenticated `tools/list`. Console combines successful inventories and shows discovery failures. `driverPolicy.toolNames` pins the shared tool selection.
+For each authorized account, OCC calls the reviewed receiver’s `tools/list` with a prepared Token Service token or manually registered bearer Secret. Console combines inventories, identifies failures and saves upstream names in `driverPolicy.toolNames`. Changing accounts clears discovery. Changing Harness clears selections and approvers.
 
-Closing the picker cancels discovery. Changing accounts clears results. Changing Harness clears selections and approvers. Hosted reads reject redirects and credential echoes, limit size and
-time, and return safe metadata with `Cache-Control: no-store`.
-See [catalog browsing](../reference/drivers/plugin-bundled.md#selection-and-catalogs).
-
-The optional `NativeCodexPluginCatalogReader` calls `plugin/list` over stdio,
-rejects invalid results and stops the child on teardown. HTTP uses the hosted reader.
+Closing the picker cancels reads. Hosted reads limit time and size, reject redirects and credential echoes, and return `Cache-Control: no-store`. Optional `NativeCodexPluginCatalogReader` validates stdio `plugin/list` and stops the child on teardown. HTTP uses the hosted reader. [Catalog browsing](../reference/drivers/plugin-bundled.md#selection-and-catalogs)
 
 ### 1. Validate desired state under exact-Agent authority
 
 `apps/controller/src/index.ts:createFastifyApp`
 
-HTTP contracts validate input before [OpenClawController](../../packages/occ/src/index.ts)
-checks the exact Namespace and Agent. Reads require Agent `read`; create/PATCH
-stores the `plugins` map and its Driver identity. `validateAgentPlugins` uses the Harness catalog for policy and Configuration checks on Agent and provisioning writes. Deployment rechecks Configuration. The OpenClaw Driver refuses a selection
-whose tools `tools.deny`, the sole `agents.entries` entry's list, the primary provider's
-`byProvider` lists, or these together block, any selection beside an entry denying `*`, or one a
-sole entry's `alsoAllow` hides under a profile. With an OpenClaw Harness,
-[`openClawPluginSettingConflict`](../../apps/controller/src/drivers/plugin/openclaw-plugin-settings.ts)
-first refuses [plugin settings the Gateway refuses](../reference/drivers/plugin-bundled.md#native-mappings-and-limits).
-Unsupported controls and incompatible selections return `400 INVALID_REQUEST`. Startup checks native app mapping, authentication, and release metadata. Agent updates store desired state and audit evidence atomically. Omission preserves selections, `{}` clears them, and a nonempty map replaces them. Clear selections with an unknown or different owner before changing catalogs.
+[OCC](../../packages/occ/src/index.ts) checks the exact Namespace and Agent. Agent reads require `read`. Create and PATCH atomically store the Driver, selections and audit event. Omit `plugins` to preserve selections, use `{}` to clear them, or send their replacements. Clear selections before changing owners.
 
-Installation uses `GET /installation`; Agent editors use
-`GET .../plugins/capabilities` with Agent read/update. Both return policy capabilities.
+`validateAgentPlugins` checks the Harness catalog and Configuration at save, provisioning and deployment. The OpenClaw Driver checks `tools.deny`, provider and sole-Agent tool lists, and `alsoAllow` under a profile. It also rejects [conflicting Gateway settings](../reference/drivers/plugin-bundled.md#native-mappings-and-limits). Unsupported controls return `400 INVALID_REQUEST`. [Policy validation](../../apps/controller/src/drivers/plugin/runtime-translator.ts) identifies conflicting enablement defaults. OCC returns fixed recovery advice for recognized failures. Console preserves rejected drafts.
+
+`GET /installation` and `GET .../plugins/capabilities` report policy capabilities. The Agent route requires `read` and `update`.
 
 ### 2. Admit an immutable plugin deployment
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-OCC freezes the Configuration, Driver, selections and account names. Before cutover, the worker verifies that the pinned Driver owns the Harness catalog. Gateway and worker verify package assets and expose one skill listing names and handles for multi-account slots.
+OCC snapshots the Configuration, Driver, selections and account names. The worker verifies the Driver owns the Harness catalog. Once Compute verifies sender policy, OCC publishes each saved account’s prepared token and expiry to its Agent-specific OpenShell profile. The skill lists account names and IDs. [Token delivery](connection-templates.md#bind-a-saved-account-to-a-plugin)
 
-- **CLI packages.** The worker selects the named account for each command. For Google, OpenShell checks the shared operation and destination, then substitutes the selected credential. Google checks its OAuth grant.
-- **Hosted MCP packages.** The [dispatcher](../../deploy/runtime/openclaw-node-mcp-accounts.patch) groups tools by server and name, keeping the first description and combining input schemas. For Gateway and worker calls, it checks tool availability and arguments on the chosen account, then calls through its session. OpenShell enforces shared tool selection.
-- **Native runtime plugins.** Startup installs packages and verifies tool policy.
+- **CLI** — The worker selects the named account’s placeholder. OpenShell checks approved Google operations and destinations. Google enforces the account’s grant.
+- **MCP** — The [dispatcher](../../deploy/runtime/openclaw-node-mcp-accounts.patch) groups identical definitions and publishes their eligible IDs. Given `{"account":"cs_b_east","arguments":{"account":"native-account"}}`, it checks eligibility before sending the upstream name and inner arguments through that account’s session. OpenShell enforces selected upstream names.
+- **Native plugins** — Startup installs packages and verifies tool policy.
 
-Withdrawal removes credential injection. Recovery preserves other attachments.
+Withdrawal stops credential injection for that source.
 
 ### 3. Deliver requested state through Compute preparation
 
@@ -349,8 +330,12 @@ establish starvation.
 
 ## Changelog
 
+- 2026-11-05 19:27: Trace saved OAuth account delivery and MCP dispatch by discovered definition. (authoring-run/761a86ac-3c67-497c-8e4f-556f1ee836b5 - ef73687d955e54ce48fa0e154d861a5a8cb839c2)
+
 - 2026-11-05 19:10: Trace same-named MCP tools across accounts. (authoring-run/4c357458-b5ce-4192-b0ae-621ecd03c699 - 14e5d34f217d8bb20e3668a6f7576d5dbdf2ecda)
 - 2026-11-05 02:03: Trace CLI and MCP account selection through admission, skill discovery and worker dispatch. (authoring-run/1ea84947-7f07-443b-b6ef-911070cc3d04 - 4c543b44fefb925d8fc378d40deedc4f5b42e726)
+- 2026-11-05 13:37: Trace plugin-policy refusal recovery. (authoring-run/9cb771c4-f1a8-44ec-a4ef-7c914a5ddb6e - a8259883139ac831b32c0a7b0fe872f6db4ee290)
+
 - 2026-11-05 01:02: Select the Harness catalog and recheck its identity before cutover. (01a169f0-a851-7b81-8e83-ff597893aa21 - 0e9575278)
 
 - 2026-11-03 01:40: Trace startup of multiple managed packages on one dedicated Agent. (authoring-run/e29308a5-ef76-4952-b439-23483c4dbd99 - 54b2a30498f690e2a16a3198e84a6363f69d91ae)

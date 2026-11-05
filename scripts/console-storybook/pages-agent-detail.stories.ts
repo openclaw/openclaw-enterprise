@@ -131,7 +131,7 @@ export const DeploymentModelProbeFailedDeployOnlyUnreadable = story(
 export const DeploymentFailedAfterSelection = story("deploymentFailedAfterSelection");
 export const DeploymentStopped = story("deploymentStopped");
 export const DeploymentSuperseded = story("deploymentSuperseded");
-export const DeploymentSucceeded = story("deploymentSucceeded");
+export const DeploymentSucceeded = story("deploymentSucceeded", { openInNewTab: true });
 export const DeploymentUnavailable = story("deploymentUnavailable");
 export const DiagnosticsSuccess = story("diagnosticsSuccess");
 export const DiagnosticsFast = story("diagnosticsFast");
@@ -311,3 +311,7 @@ export const ConfigurationSaveReadDenied = {
   ...story("configurationSaveReadDenied"),
   name: "Configuration Save read denied",
 };
+
+export const PluginConsentAttached = story("pluginConsentAttached");
+export const PluginConsentSaved = story("pluginConsentSaved");
+export const PluginConsentUnconfirmed = story("pluginConsentUnconfirmed");

@@ -28,7 +28,11 @@ import {
   credentialsRecoveryScenarios,
   credentialsThemeScenario,
 } from "./scenario-groups/credentials.mts";
-import { pluginsScenarios, pluginApproverScenarios } from "./scenario-groups/plugins.mts";
+import {
+  pluginsScenarios,
+  pluginApproverScenarios,
+  pluginConnectionReturn,
+} from "./scenario-groups/plugins.mts";
 import { channelsScenarios } from "./scenario-groups/channels.mts";
 import {
   createAgentFormScenarios,
@@ -46,6 +50,7 @@ import {
 import { calendarPlugin, pluginCapabilities, pluginSetup } from "./plugin-scenario-data.mts";
 import { namespacesScenarios } from "./scenario-groups/namespaces.mts";
 import { secretsScenarios } from "./scenario-groups/secrets.mts";
+import { connectionTemplateScenarios } from "./scenario-groups/connection-templates.mts";
 import { settingsScenarios } from "./scenario-groups/settings.mts";
 import { signInScenarios } from "./scenario-groups/sign-in.mts";
 
@@ -907,6 +912,7 @@ const authoredScenarios = {
       "A caller without Installation access is told Backends apply to the whole Installation. The Namespace selector is hidden, since another Namespace would not change the answer.",
   } satisfies LocalScenario,
   ...namespacesScenarios,
+  ...connectionTemplateScenarios,
   ...settingsScenarios,
   notFound: {
     group: "Pages/Navigation",
@@ -917,6 +923,9 @@ const authoredScenarios = {
   ...createAgentFormScenarios,
   ...pluginsScenarios,
   ...createAgentProvisioningScenarios,
+  pluginConsentAttached: pluginConnectionReturn(draft, "attached"),
+  pluginConsentSaved: pluginConnectionReturn(draft, "saved"),
+  pluginConsentUnconfirmed: pluginConnectionReturn(draft, "unconfirmed"),
   ...agentDetailScenarios.savedLogin,
   ...credentialsOAuthScenarios({ draft }),
   ...createAgentOutcomeScenarios,

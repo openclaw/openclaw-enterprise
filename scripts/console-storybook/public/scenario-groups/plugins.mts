@@ -22,6 +22,7 @@ type PluginScenario = {
   steps?: string[];
   gap?: string;
   pluginCapabilities?: PluginFieldsOptions["capabilities"];
+  connectionPreview?: ConnectionPreview;
 } & (
   | {
       group: "Components/Plugins";
@@ -43,7 +44,185 @@ type PluginScenario = {
 const pluginPreviewGap =
   "Catalog entries, local placeholder logos, and Driver capabilities are passed directly to the production component as Storybook fixtures. These previews do not verify PAT access, plugin availability, or runtime policy enforcement.";
 
+export type ConnectionPreview =
+  "choose" | "bound" | "empty" | "denied" | "loading" | "named" | "unrestricted";
+
+function googleSlotStory(preview: ConnectionPreview) {
+  const pluginId = "occ-plugin:google@1.0.0";
+  const releaseSha256 = "a".repeat(64);
+  const boundId = "cs_00000000-0000-4000-8000-000000000010";
+  return {
+    group: "Components/Plugins" as const,
+    name: `Google Workspace account — ${preview}`,
+    component: "plugins" as const,
+    description: "Preview an explicit template choice for the Google Workspace account slot.",
+    gap: "Simulated template discovery and consent navigation. This component preview does not contact a provider or change an Agent grant.",
+    connectionPreview: preview,
+    pluginCatalog: {
+      status: "ready" as const,
+      entries: [
+        { id: pluginId, name: "Google Workspace", selectableWithoutTools: true, tools: [] },
+      ],
+    },
+    pluginCapabilities: {
+      ...pluginCapabilities,
+      driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+      policyScopeByPlugin: { [pluginId]: "enablement_only" as const },
+      credentialSlots: [
+        {
+          pluginId,
+          releaseSha256,
+          id: "account",
+          label: "Workspace account",
+          connectAccount: true as const,
+          sources: preview === "bound" ? [{ id: boundId, name: "Existing Gmail account" }] : [],
+        },
+      ],
+    },
+    pluginSelections: JSON.stringify({
+      [pluginId]: {
+        enabled: true,
+        ...(preview === "bound" && {
+          driverPolicy: { releaseSha256, credentials: { account: boundId } },
+        }),
+      },
+    }),
+    actions: [
+      click("Configure plugins"),
+      { selector: 'button[aria-label="Google Workspace"]', click: true },
+      ...(["choose", "bound"].includes(preview) ? [] : [click("Choose a connection template")]),
+    ],
+  };
+}
+
+export function pluginConnectionReturn(
+  draft: string,
+  outcome: "saved" | "attached" | "unconfirmed",
+) {
+  const sourceId = "cs_00000000-0000-4000-8000-000000000010";
+  const bound = outcome === "attached";
+  const preview = googleSlotStory(bound ? "bound" : "choose");
+  return {
+    group: "Pages/Agent detail",
+    name: `Google Workspace consent return — ${outcome}`,
+    path: `${draft}&tab=plugins&connection=${outcome}${outcome === "saved" ? `&sourceId=${sourceId}` : ""}`,
+    harnessId: "openclaw",
+    auth: "runtime",
+    agentPlugins: JSON.parse(preview.pluginSelections),
+    credentialSources: bound ? [{ sourceId }] : [],
+    pluginCapabilities: {
+      ...preview.pluginCapabilities,
+      credentialSlots: preview.pluginCapabilities.credentialSlots.map((slot) => ({
+        ...slot,
+        sources: [{ id: sourceId, name: "Existing Gmail account" }],
+      })),
+    },
+    pluginDiscoveryCredential: "none",
+    pluginDiscovery: {
+      pages: { initial: { plugins: preview.pluginCatalog.entries, nextCursor: null } },
+      details: Object.fromEntries(
+        preview.pluginCatalog.entries.map((plugin) => [plugin.id, plugin] as const),
+      ),
+    },
+    savedPluginAccount: { id: sourceId, name: "Existing Gmail account" },
+    description:
+      "Read the consent result on the saved Agent’s Plugins tab. If attachment failed, attach the saved account without starting consent again.",
+    gap: "The callback result, saved account, and Agent are Storybook fixtures. These previews do not contact a provider or issue runtime credentials.",
+  };
+}
+
+const namedPlugin = "occ-plugin:team-tools@1.0.0";
+const namedRelease = "b".repeat(64);
+const savedSupportAccount = {
+  id: "cs_00000000-0000-4000-8000-000000000011",
+  name: "Support account",
+};
+const savedReportingAccount = {
+  id: "cs_00000000-0000-4000-8000-000000000012",
+  name: "Reporting account",
+};
+const namedSlotScenario = {
+  group: "Components/Plugins",
+  name: "Choose accounts for named MCP slots",
+  component: "plugins",
+  connectionPreview: "named",
+  pluginCatalog: {
+    status: "ready",
+    entries: [{ id: namedPlugin, name: "Team tools", selectableWithoutTools: true, tools: [] }],
+  },
+  pluginCapabilities: {
+    ...pluginCapabilities,
+    driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+    policyScopeByPlugin: { [namedPlugin]: "enablement_only" },
+    credentialSlots: [
+      {
+        pluginId: namedPlugin,
+        releaseSha256: namedRelease,
+        id: "support",
+        label: "Support account",
+        connectAccount: true,
+        sources: [savedSupportAccount, { ...savedReportingAccount, authorization: "required" }],
+      },
+      {
+        pluginId: namedPlugin,
+        releaseSha256: namedRelease,
+        id: "reports",
+        label: "Reports account",
+        connectAccount: true,
+        sources: [savedReportingAccount],
+      },
+    ],
+  },
+  pluginSelections: JSON.stringify({ [namedPlugin]: { enabled: true } }),
+  actions: [
+    click("Configure plugins"),
+    { selector: 'button[aria-label="Team tools"]', click: true },
+  ],
+  description:
+    "Bind an approved saved account to each named slot. The reporting account requires separate provider consent before it can be used for the support server.",
+  gap: "The catalog, account grants, and provider handoff are simulated. The Console uses each slot ID once regardless of its delivery aliases.",
+} satisfies PluginScenario;
+
 export const pluginsScenarios = {
+  namedSlotAccounts: {
+    ...namedSlotScenario,
+    pluginSelections: JSON.stringify({
+      [namedPlugin]: {
+        enabled: true,
+        driverPolicy: {
+          releaseSha256: namedRelease,
+          credentials: { support: savedSupportAccount.id },
+        },
+      },
+    }),
+    description:
+      "The Support slot already has its approved account. Another saved account needs provider consent for this server.",
+    steps: [
+      "Open Connect another account to add an account to the same slot. The separate Reports slot keeps its own account selection.",
+    ],
+  },
+  namedSlotAuthorize: {
+    ...namedSlotScenario,
+    name: "Authorize a saved account for this server",
+    actions: [...namedSlotScenario.actions, click("Authorize for this server")],
+  },
+  unrestrictedSlotScopes: {
+    ...namedSlotScenario,
+    name: "Choose OAuth scopes without a template limit",
+    connectionPreview: "unrestricted",
+    actions: [...namedSlotScenario.actions, click("Authorize for this server")],
+    description:
+      "Review required and suggested permissions for the Support account. An unrestricted template also accepts additional scope names.",
+    steps: [
+      "Select Support MCP. Keep the required read permission, leave the optional write permission unchecked, and enter another scope. Connect and attach shows the selected scopes at the simulated provider handoff.",
+      "Reset and choose Support OAuth. Connect with the Additional scopes field empty to request provider defaults.",
+    ],
+  },
+  pluginConnectChoose: googleSlotStory("choose"),
+  pluginConnectBound: googleSlotStory("bound"),
+  pluginConnectEmpty: googleSlotStory("empty"),
+  pluginConnectDenied: googleSlotStory("denied"),
+  pluginConnectLoading: googleSlotStory("loading"),
   pluginsAvailable: {
     group: "Components/Plugins",
     name: "Available catalog",
@@ -59,7 +238,7 @@ export const pluginsScenarios = {
       "Click Add Calendar. Its tool defaults remain omitted until you change them.",
       "Choose Require approval for → Write actions. Reviewer stays separate; choose Human or Automatic review, or inherit the Harness reviewer.",
       "Click Done and confirm toolDefaults.approval is write_actions. New tools inherit this default without needing entries in tools.",
-      "Review the Driver-specific policy fields supplied by the capability descriptor.",
+      "Set Destructive tools to Disabled and leave Calendar tools enabled by default on Inherit default policy. Check that the hint is available with the Destructive tools control.",
       "Expand Create event, change a tool setting, then click Done and inspect Plugin selections JSON.",
       "Reopen Configure plugins, click inside its padding, then click the gray backdrop. Only the backdrop closes it; selections remain and focus returns to Configure plugins.",
       "In a frame 1100 px wide or narrower (Components / Dialogs / Plugins (tablet) is 1024 px), the catalog and detail stack: choose Calendar to see only its detail, then Back to plugins to return to the catalog. Wider, both panes show side by side.",

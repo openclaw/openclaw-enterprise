@@ -135,7 +135,7 @@ RUN echo 'f8d1e51706f59964839d231818909ffb2ee5f6b951385a353a1a4fd07c45e2cc  /tmp
     && git apply /tmp/openclaw-codex-read-only-paths.patch
 # TODO: Remove this bridge patch when OpenClaw selects the native full-access profile.
 COPY deploy/runtime/openclaw-codex-full-access-profile.patch /tmp/openclaw-codex-full-access-profile.patch
-RUN echo '37d79564f56e068c6ac982e5524a58e9da65172ac96177debca81d51442deccc  /tmp/openclaw-codex-full-access-profile.patch' | sha256sum --check --strict \
+RUN echo 'e942e1804475a8e828859c5ba81c20de944105a7dbe00bbba6c2275b32c0944b  /tmp/openclaw-codex-full-access-profile.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-codex-full-access-profile.patch
 COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
 RUN node /tmp/build-runtime-assets.mjs inputs /source /inputs
@@ -195,7 +195,7 @@ COPY --from=openclaw-source /source/ ./
 # Exercise the original caller through the public RPC before and after the
 # placement acknowledgment, including revocation, against this exact source.
 COPY deploy/runtime/openclaw-required-worker-authority-regression.patch /tmp/openclaw-required-worker-authority-regression.patch
-RUN echo 'fe61a9c3bd9d2c777db5ce7b6272c0db8b12da4a97a07fb7a42cc879a10dbf0e  /tmp/openclaw-required-worker-authority-regression.patch' | sha256sum --check --strict \
+RUN echo '5939c62bd62c323c93cd3aa6a96fbb6f4cf9d5df8f5eafffada25a58fe727494  /tmp/openclaw-required-worker-authority-regression.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-required-worker-authority-regression.patch
 # Remove this bridge when the pinned Control UI offers a browser navigation after access refusal.
 COPY deploy/runtime/openclaw-control-ui-browser-reconnect.patch /tmp/openclaw-control-ui-browser-reconnect.patch
@@ -214,7 +214,7 @@ RUN echo 'b8c08aaf58b0e4a0dfb1df98c881d3d88b9ae7c51d1f50c2fda847135ff1d1db  /tmp
 
 # TODO: Drop this bridge when the pinned node host can present one tool for several accounts.
 COPY deploy/runtime/openclaw-node-mcp-accounts.patch /tmp/openclaw-node-mcp-accounts.patch
-RUN echo 'bbc276fbd8f402ef113a6e7e17ab245573e4222b06d5ed2eaff9a5a22753d638  /tmp/openclaw-node-mcp-accounts.patch' | sha256sum --check --strict \
+RUN echo 'e41483f724432df4d0ce14bd0ff71e20a0f38077c7ff7f95f0f8bd114e0a1fa5  /tmp/openclaw-node-mcp-accounts.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-node-mcp-accounts.patch
 
 # TODO: Remove this bridge after selecting native setup renewal with bounded saved-device fallback.

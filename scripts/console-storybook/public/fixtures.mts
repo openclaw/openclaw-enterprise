@@ -1,3 +1,4 @@
+import { createConnectionTemplateFixture } from "./connection-template-fixture.mts";
 import { createNetworkPolicyFixture } from "./network-policy-fixture.mts";
 import { createPresetFixtures } from "./preset-fixture.mts";
 import type {
@@ -37,6 +38,7 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     "pluginCapabilities" | "pluginDiscoveryCredential"
   > &
   Parameters<typeof installationDriverConfigurations>[0] & {
+    oauthCatalog?: string;
     namespaceRechecks?: readonly (string | number)[];
     namespaceName?: string;
     namespaceStatus?: string;
@@ -212,6 +214,21 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
   const { configs } = configurationStore;
   const credentials: Parameters<typeof createAgentLifecycle>[1]["credentials"] = new Map();
   const credentialSources = new Map<string, StoredCredentialSource>();
+  const savedAccount = scenario.savedPluginAccount;
+  if (savedAccount) {
+    const source = {
+      ...savedAccount,
+      namespaceId,
+      ref: { kind: "credential_source" as const, namespaceId, id: savedAccount.id },
+      type: "oauth2-refresh-token",
+      ownerCapability: "credential_refresh",
+      driverId: "openshell-refresh",
+      state: "ready" as const,
+      config: {},
+      createdAt,
+    };
+    credentialSources.set(source.id, source);
+  }
   let credentialRegistrationFailed = false;
   const deviceLogins = new Map<string, DeviceLogin>();
   const secrets = new Map<string, ReturnType<typeof secretMetadata>>();
@@ -384,6 +401,12 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
     credentials,
     deploymentError: (checkedAt) => candidateDeploymentError(scenario, checkedAt),
   });
+  const templates = createConnectionTemplateFixture(
+    scenario.oauthCatalog,
+    createdAt,
+    namespaceId,
+    nextId,
+  );
   const presets = createPresetFixtures(scenario, namespaceId, auth);
   const networkPolicy = createNetworkPolicyFixture(scenario, {
     namespaceId,
@@ -426,6 +449,10 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
     if (path === "/api/auth/sign-out" && method === "POST") {
       signedIn = false;
       return response({});
+    }
+    const templateResponse = templates(path, method, body);
+    if (templateResponse) {
+      return templateResponse;
     }
     if (path === "/installation/driver-configurations" && method === "GET") {
       return response(installationDriverConfigurations(scenario));

@@ -28,6 +28,12 @@ export {
 } from "./state/prepared-github-state.ts";
 export type { PreparedGitHubMetadataAdmission } from "./state/prepared-github-state.ts";
 import {
+  PENDING_OAUTH_CONNECTION,
+  connectionValuesChanged,
+  isOAuthScopeToken,
+  normalizeConnectionDestinations,
+  validateConnectionTemplateAuthorization,
+  ConnectionTemplateValidationError,
   MAX_AGENT_CREDENTIAL_SOURCES,
   assertExecutionAdmission,
   assertExecutionReleaseAllowed,
@@ -38,6 +44,7 @@ import {
   credentialFreeMetadataType,
   credentialSourceMatchesSnapshot,
   revisionCredentialSourceSnapshot,
+  revisionCredentialSource,
   credentialFreeProviderRef,
   pluginRuntimeHarnessRequirement,
   codexProxiesRepositoryBroker,
@@ -156,6 +163,15 @@ import type {
   ConfigurationValidationOptions,
   CredentialGatewayDriver,
   CredentialProviderDefinition,
+  OAuthConnectionTemplateVersion,
+  SavedConnection,
+  ConnectionAttachmentIntent,
+  OAuthConnectionGrant,
+  OAuthConnectionClient,
+  OAuthClient,
+  McpAuthorizationMetadata,
+  ConnectionTemplate,
+  ConnectionTemplateValues,
   CredentialRefreshDriver,
   CredentialRefreshStatus,
   CredentialSource,
@@ -194,6 +210,7 @@ import type {
   PluginDiscoveryAuthentication,
   PluginCatalogPage,
   PluginDriver,
+  PluginAccountTarget,
   PluginDriverIdentity,
   ChannelDriver,
   ChannelDirectoryResult,
@@ -274,6 +291,7 @@ import {
   AGENT_NAME_CONFLICT,
   AgentCredentialSourceBindingError,
   AgentDeletingError,
+  BrowserAuthorizationError,
   AgentPrincipalAuthorizationError,
   AuthorizationDeniedError,
   CallerStateDeniedError,
@@ -373,8 +391,11 @@ import {
   validateSelectedBackendDrivers,
   validateServiceAccountBackendBinding,
 } from "./backends.ts";
+import { accountDeliveryProfileId } from "./account-delivery.ts";
 import {
   InMemoryPlatformState,
+  type ConnectionTokenCustody,
+  type StoredOAuthClient,
   type PlatformReadView,
   type PlatformOperation,
   type PlatformStateStore,
@@ -441,6 +462,7 @@ export {
   agentEntryMessage,
   AgentCredentialSourceBindingError,
   AgentDeletingError,
+  BrowserAuthorizationError,
   AgentPrincipalAuthorizationError,
   AuthorizationDeniedError,
   CallerStateDeniedError,
@@ -585,6 +607,7 @@ export {
   type PlatformAuditSink,
   type PlatformOperation,
   type PlatformOperationRepository,
+  type ConnectionTokenCustody,
   type PlatformReadView,
   type PlatformStateStore,
   type PlatformUnitOfWork,
@@ -775,6 +798,11 @@ export interface RuntimeLogReadGrant {
 export type RuntimeLogReadAdmission = <T>(read: () => Promise<T>) => Promise<T>;
 
 export interface ControllerOptions {
+  /** Code-only composition binding for the bundled retained-source plugin reader. */
+  readonly pluginSourceReader?: {
+    readonly gateway: CredentialGatewayDriver;
+    readonly withSourceToken: NonNullable<CredentialGatewayDriver["withSourceToken"]>;
+  };
   readonly preparedTokens?: PreparedTokenService | undefined;
   readonly driverConfigurations?: readonly DriverConfigurationRegistration[];
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
@@ -1010,6 +1038,51 @@ export interface CreateSecretInput {
   readonly value: string;
 }
 
+interface ApprovedTemplateSettings {
+  readonly scopes: readonly string[];
+  readonly authorizationParameters?: Readonly<Record<string, string>>;
+  readonly oauthClientId?: string;
+}
+type TemplateInput = ApprovedTemplateSettings &
+  (
+    | {
+        readonly mode: "manual";
+        readonly issuer: string;
+        readonly authorizationUrl: string;
+        readonly tokenUrl: string;
+        readonly revocationUrl?: string;
+        readonly destinations: readonly {
+          readonly host: string;
+          readonly port?: number;
+          readonly path?: string;
+        }[];
+      }
+    | { readonly mode: "mcp_discovery"; readonly serverUrl: string; readonly issuer: string }
+  );
+function templateAcceptsAuthMethod(
+  observed: McpAuthorizationMetadata | undefined,
+  method: OAuthClient["tokenEndpointAuthMethod"],
+): boolean {
+  return (
+    !observed || (observed.tokenEndpointAuthMethods ?? ["client_secret_basic"]).includes(method)
+  );
+}
+
+export type CreateConnectionTemplateInput = TemplateInput & {
+  readonly namespaceId?: string;
+  readonly displayName: string;
+};
+export type UpdateConnectionTemplateInput =
+  { readonly displayName: string } | (TemplateInput & { readonly displayName?: string });
+export type CreateOAuthClientInput = Pick<
+  OAuthClient,
+  "displayName" | "clientId" | "tokenEndpointAuthMethod"
+> & {
+  readonly connectionTemplateId: string;
+  readonly connectionTemplateVersion: number;
+  readonly clientSecret?: string;
+};
+type DiscoverMcp = (serverUrl: string, issuer?: string) => Promise<McpAuthorizationMetadata>;
 export interface CreateCredentialSourceInput {
   readonly namespaceId: string;
   readonly name: string;
@@ -1022,6 +1095,26 @@ export interface AgentCredentialSourceInput {
   readonly namespaceId: string;
   readonly agentId: string;
   readonly credentialSourceId: string;
+}
+
+export interface StartNamespaceConnectionInput {
+  readonly accountName?: string;
+  readonly selectedScopes?: readonly string[];
+  readonly sessionId: string;
+  readonly namespaceId: string;
+  readonly connectionTemplateId: string;
+  /** The exact OCC callback URI, derived from trusted console configuration. */
+  readonly redirectUri: string;
+}
+
+export interface CompleteNamespaceConnectionInput {
+  readonly sessionId: string;
+  readonly iss?: string;
+  readonly state: string;
+  /** Present on approval. */
+  readonly code?: string;
+  /** Present when the provider reports a refusal, such as `access_denied`. */
+  readonly error?: string;
 }
 
 export interface UpdateCredentialSourceInput {
@@ -1163,6 +1256,9 @@ const BUNDLED_KUBERNETES_COMPUTE: ReadonlySet<string> = new Set([
 ]);
 /** Bounds each synchronous Credential Gateway call made while serving an API request. */
 const CREDENTIAL_GATEWAY_TIMEOUT_MS = 30_000;
+const CONNECTION_SESSION_TTL_MS = 10 * 60 * 1000;
+/** Only a claimed server-side consent attempt may operate on its still-pending source. */
+const PENDING_CONNECTION: unique symbol = Symbol("pending-connection");
 const CREDENTIAL_SOURCE_SECRETS_CROSS_NAMESPACES =
   "Credential source Secrets cannot cross Namespaces.";
 /** Overall deadline for one runtime status or log request, Driver calls included. */
@@ -1229,6 +1325,59 @@ const SECRET_CONSUMER_FIELDS: Readonly<
   provisioning_request: "provisioningRequests",
 });
 
+function connectionConsentScopes(
+  version: Readonly<OAuthConnectionTemplateVersion>,
+  selection?: readonly string[],
+): readonly string[] {
+  if (version.mode === "manual" && version.scopes.length) {
+    if (selection !== undefined) {
+      throw new ConnectionTemplateValidationError(
+        "selectedScopes",
+        "This connection template uses fixed scopes.",
+      );
+    }
+    return version.scopes;
+  }
+  const selected = selection ?? [];
+  const approved = new Set(version.scopes);
+  const requested = new Set(selected);
+  const required = version.observed?.requestedScopes ?? [];
+  if (
+    (approved.size > 0 && requested.size === 0) ||
+    requested.size !== selected.length ||
+    selected.some(
+      (scope) => !isOAuthScopeToken(scope) || (approved.size > 0 && !approved.has(scope)),
+    ) ||
+    required.some((scope) => !requested.has(scope))
+  ) {
+    throw new ConnectionTemplateValidationError(
+      "selectedScopes",
+      "Include each scope required by the resource and choose valid scopes within any configured limit.",
+    );
+  }
+  return selected;
+}
+
+function browserAuthorizationRequest(
+  version: Readonly<OAuthConnectionTemplateVersion>,
+  client: Readonly<OAuthClient>,
+  redirectUri: string,
+  selectedScopes: readonly string[],
+) {
+  return {
+    oauthClientId: client.id,
+    issuer: version.issuer,
+    clientId: client.clientId,
+    tokenEndpointAuthMethod: client.tokenEndpointAuthMethod,
+    authorizationUrl: version.authorizationUrl,
+    tokenUrl: version.tokenUrl,
+    ...(version.mcp ? { resource: version.mcp.resource } : {}),
+    scopes: selectedScopes,
+    authorizationParameters: version.authorizationParameters,
+    redirectUri,
+  };
+}
+
 /**
  * Revisions other than `active` that may still run with the sources they were admitted with,
  * and so need their own withdrawal of a source withdrawn from the Agent: earlier revisions not
@@ -1241,7 +1390,9 @@ const SECRET_CONSUMER_FIELDS: Readonly<
  * the first revision.
  */
 export async function credentialWithdrawalCompanionRevisions(
-  state: { readonly operations: Pick<PlatformReadView["operations"], "findWork"> },
+  state: {
+    readonly operations: Pick<PlatformReadView["operations"], "findWork">;
+  },
   revisions: readonly Readonly<AgentRevision>[],
   active: Readonly<AgentRevision>,
   now: Date,
@@ -1546,7 +1697,10 @@ type PluginDiscoveryCredential = {
 type PluginDiscoveryOutcome<T> =
   { value: T } | { error: PluginDiscoveryError } | { validationError: unknown };
 
-type ManagedMcpConnection = { readonly slot: string; readonly sourceId: string };
+type ManagedMcpConnection = {
+  readonly slot: string;
+  readonly sourceId: string;
+};
 
 type ManagedMcpToolReader = (
   endpoint: string,
@@ -2012,6 +2166,11 @@ type InstallationRepositoryAdmission = Readonly<{
   backendId: string;
 }>;
 
+type RevisionAccountPreparation = {
+  readonly state: "prepared" | "withdrawn";
+  readonly source: CredentialSource;
+};
+
 export class OpenClawController {
   private installationRepositoryAdmission?: InstallationRepositoryAdmission;
 
@@ -2039,7 +2198,9 @@ export class OpenClawController {
       ) {
         throw new DriverSelectionError("Repository admission must bind its exact owning Backend.");
       }
-      controller.installationRepositoryAdmission = Object.freeze({ ...repositoryAdmission });
+      controller.installationRepositoryAdmission = Object.freeze({
+        ...repositoryAdmission,
+      });
     }
     return controller;
   }
@@ -2059,6 +2220,7 @@ export class OpenClawController {
   private readonly nativeWorkers: NativeWorkerSupportSource | undefined;
   private readonly credentialProxyCapacity: CredentialProxyCapacity;
   private readonly registry = new Map<string, RegisteredDriver>();
+  private readonly pluginSourceReader: ControllerOptions["pluginSourceReader"];
   private readonly preparedTokens: PreparedTokenService | undefined;
   private readonly selections = new Map<DriverCapability, RegisteredDriver>();
   private pluginRegistrations: readonly RegisteredDriver[] = [];
@@ -2100,6 +2262,7 @@ export class OpenClawController {
     }
     this.authorization = options.authorize;
     this.preparedTokens = options.preparedTokens;
+    this.pluginSourceReader = options.pluginSourceReader;
     this.clock = options.now ?? (() => new Date());
     this.identifier = options.createId;
     this.state = options.state ?? new InMemoryPlatformState();
@@ -3060,7 +3223,10 @@ export class OpenClawController {
     const unknown = Object.freeze({
       status: "observed" as const,
       revisionId,
-      harness: Object.freeze({ state: "unknown" as const, code: "UNAVAILABLE" as const }),
+      harness: Object.freeze({
+        state: "unknown" as const,
+        code: "UNAVAILABLE" as const,
+      }),
     });
     const binding = await this.read(async (state) => {
       const namespace = await this.exactNamespace(state, namespaceId);
@@ -3371,7 +3537,7 @@ export class OpenClawController {
       );
       // Provisioning creates the Agent before it has tool sources. Bind the account
       // on the saved Agent after the initial install.
-      this.validatePluginCredentialSources(driver, plugins, []);
+      await this.validatePluginCredentialSources(state, driver, plugins, []);
       await this.authorizeProvisioningSources(
         state,
         principalId,
@@ -3478,11 +3644,17 @@ export class OpenClawController {
         actorId: principalId,
         source: "occ",
         action: "openclaw.agents.provision",
-        resource: { kind: "agent", namespaceId: namespace.id, id: namespace.id },
+        resource: {
+          kind: "agent",
+          namespaceId: namespace.id,
+          id: namespace.id,
+        },
         outcome: "success",
         details: { workId },
       });
-      const result = Object.freeze({ provisioning: provisioningProgress(record.record) });
+      const result = Object.freeze({
+        provisioning: provisioningProgress(record.record),
+      });
       if (auditEvent) {
         await state.audit.append(auditEvent(result));
       }
@@ -3613,7 +3785,9 @@ export class OpenClawController {
       }
       const retried = await state.provisioning.retryByWorkId(namespaceId, workId, principalId);
       const work = await state.operations.findWork(record.workId);
-      return Object.freeze({ provisioning: provisioningProgress(retried, work, this.clock()) });
+      return Object.freeze({
+        provisioning: provisioningProgress(retried, work, this.clock()),
+      });
     });
   }
 
@@ -3634,16 +3808,28 @@ export class OpenClawController {
         operation(new AbortController().signal));
     let record = await this.read((state) => state.provisioning.findByWorkId(claim.idempotencyKey));
     if (record === undefined) {
-      return Object.freeze({ outcome: "permanent" as const, code: "PROVISIONING_WORK_NOT_FOUND" });
+      return Object.freeze({
+        outcome: "permanent" as const,
+        code: "PROVISIONING_WORK_NOT_FOUND",
+      });
     }
     if (record.status === "succeeded" && record.revisionId !== undefined) {
-      return Object.freeze({ outcome: "succeeded" as const, revisionId: record.revisionId });
+      return Object.freeze({
+        outcome: "succeeded" as const,
+        revisionId: record.revisionId,
+      });
     }
     if (record.status === "cancelled") {
-      return Object.freeze({ outcome: "permanent" as const, code: "PROVISIONING_CANCELLED" });
+      return Object.freeze({
+        outcome: "permanent" as const,
+        code: "PROVISIONING_CANCELLED",
+      });
     }
     if (record.status === "failed") {
-      return Object.freeze({ outcome: "permanent" as const, code: "PROVISIONING_FAILED" });
+      return Object.freeze({
+        outcome: "permanent" as const,
+        code: "PROVISIONING_FAILED",
+      });
     }
     try {
       if (record.revisionId !== undefined) {
@@ -3750,10 +3936,16 @@ export class OpenClawController {
         state.provisioning.findByWorkId(claim.idempotencyKey),
       );
       if (observed?.status === "succeeded" && observed.revisionId !== undefined) {
-        return Object.freeze({ outcome: "succeeded" as const, revisionId: observed.revisionId });
+        return Object.freeze({
+          outcome: "succeeded" as const,
+          revisionId: observed.revisionId,
+        });
       }
       if (observed?.status === "cancelled") {
-        return Object.freeze({ outcome: "permanent" as const, code: "PROVISIONING_CANCELLED" });
+        return Object.freeze({
+          outcome: "permanent" as const,
+          code: "PROVISIONING_CANCELLED",
+        });
       }
       let code = "PROVISIONING_DEPENDENCY_UNAVAILABLE";
       if (
@@ -3863,10 +4055,19 @@ export class OpenClawController {
                 reasonCode: "AUTHORIZATION_DENIED",
                 ...(error.authorization === undefined
                   ? {}
-                  : { authorization: { principalId: current.actorId, ...error.authorization } }),
+                  : {
+                      authorization: {
+                        principalId: current.actorId,
+                        ...error.authorization,
+                      },
+                    }),
               }
             : {}),
-          details: { workId: current.workId, phase: current.completedPhase, code },
+          details: {
+            workId: current.workId,
+            phase: current.completedPhase,
+            code,
+          },
         });
       });
       return Object.freeze({
@@ -4113,7 +4314,12 @@ export class OpenClawController {
           description,
           query,
           codec: options.codec,
-          binding: { principalId, agentId, revisionId: binding.revision.id, source: "sandbox" },
+          binding: {
+            principalId,
+            agentId,
+            revisionId: binding.revision.id,
+            source: "sandbox",
+          },
           admitView: async (admission) => {
             try {
               await options.admitView(admission);
@@ -4206,7 +4412,10 @@ export class OpenClawController {
     ) {
       return undefined;
     }
-    const unavailable = Object.freeze({ state: "unknown" as const, code: "UNAVAILABLE" as const });
+    const unavailable = Object.freeze({
+      state: "unknown" as const,
+      code: "UNAVAILABLE" as const,
+    });
     let observed: unknown;
     try {
       const namespace = await compute.resolveSandboxNamespace!.call(compute, binding.namespace);
@@ -4443,6 +4652,1804 @@ export class OpenClawController {
       const namespace = await this.exactNamespace(state, namespaceId);
       return this.exactServiceAccount(state, namespace.id, serviceAccountId);
     });
+  }
+
+  async listUsableConnectionTemplates(
+    principalId: string,
+    namespaceId: string,
+  ): Promise<readonly Readonly<ConnectionTemplate>[]> {
+    await this.authorizeConnectionCreation(principalId, namespaceId);
+    return this.read(async (state) => {
+      await this.exactNamespace(state, namespaceId);
+      const templates = await state.connectionTemplates.listConnectionTemplates();
+      return templates.filter(
+        (template) => template.namespaceId === undefined || template.namespaceId === namespaceId,
+      );
+    });
+  }
+
+  private async authorizeConnectionCreation(
+    principalId: string,
+    namespaceId: string,
+  ): Promise<void> {
+    await this.authorize(principalId, "create", {
+      kind: "credential_source",
+      id: namespaceId,
+      namespaceId,
+    });
+  }
+
+  private async assertConnectionTemplateScope(
+    templateId: string,
+    namespaceId: string,
+  ): Promise<void> {
+    const template = await this.read((view) =>
+      view.connectionTemplates.findConnectionTemplate(templateId),
+    );
+    if (!template || (template.namespaceId !== undefined && template.namespaceId !== namespaceId)) {
+      throw new ScopeViolationError("The connection template is unavailable in this Namespace.");
+    }
+  }
+
+  private async accountTarget(
+    state: PlatformReadView,
+    account: Readonly<SavedConnection>,
+  ): Promise<PluginAccountTarget> {
+    return {
+      issuer: account.issuer,
+      tokenUrl: account.tokenUrl,
+      destinations: await this.effectiveConnectionDestinations(state, account),
+      ...(account.mcpServerUrl &&
+        account.resource && {
+          mcp: { serverUrl: account.mcpServerUrl, resource: account.resource },
+        }),
+    };
+  }
+
+  private pluginAccountBindings(
+    driver: PluginDriver | undefined,
+    plugins: PluginDesiredState | undefined,
+  ) {
+    const credentials = driver?.credentials;
+    if (!plugins || !credentials?.connectionSlot) {
+      return [];
+    }
+    return credentials.choices([]).flatMap(({ pluginId, id }) => {
+      const slot =
+        plugins[pluginId]?.enabled && credentials.connectionSlot?.(plugins, pluginId, id);
+      return slot
+        ? slot.credentialSourceIds.map((sourceId) => ({ pluginId, id, sourceId, slot }))
+        : [];
+    });
+  }
+
+  /** Worker-only preflight. Token custody stays in Token Service until Compute verifies the receiver. */
+  async prepareRevisionAccount(
+    namespaceId: string,
+    agentId: string,
+    revisionId: string,
+    sourceId: string,
+  ): Promise<RevisionAccountPreparation | undefined> {
+    return this.reconcileRevisionAccount(namespaceId, agentId, revisionId, sourceId);
+  }
+
+  /** Recheck the exact account and prepared policy immediately before releasing its access token. */
+  async releaseRevisionAccount(
+    namespaceId: string,
+    agentId: string,
+    revisionId: string,
+    expected: Readonly<CredentialSource>,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const source = await this.reconcileRevisionAccount(
+      namespaceId,
+      agentId,
+      revisionId,
+      expected.id,
+      expected,
+      signal,
+    );
+    if (source?.state !== "prepared") {
+      throw new ResourceStateConflictError("The prepared account is no longer authorized.");
+    }
+  }
+
+  private async reconcileRevisionAccount(
+    namespaceId: string,
+    agentId: string,
+    revisionId: string,
+    sourceId: string,
+    expected?: Readonly<CredentialSource>,
+    releaseSignal?: AbortSignal,
+  ): Promise<RevisionAccountPreparation | undefined> {
+    return this.mutate(async (state) => {
+      const namespace = await this.lockNamespace(state, namespaceId);
+      const revision = await state.revisions.findRevision(namespaceId, agentId, revisionId);
+      const agent = await state.agents.findAgent(namespaceId, agentId);
+      const custody = await state.savedConnections.findTokenCustody(namespaceId, sourceId);
+      if (
+        !agent ||
+        !revision ||
+        !custody ||
+        namespace.status !== "ready" ||
+        agent.desiredRuntimeState !== "running"
+      ) {
+        return undefined;
+      }
+      const newest = (await state.revisions.listRevisionMetadata(namespaceId, agentId)).at(-1);
+      const snapshot = revisionCredentialSourceSnapshot(revision, sourceId);
+      const delivery = snapshot?.accountDelivery;
+      if (
+        !delivery ||
+        (agent.activeRevisionId !== revision.id && newest?.id !== revision.id) ||
+        !agent.credentialSources?.some((b) => b.sourceId === sourceId) ||
+        agent.status !== "active" ||
+        (await state.credentialSources.findCredentialWithdrawal(
+          namespace.id,
+          revision.id,
+          sourceId,
+        ))
+      ) {
+        return undefined;
+      }
+      const ref = { kind: "credential_source" as const, namespaceId: namespace.id, id: sourceId };
+      if (
+        !(await this.authorizationDecision(agent.servicePrincipalId, "operate", ref)).decision
+          .allowed
+      ) {
+        return undefined;
+      }
+      const source = await state.credentialSources.lockCredentialSource(namespace.id, sourceId);
+      const account = await state.savedConnections.findSavedConnection(namespace.id, sourceId);
+      if (!source || source.state !== "ready" || !account || account.revocationRequestedBy) {
+        return undefined;
+      }
+      const admitted = revisionCredentialSource(source, snapshot);
+      if (!admitted) {
+        throw new ResourceStateConflictError(
+          "The saved account no longer matches the admitted plugin receiver.",
+        );
+      }
+      const gateway = this.ownedCredentialGatewayDriver(admitted);
+      const placement = await this.credentialNamespace(namespace);
+      const timeout = AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS);
+      const signal = releaseSignal ? AbortSignal.any([releaseSignal, timeout]) : timeout;
+      signal.throwIfAborted();
+      const context = {
+        namespace: placement,
+        source: { ...admitted, id: delivery.profileId },
+        signal,
+      };
+      const driver = this.ownedPluginDriver(revision.plugins?.driver, revision.harness.id);
+      const token = await this.connectionTokenService().warm(custody, signal);
+      const target = await this.accountTarget(state, account);
+      const uses = this.pluginAccountBindings(driver, revision.plugins?.plugins).filter(
+        (binding) => binding.sourceId === source.id,
+      );
+      const compatible =
+        uses.length > 0 &&
+        uses.every(
+          ({ slot }) => slot.issuers.includes(account.issuer) && slot.acceptsRecipient(target),
+        );
+      const runtime =
+        token && compatible
+          ? await this.runtimeAccountSource(
+              state,
+              source,
+              { ...account, grantedScopes: token.grantedScopes },
+              revision.plugins?.plugins,
+              driver,
+              { target, bindings: uses },
+            )
+          : undefined;
+      if (!token || !runtime) {
+        if (!gateway.withdrawConnectionToken) {
+          throw new ResourceStateConflictError("The sender cannot withdraw this connection token.");
+        }
+        await this.credentialGatewayOperation(() => gateway.withdrawConnectionToken!(context));
+        if (!expected && token && uses.length > 0 && agent.activeRevisionId === revision.id) {
+          if (!gateway.prepareConnectionSource) {
+            throw new ResourceStateConflictError(
+              "The sender cannot preserve the withdrawn account attachment.",
+            );
+          }
+          // A running Sandbox keeps its admitted provider membership. Restore that exact
+          // profile only after confirmed withdrawal, and never release this account's bearer.
+          await this.credentialGatewayOperation(() => gateway.prepareConnectionSource!(context));
+          return { state: "withdrawn", source: admitted };
+        }
+        return undefined;
+      }
+      if (runtime.type !== admitted.type || runtime.driverId !== admitted.driverId) {
+        throw new ResourceStateConflictError("The account's admitted sender has changed.");
+      }
+      if (this.ownedPluginDriver(revision.plugins?.driver, revision.harness.id) !== driver) {
+        throw new ResourceStateConflictError(
+          "The revision's Plugin Driver changed. Retry preparation.",
+        );
+      }
+      const prepared = { ...context, source: { ...runtime, id: delivery.profileId } };
+      if (expected) {
+        signal.throwIfAborted();
+        if (!isDeepStrictEqual(runtime, expected) || !gateway.publishConnectionToken) {
+          throw new ResourceStateConflictError("The prepared account policy has changed.");
+        }
+        await this.credentialGatewayOperation(() =>
+          gateway.publishConnectionToken!(prepared, {
+            accessToken: token.accessToken,
+            expiresAt: token.expiresAt,
+          }),
+        );
+      } else {
+        if (!gateway.prepareConnectionSource) {
+          throw new ResourceStateConflictError(
+            "The sender cannot prepare an account without releasing its token.",
+          );
+        }
+        await this.credentialGatewayOperation(() => gateway.prepareConnectionSource!(prepared));
+      }
+      return { state: "prepared", source: runtime };
+    });
+  }
+
+  private async removeAccountDeliveries(namespace: Namespace, source: CredentialSource) {
+    // The registration survives deletion of the Agent and its immutable revisions.
+    const profiles = await this.read((state) =>
+      state.savedConnections.listDeliveryProfiles(namespace.id, source.id),
+    );
+    for (const profile of profiles) {
+      const gateway = this.credentialGatewayDriver(profile.gatewayId);
+      const placement = await this.credentialNamespace(namespace);
+      await this.credentialGatewayOperation(() =>
+        gateway.removeSource({
+          namespace: placement,
+          source: {
+            ...source,
+            id: profile.profileId,
+            type: profile.sourceType,
+            ownerCapability: "credential_gateway",
+            driverId: gateway.id,
+          },
+          signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+        }),
+      );
+    }
+  }
+
+  private async savedPluginSlot(
+    state: PlatformReadView,
+    principalId: string,
+    namespaceId: string,
+    target: Pick<ConnectionAttachmentIntent, "agentId" | "pluginId" | "slotId">,
+    selected: {
+      readonly driver: PluginDriver;
+      readonly configuration: Readonly<Pick<Configuration, "id" | "generation">>;
+    },
+  ) {
+    const resource = {
+      kind: "agent" as const,
+      namespaceId,
+      id: target.agentId,
+    };
+    await this.authorize(principalId, "read", resource);
+    await this.authorize(principalId, "update", resource);
+    const agent = await state.agents.findAgent(namespaceId, target.agentId);
+    if (!agent || agent.status !== "active") {
+      throw new ResourceStateConflictError("The Agent is unavailable for a plugin connection.");
+    }
+    const metadata = await state.configurations.findConfiguration(
+      namespaceId,
+      agent.configurationId,
+    );
+    if (
+      metadata?.id !== selected.configuration.id ||
+      metadata?.generation !== selected.configuration.generation ||
+      this.pluginDriver(selected.driver.harnessId) !== selected.driver
+    ) {
+      throw new ResourceStateConflictError(
+        "The Agent's plugin catalog or Configuration changed. Refresh and retry.",
+      );
+    }
+    this.pluginOwner(selected.driver, agent);
+    const slot = selected.driver.credentials?.connectionSlot?.(
+      agent.plugins ?? {},
+      target.pluginId,
+      target.slotId,
+    );
+    return {
+      agent,
+      slot: agent.plugins?.[target.pluginId]?.enabled ? slot : undefined,
+    };
+  }
+
+  async listAgentPluginConnectionTemplates(
+    principalId: string,
+    input: Pick<ConnectionAttachmentIntent, "agentId" | "pluginId" | "slotId"> & {
+      readonly namespaceId: string;
+    },
+  ) {
+    await this.authorizeConnectionCreation(principalId, input.namespaceId);
+    return this.withSavedPluginTarget(
+      principalId,
+      input.namespaceId,
+      input.agentId,
+      async (selected) => {
+        const { state } = selected;
+        const { slot } = await this.savedPluginSlot(
+          state,
+          principalId,
+          input.namespaceId,
+          input,
+          selected,
+        );
+        if (!slot) {
+          return [];
+        }
+        const templates = await state.connectionTemplates.listConnectionTemplates();
+        return templates
+          .filter(
+            (template) =>
+              (template.namespaceId === undefined || template.namespaceId === input.namespaceId) &&
+              template.current.oauthClientId !== undefined &&
+              slot.issuers.includes(template.current.issuer) &&
+              slot.acceptsRecipient(template.current),
+          )
+          .map(({ id, displayName, current }) => ({
+            id,
+            displayName,
+            version: current.version,
+            mode: current.mode,
+            scopes: current.scopes,
+            requiredScopes: current.observed?.requestedScopes ?? [],
+            offeredScopes:
+              current.observed?.resourceScopes ?? current.observed?.supportedScopes ?? [],
+          }));
+      },
+    );
+  }
+
+  async startAgentPluginConnection(
+    principalId: string,
+    input: StartNamespaceConnectionInput & ConnectionAttachmentIntent,
+    audit?: (credentialSourceId: string) => AuditEvent,
+  ) {
+    const {
+      agentId,
+      pluginId,
+      slotId,
+      releaseSha256,
+      expectedCredentialSourceIds,
+      connectionTemplateId,
+      connectionTemplateVersion,
+    } = input;
+    return this.startConnection(principalId, input, audit, {
+      agentId,
+      pluginId,
+      slotId,
+      releaseSha256,
+      expectedCredentialSourceIds,
+      connectionTemplateId,
+      connectionTemplateVersion,
+    });
+  }
+
+  private async connectionClientForVersion(
+    view: PlatformReadView,
+    namespaceId: string,
+    version: OAuthConnectionTemplateVersion,
+  ) {
+    const client = version.oauthClientId
+      ? await view.connectionTemplates.findOAuthClient(version.oauthClientId)
+      : undefined;
+    if (
+      !client ||
+      (client.namespaceId !== undefined && client.namespaceId !== namespaceId) ||
+      client.issuer !== version.issuer ||
+      client.tokenUrl !== version.tokenUrl ||
+      (version.revocationUrl !== undefined && client.revocationUrl !== version.revocationUrl)
+    ) {
+      throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
+    }
+    return client;
+  }
+
+  async startNamespaceConnection(
+    principalId: string,
+    input: StartNamespaceConnectionInput,
+    audit?: (credentialSourceId: string) => AuditEvent,
+  ) {
+    return this.startConnection(principalId, input, audit);
+  }
+
+  private async startConnection(
+    principalId: string,
+    input: StartNamespaceConnectionInput,
+    audit?: (credentialSourceId: string) => AuditEvent,
+    intent?: ConnectionAttachmentIntent,
+  ): Promise<{
+    readonly credentialSourceId: string;
+    readonly authorizationUrl: string;
+    readonly expiresAt: string;
+  }> {
+    const { namespaceId } = input;
+    await this.authorizeConnectionCreation(principalId, namespaceId);
+    if (input.accountName !== undefined && !isName(input.accountName)) {
+      throw new ScopeViolationError("The credential source name is invalid.");
+    }
+    const selected = intent
+      ? await this.withSavedPluginTarget(
+          principalId,
+          namespaceId,
+          intent.agentId,
+          async ({ driver, configuration }) => ({ driver, configuration }),
+        )
+      : undefined;
+    return this.mutate(async (state) => {
+      const namespace = await this.lockNamespace(state, namespaceId);
+      if (namespace.status !== "ready") {
+        throw new NamespaceNotReadyError();
+      }
+      await this.authorizeConnectionCreation(principalId, namespaceId);
+      const refresh = this.browserConnectionDriver();
+      const template = await state.connectionTemplates.lockConnectionTemplate(
+        input.connectionTemplateId,
+      );
+      if (
+        !template ||
+        (template.namespaceId !== undefined && template.namespaceId !== namespaceId)
+      ) {
+        throw new ScopeViolationError("The connection template does not exist.");
+      }
+      const version = template.current;
+      const selectedScopes = connectionConsentScopes(version, input.selectedScopes);
+      if (intent && selected) {
+        const { slot } = await this.savedPluginSlot(
+          state,
+          principalId,
+          namespaceId,
+          intent,
+          selected,
+        );
+        if (
+          !slot ||
+          slot.releaseSha256 !== intent.releaseSha256 ||
+          !isDeepStrictEqual(
+            new Set(slot.credentialSourceIds),
+            new Set(intent.expectedCredentialSourceIds),
+          ) ||
+          version.version !== intent.connectionTemplateVersion ||
+          !slot.issuers.includes(version.issuer) ||
+          !slot.acceptsRecipient(version)
+        ) {
+          throw new ResourceStateConflictError(
+            "The saved plugin slot or connection template changed. Select the account again.",
+          );
+        }
+      }
+      const client = await this.connectionClientForVersion(state, namespaceId, version);
+      const createdAt = this.timestamp();
+      const expiresAt = new Date(Date.parse(createdAt) + CONNECTION_SESSION_TTL_MS).toISOString();
+      // Consent starts with one atomic reservation. There is no grant or worker provider to retire
+      // if the browser closes. Only a successful exchange can hand material to the Token Service.
+      const source = await state.credentialSources.createCredentialSource({
+        id: this.nextIdentifier("credential_source"),
+        namespaceId,
+        name: input.accountName ?? `Connection ${crypto.randomUUID()}`,
+        type: "oauth2-refresh-token",
+        config: {
+          issuer: version.issuer,
+          token_url: version.tokenUrl,
+          client_id: client.clientId,
+          oauth_client_id: client.id,
+        },
+        secrets: {},
+        ownerCapability: "credential_refresh",
+        driverId: refresh.id,
+        state: "registering",
+        createdAt,
+      });
+      const started = await this.credentialGatewayOperation(() =>
+        refresh.startBrowserAuthorization!(
+          {
+            namespace,
+            source,
+            signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+          },
+          browserAuthorizationRequest(version, client, input.redirectUri, selectedScopes),
+        ),
+      );
+      await state.savedConnections.createConnectionSession({
+        stateHash: createHash("sha256").update(started.state).digest("hex"),
+        namespaceId,
+        credentialSourceId: source.id,
+        sessionId: input.sessionId,
+        redirectUri: input.redirectUri,
+        selectedScopes,
+        ...(intent && { attachmentIntent: intent }),
+        privateState: started.privateState,
+        issuerRequired: await state.connectionTemplates.hasOtherConnectionIssuer(version.issuer),
+        actorId: principalId,
+        connectionTemplateId: template.id,
+        connectionTemplateVersion: version.version,
+        createdAt,
+        expiresAt,
+      });
+      if (audit) {
+        await state.audit.append(audit(source.id));
+      }
+      return {
+        credentialSourceId: source.id,
+        authorizationUrl: started.authorizationUrl,
+        expiresAt,
+      };
+    });
+  }
+
+  async expireConnectionSessions(limit: number): Promise<void> {
+    await this.mutate(async (state) => {
+      for (const attempt of await state.savedConnections.takeExpiredConnectionSessions(
+        this.timestamp(),
+        limit,
+      )) {
+        await state.credentialSources.deleteCredentialSource(
+          attempt.namespaceId,
+          attempt.credentialSourceId,
+        );
+      }
+    });
+  }
+
+  async completeNamespaceConnection(
+    principalId: string,
+    input: CompleteNamespaceConnectionInput,
+    audit?: (connection: Readonly<SavedConnection>, attachedAgentId?: string) => AuditEvent,
+    holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
+  ): Promise<
+    Readonly<SavedConnection> & {
+      readonly attachment?: {
+        readonly agentId: string;
+        readonly outcome: "attached" | "saved" | "unconfirmed";
+      };
+    }
+  > {
+    if (!isNonEmptyString(input.state)) {
+      throw new BrowserAuthorizationError("missing_state", "retry");
+    }
+    const stateHash = createHash("sha256").update(input.state).digest("hex");
+    const session = await this.mutate((state) =>
+      state.savedConnections.consumeConnectionSession(
+        stateHash,
+        principalId,
+        input.sessionId,
+        this.timestamp(),
+      ),
+    );
+    if (!session) {
+      throw new BrowserAuthorizationError("unknown_session", "retry");
+    }
+    const { namespaceId, credentialSourceId } = session;
+    let exchangeStarted = false;
+    let handoffStarted = false;
+    let approved:
+      | Pick<
+          SavedConnection,
+          | "issuer"
+          | "tokenUrl"
+          | "mcpServerUrl"
+          | "oauthClientId"
+          | "clientId"
+          | "destinations"
+          | "resource"
+          | "requestedScopes"
+          | "grantedScopes"
+        >
+      | undefined;
+    try {
+      await this.authorizeConnectionCreation(principalId, namespaceId);
+      await this.assertConnectionTemplateScope(session.connectionTemplateId, namespaceId);
+      const version = await this.read((state) =>
+        state.connectionTemplates.findOAuthConnectionTemplateVersion(
+          session.connectionTemplateId,
+          session.connectionTemplateVersion,
+        ),
+      );
+      if (!version || (input.iss !== undefined && input.iss !== version.issuer)) {
+        throw new BrowserAuthorizationError("issuer_mismatch", "fix_configuration");
+      }
+      if (input.error !== undefined || !isNonEmptyString(input.code)) {
+        throw new BrowserAuthorizationError(
+          input.error === "access_denied" ? "consent_denied" : "provider_error",
+          "retry",
+        );
+      }
+      // A shared redirect URI cannot identify the responding authorization server. A legacy
+      // single-issuer deployment may omit iss until a second issuer has been configured.
+      if (
+        input.iss === undefined &&
+        (session.issuerRequired ||
+          (await this.read((state) =>
+            state.connectionTemplates.hasOtherConnectionIssuer(version.issuer),
+          )))
+      ) {
+        throw new BrowserAuthorizationError("issuer_required", "fix_configuration");
+      }
+      const refresh = this.browserConnectionDriver();
+      const { namespace, source, client } = await this.mutate(async (view) => {
+        const namespace = await this.exactNamespace(view, namespaceId);
+        const source = await view.credentialSources.findCredentialSource(
+          namespaceId,
+          credentialSourceId,
+        );
+        if (
+          source?.state !== "registering" ||
+          source.ownerCapability !== "credential_refresh" ||
+          source.driverId !== refresh.id
+        ) {
+          throw new BrowserAuthorizationError("invalid_session", "retry");
+        }
+        const client = await this.connectionClientForVersion(view, namespaceId, version);
+        await holdSession?.(view);
+        return { namespace, source, client };
+      });
+      const context = {
+        namespace,
+        source,
+        signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+      };
+      const request = browserAuthorizationRequest(
+        version,
+        client,
+        session.redirectUri,
+        session.selectedScopes,
+      );
+      await this.credentialGatewayOperation(() =>
+        this.withOAuthClientSecret(client, async (clientSecret) => {
+          context.signal.throwIfAborted();
+          exchangeStarted = true;
+          await refresh.completeBrowserAuthorization!(
+            context,
+            session.privateState,
+            { code: input.code!, state: input.state },
+            request,
+            clientSecret,
+            async (grant) => {
+              handoffStarted = true;
+              approved = {
+                issuer: version.issuer,
+                tokenUrl: version.tokenUrl,
+                oauthClientId: client.id,
+                clientId: client.clientId,
+                destinations: version.destinations,
+                ...(version.mcp
+                  ? { resource: version.mcp.resource, mcpServerUrl: version.mcp.serverUrl }
+                  : {}),
+                requestedScopes: session.selectedScopes,
+                grantedScopes: grant.grantedScopes,
+              };
+
+              await this.acceptConnectionTokens(
+                namespaceId,
+                credentialSourceId,
+                grant,
+                context.signal,
+                holdSession,
+              );
+            },
+          );
+        }),
+      );
+      if (!approved) {
+        throw new DependencyUnavailableError(
+          "The Refresh Driver did not hand off the connection grant.",
+        );
+      }
+    } catch (error) {
+      // A network timeout may have spent the code. Keep the pending source for explicit
+      // retirement; never retry that exchange. Definite refusals have no material to retire.
+      if (!exchangeStarted || (!handoffStarted && error instanceof BrowserAuthorizationError)) {
+        await this.mutate((state) =>
+          state.credentialSources.deleteCredentialSource(namespaceId, credentialSourceId),
+        );
+      }
+      throw error;
+    }
+    let saved: Readonly<SavedConnection>;
+    const receipt = approved;
+    try {
+      saved = await this.mutate(async (state) => {
+        await this.lockNamespace(state, namespaceId);
+        await this.authorizeConnectionCreation(principalId, namespaceId);
+        await this.assertConnectionTemplateScope(session.connectionTemplateId, namespaceId);
+        await holdSession?.(state);
+        await this.grantConnectionOwner(state, namespaceId, principalId, credentialSourceId);
+        const ready = await state.credentialSources.markCredentialSourceReady(
+          namespaceId,
+          credentialSourceId,
+        );
+        if (!ready) {
+          throw new ResourceStateConflictError("The pending connection changed. Connect again.");
+        }
+        const connection = await state.savedConnections.createSavedConnection({
+          ...receipt,
+          namespaceId,
+          credentialSourceId,
+          ownerPrincipalId: principalId,
+          connectionTemplateId: session.connectionTemplateId,
+          connectionTemplateVersion: session.connectionTemplateVersion,
+          createdAt: this.timestamp(),
+        });
+        if (audit) {
+          await state.audit.append(audit(connection));
+        }
+        return connection;
+      });
+    } catch (error) {
+      // A driver may already have installed the usable grant. A commit with an uncertain
+      // outcome is safe to retry: the internal pending-source delete refuses a ready account.
+      await this.deleteCredentialSource(
+        principalId,
+        namespaceId,
+        credentialSourceId,
+        undefined,
+        PENDING_CONNECTION,
+      ).catch(() => undefined);
+      throw error;
+    }
+    const intent = session.attachmentIntent;
+    if (!intent) {
+      return saved;
+    }
+    const { agentId } = intent;
+    try {
+      const selected = await this.withSavedPluginTarget(
+        principalId,
+        namespaceId,
+        agentId,
+        async ({ driver, configuration }) => ({ driver, configuration }),
+      );
+      await this.mutate(async (state) => {
+        await this.lockNamespace(state, namespaceId);
+        const { agent, slot } = await this.savedPluginSlot(
+          state,
+          principalId,
+          namespaceId,
+          intent,
+          selected,
+        );
+        if (
+          !slot ||
+          slot.releaseSha256 !== intent.releaseSha256 ||
+          !isDeepStrictEqual(
+            new Set(slot.credentialSourceIds),
+            new Set(intent.expectedCredentialSourceIds),
+          )
+        ) {
+          throw new ResourceStateConflictError("The selected plugin slot changed during consent.");
+        }
+        await holdSession?.(state);
+        await this.updateAgent(principalId, {
+          namespaceId,
+          agentId,
+          configurationId: agent.configurationId,
+          plugins: {
+            ...agent.plugins,
+            [intent.pluginId]: slot.bind(credentialSourceId),
+          },
+        });
+        if (audit) {
+          await state.audit.append(audit(saved, agentId));
+        }
+      });
+      return { ...saved, attachment: { agentId, outcome: "attached" } };
+    } catch (error) {
+      // The account is durable. A lost commit acknowledgement requires a fresh Agent read.
+      const outcome = error instanceof PostgresCommitOutcomeUnknownError ? "unconfirmed" : "saved";
+      return { ...saved, attachment: { agentId, outcome } };
+    }
+  }
+
+  async listNamespaceConnections(
+    principalId: string,
+    namespaceId: string,
+  ): Promise<readonly Readonly<SavedConnection>[]> {
+    await this.authorize(principalId, "read", {
+      kind: "namespace",
+      id: namespaceId,
+      namespaceId,
+    });
+    return this.read(async (state) => {
+      const connections = await state.savedConnections.listNamespaceConnections(namespaceId);
+      const visible: Readonly<SavedConnection>[] = [];
+      for (const connection of connections) {
+        if (
+          await this.canRead(principalId, {
+            kind: "credential_source",
+            namespaceId,
+            id: connection.credentialSourceId,
+          })
+        ) {
+          visible.push({
+            ...connection,
+            destinations: await this.effectiveConnectionDestinations(state, connection),
+          });
+        }
+      }
+      return visible;
+    });
+  }
+
+  private async effectiveConnectionDestinations(
+    state: PlatformReadView,
+    account: Readonly<SavedConnection>,
+  ): Promise<SavedConnection["destinations"]> {
+    const template = await state.connectionTemplates.findConnectionTemplate(
+      account.connectionTemplateId,
+    );
+    if (!template || template.current.issuer !== account.issuer) {
+      return [];
+    }
+    if (template.current.mode === "manual") {
+      return account.mcpServerUrl === undefined && account.resource === undefined
+        ? template.current.destinations
+        : [];
+    }
+    if (
+      !account.mcpServerUrl ||
+      !account.resource ||
+      template.current.mcp?.serverUrl !== account.mcpServerUrl ||
+      template.current.mcp?.resource !== account.resource
+    ) {
+      return [];
+    }
+    return account.destinations;
+  }
+
+  private async grantConnectionOwner(
+    state: PlatformUnitOfWork,
+    namespaceId: string,
+    principalId: string,
+    sourceId: string,
+  ): Promise<void> {
+    const driver = this.iamPolicyDriver("createNamespaceAccessBinding");
+    if (driver.namespacePolicyTransaction !== "platform-unit-of-work") {
+      throw new DependencyUnavailableError(
+        "The IAM Driver cannot grant connection access transactionally.",
+      );
+    }
+    const roleId = `role_${namespaceId}_connection_owner`;
+    const permissions: readonly Permission[] = [
+      { resourceKind: "credential_source", action: "read" },
+      { resourceKind: "credential_source", action: "operate" },
+    ];
+    const role = await state.iamPolicy.getRole(namespaceId, roleId);
+    if (role === undefined) {
+      const roleDriver = this.iamPolicyDriver("createNamespaceRole");
+      await this.iamPolicyOperation(() =>
+        roleDriver.createNamespaceRole!(
+          { policy: state.iamPolicy },
+          { id: roleId, namespaceId, name: "Connected account owner", permissions },
+        ),
+      );
+    } else if (
+      role.namespaceId !== namespaceId ||
+      role.permissions.length !== permissions.length ||
+      !permissions.every((required) =>
+        role.permissions.some((existing) => isDeepStrictEqual(existing, required)),
+      )
+    ) {
+      throw new ResourceConflictError(
+        "The connected account owner Role requires exactly credential source read and operate.",
+      );
+    }
+    await this.iamPolicyOperation(() =>
+      driver.createNamespaceAccessBinding!(
+        { policy: state.iamPolicy },
+        {
+          id: `binding_${sourceId}_connection_owner`,
+          namespaceId,
+          subjectKind: "identity",
+          subjectId: principalId,
+          roleId,
+          resourceKind: "credential_source",
+          resourceId: sourceId,
+        },
+      ),
+    );
+  }
+
+  async attachAgentConnection(
+    principalId: string,
+    input: AgentCredentialSourceInput,
+    audit?: AuditEvent,
+  ): Promise<void> {
+    const { namespaceId, agentId, credentialSourceId } = input;
+    await this.mutate(async (state) => {
+      await this.lockNamespace(state, namespaceId);
+      await this.authorize(principalId, "update", {
+        kind: "agent",
+        id: agentId,
+        namespaceId,
+      });
+      const account = await state.savedConnections.findSavedConnection(
+        namespaceId,
+        credentialSourceId,
+      );
+      const resource = {
+        kind: "credential_source" as const,
+        id: credentialSourceId,
+        namespaceId,
+      };
+      await this.authorize(principalId, "operate", resource);
+      const source = await state.credentialSources.lockCredentialSource(
+        namespaceId,
+        credentialSourceId,
+      );
+      if (
+        account === undefined ||
+        account.revocationRequestedBy !== undefined ||
+        source?.state !== "ready"
+      ) {
+        throw new ResourceStateConflictError("Choose a completed connection in this Namespace.");
+      }
+      const agent = await state.agents.lockAgent(namespaceId, agentId);
+      if (agent?.status !== "active") {
+        throw new ScopeViolationError("The Agent is unavailable in this Namespace.");
+      }
+      await this.guardAgentProvisioning(state, namespaceId, agentId);
+      const bindings = agent.credentialSources ?? [];
+      if (!bindings.some(({ sourceId }) => sourceId === credentialSourceId)) {
+        if (bindings.length >= MAX_AGENT_CREDENTIAL_SOURCES) {
+          throw new ResourceStateConflictError(
+            `The Agent already lists ${MAX_AGENT_CREDENTIAL_SOURCES} credential sources.`,
+          );
+        }
+        const resultingSources = [...bindings, { sourceId: credentialSourceId }];
+        const delegated = new Set(
+          (await state.savedConnections.listAgentConnections(namespaceId, agentId)).map(
+            ({ credentialSourceId }) => credentialSourceId,
+          ),
+        );
+        delegated.add(source.id);
+        const sources = await this.authorizeAgentCredentialSources(
+          state,
+          principalId,
+          namespaceId,
+          resultingSources,
+          agent.harnessAuth,
+          delegated,
+        );
+        await this.validatePluginCredentialSources(
+          state,
+          this.ownedPluginDriver(agent.pluginDriver),
+          agent.plugins,
+          sources,
+          agent.harnessAuth,
+        );
+        await state.agents.updateConfiguration(
+          namespaceId,
+          agentId,
+          agent.configurationId,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          resultingSources,
+        );
+      }
+      await this.ensureAgentOperateGrants(state, namespaceId, agent, [resource]);
+      if (audit) {
+        await state.audit.append(audit);
+      }
+    });
+  }
+
+  /** Detaching revokes this Agent's access and leaves the reusable connection intact. */
+  async detachAgentConnection(
+    principalId: string,
+    input: AgentCredentialSourceInput,
+    audit?: AuditEvent,
+  ): Promise<{ readonly withdrawalRequested: boolean }> {
+    const { namespaceId, agentId, credentialSourceId } = input;
+    return this.mutate(async (state) => {
+      await this.lockNamespace(state, namespaceId);
+      await this.authorize(principalId, "update", {
+        kind: "agent",
+        id: agentId,
+        namespaceId,
+      });
+      const agent = await state.agents.lockAgent(namespaceId, agentId);
+      const connection = await state.savedConnections.findSavedConnection(
+        namespaceId,
+        credentialSourceId,
+      );
+      if (agent === undefined || connection === undefined) {
+        throw new ScopeViolationError("The Agent has no such connection.");
+      }
+      const withdrawalRequested = await this.detachAgentConnectionSource(
+        state,
+        principalId,
+        agent,
+        credentialSourceId,
+      );
+      if (audit) {
+        await state.audit.append(audit);
+      }
+      return { withdrawalRequested };
+    });
+  }
+
+  async disconnectNamespaceConnection(
+    principalId: string,
+    namespaceId: string,
+    sourceId: string,
+    audit?: AuditEvent,
+  ): Promise<void> {
+    await this.mutate(async (state) => {
+      await this.lockNamespace(state, namespaceId);
+      const connection = await state.savedConnections.findSavedConnection(namespaceId, sourceId);
+      if (connection?.ownerPrincipalId !== principalId) {
+        await this.authorize(principalId, "delete", {
+          kind: "credential_source",
+          namespaceId,
+          id: sourceId,
+        });
+      }
+      if (!connection) {
+        throw new ScopeViolationError("The Namespace has no such connection.");
+      }
+      if (connection.revocationRequestedBy !== undefined) {
+        return;
+      }
+      const source = await state.credentialSources.lockCredentialSource(namespaceId, sourceId);
+      if (!source) {
+        throw new ScopeViolationError("The connected source no longer exists.");
+      }
+      if (
+        source.state !== "deleting" &&
+        !(await state.credentialSources.markCredentialSourceDeleting(namespaceId, sourceId))
+      ) {
+        throw new ResourceStateConflictError("The connected source changed during revocation.");
+      }
+      await state.savedConnections.requestConnectionRevocation(namespaceId, sourceId, principalId);
+      for (const agent of await state.agents.listAgents(namespaceId)) {
+        await this.detachAgentConnectionSource(state, principalId, agent, sourceId, true);
+      }
+      if (audit) {
+        await state.audit.append(audit);
+      }
+    });
+    await this.finishConnectionRevocation(namespaceId, sourceId);
+  }
+
+  async finishConnectionRevocation(namespaceId: string, sourceId: string): Promise<void> {
+    const pending = await this.read(async (state) => {
+      const account = await state.savedConnections.findSavedConnection(namespaceId, sourceId);
+      if (account?.revocationRequestedBy === undefined) {
+        return undefined;
+      }
+      const source = await state.credentialSources.findCredentialSource(namespaceId, sourceId);
+      if (source?.state !== "deleting") {
+        throw new ResourceStateConflictError("The connected source has no pending retirement.");
+      }
+      return {
+        account,
+        source,
+        namespace: await this.exactNamespace(state, namespaceId),
+      };
+    });
+    if (!pending) {
+      return;
+    }
+    if (pending.account.revokedAt === undefined) {
+      await this.retireCredentialSourceMaterial(pending.namespace, pending.source, undefined);
+    }
+    const canRemoveProfiles = await this.mutate(async (state) => {
+      await this.lockNamespace(state, namespaceId);
+      const account = await state.savedConnections.findSavedConnection(namespaceId, sourceId);
+      if (account?.revocationRequestedBy === undefined) {
+        return;
+      }
+      if (!account.revokedAt) {
+        await state.savedConnections.confirmConnectionRevocation(
+          namespaceId,
+          sourceId,
+          this.timestamp(),
+        );
+      }
+      return !(await state.savedConnections.hasPendingConnectionWithdrawals(namespaceId, sourceId));
+    });
+    if (canRemoveProfiles) {
+      await this.removeAccountDeliveries(pending.namespace, pending.source);
+      await this.mutate(async (state) => {
+        await this.lockNamespace(state, namespaceId);
+        if (!(await state.credentialSources.hasReferences(namespaceId, sourceId))) {
+          await state.credentialSources.deleteCredentialSource(namespaceId, sourceId);
+        }
+      });
+    }
+  }
+
+  private connectionTokenService() {
+    const service = this.preparedTokens?.oauthConnections;
+    if (!service) {
+      throw new NotImplementedError(
+        "connection_templates",
+        "This Installation has no Token Service for browser connections.",
+      );
+    }
+    return service;
+  }
+
+  private async acceptConnectionTokens(
+    namespaceId: string,
+    sourceId: string,
+    grant: OAuthConnectionGrant,
+    signal: AbortSignal,
+    holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
+  ): Promise<void> {
+    const service = this.connectionTokenService();
+    const driver = this.secretDriver();
+    const custody = await this.mutate(async (unit) => {
+      const source = await unit.credentialSources.lockCredentialSource(namespaceId, sourceId);
+      if (
+        source?.state !== "registering" ||
+        source.ownerCapability !== "credential_refresh" ||
+        (await unit.savedConnections.findTokenCustody(namespaceId, sourceId))
+      ) {
+        throw new ResourceStateConflictError(
+          "The pending connection cannot accept an OAuth grant.",
+        );
+      }
+      await holdSession?.(unit);
+      const identity = {
+        id: this.nextIdentifier("secret"),
+        namespaceId,
+        name: "OAuth connection custody",
+      };
+      const backendRef = await this.secretOperation(() =>
+        driver.create(identity, PENDING_OAUTH_CONNECTION),
+      );
+      const custody = {
+        namespaceId,
+        sourceId,
+        secret: {
+          ...identity,
+          driverId: driver.id,
+          backendRef,
+          createdAt: this.timestamp(),
+        },
+      };
+      this.registerRollback(() => this.secretOperation(() => driver.delete(custody.secret)));
+      await unit.savedConnections.createTokenCustody(custody);
+      return custody;
+    });
+    await this.mutate(async (unit) => {
+      const source = await unit.credentialSources.lockCredentialSource(namespaceId, sourceId);
+      if (source?.state !== "registering") {
+        throw new ResourceStateConflictError("The connection was retired during consent.");
+      }
+      await holdSession?.(unit);
+      await service.accept(custody, grant, signal);
+      await this.recordConnectionTokenSchedule(unit, custody, signal);
+    });
+  }
+
+  private async recordConnectionTokenSchedule(
+    unit: PlatformUnitOfWork,
+    custody: ConnectionTokenCustody,
+    signal: AbortSignal,
+  ) {
+    const { schedule } = await this.connectionTokenService().status(custody, signal);
+    if (!schedule) {
+      throw new ResourceStateConflictError(
+        "No eligible access token is prepared for this account.",
+      );
+    }
+    await unit.savedConnections.recordTokenSchedule(custody.namespaceId, custody.sourceId, {
+      scheduledVersion: schedule.version,
+      nextRefreshAt: schedule.nextRefreshAt,
+      grantedScopes: schedule.grantedScopes,
+    });
+  }
+
+  private async connectionRefreshClient(
+    namespaceId: string,
+    sourceId: string,
+  ): Promise<OAuthConnectionClient> {
+    return this.read(async (view) => {
+      const account = await view.savedConnections.findSavedConnection(namespaceId, sourceId);
+      if (!account || account.revocationRequestedBy) {
+        throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
+      }
+      const version = await view.connectionTemplates.findOAuthConnectionTemplateVersion(
+        account.connectionTemplateId,
+        account.connectionTemplateVersion,
+      );
+      if (!version || version.oauthClientId !== account.oauthClientId) {
+        throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
+      }
+      const client = await this.connectionClientForVersion(view, namespaceId, version);
+      return {
+        registration: {
+          oauthClientId: client.id,
+          issuer: client.issuer,
+          clientId: client.clientId,
+          tokenUrl: client.tokenUrl,
+          tokenEndpointAuthMethod: client.tokenEndpointAuthMethod,
+          ...(version.mcp && { resource: version.mcp.resource }),
+        },
+        ...(client.tokenEndpointAuthMethod !== "none" && {
+          readSecret: (signal: AbortSignal) =>
+            this.withOAuthClientSecret(client, async (value) => {
+              signal.throwIfAborted();
+              if (value === undefined) {
+                throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
+              }
+              return value;
+            }),
+        }),
+      };
+    });
+  }
+
+  async maintainConnectionToken(namespaceId: string, sourceId: string) {
+    const custody = await this.read(async (view) => {
+      const source = await view.credentialSources.findCredentialSource(namespaceId, sourceId);
+      if (source?.state !== "ready" || source.ownerCapability !== "credential_refresh") {
+        return undefined;
+      }
+      return view.savedConnections.findTokenCustody(namespaceId, sourceId);
+    });
+    if (!custody) {
+      return undefined;
+    }
+    const signal = AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS);
+    const service = this.connectionTokenService();
+    if (!custody.due) {
+      return service.status(custody, signal);
+    }
+    const result = await service.renew(
+      custody,
+      signal,
+      () => this.connectionRefreshClient(namespaceId, sourceId),
+      custody.scheduledVersion,
+    );
+    if (result.state === "pending") {
+      return result;
+    }
+    await this.mutate(async (unit) => {
+      await this.lockNamespace(unit, namespaceId);
+      const source = await unit.credentialSources.lockCredentialSource(namespaceId, sourceId);
+      if (source?.state !== "ready") {
+        return;
+      }
+      if (result.state === "failed" && !result.schedule) {
+        await unit.savedConnections.recordTokenSchedule(namespaceId, sourceId, "stopped");
+      } else {
+        await this.recordConnectionTokenSchedule(unit, custody, signal);
+      }
+    });
+    return result;
+  }
+
+  private browserConnectionDriver(): CredentialRefreshDriver {
+    this.connectionTokenService();
+    const secrets = this.secretDriver();
+    if (!secrets.withValue || !secrets.compareAndSwap) {
+      throw new NotImplementedError(
+        "connection_templates",
+        "The selected Secret Driver cannot store an OAuth grant.",
+      );
+    }
+    const refresh = this.credentialRefreshDriver();
+    if (!refresh.startBrowserAuthorization || !refresh.completeBrowserAuthorization) {
+      throw new NotImplementedError(
+        "connection_templates",
+        "The selected Refresh Driver does not support browser connections.",
+      );
+    }
+    return refresh;
+  }
+
+  private async authorizeTemplateAdministration(principalId: string): Promise<void> {
+    await this.authorize(principalId, "administer", {
+      kind: "installation",
+      id: this.installation.id,
+    });
+  }
+
+  async listConnectionTemplates(
+    principalId: string,
+  ): Promise<readonly Readonly<ConnectionTemplate>[]> {
+    await this.authorizeTemplateAdministration(principalId);
+    return this.read((state) => state.connectionTemplates.listConnectionTemplates());
+  }
+
+  async getConnectionTemplate(
+    principalId: string,
+    templateId: string,
+  ): Promise<Readonly<ConnectionTemplate>> {
+    await this.authorizeTemplateAdministration(principalId);
+    const template = await this.read((state) =>
+      state.connectionTemplates.findConnectionTemplate(templateId),
+    );
+    if (!template) {
+      throw new ScopeViolationError("The connection template does not exist.");
+    }
+    return template;
+  }
+
+  async discoverConnectionTemplate(
+    principalId: string,
+    input: { serverUrl: string; issuer?: string },
+    discover: DiscoverMcp,
+  ) {
+    await this.authorizeTemplateAdministration(principalId);
+    return discover(input.serverUrl, input.issuer);
+  }
+
+  private async effectiveConnectionTemplate(
+    input: TemplateInput,
+    discover: DiscoverMcp,
+  ): Promise<ConnectionTemplateValues> {
+    const settings = {
+      scopes: [...input.scopes],
+      authorizationParameters: input.authorizationParameters ?? {},
+      ...(input.oauthClientId && { oauthClientId: input.oauthClientId }),
+    };
+    let values: ConnectionTemplateValues;
+    if (input.mode === "manual") {
+      values = {
+        ...settings,
+        mode: input.mode,
+        issuer: input.issuer,
+        authorizationUrl: input.authorizationUrl,
+        tokenUrl: input.tokenUrl,
+        ...(input.revocationUrl && { revocationUrl: input.revocationUrl }),
+        destinations: normalizeConnectionDestinations(input.destinations),
+      };
+    } else {
+      const observed = await discover(input.serverUrl, input.issuer);
+      if (observed.issuer !== input.issuer || !observed.authorizationUrl || !observed.tokenUrl) {
+        throw new ConnectionTemplateValidationError(
+          "issuer",
+          "Choose a verified issuer for this MCP server.",
+        );
+      }
+      const offered = [...observed.requestedScopes, ...(observed.resourceScopes ?? [])];
+      const allowed = new Set(offered.length ? offered : observed.supportedScopes);
+      const supported = observed.supportedScopes && new Set(observed.supportedScopes);
+      const approved = new Set(settings.scopes);
+      if (approved.size && observed.requestedScopes.some((scope) => !approved.has(scope))) {
+        throw new ConnectionTemplateValidationError(
+          "scopes",
+          "Include the scopes required by the MCP server or choose no template limit.",
+        );
+      }
+      if (
+        settings.scopes.some((scope) => !allowed.has(scope) || (supported && !supported.has(scope)))
+      ) {
+        throw new ConnectionTemplateValidationError(
+          "scopes",
+          "Choose only scopes advertised for this MCP resource.",
+        );
+      }
+      const server = new URL(observed.serverUrl);
+      values = {
+        ...settings,
+        mode: input.mode,
+        issuer: observed.issuer,
+        authorizationUrl: observed.authorizationUrl,
+        tokenUrl: observed.tokenUrl,
+        ...(observed.revocationUrl && { revocationUrl: observed.revocationUrl }),
+        destinations: normalizeConnectionDestinations([
+          {
+            host: server.hostname,
+            port: Number(server.port || 443),
+            path: server.pathname,
+          },
+        ]),
+        mcp: { serverUrl: observed.serverUrl, resource: observed.resource },
+        observed,
+      };
+    }
+    validateConnectionTemplateAuthorization(values);
+    return values;
+  }
+
+  private async assertTemplateClient(
+    state: PlatformUnitOfWork,
+    values: ConnectionTemplateValues,
+    namespaceId?: string,
+  ) {
+    if (!values.oauthClientId) {
+      return;
+    }
+    const client = await state.connectionTemplates.findOAuthClient(values.oauthClientId);
+    if (
+      !client ||
+      (client.namespaceId !== undefined && client.namespaceId !== namespaceId) ||
+      client.issuer !== values.issuer ||
+      client.tokenUrl !== values.tokenUrl ||
+      (values.revocationUrl !== undefined && client.revocationUrl !== values.revocationUrl) ||
+      !templateAcceptsAuthMethod(values.observed, client.tokenEndpointAuthMethod)
+    ) {
+      throw new ResourceStateConflictError(
+        "Choose a client approved for this scope, issuer and provider endpoints.",
+      );
+    }
+  }
+
+  private async lockTemplateScope(state: PlatformUnitOfWork, namespaceId?: string) {
+    if (
+      namespaceId !== undefined &&
+      (await this.lockNamespace(state, namespaceId)).status === "deleting"
+    ) {
+      throw new ResourceStateConflictError("The Namespace is being deleted.");
+    }
+  }
+
+  async createConnectionTemplate(
+    principalId: string,
+    input: CreateConnectionTemplateInput,
+    discover: DiscoverMcp,
+    audit?: (id: string) => AuditEvent,
+    holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
+  ): Promise<Readonly<ConnectionTemplate>> {
+    await this.authorizeTemplateAdministration(principalId);
+    const values = await this.effectiveConnectionTemplate(input, discover);
+    return this.mutate(async (state) => {
+      await this.authorizeTemplateAdministration(principalId);
+      await this.lockTemplateScope(state, input.namespaceId);
+      await this.assertTemplateClient(state, values, input.namespaceId);
+      const templateId = `ctp_${crypto.randomUUID()}`;
+      const createdAt = this.timestamp();
+      const template = await state.connectionTemplates.createConnectionTemplate({
+        id: templateId,
+        displayName: input.displayName,
+        ...(input.namespaceId && { namespaceId: input.namespaceId }),
+        createdAt,
+        current: { ...values, templateId, version: 1, createdAt },
+      });
+      await holdSession?.(state);
+      if (audit) {
+        await state.audit.append(audit(templateId));
+      }
+      return template;
+    });
+  }
+
+  async updateConnectionTemplate(
+    principalId: string,
+    id: string,
+    input: UpdateConnectionTemplateInput,
+    discover: DiscoverMcp,
+    audit?: AuditEvent,
+    holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
+  ) {
+    // Resolve the exact authorized target before any administrator-selected outbound discovery.
+    await this.getConnectionTemplate(principalId, id);
+    const values =
+      "mode" in input ? await this.effectiveConnectionTemplate(input, discover) : undefined;
+    return this.mutate(async (state) => {
+      await this.authorizeTemplateAdministration(principalId);
+      const current = await state.connectionTemplates.lockConnectionTemplate(id);
+      if (!current) {
+        throw new ScopeViolationError("The connection template does not exist.");
+      }
+      if (values) {
+        await this.assertTemplateClient(state, values, current.namespaceId);
+      }
+      const version =
+        values && connectionValuesChanged(current.current, values)
+          ? {
+              ...values,
+              templateId: id,
+              version: current.current.version + 1,
+              createdAt: this.timestamp(),
+            }
+          : undefined;
+      const updated = await state.connectionTemplates.updateConnectionTemplate(id, {
+        ...(input.displayName !== undefined && {
+          displayName: input.displayName,
+        }),
+        ...(version && { version }),
+      });
+      if (!updated) {
+        throw new ResourceStateConflictError("The template changed during the update.");
+      }
+      await holdSession?.(state);
+      if (audit) {
+        await state.audit.append(audit);
+      }
+      return updated;
+    });
+  }
+
+  async deleteConnectionTemplate(
+    principalId: string,
+    id: string,
+    audit?: AuditEvent,
+    holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
+  ) {
+    await this.mutate(async (state) => {
+      await this.authorizeTemplateAdministration(principalId);
+      if (!(await state.connectionTemplates.deleteConnectionTemplate(id))) {
+        throw new ScopeViolationError("The connection template does not exist.");
+      }
+      await holdSession?.(state);
+      if (audit) {
+        await state.audit.append(audit);
+      }
+    });
+  }
+
+  private oauthClientMetadata({
+    secretDriverId: _owner,
+    ...metadata
+  }: StoredOAuthClient): OAuthClient {
+    return immutableCopy(metadata);
+  }
+
+  async listOAuthClients(principalId: string) {
+    await this.authorizeTemplateAdministration(principalId);
+    const clients = await this.read((view) => view.connectionTemplates.listOAuthClients());
+    return Object.freeze(clients.map((client) => this.oauthClientMetadata(client)));
+  }
+
+  async createOAuthClient(
+    principalId: string,
+    input: CreateOAuthClientInput,
+    audit?: (id: string) => AuditEvent,
+    holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
+  ) {
+    const template = await this.getConnectionTemplate(principalId, input.connectionTemplateId);
+    const assertSelectedVersion = (version: number | undefined) => {
+      if (version !== input.connectionTemplateVersion) {
+        throw new ResourceStateConflictError(
+          "The template changed. Choose its current version and register again.",
+        );
+      }
+    };
+    assertSelectedVersion(template.current.version);
+    const { clientSecret, tokenEndpointAuthMethod } = input;
+    if (
+      tokenEndpointAuthMethod === "none"
+        ? clientSecret !== undefined
+        : !isNonEmptyString(clientSecret)
+    ) {
+      throw new ConnectionTemplateValidationError(
+        "clientSecret",
+        "Provide a secret only for a confidential OAuth client.",
+      );
+    }
+    const { issuer, tokenUrl, revocationUrl, observed } = template.current;
+    if (!templateAcceptsAuthMethod(observed, tokenEndpointAuthMethod)) {
+      throw new ConnectionTemplateValidationError(
+        "tokenEndpointAuthMethod",
+        "Choose an authentication method supported by this template.",
+      );
+    }
+    const client: OAuthClient = {
+      id: `ccr_${crypto.randomUUID()}`,
+      displayName: input.displayName,
+      clientId: input.clientId,
+      tokenEndpointAuthMethod,
+      issuer,
+      tokenUrl,
+      ...(revocationUrl !== undefined && { revocationUrl }),
+      ...(template.namespaceId !== undefined && { namespaceId: template.namespaceId }),
+      createdAt: this.timestamp(),
+    };
+    const lockSelectedVersion = async (state: PlatformUnitOfWork) => {
+      await this.authorizeTemplateAdministration(principalId);
+      await holdSession?.(state);
+      await this.lockTemplateScope(state, template.namespaceId);
+      const current = await state.connectionTemplates.lockConnectionTemplate(template.id);
+      assertSelectedVersion(current?.current.version);
+    };
+    const publish = async (state: PlatformUnitOfWork) => {
+      const selected = !template.current.oauthClientId;
+      if (selected) {
+        // Select the first registration. Another registration never replaces a chosen client.
+        const updated = await state.connectionTemplates.updateConnectionTemplate(template.id, {
+          version: {
+            ...template.current,
+            version: template.current.version + 1,
+            oauthClientId: client.id,
+            createdAt: this.timestamp(),
+          },
+        });
+        if (!updated) {
+          throw new ResourceStateConflictError("The template changed during client registration.");
+        }
+      }
+      if (audit) {
+        const event = audit(client.id);
+        await state.audit.append({
+          ...event,
+          details: {
+            ...event.details,
+            connectionTemplateId: template.id,
+            connectionTemplateVersion: template.current.version,
+            selected,
+          },
+        });
+      }
+    };
+    await this.mutate(async (state) => {
+      await lockSelectedVersion(state);
+      // The cleanup worker can reclaim a hidden reservation if the private write fails.
+      const cleanupAfter = clientSecret
+        ? new Date(this.clock().getTime() + 5 * 60_000).toISOString()
+        : undefined;
+      const registration = clientSecret
+        ? { ...client, secretDriverId: this.oauthClientSecretDriver().id }
+        : client;
+      await state.connectionTemplates.createOAuthClient(registration, cleanupAfter);
+      if (!clientSecret) {
+        await publish(state);
+      }
+    });
+    if (clientSecret) {
+      await this.mutate(async (state) => {
+        await lockSelectedVersion(state);
+        const reserved = await state.connectionTemplates.lockOAuthClientForCleanup(
+          client.id,
+          false,
+        );
+        if (!reserved) {
+          throw new ResourceStateConflictError(
+            "The OAuth client reservation expired. Create the client again.",
+          );
+        }
+        const { store, ref } = this.oauthClientSecret(reserved);
+        await this.secretOperation(() => store.create(ref, clientSecret));
+        await state.connectionTemplates.setOAuthClientCleanup(client.id, null);
+        await publish(state);
+      });
+    }
+    return client;
+  }
+
+  async rotateOAuthClientSecret(
+    principalId: string,
+    id: string,
+    clientSecret: string,
+    audit?: AuditEvent,
+    holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
+  ) {
+    await this.authorizeTemplateAdministration(principalId);
+    const lockClient = async (state: PlatformUnitOfWork) => {
+      const client = await state.connectionTemplates.lockOAuthClient(id);
+      await this.authorizeTemplateAdministration(principalId);
+      await holdSession?.(state);
+      if (!client) {
+        throw new ScopeViolationError("The OAuth client does not exist.");
+      }
+      if (client.tokenEndpointAuthMethod === "none") {
+        throw new ResourceStateConflictError("This public client authenticates without a secret.");
+      }
+      return client;
+    };
+    if (audit) {
+      // An in-place Driver write can succeed before SQL records its outcome. Persist the request first.
+      await this.mutate(async (state) => {
+        await lockClient(state);
+        await state.audit.append({
+          ...audit,
+          id: `aud_${crypto.randomUUID()}`,
+          details: { ...audit.details, phase: "requested" },
+        });
+      });
+    }
+    return this.mutate(async (state) => {
+      const client = await lockClient(state);
+      const { store, ref } = this.oauthClientSecret(client);
+      await this.secretOperation(() => store.update(ref, clientSecret));
+      if (audit) {
+        await state.audit.append({ ...audit, occurredAt: this.timestamp() });
+      }
+      return this.oauthClientMetadata(client);
+    });
+  }
+
+  async deleteOAuthClient(
+    principalId: string,
+    id: string,
+    audit?: AuditEvent,
+    holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
+  ) {
+    await this.authorizeTemplateAdministration(principalId);
+    await this.mutate(async (state) => {
+      const client = await state.connectionTemplates.lockOAuthClient(id);
+      await this.authorizeTemplateAdministration(principalId);
+      await holdSession?.(state);
+      if (!client) {
+        throw new ScopeViolationError("The OAuth client does not exist.");
+      }
+      // Hide confidential clients and retain their stable private reference until removal succeeds.
+      if (
+        !(await state.connectionTemplates.deleteOAuthClient(
+          id,
+          client.tokenEndpointAuthMethod !== "none",
+        ))
+      ) {
+        throw new ResourceStateConflictError(
+          "A template version still references this OAuth client.",
+        );
+      }
+      if (audit) {
+        await state.audit.append(audit);
+      }
+    });
+  }
+
+  async cleanupOAuthClients(): Promise<void> {
+    const ids = await this.read((view) => view.connectionTemplates.listOAuthClientCleanups(32));
+    for (const id of ids) {
+      await this.mutate(async (state) => {
+        const client = await state.connectionTemplates.lockOAuthClientForCleanup(id, true);
+        if (!client) {
+          return;
+        }
+        try {
+          const { store, ref } = this.oauthClientSecret(client);
+          await this.secretOperation(() => store.delete(ref));
+        } catch {
+          await state.connectionTemplates.setOAuthClientCleanup(
+            id,
+            new Date(this.clock().getTime() + 60_000).toISOString(),
+          );
+          return;
+        }
+        if (!(await state.connectionTemplates.deleteOAuthClient(id))) {
+          throw new ResourceStateConflictError("The OAuth client is still referenced.");
+        }
+      });
+    }
+  }
+
+  /** Trusted, server-side OAuth operations resolve the current value at each use. */
+  async withOAuthClientSecret<T>(
+    client: Readonly<OAuthClient>,
+    use: (secret: string | undefined) => Promise<T>,
+  ): Promise<T> {
+    const current = await this.read((view) => view.connectionTemplates.findOAuthClient(client.id));
+    if (
+      !current ||
+      !isDeepStrictEqual(this.oauthClientMetadata(current), this.oauthClientMetadata(client))
+    ) {
+      throw new ResourceStateConflictError("The approved OAuth client is unavailable.");
+    }
+    if (current.tokenEndpointAuthMethod === "none") {
+      return use(undefined);
+    }
+    const { store, ref } = this.oauthClientSecret(current);
+    return store.withValue(ref, use);
+  }
+
+  private oauthClientSecretDriver(expectedId?: string) {
+    const driver = this.secretDriver(expectedId);
+    if (!driver.installationSecrets) {
+      throw new DependencyUnavailableError(
+        "The selected Secret Driver cannot store Installation-private OAuth client secrets.",
+      );
+    }
+    return { id: driver.id, store: driver.installationSecrets };
+  }
+
+  private oauthClientSecret(client: StoredOAuthClient) {
+    if (!client.secretDriverId) {
+      throw new ResourceStateConflictError("The OAuth client has no private secret.");
+    }
+    return {
+      store: this.oauthClientSecretDriver(client.secretDriverId).store,
+      ref: { installationId: this.installation.id, id: client.id },
+    };
   }
 
   async listServiceAccounts(
@@ -4687,7 +6694,10 @@ export class OpenClawController {
         {
           completedPhase: "handoff",
           revisionId,
-          progress: { ...record.progress, ...(error === null ? {} : { error }) },
+          progress: {
+            ...record.progress,
+            ...(error === null ? {} : { error }),
+          },
         },
         pending
           ? { disposition: "defer", code, message, delayMs: 1000 }
@@ -4703,9 +6713,18 @@ export class OpenClawController {
           actorId: record.actorId,
           source: "occ",
           action: "openclaw.agents.provision.failure",
-          resource: { kind: "agent", namespaceId: record.namespaceId, id: record.agentId! },
+          resource: {
+            kind: "agent",
+            namespaceId: record.namespaceId,
+            id: record.agentId!,
+          },
           outcome: "failure",
-          details: { workId: record.workId, phase: "handoff", revisionId, code },
+          details: {
+            workId: record.workId,
+            phase: "handoff",
+            revisionId,
+            code,
+          },
         });
       }
       return Object.freeze({
@@ -4868,7 +6887,11 @@ export class OpenClawController {
         newest === undefined
           ? undefined
           : await state.revisions.findRevision(namespace.id, agent.id, newest.id);
-      return Object.freeze({ agent, revision, ...(successor === undefined ? {} : { successor }) });
+      return Object.freeze({
+        agent,
+        revision,
+        ...(successor === undefined ? {} : { successor }),
+      });
     });
   }
 
@@ -5120,7 +7143,9 @@ export class OpenClawController {
       return;
     }
     const template = await this.admitPresetTemplate(seeded.template, namespace.id);
-    const updated = await state.presets.updatePreset(namespace.id, copy.id, { template });
+    const updated = await state.presets.updatePreset(namespace.id, copy.id, {
+      template,
+    });
     if (!updated) {
       throw new ResourceStateConflictError("The Preset changed during default refresh.");
     }
@@ -5197,7 +7222,11 @@ export class OpenClawController {
     namespaceId: string,
     presetId: string,
   ): Promise<Readonly<Preset>> {
-    await this.authorize(principalId, "read", { kind: "preset", id: presetId, namespaceId });
+    await this.authorize(principalId, "read", {
+      kind: "preset",
+      id: presetId,
+      namespaceId,
+    });
     return this.read(async (state) => {
       await this.exactNamespace(state, namespaceId);
       const preset = await state.presets.findPreset(namespaceId, presetId);
@@ -5293,7 +7322,11 @@ export class OpenClawController {
     return this.mutate(async (state) => {
       // Before any lookup, so a missing target is refused like an existing one;
       // deletePresetInState re-checks under the Namespace lock.
-      await this.authorize(principalId, "delete", { kind: "preset", id: presetId, namespaceId });
+      await this.authorize(principalId, "delete", {
+        kind: "preset",
+        id: presetId,
+        namespaceId,
+      });
       const namespace = await this.lockNamespace(state, namespaceId);
       return this.deletePresetInState(state, principalId, namespace.id, presetId);
     });
@@ -5366,7 +7399,10 @@ export class OpenClawController {
       // put a placeholder into waits on a variable, located by its path: an escaped token is
       // literal text that stays in the launch render, so it is checked as written (finding
       // 1214), even where it reads like a placeholder elsewhere (finding 1220).
-      const options: ConfigurationValidationOptions = { unresolved, unresolvedType };
+      const options: ConfigurationValidationOptions = {
+        unresolved,
+        unresolvedType,
+      };
       this.validateConfigurationContent(values, options);
       // Validation owns native credential rules; Preset CRUD never creates runtime resources.
       await driver.validateValues(values, options);
@@ -5547,7 +7583,11 @@ export class OpenClawController {
     namespaceId: string,
     secretId: string,
   ): Promise<Readonly<SecretDetail>> {
-    await this.authorize(principalId, "read", { kind: "secret", id: secretId, namespaceId });
+    await this.authorize(principalId, "read", {
+      kind: "secret",
+      id: secretId,
+      namespaceId,
+    });
     return this.read(async (state) => {
       await this.exactNamespace(state, namespaceId);
       const secret = await state.secrets.findSecret(namespaceId, secretId);
@@ -5609,13 +7649,20 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
     unreadableAmong: ReadonlySet<string>,
-  ): Promise<{ readonly readable: readonly string[]; readonly unreadableCount: number }> {
+  ): Promise<{
+    readonly readable: readonly string[];
+    readonly unreadableCount: number;
+  }> {
     const namespace = await this.getNamespace(principalId, namespaceId);
     return this.read(async (state) => {
       const readable: string[] = [];
       let unreadableCount = 0;
       for (const secret of await state.secrets.listSecrets(namespace.id)) {
-        const resource: ResourceRef = { kind: "secret", id: secret.id, namespaceId: namespace.id };
+        const resource: ResourceRef = {
+          kind: "secret",
+          id: secret.id,
+          namespaceId: namespace.id,
+        };
         const read = await this.canRead(principalId, resource);
         if (!read && !unreadableAmong.has(secret.id)) {
           continue;
@@ -5734,7 +7781,11 @@ export class OpenClawController {
             throw new DependencyUnavailableError("Selected credential provider changed.");
           }
           return {
-            ...(await driver.readCredentialInput({ secret, lifetime, retention: "none" })),
+            ...(await driver.readCredentialInput({
+              secret,
+              lifetime,
+              retention: "none",
+            })),
             materialId: secret.backendRef.uid,
           };
         },
@@ -6316,7 +8367,11 @@ export class OpenClawController {
     const control = this.selectedDriver("credential_proxy").sourceControl;
     const grant = credentialFreeMetadataGrant(config);
     const id = grant.isolationId;
-    await this.authorize(principalId, "operate", { kind: "agent", namespaceId, id });
+    await this.authorize(principalId, "operate", {
+      kind: "agent",
+      namespaceId,
+      id,
+    });
     const agent = await state.agents.findAgent(namespaceId, id);
     if (!agent) {
       throw new ScopeViolationError("Credential-free metadata requires this dedicated Agent.");
@@ -6650,7 +8705,7 @@ export class OpenClawController {
     audit?: (source: Readonly<CredentialSourceMetadata>) => AuditEvent,
     registrationAudit?: (source: Readonly<CredentialSourceMetadata>) => AuditEvent,
   ): Promise<Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>> {
-    this.assertCredentialSourceTransactionBoundary();
+    this.requireIndependentMutation("Credential source registration and deletion");
     if (!isName(input.name)) {
       throw new ScopeViolationError("The credential source name is invalid.");
     }
@@ -6679,7 +8734,10 @@ export class OpenClawController {
       const config = Object.freeze({
         ...(protectedType
           ? written
-          : (selected!.validateSourceConfig({ type: type.type, config: written }) ?? written)),
+          : (selected!.validateSourceConfig({
+              type: type.type,
+              config: written,
+            }) ?? written)),
       });
       credentialSourceFieldsMatch(type, "config", config);
       const refreshDriver =
@@ -6777,7 +8835,9 @@ export class OpenClawController {
       }
       status =
         source.egress !== undefined
-          ? { state: source.egress.adoption === "prepared" ? "pending" : "ready" }
+          ? {
+              state: source.egress.adoption === "prepared" ? "pending" : "ready",
+            }
           : await this.credentialGatewayOperation(() =>
               gateway!.registerSource(
                 {
@@ -6786,7 +8846,11 @@ export class OpenClawController {
                   signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
                 },
                 // A refresh type's secrets are issuer material, held only by the refresh Driver.
-                { type: source.type, config, secrets: refresh === undefined ? values : {} },
+                {
+                  type: source.type,
+                  config,
+                  secrets: refresh === undefined ? values : {},
+                },
               ),
             );
       terminal = true;
@@ -6928,8 +8992,10 @@ export class OpenClawController {
         namespaceId: input.namespaceId,
       });
       const namespace = await this.exactNamespace(state, input.namespaceId);
-      // An Installation property, so it is reported before any Namespace or source state.
-      this.assertCredentialSourceOwnerSelected();
+      // Check Installation capabilities before disclosing Namespace or source state.
+      if (!this.selections.has("credential_refresh")) {
+        this.assertCredentialSourceOwnerSelected();
+      }
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
@@ -6948,6 +9014,12 @@ export class OpenClawController {
       if (source.state !== "ready") {
         throw new ResourceStateConflictError("Only a ready credential source can be updated.");
       }
+      if (source.ownerCapability === "credential_refresh") {
+        throw new ResourceStateConflictError(
+          "Reconnect the account to replace its saved OAuth grant.",
+        );
+      }
+      this.assertCredentialSourceOwnerSelected();
       if (source.egress?.adoption === "prepared" || source.egress?.adoption === "credential_free") {
         // After the update grant and lookup: the caller may change this source (finding 2536).
         throw new ResourceStateConflictError(FIXED_PROTECTED_SOURCE_REFUSALS.update);
@@ -6959,7 +9031,9 @@ export class OpenClawController {
         // Reconfiguring from an empty reference set could revoke the active grant.
         throw new ResourceStateConflictError("Reconnect by creating a new device-login source.");
       }
-      const secretRefs = Object.freeze({ ...(input.secrets ?? source.secrets) });
+      const secretRefs = Object.freeze({
+        ...(input.secrets ?? source.secrets),
+      });
       credentialSourceFieldsMatch(type, "secrets", secretRefs);
       if (type.rotation === "refresh") {
         refuseIssuerRotatedResend(type, source.secrets, secretRefs);
@@ -7085,9 +9159,11 @@ export class OpenClawController {
     principalId: string,
     input: RotateCredentialSourceInput,
     failureAudit?: (reasonCode: string) => AuditEvent,
+    audit?: AuditEvent,
   ): Promise<Readonly<CredentialSourceMetadata & { readonly status?: CredentialSourceStatus }>> {
     this.namespaceIdentity(input.namespaceId);
-    return this.mutate(async (state) => {
+    const ownsTransaction = this.transactionContext.getStore() === undefined;
+    const rotation = await this.mutate(async (state) => {
       await this.authorize(principalId, "update", {
         kind: "credential_source",
         id: input.credentialSourceId,
@@ -7095,7 +9171,6 @@ export class OpenClawController {
       });
       const namespace = await this.exactNamespace(state, input.namespaceId);
       // An Installation property, so it is reported before any Namespace or source state.
-      this.assertCredentialSourceOwnerSelected();
       if (namespace.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
@@ -7111,6 +9186,17 @@ export class OpenClawController {
       if (source.state !== "ready") {
         throw new ResourceStateConflictError("Only a ready credential source can be rotated.");
       }
+      if (source.ownerCapability === "credential_refresh") {
+        if (!ownsTransaction) {
+          throw new ResourceConflictError(
+            "Connected-account rotation must own its retry transaction.",
+          );
+        }
+        // Commit the retry before contacting the issuer or gateway. An uncertain write is recoverable.
+        await state.savedConnections.recordTokenSchedule(namespace.id, source.id, "due");
+        return { managedSource: source };
+      }
+      this.assertCredentialSourceOwnerSelected();
       if (source.egress?.adoption === "prepared" || source.egress?.adoption === "credential_free") {
         throw new ResourceStateConflictError(FIXED_PROTECTED_SOURCE_REFUSALS.rotate);
       }
@@ -7134,8 +9220,34 @@ export class OpenClawController {
       );
       assertRefreshMinted(minted);
       const status = await this.credentialGatewayOperation(() => gateway.sourceStatus(context()));
-      return this.credentialSourceMetadata(source, { ...status, refresh: minted });
+      if (audit) {
+        await state.audit.append(audit);
+      }
+      return this.credentialSourceMetadata(source, {
+        ...status,
+        refresh: minted,
+      });
     });
+    if ("managedSource" in rotation) {
+      const source = rotation.managedSource;
+      const failureCode = "CREDENTIAL_REFRESH_ROTATION_FAILED";
+      const refresh = await this.transact(async (unit) => {
+        this.auditUncommittedCredentialEffect(failureAudit, failureCode);
+        const status = await this.maintainConnectionToken(source.namespaceId, source.id);
+        if (!status) {
+          throw new ResourceStateConflictError("The connected account was retired.");
+        }
+        const outcome = status.state === "ready" ? audit : failureAudit?.(failureCode);
+        if (outcome) {
+          await unit.audit.append(outcome);
+        }
+        return status;
+      });
+      // Commit the new retry schedule and its audit even when no token was minted.
+      assertRefreshMinted(refresh);
+      return this.credentialSourceMetadata(source, { state: "ready", refresh });
+    }
+    return rotation;
   }
 
   /**
@@ -7229,6 +9341,21 @@ export class OpenClawController {
       }
       return { namespace: exact, source: found };
     });
+    if (source.ownerCapability === "credential_refresh") {
+      const custody = await this.read((view) =>
+        view.savedConnections.findTokenCustody(namespaceId, source.id),
+      );
+      const refresh = custody
+        ? await this.connectionTokenService().status(
+            custody,
+            AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+          )
+        : { state: "pending" as const };
+      return this.credentialSourceMetadata(source, {
+        state: source.state === "ready" ? refresh.state : "pending",
+        refresh,
+      });
+    }
     if (source.egress !== undefined) {
       try {
         this.credentialSourceOwner(source);
@@ -7313,17 +9440,23 @@ export class OpenClawController {
     namespaceId: string,
     credentialSourceId: string,
     audit?: (removedAccessBindings: readonly RemovedAccessBinding[]) => AuditEvent,
+    connection?: typeof PENDING_CONNECTION,
   ): Promise<void> {
-    this.assertCredentialSourceTransactionBoundary();
+    this.requireIndependentMutation("Credential source registration and deletion");
     this.namespaceIdentity(namespaceId);
     const { namespace, source, gateway } = await this.mutate(async (state) => {
-      const locked = await this.lockNamespaceForPolicyDelete(state, principalId, {
-        kind: "credential_source",
-        id: credentialSourceId,
-        namespaceId,
-      });
-      // An Installation property, so it is reported before any source lookup.
-      this.assertCredentialSourceOwnerSelected();
+      const locked =
+        connection === PENDING_CONNECTION
+          ? await this.lockNamespace(state, namespaceId)
+          : await this.lockNamespaceForPolicyDelete(state, principalId, {
+              kind: "credential_source",
+              id: credentialSourceId,
+              namespaceId,
+            });
+      // A saved OAuth account can be owned by the Refresh Driver on an Installation without a Gateway.
+      if (!this.selections.has("credential_refresh")) {
+        this.assertCredentialSourceOwnerSelected();
+      }
       const found = await state.credentialSources.lockCredentialSource(
         locked.id,
         credentialSourceId,
@@ -7332,6 +9465,15 @@ export class OpenClawController {
         throw new ScopeViolationError(
           "The credential source does not belong to the exact Namespace.",
         );
+      }
+      if (found.ownerCapability === "credential_refresh") {
+        const saved = await state.savedConnections.findSavedConnection(
+          namespaceId,
+          credentialSourceId,
+        );
+        if (saved || (connection === PENDING_CONNECTION && found.state === "ready")) {
+          throw new ResourceStateConflictError("Disconnect the saved account to retire its grant.");
+        }
       }
       const blocking = await state.credentialSources.findBlockingReference(locked.id, found.id);
       if (blocking === "reference") {
@@ -7343,7 +9485,10 @@ export class OpenClawController {
         // No active revision or pending work holds the source, so only waiting or Agent deletion helps.
         throw new CredentialWithdrawalInProgressError();
       }
-      const owner = this.credentialSourceOwner(found);
+      const owner =
+        found.ownerCapability === "credential_refresh"
+          ? undefined
+          : this.credentialSourceOwner(found);
       const deleting =
         found.state === "deleting"
           ? found
@@ -7354,27 +9499,10 @@ export class OpenClawController {
       return {
         namespace: locked,
         source: deleting,
-        gateway: owner.kind === "gateway" ? owner.driver : undefined,
+        gateway: owner?.kind === "gateway" ? owner.driver : undefined,
       };
     });
-    const placed = gateway ? await this.credentialNamespace(namespace) : namespace;
-    const context = () => ({
-      namespace: placed,
-      source,
-      signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-    });
-    if (source.egress?.adoption === "prepared") {
-      await this.preparedIssuer(source.egress.key.provider).withdraw(
-        source.egress,
-        AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-      );
-    } else if (gateway && source.egress?.adoption !== "credential_free") {
-      const refresh = await this.refreshDriverForSource(gateway, source.type);
-      if (refresh !== undefined) {
-        await this.credentialGatewayOperation(() => refresh.removeRefresh(context()));
-      }
-      await this.credentialGatewayOperation(() => gateway.removeSource(context()));
-    }
+    await this.retireCredentialSourceMaterial(namespace, source, gateway);
     const fenceMs =
       Date.parse(source.createdAt) + CREDENTIAL_REGISTRATION_FENCE_MS - this.clock().getTime();
     if (fenceMs > 0) {
@@ -7397,6 +9525,43 @@ export class OpenClawController {
         await state.audit.append(audit(removed));
       }
     });
+  }
+
+  private async retireCredentialSourceMaterial(
+    namespace: Readonly<Namespace>,
+    source: Readonly<CredentialSource>,
+    gateway: CredentialGatewayDriver | undefined,
+  ): Promise<void> {
+    if (source.ownerCapability === "credential_refresh") {
+      const custody = await this.read((view) =>
+        view.savedConnections.findTokenCustody(namespace.id, source.id),
+      );
+      if (custody) {
+        await this.connectionTokenService().retire(
+          custody,
+          AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+        );
+      }
+      return;
+    }
+    const placed = gateway ? await this.credentialNamespace(namespace) : namespace;
+    const context = () => ({
+      namespace: placed,
+      source,
+      signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+    });
+    if (source.egress?.adoption === "prepared") {
+      await this.preparedIssuer(source.egress.key.provider).withdraw(
+        source.egress,
+        AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+      );
+    } else if (gateway && source.egress?.adoption !== "credential_free") {
+      const refresh = await this.refreshDriverForSource(gateway, source.type);
+      if (refresh !== undefined) {
+        await this.credentialGatewayOperation(() => refresh.removeRefresh(context()));
+      }
+      await this.credentialGatewayOperation(() => gateway.removeSource(context()));
+    }
   }
 
   async createConfiguration(
@@ -7463,7 +9628,10 @@ export class OpenClawController {
           return;
         }
         await this.driverOperation(() =>
-          driver.delete({ id: configuration.id, namespaceId: configuration.namespaceId }),
+          driver.delete({
+            id: configuration.id,
+            namespaceId: configuration.namespaceId,
+          }),
         );
       });
       const result = await this.driverOperation(() => driver.create(configuration));
@@ -7843,7 +10011,10 @@ export class OpenClawController {
       // replacement of a leftover ahead of the record restores that leftover, which a retry can
       // replace again (finding 1396).
       this.registerRollback(async () => {
-        const stored = await driver.read({ id: previous.id, namespaceId: previous.namespaceId });
+        const stored = await driver.read({
+          id: previous.id,
+          namespaceId: previous.namespaceId,
+        });
         if (
           stored.generation === configuration.generation &&
           (await this.configurationRecordUnchanged(metadata))
@@ -8019,7 +10190,11 @@ export class OpenClawController {
     ) => AuditEvent,
   ) {
     await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
-    await this.authorize(principalId, "create", { kind: "secret", id: namespaceId, namespaceId });
+    await this.authorize(principalId, "create", {
+      kind: "secret",
+      id: namespaceId,
+      namespaceId,
+    });
     // The source registration below checks credential source create again. Checking it here too
     // means a caller who can never start gets the 403 naming that grant, not the Driver-selection
     // 501, and no Gateway call (finding 2995).
@@ -8049,7 +10224,9 @@ export class OpenClawController {
       );
     }
     const types = await this.credentialGatewayOperation(() =>
-      gateway.listSourceTypes({ signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS) }),
+      gateway.listSourceTypes({
+        signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+      }),
     );
     const supported = types.filter(
       (type) => type.rotation === "refresh" && type.deviceAuthorization?.harnessId === harnessId,
@@ -8112,7 +10289,12 @@ export class OpenClawController {
       }
       return created;
     });
-    return { session: secret.ref, status: "pending" as const, expiresAt, ...authorization };
+    return {
+      session: secret.ref,
+      status: "pending" as const,
+      expiresAt,
+      ...authorization,
+    };
   }
 
   private async readAgentDeviceAuthorization(
@@ -8122,7 +10304,11 @@ export class OpenClawController {
     agentId?: string,
   ) {
     await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
-    await this.authorize(principalId, "operate", { kind: "secret", id: secretId, namespaceId });
+    await this.authorize(principalId, "operate", {
+      kind: "secret",
+      id: secretId,
+      namespaceId,
+    });
     const secret = await this.read((state) => state.secrets.findSecret(namespaceId, secretId));
     if (secret === undefined) {
       throw new ScopeViolationError("The login Secret does not belong to the exact Namespace.");
@@ -8156,7 +10342,12 @@ export class OpenClawController {
         privateState: undefined,
       });
       if (await this.secretOperation(() => driver.compareAndSwap!(secret, value, expired))) {
-        return { secret, driver, value: expired, session: deviceAuthorizationSession(expired) };
+        return {
+          secret,
+          driver,
+          value: expired,
+          session: deviceAuthorizationSession(expired),
+        };
       }
     }
     return { secret, driver, value, session };
@@ -8224,13 +10415,21 @@ export class OpenClawController {
         driver.compareAndSwap!(
           secret,
           claimed,
-          JSON.stringify({ ...session, phase: "cancelled", privateState: undefined }),
+          JSON.stringify({
+            ...session,
+            phase: "cancelled",
+            privateState: undefined,
+          }),
         ),
       );
       throw new RetryLaterError("deviceLoginFailed", error);
     }
     await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
-    await this.authorize(principalId, "operate", { kind: "secret", id: secretId, namespaceId });
+    await this.authorize(principalId, "operate", {
+      kind: "secret",
+      id: secretId,
+      namespaceId,
+    });
     const current = await this.authorizedCredentialSource(
       principalId,
       namespaceId,
@@ -8300,7 +10499,11 @@ export class OpenClawController {
       readonly apiKey: string;
     },
   ) {
-    await this.authorize(principalId, "create", { kind: "agent", id: namespaceId, namespaceId });
+    await this.authorize(principalId, "create", {
+      kind: "agent",
+      id: namespaceId,
+      namespaceId,
+    });
     await this.read((state) => this.exactNamespace(state, namespaceId));
     const driver = this.selectedDriver("compute");
     if (!driver.discoverHarnessModels) {
@@ -8483,7 +10686,10 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
     input: LookupChannelDirectoryInput,
-  ): Promise<{ readonly secret: Readonly<Secret>; readonly driver: SecretDriver }> {
+  ): Promise<{
+    readonly secret: Readonly<Secret>;
+    readonly driver: SecretDriver;
+  }> {
     if (input.agentId !== undefined) {
       await this.authorize(principalId, "update", {
         kind: "agent",
@@ -8640,7 +10846,9 @@ export class OpenClawController {
         namespaceId,
         credentialSource.id,
       );
-      if (!gateway.withSourceToken) {
+      const reader = this.pluginSourceReader;
+      const selectedReader = reader?.gateway === gateway ? reader.withSourceToken : undefined;
+      if (!selectedReader && !gateway.withSourceToken) {
         throw new NotImplementedError(
           "agent_plugins.discovery",
           "The Credential Gateway does not support plugin discovery.",
@@ -8655,6 +10863,10 @@ export class OpenClawController {
         (invoke) =>
           this.credentialGatewayOperation(() => {
             context.signal.throwIfAborted();
+            if (selectedReader) {
+              return selectedReader(context, invoke);
+            }
+            // Preserve external callback invocation and its late/disconnect controls.
             return gateway.withSourceToken!(context, invoke);
           }),
         async () => {
@@ -8773,10 +10985,15 @@ export class OpenClawController {
       namespaceId,
       agentId,
       async ({ state, agent, driver }) => {
+        const credentials = agent.executionMode === "dedicated" ? driver.credentials : undefined;
         const sources: CredentialSource[] = [];
-        if (driver.credentials && agent.executionMode === "dedicated") {
+        if (credentials) {
           for (const { sourceId } of agent.credentialSources ?? []) {
-            const ref = { kind: "credential_source" as const, namespaceId, id: sourceId };
+            const ref = {
+              kind: "credential_source" as const,
+              namespaceId,
+              id: sourceId,
+            };
             if (
               (await this.canRead(principalId, ref)) &&
               (await this.authorizationDecision(principalId, "operate", ref)).decision.allowed &&
@@ -8787,18 +11004,79 @@ export class OpenClawController {
                 namespaceId,
                 sourceId,
               );
-              if (source?.state === "ready") {
+              if (source?.state === "ready" && source.ownerCapability !== "credential_refresh") {
                 sources.push(source);
               }
             }
           }
         }
+        const accounts: { account: SavedConnection; target: PluginAccountTarget; name: string }[] =
+          [];
+        if (credentials?.connectionSlot) {
+          for (const account of await state.savedConnections.listNamespaceConnections(
+            namespaceId,
+          )) {
+            const ref = {
+              kind: "credential_source" as const,
+              namespaceId,
+              id: account.credentialSourceId,
+            };
+            if (
+              !(await this.canRead(principalId, ref)) ||
+              !(await this.authorizationDecision(principalId, "operate", ref)).decision.allowed
+            ) {
+              continue;
+            }
+            const source = await state.credentialSources.findCredentialSource(namespaceId, ref.id);
+            if (source?.state === "ready") {
+              accounts.push({
+                account,
+                target: await this.accountTarget(state, account),
+                name: source.name,
+              });
+            }
+          }
+        }
+        const canConnect =
+          credentials?.connectionSlot &&
+          (
+            await this.authorizationDecision(principalId, "create", {
+              kind: "credential_source",
+              id: namespaceId,
+              namespaceId,
+            })
+          ).decision.allowed;
+        const credentialSlots = credentials?.choices(sources).map((choice) => {
+          const slot = credentials.connectionSlot?.(
+            agent.plugins ?? {},
+            choice.pluginId,
+            choice.id,
+          );
+          if (!slot) {
+            return choice;
+          }
+          const candidates = accounts
+            .filter(({ account }) => slot.issuers.includes(account.issuer))
+            .map(({ account, target, name }) => ({
+              id: account.credentialSourceId,
+              name,
+              ...(!slot.acceptsRecipient(target) && {
+                authorization: "required" as const,
+              }),
+            }));
+          return {
+            ...choice,
+            sources: [...choice.sources, ...candidates],
+            ...(canConnect &&
+              agent.plugins?.[choice.pluginId]?.enabled && {
+                connectAccount: true as const,
+              }),
+          };
+        });
         return immutableCopy({
           driver: { id: driver.id, implementation: driver.implementation },
           ...driver.policyCapabilities,
-          ...(driver.credentials && agent.executionMode === "dedicated"
-            ? { credentialSlots: driver.credentials.choices(sources) }
-            : {}),
+          ...(credentialSlots && { credentialSlots }),
           discoveryCredential: driver.discoveryCredential ?? "required",
         });
       },
@@ -8926,6 +11204,7 @@ export class OpenClawController {
       namespace: Readonly<Namespace>;
       agent: Readonly<Agent>;
       driver: PluginDriver;
+      configuration: Readonly<Pick<Configuration, "id" | "generation">>;
       harness: Pick<RevisionHarnessDescriptor, "id" | "mode">;
     }) => Promise<T>,
   ): Promise<T> {
@@ -8977,7 +11256,7 @@ export class OpenClawController {
       };
       const driver = this.pluginDriver(harness.id);
       this.pluginOwner(driver, agent);
-      return use({ state, namespace, agent, driver, harness });
+      return use({ state, namespace, agent, driver, harness, configuration: current.metadata });
     });
   }
 
@@ -9002,6 +11281,62 @@ export class OpenClawController {
             namespace.id,
             sourceRef.id,
           );
+          if (source?.ownerCapability === "credential_refresh") {
+            // The person configuring this slot can discover tools before saving an Agent grant.
+            // Use only the reviewed receiver; the caller never supplies the discovery endpoint.
+            await this.authorize(principalId, "read", sourceRef);
+            const slot = driver.credentials?.connectionSlot?.(
+              agent.plugins ?? {},
+              pluginId,
+              connection.slot,
+            );
+            const account = await state.savedConnections.findSavedConnection(
+              namespace.id,
+              source.id,
+            );
+            const custody = await state.savedConnections.findTokenCustody(namespace.id, source.id);
+            const target = account ? await this.accountTarget(state, account) : undefined;
+            if (
+              namespace.status !== "ready" ||
+              source.state !== "ready" ||
+              !slot ||
+              !account ||
+              !target ||
+              account.revocationRequestedBy ||
+              !custody ||
+              !slot.issuers.includes(account.issuer) ||
+              !slot.acceptsRecipient(target)
+            ) {
+              throw new ResourceStateConflictError(
+                "Authorize the account for this MCP server first.",
+              );
+            }
+            const delivery = slot.delivery(target, account.grantedScopes, source.id);
+            if (!delivery) {
+              throw new ResourceStateConflictError(
+                "The account grants no operations for this receiver.",
+              );
+            }
+            const reviewed = driver.credentials?.mcpToolDiscovery?.(pluginId, connection.slot, {
+              ...source,
+              ...delivery,
+              ownerCapability: "credential_gateway",
+              config: { ...delivery.config, issuer: account.issuer },
+            });
+            if (!reviewed || reviewed.endpoint !== account.mcpServerUrl) {
+              throw new ResourceStateConflictError(
+                "The account does not authorize this MCP receiver.",
+              );
+            }
+            return {
+              driver,
+              harness,
+              credential: "account" as const,
+              sourceId: source.id,
+              endpoint: reviewed.endpoint,
+            };
+          }
+
           const target =
             namespace.status === "ready" &&
             source?.state === "ready" &&
@@ -9017,6 +11352,7 @@ export class OpenClawController {
           return {
             driver,
             harness,
+            credential: "secret" as const,
             source,
             secretRef,
             servicePrincipalId: agent.servicePrincipalId,
@@ -9025,7 +11361,9 @@ export class OpenClawController {
         },
       );
       await this.authorize(principalId, "operate", sourceRef);
-      await this.authorize(target.servicePrincipalId, "operate", sourceRef);
+      if (target.credential === "secret") {
+        await this.authorize(target.servicePrincipalId, "operate", sourceRef);
+      }
       return target;
     };
 
@@ -9062,11 +11400,24 @@ export class OpenClawController {
           })),
         };
       },
-      // TODO(#4450): Acquire a usable managed MCP bearer through the Token Service once
-      // it supports these sources (#3811), and cover refresh of expired access tokens.
-      // Preserve the authorization recheck below; this direct Secret read requires a
-      // token that is already usable.
-      (invoke) => this.withPluginDiscoverySecret(namespaceId, target.secretRef, invoke),
+      async (invoke) => {
+        if (target.credential === "secret") {
+          return this.withPluginDiscoverySecret(namespaceId, target.secretRef, invoke);
+        }
+        const custody = await this.read((state) =>
+          state.savedConnections.findTokenCustody(namespaceId, target.sourceId),
+        );
+        const token =
+          custody &&
+          (await this.connectionTokenService().warm(
+            custody,
+            signal ?? AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+          ));
+        if (!token) {
+          throw new PluginDiscoveryError("credentials_rejected");
+        }
+        return invoke({ accessToken: token.accessToken });
+      },
       validateCurrent,
       signal,
     );
@@ -9209,7 +11560,11 @@ export class OpenClawController {
       throw new ScopeViolationError("Unsupported configuration scope.");
     }
     const { namespaceId, agentId } = context;
-    await this.authorize(principalId, "read", { kind: "agent", id: agentId, namespaceId });
+    await this.authorize(principalId, "read", {
+      kind: "agent",
+      id: agentId,
+      namespaceId,
+    });
     await this.read(async (state) => {
       await this.exactNamespace(state, namespaceId);
       if ((await state.agents.findAgent(namespaceId, agentId)) === undefined) {
@@ -9261,7 +11616,11 @@ export class OpenClawController {
       "agent",
       "sandbox-network-policy",
     );
-    const resource = { kind: "agent" as const, id: agent.id, namespaceId: agent.namespaceId };
+    const resource = {
+      kind: "agent" as const,
+      id: agent.id,
+      namespaceId: agent.namespaceId,
+    };
     const manage = await this.authorizationDecision(principalId, "manage_policy", resource);
     const update = await this.authorizationDecision(principalId, "update", {
       kind: "sandbox_policy",
@@ -9291,7 +11650,11 @@ export class OpenClawController {
       binding: entry.binding,
       actions: {
         read: { method: "GET", href, available: true },
-        validate: { method: "POST", href: `${href}/validate`, available: canSave },
+        validate: {
+          method: "POST",
+          href: `${href}/validate`,
+          available: canSave,
+        },
         save: { method: "PUT", href, available: canSave },
         apply: { method: "POST", href: `${href}/apply`, available: canApply },
       },
@@ -9307,7 +11670,11 @@ export class OpenClawController {
     additions: unknown,
   ): Promise<ConfigurationResult<{ readonly additions: readonly SandboxNetworkGrant[] }>> {
     this.requireNetworkPolicyFacet(facet);
-    await this.authorize(principalId, "manage_policy", { kind: "agent", id: agentId, namespaceId });
+    await this.authorize(principalId, "manage_policy", {
+      kind: "agent",
+      id: agentId,
+      namespaceId,
+    });
     await this.authorize(principalId, "update", {
       kind: "sandbox_policy",
       id: `sbp_${agentId.slice(4)}`,
@@ -9388,7 +11755,11 @@ export class OpenClawController {
     facet: SandboxFacet,
   ) {
     this.requireNetworkPolicyFacet(facet);
-    await this.authorize(principalId, "read", { kind: "agent", id: agentId, namespaceId });
+    await this.authorize(principalId, "read", {
+      kind: "agent",
+      id: agentId,
+      namespaceId,
+    });
     await this.authorize(principalId, "read", {
       kind: "sandbox_policy",
       id: `sbp_${agentId.slice(4)}`,
@@ -9451,7 +11822,11 @@ export class OpenClawController {
       kind: "installation",
       id: this.installation.id,
     });
-    await this.authorize(principalId, "administer", { kind: "agent", id: agentId, namespaceId });
+    await this.authorize(principalId, "administer", {
+      kind: "agent",
+      id: agentId,
+      namespaceId,
+    });
     return this.mutate(async (state) => {
       await this.lockNamespace(state, namespaceId);
       const agent = await state.agents.lockAgent(namespaceId, agentId);
@@ -9605,7 +11980,7 @@ export class OpenClawController {
   ): SandboxPolicySnapshot {
     if (driver?.admitProtectedCodexArtifactPolicy === undefined) {
       throw new ResourceStateConflictError(
-        "The selected Sandbox Driver cannot qualify protected Codex artifact policy.",
+        "Deploy requires a Sandbox Driver that supports protected Codex artifact admission. Ask your Installation administrator to check drivers.sandbox and the selected Driver version.",
       );
     }
     return this.checkedSandboxPolicySnapshot(driver, [], version, undefined, undefined, () => {
@@ -9682,7 +12057,11 @@ export class OpenClawController {
     additions: readonly SandboxNetworkGrant[],
   ): Promise<Readonly<SandboxPolicy>> {
     this.requireNetworkPolicyFacet(facet);
-    await this.authorize(principalId, "manage_policy", { kind: "agent", id: agentId, namespaceId });
+    await this.authorize(principalId, "manage_policy", {
+      kind: "agent",
+      id: agentId,
+      namespaceId,
+    });
     await this.authorize(principalId, "update", {
       kind: "sandbox_policy",
       id: `sbp_${agentId.slice(4)}`,
@@ -9745,7 +12124,11 @@ export class OpenClawController {
     revisionId: string,
   ): Promise<Readonly<SandboxPolicy>> {
     this.requireNetworkPolicyFacet(facet);
-    await this.authorize(principalId, "manage_policy", { kind: "agent", id: agentId, namespaceId });
+    await this.authorize(principalId, "manage_policy", {
+      kind: "agent",
+      id: agentId,
+      namespaceId,
+    });
     const sandboxPolicy = {
       kind: "sandbox_policy",
       id: `sbp_${agentId.slice(4)}`,
@@ -9844,7 +12227,11 @@ export class OpenClawController {
     ) => Promise<SandboxPolicyRecommendations>,
   ): Promise<SandboxPolicyRecommendations> {
     this.requireNetworkPolicyFacet(facet);
-    await this.authorize(principalId, "read", { kind: "agent", id: agentId, namespaceId });
+    await this.authorize(principalId, "read", {
+      kind: "agent",
+      id: agentId,
+      namespaceId,
+    });
     await this.authorize(principalId, "read", {
       kind: "sandbox_policy",
       id: `sbp_${agentId.slice(4)}`,
@@ -9890,7 +12277,11 @@ export class OpenClawController {
         }
         const namespace = await compute.resolveSandboxNamespace(binding.namespace);
         result = await readRecommendations(
-          { namespace, revision: binding.revision, signal: AbortSignal.timeout(15_000) },
+          {
+            namespace,
+            revision: binding.revision,
+            signal: AbortSignal.timeout(15_000),
+          },
           32,
         );
       } catch {
@@ -10036,7 +12427,7 @@ export class OpenClawController {
         pluginApprovers,
         async () => (await savedConfiguration()).values,
       );
-      this.validatePluginCredentialSources(driver, plugins, sources, harnessAuth);
+      await this.validatePluginCredentialSources(state, driver, plugins, sources, harnessAuth);
       const { repositoryBindings, repositoryAccess } = this.repositorySettings(namespace.id, input);
       await this.validateSavedAgentTopology(
         state,
@@ -10208,7 +12599,11 @@ export class OpenClawController {
   }
 
   async listAgentStandingApprovals(principalId: string, namespaceId: string, agentId: string) {
-    await this.authorize(principalId, "administer", { kind: "agent", id: agentId, namespaceId });
+    await this.authorize(principalId, "administer", {
+      kind: "agent",
+      id: agentId,
+      namespaceId,
+    });
     return this.read(async (state) => {
       await this.exactNamespace(state, namespaceId);
       if (!(await state.agents.findAgent(namespaceId, agentId))) {
@@ -10232,7 +12627,11 @@ export class OpenClawController {
 
   /** A review projection only: it neither creates nor extends authority. */
   async listAgentStandingApprovalScopes(principalId: string, namespaceId: string, agentId: string) {
-    await this.authorize(principalId, "administer", { kind: "agent", id: agentId, namespaceId });
+    await this.authorize(principalId, "administer", {
+      kind: "agent",
+      id: agentId,
+      namespaceId,
+    });
     return this.read(async (state) => {
       const agent = await state.agents.findAgent(namespaceId, agentId);
       if (!agent) {
@@ -10247,9 +12646,13 @@ export class OpenClawController {
         namespaceId,
         agent.repositoryBindings,
         "saved",
+        this.selectedStandingRepositoryAdmission(),
       );
       return (resolved?.resolution.bindings ?? []).flatMap((binding) => {
-        const scope = eligibleRepositoryApprovalScope(resolved!.driver, { namespaceId, binding });
+        const scope = eligibleRepositoryApprovalScope(resolved!.driver, {
+          namespaceId,
+          binding,
+        });
         return scope
           ? [
               {
@@ -10280,7 +12683,9 @@ export class OpenClawController {
       namespaceId: input.namespaceId,
     });
     await this.mutate(async (state) => {
-      await state.namespaces.lockNamespace(input.namespaceId, { includeDeleted: true });
+      await state.namespaces.lockNamespace(input.namespaceId, {
+        includeDeleted: true,
+      });
       const agent = await state.agents.lockAgent(input.namespaceId, input.agentId);
       if (!agent) {
         throw new ScopeViolationError("Agent does not belong to the exact Namespace.");
@@ -10364,7 +12769,11 @@ export class OpenClawController {
       input.pluginApprovers === null ? null : normalizeAgentPluginApprovers(input.pluginApprovers);
     this.namespaceIdentity(input.namespaceId);
     return this.mutate(async (state) => {
-      const target = { kind: "agent", id: input.agentId, namespaceId: input.namespaceId } as const;
+      const target = {
+        kind: "agent",
+        id: input.agentId,
+        namespaceId: input.namespaceId,
+      } as const;
       await this.authorize(principalId, "update", target);
       const namespace = await this.lockNamespace(state, input.namespaceId);
       // Namespace IAM writes share this lock. Use the policy after any writer ahead of us.
@@ -10414,11 +12823,25 @@ export class OpenClawController {
           throw QualifiedAuthorizationDeniedError.qualify(error, "current_harness_auth");
         },
       );
+      const connections = await state.savedConnections.listAgentConnections(namespace.id, agent.id);
+      const attached = new Set(connections.map(({ credentialSourceId }) => credentialSourceId));
+      let resultingSources = requestedSources;
+      // Retaining an existing attachment uses the Agent's delegated authority. Removing one
+      // goes through detach so live revisions and the exact grant are withdrawn together.
       await this.authorizeBoundCredentialSources(
         principalId,
         namespace.id,
-        agent.credentialSources ?? [],
+        (agent.credentialSources ?? []).filter(({ sourceId }) => !attached.has(sourceId)),
       );
+      if (
+        requestedSources &&
+        connections.some(
+          ({ credentialSourceId }) =>
+            !requestedSources.some(({ sourceId }) => sourceId === credentialSourceId),
+        )
+      ) {
+        throw new ResourceStateConflictError("Detach the connected account from the Agent first.");
+      }
       if (requestedAuth !== undefined) {
         rejectCrossNamespaceSecretSources(namespace.id, undefined, requestedAuth);
         await this.authorizeHarnessAuthSource(state, principalId, namespace.id, requestedAuth);
@@ -10433,6 +12856,7 @@ export class OpenClawController {
               namespace.id,
               requestedSources,
               auth,
+              attached,
             );
       if (requestedSources === undefined && requestedAuth !== undefined) {
         this.assertHarnessSourceListed(agent.credentialSources ?? [], requestedAuth);
@@ -10452,22 +12876,70 @@ export class OpenClawController {
         agent,
         plugins === undefined ? "stored" : "request",
       );
+      if (plugins) {
+        const previous = this.pluginAccountBindings(driver, agent.plugins);
+        for (const { pluginId, id, sourceId, slot } of this.pluginAccountBindings(
+          driver,
+          plugins,
+        )) {
+          if (
+            previous.some((b) => b.pluginId === pluginId && b.id === id && b.sourceId === sourceId)
+          ) {
+            continue;
+          }
+          const resource = {
+            kind: "credential_source" as const,
+            namespaceId: namespace.id,
+            id: sourceId,
+          };
+          await this.authorize(principalId, "read", resource);
+          await this.authorize(principalId, "operate", resource);
+          const account = await state.savedConnections.findSavedConnection(namespace.id, sourceId);
+          if (!account) {
+            continue; // Ordinary Gateway sources must already be listed on the Agent.
+          }
+          if (
+            account.revocationRequestedBy ||
+            !slot.issuers.includes(account.issuer) ||
+            !slot.acceptsRecipient(await this.accountTarget(state, account))
+          ) {
+            throw new ResourceStateConflictError(
+              "Authorize an account for this plugin server before binding it.",
+            );
+          }
+          if (!attached.has(sourceId)) {
+            const bindings = resultingSources ?? agent.credentialSources ?? [];
+            if (!bindings.some((b) => b.sourceId === sourceId)) {
+              if (bindings.length >= MAX_AGENT_CREDENTIAL_SOURCES) {
+                throw new ResourceStateConflictError(
+                  `The Agent already lists ${MAX_AGENT_CREDENTIAL_SOURCES} credential sources.`,
+                );
+              }
+              resultingSources = [...bindings, { sourceId }];
+            }
+            await this.ensureAgentOperateGrants(state, namespace.id, agent, [resource]);
+            attached.add(sourceId);
+          }
+        }
+      }
       if (
-        sources === undefined &&
-        driver?.credentials &&
-        plugins &&
-        Object.values(plugins).some((p) => p.driverPolicy !== undefined)
+        resultingSources !== requestedSources ||
+        (sources === undefined &&
+          driver?.credentials &&
+          plugins &&
+          Object.values(plugins).some((p) => p.driverPolicy !== undefined))
       ) {
         sources = await this.authorizeAgentCredentialSources(
           state,
           principalId,
           namespace.id,
-          agent.credentialSources ?? [],
+          resultingSources ?? agent.credentialSources ?? [],
           auth,
+          attached,
         );
       }
       if (sources !== undefined) {
-        this.validatePluginCredentialSources(driver, selections, sources, auth);
+        await this.validatePluginCredentialSources(state, driver, selections, sources, auth);
       }
       const backendId = this.backendId(input.backendId, agent.backendId);
       const repositoryChange =
@@ -10525,7 +12997,7 @@ export class OpenClawController {
         repositoryBindings,
         pluginApprovers,
         repositoryAccess,
-        requestedSources,
+        resultingSources,
         gatewayManagedMode,
         plugins === undefined
           ? undefined
@@ -10568,7 +13040,13 @@ export class OpenClawController {
           );
           // The request's own selections resolved above, so only saved ones can fail here.
           const resolved =
-            selected && this.resolveRepositoryBindings(namespace.id, [selected], "saved");
+            selected &&
+            this.resolveRepositoryBindings(
+              namespace.id,
+              [selected],
+              "saved",
+              this.selectedStandingRepositoryAdmission(),
+            );
           const binding = resolved?.resolution.bindings[0];
           const scope =
             binding &&
@@ -11131,7 +13609,10 @@ export class OpenClawController {
       const configurationDriver = this.configurationDriver();
       const configuration = this.exactConfiguration(
         await this.driverOperation(() =>
-          configurationDriver.read({ id: metadata.id, namespaceId: namespace.id }),
+          configurationDriver.read({
+            id: metadata.id,
+            namespaceId: namespace.id,
+          }),
         ),
         metadata,
       );
@@ -11240,7 +13721,10 @@ export class OpenClawController {
       // OpenClaw's sandbox (finding 2767). The upgrade preflight runs the same values-only rules.
       refuseUndeployableConfigurationValues(configuration.values);
       this.validateComputeConfiguration(configuration.values);
-      await configurationDriver.validate({ ...configuration, values: admittedConfiguration });
+      await configurationDriver.validate({
+        ...configuration,
+        values: admittedConfiguration,
+      });
       if (resolveConfiguredHarnessId(admittedConfiguration) !== configuredHarnessId) {
         throw new ScopeViolationError(
           "A Sandbox Driver cannot change the selected Harness runtime.",
@@ -11325,12 +13809,16 @@ export class OpenClawController {
           binding.repositoryRef,
         );
         if (approval) {
-          const admission = this.installationRepositoryAdmission;
           const resolved = this.resolveRepositoryBindings(
             namespace.id,
-            [{ repositoryRef: binding.repositoryRef, profile: binding.profile }],
+            [
+              {
+                repositoryRef: binding.repositoryRef,
+                profile: binding.profile,
+              },
+            ],
             "saved",
-            admission?.policy === this.selections.get("repo")?.driver ? admission : undefined,
+            this.selectedStandingRepositoryAdmission(),
           )!;
           const scope = eligibleRepositoryApprovalScope(resolved.driver, {
             namespaceId: namespace.id,
@@ -11383,7 +13871,10 @@ export class OpenClawController {
         }
         executionAdmission = { version, mode: "protected" };
       }
-      const execution = { executionAdmission, ...(egressPlan === undefined ? {} : { egressPlan }) };
+      const execution = {
+        executionAdmission,
+        ...(egressPlan === undefined ? {} : { egressPlan }),
+      };
       assertExecutionAdmission(execution);
       try {
         if (compute.validateExecutionAdmission === undefined) {
@@ -11397,7 +13888,9 @@ export class OpenClawController {
         );
       }
       const policy = await state.sandboxPolicies.find(namespace.id, lockedAgent.id);
-      const policyScope = { repositoryCredentials: repositoryCredentials !== undefined };
+      const policyScope = {
+        repositoryCredentials: repositoryCredentials !== undefined,
+      };
       // Finding 2053: protected execution refuses Agent additions, never drops them. Only an
       // explicitly acknowledged artifact snapshot can accompany dedicated Codex repository
       // execution. The caller learns of saved additions only with SandboxPolicy read access.
@@ -11592,38 +14085,50 @@ export class OpenClawController {
           "The Agent does not belong to the exact Installation and Namespace.",
         );
       }
-      const revision = await this.activeCredentialSourceRevision(state, agent, input);
-      const withdrawal = await this.requestRevisionCredentialWithdrawal(
+      if (agent.status !== "active") {
+        throw new ResourceStateConflictError(
+          "The Agent has no active revision to withdraw the credential source from.",
+        );
+      }
+      const revisions = await state.revisions.listRevisions(agent.namespaceId, agent.id);
+      const targets = await this.credentialSourceWithdrawalRevisions(
         state,
-        principalId,
-        revision,
+        revisions,
+        agent.activeRevisionId,
         input.credentialSourceId,
       );
-      const others = (
-        await credentialWithdrawalCompanionRevisions(
-          state,
-          await state.revisions.listRevisions(agent.namespaceId, agent.id),
-          revision,
-          this.clock(),
-        )
-      ).filter((candidate) => revisionHoldsCredentialSource(candidate, input.credentialSourceId));
-      const pendingOthers: Readonly<CredentialWithdrawal>[] = [];
-      for (const other of others) {
-        const recorded = await this.requestRevisionCredentialWithdrawal(
-          state,
-          principalId,
-          other,
-          input.credentialSourceId,
-        );
-        if (recorded.state === "pending") {
-          pendingOthers.push(recorded);
+      const activeHoldsSource = targets.some(({ id }) => id === agent.activeRevisionId);
+      const withdrawals: Readonly<CredentialWithdrawal>[] = [];
+      for (const revision of targets) {
+        // Only a serving Agent binding can start a withdrawal here. A detach may already
+        // have requested one on a candidate before it or any other revision became active.
+        if (!activeHoldsSource) {
+          const previous = await state.credentialSources.findCredentialWithdrawal(
+            agent.namespaceId,
+            revision.id,
+            input.credentialSourceId,
+          );
+          if (previous === undefined) {
+            continue;
+          }
         }
+        withdrawals.push(
+          await this.requestRevisionCredentialWithdrawal(
+            state,
+            principalId,
+            revision,
+            input.credentialSourceId,
+          ),
+        );
       }
-      // Every pending withdrawal now has an attempt queued or running, either earlier or just
-      // now. Like the read, this reflects the queue at commit: a claim that expired on its last
-      // attempt counts until recoverStale fails it.
-      const reported =
-        withdrawal.state === "pending" ? withdrawal : (pendingOthers[0] ?? withdrawal);
+      const reported = withdrawals.find(({ state }) => state === "pending") ?? withdrawals[0];
+      if (!reported) {
+        throw new ResourceStateConflictError(
+          agent.activeRevisionId === undefined
+            ? "The Agent has no active revision to withdraw the credential source from."
+            : "The Agent's active version does not use this credential source, so there is nothing to withdraw. Withdraw a source that the deployed version uses.",
+        );
+      }
       return credentialWithdrawalStatus(reported, reported.state === "pending");
     });
   }
@@ -11722,38 +14227,29 @@ export class OpenClawController {
       if (agent === undefined) {
         throw new ScopeViolationError("The Agent does not belong to this Namespace.");
       }
-      // After Agent read, these name what the Agent lacks, as the request route's 409 does; they
-      // read only its active version's withdrawals, never the source (finding D762).
-      if (agent.activeRevisionId === undefined) {
-        throw new CredentialWithdrawalNotFoundError("no_active_version");
-      }
-      const withdrawal = await state.credentialSources.findCredentialWithdrawal(
-        agent.namespaceId,
+      const withdrawals: Readonly<CredentialWithdrawal>[] = [];
+      const revisions = await state.revisions.listRevisions(agent.namespaceId, agent.id);
+      const targets = await this.credentialSourceWithdrawalRevisions(
+        state,
+        revisions,
         agent.activeRevisionId,
         input.credentialSourceId,
       );
-      if (withdrawal === undefined) {
-        throw new CredentialWithdrawalNotFoundError("not_withdrawn");
-      }
-      const withdrawals = [withdrawal];
-      const revisions = await state.revisions.listRevisions(agent.namespaceId, agent.id);
-      const active = revisions.find(({ id }) => id === withdrawal.revisionId);
-      const companions =
-        active === undefined
-          ? []
-          : await credentialWithdrawalCompanionRevisions(state, revisions, active, this.clock());
-      for (const companion of companions) {
-        if (!revisionHoldsCredentialSource(companion, input.credentialSourceId)) {
-          continue;
-        }
-        const recorded = await state.credentialSources.findCredentialWithdrawal(
-          companion.namespaceId,
-          companion.id,
+      for (const revision of targets) {
+        const withdrawal = await state.credentialSources.findCredentialWithdrawal(
+          agent.namespaceId,
+          revision.id,
           input.credentialSourceId,
         );
-        if (recorded !== undefined) {
-          withdrawals.push(recorded);
+        if (withdrawal) {
+          withdrawals.push(withdrawal);
         }
+      }
+      const first = withdrawals[0];
+      if (!first) {
+        throw new CredentialWithdrawalNotFoundError(
+          agent.activeRevisionId === undefined ? "no_active_version" : "not_withdrawn",
+        );
       }
       let inProgress: Readonly<CredentialWithdrawalStatus> | undefined;
       for (const candidate of withdrawals) {
@@ -11772,37 +14268,25 @@ export class OpenClawController {
         }
         inProgress ??= status;
       }
-      return inProgress ?? credentialWithdrawalStatus(withdrawal, false);
+      return inProgress ?? credentialWithdrawalStatus(first, false);
     });
   }
 
-  /** The active revision must hold the source as its Harness authentication or a non-model source. */
-  private async activeCredentialSourceRevision(
-    state: PlatformUnitOfWork,
-    agent: Readonly<Agent>,
-    input: AgentCredentialSourceInput,
-  ): Promise<Readonly<AgentRevision>> {
-    if (agent.status !== "active" || agent.activeRevisionId === undefined) {
-      throw new ResourceStateConflictError(
-        "The Agent has no active revision to withdraw the credential source from.",
-      );
-    }
-    const revision = await state.revisions.findRevision(
-      agent.namespaceId,
-      agent.id,
-      agent.activeRevisionId,
-    );
-    if (revision === undefined) {
-      throw new ScopeViolationError("The Agent's active revision is unavailable.");
-    }
-    if (!revisionHoldsCredentialSource(revision, input.credentialSourceId)) {
-      // After the Agent operate grant. The check reads only the revision's bindings, never the
-      // source, so a missing source ID and one the caller cannot read answer alike (finding 2536).
-      throw new ResourceStateConflictError(
-        "The Agent's active version does not use this credential source, so there is nothing to withdraw. Withdraw a source that the deployed version uses.",
-      );
-    }
-    return revision;
+  /** The active revision first, followed by any other revision that may still run with this source. */
+  private async credentialSourceWithdrawalRevisions(
+    state: PlatformUnitOfWork | PlatformReadView,
+    revisions: readonly Readonly<AgentRevision>[],
+    activeRevisionId: string | undefined,
+    sourceId: string,
+  ): Promise<readonly Readonly<AgentRevision>[]> {
+    const active = revisions.find(({ id }) => id === activeRevisionId);
+    const serving = active
+      ? [
+          active,
+          ...(await credentialWithdrawalCompanionRevisions(state, revisions, active, this.clock())),
+        ]
+      : revisions;
+    return serving.filter((revision) => revisionHoldsCredentialSource(revision, sourceId));
   }
 
   async stopAgent(
@@ -11916,7 +14400,11 @@ export class OpenClawController {
             actorId: principalId,
             source: "occ",
             action: "openclaw.namespaces.delete.retry",
-            resource: { kind: "namespace", id: namespace.id, namespaceId: namespace.id },
+            resource: {
+              kind: "namespace",
+              id: namespace.id,
+              namespaceId: namespace.id,
+            },
             outcome: "success",
             details: {
               workId,
@@ -11945,7 +14433,11 @@ export class OpenClawController {
         const readable: string[] = [];
         for (const { id } of resources.slice(0, NAMESPACE_NOT_EMPTY_ID_LIMIT)) {
           // An authorization outage hides the ID rather than the conflict.
-          const resource = { kind: resourceKind, id, namespaceId: namespace.id };
+          const resource = {
+            kind: resourceKind,
+            id,
+            namespaceId: namespace.id,
+          };
           if (await this.canRead(principalId, resource).catch(() => false)) {
             readable.push(id);
           }
@@ -11989,6 +14481,18 @@ export class OpenClawController {
           await state.serviceAccounts.listServiceAccounts(namespace.id),
         );
       }
+      const templates = await state.connectionTemplates.countNamespaceConnectionTemplates(
+        namespace.id,
+      );
+      const clients = await state.connectionTemplates.countNamespaceOAuthClients(namespace.id);
+      if (clients > 0) {
+        contents.push("OAuth clients");
+        counts["OAuth clients"] = clients;
+      }
+      if (templates > 0) {
+        contents.push("connection templates");
+        counts["connection templates"] = templates;
+      }
       if (await state.provisioning.hasPendingNamespaceProvisioning(namespace.id)) {
         contents.push("pending Agent provisioning");
       }
@@ -12008,7 +14512,11 @@ export class OpenClawController {
           actorId: principalId,
           source: "occ",
           action: "openclaw.presets.delete",
-          resource: { kind: "preset", id: preset.id, namespaceId: namespace.id },
+          resource: {
+            kind: "preset",
+            id: preset.id,
+            namespaceId: namespace.id,
+          },
           outcome: "success",
           // Like a direct Preset delete, name the AccessBindings removed with it.
           details: {
@@ -12121,7 +14629,11 @@ export class OpenClawController {
             actorId: principalId,
             source: "occ",
             action: "openclaw.agents.delete.retry",
-            resource: { kind: "agent", namespaceId: namespace.id, id: agent.id },
+            resource: {
+              kind: "agent",
+              namespaceId: namespace.id,
+              id: agent.id,
+            },
             outcome: "success",
             details: {
               workId,
@@ -12467,7 +14979,11 @@ export class OpenClawController {
               reference.id,
               allowed,
             )
-          : await allowed("read", { kind: reference.kind, id: reference.id, namespaceId });
+          : await allowed("read", {
+              kind: reference.kind,
+              id: reference.id,
+              namespaceId,
+            });
       if (!readable) {
         unreadable += 1;
         continue;
@@ -12532,7 +15048,11 @@ export class OpenClawController {
         : (["read", "update"] as const).map(
             (action): [AuthorizationRequest["action"], ResourceRef] => [
               action,
-              { kind: "configuration", namespaceId, id: record.configurationId as string },
+              {
+                kind: "configuration",
+                namespaceId,
+                id: record.configurationId as string,
+              },
             ],
           )),
       ...Object.values(plan.configuration.secretBindings ?? {}).map(
@@ -12543,18 +15063,26 @@ export class OpenClawController {
         : []),
       ...(harnessAuth?.method === "credential_source"
         ? [
-            ["operate", { kind: "credential_source", namespaceId, id: harnessAuth.sourceId }] as [
-              AuthorizationRequest["action"],
-              ResourceRef,
-            ],
+            [
+              "operate",
+              {
+                kind: "credential_source",
+                namespaceId,
+                id: harnessAuth.sourceId,
+              },
+            ] as [AuthorizationRequest["action"], ResourceRef],
           ]
         : []),
       ...(isServiceAccountHarnessAuth(harnessAuth)
         ? [
-            ["read", { kind: "service_account", namespaceId, id: harnessAuth.source.id }] as [
-              AuthorizationRequest["action"],
-              ResourceRef,
-            ],
+            [
+              "read",
+              {
+                kind: "service_account",
+                namespaceId,
+                id: harnessAuth.source.id,
+              },
+            ] as [AuthorizationRequest["action"], ResourceRef],
           ]
         : []),
     ];
@@ -12904,27 +15432,98 @@ export class OpenClawController {
    * Namespace lock serializes binding, source deletion, and admission. The listing rule is
    * checked after every source authorization and lookup, so it never answers before a 403.
    */
+  private async runtimeAccountSource(
+    state: PlatformReadView,
+    source: CredentialSource,
+    account: SavedConnection,
+    plugins: PluginDesiredState | undefined,
+    driver: PluginDriver | undefined,
+    resolved?: {
+      readonly target: PluginAccountTarget;
+      readonly bindings: ReturnType<OpenClawController["pluginAccountBindings"]>;
+    },
+  ): Promise<CredentialSource | undefined> {
+    const target = resolved?.target ?? (await this.accountTarget(state, account));
+    const uses =
+      resolved?.bindings ??
+      this.pluginAccountBindings(driver, plugins).filter(
+        (binding) => binding.sourceId === source.id,
+      );
+    if (uses.length === 0) {
+      return undefined; // A grant alone creates no workload credential.
+    }
+    const deliveries = uses.map(({ slot }) => {
+      if (!slot.issuers.includes(account.issuer) || !slot.acceptsRecipient(target)) {
+        throw new ResourceStateConflictError(
+          "Authorize an account for this plugin server before binding it.",
+        );
+      }
+      return slot.delivery(target, account.grantedScopes, source.id);
+    });
+    if (deliveries.some((delivery) => delivery === undefined)) {
+      return undefined;
+    }
+    const [delivery] = deliveries;
+    if (!delivery || deliveries.some((item) => !isDeepStrictEqual(item, delivery))) {
+      throw new ResourceStateConflictError(
+        "The selected slots require incompatible presentations for this account.",
+      );
+    }
+    return {
+      ...source,
+      ...delivery,
+      ownerCapability: "credential_gateway",
+      driverId: this.credentialGatewayDriver().id,
+      config: {
+        ...delivery.config,
+        issuer: account.issuer,
+        client_id: account.clientId,
+      },
+    };
+  }
+
   private async authorizeAgentCredentialSources(
     state: PlatformUnitOfWork,
     principalId: string,
     namespaceId: string,
     bindings: readonly AgentCredentialSourceBinding[],
     harnessAuth: HarnessAuthBinding | null | undefined,
+    attached: ReadonlySet<string> = new Set(),
   ): Promise<readonly CredentialSource[]> {
     const sources: CredentialSource[] = [];
     for (const { sourceId } of bindings) {
-      await this.authorize(principalId, "operate", {
-        kind: "credential_source",
-        namespaceId,
-        id: sourceId,
-      });
-      this.assertCredentialSourceOwnerSelected();
+      if (!attached.has(sourceId)) {
+        await this.authorize(principalId, "operate", {
+          kind: "credential_source",
+          namespaceId,
+          id: sourceId,
+        });
+      }
+      if (!this.selections.has("credential_refresh")) {
+        this.assertCredentialSourceOwnerSelected();
+      }
       const source = await state.credentialSources.lockCredentialSource(namespaceId, sourceId);
       if (source === undefined || source.state !== "ready") {
         throw new ScopeViolationError(
           "The credential source is unavailable in the exact Namespace.",
         );
       }
+      if (source.ownerCapability === "credential_refresh") {
+        const account = await state.savedConnections.findSavedConnection(namespaceId, sourceId);
+        if (
+          !account ||
+          account.revocationRequestedBy ||
+          !attached.has(sourceId) ||
+          (harnessAuth?.method === "credential_source" && harnessAuth.sourceId === sourceId)
+        ) {
+          throw new ResourceStateConflictError(
+            "Attach a ready saved account through an authorized plugin slot.",
+          );
+        }
+        sources.push(source);
+        continue;
+      }
+      this.assertCredentialSourceOwnerSelected();
       if (
         source.ownerCapability === "credential_proxy" &&
         !this.selections.has("credential_proxy")
@@ -12941,16 +15540,33 @@ export class OpenClawController {
     return sources;
   }
 
-  private validatePluginCredentialSources(
+  private async validatePluginCredentialSources(
+    state: PlatformReadView,
     driver: PluginDriver | undefined,
     plugins: PluginDesiredState | undefined,
     sources: readonly CredentialSource[],
     harnessAuth?: HarnessAuthBinding | null,
-  ): PluginRevisionState["accountNames"] {
+  ): Promise<PluginRevisionState["accountNames"]> {
     if (plugins && Object.keys(plugins).length) {
+      const projected: CredentialSource[] = [];
+      for (const source of sources) {
+        if (source.ownerCapability !== "credential_refresh") {
+          projected.push(source);
+          continue;
+        }
+        const account = await state.savedConnections.findSavedConnection(
+          source.namespaceId,
+          source.id,
+        );
+        const runtime =
+          account && (await this.runtimeAccountSource(state, source, account, plugins, driver));
+        if (runtime) {
+          projected.push(runtime);
+        }
+      }
       const names = driver?.credentials?.validate(
         plugins,
-        sources,
+        projected,
         harnessAuth?.method === "credential_source" ? harnessAuth.sourceId : undefined,
       );
       return names ?? undefined;
@@ -12970,7 +15586,13 @@ export class OpenClawController {
   ) {
     const bindings = agent.credentialSources ?? [];
     if (bindings.length === 0) {
-      this.validatePluginCredentialSources(driver, agent.plugins, [], agent.harnessAuth);
+      await this.validatePluginCredentialSources(
+        state,
+        driver,
+        agent.plugins,
+        [],
+        agent.harnessAuth,
+      );
       return { credentialSources: [], accountNames: undefined };
     }
     // A state refusal, so HTTP keeps the message instead of the generic "already exists".
@@ -12985,8 +15607,14 @@ export class OpenClawController {
       agent.namespaceId,
       bindings,
       agent.harnessAuth,
+      new Set(
+        (await state.savedConnections.listAgentConnections(agent.namespaceId, agent.id)).map(
+          ({ credentialSourceId }) => credentialSourceId,
+        ),
+      ),
     );
-    const accountNames = this.validatePluginCredentialSources(
+    const accountNames = await this.validatePluginCredentialSources(
+      state,
       driver,
       agent.plugins,
       sources,
@@ -13006,15 +15634,65 @@ export class OpenClawController {
       if (source === undefined || source.state !== "ready") {
         throw new ScopeViolationError("The credential source is unavailable.");
       }
+      if (source.ownerCapability === "credential_refresh") {
+        const account = await state.savedConnections.findSavedConnection(
+          agent.namespaceId,
+          sourceId,
+        );
+        if (!account || account.revocationRequestedBy) {
+          throw new ResourceStateConflictError("The connected account is unavailable.");
+        }
+        const runtime = await this.runtimeAccountSource(
+          state,
+          source,
+          account,
+          agent.plugins,
+          driver,
+        );
+        if (runtime) {
+          // Each approved presentation has an independent sender profile. Sharing an account
+          // cannot change another Agent's protected destination or placeholder.
+          const profileId = accountDeliveryProfileId(
+            sourceId,
+            runtime.driverId,
+            agent.id,
+            runtime.config,
+          );
+          await state.savedConnections.registerDeliveryProfile(agent.namespaceId, sourceId, {
+            profileId,
+            gatewayId: runtime.driverId,
+            sourceType: runtime.type,
+          });
+          snapshots.push({
+            sourceId,
+            sourceType: runtime.type,
+            credentialGatewayId: runtime.driverId,
+            accountDelivery: {
+              refreshDriverId: source.driverId,
+              profileId,
+              config: runtime.config,
+            },
+          });
+        }
+        continue;
+      }
       const owner = this.credentialSourceOwner(source);
       if (owner.kind === "proxy") {
         if (!this.protectedSourceTypes().some((p) => p.type.type === source.type)) {
           throw new CredentialSourceTypeNotOfferedError("proxy");
         }
-        snapshots.push({ sourceId, credentialProxyId: owner.driver.id, sourceType: source.type });
+        snapshots.push({
+          sourceId,
+          credentialProxyId: owner.driver.id,
+          sourceType: source.type,
+        });
       } else {
         await this.credentialSourceType(owner.driver, source.type);
-        snapshots.push({ sourceId, credentialGatewayId: owner.driver.id, sourceType: source.type });
+        snapshots.push({
+          sourceId,
+          credentialGatewayId: owner.driver.id,
+          sourceType: source.type,
+        });
       }
     }
     return { credentialSources: immutableCopy(snapshots), accountNames };
@@ -13030,7 +15708,11 @@ export class OpenClawController {
     namespaceId: string,
   ): Promise<void> {
     this.namespaceIdentity(namespaceId);
-    await this.authorize(principalId, "create", { kind: "agent", namespaceId, id: namespaceId });
+    await this.authorize(principalId, "create", {
+      kind: "agent",
+      namespaceId,
+      id: namespaceId,
+    });
     await this.authorize(principalId, "create", {
       kind: "configuration",
       namespaceId,
@@ -13049,7 +15731,10 @@ export class OpenClawController {
     {
       statusRead,
       admission = false,
-    }: { readonly statusRead?: "status" | "retry"; readonly admission?: boolean } = {},
+    }: {
+      readonly statusRead?: "status" | "retry";
+      readonly admission?: boolean;
+    } = {},
   ): Promise<void> {
     const namespaceId = record.namespaceId;
     await this.authorizeProvisioningRequest(principalId, namespaceId);
@@ -13717,7 +16402,10 @@ export class OpenClawController {
     ) {
       return undefined;
     }
-    return Object.freeze({ id: receipt.targetId, namespaceId: record.namespaceId });
+    return Object.freeze({
+      id: receipt.targetId,
+      namespaceId: record.namespaceId,
+    });
   }
 
   /** Whether the accepted plan names the Configuration Driver the Installation selects. */
@@ -13769,7 +16457,10 @@ export class OpenClawController {
     }
     if ((await this.driverOperation(() => driver.inspectExact!(configuration))) !== undefined) {
       await this.driverOperation(() =>
-        driver.delete({ id: configuration.id, namespaceId: configuration.namespaceId }),
+        driver.delete({
+          id: configuration.id,
+          namespaceId: configuration.namespaceId,
+        }),
       );
     }
   }
@@ -13927,7 +16618,10 @@ export class OpenClawController {
         "The Configuration Driver does not support exact provisioning recovery.",
       );
     }
-    const effect = { kind: "configuration" as const, targetId: configurationId };
+    const effect = {
+      kind: "configuration" as const,
+      targetId: configurationId,
+    };
     let current = record;
     if (this.provisioningEffectReceipt(current, effect) === undefined) {
       const metadata = await this.read((state) =>
@@ -14223,6 +16917,120 @@ export class OpenClawController {
     return Object.freeze(sources);
   }
 
+  /** The caller holds the Namespace and Agent locks. Only withdraw this Agent's copies. */
+  private async detachAgentConnectionSource(
+    state: PlatformUnitOfWork,
+    principalId: string,
+    agent: Readonly<Agent>,
+    sourceId: string,
+    revokeForAllAgents = false,
+  ): Promise<boolean> {
+    const { namespaceId, id: agentId } = agent;
+    const bindings = agent.credentialSources ?? [];
+    const attached = bindings.some((binding) => binding.sourceId === sourceId);
+    if (!attached && !revokeForAllAgents) {
+      throw new ScopeViolationError("The connection is not attached to this Agent.");
+    }
+    const remaining = bindings.filter((binding) => binding.sourceId !== sourceId);
+    if (!revokeForAllAgents) {
+      const driver = this.ownedPluginDriver(agent.pluginDriver);
+      await this.guardAgentProvisioning(state, namespaceId, agentId);
+      this.assertHarnessSourceListed(remaining, agent.harnessAuth);
+      const remainingSources: CredentialSource[] = [];
+      for (const binding of remaining) {
+        const source = await state.credentialSources.findCredentialSource(
+          namespaceId,
+          binding.sourceId,
+        );
+        if (source?.ownerCapability === "credential_refresh") {
+          const account = await state.savedConnections.findSavedConnection(namespaceId, source.id);
+          const delivery =
+            account &&
+            (await this.runtimeAccountSource(state, source, account, agent.plugins, driver));
+          if (delivery) {
+            remainingSources.push(delivery);
+          }
+        } else if (source) {
+          remainingSources.push(source);
+        }
+      }
+      await this.validatePluginCredentialSources(
+        state,
+        driver,
+        agent.plugins,
+        remainingSources,
+        agent.harnessAuth,
+      );
+    }
+    const revisions = await state.revisions.listRevisions(namespaceId, agentId);
+    if (
+      !attached &&
+      !revisions.some((revision) => revisionHoldsCredentialSource(revision, sourceId))
+    ) {
+      return false;
+    }
+    const targets = await this.credentialSourceWithdrawalRevisions(
+      state,
+      revisions,
+      agent.activeRevisionId,
+      sourceId,
+    );
+    let withdrawalRequested = false;
+    for (const revision of targets) {
+      if (!revokeForAllAgents) {
+        await this.authorize(principalId, "operate", {
+          kind: "agent",
+          namespaceId,
+          id: agentId,
+        });
+      }
+      const withdrawal = await this.requestRevisionCredentialWithdrawal(
+        state,
+        principalId,
+        revision,
+        sourceId,
+      );
+      if (withdrawal.state === "pending") {
+        withdrawalRequested = true;
+      }
+    }
+    if (attached) {
+      await state.agents.updateConfiguration(
+        namespaceId,
+        agentId,
+        agent.configurationId,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        remaining,
+      );
+    }
+    const bindingId = `binding_${agentId}_${sourceId}_operate`;
+    const grant = await state.iamPolicy.getAccessBinding(namespaceId, bindingId);
+    if (
+      grant?.subjectKind === "identity" &&
+      grant.subjectId === agent.servicePrincipalId &&
+      grant.resourceKind === "credential_source" &&
+      grant.resourceId === sourceId &&
+      grant.roleId === `role_${namespaceId}_agent_credential_source_operate`
+    ) {
+      const driver = this.iamPolicyDriver("deleteNamespaceAccessBinding");
+      if (driver.namespacePolicyTransaction !== "platform-unit-of-work") {
+        throw new DependencyUnavailableError(
+          "The IAM Driver cannot withdraw the Agent grant transactionally.",
+        );
+      }
+      await this.iamPolicyOperation(() =>
+        driver.deleteNamespaceAccessBinding!({ policy: state.iamPolicy }, namespaceId, bindingId),
+      );
+    }
+    return withdrawalRequested;
+  }
+
   private async ensureAgentOperateGrants(
     state: PlatformUnitOfWork,
     namespaceId: string,
@@ -14373,7 +17181,10 @@ export class OpenClawController {
     }
     return immutableCopy({
       ...binding,
-      credential: { kind: "access_token" as const, secretRef: account.credential.secretRef },
+      credential: {
+        kind: "access_token" as const,
+        secretRef: account.credential.secretRef,
+      },
       backendBinding,
     });
   }
@@ -14441,7 +17252,10 @@ export class OpenClawController {
     return [
       immutableCopy({
         ...binding,
-        credential: { kind: "access_token" as const, secretRef: account.credential.secretRef },
+        credential: {
+          kind: "access_token" as const,
+          secretRef: account.credential.secretRef,
+        },
         backendBinding,
       }),
     ];
@@ -14682,7 +17496,9 @@ export class OpenClawController {
       return undefined;
     }
     const catalog = await this.credentialGatewayOperation(() =>
-      gateway.listSourceTypes({ signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS) }),
+      gateway.listSourceTypes({
+        signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+      }),
     );
     return catalog.some((entry) => entry.type === type && entry.rotation === "refresh")
       ? this.credentialRefreshDriver()
@@ -14704,7 +17520,12 @@ export class OpenClawController {
     try {
       return await operation();
     } catch (error) {
-      if (error instanceof ScopeViolationError || error instanceof ResourceConflictError) {
+      // A definite browser authorization failure keeps its safe code and recovery action.
+      if (
+        error instanceof ScopeViolationError ||
+        error instanceof ResourceConflictError ||
+        error instanceof BrowserAuthorizationError
+      ) {
         throw error;
       }
       throw new DependencyUnavailableError(
@@ -14770,21 +17591,23 @@ export class OpenClawController {
       }
       return { kind: "proxy" as const, driver };
     }
-    return { kind: "gateway" as const, driver: this.ownedCredentialGatewayDriver(source) };
+    return {
+      kind: "gateway" as const,
+      driver: this.ownedCredentialGatewayDriver(source),
+    };
   }
 
   /** Recheck the immutable admission and its selected owner in the use or observation transaction. */
   private currentCredentialSourceOwner(source: CredentialSource, revision: AgentRevision): boolean {
-    if (
-      !credentialSourceMatchesSnapshot(
-        source,
-        revisionCredentialSourceSnapshot(revision, source.id),
-      )
-    ) {
+    const runtime = revisionCredentialSource(
+      source,
+      revisionCredentialSourceSnapshot(revision, source.id),
+    );
+    if (!runtime) {
       return false;
     }
     try {
-      this.credentialSourceOwner(source);
+      this.credentialSourceOwner(runtime);
       return true;
     } catch {
       return false;
@@ -14796,7 +17619,9 @@ export class OpenClawController {
     type: string,
   ): Promise<CredentialSourceType> {
     const catalog = await this.credentialGatewayOperation(() =>
-      driver.listSourceTypes({ signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS) }),
+      driver.listSourceTypes({
+        signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+      }),
     );
     const entry = catalog.find((candidate) => candidate.type === type);
     if (entry === undefined) {
@@ -14821,7 +17646,12 @@ export class OpenClawController {
       secrets: source.secrets,
       ...(source.egress === undefined
         ? {}
-        : { egress: { adoption: source.egress.adoption, retention: source.egress.retention } }),
+        : {
+            egress: {
+              adoption: source.egress.adoption,
+              retention: source.egress.retention,
+            },
+          }),
       state: source.state,
       ref: Object.freeze({
         kind: "credential_source" as const,
@@ -14949,7 +17779,11 @@ export class OpenClawController {
       kind: "installation",
       id: this.installation.id,
     });
-    await this.authorize(principalId, "read", { kind: "namespace", id: namespaceId, namespaceId });
+    await this.authorize(principalId, "read", {
+      kind: "namespace",
+      id: namespaceId,
+      namespaceId,
+    });
     if (target !== undefined) {
       await this.authorize(principalId, "read", target);
     }
@@ -15594,7 +18428,11 @@ export class OpenClawController {
       // A model selection that names no supported Harness: admission refuses it below.
       return;
     }
-    const harness = { id: harnessId, version: "provisioning", mode: executionMode };
+    const harness = {
+      id: harnessId,
+      version: "provisioning",
+      mode: executionMode,
+    };
     try {
       compute.validateHarnessAuth(
         harness,
@@ -15613,7 +18451,10 @@ export class OpenClawController {
   private secretHarnessAuthSnapshot(
     binding: Extract<HarnessAuthBinding, { readonly source: SecretReference }>,
   ): HarnessAuthSnapshot {
-    return immutableCopy({ ...binding, secretDriverId: this.secretDriver().id });
+    return immutableCopy({
+      ...binding,
+      secretDriverId: this.secretDriver().id,
+    });
   }
 
   // The Configuration values a deployment admits for this Harness: the Sandbox Driver's view,
@@ -15653,6 +18494,25 @@ export class OpenClawController {
       }
       return entry.driver as PluginDriver;
     });
+  }
+
+  private ownedPluginDriver(
+    pin: PluginDriverIdentity | undefined,
+    harnessId?: string,
+  ): PluginDriver | undefined {
+    if (!pin) {
+      return undefined;
+    }
+    const driver = this.enabledPluginDrivers().find(
+      (candidate) =>
+        candidate.id === pin.id &&
+        candidate.implementation === pin.implementation &&
+        (harnessId === undefined || candidate.harnessId === harnessId),
+    );
+    if (!driver) {
+      throw new DependencyUnavailableError("The saved Plugin Driver is unavailable.");
+    }
+    return driver;
   }
 
   private pluginDriver(harnessId: string, selection = false): PluginDriver {
@@ -15727,6 +18587,11 @@ export class OpenClawController {
       repositoryBindings,
       repositoryAccess: normalizedRepositoryAccess(input.repositoryAccess, repositoryBindings)!,
     };
+  }
+
+  private selectedStandingRepositoryAdmission(): InstallationRepositoryAdmission | undefined {
+    const admission = this.installationRepositoryAdmission;
+    return admission?.policy === this.selections.get("repo")?.driver ? admission : undefined;
   }
 
   /**
@@ -15866,7 +18731,10 @@ export class OpenClawController {
     }
     validateRepositoryTopology(compute, harness, sandboxDriverId);
     const snapshot: RepositoryRevisionState = {
-      driver: { id: resolved.driver.id, implementation: resolved.driver.implementation },
+      driver: {
+        id: resolved.driver.id,
+        implementation: resolved.driver.implementation,
+      },
       deadlineWallMs: admittedAtWallMs + resolved.resolution.sessionDurationSeconds * 1000,
       bindings: resolved.resolution.bindings,
     };
@@ -16130,12 +18998,10 @@ export class OpenClawController {
     return active ? work(active) : this.state.read(work);
   }
 
-  private assertCredentialSourceTransactionBoundary(): void {
+  private requireIndependentMutation(operation: string): void {
     // Async descendants can retain the borrowed unit after its transaction has ended.
     if (this.transactionContext.getStore() !== undefined) {
-      throw new ResourceConflictError(
-        "Credential source registration and deletion cannot run in a controller transaction.",
-      );
+      throw new ResourceConflictError(`${operation} cannot run in a controller transaction.`);
     }
   }
 

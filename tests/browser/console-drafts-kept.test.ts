@@ -44,7 +44,7 @@ import {
   routeInstallationProvisioning,
   raceAgentName,
   routeInstallationWithoutProvisioning,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
 import { provisioningJob, routeProvisioningJob } from "./console-provisioning-job-fixture.ts";
 import {
   AGENT_CREATE_RESTRICTED,
@@ -54,6 +54,7 @@ import {
   RESOURCE_NOT_FOUND,
 } from "../helpers/refusal-text.mjs";
 import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
+import { createDraftStore } from "../../apps/controller/src/console/drafts.mts";
 
 // Legacy resource fields enter the suite as unknown; the checks below narrow them.
 type NamespaceFixture = {
@@ -1250,4 +1251,34 @@ test("a repository-scoped Agent refusal keeps no draft", async (t) => {
   await heading(page, "Recover from a rejected Agent save").waitFor();
   fixture.policy.restrictions.pop();
   await expectNoKeptDraft(page);
+});
+
+test("draft scope retirement preserves exact neighbors and literal null namespaces", () => {
+  const store = createDraftStore();
+  const parent = store.scope("namespace", "agent");
+  const child = store.scope("namespace", "agent", "child");
+  const nearby = store.scope("namespace", "agents");
+  const global = store.scope(null);
+  const literalNull = store.scope("null");
+  const capture = () => "parent draft";
+  parent.track("child", capture);
+  child.track("child", () => "child draft");
+  nearby.track("child", () => "nearby draft");
+  global.track("child", () => "global draft");
+  literalNull.track("child", () => "literal null draft");
+  store.flush();
+
+  parent.clear();
+  // A reply from the retired view must not restore its draft.
+  parent.record("child", capture);
+  assert.equal(parent.get("child"), undefined);
+  assert.equal(child.get("child"), "child draft");
+  assert.equal(nearby.get("child"), "nearby draft");
+
+  assert.equal(global.get("child"), "global draft");
+  store.retainNamespaces(new Set(["null"]));
+  assert.equal(child.get("child"), undefined);
+  assert.equal(nearby.get("child"), undefined);
+  assert.equal(global.get("child"), undefined);
+  assert.equal(literalNull.get("child"), "literal null draft");
 });
