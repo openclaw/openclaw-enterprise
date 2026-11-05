@@ -66,7 +66,7 @@ Browsing: `packages/occ/src/index.ts:listAgents`, `listRevisions`,
 `getAgentForBrowsing`, and `getRevisionForBrowsing`.
 `packages/occ/src/state/postgres-state.ts:browseSavedConfiguration` returns metadata
 plus `configurationReadError` on decode failure. Queries/operational reads stay strict; unreadable drafts block editing/deployment without defaults.
-**Selected for service** shows `activeRevisionId`.
+**Selected for service** uses `activeRevisionId`.
 **Viewing version** switches `revision=draft`/`revision=<id>` without activation.
 **Load older versions** appends, keeps selection and focuses the picker after the last page.
 `deploymentStatus`/`deploymentErrorCode` mark failures after reload, excluding superseded/stopped.
