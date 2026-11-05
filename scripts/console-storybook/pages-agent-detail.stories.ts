@@ -43,6 +43,10 @@ export const GatewaySafetyStrict = story("gatewaySafetyStrict");
 export const GatewaySafetyRejectSteering = story("gatewaySafetyRejectSteering");
 export const GatewaySafetyReader = story("gatewaySafetyReader");
 export const PluginsDraft = story("pluginsDraft");
+export const GoogleAccounts = {
+  ...story("googleAccounts"),
+  name: "Choose accounts for Google Workspace",
+};
 export const SlackMcpTools = {
   ...story("slackMcpTools"),
   name: "Choose accounts and tools for Slack",

@@ -73,7 +73,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { normalizeSecretBindings } from "../../packages/contracts/src/index.ts";
 import {
-  managedMcpCredentialEnvironment,
+  managedCredentialEnvironment,
   managedMcpInstalls,
 } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
@@ -1923,16 +1923,15 @@ async function verifyManagedRelease({
     cs_test_account: "Work $(OPENCLAW_CONFIG_PATH)",
     cs_second_account: "Personal $$",
   };
-  if (kind === "mcp" && managedMcpInstalls.find((install) => install.id === id)?.repeatable) {
-    selectionCases.push({
-      enabled: true,
-      driverPolicy: {
-        releaseSha256,
-        credentials: { [slotId]: Object.keys(accountNames) },
-        toolNames,
-      },
-    });
-  }
+  selectionCases.push({
+    enabled: true,
+    driverPolicy: {
+      releaseSha256,
+      credentials: { [slotId]: Object.keys(accountNames) },
+      ...(kind === "mcp" && { toolNames }),
+    },
+  });
+
   for (const selection of selectionCases) {
     const { enabled, driverPolicy } = selection;
     const selected = driverPolicy?.credentials[slotId];
@@ -2004,13 +2003,15 @@ async function verifyManagedRelease({
         ...(driverPolicy && {
           accounts: selectedAccounts.map((sourceId) => ({
             id: sourceId,
-            env: managedMcpCredentialEnvironment(
-              managedMcpInstalls.find((install) => install.id === id),
+            env: managedCredentialEnvironment(
+              kind === "cli"
+                ? managedGoogleInstall
+                : managedMcpInstalls.find((install) => install.id === id),
               sourceId,
             ),
             ...(selectedAccounts.length > 1 && { name: accountNames[sourceId] }),
           })),
-          toolNames: driverPolicy.toolNames ?? [],
+          ...(kind === "mcp" && { toolNames: driverPolicy.toolNames ?? [] }),
         }),
       },
     ];
@@ -10992,7 +10993,7 @@ test("non-model credential sources resolved at dispatch must match the revision'
   }
 
   // Selecting one of two attached MCP accounts grants the shared tool policy to that account alone.
-  const slack = managedMcpInstalls.find((install) => install.repeatable);
+  const [slack] = managedMcpInstalls;
   const mcpSources = [first, second].map((source) => ({
     ...source,
     config: {
@@ -11031,7 +11032,7 @@ test("non-model credential sources resolved at dispatch must match the revision'
     );
   }
 
-  // Google sources remain independently attached when its selected source is withdrawn.
+  // Binding the Google slot limits delivery to the selected accounts, including after withdrawal.
   const accounts = [first, second].map((tool) => ({
     ...tool,
     type: "oauth2-refresh-token",
@@ -11066,11 +11067,11 @@ test("non-model credential sources resolved at dispatch must match the revision'
       },
     },
   };
-  assert.deepEqual(driver.credentialSourcesForRevision(bound, context), accounts);
+  assert.deepEqual(driver.credentialSourcesForRevision(bound, context), [accounts[1]]);
   assert.deepEqual(driver.credentialSourcesForRevision(native, context), accounts);
   assert.deepEqual(
     driver.credentialSourcesForRevision(bound, { credentialSources: [accounts[0]] }),
-    [accounts[0]],
+    [],
   );
 });
 

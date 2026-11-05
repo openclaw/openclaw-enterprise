@@ -11,12 +11,20 @@ Codex Agents use a different catalog and approval policy; see
 Open **Agents**, select the Agent, then open **Create new version** → **Plugins**.
 Use **Configure plugins** to edit saved selections and tool policy. On a dedicated
 OpenClaw Agent on Kubernetes with the bundled OpenClaw Plugin Driver, choose
-**Google Workspace** and add it. Leave **Install without an account** selected
-to verify the installation with `gog --version`. To make Google API calls, choose a ready
-**Google account**, save the selection and deploy. The worker receives an
-OpenShell placeholder for that account. The Gateway loads the skill. The worker can use mapped operations within the account’s configured host, path and OAuth scopes. A command that calls multiple Google services may need more destinations than the selected source permits.
+**Google Workspace** and add it. Select the saved Google accounts the Agent should
+use, or leave every box clear to install the CLI without a credential.
+Use distinct account names such as “Work mail” and “Personal mail”. Save and deploy.
 
-The picker lists compatible sources attached to the Agent. Other sources can stay attached with their own authority. OpenShell requires distinct placeholder names and refuses another credential on a host covered by the Google request guard. The caller needs
+With one account, run `gog` as usual. With several, the Agent reads the
+`oce-plugin-accounts` skill and runs `gog --oce-account <source-id> ...` on the
+worker. The worker passes that account’s placeholder to the command.
+OCE checks the shared operation and destination policy. Google enforces the
+selected account’s OAuth grant. A command that uses multiple Google services
+can require additional authorized destinations.
+
+The picker lists compatible sources attached to the Agent. If OpenShell reports
+that a plugin provider lacks its account-specific placeholder, register a
+replacement source with the same Secret and select it. The caller needs
 `read` and `operate` on the source, and the Agent needs `operate`. If the
 package digest changes, select the account again. Clearing the slot or removing
 the plugin takes effect on the next deployment. The Agent keeps its separately attached credentials. To stop a running version from using a credential, [withdraw the source](../../reference/credential-sources/withdrawal.md). [Enable the Google request guard](../credential-proxy.md#enable-google-workspace-requests-from-a-dedicated-worker)
@@ -76,7 +84,7 @@ set Helm `api.pluginDiscoveryCidrs` to the endpoint's IPv4 `/32` hosts and refre
 them when DNS changes. Other ports need the Installation's managed egress policy.
 This setting is separate from model discovery. Worker calls use the Sandbox policy.
 
-Open **Plugins** and add the plugin. For a repeatable slot such as Slack, select
+Open **Plugins** and add the plugin. Select
 each account the Agent should use. Give the saved accounts distinct names that
 the model can match to a request, such as “Engineering” and “Customer support”.
 Choose **Load tools** to discover tools with each selected account. The list
@@ -97,9 +105,7 @@ to revoke a running version's credential access.
 
 For example, Slack uses `host: mcp.slack.com`, `port: "443"`, `path: /mcp` and
 `env_var: SLACK_MCP_TOKEN`. Select `slack_search_public` if the account advertises
-it. If OpenShell reports that a source uses the old shared placeholder, register
-a replacement source from the same Secret, select it and deploy the Agent.
-Inspect the worker server and tool filter:
+it. Inspect the worker server and tool filter:
 
 ```sh
 OPENCLAW_CONFIG_PATH="$OPENCLAW_NODE_STATE_DIR/openclaw.json" openclaw config get nodeHost.mcp.servers.oce_mcp_slack --json

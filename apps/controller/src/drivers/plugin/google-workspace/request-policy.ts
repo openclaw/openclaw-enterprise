@@ -4,7 +4,7 @@ import {
   googleDiscoveryRequests,
   googleRouteCandidates,
   googleReleaseSha256,
-  googleScopeFromString,
+  googleAccountScopes,
   googleSourcePathMatches,
   type GoogleOperation,
   type GoogleParameter,
@@ -270,7 +270,7 @@ function validGoogleRequest(
         return false;
       }
       // Gmail restricts q and message content on a metadata-only grant even though the method
-      // accepts that scope. Apply this before sending a possibly more powerful bearer.
+      // accepts that scope. These forms require a content-capable scope in the shared operation policy.
       if (
         grants.every((s) => s === "https://www.googleapis.com/auth/gmail.metadata") &&
         (params.has("q") ||
@@ -287,10 +287,22 @@ function validGoogleRequest(
 export const googleWorkspaceRequestPolicy = {
   releaseSha256: googleReleaseSha256,
   acceptsScope(raw: string): boolean {
-    return googleScopeFromString(raw) !== undefined;
+    return googleAccountScopes(raw) !== undefined;
   },
   allows(request: OpenShellOnlineHttpRequest): boolean {
-    const scope = googleScopeFromString(request.bindingConfig);
-    return scope !== undefined && validGoogleRequest(scope, request);
+    const accounts = googleAccountScopes(request.bindingConfig);
+    if (!accounts) {
+      return false;
+    }
+    const scopes = Object.values(accounts);
+    const { host, path } = request.target;
+    const protectedScopes = scopes.filter(
+      (scope) => scope.host === host && googleSourcePathMatches(scope.path, path),
+    );
+    // Authorization is stripped from the supervisor's request view. The shared guard admits
+    // released operations for this destination; Google authorizes the actual account token.
+    // A discovery path covered by any provider must never be treated as public.
+    const applicable = protectedScopes.length ? protectedScopes : scopes;
+    return applicable.some((scope) => validGoogleRequest(scope, request));
   },
 };

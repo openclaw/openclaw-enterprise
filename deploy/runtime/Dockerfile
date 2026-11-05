@@ -209,12 +209,12 @@ RUN echo '1ed77577d53d43619f7c8fb33dbcdcf6a728351821abfe1b0beee947bd6eb456  /tmp
 
 # Forward the scoped Google placeholder and the OpenShell TLS root to native worker children.
 COPY deploy/runtime/openclaw-google-worker-placeholder.patch /tmp/openclaw-google-worker-placeholder.patch
-RUN echo '55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31  /tmp/openclaw-google-worker-placeholder.patch' | sha256sum --check --strict \
+RUN echo 'b8c08aaf58b0e4a0dfb1df98c881d3d88b9ae7c51d1f50c2fda847135ff1d1db  /tmp/openclaw-google-worker-placeholder.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-google-worker-placeholder.patch
 
 # TODO: Drop this bridge when the pinned node host can present one tool for several accounts.
 COPY deploy/runtime/openclaw-node-mcp-accounts.patch /tmp/openclaw-node-mcp-accounts.patch
-RUN echo 'b9b50e5593bbb7e3b4304420c62b9e211ca09b9de8e229715ea813e3e1a4d4b0  /tmp/openclaw-node-mcp-accounts.patch' | sha256sum --check --strict \
+RUN echo 'bbc276fbd8f402ef113a6e7e17ab245573e4222b06d5ed2eaff9a5a22753d638  /tmp/openclaw-node-mcp-accounts.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-node-mcp-accounts.patch
 
 # Run the bridge tests alongside the build using the same patched source.
@@ -381,6 +381,22 @@ RUN --mount=type=secret,id=build-ca,required=false \
     node /tmp/install-gog.mts /usr/local/lib/oce/plugins/google "linux-${TARGETARCH:-amd64}" /usr/local/lib/oce/plugins/google/bin /tmp/download-pinned.sh
 
 COPY apps/controller/plugins/ /usr/local/lib/oce/plugin-catalog/
+# Give each reviewed CLI its own command on PATH when an Agent binds accounts.
+RUN --mount=type=bind,source=deploy/runtime/managed-plugin-cli.mjs,target=/tmp/managed-plugin-cli.mjs node --input-type=module - <<'NODE'
+import { chmodSync, copyFileSync, mkdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+const catalog = "/usr/local/lib/oce/plugin-catalog";
+const { plugins } = JSON.parse(readFileSync(join(catalog, "marketplace.json")));
+for (const { name } of plugins) {
+  const release = JSON.parse(readFileSync(join(catalog, name, "ai.openclaw.oce/release.json")));
+  if (!release.capabilities.harness.includes("cli")) continue;
+  const directory = join(release.runtimeDirectory, "account-bin");
+  const command = join(directory, release.executable);
+  mkdirSync(directory, { recursive: true });
+  copyFileSync("/tmp/managed-plugin-cli.mjs", command);
+  chmodSync(command, 0o555);
+}
+NODE
 
 COPY --from=openclaw-runtime-assets /out/ /opt/oce/runtime/
 COPY --from=openclaw-runtime-assets /source/ /app/node_modules/openclaw/

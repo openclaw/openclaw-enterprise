@@ -11601,7 +11601,6 @@ test("deploying Google Workspace and Slack together freezes both selections and 
     ]),
   );
   assert.equal(slot.toolDiscovery, true);
-  assert.equal(slot.repeatable, true);
   const google = { "occ-plugin:google@1.0.0": { enabled: true } };
   const pluginsFor = (toolNames, account = source.data.id) => ({
     ...google,

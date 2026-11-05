@@ -245,11 +245,11 @@ async function fixture(
       assert.equal(profiles.size, 0);
     },
     /** A source stored before a rule existed, with its provider, as an older release left it. */
-    seedStored(type, config) {
+    seedStored(type, config, sourceName = `Stored ${type}`) {
       const stored = {
         id: "cs_" + randomUUID(),
         namespaceId: namespace.id,
-        name: `Stored ${type}`,
+        name: sourceName,
         type,
         config: type === "openai" ? config : toolConfig(type, config),
         secrets:
@@ -275,8 +275,8 @@ async function fixture(
       return { stored, name, profileKey: workspace + "/" + name };
     },
     /** As seedStored, with the ready OCC record an older release committed. */
-    async seedStoredRecord(type, config) {
-      const seeded = this.seedStored(type, config);
+    async seedStoredRecord(type, config, name) {
+      const seeded = this.seedStored(type, config, name);
       await app.controller.transact(async (unit) => {
         await unit.credentialSources.createCredentialSource({
           ...seeded.stored,
@@ -341,15 +341,26 @@ test("old source routing records cannot deliver credentials and remain readable 
   assert.equal((await f.request("DELETE", f.path + "/" + stored.id)).status, 204);
 });
 
-test("the saved Agent picker and binding use the granted source and the same reviewed release", async (t) => {
+test("the saved Agent picker binds any granted Google accounts to the reviewed release", async (t) => {
   const f = await fixture(t, { toolSources: true, persistedIam: true });
-  const { stored: google } = await f.seedStoredRecord("oauth2-refresh-token", {
+  const googleConfig = {
     token_url: "https://oauth2.googleapis.com/token",
     host: "gmail.googleapis.com",
     path: "/gmail/v1/users/me/messages",
     scope: "https://www.googleapis.com/auth/gmail.readonly",
     env_var: "GOG_ACCESS_TOKEN",
-  });
+  };
+  // Both saved OAuth sources target the same Gmail account endpoint with distinct identities.
+  const { stored: google } = await f.seedStoredRecord(
+    "oauth2-refresh-token",
+    googleConfig,
+    "Work mail",
+  );
+  const { stored: second } = await f.seedStoredRecord(
+    "oauth2-refresh-token",
+    googleConfig,
+    "Personal mail",
+  );
   for (const driver of [
     new OCCPluginDriver(),
     createTestKubernetesComputeDriver("plugin-compute"),
@@ -375,7 +386,7 @@ test("the saved Agent picker and binding use the granted source and the same rev
     {
       harnessAuth: null,
       executionMode: "dedicated",
-      credentialSources: [{ sourceId: google.id }, { sourceId: other.id }],
+      credentialSources: [google, second, other].map(({ id }) => ({ sourceId: id })),
     },
   );
   const path = `/namespaces/${f.namespace.id}/agents/${agent.id}`;
@@ -390,7 +401,7 @@ test("the saved Agent picker and binding use the granted source and the same rev
     },
   });
   assert.equal(role.status, 201, JSON.stringify(role.body));
-  for (const source of [google, other, sameHost]) {
+  for (const source of [google, second, other, sameHost]) {
     const grant = await f.request("POST", `${iam}/access-bindings`, {
       body: {
         subjectKind: "identity",
@@ -403,7 +414,13 @@ test("the saved Agent picker and binding use the granted source and the same rev
     assert.equal(grant.status, 201, JSON.stringify(grant.body));
   }
   const [slot] = await slots();
-  assert.deepEqual(slot.sources, [{ id: google.id, name: google.name }]);
+  assert.deepEqual(
+    new Map(slot.sources.map(({ id, name }) => [id, name])),
+    new Map([
+      [google.id, google.name],
+      [second.id, second.name],
+    ]),
+  );
   const save = (sourceId, releaseSha256) =>
     f.request("PATCH", path, {
       body: {
@@ -439,10 +456,15 @@ test("the saved Agent picker and binding use the granted source and the same rev
     releaseSha256: slot.releaseSha256,
     credentials: { account: google.id },
   });
+  const both = await save([google.id, second.id], slot.releaseSha256);
+  assert.equal(both.status, 200, JSON.stringify(both.body));
+  assert.deepEqual(both.data.plugins[slot.pluginId].driverPolicy.credentials, {
+    account: [google.id, second.id],
+  });
   const conflicting = await f.request("PATCH", path, {
     body: {
       configurationId: agent.configurationId,
-      credentialSources: [google, other, sameHost].map(({ id }) => ({ sourceId: id })),
+      credentialSources: [google, second, other, sameHost].map(({ id }) => ({ sourceId: id })),
     },
   });
   assert.equal(conflicting.status, 400, JSON.stringify(conflicting.body));
@@ -454,7 +476,10 @@ test("the saved Agent picker and binding use the granted source and the same rev
     },
   });
   assert.equal(clear.status, 200, JSON.stringify(clear.body));
-  assert.deepEqual(clear.data.credentialSources, [{ sourceId: google.id }, { sourceId: other.id }]);
+  assert.deepEqual(
+    clear.data.credentialSources,
+    [google, second, other].map(({ id }) => ({ sourceId: id })),
+  );
 });
 test("Installation discovery serializes OpenShell model authentication and refresh source metadata", async (t) => {
   const f = await fixture(t, { toolSources: true });

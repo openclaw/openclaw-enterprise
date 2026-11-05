@@ -13,13 +13,12 @@ const releasedPolicies = new Map<string, PluginRequestPolicy>([
   [googleWorkspaceRequestPolicy.releaseSha256, googleWorkspaceRequestPolicy],
 ]);
 
-// The Gateway advertises one implementation version per registration. Pin the whole set
-// at admission and each individual release in the Sandbox's binding.
+// The Gateway negotiates the account-scope wire format and released policy set together.
+// Each Sandbox binding also pins its own plugin release.
 const releases = [...releasedPolicies.keys()].sort();
-export const managedPluginGuardVersion =
-  releases.length === 1
-    ? releases[0]!
-    : createHash("sha256").update(releases.join("\n")).digest("hex");
+export const managedPluginGuardVersion = createHash("sha256")
+  .update(["account-scopes-v1", ...releases].join("\n"))
+  .digest("hex");
 
 export function acceptsPluginRequestScope(id: string, scope: string): boolean {
   return releasedPolicies.get(id)?.acceptsScope(scope) === true;

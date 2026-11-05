@@ -1,13 +1,12 @@
 import type { CredentialSource } from "@openclaw-enterprise/contracts";
-import type { ManagedCliInstall, ManagedCredentialSlot } from "../managed-catalog.ts";
+import type { ManagedCliInstall } from "../managed-catalog.ts";
 import {
   eligibleGoogleOperations,
   googleDiscoveryRequests,
   googleRequestScope,
 } from "./operations.ts";
 
-function sourceScope(source: CredentialSource) {
-  const config = source.config;
+function sourceScope(config: CredentialSource["config"]) {
   return googleRequestScope({
     host: config.host,
     port: Number(config.port ?? 443),
@@ -16,30 +15,33 @@ function sourceScope(source: CredentialSource) {
   });
 }
 
+function acceptsConfig(install: ManagedCliInstall, config: CredentialSource["config"]): boolean {
+  const slot = install.credentials[install.slotId]!;
+  const scope = sourceScope(config);
+  return (
+    config.token_url === slot.tokenEndpoint &&
+    config.env_var === slot.delivery.env &&
+    (config.binary === undefined || config.binary === install.binaryPath) &&
+    scope !== undefined &&
+    eligibleGoogleOperations(scope).length > 0
+  );
+}
+
 /** Google scopes and routes are connector semantics, independent of catalog presentation. */
 export const googleWorkspaceCredentialPolicy = {
   packageName: "oce-google-workspace",
-  accepts(
-    install: ManagedCliInstall,
-    slot: ManagedCredentialSlot,
-    source: CredentialSource,
-  ): boolean {
-    const config = source.config;
-    const scope = sourceScope(source);
+  acceptsConfig,
+  accepts(install: ManagedCliInstall, source: CredentialSource): boolean {
     return (
       source.state === "ready" &&
       source.ownerCapability === "credential_gateway" &&
       source.egress === undefined &&
       source.type === "oauth2-refresh-token" &&
-      config.token_url === slot.tokenEndpoint &&
-      config.env_var === slot.delivery.env &&
-      (config.binary === undefined || config.binary === install.binaryPath) &&
-      scope !== undefined &&
-      eligibleGoogleOperations(scope).length > 0
+      acceptsConfig(install, source.config)
     );
   },
   conflict(selected: CredentialSource, sources: readonly CredentialSource[]) {
-    const scope = sourceScope(selected);
+    const scope = sourceScope(selected.config);
     if (!scope) {
       return undefined;
     }

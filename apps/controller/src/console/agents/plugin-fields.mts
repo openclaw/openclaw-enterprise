@@ -1035,7 +1035,7 @@ export function createPluginFields({
                   : undefined;
               const credentials = isObject(policy?.credentials) ? { ...policy.credentials } : {};
               if (next.length) {
-                credentials[slot.id] = slot.repeatable ? next : next[0];
+                credentials[slot.id] = next;
               } else {
                 delete credentials[slot.id];
               }
@@ -1044,63 +1044,48 @@ export function createPluginFields({
                 return;
               }
               selection.driverPolicy = {
-                ...(slot.repeatable && policy),
+                ...policy,
                 releaseSha256: slot.releaseSha256,
                 credentials,
               };
             });
-          if (slot.repeatable) {
-            const accounts = element(
-              "fieldset",
-              { className: "plugin-tool" },
-              element("legend", {}, slot.label),
-            );
-            if (stale) {
-              accounts.append(
-                element(
-                  "p",
-                  { className: "hint" },
-                  "The release changed. Select the accounts for this version again.",
-                ),
-                button("Clear accounts", () => setAccounts([])),
-              );
-            }
-            const sources = new Map(slot.sources.map(({ id, name }) => [id, name]));
-            const checkedIds = stale ? [] : ids;
-            for (const id of checkedIds) {
-              if (!sources.has(id)) {
-                sources.set(id, `${id} (unavailable)`);
-              }
-            }
-            for (const [id, name] of sources) {
-              const checkbox = element("input", {
-                type: "checkbox",
-                checked: checkedIds.includes(id),
-              });
-              checkbox.addEventListener("change", () =>
-                setAccounts(
-                  checkbox.checked
-                    ? [...checkedIds, id]
-                    : checkedIds.filter((selectedId) => selectedId !== id),
-                ),
-              );
-              accounts.append(element("label", { className: "plugin-toggle" }, checkbox, name));
-            }
-            details.append(accounts);
-          } else {
-            const options: Choice[] = [
-              ["", "Install without an account"],
-              ...slot.sources.map(({ id, name }) => [id, name] as const),
-            ];
-            if (stale) {
-              options.push(["stale", "Release changed — select an account again", true]);
-            }
-            details.append(
-              select(slot.label, stale ? "stale" : (ids[0] ?? ""), options, (sourceId) =>
-                setAccounts(sourceId ? [sourceId] : []),
+          const accounts = element(
+            "fieldset",
+            { className: "plugin-tool" },
+            element("legend", {}, slot.label),
+          );
+          if (stale) {
+            accounts.append(
+              element(
+                "p",
+                { className: "hint" },
+                "The release changed. Select the accounts for this version again.",
               ),
+              button("Clear accounts", () => setAccounts([])),
             );
           }
+          const sources = new Map(slot.sources.map(({ id, name }) => [id, name]));
+          const checkedIds = stale ? [] : ids;
+          for (const id of checkedIds) {
+            if (!sources.has(id)) {
+              sources.set(id, `${id} (unavailable)`);
+            }
+          }
+          for (const [id, name] of sources) {
+            const checkbox = element("input", {
+              type: "checkbox",
+              checked: checkedIds.includes(id),
+            });
+            checkbox.addEventListener("change", () =>
+              setAccounts(
+                checkbox.checked
+                  ? [...checkedIds, id]
+                  : checkedIds.filter((selectedId) => selectedId !== id),
+              ),
+            );
+            accounts.append(element("label", { className: "plugin-toggle" }, checkbox, name));
+          }
+          details.append(accounts);
           if (!slot.sources.length) {
             details.append(
               element(

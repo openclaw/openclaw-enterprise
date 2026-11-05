@@ -6,7 +6,7 @@
 // Ephemeral native worker reconnect is in runtime-image-startup-probe.test.mjs.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -23,7 +23,7 @@ import {
 import {
   managedInstalls,
   managedMcpInstalls,
-  managedMcpCredentialEnvironment,
+  managedCredentialEnvironment,
 } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
@@ -43,14 +43,20 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 const slack = managedMcpInstalls.find(({ id }) => id === "occ-plugin:slack@1.0.0");
 
 function slackAccount(id, name) {
-  return { id, name, env: managedMcpCredentialEnvironment(slack, id) };
+  return { id, name, env: managedCredentialEnvironment(slack, id) };
 }
 
 function managedPackages(...packages) {
   return "OPENCLAW_MANAGED_PLUGIN_JSON=" + JSON.stringify(packages);
 }
 
-async function startGatewayWithSlack(t, enabled, workspaceNodeId, accounts = []) {
+async function startGatewayWithSlack(
+  t,
+  enabled,
+  workspaceNodeId,
+  accounts = [],
+  googleAccounts = [],
+) {
   const { id, releaseSha256 } = managedGoogleInstall;
   const configurationPath = await temporaryGatewayConfiguration(t, "openclaw");
   const manifest = {
@@ -71,7 +77,7 @@ async function startGatewayWithSlack(t, enabled, workspaceNodeId, accounts = [])
           id,
           packageName: managedGoogleInstall.packageName,
           slotId: "account",
-          ...(enabled && { releaseSha256 }),
+          ...(enabled && { releaseSha256, accounts: googleAccounts }),
         },
         {
           kind: "mcp",
@@ -157,50 +163,105 @@ describe("runtime image native worker", { concurrency: 2 }, () => {
       // Exercise the production worker bootstrap in the real image. Substitute its model probe and
       // enrollment peer; the child resolves and executes the installed binary with the actual launch env.
       const probe = `const r = require("node:child_process").spawnSync("gog", ["--version"], {encoding:"utf8"});
-console.log(JSON.stringify({...(r.error ? {code:r.error.code} : {version:r.stdout.trim().split(" ")[0]}), markerVisible:process.env.GOG_ACCESS_TOKEN===undefined?undefined:"present"}));
+console.log(JSON.stringify({...(r.error ? {code:r.error.code} : {version:r.stdout.trim().split(" ")[0]}), baseEnv:process.env.GOG_ACCESS_TOKEN === undefined ? undefined : "present"}));
 process.exit(r.error ? 0 : r.status);`;
-      const worker = (digest, mounts, environment = []) =>
-        runManagedWorker(["-e", probe], mounts, [
+      const west = {
+        id: "cs_west",
+        env: managedCredentialEnvironment(managedGoogleInstall, "cs_west"),
+      };
+      const east = {
+        id: "cs_east",
+        env: managedCredentialEnvironment(managedGoogleInstall, "cs_east"),
+      };
+      const withdrawn = {
+        id: "cs_gone",
+        env: managedCredentialEnvironment(managedGoogleInstall, "cs_gone"),
+      };
+      const marker = (binding, scope) =>
+        "openshell:resolve:env:s" + scope.repeat(64) + "_" + binding.env;
+      const worker = (
+        digest,
+        mounts = [],
+        environment = [],
+        accounts = [],
+        childArgs = ["-e", probe],
+      ) =>
+        runManagedWorker(childArgs, mounts, [
           ...environment,
           ...(digest === undefined
             ? []
             : [
-                "OPENCLAW_MANAGED_PLUGIN_JSON=" +
-                  JSON.stringify({
-                    kind: "cli",
-                    packageName: managedGoogleInstall.packageName,
-                    slotId: "account",
-                    releaseSha256: digest,
-                  }),
+                managedPackages({
+                  kind: "cli",
+                  packageName: managedGoogleInstall.packageName,
+                  slotId: "account",
+                  releaseSha256: digest,
+                  accounts,
+                }),
               ]),
         ]);
-      const marker =
-        "GOG_ACCESS_TOKEN=openshell:resolve:env:s" + "a".repeat(64) + "_GOG_ACCESS_TOKEN";
-      assert.deepEqual(JSON.parse((await worker(undefined, [], [marker])).stdout.trim()), {
+      assert.deepEqual(JSON.parse((await worker(undefined, [], ["GOG_ACCESS_TOKEN=raw"])).stdout), {
         code: "ENOENT",
-        markerVisible: "present",
       });
-      assert.deepEqual(JSON.parse((await worker(expected)).stdout.trim()), {
-        version: "v" + version,
-      });
-      const bound = "OPENCLAW_MANAGED_CREDENTIAL_ENV=GOG_ACCESS_TOKEN";
-      assert.deepEqual(JSON.parse((await worker(expected, [], [marker])).stdout), {
-        version: "v" + version,
-        markerVisible: "present",
-      });
-      assert.deepEqual(JSON.parse((await worker(expected, [], [bound])).stdout), {
-        version: "v" + version,
-      });
-      assert.deepEqual(JSON.parse((await worker(expected, [], ["GOG_ACCESS_TOKEN=raw"])).stdout), {
-        version: "v" + version,
-      });
-      assert.deepEqual(JSON.parse((await worker(expected, [], [bound, marker])).stdout), {
-        version: "v" + version,
-        markerVisible: "present",
-      });
-      await assert.rejects(
-        worker(expected, [], [bound, "GOG_ACCESS_TOKEN=not-an-issued-placeholder"]),
-        (error) => /requires its issued credential placeholder/.test(error.stderr),
+      assert.deepEqual(JSON.parse((await worker(expected)).stdout), { version: "v" + version });
+      const westMarker = marker(west, "a");
+      const eastMarker = marker(east, "b");
+      // An independent bearer client can consume the one scoped marker supplied by the Sandbox.
+      assert.deepEqual(
+        JSON.parse(
+          (
+            await worker(
+              undefined,
+              [],
+              [west.env + "=" + westMarker, "GOG_ACCESS_TOKEN=" + westMarker],
+            )
+          ).stdout,
+        ),
+        { code: "ENOENT", baseEnv: "present" },
+      );
+      const probePath = fileURLToPath(
+        new URL("../fixtures/runtime-google-account-calls.mjs", import.meta.url),
+      );
+      const mounts = [
+        "--add-host",
+        "gmail.googleapis.com:127.0.0.1",
+        "--add-host",
+        "www.googleapis.com:127.0.0.1",
+        "--sysctl",
+        "net.ipv4.ip_unprivileged_port_start=0",
+        "-v",
+        probePath + ":/tmp/google-account-calls.mjs:ro",
+      ];
+      const capture = (bindings, environment, expectedCalls) =>
+        worker(expected, mounts, environment, bindings, [
+          "/tmp/google-account-calls.mjs",
+          JSON.stringify(
+            expectedCalls.map(({ args, marker }) => ({
+              args,
+              bearerHash:
+                marker &&
+                createHash("sha256")
+                  .update("Bearer " + marker)
+                  .digest("hex"),
+            })),
+          ),
+        ]);
+      await capture([west], [west.env + "=" + westMarker], [{ args: [], marker: westMarker }]);
+      // Both selected identities and all local denials use the same pinned binary and TLS endpoint.
+      await capture(
+        [west, east, withdrawn],
+        [west.env + "=" + westMarker, east.env + "=" + eastMarker],
+        [
+          { args: ["--oce-account", east.id], marker: eastMarker },
+          { args: ["--oce-account", west.id], marker: westMarker },
+          { args: [] },
+          { args: ["--oce-account", "cs_unknown"] },
+          { args: ["--oce-account", withdrawn.id] },
+          { args: ["--oce-account", west.id, "--access-token=controlled-test-override"] },
+        ],
+      );
+      await assert.rejects(worker(expected, [], [west.env + "=raw"], [west]), (error) =>
+        /requires its issued credential placeholder/.test(error.stderr),
       );
       await assert.rejects(worker("0".repeat(64)), (error) =>
         /image integrity check: \/usr\/local\/lib\/oce\/plugin-catalog\/oce-google-workspace\/ai\.openclaw\.oce\/release\.json/.test(
@@ -257,15 +318,24 @@ process.exit(r.error ? 0 : r.status);`;
         },
       });
       await writeFile(join(directory, "ai.openclaw.oce/release.json"), release);
+      await mkdir(join(directory, "account-bin"));
+      const command = join(directory, "account-bin", executable);
+      await copyFile(
+        new URL("../../deploy/runtime/managed-plugin-cli.mjs", import.meta.url),
+        command,
+      );
+      await chmod(command, 0o555);
+      const account = { id: "cs_documents", env: "DOCUMENTS_ACCESS_TOKEN_TEST" };
       const settings =
         "OPENCLAW_MANAGED_PLUGIN_JSON=" +
         JSON.stringify({
           kind: "cli",
           packageName: "oce-documents-cli",
           slotId: "workspace",
+          accounts: [account],
           releaseSha256: createHash("sha256").update(release).digest("hex"),
         });
-      const marker = "openshell:resolve:env:s" + "b".repeat(64) + "_DOCUMENTS_ACCESS_TOKEN";
+      const marker = "openshell:resolve:env:s" + "b".repeat(64) + "_" + account.env;
       const result = await runManagedWorker(
         [
           "-e",
@@ -279,13 +349,9 @@ process.exit(r.status);`,
           "-v",
           directory + ":" + runtimeDirectory + ":ro",
         ],
-        [
-          settings,
-          "OPENCLAW_MANAGED_CREDENTIAL_ENV=DOCUMENTS_ACCESS_TOKEN",
-          "DOCUMENTS_ACCESS_TOKEN=" + marker,
-        ],
+        [settings, account.env + "=" + marker],
       );
-      assert.deepEqual(JSON.parse(result.stdout), { version: "v" + version, marker });
+      assert.deepEqual(JSON.parse(result.stdout), { version: "v" + version });
     },
   );
 
@@ -489,7 +555,18 @@ console.log(require("node:fs").readFileSync(process.env.OPENCLAW_CONFIG_PATH, "u
         slackAccount("cs_work", "Office workspace"),
         slackAccount("cs_home", "Home workspace"),
       ];
-      const { containerName } = await startGatewayWithSlack(t, true, undefined, accounts);
+      const googleAccounts = ["cs_office", "cs_archive"].map((id) => ({
+        id,
+        name: "Google " + id.slice(3),
+        env: managedCredentialEnvironment(managedGoogleInstall, id),
+      }));
+      const { containerName } = await startGatewayWithSlack(
+        t,
+        true,
+        undefined,
+        accounts,
+        googleAccounts,
+      );
       const { stdout } = await runDocker([
         "exec",
         "-e",
@@ -524,7 +601,10 @@ console.log(require("node:fs").readFileSync(process.env.OPENCLAW_CONFIG_PATH, "u
         "cat",
         JSON.parse(skill.stdout).filePath,
       ]);
-      for (const { id, name, env } of accounts) {
+      assert.match(body.stdout, /--oce-account <account ID>/);
+      assert.match(body.stdout, /"command":"gog"/);
+      assert.match(body.stdout, /"server":"oce_mcp_slack"/);
+      for (const { id, name, env } of [...accounts, ...googleAccounts]) {
         assert.ok(body.stdout.includes(id) && body.stdout.includes(name));
         assert.ok(!body.stdout.includes(env));
       }

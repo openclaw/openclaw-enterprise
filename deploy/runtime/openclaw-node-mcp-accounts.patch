@@ -421,10 +421,10 @@ index 12cfdc5..93fedbe 100644
              options,
 diff --git a/src/node-host/node-worker-mcp-accounts.integration.test.ts b/src/node-host/node-worker-mcp-accounts.integration.test.ts
 new file mode 100644
-index 0000000..b82ea60
+index 0000000..783fb06
 --- /dev/null
 +++ b/src/node-host/node-worker-mcp-accounts.integration.test.ts
-@@ -0,0 +1,148 @@
+@@ -0,0 +1,149 @@
 +import assert from "node:assert/strict";
 +import { randomUUID } from "node:crypto";
 +import { expect, it } from "vitest";
@@ -442,7 +442,8 @@ index 0000000..b82ea60
 +  testWorkerLaunchInput,
 +} from "./node-worker-supervisor.test-support.js";
 +
-+it("routes one admitted worker tool to its chosen account on the same HTTP endpoint", async ({
++// A cold arm64 image also compiles the worker before its first MCP call.
++it("routes one admitted worker tool to its chosen account on the same HTTP endpoint", { timeout: 300_000 }, async ({
 +  onTestFinished,
 +}) => {
 +  const credentials = { cs_a_west: randomUUID(), cs_b_east: randomUUID() };

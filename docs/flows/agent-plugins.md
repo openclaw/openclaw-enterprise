@@ -126,10 +126,10 @@ Installation uses `GET /installation`; Agent editors use
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-OCC freezes the Configuration, Driver and selections. Gateway and worker verify each package they use.
+OCC freezes the Configuration, Driver, selections and account names. For slots with multiple accounts, Gateway and worker generate one skill listing names and handles.
 
-- **CLI packages.** The Gateway loads skills. The Harness runs the pinned executable. The guard checks operation and credential restrictions before injection.
-- **Hosted MCP packages.** OCC freezes the selected accounts' names. Gateway and worker build one skill from those names and handles. Worker and Gateway calls reach the same dispatcher. It sends native arguments through the selected account's private session. OpenShell enforces the shared tool selection at the endpoint.
+- **CLI packages.** The worker selects the named account for each command. For Google, OpenShell checks the shared operation and destination, then substitutes the selected credential. Google checks its OAuth grant.
+- **Hosted MCP packages.** Worker and Gateway calls reach one dispatcher. It sends native arguments through the chosen account’s session. OpenShell enforces the shared tool selection.
 - **Native runtime plugins.** Startup installs packages and verifies tool policy.
 
 Withdrawal removes credential injection. Recovery preserves other attachments.
@@ -361,7 +361,7 @@ establish starvation.
 
 ## Changelog
 
-- 2026-11-05 02:03: Trace repeatable MCP account selection through admission, skill discovery and worker dispatch. (authoring-run/1ea84947-7f07-443b-b6ef-911070cc3d04 - 4c543b44fefb925d8fc378d40deedc4f5b42e726)
+- 2026-11-05 02:03: Trace CLI and MCP account selection through admission, skill discovery and worker dispatch. (authoring-run/1ea84947-7f07-443b-b6ef-911070cc3d04 - 4c543b44fefb925d8fc378d40deedc4f5b42e726)
 
 - 2026-11-03 01:40: Trace startup of multiple managed packages on one dedicated Agent. (authoring-run/e29308a5-ef76-4952-b439-23483c4dbd99 - 54b2a30498f690e2a16a3198e84a6363f69d91ae)
 

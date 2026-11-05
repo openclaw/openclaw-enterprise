@@ -5,6 +5,9 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import test from "node:test";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { managedCredentialEnvironment } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
+import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import {
   createOpenShellBackend,
@@ -100,7 +103,14 @@ test(
       ConfigureProviderRefresh(call, callback) {
         assertBearer(call);
         requests.push(call.request);
-        callback(null, { status: { ...status, status: "configured" } });
+        callback(null, {
+          status: {
+            ...status,
+            provider: call.request.provider,
+            credential_key: call.request.credential_key,
+            status: "configured",
+          },
+        });
       },
       RotateProviderCredential(call, callback) {
         assertBearer(call);
@@ -223,6 +233,45 @@ test(
     const driver = new OpenShellCredentialGatewayDriver(
       { binaries: ["/usr/local/bin/codex"] },
       { backend },
+    );
+    // Two Google sources declare the same release slot. Inspect the actual refresh RPCs:
+    // each provider must mint into the same account-specific key its profile projects.
+    const refresh = new OpenShellCredentialRefreshDriver({}, { backend });
+    const googleSourceConfig = {
+      token_url: "https://oauth2.googleapis.com/token",
+      host: "gmail.googleapis.com",
+      path: "/gmail/v1/**",
+      scope: "https://www.googleapis.com/auth/gmail.readonly",
+      env_var: "GOG_ACCESS_TOKEN",
+      client_id: "google-client",
+    };
+    const accountIds = [`cs_${randomUUID()}`, `cs_${randomUUID()}`];
+    for (const id of accountIds) {
+      await refresh.configureRefresh(
+        {
+          signal,
+          namespace: { id: "namespace", name: workspace },
+          source: {
+            id,
+            namespaceId: "namespace",
+            driverId: driver.id,
+            type: "oauth2-refresh-token",
+            config: googleSourceConfig,
+          },
+        },
+        {
+          config: googleSourceConfig,
+          secrets: { refresh_token: "synthetic-google-refresh" },
+          requestId: randomUUID(),
+        },
+      );
+    }
+    assert.deepEqual(
+      requests.slice(-2).map((request) => [request.provider, request.credential_key]),
+      accountIds.map((id) => [
+        openShellProviderName(id),
+        managedCredentialEnvironment(managedGoogleInstall, id),
+      ]),
     );
     // Incoming IP-SAN transport must also carry the operator identity without SNI or bearer headers.
     const ipBackend = createOpenShellBackend({

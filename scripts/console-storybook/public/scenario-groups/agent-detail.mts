@@ -171,6 +171,27 @@ export function createAgentDetailScenarios({
   const slackSourceId = "cs_00000000-0000-4000-8000-000000000001";
   const secondSlackSourceId = "cs_00000000-0000-4000-8000-000000000002";
 
+  const googleEntry = { id: "occ-plugin:google@1.0.0", name: "Google Workspace", tools: [] };
+  const googleAccounts = [
+    { id: "cs_00000000-0000-4000-8000-000000000003", name: "Work mail" },
+    { id: "cs_00000000-0000-4000-8000-000000000004", name: "Personal mail" },
+  ];
+  const managedPluginPicker = {
+    group: "Pages/Agent detail",
+    path: `${draft}&tab=plugins`,
+    harnessId: "openclaw",
+    deployed: true,
+    pluginDiscoveryCredential: "none",
+    actions: [click("Configure plugins")],
+  } satisfies Partial<AgentDetailScenario>;
+  const managedCapabilities = {
+    driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+    approvers: { agent: false, plugin: false, tools: false },
+    toolDefaults: { enabled: false, approval: [], reviewer: [] },
+    tools: { enabled: false, approval: [], reviewer: [] },
+    driverPolicySchema: { type: "object", properties: {} },
+  } satisfies Partial<AgentDetailScenario["pluginCapabilities"]>;
+
   const slackEntry = { id: slackPluginId, name: "Slack", tools: [] };
 
   const slackTool = {
@@ -1085,21 +1106,42 @@ export function createAgentDetailScenarios({
         ],
         gap: "Catalog responses and the saved Agent are simulated. This verifies Console recovery, not plugin installation or a live runtime.",
       },
+      googleAccounts: {
+        ...managedPluginPicker,
+        name: "Choose accounts for Google Workspace",
+        agentPlugins: { [googleEntry.id]: { enabled: true } },
+        credentialSources: googleAccounts.map(({ id }) => ({ sourceId: id })),
+        pluginCapabilities: {
+          ...managedCapabilities,
+          policyScopeByPlugin: { [googleEntry.id]: "enablement_only" },
+          credentialSlots: [
+            {
+              pluginId: googleEntry.id,
+              releaseSha256: "b".repeat(64),
+              id: "account",
+              label: "Google account",
+              sources: googleAccounts,
+            },
+          ],
+        },
+        pluginDiscovery: {
+          pages: { initial: { plugins: [googleEntry], nextCursor: null } },
+          details: { [googleEntry.id]: googleEntry },
+        },
+        description: "Choose which saved Google accounts the Agent can use.",
+        steps: [
+          "Open Google Workspace. Select Work mail and Personal mail, then choose Done and Save plugin selections.",
+          "Reopen Google Workspace. Both accounts are selected. Clear either account to keep one, or both to install without a credential.",
+        ],
+        gap: "Account records and saves are simulated. This preview verifies the Console picker.",
+      },
       slackMcpTools: {
-        group: "Pages/Agent detail",
+        ...managedPluginPicker,
         name: "Choose accounts and tools for Slack",
-        path: `${draft}&tab=plugins`,
-        harnessId: "openclaw",
-        deployed: true,
         agentPlugins: { [slackPluginId]: { enabled: true } },
         credentialSources: [{ sourceId: slackSourceId }, { sourceId: secondSlackSourceId }],
-        pluginDiscoveryCredential: "none",
         pluginCapabilities: {
-          driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
-          approvers: { agent: false, plugin: false, tools: false },
-          toolDefaults: { enabled: false, approval: [], reviewer: [] },
-          tools: { enabled: false, approval: [], reviewer: [] },
-          driverPolicySchema: { type: "object", properties: {} },
+          ...managedCapabilities,
           policyScopeByPlugin: { [slackPluginId]: "enablement_only" },
           credentialSlots: [
             {
@@ -1107,7 +1149,6 @@ export function createAgentDetailScenarios({
               releaseSha256: "a".repeat(64),
               id: "account",
               label: "Slack user accounts",
-              repeatable: true,
               toolDiscovery: true,
               sources: [
                 { id: slackSourceId, name: "Design workspace" },
@@ -1142,7 +1183,6 @@ export function createAgentDetailScenarios({
             code: "FORBIDDEN",
           },
         ],
-        actions: [click("Configure plugins")],
         description:
           "Attach two Slack accounts and choose the tools the Agent can use with either account.",
         steps: [

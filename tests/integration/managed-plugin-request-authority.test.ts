@@ -1,3 +1,4 @@
+import { managedPluginGuardVersion } from "../../apps/controller/src/drivers/plugin/managed-request-policies.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
@@ -61,12 +62,20 @@ test("the signed OpenShell request guard intersects the source envelope with the
   const gateway = token(keys, "gateway", undefined, managedPluginMiddlewareAudience);
   const context = { sandbox_id: sandbox, workspace: "default", request_id: "gmail-request-1" };
   const gmail = "https://www.googleapis.com/auth/gmail.readonly";
-  const scopeConfig = (host: string, path: string, scope: string, port = 443) => ({
+  const accountScope = (host: string, path: string, scope: string, port = 443) => ({
+    host,
+    port,
+    path,
+    scopes: [scope],
+  });
+  const accountsConfig = (accounts: Record<string, ReturnType<typeof accountScope>>) => ({
     fields: {
       binding_id: { stringValue: managedGoogleInstall.releaseSha256 },
-      request_scope: { stringValue: JSON.stringify({ host, port, path, scopes: [scope] }) },
+      request_scope: { stringValue: JSON.stringify(accounts) },
     },
   });
+  const scopeConfig = (host: string, path: string, scope: string, port = 443) =>
+    accountsConfig({ account: accountScope(host, path, scope, port) });
   const config = scopeConfig("gmail.googleapis.com", "/gmail/v1/users/me/messages", gmail);
   const target = {
     scheme: "https",
@@ -94,7 +103,7 @@ test("the signed OpenShell request guard intersects the source envelope with the
   );
   // GetGatewayInfo exposes these negotiated fields before a Sandbox receives its provider.
   assert.equal(manifest.extension.implementation_name, managedPluginMiddlewareImplementation);
-  assert.equal(manifest.extension.implementation_version, managedGoogleInstall.releaseSha256);
+  assert.equal(manifest.extension.implementation_version, managedPluginGuardVersion);
   assert.deepEqual(manifest.extension.required_capabilities, [contract]);
   assert.deepEqual(manifest.extension.supported_capabilities, [contract]);
   assert.deepEqual(
@@ -198,6 +207,36 @@ test("the signed OpenShell request guard intersects the source envelope with the
     }),
     2,
   );
+  // Both accounts share the released operations. Google's API authorizes the supplied token.
+  // The metadata-only account cannot remove search from the other account's shared route.
+  const work = accountScope(target.host, "/gmail/v1/users/me/**", gmail);
+  const metadataGrant = "https://www.googleapis.com/auth/gmail.metadata";
+  const shared = accountsConfig({
+    work,
+    personal: accountScope(target.host, work.path, metadataGrant),
+  });
+  assert.equal(
+    await evaluate({ ...request, config: shared, target: { ...get, query: "format=metadata" } }),
+    1,
+  );
+  assert.equal(
+    await evaluate({ ...request, config: shared, target: { ...target, query: "q=is%3Aunread" } }),
+    1,
+  );
+  assert.equal(
+    await evaluate({ ...request, config: shared, target: { ...target, query: "unreviewed=true" } }),
+    2,
+  );
+  const protectedDiscovery = accountsConfig({
+    work: accountScope(target.host, "/**", gmail),
+    personal: work,
+  });
+  assert.equal(await evaluate({ ...request, config: protectedDiscovery, target: fallback }), 2);
+  const separate = accountsConfig({
+    work,
+    personal: accountScope(target.host, target.path, metadataGrant),
+  });
+  assert.equal(await evaluate({ ...request, config: separate, target: get }), 1);
   const json = (value: unknown) => ({
     body: Buffer.from(JSON.stringify(value)),
     headers: [{ name: "content-type", value: "application/json" }],

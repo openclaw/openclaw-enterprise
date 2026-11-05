@@ -1,41 +1,87 @@
+diff --git a/src/node-host/node-worker-environment.ts b/src/node-host/node-worker-environment.ts
+index 9ce88b5..aff2bdb 100644
 --- a/src/node-host/node-worker-environment.ts
 +++ b/src/node-host/node-worker-environment.ts
-@@ -36,6 +36,9 @@
+@@ -106,15 +106,26 @@ export function snapshotNodeWorkerEnv(
  ): NodeJS.ProcessEnv {
    const windows = process.platform === "win32";
    const snapshot: NodeJS.ProcessEnv = {};
-+  const googleMarker = /^openshell:resolve:env:s[0-9a-f]{64}_GOG_ACCESS_TOKEN$/.test(
-+    source.GOG_ACCESS_TOKEN ?? "",
-+  );
++  const googleMarker =
++    /^openshell:resolve:env:s[0-9a-f]{64}_GOG_ACCESS_TOKEN(?:_[A-F0-9]{24})?$/.test(
++      source.GOG_ACCESS_TOKEN ?? "",
++    );
++  let managedCliMarker = false;
    const retainedWindowsKeys = new Map<string, string>();
    for (const [key, value] of Object.entries(source)) {
      if (value === undefined) {
-@@ -44,7 +47,9 @@
+       continue;
+     }
      const normalized = windows ? key.toUpperCase() : key;
++    // The node supervisor stages only scoped markers for admitted private CLI bindings.
++    const marker = /^openshell:resolve:env:s[0-9a-f]{64}_([A-Z][A-Z0-9_]*)$/.exec(value);
++    const boundCliMarker = marker !== null && normalized === "OCE_MANAGED_CLI_" + marker[1];
++    managedCliMarker ||= boundCliMarker;
      const allowed =
        (windows ? WINDOWS_WORKER_ENV_KEYS : POSIX_WORKER_ENV_KEYS).has(normalized) ||
 -      normalized.startsWith("LC_");
 +      normalized.startsWith("LC_") ||
-+      (googleMarker && (normalized === "GOG_ACCESS_TOKEN" ||
-+        (normalized === "SSL_CERT_FILE" && value === "/run/openshell-supervisor-ca/material/ca-bundle.crt")));
++      boundCliMarker ||
++      (googleMarker && normalized === "GOG_ACCESS_TOKEN");
      if (!allowed) {
        continue;
      }
+@@ -127,6 +138,12 @@ export function snapshotNodeWorkerEnv(
+     }
+     snapshot[key] = value;
+   }
++  if (
++    (managedCliMarker || googleMarker) &&
++    source.SSL_CERT_FILE === "/run/openshell-supervisor-ca/material/ca-bundle.crt"
++  ) {
++    snapshot.SSL_CERT_FILE = source.SSL_CERT_FILE;
++  }
+   if (homeDir) {
+     for (const key of Object.keys(snapshot)) {
+       if (
+diff --git a/src/node-host/node-worker-google-placeholder.test.ts b/src/node-host/node-worker-google-placeholder.test.ts
+new file mode 100644
+index 0000000..ecd516e
 --- /dev/null
 +++ b/src/node-host/node-worker-google-placeholder.test.ts
-@@ -0,0 +1,15 @@
+@@ -0,0 +1,36 @@
 +import { expect, test } from "vitest";
 +import { snapshotNodeWorkerEnv } from "./node-worker-environment.js";
 +
-+test("a native worker receives only a scoped Google placeholder and OpenShell trust", () => {
-+  const marker = `openshell:resolve:env:s${"a".repeat(64)}_GOG_ACCESS_TOKEN`;
++test("a native worker receives only its independently scoped CLI placeholders and OpenShell trust", () => {
 +  const trust = "/run/openshell-supervisor-ca/material/ca-bundle.crt";
-+  const capture = (token: string, ca = trust) =>
-+    snapshotNodeWorkerEnv({ GOG_ACCESS_TOKEN: token, SSL_CERT_FILE: ca });
-+  expect(capture(marker)).toMatchObject({ GOG_ACCESS_TOKEN: marker, SSL_CERT_FILE: trust });
-+  for (const token of ["raw-token", marker.replace("GOG_ACCESS_TOKEN", "ANOTHER_TOKEN")]) {
-+    expect(capture(token).GOG_ACCESS_TOKEN).toBeUndefined();
-+    expect(capture(token).SSL_CERT_FILE).toBeUndefined();
++  const west = "GOG_ACCESS_TOKEN_A";
++  const east = "GOG_ACCESS_TOKEN_B";
++  const marker = (alias: string) => "openshell:resolve:env:s" + "a".repeat(64) + "_" + alias;
++  const env = {
++    ["OCE_MANAGED_CLI_" + west]: marker(west),
++    ["OCE_MANAGED_CLI_" + east]: marker(east),
++    OCE_MANAGED_CLI_OTHER: marker(west),
++    OCE_MANAGED_CLI_RAW: "raw-token",
++    GOG_ACCESS_TOKEN: "raw",
++    SSL_CERT_FILE: trust,
++  };
++  const independent = marker("GOG_ACCESS_TOKEN_" + "F".repeat(24));
++  expect(snapshotNodeWorkerEnv({ GOG_ACCESS_TOKEN: independent }).GOG_ACCESS_TOKEN).toBe(
++    independent,
++  );
++  const snapshot = snapshotNodeWorkerEnv(env);
++  expect(snapshot).toMatchObject({
++    ["OCE_MANAGED_CLI_" + west]: marker(west),
++    ["OCE_MANAGED_CLI_" + east]: marker(east),
++    SSL_CERT_FILE: trust,
++  });
++  for (const key of ["GOG_ACCESS_TOKEN", "OCE_MANAGED_CLI_OTHER", "OCE_MANAGED_CLI_RAW"]) {
++    expect(snapshot[key]).toBeUndefined();
 +  }
-+  expect(capture(marker, "/tmp/untrusted-ca.pem").SSL_CERT_FILE).toBeUndefined();
++  expect(
++    snapshotNodeWorkerEnv({ OCE_MANAGED_CLI_RAW: "raw", SSL_CERT_FILE: trust }).SSL_CERT_FILE,
++  ).toBeUndefined();
++  expect(
++    snapshotNodeWorkerEnv({ ...env, SSL_CERT_FILE: "/tmp/untrusted.pem" }).SSL_CERT_FILE,
++  ).toBeUndefined();
 +});

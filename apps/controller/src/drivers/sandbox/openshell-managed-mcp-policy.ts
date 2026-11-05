@@ -4,8 +4,8 @@ import { asRecord, numericLastLabel } from "@openclaw-enterprise/utils";
 import { openShellProviderName } from "../../backends/openshell.ts";
 import {
   type ManagedMcpInstall,
-  managedMcpCredentialBinding,
-  managedMcpCredentialEnvironment,
+  managedSlotBinding,
+  managedCredentialEnvironment,
   managedMcpInstalls,
 } from "../plugin/managed-catalog.ts";
 import { openShellProfileEndpoint } from "./openshell-gateway-client.ts";
@@ -59,7 +59,7 @@ function openShellManagedMcpPolicy(
   requirements: HarnessWorkloadRequirements,
   installationProviders: readonly string[],
 ) {
-  const binding = managedMcpCredentialBinding(revision.plugins?.plugins, install);
+  const binding = managedSlotBinding(revision.plugins?.plugins, install);
   const { host, port, path } = install.endpoint;
   const selected = new Set(binding?.sourceIds);
   const attached = requirements.credentialAttachments.filter(
@@ -87,7 +87,6 @@ function openShellManagedMcpPolicy(
         requestScope.path !== path ||
         (binding && !selected.has(sourceId)),
     ) ||
-    (!binding && !install.repeatable && attached.length !== 1) ||
     requirements.proxyWiring ||
     revision.egressPlan ||
     installationProviders.length ||
@@ -103,7 +102,7 @@ function openShellManagedMcpPolicy(
   return {
     install,
     credentialEnvironments: attached.map(({ sourceId }) =>
-      managedMcpCredentialEnvironment(install, sourceId),
+      managedCredentialEnvironment(install, sourceId),
     ),
     providers: attached.map(({ ref }) => ({
       name: "_provider_" + ref.replaceAll("-", "_"),

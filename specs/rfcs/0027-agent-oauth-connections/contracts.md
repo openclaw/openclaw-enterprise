@@ -174,7 +174,10 @@ approved destination.
 For a CLI slot, the worker supplies the selected placeholder to that command
 invocation. One account can be used directly. With several accounts, the
 shared skill explains how to name the source. An unknown or withdrawn
-source cannot trigger a call through another account.
+source cannot trigger a call through another account. For Google, OCE applies a
+shared operation and destination policy. Where account destinations overlap,
+any applicable binding can authorize the operation. Google enforces the OAuth
+scopes on the selected bearer.
 
 Qualify the change by calling the same tool on two accounts, checking which
 account answered each call, then removing one binding and using the other.

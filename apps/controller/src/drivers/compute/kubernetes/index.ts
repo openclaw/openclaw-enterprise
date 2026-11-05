@@ -193,10 +193,9 @@ import { requireHarnessAuthMethod } from "../harness-auth-method.ts";
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
 import {
   managedInstalls,
-  managedMcpCredentialBinding,
-  managedMcpCredentialEnvironment,
-  managedMcpInstallForSourceConfig,
-  managedMcpSlotAcceptsSource,
+  managedCredentialEnvironment,
+  managedSlotAcceptsSource,
+  managedSlotBinding,
 } from "../../plugin/managed-catalog.ts";
 import { requireManagedCredentialRuntime } from "../../plugin/managed-runtime.ts";
 import {
@@ -15427,22 +15426,22 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     if (plugins?.driver.implementation !== "occ/openclaw-plugin") {
       return resolved;
     }
-    // A source attached to the Agent can be left out of an enabled plugin's account slot.
-    // Only selected providers may share the endpoint's enabled tool policy.
-    return resolved.filter((source) => {
-      const install = managedMcpInstallForSourceConfig(source.config);
-      if (
-        !install?.repeatable ||
-        !plugins.plugins[install.id]?.enabled ||
-        !managedMcpSlotAcceptsSource(install, source)
-      ) {
-        return true;
+    // Only the accounts selected for an enabled slot may share its request policy.
+    const slots = managedInstalls.flatMap((install) => {
+      if (!plugins.plugins[install.id]?.enabled) {
+        return [];
       }
-      return (
-        managedMcpCredentialBinding(plugins.plugins, install)?.sourceIds.includes(source.id) ===
-        true
-      );
+      const binding = managedSlotBinding(plugins.plugins, install);
+      // CLI credentials attached independently retain their own routes until the owner binds the slot.
+      return binding || install.kind === "mcp"
+        ? [{ install, selected: new Set(binding?.sourceIds) }]
+        : [];
     });
+    return resolved.filter(
+      (source) =>
+        slots.some(({ selected }) => selected.has(source.id)) ||
+        !slots.some(({ install }) => managedSlotAcceptsSource(install, source)),
+    );
   }
 
   private harnessAuthForRevision(
@@ -16228,21 +16227,20 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         if (!selection || (!selection.enabled && role !== "gateway")) {
           continue;
         }
-        const binding =
-          install.kind === "mcp" ? managedMcpCredentialBinding(selections, install) : undefined;
+        const binding = managedSlotBinding(selections, install);
         packages.push({
           kind: install.kind,
           packageName: install.packageName,
-          slotId: Object.keys(install.credentials)[0],
+          slotId: install.slotId,
           ...(role === "gateway" && { id: install.id }),
           ...(selection.enabled && { releaseSha256: install.releaseSha256 }),
           ...(binding && {
             accounts: binding.sourceIds.map((id) => ({
               id,
-              env: managedMcpCredentialEnvironment(binding.install, id),
+              env: managedCredentialEnvironment(install, id),
               ...(pluginRuntime.accountNames?.[id] && { name: pluginRuntime.accountNames[id] }),
             })),
-            toolNames: binding.toolNames,
+            ...(install.kind === "mcp" && { toolNames: binding.toolNames }),
           }),
         });
       }

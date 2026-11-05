@@ -10,7 +10,6 @@
   "credentials": {
     "account": {
       "label": "Slack user accounts",
-      "repeatable": true,
       "issuer": "https://mcp.slack.com",
       "delivery": { "role": "harness", "env": "SLACK_MCP_TOKEN", "presentation": "bearer" },
       "mcp": {

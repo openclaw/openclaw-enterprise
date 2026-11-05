@@ -239,11 +239,11 @@ The build verifies the upstream skill pin, the packaged `oce-google` instruction
 image architecture, and the executable’s checksum and reported version. The binary
 lives under `/usr/local/lib/oce/plugins/google/bin`, outside the image’s default PATH.
 
-A selected dedicated OpenClaw worker verifies the bundled release and binary before
-enrollment, then adds that directory to its PATH. The Gateway verifies the bundled
-skill and adds it to native skill discovery. OpenClaw’s usual precedence applies if
-the workspace contains another skill with the same name. Run `gog --version` in the
-worker to check the installation.
+The dedicated worker verifies the selected release and binary before enrollment.
+For a bound slot, `gog` on the worker’s PATH runs the binary with the chosen
+account’s placeholder. The Gateway verifies and registers the bundled skill.
+OpenClaw applies its usual skill precedence. Check the binary version with
+`/usr/local/lib/oce/plugins/google/bin/gog --version`.
 
 For account selection and deployment, see [Configure Agent plugins](../../docs/guides/topics/plugins-configure.md#use-the-console).
 

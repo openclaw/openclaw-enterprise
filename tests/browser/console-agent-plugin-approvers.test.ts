@@ -160,10 +160,12 @@ test("A dedicated OpenClaw Agent can enable and disable Google Workspace without
   }
   await dialog.getByRole("button", { name: "Google Workspace", exact: true }).click();
   await dialog.getByRole("button", { name: "Add Google Workspace", exact: true }).click();
-  assert.equal(await dialog.getByLabel("Google account", { exact: true }).inputValue(), "");
+  const accounts = dialog.getByRole("group", { name: "Google account", exact: true });
+  await accounts.waitFor();
+  assert.equal(await accounts.getByRole("checkbox").count(), 0);
   await dialog
-    .getByRole("option", { name: "Install without an account" })
-    .waitFor({ state: "attached" });
+    .getByText("No compatible, ready credential is available to both you and this Agent.")
+    .waitFor();
   await checkPolicySupport("Google Workspace");
   async function save(enabled: boolean) {
     await dialog.getByRole("button", { name: "Done", exact: true }).click();

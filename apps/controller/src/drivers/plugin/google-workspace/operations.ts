@@ -157,12 +157,24 @@ export function eligibleGoogleOperations(scope: GoogleRequestScope) {
   });
 }
 
-export function googleScopeFromString(raw: unknown): GoogleRequestScope | undefined {
+export function googleAccountScopes(raw: unknown): Record<string, GoogleRequestScope> | undefined {
   if (typeof raw !== "string" || raw.length > 16384 || !raw) {
     return undefined;
   }
   try {
-    return googleRequestScope(JSON.parse(raw));
+    const accounts = asRecord(JSON.parse(raw));
+    if (!accounts || !Object.keys(accounts).length) {
+      return undefined;
+    }
+    const entries: [string, GoogleRequestScope][] = [];
+    for (const [id, value] of Object.entries(accounts)) {
+      const scope = googleRequestScope(value);
+      if (!id || !scope) {
+        return undefined;
+      }
+      entries.push([id, scope]);
+    }
+    return Object.fromEntries(entries);
   } catch {
     return undefined;
   }

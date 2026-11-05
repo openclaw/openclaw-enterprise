@@ -180,7 +180,7 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
       {
         workspace: openShellWorkspaceName(context.namespace),
         provider: openShellProviderName(context.source.id),
-        credentialKey: type.credentialKey(input.config),
+        credentialKey: type.credentialKey(context.source.id, input.config),
         strategy: type.strategy,
         material,
         requestId: input.requestId,
@@ -206,7 +206,7 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
     const client = this.client(context);
     const workspace = openShellWorkspaceName(context.namespace);
     const provider = openShellProviderName(context.source.id);
-    const credentialKey = type.credentialKey(context.source.config);
+    const credentialKey = type.credentialKey(context.source.id, context.source.config);
     try {
       return credentialRefreshStatus(
         await client.rotateProviderCredential(
@@ -233,7 +233,7 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
     const status = await this.client(context).getProviderRefreshStatus(
       openShellWorkspaceName(context.namespace),
       openShellProviderName(context.source.id),
-      type.credentialKey(context.source.config),
+      type.credentialKey(context.source.id, context.source.config),
       context.signal,
     );
     // Device login has no grant until approval. Once account metadata records a
@@ -258,7 +258,7 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
     await this.client(context).deleteProviderRefresh(
       openShellWorkspaceName(context.namespace),
       openShellProviderName(context.source.id),
-      type.credentialKey(context.source.config),
+      type.credentialKey(context.source.id, context.source.config),
       context.signal,
     );
   }
