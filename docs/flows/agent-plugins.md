@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
 updated: 2026-11-05
-last_updated_session: authoring-run/1ea84947-7f07-443b-b6ef-911070cc3d04
+last_updated_session: authoring-run/4c357458-b5ce-4192-b0ae-621ecd03c699
 ---
 
 # Agent Plugin Deployment Flow
@@ -114,10 +114,10 @@ Installation uses `GET /installation`; Agent editors use
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-OCC freezes the Configuration, Driver, selections and account names. Before cutover, the worker checks that the pinned Driver owns the Harness catalog. Gateway and worker verify the package assets. For a slot with multiple accounts, each exposes one shared skill listing the account names and handles.
+OCC freezes the Configuration, Driver, selections and account names. Before cutover, the worker verifies that the pinned Driver owns the Harness catalog. Gateway and worker verify package assets and expose one skill listing names and handles for multi-account slots.
 
 - **CLI packages.** The worker selects the named account for each command. For Google, OpenShell checks the shared operation and destination, then substitutes the selected credential. Google checks its OAuth grant.
-- **Hosted MCP packages.** Worker and Gateway calls reach one dispatcher. It sends native arguments through the chosen account’s session. OpenShell enforces the shared tool selection.
+- **Hosted MCP packages.** The [dispatcher](../../deploy/runtime/openclaw-node-mcp-accounts.patch) groups tools by server and name, keeping the first description and combining input schemas. For Gateway and worker calls, it checks tool availability and arguments on the chosen account, then calls through its session. OpenShell enforces shared tool selection.
 - **Native runtime plugins.** Startup installs packages and verifies tool policy.
 
 Withdrawal removes credential injection. Recovery preserves other attachments.
@@ -349,6 +349,7 @@ establish starvation.
 
 ## Changelog
 
+- 2026-11-05 19:10: Trace same-named MCP tools across accounts. (authoring-run/4c357458-b5ce-4192-b0ae-621ecd03c699 - 14e5d34f217d8bb20e3668a6f7576d5dbdf2ecda)
 - 2026-11-05 02:03: Trace CLI and MCP account selection through admission, skill discovery and worker dispatch. (authoring-run/1ea84947-7f07-443b-b6ef-911070cc3d04 - 4c543b44fefb925d8fc378d40deedc4f5b42e726)
 - 2026-11-05 01:02: Select the Harness catalog and recheck its identity before cutover. (01a169f0-a851-7b81-8e83-ff597893aa21 - 0e9575278)
 
