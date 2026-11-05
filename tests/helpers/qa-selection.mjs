@@ -18,6 +18,8 @@ const separatelySelectedScenarios = new Set([
   "authority-recovery",
   "plugin-install",
   "openshell-linear-read",
+  "codex-search-config",
+  "custom-responses",
 ]);
 
 // One selection contract serves local execution and hosted credential setup.
