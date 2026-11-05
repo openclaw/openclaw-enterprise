@@ -106,8 +106,9 @@ node scripts/generate-occ-api-reference.mjs --check
 
 Run `pnpm hooks:install` to reinstall the managed pre-push hook. It refuses to
 replace an unmanaged hook and preserves `core.hooksPath`. The hook requires the
-Bun version in `.bun-version` and runs the package's `format:check` command. It
-checks files on disk in the active checkout, including unstaged edits. To verify formatting
+Bun version in `.bun-version` and invokes that executable's formatter directly,
+without running package scripts. It checks files on disk in the active checkout,
+including unstaged edits. To verify formatting
 for a trusted outgoing commit, run `pnpm format:check` in a clean, isolated
 checkout of its exact commit ID with matching dependencies already installed.
 

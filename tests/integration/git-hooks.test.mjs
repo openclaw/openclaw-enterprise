@@ -108,9 +108,32 @@ test("hook installation refuses to replace an existing unmanaged native hook", a
 });
 
 test("the native pre-push hook runs the pinned formatter and blocks formatting failures", async (t) => {
-  const fixtureRoot = await createRepositoryFixture(t);
-  const install = installHooks(fixtureRoot);
+  const installationRoot = await createRepositoryFixture(t);
+  const install = installHooks(installationRoot);
   assert.equal(install.status, 0, install.stderr);
+
+  // The common hook also runs in sibling worktrees whose scripts were never installed.
+  const commit = spawnSync(
+    "git",
+    [
+      "-c",
+      "user.name=Fixture",
+      "-c",
+      "user.email=fixture@example.test",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "Fixture",
+    ],
+    { cwd: installationRoot, encoding: "utf8" },
+  );
+  assert.equal(commit.status, 0, commit.stderr);
+  const fixtureRoot = join(await temporaryDirectory(t, "openclaw-hook-worktree-"), "checkout");
+  const worktree = spawnSync("git", ["worktree", "add", "--detach", fixtureRoot], {
+    cwd: installationRoot,
+    encoding: "utf8",
+  });
+  assert.equal(worktree.status, 0, worktree.stderr);
 
   for (const filename of [".prettierrc.json", ".prettierignore", ".bun-version"]) {
     await copyFile(join(repositoryRoot, filename), join(fixtureRoot, filename));
@@ -119,9 +142,12 @@ test("the native pre-push hook runs the pinned formatter and blocks formatting f
   const fixturePackage = {
     name: "hook-fixture",
     private: true,
-    scripts: { "format:check": scripts["format:check"] },
+    scripts: {
+      "preformat:check": "printf invoked > lifecycle-script-invoked",
+      "format:check": `printf invoked > package-script-invoked; ${scripts["format:check"]}`,
+    },
   };
-  const nativeHookPath = join(fixtureRoot, ".git/hooks/pre-push");
+  const nativeHookPath = join(installationRoot, ".git/hooks/pre-push");
   const runHook = () =>
     spawnSync(nativeHookPath, ["origin", "https://example.test/repository"], {
       cwd: fixtureRoot,
@@ -153,6 +179,13 @@ test("the native pre-push hook runs the pinned formatter and blocks formatting f
   });
   assert.equal(format.status, 0, format.stdout + format.stderr);
 
+  // Package-script PATH handling must not replace the already resolved formatter.
+  const localBinaries = join(fixtureRoot, "node_modules/.bin");
+  await mkdir(localBinaries, { recursive: true });
+  const localBun = join(localBinaries, "bun");
+  await writeFile(localBun, "#!/bin/sh\nprintf invoked > local-bun-invoked\nexit 0\n");
+  await chmod(localBun, 0o755);
+
   // Generated API documentation is checked by openapi:check, not the formatter.
   const generatedPath = join(fixtureRoot, "docs/reference/api.md");
   const generatedContent = "# Generated API\n\n-   generated entry\n";
@@ -160,6 +193,15 @@ test("the native pre-push hook runs the pinned formatter and blocks formatting f
   await writeFile(generatedPath, generatedContent);
   const baseline = runHook();
   assert.equal(baseline.status, 0, baseline.stdout + baseline.stderr);
+  for (const marker of [
+    "lifecycle-script-invoked",
+    "package-script-invoked",
+    "local-bun-invoked",
+  ]) {
+    await t.test(`${marker} stays absent`, async () => {
+      await assert.rejects(stat(join(fixtureRoot, marker)), { code: "ENOENT" });
+    });
+  }
 
   for (const [relativePath, unformatted] of cases) {
     await t.test(relativePath, async () => {
