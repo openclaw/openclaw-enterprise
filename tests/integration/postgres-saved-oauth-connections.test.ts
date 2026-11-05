@@ -191,7 +191,10 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
     defaultClientScopes: [],
     directAccessGrantsEnabled: false,
     redirectUris: [redirectUri],
-    attributes: { "pkce.code.challenge.method": "S256" },
+    attributes: {
+      "pkce.code.challenge.method": "S256",
+      ...(!pluginWorkflow && { "exclude.issuer.from.auth.response": "true" }),
+    },
   });
   const scopes = ["openid"];
   let optionalScopeId: string | undefined;
@@ -626,6 +629,7 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
       });
     },
     preparedTokens,
+    manualConfig,
     mcpConfig,
     setDiscoveredResource(resource: string) {
       discoveredResource = resource;
@@ -677,6 +681,7 @@ test(
       ownerId,
       begin,
       advanceRegistrationFence,
+      manualConfig,
       mcpConfig,
       setDiscoveredResource,
     } = await oauthAccounts(t);
@@ -714,6 +719,8 @@ test(
     );
     // The same user in a second browser cannot spend the first browser's state or code.
     const { id, callback } = await begin();
+    // Only Keycloak can start a flow. The built-in Google template still has no OAuth client.
+    assert.equal(new URL(callback, publicOrigin).searchParams.has("iss"), false);
     const stolen = await secondSession("GET", callback);
     assert.match(String(stolen.headers.location), /reason=unknown_session/);
     // The code was issued while A was current. Keycloak now rejects A, so redeeming it proves
@@ -921,6 +928,43 @@ test(
       createdProviders,
       [],
       "no OpenShell provider receives user or OAuth client credentials",
+    );
+    // A second issuer becomes eligible after the first browser obtained its code. Even after the
+    // template changes, callbacks from both usable versions could still be in flight.
+    const pending = await begin();
+    const secondIssuer = "https://second-issuer.example.test";
+    const secondTemplate = await inject("POST", "/connection-templates", {
+      ...manualConfig,
+      namespaceId,
+      displayName: "Second authorization server",
+      issuer: secondIssuer,
+      authorizationUrl: secondIssuer + "/authorize",
+      tokenUrl: secondIssuer + "/token",
+    });
+    assert.equal(secondTemplate.statusCode, 201, secondTemplate.body);
+    const secondTemplateId = secondTemplate.json().data.id;
+    const secondClient = await inject("POST", "/oauth-clients", {
+      connectionTemplateId: secondTemplateId,
+      connectionTemplateVersion: 1,
+      displayName: "Second server public registration",
+      clientId: randomUUID(),
+      tokenEndpointAuthMethod: "none",
+    });
+    assert.equal(secondClient.statusCode, 201, secondClient.body);
+    const switchIssuer = await inject("PATCH", "/connection-templates/" + secondTemplateId, {
+      ...manualConfig,
+      oauthClientId,
+    });
+    assert.equal(switchIssuer.statusCode, 200, switchIssuer.body);
+    const ambiguous = await owner("GET", pending.callback);
+    assert.match(String(ambiguous.headers.location), /reason=issuer_required/);
+    assert.equal(
+      (await inject("DELETE", "/connection-templates/" + secondTemplateId)).statusCode,
+      204,
+    );
+    assert.equal(
+      (await inject("DELETE", "/oauth-clients/" + secondClient.json().data.id)).statusCode,
+      204,
     );
     // A peer can revoke a browser session after its callback has already passed admission.
     const peer = await createPostgresAgentApp(t, {
