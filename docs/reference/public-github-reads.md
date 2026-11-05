@@ -113,7 +113,9 @@ Select public reads separately in a dedicated Agent's Configuration or Preset:
 ```
 
 Deploy a new Agent revision after changing its selection. Omission and empty
-lists grant no public reads. Effective scope is the intersection of the current
+lists grant no public-reader access. This selection does not revoke independent
+ordinary Sandbox network grants, including the development launcher's direct GitHub
+rule. Effective reader scope is the intersection of the current
 Installation ceiling and the selection saved for that revision. Native network
 denies remain narrowing constraints. Enabling the reader grants no Agent access
 by itself, and an existing revision does not inherit a later selection.

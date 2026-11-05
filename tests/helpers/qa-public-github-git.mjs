@@ -13,6 +13,65 @@ const supervisor =
   "ghcr.io/nvidia/openshell/supervisor:0.1.6@sha256:ce859a7d77ee515d3fe0b3c7dc61286516f402eb1d25c761d806d9ae5ed96c0b";
 const url = "https://github.com/octocat/Hello-World.git";
 
+function assertNoDirectGithubPolicy(defaults, additions) {
+  const hosts = [
+    ...Object.values(defaults).flatMap((rule) => rule.endpoints.map(({ host }) => host)),
+    ...additions.map(({ host }) => host),
+  ];
+  for (const host of hosts) {
+    assert.ok(
+      !["github.com", "api.github.com"].some(
+        (target) =>
+          host === target ||
+          host === "*" ||
+          (host.startsWith("*.") && target.endsWith(host.slice(1))),
+      ),
+      "ordinary public Git QA must have no independent direct GitHub grant",
+    );
+  }
+}
+
+export function configureQaOrdinaryPublicGithubPolicy(sandbox) {
+  const rules = sandbox.policy.networkPolicies;
+  const selected = rules.filter(({ name }) => name === "source-control");
+  assert.deepEqual(
+    selected,
+    [
+      {
+        name: "source-control",
+        endpoints: [{ host: "github.com", ports: [443], tls: "skip" }],
+        binaries: [{ path: "/usr/bin/git" }],
+      },
+    ],
+    "ordinary public Git QA requires the exact launcher source-control default",
+  );
+  const defaults = Object.fromEntries(
+    rules.map((rule) => [
+      rule.name,
+      {
+        ...rule,
+        endpoints: rule === selected[0] ? [] : rule.endpoints,
+      },
+    ]),
+  );
+  assertNoDirectGithubPolicy(defaults, []);
+  // The normal OpenShell configuration requires a nonempty policy list. Keep
+  // its named binary rule, with no destinations, instead of inventing a grant.
+  selected[0].endpoints = [];
+}
+
+function assertOrdinaryPublicGithubAdmission(revision, services) {
+  assert.equal(revision.executionAdmission.mode, "unprotected");
+  assert.equal(revision.egressPlan, undefined);
+  assert.equal(revision.repositoryCredentials, undefined);
+  assert.deepEqual(revision.compute.serviceAccess ?? [], services);
+  assert.deepEqual(revision.sandboxPolicy.serviceAccess ?? [], services);
+  assert.equal(revision.sandboxPolicy.implementation, "openshell");
+  assert.deepEqual(revision.sandboxPolicy.defaults["source-control"].endpoints, []);
+  assert.deepEqual(revision.sandboxPolicy.additions, []);
+  assertNoDirectGithubPolicy(revision.sandboxPolicy.defaults, revision.sandboxPolicy.additions);
+}
+
 async function verifyReaderSource(f) {
   const names = ["server.ts", "access.ts", "git.ts", "transport.mjs"];
   const expected = Object.fromEntries(
@@ -291,9 +350,13 @@ export async function verifyQaPublicGithubGit(context, artifacts) {
     f.afterSaveInstallation = () => routeReader(f, reader.peer.address);
     const compute = f.configuration.drivers.compute.configuration;
     compute.network.publicGithubRead = reader.peer;
-    compute.runtime.codexModelBaseUrl = process.env.OCC_TEST_QA_CODEX_MODEL_BASE_URL;
-    // This public-only service scope admits no ambient artifact destinations.
+    compute.runtime.modelProvider = {
+      protocol: "openai-responses",
+      baseUrl: process.env.OCC_TEST_QA_CODEX_MODEL_BASE_URL,
+    };
+    // Keep artifact declarations empty and narrow ordinary defaults explicitly.
     f.configuration.drivers.sandbox.configuration.policy.codexArtifactRuleNames = [];
+    configureQaOrdinaryPublicGithubPolicy(f.configuration.drivers.sandbox.configuration);
     await f.saveInstallation(f.configuration);
     const first = await createQaAgent(f, "Codex", undefined, "-public-git-all", {
       apiKeyAuth: true,
@@ -302,6 +365,14 @@ export async function verifyQaPublicGithubGit(context, artifacts) {
           [reader.peer.address]: "allow",
         };
       },
+    });
+    assertOrdinaryPublicGithubAdmission(first.revision, []);
+    await f.record("public-git-execution-boundary", {
+      executionMode: "ordinary-openshell",
+      executionAdmission: "unprotected",
+      directGithubDefault: "no endpoints",
+      readerServiceAccessBeforeOptIn: [],
+      protectedCoexistenceQualified: false,
     });
     let commandIndex = 0;
     const executeCommand = async (agent, args) => {
@@ -331,6 +402,11 @@ export async function verifyQaPublicGithubGit(context, artifacts) {
       await f.write(`native-git-${randomUUID()}.json`, result);
       assert.equal(result.error, undefined, "native command execution must be supported");
       assert.ok(Number.isInteger(result.exitCode), "native command must finish");
+      assert.equal(result.providerPermissionProfile, ":danger-full-access");
+      assert.equal(
+        result.workspaceRoot,
+        f.configuration.drivers.sandbox.configuration.kubernetes.sandboxDataMount.mountPath,
+      );
       await f.record(`public-git-command-${++commandIndex}`, {
         agentId: agent.id,
         revisionId: agent.revision.id,
@@ -355,7 +431,7 @@ export async function verifyQaPublicGithubGit(context, artifacts) {
       /^git version /,
       "native execution must work before a denial can count",
     );
-    // No Agent opt-in: ordinary GitHub access must fail under default deny.
+    // No opt-in and no independent direct GitHub grant: the outer policy must deny.
     await denied(first, "ls-remote", url);
     async function select(agent, policy) {
       const values = structuredClone(agent.configuration.values);
@@ -373,10 +449,27 @@ export async function verifyQaPublicGithubGit(context, artifacts) {
       );
       agent.configuration.values = values;
       await f.deployAndWait(agent);
-      assert.equal(agent.revision.executionAdmission.mode, "protected");
-      assert.ok(
-        agent.revision.compute.serviceAccess.some((service) => service.id === "public-github-read"),
-      );
+      assertOrdinaryPublicGithubAdmission(agent.revision, [
+        {
+          id: "public-github-read",
+          driverId: f.configuration.drivers.compute.id,
+          implementation: "kubernetes",
+          endpoint: `https://${reader.peer.address}:8080`,
+          configuration: {
+            policy,
+            peer: { namespace: reader.peer.namespace, podLabels: reader.peer.podLabels },
+            authorizationConfigMapName: reader.peer.authorizationConfigMapName,
+            installationId: f.installation.id,
+            caBundle: reader.peer.caBundle,
+          },
+        },
+      ]);
+      await f.record(`public-git-admission-${agent.revision.id}`, {
+        executionMode: "ordinary-openshell",
+        executionAdmission: agent.revision.executionAdmission.mode,
+        sandboxPolicy: agent.revision.sandboxPolicy,
+        serviceAccess: agent.revision.compute.serviceAccess,
+      });
       const pod = await f.pod(agent, "agent");
       assert.ok(
         pod.metadata.ownerReferences.some((owner) => owner.kind === "Sandbox"),
@@ -511,12 +604,15 @@ export async function verifyQaPublicGithubGit(context, artifacts) {
     await git(second, "ls-remote", "https://github.com/octocat/Spoon-Knife.git");
     await stopQaAgent(f, second);
     const evidence = await f.record("public-github-git", {
+      executionMode: "ordinary-openshell",
+      executionAdmission: "unprotected",
+      protectedCoexistenceQualified: false,
       provider: "live anonymous github.com",
       model: process.env.OCC_TEST_QA_CODEX_MODEL,
       before,
       after,
       unchangedUrl: url,
-      defaultDeny: true,
+      defaultDenyWithoutIndependentDirectGithubGrant: true,
       managedSkillApiRead: true,
       ceilingIntersection: true,
       separateAgentScopes: true,
@@ -531,13 +627,14 @@ export async function verifyQaPublicGithubGit(context, artifacts) {
         "Native push upstream-no-contact proof is controlled-fixture coverage, separate from installed reader refusal",
         "Installed lookalike-host OpenShell policy refusal (DNS failure is insufficient)",
         "Known private repository live-provider proof",
-        "Protected repository read/write coexistence",
+        "Paired protected execution and protected repository read/write coexistence",
         "Ten-minute expiry isolation",
       ],
     });
     return {
       evidence,
-      outcome: "native Git public clone/fetch and real model turn through shipping OCE/OpenShell",
+      outcome:
+        "ordinary OpenShell native public Git clone/fetch and real model turn; protected coexistence remains unqualified",
     };
   } catch (error) {
     throw redactQaError(error);

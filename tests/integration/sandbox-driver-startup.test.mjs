@@ -90,6 +90,9 @@ import {
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { installationDriverConfigurations } from "../../apps/controller/src/composition/installation-config.ts";
+import { configureQaOrdinaryPublicGithubPolicy } from "../helpers/qa-public-github-git.mjs";
 
 const controllerRequire = createRequire(
   new URL("../../apps/controller/package.json", import.meta.url),
@@ -8444,7 +8447,87 @@ test(
   },
 );
 
-async function publicReaderMaterialDelivery(t, protectedReader) {
+function ordinaryPublicGithubConfiguration() {
+  const options = sandboxInstallation().drivers.sandbox.configuration;
+  options.policy.networkPolicies.unshift({
+    name: "source-control",
+    endpoints: [{ host: "github.com", ports: [443], tls: "skip" }],
+    binaries: [{ path: "/usr/bin/git" }],
+  });
+  return options;
+}
+
+test("ordinary public Git QA closes only its launcher GitHub grant through normal Sandbox admission and creation", async (t) => {
+  for (const { narrow, modelDefault } of [
+    { narrow: false, modelDefault: true },
+    { narrow: true, modelDefault: true },
+    { narrow: true, modelDefault: false },
+  ]) {
+    const options = ordinaryPublicGithubConfiguration();
+    if (!modelDefault) {
+      options.policy.networkPolicies.pop();
+    }
+    const before = structuredClone(options);
+    if (narrow) {
+      configureQaOrdinaryPublicGithubPolicy(options);
+      const restored = structuredClone(options);
+      restored.policy.networkPolicies[0].endpoints = before.policy.networkPolicies[0].endpoints;
+      assert.deepEqual(restored, before, "all other installation attachments stay intact");
+    }
+    const installationInput = sandboxInstallation();
+    installationInput.drivers.sandbox.configuration = options;
+    const loaded = await loadInstallationFile(t, installationInput);
+    assert.ok(loaded.sandboxDriver instanceof OpenShellSandboxDriver);
+    const gateway = workspaceGatewayClient();
+    let created;
+    gateway.createSandbox = async (request) => (created = storedSandbox(request));
+    gateway.getSandbox = async () => created;
+    gateway.getService = async (_workspace, sandbox, service) =>
+      harnessService(sandbox, service, created?.serviceUrls[""]);
+    const driver = openShellDriver(gateway, options);
+    const context = namespaceContext();
+    const revision = dedicatedRevision(driver, context, "000000001717");
+    revision.sandboxPolicy = driver.admitNetworkPolicy([], 1);
+    await driver.ensureNamespace(context);
+    await driver.provisionHarness({
+      ...context,
+      revision,
+      requirements: codexRequirements(revision),
+    });
+    const emitted = created.spec.policy.network_policies;
+    assert.deepEqual(
+      emitted["source-control"].endpoints,
+      narrow ? [] : [{ host: "github.com", ports: [443], tls: "NETWORK_TLS_MODE_SKIP" }],
+    );
+    assert.deepEqual(emitted["model-egress"], revision.sandboxPolicy.defaults["model-egress"]);
+    assert.deepEqual(emitted["source-control"].binaries, [{ path: "/usr/bin/git" }]);
+    assert.equal(emitted["public-github-read"], undefined, "no opt-in grants no reader route");
+    assert.equal(gateway.profiles.has("oce-codex-runtime-public-github-read"), false);
+  }
+});
+
+test("ordinary public Git QA refuses an unexpected launcher GitHub rule before mutating it", () => {
+  for (const change of [
+    (rule) => rule.endpoints.push({ host: "example.test", ports: [443] }),
+    (rule) => rule.binaries.push({ path: "/usr/bin/curl" }),
+    (rule) => {
+      rule.endpoints[0].tls = "terminate";
+    },
+  ]) {
+    const options = ordinaryPublicGithubConfiguration();
+    change(options.policy.networkPolicies[0]);
+    const before = structuredClone(options);
+    assert.throws(() => configureQaOrdinaryPublicGithubPolicy(options), /launcher source-control/);
+    assert.deepEqual(options, before);
+  }
+  const options = ordinaryPublicGithubConfiguration();
+  options.policy.networkPolicies[1].endpoints.push({ host: "*.com", ports: [443] });
+  const before = structuredClone(options);
+  assert.throws(() => configureQaOrdinaryPublicGithubPolicy(options), /independent direct GitHub/);
+  assert.deepEqual(options, before, "a second direct grant must refuse before mutation");
+});
+
+async function publicReaderMaterialDelivery(t, protectedReader, workspaceNode) {
   const tls = await harnessTlsFixture(t);
   const gateway = workspaceGatewayClient();
   let created;
@@ -8459,9 +8542,13 @@ async function publicReaderMaterialDelivery(t, protectedReader) {
     advertisedUrl: "http://codex.example.test:8080/",
     url: "http://codex.example.test:8080/",
   });
-  const options = sandboxInstallation().drivers.sandbox.configuration;
+  const options = protectedReader
+    ? sandboxInstallation().drivers.sandbox.configuration
+    : ordinaryPublicGithubConfiguration();
   if (protectedReader) {
     options.egress = { middlewareName: "service-exchange", authorityScope: "execution" };
+  } else {
+    configureQaOrdinaryPublicGithubPolicy(options);
   }
   const driver = openShellDriver(gateway, options);
   const { context, revision, requirements } = runtimeSandboxFixture(driver);
@@ -8570,6 +8657,14 @@ async function publicReaderMaterialDelivery(t, protectedReader) {
     assert.equal(revision.repositoryCredentials, undefined);
   }
   const serviceRule = created.spec.policy.network_policies["public-github-read"];
+  if (!protectedReader) {
+    assert.deepEqual(created.spec.policy.network_policies["source-control"].endpoints, []);
+    assert.deepEqual(
+      created.spec.policy.network_policies["model-egress"],
+      revision.sandboxPolicy.defaults["model-egress"],
+    );
+    assert.deepEqual(revision.sandboxPolicy.serviceAccess, revision.compute.serviceAccess);
+  }
   assert.deepEqual(serviceRule.endpoints[0].credential_binding, {
     provider: providerCreate.name,
   });

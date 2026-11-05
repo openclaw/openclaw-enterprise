@@ -91,8 +91,8 @@ test(
       const { verifyQaPublicGithubGit } = await import("../helpers/qa-public-github-git.mjs");
       await stage(
         context,
-        "compose/Codex/OpenShell",
-        "native public Git clone, fetch and revision isolation",
+        "compose/Codex/ordinary OpenShell",
+        "ordinary native public Git clone, fetch and revision isolation",
         () => verifyQaPublicGithubGit(context, artifacts),
         "public-github-git",
       );
