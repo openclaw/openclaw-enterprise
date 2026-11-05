@@ -193,6 +193,9 @@ Run cleanup even if preparation or a test fails:
 node scripts/ci/cleanup.mjs --state "$OCC_OPENSHELL_TEST_ROOT/state.json"
 ```
 
+The separate [Git retention case](repository-credentials.md#verify-openshell-git-expiry-and-restart)
+checks finite-grant expiry and worker restart on the ordinary authenticated installation.
+
 The Codex Sandbox case and guided native OpenClaw first-Agent case use production
 Drivers, but neither qualifies a production installation. The separate native
 Sandbox case uses a test-only compatibility bridge. Use the k3d helper below to

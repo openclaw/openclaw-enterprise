@@ -56,7 +56,7 @@ for (let call = 0; call < 3; call += 1) {
 // runner can still stall one call, so a call over the bound is retried twice and the fastest of
 // the three counts: a steep blowup is slow every time.
 const BOUND_MS = 50;
-function fastestCall(name) {
+function fastestCall(name: string) {
   let fastest = Infinity;
   let marked;
   for (let attempt = 0; attempt < 3 && fastest >= BOUND_MS; attempt += 1) {
@@ -104,17 +104,17 @@ const CONTEXTS = [
   // A mark before what a lookahead looks for (\p{M}*).
   ...["\u03015", "\u0301\u0660", "\u0301\u2060", "\u0301-", "\u0301\u00ab", "\u0301)"],
 ];
-const sticky = (source) => new RegExp(source, "uy");
+const sticky = (source: string) => new RegExp(source, "uy");
 const alternatives = UNBROKEN_ALTERNATIVES.map(sticky);
 // Splits off every lookahead and lookbehind group, skipping escapes and character classes:
 // `kept` is the source without them, `bodies` what each one holds.
-function splitLookarounds(source) {
+function splitLookarounds(source: string) {
   let kept = "";
-  const bodies = [];
+  const bodies: string[] = [];
   let depth = 0;
   let inClass = false;
   for (let index = 0; index < source.length; index += 1) {
-    const character = source[index];
+    const character = source.charAt(index);
     const text = character === "\\" ? source.slice(index, index + 2) : character;
     index += text.length - 1;
     if (character === "[" && !inClass) {
@@ -123,7 +123,9 @@ function splitLookarounds(source) {
       inClass = false;
     } else if (!inClass && character === "(") {
       if (depth === 0 && /^\(\?<?[=!]/.test(source.slice(index))) {
-        const opener = source.slice(index).match(/^\(\?<?[=!]/)[0];
+        const match = source.slice(index).match(/^\(\?<?[=!]/);
+        assert.ok(match);
+        const opener = match[0];
         index += opener.length - 1;
         bodies.push("");
         depth = 1;
@@ -146,9 +148,9 @@ function splitLookarounds(source) {
   }
   return { kept, bodies };
 }
-const withoutLookarounds = (source) => splitLookarounds(source).kept;
-const widened = UNBROKEN_ALTERNATIVES.map((source) => sticky(withoutLookarounds(source)));
-const consumes = (regex, text, at = 0) => {
+const withoutLookarounds = (source: string) => splitLookarounds(source).kept;
+const widened = UNBROKEN_ALTERNATIVES.map((source: string) => sticky(withoutLookarounds(source)));
+const consumes = (regex: RegExp, text: string, at = 0) => {
   regex.lastIndex = at;
   return regex.test(text);
 };
@@ -161,12 +163,16 @@ function* codePoints() {
   }
 }
 // Alternatives that match `character` between some pair of contexts.
-function matchingPairs(character, candidates) {
+function matchingPairs(character: string, candidates: number[]) {
   const found = [];
   for (const before of CONTEXTS) {
     for (const after of CONTEXTS) {
       const text = `${before}${character}${after}`;
-      const hits = candidates.filter((index) => consumes(alternatives[index], text, before.length));
+      const hits = candidates.filter((index) => {
+        const alternative = alternatives[index];
+        assert.ok(alternative);
+        return consumes(alternative, text, before.length);
+      });
       if (hits.length > 0) {
         found.push({ before, after, hits });
       }
@@ -174,8 +180,14 @@ function matchingPairs(character, candidates) {
   }
   return found;
 }
-const shown = (text) =>
-  [...text].map((c) => `U+${c.codePointAt(0).toString(16).padStart(4, "0")}`).join(" ");
+const shown = (text: string) =>
+  [...text]
+    .map((c) => {
+      const point = c.codePointAt(0);
+      assert.ok(point !== undefined);
+      return `U+${point.toString(16).padStart(4, "0")}`;
+    })
+    .join(" ");
 
 test("No two long-name alternatives match the same character, and no mark starts one", () => {
   assert.ok(UNBROKEN_ALTERNATIVES.length > 1);
@@ -185,7 +197,9 @@ test("No two long-name alternatives match the same character, and no mark starts
   for (const character of codePoints()) {
     const candidates = [];
     for (let index = 0; index < widened.length; index += 1) {
-      if (consumes(widened[index], character)) {
+      const alternative = widened[index];
+      assert.ok(alternative);
+      if (consumes(alternative, character)) {
         candidates.push(index);
       }
     }
@@ -214,7 +228,7 @@ test("No two long-name alternatives match the same character, and no mark starts
 // more than one character), and anything added where the alternatives are joined into the rule.
 // So each alternative must be one character class or escape, with only lookarounds beside it.
 const ATOM = String.raw`(?:\[(?:\\.|[^\]\\])*\]|\\u\{[0-9a-fA-F]+\}|\\u[0-9a-fA-F]{4}|\\x[0-9a-fA-F]{2}|\\[pP]\{[\w=]+\}|\\[dDwWsSfnrtv0\\/.^$|?*+()[\]{}-]|[^\\[\](){}|*+?.^$])`;
-function atomWithoutLookarounds(source) {
+function atomWithoutLookarounds(source: string) {
   return new RegExp(`^${ATOM}$`).test(withoutLookarounds(source));
 }
 // A lookaround runs at every position the rule tries, so a body that can split marks two ways
@@ -222,11 +236,11 @@ function atomWithoutLookarounds(source) {
 // escape, after at most one run of marks, or the start of the name.
 const LOOKAROUND_BRANCH = new RegExp(String.raw`^(?:\^|(?:\\p\{M\}\*)?${ATOM})$`);
 // Splits a body on its top-level bars; a group inside a body is refused as a branch.
-function lookaroundBranches(body) {
+function lookaroundBranches(body: string) {
   const branches = [""];
   let inClass = false;
   for (let index = 0; index < body.length; index += 1) {
-    const character = body[index];
+    const character = body.charAt(index);
     const text = character === "\\" ? body.slice(index, index + 2) : character;
     index += text.length - 1;
     if (character === "[" && !inClass) {
@@ -268,6 +282,7 @@ test("The long-name rule joins exactly those alternatives, each with its marks",
   assert.equal(rest.length, 2, "the rule uses the run twice");
   assert.equal(rest[0], "{21,}|");
   // Twenty run characters, then one break character the line keeps.
+  assert.ok(rest[1] !== undefined);
   assert.match(rest[1], /^\{20\}\[[^\]()|]*\]$/);
   assert.equal(UNBROKEN_RUN.flags, "u");
 });

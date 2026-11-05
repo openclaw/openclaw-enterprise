@@ -368,7 +368,10 @@ async function availablePorts() {
   }
 }
 
-export async function localFirstAgentStack(context) {
+export async function localFirstAgentStack(context, { modelCredential } = {}) {
+  if (modelCredential !== undefined && modelCredential !== "openai") {
+    throw new Error("Unsupported local first-Agent model credential selection.");
+  }
   if (process.env.OCC_TEST_LOCAL_FIRST_AGENT_REAL !== "1") {
     throw new Error("The protected local first-Agent test must be explicitly enabled.");
   }
@@ -397,7 +400,9 @@ export async function localFirstAgentStack(context) {
     );
   }
   const credentialVariable =
-    sandboxDriver === "openshell" ? "CODEX_ACCESS_TOKEN" : "OPENAI_API_KEY";
+    sandboxDriver === "openshell" && modelCredential !== "openai"
+      ? "CODEX_ACCESS_TOKEN"
+      : "OPENAI_API_KEY";
   if (!process.env[credentialVariable]?.trim()) {
     throw new Error(
       `${credentialVariable} is required to provision the protected local first-Agent test.`,

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -5233,6 +5234,142 @@ test("run records only allowlisted measurements from test diagnostics", async (t
     outcome: "passed",
     elapsedMs: 39_000,
   };
+  // These receipts travel through the real reporter and runner into the uploaded
+  // result, including after a later failure. Unknown text must never reach a tail.
+  const uuid = "12345678-1234-1234-1234-123456789abc";
+  const sha256 = "a".repeat(64);
+  const opaque = "supplier-instance-123";
+  const opaqueHash = createHash("sha256").update(opaque).digest("hex");
+  const time = "2026-11-05T12:00:00.123456789Z";
+  const retentionKind = "openshell-git-retention";
+  const forbidden = "unregistered-retention-private-text";
+  const runtimeReceipt = {
+    revisionId: opaque,
+    sandboxId: opaque,
+    sandboxUid: uuid,
+    podUid: uuid,
+    mainProcessInstanceId: opaque,
+    mainProcessStartedAt: time,
+    containers: [
+      {
+        name: opaque,
+        id: opaque,
+        imageId: `containerd://sha256:${sha256}`,
+        startedAt: time,
+        restartCount: 0,
+        output: forbidden,
+      },
+    ],
+    credential: forbidden,
+  };
+  const launchReceipt = {
+    workspace: opaque,
+    sandboxId: opaque,
+    requestId: uuid,
+    executionSeconds: 120,
+    observerMs: 180_000,
+  };
+  const retentionReceipts = [
+    {
+      event: "supervisor-trust",
+      parent: `ghcr.io/example/stock@sha256:${sha256}`,
+      reference: `docker.io/library/test@sha256:${sha256}`,
+      binaryHash: sha256,
+      configDigest: `sha256:${sha256}`,
+    },
+    { event: "finite-git-grant", revisionId: opaque, deadlineWallMs: 1_800_000_000_000 },
+    { event: "initial-runtime", ...runtimeReceipt },
+    {
+      event: "installed-supervisor",
+      sandboxId: opaque,
+      workloadPodUid: uuid,
+      supervisorPodUid: uuid,
+      image: `docker.io/library/test@sha256:${sha256}`,
+      imageId: `containerd://sha256:${sha256}`,
+      containerId: opaque,
+      binaryHash: sha256,
+    },
+    ...["before-expiry", "after-expiry", "after-worker-restart"].map((stage) => ({
+      event: "model-turn-succeeded",
+      stage,
+      nonce: `FIRST_AGENT_${uuid}`,
+    })),
+    {
+      event: "initial-git-succeeded",
+      revisionId: opaque,
+      sha: "b".repeat(40),
+      connections: 2,
+      requests: 1,
+    },
+    {
+      event: "git-expiry-observed",
+      deadlineWallMs: 1_800_000_000_000,
+      workId: opaque,
+      code: "REPOSITORY_ACCESS_WITHDRAWN",
+      workerUid: uuid,
+      expiry: {
+        event: "worker.openshell-git-expiry",
+        namespaceId: opaque,
+        agentId: opaque,
+        revisionId: opaque,
+        repositoryRef: opaque,
+        outcome: "withdrawn",
+        check: "record-reduced-generation",
+        output: forbidden,
+      },
+    },
+    {
+      event: "worker-restarted",
+      beforeUid: uuid,
+      afterUid: uuid,
+      databaseUid: uuid,
+      custodyUid: uuid,
+      custodyVersion: "234",
+    },
+    ...["after-expiry", "after-worker-restart"].map((event) => ({
+      event,
+      ...runtimeReceipt,
+      nonGit: "succeeded",
+      freshGit: "http-403",
+      connections: 2,
+      requests: 1,
+    })),
+    { event: "managed-workload-exec-dispatch-unknown", ...launchReceipt },
+    {
+      event: "managed-workload-exec-result",
+      ...launchReceipt,
+      outcome: "terminal-exit",
+      exitCode: 0,
+      grpcStatus: 0,
+      stdoutBytes: 12,
+      stderrBytes: 0,
+    },
+    {
+      event: "managed-workload-exec-unconfirmed",
+      ...launchReceipt,
+      grpcStatus: "unknown",
+      reason: "stream-failure",
+    },
+    { event: "cleanup", outcome: "passed" },
+  ].map((value) => ({ kind: retentionKind, ...value, unexpected: forbidden }));
+  const invalidRetention = [
+    { event: forbidden },
+    { event: "initial-runtime", ...runtimeReceipt, podUid: forbidden },
+    {
+      event: "initial-runtime",
+      ...runtimeReceipt,
+      containers: [{ ...runtimeReceipt.containers[0], imageId: forbidden }],
+    },
+    {
+      event: "initial-runtime",
+      ...runtimeReceipt,
+      containers: Array(17).fill(runtimeReceipt.containers[0]),
+    },
+    { event: "finite-git-grant", revisionId: opaque, deadlineWallMs: -1 },
+    { event: "model-turn-succeeded", stage: "before-expiry", nonce: forbidden },
+    { event: "model-turn-succeeded", stage: forbidden, nonce: `FIRST_AGENT_${uuid}` },
+    { event: "cleanup", outcome: forbidden },
+  ].map((value) => ({ kind: retentionKind, ...value }));
   await writeFile(
     join(root, "tests/integration/measurements.test.mjs"),
     [
@@ -5414,6 +5551,9 @@ test("run records only allowlisted measurements from test diagnostics", async (t
         measurement({ ...openshellPhase, outcome: "secretauthvalue-phase-outcome" }),
         measurement({ ...openshellPhase, elapsedMs: 2_400_001 }),
         measurement({ ...openshellPhase, elapsedMs: 0.5 }),
+        ...retentionReceipts.map(measurement),
+        ...invalidRetention.map(measurement),
+        `openclaw-ci-measurement {"kind":"openshell-git-retention","private":"${forbidden}",`,
         "openclaw-ci-measurement secretauthvalue-not-json",
         "secretauthvalue-plain-diagnostic",
       ].map((message) => `  t.diagnostic(${JSON.stringify(message)});`),
@@ -5442,79 +5582,168 @@ test("run records only allowlisted measurements from test diagnostics", async (t
   const artifact = await readFile(resultsPath, "utf8");
   const summary = JSON.parse(artifact);
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(summary.files[0].measurements, [
-    {
-      kind: "local-first-agent-command",
-      phase: "setup",
-      stage: "runtime-build",
-      count: 1,
-      failed: 0,
-      elapsedMs: 100,
-    },
-    {
-      kind: "local-first-agent-pod",
-      stage: "native-initial",
-      role: "harness",
-      restarts: 0,
-      createdAfterRequestMs: 100,
-      scheduledMs: 100,
-      initializedMs: 200,
-      runningMs: 200,
-      readyMs: 300,
-      observedMs: 400,
-    },
+  assert.deepEqual(
+    summary.files[0].measurements.filter(({ kind }) => kind !== retentionKind),
+    [
+      {
+        kind: "local-first-agent-command",
+        phase: "setup",
+        stage: "runtime-build",
+        count: 1,
+        failed: 0,
+        elapsedMs: 100,
+      },
+      {
+        kind: "local-first-agent-pod",
+        stage: "native-initial",
+        role: "harness",
+        restarts: 0,
+        createdAfterRequestMs: 100,
+        scheduledMs: 100,
+        initializedMs: 200,
+        runningMs: 200,
+        readyMs: 300,
+        observedMs: 400,
+      },
 
-    { kind: "local-first-agent", stage: "setup", outcome: "passed", elapsedMs: 1234 },
-    {
-      kind: "kubelet-volume-refresh",
-      volume: "secret",
-      nudge: "pod-annotation",
-      sample: 1,
-      seconds: 1.2,
-    },
-    {
-      kind: "runtime-model-probe",
-      case: "gateway-500m-answer",
-      code: "READY",
-      elapsedMs: 61_234,
-      capMs: 110_000,
-      cpuWaitMs: 4_321,
-      setupMs: 2_345,
-      probeDoneMs: 63_456,
-      readyMs: null,
-    },
-    {
-      kind: "runtime-model-probe",
-      case: "gateway-1cpu-answer",
-      code: "other",
-      elapsedMs: 1,
-      capMs: 65_000,
-      cpuWaitMs: null,
-      setupMs: 1,
-      probeDoneMs: 1,
-      readyMs: 1,
-    },
-    {
-      kind: "runtime-model-probe",
-      case: "gateway-500m-contended",
-      code: null,
-      elapsedMs: null,
-      capMs: null,
-      cpuWaitMs: null,
-      setupMs: 1,
-      probeDoneMs: null,
-      readyMs: null,
-    },
-    {
-      kind: "runtime-sigterm",
-      case: "gateway-model-probe",
-      stopped: true,
-      elapsedMs: 4_321,
-      budgetMs: 15_000,
-    },
-    openshellPhase,
-  ]);
+      { kind: "local-first-agent", stage: "setup", outcome: "passed", elapsedMs: 1234 },
+      {
+        kind: "kubelet-volume-refresh",
+        volume: "secret",
+        nudge: "pod-annotation",
+        sample: 1,
+        seconds: 1.2,
+      },
+      {
+        kind: "runtime-model-probe",
+        case: "gateway-500m-answer",
+        code: "READY",
+        elapsedMs: 61_234,
+        capMs: 110_000,
+        cpuWaitMs: 4_321,
+        setupMs: 2_345,
+        probeDoneMs: 63_456,
+        readyMs: null,
+      },
+      {
+        kind: "runtime-model-probe",
+        case: "gateway-1cpu-answer",
+        code: "other",
+        elapsedMs: 1,
+        capMs: 65_000,
+        cpuWaitMs: null,
+        setupMs: 1,
+        probeDoneMs: 1,
+        readyMs: 1,
+      },
+      {
+        kind: "runtime-model-probe",
+        case: "gateway-500m-contended",
+        code: null,
+        elapsedMs: null,
+        capMs: null,
+        cpuWaitMs: null,
+        setupMs: 1,
+        probeDoneMs: null,
+        readyMs: null,
+      },
+      {
+        kind: "runtime-sigterm",
+        case: "gateway-model-probe",
+        stopped: true,
+        elapsedMs: 4_321,
+        budgetMs: 15_000,
+      },
+      openshellPhase,
+    ],
+  );
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${artifact}`, /secretauthvalue/);
+  const receipts = summary.files[0].measurements.filter(({ kind }) => kind === retentionKind);
+  assert.deepEqual(
+    receipts.map(({ event }) => event),
+    retentionReceipts.map(({ event }) => event),
+  );
+  assert.equal(summary.sourceSha, currentSha());
+  assert.equal(summary.files[0].path, "tests/integration/measurements.test.mjs");
+  assert.deepEqual(
+    receipts.find(({ event }) => event === "initial-runtime"),
+    {
+      kind: retentionKind,
+      event: "initial-runtime",
+      revisionIdHash: opaqueHash,
+      sandboxIdHash: opaqueHash,
+      sandboxUid: uuid,
+      podUid: uuid,
+      mainProcessInstanceIdHash: opaqueHash,
+      mainProcessStartedAt: time,
+      containers: [
+        {
+          nameHash: opaqueHash,
+          idHash: opaqueHash,
+          imageDigest: `sha256:${sha256}`,
+          startedAt: time,
+          restartCount: 0,
+        },
+      ],
+    },
+  );
+  assert.deepEqual(
+    receipts.find(({ event }) => event === "supervisor-trust"),
+    {
+      kind: retentionKind,
+      event: "supervisor-trust",
+      parentDigest: `sha256:${sha256}`,
+      imageDigest: `sha256:${sha256}`,
+      binaryHash: sha256,
+      configDigest: `sha256:${sha256}`,
+    },
+  );
+  assert.deepEqual(receipts.find(({ event }) => event === "git-expiry-observed").expiry, {
+    event: "worker.openshell-git-expiry",
+    namespaceIdHash: opaqueHash,
+    agentIdHash: opaqueHash,
+    revisionIdHash: opaqueHash,
+    repositoryRefHash: opaqueHash,
+    outcome: "withdrawn",
+    check: "record-reduced-generation",
+  });
+  assert.ok(!artifact.includes(forbidden));
+  assert.ok(!artifact.includes(opaque));
+
+  // A later failure makes the reporter emit its raw output buffer. Invalid
+  // receipts and unselected fields must still not fall through into that buffer.
+  const fixtureFile = join(root, "tests/integration/measurements.test.mjs");
+  await writeFile(
+    fixtureFile,
+    (await readFile(fixtureFile, "utf8")) +
+      '\ntest("fails after receipts", () => { throw new Error("controlled failure"); });\n',
+  );
+  const failed = run(root, [
+    "run",
+    "measure",
+    "--manifest",
+    "manifest.json",
+    "--root",
+    root,
+    "--state",
+    "state/failed-measurements.json",
+    "--results",
+    resultsPath,
+  ]);
+  assert.equal(failed.status, 1, failed.stderr);
+  const failedArtifact = await readFile(resultsPath, "utf8");
+  const diagnostics = await readFile(
+    join(root, "state/failed-measurements.json.diagnostics.json"),
+    "utf8",
+  );
+  assert.deepEqual(
+    JSON.parse(failedArtifact).files[0].measurements.filter(({ kind }) => kind === retentionKind),
+    receipts,
+  );
+  for (const output of [failed.stdout, failed.stderr, failedArtifact, diagnostics]) {
+    assert.ok(!output.includes(forbidden));
+    assert.ok(!output.includes(opaque));
+  }
 });
 
 test("run reports a cleanup that fails once a cancelled job's shell is gone as cancelled", async (t) => {
