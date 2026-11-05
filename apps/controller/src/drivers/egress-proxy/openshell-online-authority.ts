@@ -1,3 +1,4 @@
+import { loadSync, type MessageTypeDefinition } from "@grpc/proto-loader";
 import { isIP } from "node:net";
 import { hasControlCharacter } from "@openclaw-enterprise/utils";
 import {
@@ -191,7 +192,14 @@ function httpRequestView(
 }
 
 // Stock OpenShell applies this ceiling to the complete protobuf Struct.
-export const OPEN_SHELL_MIDDLEWARE_CONFIG_BYTES = 64 * 1024;
+const maxMiddlewareConfigBytes = 64 * 1024;
+const protobufStruct = loadSync("google/protobuf/struct.proto")[
+  "google.protobuf.Struct"
+] as MessageTypeDefinition<unknown, unknown>;
+
+export function openShellMiddlewareConfigFits(config: unknown): boolean {
+  return protobufStruct.serialize(config).length <= maxMiddlewareConfigBytes;
+}
 
 function bindingId(config: unknown, scoped = false): string | undefined {
   const fields = record(record(config).fields);
@@ -203,7 +211,8 @@ function bindingId(config: unknown, scoped = false): string | undefined {
       Object.keys(fields).length === 2 &&
       scope.kind === "stringValue" &&
       typeof scope.stringValue === "string" &&
-      Buffer.byteLength(scope.stringValue) <= OPEN_SHELL_MIDDLEWARE_CONFIG_BYTES);
+      Buffer.byteLength(scope.stringValue) <= maxMiddlewareConfigBytes &&
+      openShellMiddlewareConfigFits(config));
   return validFields &&
     Object.keys(value).every((key) => key === "stringValue" || key === "kind") &&
     value.kind === "stringValue" &&

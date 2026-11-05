@@ -150,7 +150,7 @@ test("the signed OpenShell request guard intersects the source envelope with the
   const oversized = {
     fields: {
       ...many.fields,
-      request_scope: { stringValue: many.fields.request_scope.stringValue.padEnd(65537, " ") },
+      request_scope: { stringValue: many.fields.request_scope.stringValue.padEnd(65500, " ") },
     },
   };
   assert.equal(

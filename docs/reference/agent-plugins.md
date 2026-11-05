@@ -13,6 +13,8 @@ Dedicated OpenClaw on Kubernetes supports multiple accounts per plugin slot.
 [Google Workspace](../../apps/controller/plugins/oce-google-workspace/plugin.json) installs a Gateway skill and worker CLI.
 [Slack](../guides/topics/plugins-configure.md#configure-slack-search) discovers tools through `tools/list`.
 Accounts share tool selection. A worker advertises up to 128 MCP tools.
+OpenShell v0.1.6 permits 32 providers per Sandbox. Each attached account uses
+one provider, and runtime providers count toward the same [OpenShell limit](https://github.com/NVIDIA/OpenShell/blob/ac7f615cd12d5cc49cb16eb1f5f10ffeb1e90f47/crates/openshell-server/src/grpc/mod.rs#L152).
 
 Embedded OpenClaw supports the bundled Diffs plugin and its `diffs` tool, with
 plugin/tool enablement and `provider_default` or `none` approval. Both use the

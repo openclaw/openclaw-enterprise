@@ -1,5 +1,4 @@
-import { loadSync, type MessageTypeDefinition } from "@grpc/proto-loader";
-import { OPEN_SHELL_MIDDLEWARE_CONFIG_BYTES } from "../egress-proxy/openshell-online-authority.ts";
+import { openShellMiddlewareConfigFits } from "../egress-proxy/openshell-online-authority.ts";
 import type { AgentRevision, HarnessWorkloadRequirements } from "@openclaw-enterprise/contracts";
 import { SandboxRevisionUnsupportedError } from "@openclaw-enterprise/occ";
 import { asRecord, numericLastLabel } from "@openclaw-enterprise/utils";
@@ -26,9 +25,6 @@ import {
 } from "../plugin/managed-catalog.ts";
 import { managedGoogleInstall } from "../plugin/google-workspace/install.ts";
 
-const protobufStruct = loadSync("google/protobuf/struct.proto")[
-  "google.protobuf.Struct"
-] as MessageTypeDefinition<unknown, unknown>;
 const googleRequestRuleName = "oce-google-requests";
 
 function unsupported(message: string): never {
@@ -181,7 +177,7 @@ export function googleRequestPolicy(accounts: Record<string, GoogleRequestScope>
     },
   };
   const config = middlewares[managedPluginMiddleware].config;
-  if (protobufStruct.serialize(config).length > OPEN_SHELL_MIDDLEWARE_CONFIG_BYTES) {
+  if (!openShellMiddlewareConfigFits(config)) {
     unsupported(
       "The combined Google account request policy exceeds OpenShell's 64 KiB middleware configuration limit.",
     );
