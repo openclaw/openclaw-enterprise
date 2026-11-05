@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-11-05
-last_updated_session: authoring-run/root-deployment_docs
+last_updated_session: authoring-run/a85a4857-880b-4f7b-8fe2-d648c86e601e
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -399,6 +399,8 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 14:17: Revoke empty API grants. (authoring-run/a85a4857-880b-4f7b-8fe2-d648c86e601e - 2b92aa9b35de6e7633b960dfd7edcf1fd3fd46ea)
 
 - 2026-11-05 12:54: Reject projected identity at admission. (authoring-run/root-deployment_docs - 894a5b6698049c41fba27f5c2c0764e86b4c0632)
 
