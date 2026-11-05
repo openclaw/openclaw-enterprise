@@ -76,9 +76,92 @@ const lane = {
     (!(issuer && tokenOrigin && secretsFile) && "Prepare the keycloak-oidc CI lane."),
 };
 const reportsUrl = "https://reports.example.test/mcp";
+const slackInstall = managedMcpInstalls.find(({ packageName }) => packageName === "oce-slack")!;
+const slackOAuth = {
+  issuer: "https://mcp.slack.com",
+  authorizationUrl: "https://slack.com/oauth/v2_user/authorize",
+  tokenUrl: "https://slack.com/api/oauth.v2.user.access",
+};
 
 const gmailRead = "https://www.googleapis.com/auth/gmail.readonly";
 const gmailModify = "https://www.googleapis.com/auth/gmail.modify";
+
+/** Real OCC consent and refresh with a controlled Slack token endpoint; no Slack requests leave this process. */
+async function connectFixtureSlackAccount(
+  t: TestContext,
+  owner: Awaited<ReturnType<typeof accountSession>>,
+  namespaceId: string,
+) {
+  const template = await owner("POST", "/connection-templates", {
+    mode: "mcp_discovery",
+    namespaceId,
+    displayName: "Slack account",
+    serverUrl: slackInstall.url,
+    issuer: slackOAuth.issuer,
+    scopes: ["chat:write"],
+  });
+  assert.equal(template.statusCode, 201, template.body);
+  const registration = await owner("POST", "/oauth-clients", {
+    connectionTemplateId: template.json().data.id,
+    connectionTemplateVersion: template.json().data.current.version,
+    displayName: "Slack fixture",
+    clientId: randomUUID(),
+    clientSecret: randomUUID(),
+    tokenEndpointAuthMethod: "client_secret_post",
+  });
+  assert.equal(registration.statusCode, 201, registration.body);
+  const base = `/namespaces/${namespaceId}`;
+  const started = await owner("POST", base + "/connections", {
+    connectionTemplateId: template.json().data.id,
+    selectedScopes: ["chat:write"],
+  });
+  assert.equal(started.statusCode, 201, started.body);
+  const authorization = new URL(started.json().data.authorizationUrl);
+  const callback = new URL(authorization.searchParams.get("redirect_uri")!);
+  callback.search = new URLSearchParams({
+    state: authorization.searchParams.get("state")!,
+    iss: slackOAuth.issuer,
+    code: randomUUID(),
+  }).toString();
+  const issue = async (operation: () => ReturnType<typeof owner>) => {
+    const accessToken = randomUUID();
+    const exchange = t.mock.method(
+      globalThis,
+      "fetch",
+      async (url: Parameters<typeof globalThis.fetch>[0]) => {
+        assert.equal(String(url), slackOAuth.tokenUrl);
+        return Response.json({
+          access_token: accessToken,
+          refresh_token: randomUUID(),
+          expires_in: 3600,
+          token_type: "Bearer",
+          scope: "chat:write",
+        });
+      },
+    );
+    try {
+      const response = await operation();
+      assert.equal(exchange.mock.callCount(), 1);
+      return { response, accessToken };
+    } finally {
+      exchange.mock.restore();
+    }
+  };
+  const connected = await issue(() => owner("GET", callback.pathname + callback.search));
+  assert.match(String(connected.response.headers.location), /connection=connected/);
+  const sourceId: string = started.json().data.credentialSourceId;
+  return {
+    sourceId,
+    accessToken: connected.accessToken,
+    async renew() {
+      const refreshed = await issue(() =>
+        owner("POST", `${base}/credential-sources/${sourceId}/rotate`),
+      );
+      assert.equal(refreshed.response.statusCode, 200, refreshed.response.body);
+      return refreshed.accessToken;
+    },
+  };
+}
 
 async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
   assert.ok(issuer && tokenOrigin && secretsFile);
@@ -158,6 +241,40 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
       controllerOptions: { preparedTokens, now: () => new Date(Date.now() + skew) },
       appOptions: {
         publicOrigin,
+        // Only the fixture MCP metadata is supplied locally. OCC creates the template and
+        // Keycloak serves authorization, token exchange, and user logins for this issuer.
+        async discoverMcpAuthorization(serverUrl: string, selectedIssuer?: string) {
+          if (serverUrl === slackInstall.url) {
+            assert.equal(selectedIssuer, slackOAuth.issuer);
+            return {
+              ...slackOAuth,
+              serverUrl,
+              resource: slackInstall.credentials[slackInstall.slotId]!.mcp.resource,
+              issuers: [slackOAuth.issuer],
+              requestedScopes: ["chat:write"],
+              resourceScopes: [],
+              supportedScopes: ["chat:write"],
+              tokenEndpointAuthMethods: ["client_secret_post"],
+            };
+          }
+          if (pluginWorkflow) {
+            assert.equal(serverUrl, reportsUrl);
+          }
+          assert.equal(selectedIssuer, issuer);
+          return {
+            serverUrl,
+            resource: pluginWorkflow ? new URL(reportsUrl).origin : discoveredResource,
+            issuers: [issuer],
+            requestedScopes: ["openid"],
+            resourceScopes: ["openid", "profile"],
+            supportedScopes: ["openid", "profile"],
+            issuer,
+            authorizationUrl: `${issuer}/protocol/openid-connect/auth`,
+            tokenUrl,
+            tokenEndpointAuthMethods: ["client_secret_basic"],
+          };
+        },
+
         provisionAuthAccount: (...args: Parameters<typeof provision>) => provision(...args),
       },
     });
@@ -820,12 +937,14 @@ test(
           }
           const bound = selected.driverPolicy?.credentials as { account?: string } | undefined;
           return {
-            releaseSha256,
-            credentialSourceId: bound?.account ?? null,
-            acceptsTemplate(version) {
-              return version.issuer === issuer && version.envVar === "CONNECTION_TOKEN";
-            },
-            bind(source) {
+            ...admitted,
+            delivery(target, grantedScopes) {
+              const delivery = admitted.delivery(target, grantedScopes);
+              assert.ok(delivery);
+              const [receiver] = target.destinations;
+              // This test Driver presents its Keycloak account through the normal single-target
+              // sender. The bundled Google sender below requires Google's own issuer and client.
+              const { destinations: _, ...config } = delivery.config;
               return {
                 ...selected,
                 driverPolicy: { releaseSha256, credentials: { account: source.id } },
@@ -1091,8 +1210,27 @@ test(
       assert.equal(deployed.statusCode, 202, deployed.body);
       revisions.set(id, deployed.json().data.id);
     }
-    const prepare = (agentId: string) =>
-      controller.prepareRevisionAccount(namespaceId, agentId, revisions.get(agentId)!, shared.id);
+    const prepare = async (agentId: string) => {
+      const prepared = await controller.prepareRevisionAccount(
+        namespaceId,
+        agentId,
+        revisions.get(agentId)!,
+        shared.id,
+      );
+      const source = prepared?.source;
+      if (source) {
+        assert.equal(prepared?.state, "prepared");
+        // This fixture Compute does not run a Sandbox. The controller boundary below
+        // proves prepared policy and fresh release checks; native guard proof is separate.
+        await controller.releaseRevisionAccount(
+          namespaceId,
+          agentId,
+          revisions.get(agentId)!,
+          source,
+        );
+      }
+      return source;
+    };
     // Different placeholders in the same release produce distinct sender profiles.
     const senderFor = async (id: string) => {
       assert.ok(await prepare(id));
@@ -1190,9 +1328,262 @@ test(
       (account: { credentialSourceId: string }) => account.credentialSourceId === shared.id,
     );
     assert.deepEqual([...refreshed.grantedScopes].sort(), [gmailRead, "openid"]);
-    assert.equal(await prepare(b), undefined);
-    const withdrawn = provider(primarySender);
-    assert.deepEqual(Object.keys(withdrawn.credentials), []);
-    assert.deepEqual(Object.keys(withdrawn.credentialExpirationTimes), []);
+    const narrowed = await prepare(b);
+    assert.ok(narrowed?.config.scope);
+    assert.deepEqual(narrowed.config.scope.split(" "), [gmailRead]);
+    assert.ok(provider(primarySender).credentials[primary.credentials.account.delivery.env]);
+
+    // The fixture Compute does not place Kubernetes plugins. Keep its placement Driver
+    // and delegate every slot and source decision to the bundled Google credential policy.
+    controller.registerDriver({
+      ...plugin,
+      id: "google-slot-fixture",
+      credentials: new OCCPluginDriver().credentials,
+    });
+    controller.selectDriver("plugin", "google-slot-fixture");
+    const google = await connectFixtureGoogleAccount(t, owner, namespaceId, [
+      gmailRead,
+      "https://www.googleapis.com/auth/calendar.readonly",
+      "https://www.googleapis.com/auth/drive.readonly",
+      "https://www.googleapis.com/auth/documents.readonly",
+    ]);
+    const receipt = (await owner("GET", connections))
+      .json()
+      .data.find(
+        (row: { credentialSourceId: string }) =>
+          row.credentialSourceId === google.credentialSourceId,
+      );
+    const templateId = receipt.connectionTemplateId;
+    const calendar = { host: "www.googleapis.com", port: 443, path: "/calendar/v3/**" };
+    const drive = { host: "www.googleapis.com", port: 443, path: "/drive/v3/files/**" };
+    const docs = { host: "docs.googleapis.com", port: 443, path: "/v1/documents/**" };
+    const templateInput: Record<string, unknown> = { ...google.templateInput };
+    delete templateInput.namespaceId;
+    const initialRoutes = await owner("PATCH", "/connection-templates/" + templateId, {
+      ...templateInput,
+      destinations: [...google.templateInput.destinations, drive],
+    });
+    assert.equal(initialRoutes.statusCode, 200, initialRoutes.body);
+    const created = await owner("POST", agents, {
+      name: "Google APIs",
+      executionMode: "dedicated",
+      configurationId: config.json().data.id,
+      plugins: { [cli.id]: { enabled: true } },
+    });
+    assert.equal(created.statusCode, 201, created.body);
+    const googleAgent = created.json().data.id;
+    const granted = await owner(
+      "POST",
+      path(googleAgent) + "/connections/" + google.credentialSourceId,
+    );
+    assert.equal(granted.statusCode, 204, granted.body);
+    const modelGrant = await owner("POST", base + "/iam/access-bindings", {
+      subjectKind: "identity",
+      subjectId: created.json().data.servicePrincipalId,
+      roleId: modelRole.json().data.id,
+      resourceKind: "credential_source",
+      resourceId: modelSourceId,
+    });
+    assert.equal(modelGrant.statusCode, 201, modelGrant.body);
+    const bound = await owner("PATCH", path(googleAgent), {
+      configurationId: config.json().data.id,
+      harnessAuth: { method: "credential_source", sourceId: modelSourceId },
+      credentialSources: [{ sourceId: google.credentialSourceId }, { sourceId: modelSourceId }],
+      plugins: {
+        [cli.id]: {
+          enabled: true,
+          driverPolicy: {
+            releaseSha256: cli.releaseSha256,
+            credentials: { account: google.credentialSourceId },
+          },
+        },
+      },
+    });
+    assert.equal(bound.statusCode, 200, bound.body);
+    const deployed = await owner("POST", path(googleAgent) + "/deploy");
+    assert.equal(deployed.statusCode, 202, deployed.body);
+    const revisionId = deployed.json().data.id;
+    const prepareGoogle = async () =>
+      (
+        await controller.prepareRevisionAccount(
+          namespaceId,
+          googleAgent,
+          revisionId,
+          google.credentialSourceId,
+        )
+      )?.source;
+    const initialSource = await prepareGoogle();
+    assert.ok(initialSource);
+    await controller.releaseRevisionAccount(namespaceId, googleAgent, revisionId, initialSource);
+    const revision = await state.read((v) =>
+      v.revisions.findRevision(namespaceId, googleAgent, revisionId),
+    );
+    const delivered = revision?.credentialSources?.find(
+      (source) => source.sourceId === google.credentialSourceId,
+    )?.accountDelivery;
+    assert.ok(delivered);
+    const sender = provider(openShellProviderName(delivered.profileId));
+    const googleProfile = await transport.getProviderProfile(sender.workspace, sender.type);
+    assert.deepEqual(
+      googleProfile.endpoints
+        .map(({ host, port, path }: { host: string; port: number; path: string }) => [
+          host,
+          port,
+          path,
+        ])
+        .sort(),
+      [
+        ["gmail.googleapis.com", 443, "/gmail/v1/users/me/messages"],
+        ["www.googleapis.com", 443, "/calendar/v3/**"],
+        ["www.googleapis.com", 443, "/drive/v3/files/**"],
+      ],
+    );
+    assert.ok(
+      sender.credentials[cliAccount.delivery.env] === google.accessToken,
+      "only the prepared Google access token reaches the selected revision",
+    );
+    const changed = await owner("PATCH", "/connection-templates/" + templateId, {
+      ...templateInput,
+      destinations: [calendar, docs],
+    });
+    assert.equal(changed.statusCode, 200, changed.body);
+    const currentSource = await prepareGoogle();
+    assert.ok(currentSource);
+    assert.deepEqual(
+      Object.keys(sender.credentials),
+      [],
+      "changed routes cannot reuse the prior bearer",
+    );
+    const currentProfile = await transport.getProviderProfile(sender.workspace, sender.type);
+    assert.deepEqual(
+      currentProfile.endpoints
+        .map(({ host, port, path }: { host: string; port: number; path: string }) => [
+          host,
+          port,
+          path,
+        ])
+        .sort(),
+      [
+        [calendar.host, calendar.port, calendar.path],
+        [docs.host, docs.port, docs.path],
+      ].sort(),
+    );
+    await assert.rejects(
+      controller.releaseRevisionAccount(namespaceId, googleAgent, revisionId, initialSource),
+      { name: "ResourceStateConflictError" },
+    );
+    await controller.releaseRevisionAccount(namespaceId, googleAgent, revisionId, currentSource);
+    assert.ok(
+      sender.credentials[cliAccount.delivery.env] === google.accessToken,
+      "current routes use the original consent grant without reconnect",
+    );
+    assert.equal(
+      (await state.read((v) => v.revisions.findRevision(namespaceId, googleAgent, revisionId)))?.id,
+      revisionId,
+    );
+    // This Agent's first revision uses real Kubernetes admission; earlier fixture deployments
+    // intentionally omit runtime registration and cannot be adopted as historical native launches.
+    const workerGoogle = await connectFixtureGoogleAccount(t, owner, namespaceId, [gmailRead]);
+    const workerReceipt = (await owner("GET", connections))
+      .json()
+      .data.find(
+        (row: { credentialSourceId: string }) =>
+          row.credentialSourceId === workerGoogle.credentialSourceId,
+      );
+    const workerTemplatePath = "/connection-templates/" + workerReceipt.connectionTemplateId;
+    const workerTemplateInput: Record<string, unknown> = { ...workerGoogle.templateInput };
+    delete workerTemplateInput.namespaceId;
+    const slackAccount = await connectFixtureSlackAccount(t, owner, namespaceId);
+    const workerAgent = await owner("POST", agents, {
+      name: "Worker release ordering",
+      executionMode: "dedicated",
+      configurationId: config.json().data.id,
+      plugins: { [cli.id]: { enabled: true }, [slackInstall.id]: { enabled: true } },
+    });
+    assert.equal(workerAgent.statusCode, 201, workerAgent.body);
+    const workerAgentId = workerAgent.json().data.id;
+    const workerAccount = await owner(
+      "POST",
+      path(workerAgentId) + "/connections/" + workerGoogle.credentialSourceId,
+    );
+    assert.equal(workerAccount.statusCode, 204, workerAccount.body);
+    const workerSlack = await owner(
+      "POST",
+      path(workerAgentId) + "/connections/" + slackAccount.sourceId,
+    );
+    assert.equal(workerSlack.statusCode, 204, workerSlack.body);
+    const workerModelGrant = await owner("POST", base + "/iam/access-bindings", {
+      subjectKind: "identity",
+      subjectId: workerAgent.json().data.servicePrincipalId,
+      roleId: modelRole.json().data.id,
+      resourceKind: "credential_source",
+      resourceId: modelSourceId,
+    });
+    assert.equal(workerModelGrant.statusCode, 201, workerModelGrant.body);
+    const workerBinding = await owner("PATCH", path(workerAgentId), {
+      configurationId: config.json().data.id,
+      harnessAuth: { method: "credential_source", sourceId: modelSourceId },
+      // Keep the account that will become unavailable first in the admitted list.
+      credentialSources: [
+        { sourceId: workerGoogle.credentialSourceId },
+        { sourceId: slackAccount.sourceId },
+        { sourceId: modelSourceId },
+      ],
+      plugins: {
+        [slackInstall.id]: {
+          enabled: true,
+          driverPolicy: {
+            releaseSha256: slackInstall.releaseSha256,
+            credentials: { account: slackAccount.sourceId },
+          },
+        },
+        [cli.id]: {
+          enabled: true,
+          driverPolicy: {
+            releaseSha256: cli.releaseSha256,
+            credentials: { account: workerGoogle.credentialSourceId },
+          },
+        },
+      },
+    });
+    assert.equal(workerBinding.statusCode, 200, workerBinding.body);
+    await assertWorkerAccountRelease(t, {
+      controller,
+      state,
+      pool,
+      principal,
+      secretDriver,
+      gateway,
+      refresh,
+      preparedTokens,
+      plugin: new OCCPluginDriver(),
+      namespaceId,
+      agentId: workerAgentId,
+      sourceId: workerGoogle.credentialSourceId,
+      expectedToken: workerGoogle.accessToken,
+      transport,
+      providers,
+      sibling: slackAccount,
+      async makeIncompatible() {
+        const incompatibleInput: Record<string, unknown> = {
+          ...workerTemplateInput,
+          issuer: "https://unavailable.example.test",
+        };
+        delete incompatibleInput.oauthClientId;
+        const response = await owner("PATCH", workerTemplatePath, incompatibleInput);
+        assert.equal(response.statusCode, 200, response.body);
+      },
+      async removeEligibleRoutes() {
+        const response = await owner("PATCH", workerTemplatePath, {
+          ...workerTemplateInput,
+          destinations: [calendar],
+        });
+        assert.equal(response.statusCode, 200, response.body);
+      },
+      async restoreTemplate() {
+        const response = await owner("PATCH", workerTemplatePath, workerTemplateInput);
+        assert.equal(response.statusCode, 200, response.body);
+      },
+    });
   },
 );

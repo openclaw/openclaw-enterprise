@@ -2157,6 +2157,11 @@ type InstallationRepositoryAdmission = Readonly<{
   backendId: string;
 }>;
 
+type RevisionAccountPreparation = {
+  readonly state: "prepared" | "withdrawn";
+  readonly source: CredentialSource;
+};
+
 export class OpenClawController {
   private installationRepositoryAdmission?: InstallationRepositoryAdmission;
 
@@ -4628,6 +4633,221 @@ export class OpenClawController {
     );
     if (!template || (template.namespaceId !== undefined && template.namespaceId !== namespaceId)) {
       throw new ScopeViolationError("The connection template is unavailable in this Namespace.");
+    }
+  }
+
+  private async accountTarget(
+    state: PlatformReadView,
+    account: Readonly<SavedConnection>,
+  ): Promise<PluginAccountTarget> {
+    return {
+      issuer: account.issuer,
+      tokenUrl: account.tokenUrl,
+      destinations: await this.effectiveConnectionDestinations(state, account),
+      ...(account.mcpServerUrl &&
+        account.resource && {
+          mcp: { serverUrl: account.mcpServerUrl, resource: account.resource },
+        }),
+    };
+  }
+
+  private pluginAccountBindings(plugins: PluginDesiredState | undefined) {
+    const credentials = this.pluginDriver().credentials;
+    if (!plugins || !credentials?.connectionSlot) {
+      return [];
+    }
+    return credentials.choices([]).flatMap(({ pluginId, id }) => {
+      const slot =
+        plugins[pluginId]?.enabled && credentials.connectionSlot?.(plugins, pluginId, id);
+      return slot && slot.credentialSourceId
+        ? [{ pluginId, id, sourceId: slot.credentialSourceId, slot }]
+        : [];
+    });
+  }
+
+  /** Worker-only preflight. Token custody stays in Token Service until Compute verifies the receiver. */
+  async prepareRevisionAccount(
+    namespaceId: string,
+    agentId: string,
+    revisionId: string,
+    sourceId: string,
+  ): Promise<RevisionAccountPreparation | undefined> {
+    return this.reconcileRevisionAccount(namespaceId, agentId, revisionId, sourceId);
+  }
+
+  /** Recheck the exact account and prepared policy immediately before releasing its access token. */
+  async releaseRevisionAccount(
+    namespaceId: string,
+    agentId: string,
+    revisionId: string,
+    expected: Readonly<CredentialSource>,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const source = await this.reconcileRevisionAccount(
+      namespaceId,
+      agentId,
+      revisionId,
+      expected.id,
+      expected,
+      signal,
+    );
+    if (source?.state !== "prepared") {
+      throw new ResourceStateConflictError("The prepared account is no longer authorized.");
+    }
+  }
+
+  private async reconcileRevisionAccount(
+    namespaceId: string,
+    agentId: string,
+    revisionId: string,
+    sourceId: string,
+    expected?: Readonly<CredentialSource>,
+    releaseSignal?: AbortSignal,
+  ): Promise<RevisionAccountPreparation | undefined> {
+    return this.mutate(async (state) => {
+      const namespace = await this.lockNamespace(state, namespaceId);
+      const revision = await state.revisions.findRevision(namespaceId, agentId, revisionId);
+      const agent = await state.agents.findAgent(namespaceId, agentId);
+      const custody = await state.savedConnections.findTokenCustody(namespaceId, sourceId);
+      if (
+        !agent ||
+        !revision ||
+        !custody ||
+        namespace.status !== "ready" ||
+        agent.desiredRuntimeState !== "running"
+      ) {
+        return undefined;
+      }
+      const newest = (await state.revisions.listRevisionMetadata(namespaceId, agentId)).at(-1);
+      const snapshot = revisionCredentialSourceSnapshot(revision, sourceId);
+      const delivery = snapshot?.accountDelivery;
+      if (
+        !delivery ||
+        (agent.activeRevisionId !== revision.id && newest?.id !== revision.id) ||
+        !agent.credentialSources?.some((b) => b.sourceId === sourceId) ||
+        agent.status !== "active" ||
+        (await state.credentialSources.findCredentialWithdrawal(
+          namespace.id,
+          revision.id,
+          sourceId,
+        ))
+      ) {
+        return undefined;
+      }
+      const ref = { kind: "credential_source" as const, namespaceId: namespace.id, id: sourceId };
+      if (
+        !(await this.authorizationDecision(agent.servicePrincipalId, "operate", ref)).decision
+          .allowed
+      ) {
+        return undefined;
+      }
+      const source = await state.credentialSources.lockCredentialSource(namespace.id, sourceId);
+      const account = await state.savedConnections.findSavedConnection(namespace.id, sourceId);
+      if (!source || source.state !== "ready" || !account || account.revocationRequestedBy) {
+        return undefined;
+      }
+      const admitted = revisionCredentialSource(source, snapshot);
+      if (!admitted) {
+        throw new ResourceStateConflictError(
+          "The saved account no longer matches the admitted plugin receiver.",
+        );
+      }
+      const gateway = this.ownedCredentialGatewayDriver(admitted);
+      const placement = await this.credentialNamespace(namespace);
+      const timeout = AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS);
+      const signal = releaseSignal ? AbortSignal.any([releaseSignal, timeout]) : timeout;
+      signal.throwIfAborted();
+      const context = {
+        namespace: placement,
+        source: { ...admitted, id: delivery.profileId },
+        signal,
+      };
+      const token = await this.connectionTokenService().warm(custody, signal);
+      const target = await this.accountTarget(state, account);
+      const uses = this.pluginAccountBindings(revision.plugins?.plugins).filter(
+        (binding) => binding.sourceId === source.id,
+      );
+      const compatible =
+        uses.length > 0 &&
+        uses.every(
+          ({ slot }) => slot.issuers.includes(account.issuer) && slot.acceptsRecipient(target),
+        );
+      const runtime =
+        token && compatible
+          ? await this.runtimeAccountSource(
+              state,
+              source,
+              { ...account, grantedScopes: token.grantedScopes },
+              revision.plugins?.plugins,
+              { target, bindings: uses },
+            )
+          : undefined;
+      if (!token || !runtime) {
+        if (!gateway.withdrawConnectionToken) {
+          throw new ResourceStateConflictError("The sender cannot withdraw this connection token.");
+        }
+        await this.credentialGatewayOperation(() => gateway.withdrawConnectionToken!(context));
+        if (!expected && token && uses.length > 0 && agent.activeRevisionId === revision.id) {
+          if (!gateway.prepareConnectionSource) {
+            throw new ResourceStateConflictError(
+              "The sender cannot preserve the withdrawn account attachment.",
+            );
+          }
+          // A running Sandbox keeps its admitted provider membership. Restore that exact
+          // profile only after confirmed withdrawal, and never release this account's bearer.
+          await this.credentialGatewayOperation(() => gateway.prepareConnectionSource!(context));
+          return { state: "withdrawn", source: admitted };
+        }
+        return undefined;
+      }
+      if (runtime.type !== admitted.type || runtime.driverId !== admitted.driverId) {
+        throw new ResourceStateConflictError("The account's admitted sender has changed.");
+      }
+      const prepared = { ...context, source: { ...runtime, id: delivery.profileId } };
+      if (expected) {
+        signal.throwIfAborted();
+        if (!isDeepStrictEqual(runtime, expected) || !gateway.publishConnectionToken) {
+          throw new ResourceStateConflictError("The prepared account policy has changed.");
+        }
+        await this.credentialGatewayOperation(() =>
+          gateway.publishConnectionToken!(prepared, {
+            accessToken: token.accessToken,
+            expiresAt: token.expiresAt,
+          }),
+        );
+      } else {
+        if (!gateway.prepareConnectionSource) {
+          throw new ResourceStateConflictError(
+            "The sender cannot prepare an account without releasing its token.",
+          );
+        }
+        await this.credentialGatewayOperation(() => gateway.prepareConnectionSource!(prepared));
+      }
+      return { state: "prepared", source: runtime };
+    });
+  }
+
+  private async removeAccountDeliveries(namespace: Namespace, source: CredentialSource) {
+    // The registration survives deletion of the Agent and its immutable revisions.
+    const profiles = await this.read((state) =>
+      state.savedConnections.listDeliveryProfiles(namespace.id, source.id),
+    );
+    for (const profile of profiles) {
+      const gateway = this.credentialGatewayDriver(profile.gatewayId);
+      const placement = await this.credentialNamespace(namespace);
+      await this.credentialGatewayOperation(() =>
+        gateway.removeSource({
+          namespace: placement,
+          source: {
+            ...source,
+            id: profile.profileId,
+            type: profile.sourceType,
+            ownerCapability: "credential_gateway",
+            driverId: gateway.id,
+          },
+          signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+        }),
+      );
     }
   }
 
@@ -10616,16 +10836,56 @@ export class OpenClawController {
             namespace.id,
             sourceRef.id,
           );
-          const target =
-            namespace.status === "ready" &&
-            source?.state === "ready" &&
-            agent.credentialSources?.some(({ sourceId }) => sourceId === sourceRef.id)
-              ? driver.credentials?.mcpToolDiscovery?.(pluginId, connection.slot, source)
-              : undefined;
-          const secretRef = source?.secrets.token;
-          if (!target || !secretRef) {
+        }
+        if (agent.status !== "active") {
+          throw new AgentDeletingError();
+        }
+        const source = await state.credentialSources.findCredentialSource(
+          namespace.id,
+          sourceRef.id,
+        );
+        if (source?.ownerCapability === "credential_refresh") {
+          // The person configuring this slot can discover tools before saving an Agent grant.
+          // Use only the reviewed receiver; the caller never supplies the discovery endpoint.
+          await this.authorize(principalId, "read", sourceRef);
+          const slot = driver.credentials?.connectionSlot?.(
+            agent.plugins ?? {},
+            pluginId,
+            connection.slot,
+          );
+          const account = await state.savedConnections.findSavedConnection(namespace.id, source.id);
+          const custody = await state.savedConnections.findTokenCustody(namespace.id, source.id);
+          const target = account ? await this.accountTarget(state, account) : undefined;
+          if (
+            namespace.status !== "ready" ||
+            source.state !== "ready" ||
+            !slot ||
+            !account ||
+            !target ||
+            account.revocationRequestedBy ||
+            !custody ||
+            !slot.issuers.includes(account.issuer) ||
+            !slot.acceptsRecipient(target)
+          ) {
             throw new ResourceStateConflictError(
-              "Choose a ready, compatible credential source from this Agent's saved credentials.",
+              "Authorize the account for this MCP server first.",
+            );
+          }
+          const delivery = slot.delivery(target, account.grantedScopes);
+          if (!delivery) {
+            throw new ResourceStateConflictError(
+              "The account grants no operations for this receiver.",
+            );
+          }
+          const reviewed = driver.credentials?.mcpToolDiscovery?.(pluginId, connection.slot, {
+            ...source,
+            ...delivery,
+            ownerCapability: "credential_gateway",
+            config: { ...delivery.config, issuer: account.issuer },
+          });
+          if (!reviewed || reviewed.endpoint !== account.mcpServerUrl) {
+            throw new ResourceStateConflictError(
+              "The account does not authorize this MCP receiver.",
             );
           }
           return {
@@ -14542,6 +14802,53 @@ export class OpenClawController {
    * Namespace lock serializes binding, source deletion, and admission. The listing rule is
    * checked after every source authorization and lookup, so it never answers before a 403.
    */
+  private async runtimeAccountSource(
+    state: PlatformReadView,
+    source: CredentialSource,
+    account: SavedConnection,
+    plugins: PluginDesiredState | undefined,
+    resolved?: {
+      readonly target: PluginAccountTarget;
+      readonly bindings: ReturnType<OpenClawController["pluginAccountBindings"]>;
+    },
+  ): Promise<CredentialSource | undefined> {
+    const target = resolved?.target ?? (await this.accountTarget(state, account));
+    const uses =
+      resolved?.bindings ??
+      this.pluginAccountBindings(plugins).filter((binding) => binding.sourceId === source.id);
+    if (uses.length === 0) {
+      return undefined; // A grant alone creates no workload credential.
+    }
+    const deliveries = uses.map(({ slot }) => {
+      if (!slot.issuers.includes(account.issuer) || !slot.acceptsRecipient(target)) {
+        throw new ResourceStateConflictError(
+          "Authorize an account for this plugin server before binding it.",
+        );
+      }
+      return slot.delivery(target, account.grantedScopes);
+    });
+    if (deliveries.some((delivery) => delivery === undefined)) {
+      return undefined;
+    }
+    const [delivery] = deliveries;
+    if (!delivery || deliveries.some((item) => !isDeepStrictEqual(item, delivery))) {
+      throw new ResourceStateConflictError(
+        "The selected slots require incompatible presentations for this account.",
+      );
+    }
+    return {
+      ...source,
+      ...delivery,
+      ownerCapability: "credential_gateway",
+      driverId: this.credentialGatewayDriver().id,
+      config: {
+        ...delivery.config,
+        issuer: account.issuer,
+        client_id: account.clientId,
+      },
+    };
+  }
+
   private async authorizeAgentCredentialSources(
     state: PlatformUnitOfWork,
     principalId: string,

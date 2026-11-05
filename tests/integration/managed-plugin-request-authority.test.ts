@@ -67,7 +67,30 @@ test("the signed OpenShell request guard intersects the source envelope with the
       request_scope: { stringValue: JSON.stringify({ host, port, path, scopes: [scope] }) },
     },
   });
-  const config = scopeConfig("gmail.googleapis.com", "/gmail/v1/users/me/messages", gmail);
+  // A provider can report unrelated scopes. The sender forwards only the scopes governing
+  // reviewed operations at this destination; the signed request guard still decides each call.
+  const recipient = {
+    host: "gmail.googleapis.com",
+    port: 443,
+    path: "/gmail/v1/users/me/messages",
+  };
+  const google = managedGoogleInstall;
+  const slot = new OCCPluginDriver().credentials.connectionSlot(
+    { [google.id]: { enabled: true } },
+    google.id,
+    "account",
+  )!;
+  const targetAccount = {
+    issuer: google.credentials.account!.issuer,
+    tokenUrl: google.credentials.account!.tokenEndpoint,
+    destinations: [recipient],
+  };
+  const largeGrant = Array.from({ length: 1200 }, (_, i) => "unrelated.scope." + i);
+  const delivery = slot.delivery(targetAccount, [...largeGrant, gmail, gmail]);
+  assert.ok(delivery);
+  const { config: projected } = delivery;
+  assert.equal(projected.scope, gmail);
+  const config = scopeConfig(recipient.host, recipient.path, projected.scope!);
   const target = {
     scheme: "https",
     host: "gmail.googleapis.com",

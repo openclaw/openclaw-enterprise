@@ -401,6 +401,99 @@ export function managedMcpSlotAcceptsSource(
   );
 }
 
+/** Resolve the release's named account independently of any account currently bound to it. */
+export function managedPluginAccountSlot(
+  install: ManagedCliInstall | ManagedMcpInstall,
+  selections: PluginDesiredState,
+  slotId: string,
+) {
+  if (!Object.hasOwn(install.credentials, slotId)) {
+    return undefined;
+  }
+  const selection = selections[install.id];
+  const policy = selection?.driverPolicy;
+  const bindings = asRecord(policy?.credentials);
+  const current = bindings?.[slotId];
+  const slot = install.credentials[slotId]!;
+  function acceptsRecipient(target: PluginAccountTarget) {
+    const { destinations, mcp } = target;
+    if (target.issuer !== slot.issuer) {
+      return false;
+    }
+    if (install.kind === "mcp") {
+      const [endpoint] = destinations;
+      return (
+        destinations.length === 1 &&
+        endpoint !== undefined &&
+        mcp?.serverUrl === install.url &&
+        mcp.resource === install.credentials[slotId]!.mcp.resource &&
+        endpoint.host === install.endpoint.host &&
+        endpoint.port === install.endpoint.port &&
+        endpoint.path === install.endpoint.path
+      );
+    }
+    return (
+      !mcp &&
+      target.tokenUrl === install.credentials[slotId]!.tokenEndpoint &&
+      destinations.some(isGoogleWorkspaceRecipient)
+    );
+  }
+  return {
+    releaseSha256: install.releaseSha256,
+    credentialSourceId: typeof current === "string" ? current : null,
+    issuers: [slot.issuer],
+    acceptsRecipient,
+    delivery(target: PluginAccountTarget, grantedScopes: readonly string[]) {
+      if (!acceptsRecipient(target)) {
+        throw new ConfigurationHarnessError(
+          "The saved account does not match this plugin slot's approved destination.",
+        );
+      }
+      const config: Record<string, string> = {
+        // Both reviewed senders use POST for protected requests. Each operation or tool
+        // remains subject to its plugin's request policy.
+        access: "full",
+        env_var: slot.delivery.env,
+        ...(slot.delivery.envAliases && {
+          env_var_aliases: slot.delivery.envAliases.join(","),
+        }),
+        token_url: target.tokenUrl,
+        oauth_owner: "token_service",
+      };
+      if (install.kind === "mcp") {
+        const [endpoint] = target.destinations;
+        config.host = endpoint!.host;
+        config.port = String(endpoint!.port);
+        config.path = endpoint!.path;
+        config.protocol = "mcp";
+      } else {
+        const destinations = target.destinations.filter(isGoogleWorkspaceRecipient);
+        config.destinations = JSON.stringify(destinations);
+        const scopes = googleWorkspaceDeliveryScopes(destinations, grantedScopes);
+        if (scopes.length === 0) {
+          return undefined;
+        }
+        config.scope = scopes.join(" ");
+      }
+      return {
+        type: install.kind === "mcp" ? "bearer-token" : "oauth2-refresh-token",
+        config,
+      };
+    },
+    bind(sourceId: string) {
+      return {
+        ...selection,
+        enabled: true,
+        driverPolicy: {
+          ...policy,
+          releaseSha256: install.releaseSha256,
+          credentials: { ...bindings, [slotId]: sourceId },
+        },
+      };
+    },
+  };
+}
+
 export const managedPluginCredentials = {
   connectionSlot(selections: PluginDesiredState, pluginId: string, slotId: string) {
     const install = managedCliInstalls.find(({ id }) => id === pluginId);

@@ -364,22 +364,29 @@ test("Google offers OAuth only for a compatible template and can bind the result
     scopes: [scope],
     envVar: "GOG_ACCESS_TOKEN",
   };
-  assert.equal(slot.acceptsTemplate(template), true);
-  for (const mismatch of [
-    { issuer: "https://other.example" },
-    { tokenUrl: "https://other.example/token" },
-    { scopes: ["openid"] },
-    { envVar: "OTHER_TOKEN" },
-    { endpoint: { ...template.endpoint, host: "other.example" } },
-  ]) {
-    assert.equal(slot.acceptsTemplate({ ...template, ...mismatch }), false);
-  }
-  const source = {
-    id: "cs_google",
-    state: "ready",
-    type: "oauth2-refresh-token",
-    ownerCapability: "credential_gateway",
-    config: { token_url: template.tokenUrl, env_var: template.envVar, host, path: "/**", scope },
+  assert.deepEqual(slot.issuers, [target.issuer]);
+  assert.equal(slot.acceptsRecipient(target), true);
+  assert.equal(
+    slot.acceptsRecipient({
+      ...target,
+      tokenUrl: "https://other.example/token",
+    }),
+    false,
+  );
+  assert.equal(
+    slot.acceptsRecipient({
+      ...target,
+      destinations: [{ ...target.destinations[0], host: "other.example" }],
+    }),
+    false,
+  );
+  assert.equal(slot.delivery(target, []), undefined);
+  const allGoogle = {
+    ...target,
+    destinations: [
+      ...target.destinations,
+      { host: "www.googleapis.com", port: 443, path: "/calendar/**" },
+    ],
   };
   const bound = { [googleId]: slot.bind(source) };
   driver.validatePolicies(bound);
