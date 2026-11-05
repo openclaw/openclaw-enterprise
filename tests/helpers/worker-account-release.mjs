@@ -16,7 +16,7 @@ import { managedPluginGuardVersion } from "../../apps/controller/src/drivers/plu
  * supervisor propagation are separate proofs; this check verifies the production caller ordering.
  */
 export async function assertWorkerAccountRelease(t, input) {
-  const { controller, state, pool, namespaceId, sourceId } = input;
+  const { controller, state, pool, namespaceId, agentId, sourceId } = input;
   const tenant = await state.read((view) => view.namespaces.findNamespace(namespaceId));
   assert.ok(tenant);
   const sandboxDriver = createProviderSandboxDriver({ id: "openshell-sandbox" }).driver;
@@ -31,7 +31,7 @@ export async function assertWorkerAccountRelease(t, input) {
     tenant,
     sandboxDriver,
     credentialGatewayDriver: input.gateway,
-    revisionOverrides: { namespaceId },
+    revisionOverrides: { namespaceId, agentId },
     async provisionHarness(context) {
       const membership = context.requirements.credentialAttachments.map(({ ref }) => ref);
       if (providerMembership) {
@@ -54,10 +54,14 @@ export async function assertWorkerAccountRelease(t, input) {
       fixture.observePods([pod]);
     },
   });
-  controller.installPluginDrivers(input.pluginDrivers);
+  // Earlier API scenarios use a custom catalog. Admit this Agent through the real
+  // OpenClaw catalog; the fresh Worker below independently composes both catalogs.
+  const openClawCatalog = input.pluginDrivers.find(({ harnessId }) => harnessId === "openclaw");
+  controller.registerDriver(openClawCatalog);
+  controller.selectDriver("plugin", openClawCatalog.id);
   controller.registerDriver(fixture.driver);
   controller.selectDriver("compute", fixture.driver.id);
-  const agentId = await input.createAgent();
+  await input.bindPlugins();
   // Admit through the real Kubernetes Driver, preserving the same transport state for dispatch.
   const revision = await controller.deployAgent(
     input.principal.id,
