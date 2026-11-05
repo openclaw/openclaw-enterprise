@@ -70,6 +70,16 @@ test(
         () => verifyQaSandboxPolicy(artifacts),
       );
     }
+    if (selection.authorityRecovery) {
+      const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
+      await stage(
+        context,
+        "kubernetes/Codex/OpenShell",
+        "recovered worker model-source authority chain",
+        () => verifyQaSandboxPolicy(artifacts, "authority-recovery"),
+        "authority-recovery",
+      );
+    }
     if (selection.pluginInstall) {
       const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
       await stage(
@@ -152,7 +162,6 @@ test(
                     !f.retained && f.pendingRepositories.size === 0,
                     "blocked by unresolved repository cleanup",
                   );
-                  await prepareQaPreset(f, preset);
                   if (selectedCell.scenarios.includes("codex-search-config")) {
                     f.configuration.drivers.compute.configuration.runtime.modelProvider = {
                       protocol: "openai-responses",

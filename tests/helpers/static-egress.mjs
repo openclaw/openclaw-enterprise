@@ -545,28 +545,6 @@ export async function staticEgressFixture(
   };
   const secret = await post("secrets", { name: "provider-key", value: "synthetic-key-initial" });
   const path = `/namespaces/${namespace.id}/credential-sources`;
-  const providerRequests = [];
-  let providerResponse = { status: 200, body: { output: "fixture answer" } };
-  const createProvider = providerServer === undefined ? createHttpsServer : providerServer;
-  const provider = createProvider({ key, cert }, async (request, response) => {
-    const bytes = await buffer(request);
-    providerRequests.push({
-      method: request.method,
-      path: request.url,
-      authorization: request.headers.authorization,
-      body: bytes.length ? JSON.parse(bytes) : undefined,
-      headers: request.headers,
-    });
-    response.writeHead(providerResponse.status, {
-      "content-type": providerResponse.contentType ?? "application/json",
-    });
-    response.write(providerResponse.rawBody ?? JSON.stringify(providerResponse.body));
-    if (providerResponse.trailers) {
-      response.addTrailers(providerResponse.trailers);
-    }
-    response.end();
-  });
-  const providerPort = await listen(t, provider);
   const inferenceSecret = await post("secrets", {
     name: "inference-provider-key",
     value: "synthetic-key-initial",

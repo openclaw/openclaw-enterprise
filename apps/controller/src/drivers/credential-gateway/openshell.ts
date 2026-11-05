@@ -1006,14 +1006,11 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         }),
       });
     }
-    const profile = type.profile(
-      "destination-description",
-      config,
-      this.options,
+    const profile = type.profile("destination-description", config, this.options, () =>
       this.backend.client.placement(),
     );
     const endpoints = (
-      type.refresh === undefined
+      type.catalog.rotation !== "refresh"
         ? profile.endpoints.map(
             (endpoint) =>
               `https://${endpoint.host}${endpoint.port === 443 ? "" : `:${endpoint.port}`}${(endpoint.path ?? "/").replace(/\/\*\*$/u, "") || "/"}`,
