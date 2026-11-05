@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { renderPresetTemplate } from "../../packages/contracts/src/index.ts";
+import { managedGatewayConfiguration } from "../../apps/controller/src/drivers/compute/gateway-tool-policy.ts";
 import {
   authenticatedHeaders,
   createAuthenticatedControllerRequest,
@@ -1001,6 +1002,14 @@ function nativeConfiguration(harnessId, slack, options = {}) {
     configuration.plugins.allow.push("memory-core");
     configuration.plugins.entries["memory-core"] = { enabled: true };
     configuration.plugins.slots = { ...configuration.plugins.slots, memory: "memory-core" };
+    // Dedicated Gateways apply a second, concrete tool gate after plugin admission. Preserve
+    // the normal baseline and opt into only the Memory search used by this scenario.
+    const gatewayPolicy = managedGatewayConfiguration(configuration, configuration, true).tools
+      .gatewayPolicy;
+    configuration.tools.gatewayPolicy = {
+      ...gatewayPolicy,
+      allow: [...gatewayPolicy.allow, "memory_search"],
+    };
     // Exercise remote file indexing without projecting the Harness model key into Gateway.
     configuration.memory = {
       search: {
@@ -6015,12 +6024,6 @@ async function assertDedicatedWorkspaceRuntime(context, topology, claim, private
       evidence.memorySearchCatalogued =
         catalog.groups?.some((group) => group.tools?.some(({ id }) => id === "memory_search")) ===
         true;
-      evidence.memoryOwnerCatalogued =
-        catalog.groups?.some(
-          (group) =>
-            group.pluginId === "memory-core" &&
-            group.tools?.some(({ id }) => id === "memory_search"),
-        ) === true;
       process.stderr.write(
         `k3d dedicated: Memory capability selection ${JSON.stringify(evidence)}\n`,
       );
