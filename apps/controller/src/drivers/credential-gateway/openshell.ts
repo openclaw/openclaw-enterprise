@@ -123,7 +123,7 @@ interface OpenShellSourceType {
     sourceId: string,
     config: Readonly<Record<string, string>>,
     options: OpenShellCredentialGatewayOptions,
-    gateway?: OpenShellGatewayPlacement,
+    gateway: () => OpenShellGatewayPlacement | undefined,
     modelProvider?: ModelProviderConfiguration,
   ): Omit<OpenShellProviderProfile, "annotations">;
 }
@@ -416,11 +416,12 @@ function oauth2SourceType(
     credentials: (config) => Object.freeze({ access_token: config.env_var ?? "" }),
     // The token endpoint lives only in the profile: OpenShell refuses it as refresh material.
     profile: (sourceId, config, options, gateway) => {
+      const placement = gateway();
       checkStoredHost(config);
       // A source stored before the token_url host rules fails here until it is replaced.
       if (
         !tokenUrlHostAllowed(config.token_url ?? "") ||
-        !tokenUrlHostOutsideGateway(config.token_url ?? "", gateway) ||
+        !tokenUrlHostOutsideGateway(config.token_url ?? "", placement) ||
         !tokenUrlPortAllowed(config.token_url ?? "")
       ) {
         throw new StoredCredentialSourceConfigError("token_url");
@@ -1054,7 +1055,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       type,
       context.source.id,
       input.config,
-      this.placement(context),
+      () => this.placement(context),
       context.signal,
     );
     try {
@@ -1122,7 +1123,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       type,
       context.source.id,
       context.source.config,
-      this.placement(context),
+      () => this.placement(context),
       context.signal,
     );
     await client.updateProviderCredentials(
@@ -1291,7 +1292,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         type,
         source.id,
         source.config,
-        this.placement(context),
+        () => this.placement(context),
         context.signal,
       );
       attachments.push(
@@ -1444,7 +1445,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     type: OpenShellSourceType,
     sourceId: string,
     config: Readonly<Record<string, string>>,
-    gateway: OpenShellGatewayPlacement | undefined,
+    gateway: () => OpenShellGatewayPlacement | undefined,
     signal: AbortSignal,
   ): Promise<void> {
     const base = type.profile(sourceId, config, this.options, gateway, this.modelProvider);
