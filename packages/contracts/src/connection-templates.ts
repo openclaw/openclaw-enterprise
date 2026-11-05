@@ -1,9 +1,14 @@
+/** RFC 6749 section 3.3 scope-token grammar shared by the API and token exchange. */
+export const oauthScopeTokenPattern = /^[\x21\x23-\x5b\x5d-\x7e]+$/u;
+export function isOAuthScopeToken(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 512 && oauthScopeTokenPattern.test(value);
+}
+
 /** Where a connected credential may be sent; the Credential Gateway releases it nowhere else. */
 export interface ConnectionEndpoint {
   readonly host: string;
   readonly port: number;
   readonly path: string;
-  readonly access: "read-only" | "full";
 }
 
 export type OAuthClientAuthMethod = "none" | "client_secret_basic" | "client_secret_post";
@@ -46,6 +51,7 @@ export interface ConnectionTemplateValues {
   readonly tokenUrl: string;
   readonly revocationUrl?: string;
   readonly oauthClientId?: string;
+  /** An empty list leaves scope selection to the account owner and provider. */
   readonly scopes: readonly string[];
   readonly authorizationParameters: Readonly<Record<string, string>>;
   readonly recipient: Readonly<ConnectionEndpoint>;
@@ -147,7 +153,6 @@ export function connectionValuesChanged(
     current.recipient.host !== next.recipient.host ||
     current.recipient.port !== next.recipient.port ||
     current.recipient.path !== next.recipient.path ||
-    current.recipient.access !== next.recipient.access ||
     current.scopes.length !== next.scopes.length ||
     current.scopes.some((scope, index) => scope !== next.scopes[index]) ||
     !sameParameters(current.authorizationParameters, next.authorizationParameters)

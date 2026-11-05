@@ -87,6 +87,9 @@ test("the browser code exchange passes only granted scopes to refresh", async (t
     assert.equal(init.body.get("client_id"), request.clientId);
     assert.equal(init.body.has("client_secret"), false);
     assert.equal(init.body.get("resource"), request.resource);
+    if (init.body.get("grant_type") === "refresh_token") {
+      assert.equal(init.body.has("scope"), false);
+    }
     return Response.json({
       access_token: randomUUID(),
       token_type: "Bearer",
@@ -95,12 +98,18 @@ test("the browser code exchange passes only granted scopes to refresh", async (t
       scope: responseScope,
     });
   });
-  const exchange = () =>
-    exchangeAuthorizationCode(request, "test-verifier", "test-code", undefined, t.signal);
+  const exchange = (scopes = request.scopes) =>
+    exchangeAuthorizationCode(
+      { ...request, scopes },
+      "test-verifier",
+      "test-code",
+      undefined,
+      t.signal,
+    );
 
-  assert.equal((await exchange()).scope, "read write");
+  assert.deepEqual((await exchange()).grantedScopes, ["read", "write"]);
   responseScope = "read";
-  assert.equal((await exchange()).scope, "read");
+  assert.deepEqual((await exchange()).grantedScopes, ["read"]);
   for (responseScope of ["read admin", ["read"], ""]) {
     await assert.rejects(exchange(), {
       name: "BrowserAuthorizationError",
@@ -108,6 +117,19 @@ test("the browser code exchange passes only granted scopes to refresh", async (t
       recoveryAction: "fix_configuration",
     });
   }
+  // Only a default-scope request may adopt a provider-reported initial grant.
+  responseScope = "provider.default";
+  const defaults = await exchange([]);
+  assert.deepEqual(defaults.grantedScopes, ["provider.default"]);
+  responseScope = undefined;
+  const unreported = await exchange([]);
+  assert.deepEqual(unreported.grantedScopes, []);
+  const renewed = await refreshPinnedOAuthGrant(unreported, t.signal, undefined);
+  assert.deepEqual(renewed.grantedScopes, []);
+  responseScope = "later.addition";
+  await assert.rejects(refreshPinnedOAuthGrant(unreported, t.signal, undefined), {
+    code: "grant_scope_mismatch",
+  });
 });
 
 async function oauthCustody() {
@@ -285,7 +307,7 @@ function connectionGrant(issuer) {
     tokenEndpointAuthMethod: "none",
     refreshToken: randomUUID(),
     accessToken: randomUUID(),
-    scope: "read",
+    grantedScopes: ["read"],
     expiresAt: new Date(Date.now() + 3600_000).toISOString(),
   };
 }

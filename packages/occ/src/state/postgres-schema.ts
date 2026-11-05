@@ -2426,7 +2426,6 @@ export const oauthConnectionTemplateVersions = occSchema.table(
     recipientHost: collatedText("recipient_host").notNull(),
     recipientPort: integer("recipient_port").notNull(),
     recipientPath: collatedText("recipient_path").notNull(),
-    recipientAccess: collatedText("recipient_access").notNull().default("full"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
   (table) => [
@@ -2449,10 +2448,9 @@ export const oauthConnectionTemplateVersions = occSchema.table(
     ),
     check(
       "oauth_connection_template_versions_scopes_valid",
-      sql`cardinality(${table.scopes}) BETWEEN 1 AND 32
-    AND array_position(${table.scopes}, NULL) IS NULL
+      sql`array_position(${table.scopes}, NULL) IS NULL
 
-    AND array_to_string(${table.scopes}, ' ') ~ '^[!#-[\\]-~]+( [!#-[\\]-~]+)*$'`,
+    AND (cardinality(${table.scopes}) = 0 OR array_to_string(${table.scopes}, ' ') ~ '^[!#-[\\]-~]+( [!#-[\\]-~]+)*$')`,
     ),
     check(
       "oauth_connection_template_versions_parameters_object",
@@ -2463,7 +2461,6 @@ export const oauthConnectionTemplateVersions = occSchema.table(
       sql`${table.recipientHost} ~ '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$'
     AND length(${table.recipientHost}) <= 253
     AND ${table.recipientPort} BETWEEN 1 AND 65535
-    AND ${table.recipientAccess} IN ('read-only', 'full')
     AND ${table.recipientPath} ~ '^/[!-~]*$' AND length(${table.recipientPath}) <= 512`,
     ),
     check(
@@ -2530,15 +2527,21 @@ export const savedConnections = occSchema.table(
   },
   (table) => [
     primaryKey({ columns: [table.namespaceId, table.credentialSourceId] }),
-    check("saved_connections_recipient_object", sql`jsonb_typeof(${table.recipient}) = 'object'`),
+    check(
+      "saved_connections_recipient_object",
+      sql`jsonb_typeof(${table.recipient}) = 'object' AND ${table.recipient} ?& ARRAY['host','port','path'] AND ${table.recipient} - ARRAY['host','port','path'] = '{}'::jsonb`,
+    ),
     check(
       "saved_connections_mcp_resource",
       sql`(${table.mcpServerUrl} IS NULL) = (${table.resource} IS NULL)`,
     ),
-    check("saved_connections_requested_scopes", sql`cardinality(${table.requestedScopes}) > 0`),
+    check(
+      "saved_connections_requested_scopes",
+      sql`array_position(${table.requestedScopes},NULL) IS NULL`,
+    ),
     check(
       "saved_connections_granted_scopes",
-      sql`cardinality(${table.grantedScopes}) > 0 AND ${table.grantedScopes} <@ ${table.requestedScopes}`,
+      sql`array_position(${table.grantedScopes},NULL) IS NULL AND (cardinality(${table.requestedScopes}) = 0 OR ${table.grantedScopes} <@ ${table.requestedScopes})`,
     ),
     foreignKey({
       name: "saved_connections_source_owner",
@@ -2614,7 +2617,7 @@ export const connectionSessions = occSchema.table(
       .onUpdate("restrict"),
     check(
       "connection_sessions_selected_scopes_valid",
-      sql`cardinality(${table.selectedScopes}) BETWEEN 1 AND 32 AND array_position(${table.selectedScopes},NULL) IS NULL`,
+      sql`array_position(${table.selectedScopes},NULL) IS NULL`,
     ),
     index("connection_sessions_expiry_idx").on(table.expiresAt),
   ],

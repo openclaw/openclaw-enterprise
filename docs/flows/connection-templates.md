@@ -28,7 +28,7 @@ its registered authentication method. For an MCP connection it sends the
 approved resource at authorization, exchange, and refresh. The Token Service
 keeps the access token and refresh grant in a private Secret. OCC records the
 credential source ID, account owner, approved recipient, requested scopes, and
-granted scopes. A shared callback verifies the issuer when multiple issuers are
+granted scopes. When the person requests provider defaults, the Driver omits the scope parameter. It records the scopes the provider reports, or an empty list if the provider omits them. Renewal can narrow the recorded grant. It cannot add scopes to an unreported grant. A shared callback verifies the issuer when multiple issuers are
 configured. A provider timeout consumes the attempt.
 
 The worker renews the saved account through the Token Service. For each refresh, it checks the saved grant against the approved registration

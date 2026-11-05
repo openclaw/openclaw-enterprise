@@ -1,4 +1,5 @@
 import { Type } from "typebox";
+import { oauthScopeTokenPattern } from "../connection-templates.ts";
 import { RequestId, NamespaceId } from "./common.ts";
 
 export const ConnectionTemplateId = Type.String({
@@ -6,16 +7,17 @@ export const ConnectionTemplateId = Type.String({
 });
 
 const HttpsUrl = Type.String({ maxLength: 2048, pattern: "^https://[^\\s/]" });
-const Scope = Type.String({ minLength: 1, maxLength: 512, pattern: "^[!#-\\[\\]-~]+$" });
-
-const EndpointAccess = Type.Union([Type.Literal("read-only"), Type.Literal("full")]);
+export const OAuthScope = Type.String({
+  minLength: 1,
+  maxLength: 512,
+  pattern: oauthScopeTokenPattern.source,
+});
 
 const ConnectionEndpointSchema = Type.Object(
   {
     host: Type.String({ minLength: 1, maxLength: 253 }),
     port: Type.Optional(Type.Integer({ minimum: 1, maximum: 65535 })),
     path: Type.Optional(Type.String({ minLength: 1, maxLength: 512, pattern: "^/" })),
-    access: Type.Optional(EndpointAccess),
   },
   { additionalProperties: false },
 );
@@ -34,7 +36,11 @@ const AuthMethod = Type.Union([
   Type.Literal("client_secret_basic"),
   Type.Literal("client_secret_post"),
 ]);
-const Scopes = Type.Array(Scope, { minItems: 1, maxItems: 32, uniqueItems: true });
+const Scopes = Type.Array(OAuthScope, {
+  uniqueItems: true,
+  description:
+    "Scopes approved by the administrator. An empty list leaves scope selection to the account owner and provider.",
+});
 const Parameters = Type.Record(
   Type.String({ minLength: 1, maxLength: 128 }),
   Type.String({ maxLength: 1024 }),
@@ -93,14 +99,14 @@ const Observed = Type.Object(
     serverUrl: HttpsUrl,
     resource: HttpsUrl,
     issuers: Type.Array(HttpsUrl),
-    requestedScopes: Type.Array(Scope),
-    resourceScopes: Type.Optional(Type.Array(Scope)),
+    requestedScopes: Type.Array(OAuthScope),
+    resourceScopes: Type.Optional(Type.Array(OAuthScope)),
     issuer: Type.Optional(HttpsUrl),
     authorizationUrl: Type.Optional(HttpsUrl),
     tokenUrl: Type.Optional(HttpsUrl),
     revocationUrl: Type.Optional(HttpsUrl),
     registrationUrl: Type.Optional(HttpsUrl),
-    supportedScopes: Type.Optional(Type.Array(Scope)),
+    supportedScopes: Type.Optional(Type.Array(OAuthScope)),
     tokenEndpointAuthMethods: Type.Optional(Type.Array(Type.String())),
   },
   strict,
@@ -120,7 +126,7 @@ export const OAuthConnectionTemplateVersionSchema = Type.Object(
     tokenUrl: HttpsUrl,
     revocationUrl: Type.Optional(HttpsUrl),
     recipient: Type.Object(
-      { host: Type.String(), port: Type.Integer(), path: Type.String(), access: EndpointAccess },
+      { host: Type.String(), port: Type.Integer(), path: Type.String() },
       strict,
     ),
     scopes: Scopes,

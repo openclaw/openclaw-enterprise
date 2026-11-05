@@ -2353,7 +2353,11 @@ async function loadPage({
       if (installationAdmin) {
         viewState.administrationEnded.add(showRequiredAccess);
         view.append(
-          renderConnectionTemplates({ request: viewRequest, isCurrent: viewIsCurrent }, namespaces),
+          renderConnectionTemplates(
+            { request: viewRequest, isCurrent: viewIsCurrent },
+            namespaces,
+            selectedNamespace,
+          ),
         );
       } else if (installationAdmin === false) {
         showRequiredAccess();

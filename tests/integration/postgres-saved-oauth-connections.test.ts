@@ -172,7 +172,7 @@ test(
     const otherId = await makeNamespace();
     const base = `/namespaces/${namespaceId}`;
     const connections = `${base}/connections`;
-    const recipient = { host: "api.connections.test", port: 443, path: "/mcp", access: "full" };
+    const recipient = { host: "api.connections.test", port: 443, path: "/mcp" };
     const registered = await inject("POST", "/oauth-clients", {
       displayName: "Saved accounts",
       namespaceId,
@@ -185,7 +185,7 @@ test(
     });
     assert.equal(registered.statusCode, 201, registered.body);
     const oauthClientId = registered.json().data.id;
-    const template = await inject("POST", "/connection-templates", {
+    const manualConfig = {
       mode: "manual",
       displayName: "Keycloak",
       namespaceId,
@@ -195,13 +195,14 @@ test(
       oauthClientId,
       scopes: ["openid"],
       recipient,
-    });
+    };
+    const template = await inject("POST", "/connection-templates", manualConfig);
     assert.equal(template.statusCode, 201, template.body);
     const manual = { connectionTemplateId: template.json().data.id };
     // The client also permits revocation, but this version uses only its token endpoint.
     const manualStart = await inject("POST", connections, manual);
     assert.equal(manualStart.statusCode, 201, manualStart.body);
-    const mcp = await inject("POST", "/connection-templates", {
+    const mcpConfig = {
       displayName: "Scope selection",
       namespaceId,
       mode: "mcp_discovery",
@@ -209,7 +210,8 @@ test(
       serverUrl,
       scopes: ["openid", "profile"],
       oauthClientId,
-    });
+    };
+    const mcp = await inject("POST", "/connection-templates", mcpConfig);
     assert.equal(mcp.statusCode, 201, mcp.body);
     const input = { connectionTemplateId: mcp.json().data.id, selectedScopes: ["openid"] };
     for (const selectedScopes of [undefined, ["profile"], ["openid", "other"]]) {
@@ -219,6 +221,28 @@ test(
       });
       assert.equal(refused.statusCode, 400, refused.body);
     }
+    // With no configured scope list, discovery suggests scopes and its challenge still requires openid.
+    const unrestrictedMcp = await inject("POST", "/connection-templates", {
+      ...mcpConfig,
+      scopes: [],
+      displayName: "Open MCP scope selection",
+    });
+    assert.equal(unrestrictedMcp.statusCode, 201, unrestrictedMcp.body);
+    const unrestrictedId = unrestrictedMcp.json().data.id;
+    assert.equal(
+      (await inject("POST", connections, { connectionTemplateId: unrestrictedId })).statusCode,
+      400,
+    );
+    const manyScopes = ["openid", ...Array.from({ length: 32 }, (_, i) => "custom." + i)];
+    const freeStart = await inject("POST", connections, {
+      connectionTemplateId: unrestrictedId,
+      selectedScopes: manyScopes,
+    });
+    assert.equal(freeStart.statusCode, 201, freeStart.body);
+    assert.equal(
+      new URL(freeStart.json().data.authorizationUrl).searchParams.get("scope"),
+      manyScopes.join(" "),
+    );
     // Even an Installation administrator cannot use a Namespace-scoped template elsewhere.
     const wrongScope = await inject("POST", `/namespaces/${otherId}/connections`, input);
     assert.equal(wrongScope.statusCode, 404, wrongScope.body);
@@ -252,6 +276,49 @@ test(
     assert.ok(
       visible.json().data.some((value: { id: string }) => value.id === input.connectionTemplateId),
     );
+    // Let Keycloak choose a default on this isolated registration. The account must record it
+    // as a provider grant while preserving that the person did not request an explicit scope.
+    const unrestrictedManual = await inject("POST", "/connection-templates", {
+      ...manualConfig,
+      scopes: [],
+      displayName: "Provider defaults",
+    });
+    assert.equal(unrestrictedManual.statusCode, 201, unrestrictedManual.body);
+    const [keycloakClient] = await keycloakRealmAdmin(
+      issuer,
+      secrets.admin,
+      "GET",
+      "/clients?clientId=" + clientId,
+    );
+    const realmScopes = await keycloakRealmAdmin(issuer, secrets.admin, "GET", "/client-scopes");
+    const profile = realmScopes.find((scope: { name: string }) => scope.name === "profile");
+    assert.ok(profile);
+    const defaultPath = "/clients/" + keycloakClient.id + "/default-client-scopes/" + profile.id;
+    await keycloakRealmAdmin(issuer, secrets.admin, "PUT", defaultPath);
+    const defaults = await owner("POST", connections, {
+      connectionTemplateId: unrestrictedManual.json().data.id,
+      selectedScopes: [],
+    });
+    assert.equal(defaults.statusCode, 201, defaults.body);
+    const defaultsUrl = defaults.json().data.authorizationUrl;
+    assert.equal(new URL(defaultsUrl).searchParams.has("scope"), false);
+    const defaultCallback = await owner(
+      "GET",
+      await consentRedirect(defaultsUrl, secrets.users.alice.password),
+    );
+    assert.match(String(defaultCallback.headers.location), /connection=connected/);
+    const defaultsId = defaults.json().data.credentialSourceId;
+    const defaultAccounts = await owner("GET", connections);
+    const defaultAccount = defaultAccounts
+      .json()
+      .data.find(
+        (account: { credentialSourceId: string }) => account.credentialSourceId === defaultsId,
+      );
+    assert.deepEqual(defaultAccount.requestedScopes, []);
+    assert.deepEqual(defaultAccount.grantedScopes, ["profile"]);
+    await keycloakRealmAdmin(issuer, secrets.admin, "DELETE", defaultPath);
+    const disconnected = await owner("DELETE", connections + "/" + defaultsId);
+    assert.equal(disconnected.statusCode, 204, disconnected.body);
     async function begin() {
       const response = await owner("POST", connections, input);
       assert.equal(response.statusCode, 201, response.body);
