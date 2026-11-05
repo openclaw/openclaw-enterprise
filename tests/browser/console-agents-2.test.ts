@@ -70,7 +70,7 @@ import {
   routeInstallationWithoutProvisioning,
   agentPostRequests,
   raceAgentName,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
 import { provisioningJob, routeProvisioningJob } from "./console-provisioning-job-fixture.ts";
 import {
   AGENT_NAME_CONFLICT,

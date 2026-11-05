@@ -65,7 +65,7 @@ import {
   nativeSandboxDriver,
   routeInstallationProvisioning,
   routeInstallationWithoutProvisioning,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
 import { provisioningJob, routeProvisioningJob } from "./console-provisioning-job-fixture.ts";
 import { createRuntimeAuthFixture as rawRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import { createReadyConsoleNamespace as rawReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";

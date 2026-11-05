@@ -40,7 +40,7 @@ type Credentials = Pick<LoginFixture["credentials"], "email" | "password">;
 type Grant = readonly [Permission["action"], Permission["resourceKind"]];
 type RequestRecord = { method: string; path: string; body: unknown };
 type Scope = Page | Locator;
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 function refusalMessage(body: unknown): string {

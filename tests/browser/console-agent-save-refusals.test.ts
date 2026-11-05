@@ -34,7 +34,7 @@ import {
 import {
   createRepositoryLaunchFixture,
   withholdPermissionSummary,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
 import { createPolicyConsole } from "./console-sandbox-policy-fixture.ts";
 import {
   AGENT_SOURCES_DENIED,
