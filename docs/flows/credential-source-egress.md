@@ -32,12 +32,8 @@ Suppose the revision admits `github-app-metadata` for repository ID `12345`,
 1. **Match the request.** The supervisor binds the bodyless `GET /repos/acme/widgets`
    reply to its exchange. The GitHub adapter checks method, URL, headers and body
    against the installed route.
-2. **Resolve the token.** OCC checks installation, binding, withdrawal and current
-   `credential_source:operate`, then resolves the registered GitHub grant through the Token Service. If the token has too little time left, resolution can wait for issuance within the request deadline. OCC checks the binding, permission and selected token version again before releasing the header to the supervisor.
-3. **Permit one send.** On the same stream, OCC rechecks authority and the
-   token version. If the Agent lost its source grant after resolution, OCC
-   refuses the send. Otherwise, the supervisor can start the request by the
-   deadline in the permit. Issuing a permit does not confirm receipt by GitHub.
+2. **Resolve the token.** OCC authorizes the Agent and resolves the registered grant. The Token Service can start or join issuance. OCC rechecks authority and token version before returning the header.
+3. **Permit one send.** OCC rechecks the binding on the same stream. The supervisor must start its request by the permit deadline.
 4. **Release the identity.** The adapter checks GitHub's complete reply: `200` JSON,
    at most 64 KiB, with the admitted ID and name (ASCII case may differ). The caller
    receives `200`, `Content-Type: application/json`, `Cache-Control: no-store`
@@ -191,15 +187,7 @@ extend the lifetime.
 GitHub acquisition validation, transport and metadata injection share a wire check:
 1–16,384 bytes of nonspace printable ASCII, not authentication.
 
-`apps/controller/src/drivers/repo/github/credentials/prepared-lifecycle.ts:readWarm`
-pins the committed attempt ID, material version and earlier of material expiry or signed
-deadline. The store projects ciphertext only for that eligible row and issuer, checks
-`clock_timestamp()` at projection and rechecks expiry and cancellation immediately before
-decryption. The outer reader verifies identity and expiry. Expired or replaced selections
-return `not_ready` unless the signed deadline has elapsed; projected bytes cannot be recalled.
-Separate background custody permits rotation and cleanup of material ineligible for requests.
-The registry returns credential headers, an opaque handle and nonsecret evidence to the
-authenticated supervisor; material remains request-scoped.
+`apps/controller/src/drivers/repo/github/credentials/prepared-lifecycle.ts:resolve` checks the registered source and the token's remaining lifetime. It reads only ciphertext for the selected issuer, attempt and version. The store rechecks the caller’s deadline and cancellation before decryption. If issuance cannot supply an eligible token in time, OCC releases no header. Background cleanup retains access to retired material.
 
 Before send, `packages/occ/src/state/prepared-github-state.ts:postgresPreparedGitHubProof`
 queries current material metadata in the active platform transaction, without another

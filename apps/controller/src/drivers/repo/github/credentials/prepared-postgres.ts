@@ -57,6 +57,11 @@ const matching = "f.source_id = $1 AND f.source = $2::jsonb";
 const families = "occ.prepared_github_families";
 const attempts = "occ.prepared_github_attempts";
 type Source = PreparedGitHubEgressSource;
+export interface GitHubPreparationRequest {
+  readonly source: Source;
+  readonly urgency: "proactive" | "required";
+}
+
 type TokenSource = {
   readonly key: { readonly source: { readonly id: string } };
   readonly grant: Admission["grant"];
@@ -260,22 +265,21 @@ export class PreparedGitHubPostgres {
     });
   }
 
-  async claim(claim: string, source?: Source) {
+  async claim(claim: string, request?: GitHubPreparationRequest) {
     return this.transaction(async (c) => {
-      // A request may need fresh material before the scheduled poll. It can take only its
-      // registered family, and cannot displace a live claim from a worker or another request.
-      const eligible = source
-        ? `f.source_id=$3 AND f.source=$4::jsonb
-            AND (f.worker_claim IS NULL OR f.next_check_at <= clock_timestamp())`
-        : "f.next_check_at <= clock_timestamp()";
+      // Proactive hints keep the normal cadence for short-lived tokens. If this use
+      // cannot proceed, it may advance the exact family's next check without stealing a live claim.
+      const due = "f.next_check_at <= clock_timestamp()";
+      const when = request?.urgency === "required" ? `(f.worker_claim IS NULL OR ${due})` : due;
+      const exact = request ? "AND f.source_id=$3 AND f.source=$4::jsonb" : "";
       const { rows } = await c.query(
         `WITH due AS (SELECT source_id FROM ${families} f
-        WHERE enabled AND admission->>'issuerAuthority'=$2 AND ${eligible} AND ${active}
+        WHERE enabled AND admission->>'issuerAuthority'=$2 AND ${when} ${exact} AND ${active}
         ORDER BY next_check_at LIMIT 1 FOR UPDATE SKIP LOCKED)
         UPDATE ${families} f SET next_check_at=clock_timestamp() + interval '60 seconds',worker_claim=$1
         FROM due WHERE f.source_id=due.source_id RETURNING f.source, f.issuer`,
-        source
-          ? [claim, this.issuerAuthority, source.key.source.id, source]
+        request
+          ? [claim, this.issuerAuthority, request.source.key.source.id, request.source]
           : [claim, this.issuerAuthority],
       );
       return rows[0] as Pick<FamilyRow, "source" | "issuer"> | undefined;
@@ -432,7 +436,7 @@ export class PreparedGitHubPostgres {
   }
 
   // Request access pins the selected material and the earlier material/request deadline.
-  // Null is background preparation: it may open material no longer eligible for requests.
+  // Null selects issuance, which may inspect material no longer eligible for a request.
   store(
     source: { readonly key: { readonly source: { readonly id: string } } },
     access: Readonly<{
