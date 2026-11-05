@@ -128,6 +128,9 @@ export function selectQaMatrix(env = process.env) {
   }
   const sandboxPolicy = scenarios.includes("sandbox-policy");
   const privateStorage = scenarios.includes("private-storage");
+  if (privateStorage) {
+    assert.notEqual(installation, "compose", "Private storage requires Kubernetes setup");
+  }
   const pluginInstall = scenarios.includes("plugin-install");
   const linearRead = scenarios.includes("openshell-linear-read");
   assert.ok(

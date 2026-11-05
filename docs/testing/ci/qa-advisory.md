@@ -62,7 +62,7 @@ is in the [QA manifest](../../../scripts/ci/test-suites/qa-matrix.json).
 | Scenario                | In advisory          | Presets         | Checks                                                                                                                                                     |
 | ----------------------- | -------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `sandbox-policy`        | Yes — OpenShell jobs | Codex           | Discover and preview configuration, then apply, update, and withdraw OpenShell network policy in a prepared environment.                                   |
-| `private-storage`       | Yes — OpenShell jobs | Codex           | API-admitted Agent private state ancestry, denial of sibling replacement, and retention across an Agent revision replacement; no model request.            |
+| `private-storage`       | Yes — OpenShell jobs | Codex           | Private state ancestry, unrelated-UID rename denial, and retained bytes across Agent replacement; no additional model turn beyond startup.                 |
 | `plugin-install`        | Yes — OpenShell jobs | Codex           | Install a dedicated Codex plugin, find it after the Codex process restarts, then remove it from the Agent selection.                                       |
 | `model-ui`              | No                   | OpenClaw        | Real model turn and native browser response.                                                                                                               |
 | `console-secrets`       | Yes (Codex)          | OpenClaw, Codex | Create and manage Console Secrets referenced by Agent drafts. Refusing Namespace deletion identifies the deployed Agent and links to its cleanup controls. |
@@ -150,7 +150,9 @@ OpenShell files or the local installation suite. For those suites, follow
 [local installation tests](../kubernetes.md#local-kubernetes-installation).
 
 `private-storage` uses the same prepared environment and credential-file inputs
-as `sandbox-policy`. It proves PVC protection and retained bytes, not successful
+as `sandbox-policy`. Both revisions perform the ordinary startup authentication
+probe; the storage assertions add no model turn. It proves PVC protection and
+retained bytes, not successful
 native Doctor capture or enrollment after a maintenance refusal.
 
 ### Select scenarios
