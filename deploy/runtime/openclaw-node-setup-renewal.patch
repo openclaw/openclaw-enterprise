@@ -2838,7 +2838,7 @@
 +}
 --- /dev/null
 +++ b/src/cli/connect-cli-access.test.ts
-@@ -0,0 +1,834 @@
+@@ -0,0 +1,856 @@
 +// Real CLI selection, native profile storage, HTTPS requests and WSS upgrades.
 +// The daemon plan is real; OS service installation, command capabilities and
 +// the remote Gateway protocol peer are fixtures.
@@ -2879,6 +2879,7 @@
 +  install: vi.fn<(args: GatewayServiceInstallArgs) => Promise<void>>(),
 +  readCommand: vi.fn(),
 +  afterConsent: vi.fn<() => Promise<void>>(),
++  connected: vi.fn(),
 +  runtime: { error: vi.fn(), exit: vi.fn(), log: vi.fn(), writeJson: vi.fn() },
 +}));
 +vi.mock("../runtime.js", async (importOriginal) => ({
@@ -2932,7 +2933,7 @@
 +    dispose: async () => {},
 +    start: () => ({
 +      connect: () => {},
-+      updateGatewayConnection: () => {},
++      updateGatewayConnection: fixture.connected,
 +      cancelAll: async () => {},
 +      close: async () => {},
 +    }),
@@ -3001,6 +3002,21 @@
 +  const program = new Command().exitOverride();
 +  registerConnectCli(program);
 +  await program.parseAsync(["connect", ...args], { from: "user" });
++}
++async function waitForNodeConnection(running: Promise<unknown>, expectedUrl: string) {
++  // An outbound auth frame alone does not prove that the runner accepted hello.
++  await Promise.race([
++    vi.waitFor(
++      () =>
++        expect(fixture.connected).toHaveBeenCalledWith(
++          expect.objectContaining({ url: expectedUrl }),
++        ),
++      { timeout: 5_000 },
++    ),
++    running.then(() => {
++      throw new Error("Node runner exited before connecting to the expected Gateway");
++    }),
++  ]);
 +}
 +async function closeServer(server: Server) {
 +  server.closeAllConnections();
@@ -3398,6 +3414,9 @@
 +            ]);
 +            expect(upgrades).toEqual([acceptedUpgrade, acceptedUpgrade]);
 +          }
++          // Keep observing through reinstall: it must not send credentials itself.
++          connectAuth.length = 0;
++          upgrades.length = 0;
 +          expect(plan.environment?.CF_ACCESS_CLIENT_ID).toBeUndefined();
 +          expect(plan.environment?.CF_ACCESS_CLIENT_SECRET).toBeUndefined();
 +          expect(plan.environment?.OPENCLAW_GATEWAY_TOKEN).toBe(
@@ -3444,6 +3463,8 @@
 +            );
 +            fixture.runtime.error.mockClear();
 +          }
++          expect(connectAuth).toHaveLength(0);
++          expect(upgrades).toHaveLength(0);
 +          const identity = loadOrCreateDeviceIdentity();
 +          if (stateChange === "missing") {
 +            await clearDeviceAuthToken({ deviceId: identity.deviceId, role: "node" });
@@ -3454,9 +3475,6 @@
 +            role: "node",
 +          });
 +          expect(plan.environment?.OPENCLAW_SERVICE_KIND).toBe("node");
-+          // Initial pairing cannot satisfy assertions about a new service process.
-+          connectAuth.length = 0;
-+          upgrades.length = 0;
 +          await withEnvAsync(plan.environment ?? {}, async () => {
 +            // Match actual startup: the installed environment is hydrated before
 +            // Commander reaches the runner, while unrelated shared auth is eligible.
@@ -3467,13 +3485,14 @@
 +            const scope = new AsyncWorkScope();
 +            const program = new Command().exitOverride();
 +            registerNodeCli(program);
++            fixture.connected.mockClear();
 +            const restarted = scope.track(() =>
 +              program.parseAsync(plan.programArguments.slice(1), { from: "user" }),
 +            );
 +            void restarted.catch(() => undefined);
 +            try {
 +              if (stateChange === "paired" || sharedFirst) {
-+                await vi.waitFor(() => expect(connectAuth).toHaveLength(1), { timeout: 5_000 });
++                await waitForNodeConnection(restarted, `wss://127.0.0.1:${gatewayPort}`);
 +                expect(connectAuth).toEqual([{ deviceToken: "service-node-token" }]);
 +                expect(upgrades).toEqual([acceptedUpgrade]);
 +              } else {
@@ -3598,6 +3617,9 @@
 +            secret: "secret-before",
 +          };
 +          expect(upgrades).toEqual([initialUpgrade, initialUpgrade]);
++          // Profile repair must not perform another authenticated connection.
++          authFrames.length = 0;
++          upgrades.length = 0;
 +
 +          if (idSource === "conventional-env") {
 +            // A paired service repair can retain one conventional environment
@@ -3626,6 +3648,8 @@
 +            expect(plan.environment?.CF_ACCESS_CLIENT_ID).toBe("installed-id");
 +            expect(plan.environment?.CF_ACCESS_CLIENT_SECRET).toBeUndefined();
 +          }
++          expect(authFrames).toHaveLength(0);
++          expect(upgrades).toHaveLength(0);
 +
 +          // Rotate the provider, retaining its reference. A copied service secret
 +          // would keep presenting the old value on this real TLS restart.
@@ -3634,9 +3658,6 @@
 +            JSON.stringify({ id: "file-id-after", secret: "secret-after" }),
 +            { mode: 0o600 },
 +          );
-+          // Observe the actual restart, not the token-authenticated pairing handshake.
-+          authFrames.length = 0;
-+          upgrades.length = 0;
 +          await withEnvAsync({ ...plan.environment, NODE_TEST_ACCESS_ID: undefined }, async () => {
 +            // A new service process has no runtime snapshot from its installer.
 +            // Keep actual config.env hydration instead of reusing that old cache.
@@ -3645,12 +3666,13 @@
 +            const scope = new AsyncWorkScope();
 +            const program = new Command().exitOverride();
 +            registerNodeCli(program);
++            fixture.connected.mockClear();
 +            const restarted = scope.track(() =>
 +              program.parseAsync(plan.programArguments.slice(1), { from: "user" }),
 +            );
 +            void restarted.catch(() => undefined);
 +            try {
-+              await vi.waitFor(() => expect(authFrames).toHaveLength(1), { timeout: 5_000 });
++              await waitForNodeConnection(restarted, `wss://127.0.0.1:${claim.port}`);
 +              expect(authFrames).toEqual([{ deviceToken: "rotation-node-token" }]);
 +              const expectedIds = {
 +                "conventional-env": "installed-id",
@@ -4675,7 +4697,7 @@
        } finally {
          stop();
          await running;
-@@ -147,9 +942,765 @@
+@@ -147,9 +942,777 @@
      });
    });
  
@@ -5195,10 +5217,22 @@
 +        registerNodeCli(replayProgram);
 +        // The same fresh envelope still lists A first. Its saved B binding must
 +        // select B before Upgrade, even though A is now reachable.
++        fixture.connected.mockReset();
 +        running = replayProgram
 +          .parseAsync(["node", "run", "--pair-or-reconnect", code], { from: "user" })
 +          .then(() => {});
-+        await vi.waitFor(() => expect(frames).toHaveLength(4), { timeout: 5_000 });
++        await Promise.race([
++          vi.waitFor(
++            () =>
++              expect(fixture.connected).toHaveBeenCalledWith(
++                expect.objectContaining({ url: second }),
++              ),
++            { timeout: 5_000 },
++          ),
++          running.then(() => {
++            throw new Error("Node exited before its saved candidate reconnected");
++          }),
++        ]);
 +        expect(replayFirstConnections).not.toHaveBeenCalled();
 +        expect(frames.map((frame) => (frame.params as { auth?: unknown }).auth)).toEqual([
 +          { bootstrapToken: "synthetic-mixed-bootstrap" },
