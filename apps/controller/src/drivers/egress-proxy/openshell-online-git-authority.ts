@@ -257,10 +257,14 @@ function requestHead(
       binding.scope === "github-repository" &&
       matchesOrigin("https://api.github.com", request) &&
       ((name === "time-zone" && value === "Etc/UTC") ||
-        (name === "graphql-features" &&
-          value === "merge_queue" &&
-          request.target.method === "POST" &&
-          request.target.path === "/graphql"));
+        (request.target.method === "POST" &&
+          request.target.path === "/graphql" &&
+          ((name === "graphql-features" && value === "merge_queue") ||
+            // gh forwards its local cache duration; never use it to cache authorization.
+            (name === "x-gh-cache-ttl" &&
+              value.length > 0 &&
+              value.length <= 64 &&
+              [...value].every((character) => character >= " " && character !== "\u007f")))));
     if (
       (!allowed.includes(name) && !apiMetadata) ||
       Object.hasOwn(headers, name) ||

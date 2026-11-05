@@ -38,11 +38,26 @@ export async function runService(
     import("../../drivers/repo/credentials/service.ts"),
     import("../../drivers/repo/credentials/server.ts"),
   ]);
-  const service = createCredentialService({
-    config: loaded.config,
-    factory: loaded.factory,
-    clock,
-  });
+  const constructSession =
+    "createPrepared" in loaded.factory
+      ? (
+          await import("../../drivers/repo/credentials/session-construction.ts")
+        ).preparedSessionConstructor(loaded.factory)
+      : (
+          await import("../../drivers/repo/credentials/development-session.ts")
+        ).developmentSessionConstructor({
+          config: loaded.config,
+          factory: loaded.factory,
+          clock,
+        });
+  const service = createCredentialService(
+    {
+      config: loaded.config,
+      factory: loaded.factory,
+      clock,
+    },
+    constructSession,
+  );
   let listeners: BoundListeners;
   try {
     // One JSON line per refused request (finding 2411), next to this process's other events.

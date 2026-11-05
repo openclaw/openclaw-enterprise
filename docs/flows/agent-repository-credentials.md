@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
 updated: "2026-11-05"
-last_updated_session: authoring-run/39d1461a-eab1-4cec-8122-86c74cb4dd3f
+last_updated_session: authoring-run/bef19a68-8a96-4f07-9be2-414c284f8c50
 ---
 
 # Agent repository credential flow
@@ -270,15 +270,13 @@ Custom hook paths and API writes remain outside this
 [guardrail](../reference/repository-credentials/push-ref-guardrail.md).
 
 `apps/controller/src/drivers/repo/github/credentials/client/router.ts:routeRepositoryClient`
-routes supported `gh` commands using explicit targets or effective Git remotes. It pins
-generation, reference and session, selects private `gh` configuration and preserves HOME
-without changing shared selection.
-
-See [draft creation from a prepared Git session](../reference/repository-credentials/protected-openshell-git.md#use-the-admitted-repository).
+routes supported `gh` using explicit targets or effective Git remotes. It pins generation,
+reference and session, selects private configuration and preserves HOME and shared selection.
 
 OpenShell's
 `apps/controller/src/drivers/egress-proxy/openshell-online-git-authority.ts:requestHead`
-validates [CLI metadata](../reference/repository-credentials/protected-openshell-git.md#use-the-admitted-repository).
+validates [CLI metadata](../reference/repository-credentials/protected-openshell-git.md#use-the-admitted-repository);
+cache hints never replace authorization.
 `apps/controller/src/drivers/egress-proxy/openshell-online-git-authority.ts:validBinding`
 uses `normalizePushRefAllowlist` for Git-only policies, including terminal `/*`
 patterns. Draft-pull heads remain concrete refs. Receive-pack rejects any disallowed
@@ -291,18 +289,18 @@ fresh installation tokens under the same grant until the version deadline.
 
 ### 6. Maintain, recover and retire ownership
 
-The [worker](../../apps/controller/src/worker.mjs) owns maintenance and shutdown and binds the selected
-`ProtectedRepositoryGitAuthority` through the [sender binder](../../apps/controller/src/composition/repository-credentials/transport.ts).
-Missing authority or mismatched Drivers prevent route-store and sender calls.
-OpenShell connects first; bare Sandboxes have no Git.
+The [worker](../../apps/controller/src/worker.mjs) maintains and closes the
+[sender](../../apps/controller/src/composition/repository-credentials/transport.ts),
+supplying `ProtectedRepositoryGitAuthority`. Missing authority or mismatched Drivers prevent store/sender calls.
+OpenShell connects storage first; bare Sandboxes lack Git.
 
-Optional `reconcile` runs with a 25-second abort signal, one second after the preceding call
-finishes. Close aborts and joins. Readback settles delivery without reinstalling or restoring
-withdrawn access.
+Optional `reconcile` calls have 25-second abort signals, starting one second after their
+predecessors finish. Close aborts and joins. Readback settles delivery without reinstalling
+or restoring withdrawn access.
 
-Activation and maintenance commit atomically, preserving the actor. Maintenance uses 30 seconds,
-the native sender interval or a shorter Compute interval. Restart invalidates missing known
-sessions without reminting; cleanup permits deployment.
+Activation and maintenance commit atomically, preserving actors. Maintenance uses 30 seconds,
+the native sender interval or shorter Compute interval. Restart invalidates missing known sessions
+without reminting; cleanup permits deployment.
 
 [Preview, save and deploy](../../packages/occ/src/index.ts) require current scope and standing permission.
 The [worker](../../apps/controller/src/worker/repository-credentials.ts) rechecks
@@ -346,7 +344,7 @@ See [tests](../../tests/integration/postgres-standing-expiry-authority.test.ts).
 `apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts:subtractExpiredOpenShellGit`
 checks retained profiles between supervisor reports, including recovery.
 `apps/controller/src/drivers/sandbox/openshell-gateway-client.ts:GrpcOpenShellGatewayClient.getProviderProfile`
-verifies profile identity and defaults omitted protobuf endpoint/credential lists to empty.
+verifies identity and defaults omitted protobuf endpoint/credential lists to empty.
 Files-only profiles can pass; missing profiles, GitHub endpoints and `GITHUB_TOKEN` prevent retention.
 
 `ControllerWorker.processAgentDeletion` retires Compute and queues version-keyed cleanup
@@ -398,6 +396,10 @@ denied before reaching the provider, and chat continues.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 14:14: Merge flow updates. (authoring-run/bef19a68-8a96-4f07-9be2-414c284f8c50 - 2446db2c52e4a9cec230b84ee0f50d0063f013a5)
+
+- 2026-11-05 13:46: Admit CLI cache hints without caching authorization. (authoring-run/1247283d-6d2a-4d1f-9804-287f1ae13518 - a825988313)
 
 - 2026-11-05 13:02: Merge configuration ownership and profile verification. (authoring-run/39d1461a-eab1-4cec-8122-86c74cb4dd3f - 8d8d6143aba4362c00a414f8f0c5de408d49f0d1)
 
