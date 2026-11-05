@@ -334,7 +334,7 @@
     },
     {
       "kind": "text",
-      "text": "Before installation, the worker matches the held launcher request to an authenticated denial.",
+      "text": "At selected-repository startup, OCE matches the held launcher request to an authenticated denial before issuing the token.",
       "x": 20,
       "y": 657,
       "size": 14,

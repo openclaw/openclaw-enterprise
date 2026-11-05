@@ -176,7 +176,7 @@ export default {
     },
   ],
   notes: [
-    "Before installation, the worker matches the held launcher request to an authenticated denial.",
+    "At selected-repository startup, OCE matches the held launcher request to an authenticated denial before issuing the token.",
     "Renewal updates the provider for an existing Sandbox. Each Git request still needs authorization.",
   ],
 } satisfies Diagram;

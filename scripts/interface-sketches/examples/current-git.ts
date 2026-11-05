@@ -2,7 +2,7 @@ import type { Diagram } from "../diagram.ts";
 
 export default {
   title: "What happens when the Agent runs git push?",
-  subtitle: "Request authorization in the OpenShell reference implementation",
+  subtitle: "Selected-repository profile (github-repository) · OpenShell reference implementation",
   layout: { board: [1180, 474] },
   groups: [
     {
@@ -91,6 +91,6 @@ export default {
   ],
   notes: [
     "github-repository restricts access to selected repositories. GitHub governs refs. Explicit git-write checks the pushed ref in OCE.",
-    "github-installation uses the App installation’s scope and requires opt-in. An allow leaves exact dispatch and delivery unconfirmed.",
+    "An allow authorizes this request. Read back the ref at GitHub to confirm that the push succeeded.",
   ],
 } satisfies Diagram;

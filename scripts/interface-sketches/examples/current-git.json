@@ -13,7 +13,7 @@
     },
     {
       "kind": "text",
-      "text": "Request authorization in the OpenShell reference implementation",
+      "text": "Selected-repository profile (github-repository) · OpenShell reference implementation",
       "x": 20,
       "y": 55,
       "size": 16,
@@ -188,7 +188,7 @@
     },
     {
       "kind": "text",
-      "text": "github-installation uses the App installation’s scope and requires opt-in. An allow leaves exact dispatch and delivery unconfirmed.",
+      "text": "An allow authorizes this request. Read back the ref at GitHub to confirm that the push succeeded.",
       "x": 20,
       "y": 439,
       "size": 14,
