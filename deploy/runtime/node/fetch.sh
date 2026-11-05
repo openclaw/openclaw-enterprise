@@ -10,7 +10,8 @@ test "$(node -p 'process.versions.node')" = "$version" || {
 . /etc/os-release
 test "$VERSION_CODENAME" = bookworm
 mkdir -p /build/node
-curl --fail --location --silent --show-error --retry 6 --max-time 300 \
+curl --fail --location --silent --show-error --retry 6 --retry-all-errors \
+  --retry-max-time 600 --max-time 300 \
   "https://nodejs.org/dist/v$version/node-v$version.tar.xz" -o /build/node.tar.xz
 archive_sha=$(node -p 'require("./source.json").sourceArchiveSha256')
 patch_sha=$(node -p 'require("./source.json").patchSha256')
