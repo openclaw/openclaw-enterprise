@@ -11,6 +11,7 @@ import { assertApiError } from "../helpers/api-error.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { CODEX_PLACEMENT_REFUSAL, EMBEDDED_API_KEY_REQUIRED } from "../helpers/refusal-text.mjs";
 
 const GATEWAY_PASSWORD = { source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" };
@@ -424,6 +425,58 @@ test("Agent create admits private workspace files through the OpenShell initiali
     assert.equal(created.data.desiredRuntimeState, "stopped");
     assert.deepEqual((await f.staged(created.data.id)).files, files);
     assert.equal(JSON.stringify(created.body).includes(files["USER.md"]), false);
+  }
+});
+
+test("Agent admission refuses projected identity only for OpenShell-owned Harnesses", async (t) => {
+  for (const selected of [true, false]) {
+    const sandbox = selected ? openShellSandbox(t) : {};
+    const computeDriver = createTestKubernetesComputeDriver("identity-admission", {
+      sandboxDriver: sandbox.sandboxDriver,
+      servicePrincipalCredentials: {
+        mode: "projectedServiceAccountToken",
+        audience: "occ",
+        expirationSeconds: 600,
+      },
+    });
+    const f = await setup(t, sandbox);
+    // Namespace setup uses the fixture lifecycle; admission below uses the real Compute
+    // validator without provisioning Kubernetes resources or contacting OpenShell.
+    f.controller.registerDriver(computeDriver);
+    f.controller.selectDriver("compute", computeDriver.id);
+    const key = await f.createSecret(f.namespace.id, "model-key", "test-api-key");
+    for (const [runtime, model] of [
+      ["openclaw", "openai/gpt-4.1"],
+      ["codex", "codex/gpt-5.1"],
+    ]) {
+      // Native dedicated workers require a provider; the no-provider control uses Codex.
+      if (!selected && runtime === "openclaw") {
+        continue;
+      }
+      const stored = {
+        data: await f.createConfiguration(
+          f.namespace.id,
+          createHarnessConfiguration(runtime, model.split("/")[1]),
+        ),
+      };
+      const result = await f.create(`Projected ${runtime}`, {
+        configurationId: stored.data.id,
+        executionMode: "dedicated",
+        harnessAuth: { method: "api_key", source: key.ref },
+      });
+      if (selected) {
+        assertApiError(result, 400, "INVALID_REQUEST");
+        assert.match(
+          result.body.error.message,
+          /OpenShell cannot preserve an Agent ServiceAccount/,
+        );
+        assert.match(result.body.error.message, /servicePrincipalCredentials\.mode to disabled/);
+        // Refuse before creating an Agent or staging a revision that can stop a predecessor.
+        assert.deepEqual((await f.request("GET", f.path)).data, []);
+      } else {
+        assert.equal(result.status, 201, JSON.stringify(result.body));
+      }
+    }
   }
 });
 

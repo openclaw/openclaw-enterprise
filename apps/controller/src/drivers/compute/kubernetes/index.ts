@@ -4578,6 +4578,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
     secretBindings?: SecretBindings | null,
     credentialSourceType?: CredentialSourceType,
   ): void {
+    if (
+      harness.mode === "dedicated" &&
+      this.sandboxDriver?.implementation === "openshell" &&
+      this.options.servicePrincipalCredentials.mode === "projectedServiceAccountToken"
+    ) {
+      throw new ConfigurationHarnessError(
+        "OpenShell cannot preserve an Agent ServiceAccount and projected identity token. Ask an operator to set Kubernetes Compute servicePrincipalCredentials.mode to disabled, or select a Sandbox Driver that supports the projection.",
+      );
+    }
     this.validateAdmittedHarnessAuth(
       "admission",
       harness,
