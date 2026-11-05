@@ -24,28 +24,37 @@ permissions are set in the [workflow files](../../../.github/workflows);
 
 ## Environments
 
-Full Integration uses `integration-main` for its credentialed jobs. Main dispatch
-requires exactly one custom deployment rule: branch `main`, with no required
-reviewers. Disable administrator bypass. Preflight rejects a broader branch rule,
-a tag rule, incomplete rule metadata, or an enabled bypass flag. If the API omits
-the bypass flag, verify it separately in the environment settings.
+Full Integration runs automatically after pushes to `main`. Manual dispatches
+also require `main` and approval by the dispatcher through
+`integration-main-approval`, which has no secrets or variables. Configure its
+sole required reviewer as `@openclaw/maintainers-oce`; allow self-review and
+disable administrator bypass. Both environments must have exactly one custom
+deployment rule: branch `main`. `integration-main` must have no required
+reviewers, so automatic pushes do not wait for approval.
 
-The temporary proof route runs `all` after a push to exactly
-`dev/kevinlin/integration-main-cutover`. The push requires
-`kevinlin-openai` as the actor and rerun actor in this repository, and exactly two
-environment branch rules: `main` and the named cutover branch. Remove the proof
-route and temporary branch rule after verification.
+After a manual approval, preflight reads the environment policy and the run's
+review history with the workflow token. The approved review must name the exact
+approval environment and match the dispatcher's user ID and triggering login.
+Missing, rejected, conflicting, or unverifiable reviews fail before
+`integration-main` jobs start. Repository write access alone does not authorize
+a manual dispatch.
+
+Main push jobs can retry at the original commit. A manual run requires a new
+approved dispatch for each attempt. Each credentialed job checks the event and
+attempt before it reads credentials. Preflight
+rejects extra branches, tags, incomplete policy metadata, and a missing or
+enabled bypass flag.
 
 The separate `integration-qa-pr` environment permits `main` and
 `refs/pull/*/merge`. Its `full-qa` and `qa-openshell-compose` labels select
 advisory runs. Keep its two secret values separate from `integration-main`.
 Full Integration preflight does not govern this environment.
 
-Full Integration rejects tags and other credentialed branch dispatches. Check
+Full Integration rejects tags and all branch dispatches outside `main`. Check
 the source commit before dispatch and confirm the run's `headSha` matches it.
 
-`dev-up-k3d` and `skipper-prepared-git-installed` accept branches without a
-GitHub environment. The Skipper job uses synthetic, job-local model and Git credentials for the
+`dev-up-k3d` and `skipper-prepared-git-installed` need no credential environment,
+but manual runs still require `main` and the dispatcher's team approval. The Skipper job uses synthetic, job-local model and Git credentials for the
 [installed private Git fixture](../repository-credentials.md#verify-prepared-native-git)
 and a GitHub Actions cache token to build images. `helper-timeout` and standalone
 `logging-collector` also need no environment, but both require `main`.

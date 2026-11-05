@@ -17,9 +17,10 @@ export const fullIntegrationLanes = Object.freeze([
 ]);
 
 const lanes = new Set(fullIntegrationLanes);
-const branchEligibleLanes = new Set(["dev-up-k3d", "skipper-prepared-git-installed"]);
-// TODO: Remove the cutover push route after integration-main verification is complete.
-const cutoverRef = "refs/heads/dev/kevinlin/integration-main-cutover";
+const repository = "openclaw/openclaw-enterprise";
+const approvalEnvironment = "integration-main-approval";
+const approvalEnvironmentId = 26285522718;
+const approvedTeamId = 19674117;
 const credentialedLanes = new Set([
   "qa-matrix",
   "docker-model",
@@ -32,31 +33,28 @@ const credentialedLanes = new Set([
 ]);
 
 export function selectLane({ eventName, inputLane, ref }) {
-  if (eventName === "workflow_dispatch") {
-    if (ref === cutoverRef) {
-      throw new Error("The cutover proof branch accepts push events only.");
-    }
-    return inputLane;
-  }
-  if (eventName === "push" && ref === cutoverRef) {
+  if (eventName === "push" && ref === "refs/heads/main") {
     return "all";
+  }
+  if (eventName === "workflow_dispatch") {
+    return inputLane;
   }
   throw new Error(`Unsupported full integration event: ${eventName}`);
 }
 
-export function assertSourceRef(ref, lane, eventName = "workflow_dispatch") {
-  if (eventName === "push" && ref === cutoverRef) {
-    return;
-  }
-  if (
-    eventName === "workflow_dispatch" &&
-    branchEligibleLanes.has(lane) &&
-    /^refs\/heads\/.+/.test(ref ?? "")
-  ) {
-    return;
-  }
+export function assertSourceRef(ref) {
   if (ref !== "refs/heads/main") {
-    throw new Error("Full integration must run from main or the exact cutover push ref.");
+    throw new Error("Full integration must run from main at the approved github.sha.");
+  }
+}
+
+function assertRunContext(env) {
+  assertSourceRef(env.GITHUB_REF);
+  if (env.GITHUB_REPOSITORY !== repository || env.GITHUB_REF_TYPE !== "branch") {
+    throw new Error("Full integration requires this repository and the main branch.");
+  }
+  if (env.GITHUB_EVENT_NAME === "workflow_dispatch" && env.GITHUB_RUN_ATTEMPT !== "1") {
+    throw new Error("Manual integration reruns are refused; start a new approved dispatch.");
   }
 }
 
@@ -75,38 +73,90 @@ function branchPolicies(policies) {
   return policies?.branch_policies ?? [];
 }
 
-export function validateEnvironmentPolicy(
-  environmentName,
-  environment,
-  policies,
-  sourceRef = "refs/heads/main",
-) {
-  const reviewers = requiredReviewersRule(environment);
-  if ((reviewers?.reviewers ?? []).length > 0) {
-    throw new Error(`Protected environment ${environmentName} must not require reviewers.`);
-  }
-  if (environment.can_admins_bypass !== undefined && environment.can_admins_bypass !== false) {
+function assertMainOnlyPolicy(environmentName, environment, policies) {
+  if (environment.can_admins_bypass !== false) {
     throw new Error(`Protected environment ${environmentName} must disable administrator bypass.`);
   }
   const policy = environment.deployment_branch_policy;
   if (policy?.custom_branch_policies !== true || policy?.protected_branches !== false) {
-    throw new Error(
-      `Protected environment ${environmentName} must use custom deployment branch rules.`,
-    );
+    throw new Error(`Protected environment ${environmentName} must use custom main-only policy.`);
   }
-  const allowed =
-    sourceRef === cutoverRef ? ["main", cutoverRef.slice("refs/heads/".length)] : ["main"];
   const branches = branchPolicies(policies);
   if (
-    policies?.total_count !== branches.length ||
-    branches.length !== allowed.length ||
-    !allowed.every((name) =>
-      branches.some((branch) => branch.name === name && branch.type === "branch"),
-    )
+    policies?.total_count !== 1 ||
+    branches.length !== 1 ||
+    branches[0]?.name !== "main" ||
+    branches[0]?.type !== "branch"
+  ) {
+    throw new Error(`Protected environment ${environmentName} must allow only the main branch.`);
+  }
+}
+
+export function validateEnvironmentPolicy(environmentName, environment, policies) {
+  const reviewers = requiredReviewersRule(environment);
+  if ((reviewers?.reviewers ?? []).length > 0) {
+    throw new Error(`Protected environment ${environmentName} must not require reviewers.`);
+  }
+  assertMainOnlyPolicy(environmentName, environment, policies);
+}
+
+function positiveId(value) {
+  return (
+    typeof value === "string" && /^[1-9]\d*$/.test(value) && Number.isSafeInteger(Number(value))
+  );
+}
+
+async function validateManualApproval(env, github) {
+  if (
+    !positiveId(env.GITHUB_ACTOR_ID) ||
+    !positiveId(env.GITHUB_RUN_ID) ||
+    !env.GITHUB_ACTOR ||
+    !env.GITHUB_TRIGGERING_ACTOR ||
+    env.GITHUB_ACTOR.toLowerCase() !== env.GITHUB_TRIGGERING_ACTOR.toLowerCase()
   ) {
     throw new Error(
-      `Protected environment ${environmentName} must allow only the selected main or cutover branch policy.`,
+      "Manual integration requires the same identified dispatcher and triggering actor.",
     );
+  }
+  const read = (path) => github({ repository, token: env.GITHUB_TOKEN, path });
+  const environment = await read(`/environments/${approvalEnvironment}`);
+  const policies = await read(`/environments/${approvalEnvironment}/deployment-branch-policies`);
+  assertMainOnlyPolicy(approvalEnvironment, environment, policies);
+  const rules = environment.protection_rules?.filter((rule) => rule.type === "required_reviewers");
+  const rule = rules?.[0];
+  if (
+    environment.id !== approvalEnvironmentId ||
+    environment.name !== approvalEnvironment ||
+    rules?.length !== 1 ||
+    rule.prevent_self_review !== false ||
+    rule.reviewers?.length !== 1 ||
+    rule.reviewers[0]?.type !== "Team" ||
+    rule.reviewers[0]?.reviewer?.id !== approvedTeamId
+  ) {
+    throw new Error(
+      "Manual integration approval must use only the configured team and environment.",
+    );
+  }
+  const reviews = await read(`/actions/runs/${env.GITHUB_RUN_ID}/approvals`);
+  if (!Array.isArray(reviews)) {
+    throw new Error("Manual integration approval history is unavailable.");
+  }
+  const targeted = reviews.filter((review) =>
+    review.environments?.some((item) => item.id === approvalEnvironmentId),
+  );
+  const review = targeted[0];
+  if (
+    targeted.length !== 1 ||
+    review.state !== "approved" ||
+    !review.environments.some(
+      (item) => item.id === approvalEnvironmentId && item.name === approvalEnvironment,
+    ) ||
+    review.user?.id !== Number(env.GITHUB_ACTOR_ID) ||
+    review.user?.type !== "User" ||
+    typeof review.user?.login !== "string" ||
+    review.user.login.toLowerCase() !== env.GITHUB_ACTOR.toLowerCase()
+  ) {
+    throw new Error("Manual integration requires this dispatcher's approved environment review.");
   }
 }
 
@@ -129,22 +179,17 @@ export async function validateFullIntegrationPreflight({
   env = process.env,
   github = fetchGithubJson,
 } = {}) {
-  if (env.GITHUB_REF === cutoverRef) {
-    if (
-      env.GITHUB_REPOSITORY !== "openclaw/openclaw-enterprise" ||
-      env.GITHUB_ACTOR !== "kevinlin-openai" ||
-      env.GITHUB_TRIGGERING_ACTOR !== "kevinlin-openai"
-    ) {
-      throw new Error("Cutover proof requires the approved repository, actor and rerun actor.");
-    }
-  }
+  assertRunContext(env);
   const selected = selectLane({
     eventName: env.GITHUB_EVENT_NAME,
     inputLane: env.INPUT_LANE,
     ref: env.GITHUB_REF,
   });
-  assertSourceRef(env.GITHUB_REF, selected, env.GITHUB_EVENT_NAME);
+  // Validate selection before any authorization or protected-environment reads.
   const required = requiredEnvironmentsForLane(selected);
+  if (env.GITHUB_EVENT_NAME === "workflow_dispatch") {
+    await validateManualApproval(env, github);
+  }
   for (const environmentName of required) {
     const environment = await github({
       repository: env.GITHUB_REPOSITORY,
@@ -156,13 +201,18 @@ export async function validateFullIntegrationPreflight({
       token: env.GITHUB_TOKEN,
       path: `/environments/${environmentName}/deployment-branch-policies`,
     });
-    validateEnvironmentPolicy(environmentName, environment, policies, env.GITHUB_REF);
+    validateEnvironmentPolicy(environmentName, environment, policies);
   }
   return { selectedLane: selected, runAll: selected === "all" };
 }
 
 async function main() {
   const result = await validateFullIntegrationPreflight();
+  console.log(
+    process.env.GITHUB_EVENT_NAME === "workflow_dispatch"
+      ? "Full Integration authorized by the dispatcher's required team approval."
+      : "Full Integration authorized by a main push.",
+  );
   if (process.env.GITHUB_OUTPUT) {
     const { appendFileSync } = await import("node:fs");
     appendFileSync(

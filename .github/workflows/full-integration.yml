@@ -1,9 +1,8 @@
 name: Full Integration
 
 on:
-  # TODO: Remove this proof trigger after integration-main verification is complete.
   push:
-    branches: [dev/kevinlin/integration-main-cutover]
+    branches: [main]
   workflow_dispatch:
     inputs:
       lane:
@@ -40,9 +39,20 @@ env:
   NODE_VERSION: "24.22.1"
 
 jobs:
+  manual-approval:
+    name: Approve manual integration
+    if: ${{ github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && github.run_attempt == '1' && github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    environment: integration-main-approval
+    steps:
+      - name: Record required team approval
+        run: echo "Required team approval received; preflight verifies the dispatcher."
+
   preflight:
-    # The temporary proof route is restricted to the approved operator, including reruns.
-    if: ${{ github.ref != 'refs/heads/dev/kevinlin/integration-main-cutover' || (github.repository == 'openclaw/openclaw-enterprise' && github.actor == 'kevinlin-openai' && github.triggering_actor == 'kevinlin-openai') }}
+    needs: manual-approval
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && ((github.event_name == 'push' && needs.manual-approval.result == 'skipped') || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1' && needs.manual-approval.result == 'success')) }}
     name: Dispatch Preflight
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -72,7 +82,7 @@ jobs:
     # sandboxing failed!"), so it runs on ci.yml's blacksmith 16vcpu runner (finding 1383).
     runs-on: ${{ (startsWith(matrix.lane, 'k3d-fixture-') || matrix.lane == 'k3d-observability' || startsWith(matrix.lane, 'images-runtime-startup') || matrix.lane == 'postgres-application' || startsWith(matrix.lane, 'checks-baseline-') || startsWith(matrix.lane, 'checks-browser')) && 'blacksmith-32vcpu-ubuntu-2404' || matrix.lane == 'k3d-observability-demo' && 'ubuntu-22.04' || (matrix.lane == 'postgres-auth' || matrix.lane == 'images-packaging') && 'blacksmith-16vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
     needs: preflight
-    if: needs.preflight.outputs.run_all == 'true'
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.run_all == 'true') }}
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
@@ -183,7 +193,7 @@ jobs:
     name: Runtime Image Fixture
     runs-on: ubuntu-22.04
     needs: preflight
-    if: needs.preflight.outputs.run_all == 'true'
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.run_all == 'true') }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -207,7 +217,7 @@ jobs:
     name: Docker Model Runtime
     runs-on: ubuntu-24.04
     needs: preflight
-    if: needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'docker-model'
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'docker-model') }}
     timeout-minutes: 40
     environment: integration-main
     env:
@@ -232,7 +242,7 @@ jobs:
     name: k3d Model Runtime
     runs-on: blacksmith-32vcpu-ubuntu-2404
     needs: preflight
-    if: needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'k3d-model'
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'k3d-model') }}
     timeout-minutes: 120
     environment: integration-main
     env:
@@ -259,7 +269,7 @@ jobs:
     name: Gateway Routing
     runs-on: blacksmith-32vcpu-ubuntu-2404
     needs: preflight
-    if: needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'gateway-routing'
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'gateway-routing') }}
     timeout-minutes: 35
     environment: integration-main
     env:
@@ -285,7 +295,7 @@ jobs:
     name: Production TUI
     runs-on: ubuntu-24.04
     needs: preflight
-    if: needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'production-tui'
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'production-tui') }}
     timeout-minutes: 50
     environment: integration-main
     env:
@@ -313,7 +323,7 @@ jobs:
     name: Slack Live
     runs-on: blacksmith-32vcpu-ubuntu-2404
     needs: preflight
-    if: needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'slack'
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'slack') }}
     timeout-minutes: 50
     environment: integration-main
     env:
@@ -343,7 +353,7 @@ jobs:
     name: OpenShell
     runs-on: ubuntu-24.04
     needs: preflight
-    if: needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'openshell'
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'openshell') }}
     timeout-minutes: 120
     environment: integration-main
     env:
@@ -376,7 +386,7 @@ jobs:
     name: k3d OTEL
     runs-on: blacksmith-32vcpu-ubuntu-2404
     needs: preflight
-    if: needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'k3d-otel'
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'k3d-otel') }}
     timeout-minutes: 65
     environment: integration-main
     env:
@@ -402,7 +412,7 @@ jobs:
     name: Helper Timeout
     runs-on: ubuntu-24.04
     needs: preflight
-    if: needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'helper-timeout'
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'helper-timeout') }}
     # Its one test spends 300 s; the lane deadline stops tests five minutes before this.
     timeout-minutes: 15
     steps:
@@ -422,7 +432,7 @@ jobs:
     name: Logging Collector
     runs-on: ubuntu-24.04
     needs: preflight
-    if: needs.preflight.outputs.selected_lane == 'logging-collector'
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'logging-collector') }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -441,7 +451,7 @@ jobs:
     name: Local Kubernetes Installation
     runs-on: ubuntu-22.04
     needs: preflight
-    if: needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'dev-up-k3d'
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'dev-up-k3d') }}
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -464,7 +474,7 @@ jobs:
   skipper-prepared-git-installed:
     name: Installed Skipper private Git and live withdrawal
     needs: preflight
-    if: needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'skipper-prepared-git-installed'
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'skipper-prepared-git-installed') }}
     # The First Agent Smoke runner supports the packaged Codex sandbox and k3d policy.
     # Only synthetic, job-local model and private Git credentials enter this installation.
     runs-on: ubuntu-22.04
@@ -623,7 +633,7 @@ jobs:
     name: Shipped Installation QA Matrix
     runs-on: blacksmith-16vcpu-ubuntu-2404
     needs: [preflight, slack]
-    if: ${{ !cancelled() && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'qa-matrix') }}
+    if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'qa-matrix') }}
     timeout-minutes: 240
     environment: integration-main
     env:

@@ -17,9 +17,8 @@ clusters, and provider services. The workflow collects the selected results in
 
 ## Trigger
 
-Manual dispatch selects one supported `lane` or `all` on `main`. The temporary
-proof route accepts a push on
-`dev/kevinlin/integration-main-cutover`; see the [environment policy](configuration.md#environments).
+Pushes to `main` select `all`. Manual dispatch selects one supported `lane` or
+`all` on `main` and requires the dispatcher's [team approval](configuration.md#environments).
 A scheduled advisory run does not run the Full Integration workflow.
 
 ## Scenarios
@@ -72,16 +71,16 @@ commit, then dispatch the selected lane or `all` on `main`:
 gh workflow run full-integration.yml --ref main -f lane=all
 ```
 
-See the [environment policy](configuration.md#environments) for branch exceptions.
-
 ### Run the hosted local installation lane
 
 ```sh
-gh workflow run full-integration.yml --ref '<reviewed-branch>' -f lane=dev-up-k3d
+gh workflow run full-integration.yml --ref main -f lane=dev-up-k3d
 ```
 
 Check `headSha` and `full-results-dev-up-k3d`; every case must pass without skips.
-The 180-minute job budget includes setup/cleanup.
+The 180-minute job budget includes setup/cleanup. Manual runs require the same
+team approval as credentialed lanes. Start a new approved dispatch to retry a manual run.
+Jobs triggered by a main push can retry at the original commit.
 
 ## Results and limits
 

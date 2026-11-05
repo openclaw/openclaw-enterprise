@@ -14,7 +14,7 @@ The [ordinary CI lanes](../testing/ci/required-checks.md) reject missing or skip
 
 - `.github/workflows/ci.yml:jobs`: PR, main push, merge-group and manual checks on ephemeral runners.
 - `.github/workflows/qa-advisory.yml:jobs`: 6-hourly QA on `main`, and post-merge QA when `QA_ADVISORY_ON_PUSH` is `true`; trusted pull requests select [full or focused advisory QA](../testing/ci/qa-advisory.md).
-- `.github/workflows/full-integration.yml:jobs`: manual integrations from main and the temporary named-branch proof routes, pinned to `github.sha`.
+- `.github/workflows/full-integration.yml:jobs`: automatic main pushes and approved manual main integrations, pinned to `github.sha`.
 
 ## Flow
 
@@ -89,19 +89,16 @@ A PR can change the workflow loaded from its merge checkout despite base-loaded
 policy. Separately trusted enforcement is a deployment decision, not an
 established source property.
 
-Full Integration checks out `github.sha`; preflight selects the lane. Credentialed
-jobs use `integration-main`. Main dispatch requires main-only policy. Proof
-routes verify repository, actor and rerun actor before fetching policy; only
-they admit the cutover branch. Invalid policy, required reviewers or an enabled
-bypass flag fail preflight.
+Full Integration checks out `github.sha`. Main pushes select `all`; manual main
+dispatches wait at secret-free `integration-main-approval`. Preflight verifies
+its team rule and binds the review to the dispatcher's ID and triggering login.
+Invalid approval or environment policy fails closed.
 
-The cutover push selects `all`: every dispatch lane and CI suite. QA follows
-Slack even after failure; cancellation stops QA. Aggregation requires selected
-QA and installation results. Isolated dispatch selects Codex Git write/denial on both installations,
-without Slack credentials, in a separate serialized repository queue. Credential-free `dev-up-k3d` and
-`skipper-prepared-git-installed` serialize reviewed-branch dispatch per branch.
-Other runs serialize in `full-integration`; none cancel an earlier run. The
-[environment guide](../testing/ci/configuration.md#environments) owns proof removal.
+Each test job checks the repository, main branch and event. Main push jobs can
+retry at the original commit. Manual retries require a fresh approved dispatch. `all` selects every suite. QA waits
+for Slack success or failure; cancellation stops QA. Aggregation requires selected
+results. Installation runs serialize per lane; other runs use `full-integration`,
+without cancellation. The [environment guide](../testing/ci/configuration.md#environments) owns approval setup.
 
 PostgreSQL migration and application suites own separate servers; each Kubernetes fixture lane owns a separate cluster and PostgreSQL server. Before creating k3d nodes that share the runner kernel, the shared action enables bridge netfilter; missing filtering fails setup rather than leaving Pod network policies unenforced. The repository credential platform lane uses Blacksmith for full-image HTTP, PostgreSQL, Unix-control and credential-material proof; NetworkPolicy enforcement remains the fixture lanes' responsibility. State and cleanup stay on each runner; within a lane, `scripts/ci/run-tests.mjs:runLane` runs files sequentially except audited `parallelFiles`.
 
