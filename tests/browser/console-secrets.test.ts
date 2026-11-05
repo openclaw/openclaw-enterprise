@@ -132,7 +132,7 @@ test("a template needs an explicit availability when the administrator has no Na
   const register = editor.getByRole("button", {
     name: "Create template and register OAuth client",
   });
-  const save = editor.getByRole("button", { name: "Create template" });
+  const save = editor.getByRole("button", { name: "Create template", exact: true });
   const requests = apiRequests(page, fixture.origin);
   for (const action of [register, save]) {
     await action.click();
@@ -166,7 +166,7 @@ test("a template needs an explicit availability when the administrator has no Na
     "Installation-wide",
   );
   await registration.getByLabel("OAuth client name").fill("Tools client");
-  await registration.getByLabel("Provider client ID").fill("tools-client");
+  await registration.getByLabel("Client ID", { exact: true }).fill("tools-client");
   await registration.getByLabel("Client authentication").selectOption("none");
   const registered = responseTo(page, "POST", fixture.origin + "/oauth-clients");
   await registration.getByRole("button", { name: "Register OAuth client" }).click();
@@ -206,7 +206,9 @@ test("a template needs an explicit availability when the administrator has no Na
 });
 
 test("registering a provider-issued client uses a saved or newly created template without changing an existing default", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth client owners");
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth client owners", {
+    publicOrigin: true,
+  });
   selectTemplateDrivers(fixture.controller);
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, secretsUrl(namespace));
@@ -232,6 +234,7 @@ test("registering a provider-issued client uses a saved or newly created templat
   const template = (await result.json()).data;
   assert.deepEqual(template.current.recipient, { kind: "google_apis" });
   assert.equal(template.current.oauthClientId, undefined);
+  await form.getByLabel("Client ID", { exact: true }).waitFor();
   assert.equal(await templateChoice.inputValue(), template.id);
   assert.equal(
     await form.getByLabel("Client availability").inputValue(),
@@ -246,14 +249,19 @@ test("registering a provider-issued client uses a saved or newly created templat
   assert.equal(await form.getByLabel("Provider", { exact: true }).count(), 0);
   const privateValue = "browser-write-only-client-material";
   await form.getByLabel("OAuth client name").fill("Engineering Google");
-  // Opening and canceling another template editor preserves the selected template and client fields.
+  await form.getByLabel("Client ID", { exact: true }).fill("engineering-google");
+  await form.getByLabel("Client secret", { exact: true }).fill(privateValue);
+  // Opening and canceling another template editor preserves credentials for the original selection.
   await templateChoice.selectOption({ label: "Create connection template…" });
   await editor.getByRole("button", { name: "Cancel" }).click();
   assert.equal(await templateChoice.inputValue(), template.id);
   assert.equal(await form.getByLabel("OAuth client name").inputValue(), "Engineering Google");
-  await form.getByLabel("Provider client ID").fill("engineering-google");
+  assert.equal(
+    await form.getByLabel("Client ID", { exact: true }).inputValue(),
+    "engineering-google",
+  );
+  assert.equal(await form.getByLabel("Client secret", { exact: true }).inputValue(), privateValue);
   assert.equal(await form.getByLabel("Client authentication").inputValue(), "client_secret_post");
-  await form.getByLabel("Client secret", { exact: true }).fill(privateValue);
   const registered = responseTo(page, "POST", fixture.origin + "/oauth-clients");
   await form.getByRole("button", { name: "Register OAuth client" }).click();
   const first = await registered;
@@ -271,7 +279,22 @@ test("registering a provider-issued client uses a saved or newly created templat
   await page.getByRole("button", { name: "Register OAuth client" }).click();
   await templateChoice.selectOption(template.id);
   await form.getByLabel("OAuth client name").fill("Second Google");
-  await form.getByLabel("Provider client ID").fill("second-google");
+  await form.getByLabel("Client ID", { exact: true }).fill("keep-with-original-template");
+  await form.getByLabel("Client authentication").selectOption("client_secret_basic");
+  await form.getByLabel("Client secret", { exact: true }).fill(privateValue);
+  // Choosing a new, wider template must not carry confidential registration details across scopes.
+  await templateChoice.selectOption({ label: "Set up Google OAuth…" });
+  await editor.getByLabel("Template name").fill("Installation Google");
+  await editor.getByLabel("Template availability").selectOption({ label: "Installation-wide" });
+  await editor.getByLabel("OAuth scope limit").selectOption({ label: "No template limit" });
+  await editor.getByRole("button", { name: "Create template", exact: true }).click();
+  await editor.waitFor({ state: "hidden" });
+  assert.equal(await form.getByLabel("Client availability").inputValue(), "Installation-wide");
+  assert.equal(await form.getByLabel("Client ID", { exact: true }).inputValue(), "");
+  assert.equal(await form.getByLabel("Client secret", { exact: true }).inputValue(), "");
+  assert.equal(await form.getByLabel("Client authentication").inputValue(), "client_secret_post");
+  await templateChoice.selectOption(template.id);
+  await form.getByLabel("Client ID", { exact: true }).fill("second-google");
   await form.getByLabel("Client authentication").selectOption("none");
   const secondRegistration = responseTo(page, "POST", fixture.origin + "/oauth-clients");
   await form.getByRole("button", { name: "Register OAuth client" }).click();

@@ -1,4 +1,9 @@
-import type { ConnectionTemplate, Namespace, OAuthClient } from "@openclaw-enterprise/contracts";
+import type {
+  ConnectionTemplate,
+  McpAuthorizationMetadata,
+  Namespace,
+  OAuthClient,
+} from "@openclaw-enterprise/contracts";
 import { requestFailure } from "./api-client.mjs";
 import { button, element, field, validateFields } from "./dom.mjs";
 import { googleOAuthProvider } from "./oauth-providers.mjs";
@@ -12,6 +17,10 @@ const methods = {
   client_secret_post: "Client secret in request body",
   none: "Public client (no secret)",
 } as const;
+
+export function advertisedClientMethods(observed: McpAuthorizationMetadata | undefined) {
+  return observed?.tokenEndpointAuthMethods ?? ["client_secret_basic"];
+}
 
 export function availabilityLabel(
   value: { namespaceId?: string },
@@ -49,7 +58,7 @@ export function openOAuthClientRegistration(
     selected?: ConnectionTemplate;
     redirectUri?: string | undefined;
     createTemplate?: (google: boolean, onSaved: (template: ConnectionTemplate) => void) => void;
-    onClose: (created: PublicClient | undefined, uncertain: boolean) => void;
+    onClose: (created?: PublicClient) => void;
   },
 ) {
   const dialog = element("dialog", {
@@ -95,15 +104,19 @@ export function openOAuthClientRegistration(
     "fieldset",
     { className: "connection-template-fields" },
     field({ label: "Client availability", control: availability }),
-    options.redirectUri
-      ? field({
-          label: "Redirect URI",
-          control: element("input", { readonly: true, value: options.redirectUri }),
-          help: "Register this URI with the provider before using its client.",
-        })
-      : null,
+    field({
+      label: "Redirect URI",
+      control: element("input", {
+        readOnly: true,
+        value: options.redirectUri ?? "",
+        placeholder: "Public origin not configured",
+      }),
+      help: options.redirectUri
+        ? "Register this URI with the provider before using its client."
+        : "Configure the Installation’s public origin to obtain the callback URI for this registration.",
+    }),
     field({ label: "OAuth client name", control: name }),
-    field({ label: "Provider client ID", control: clientId }),
+    field({ label: "Client ID", control: clientId }),
     field({ label: "Client authentication", control: method }),
     secretField,
   );
@@ -119,26 +132,28 @@ export function openOAuthClientRegistration(
   let pending = false;
   let uncertain = false;
   let created: PublicClient | undefined;
-  let methodChosen = false;
   function showSecret() {
     secretField.hidden = secret.disabled = method.value === "none" || !method.value;
     if (secret.disabled) {
       secret.value = "";
     }
   }
-  method.addEventListener("change", () => {
-    methodChosen = true;
-    showSecret();
-  });
+  method.addEventListener("change", showSecret);
   function select(template: ConnectionTemplate | undefined) {
-    const previousMethod = method.value;
+    const sameTemplate =
+      selected?.id === template?.id && selected?.current.version === template?.current.version;
+    const previousMethod = sameTemplate ? method.value : "";
+    if (!sameTemplate) {
+      clientId.value = "";
+      secret.value = "";
+    }
     selected = template;
     choice.value = template?.id ?? "";
     details.hidden = details.disabled = !template;
     availability.value = template ? availabilityLabel(template, options.namespaces) : "";
     const allowed =
       template?.current.mode === "mcp_discovery"
-        ? (template.current.observed?.tokenEndpointAuthMethods ?? ["client_secret_basic"])
+        ? advertisedClientMethods(template.current.observed)
         : undefined;
     method.replaceChildren(
       ...Object.entries(methods)
@@ -149,7 +164,7 @@ export function openOAuthClientRegistration(
       template?.current.issuer === googleOAuthProvider.issuer
         ? "client_secret_post"
         : "client_secret_basic";
-    const preferred = methodChosen ? previousMethod : defaultMethod;
+    const preferred = previousMethod || defaultMethod;
     if (Array.from(method.options).some((item) => item.value === preferred)) {
       method.value = preferred;
     }
@@ -228,7 +243,11 @@ export function openOAuthClientRegistration(
       const code = requestFailure(cause).status;
       uncertain = code === undefined || code >= 500 || code === 408;
       if (dialog.open) {
-        status.textContent = oauthFailure(cause, "OAuth client registration");
+        const reason = oauthFailure(cause, "OAuth client registration");
+        status.textContent =
+          code === 409
+            ? reason + " Close this dialog and reopen registration to load the current template."
+            : reason;
       }
     } finally {
       secret.value = "";
@@ -253,7 +272,7 @@ export function openOAuthClientRegistration(
       secret.value = "";
       dialog.remove();
       if (context.isCurrent()) {
-        options.onClose(created, uncertain);
+        options.onClose(created);
       }
     },
     { once: true },
