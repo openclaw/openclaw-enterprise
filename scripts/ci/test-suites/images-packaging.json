@@ -24,6 +24,7 @@
     "tests/integration/docker-compute-token-retry.test.mjs",
     "tests/integration/workspace-setup-runtime.test.mjs",
     "tests/integration/production-kubernetes-packaging.test.mjs",
+    "tests/integration/preprovisioned-console-chart.test.ts",
     "tests/integration/production-image-startup.test.mjs",
     "tests/integration/container-registry-real.test.mjs",
     "tests/integration/logging-packaging.test.mjs",
@@ -36,6 +37,16 @@
   "files": [
     {
       "path": "tests/integration/production-upgrade-signal-lock.test.ts"
+    },
+    {
+      "path": "tests/integration/preprovisioned-console-chart.test.ts",
+      "expectedTests": [
+        "bound Namespace keeps closed password authentication on install and upgrade",
+        "bound Namespace permits a team-restricted GitHub Console upgrade",
+        "bound Console login refuses fresh installs and incompatible upgrades",
+        "bound Console login refuses unrestricted and organization-wide admission",
+        "unbound GitHub profiles retain their existing allowlist behavior"
+      ]
     },
     {
       "path": "tests/integration/container-publication-workflow.test.mjs",

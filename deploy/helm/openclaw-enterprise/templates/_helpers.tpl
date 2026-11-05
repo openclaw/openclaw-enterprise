@@ -195,8 +195,19 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (ne (len $binding) 2) (not (regexMatch "^ns_[a-zA-Z0-9_-]{1,60}$" (toString $binding.namespaceId))) (not (regexMatch "^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$" (toString $binding.uid))) -}}
 {{- fail "preprovisionedNamespace requires exactly namespaceId and Kubernetes uid" -}}
 {{- end -}}
-{{- if or $.Values.executionCluster.enabled (not $.Values.gatewayRouting.enabled) (ne $.Values.gatewayRouting.serviceType "ClusterIP") (not (or $.Values.egressAuthority.enabled $.Values.openshellGit.enabled)) $.Values.auth.github.enabled $.Values.auth.google.enabled $.Values.auth.oidc.enabled (ne $.Values.auth.passwordSignIn "all") $.Values.agentNativeAdmin.enabled -}}
-{{- fail "preprovisionedNamespace requires the closed single-cluster OpenShell canary: private gateway routing, egress or OpenShell Git authority, disposable password operator and no external login or native admin" -}}
+{{- $closedPassword := and (not $external) (eq $.Values.auth.passwordSignIn "all") -}}
+{{- $teamRestrictedUpgrade := and
+  $.Release.IsUpgrade
+  $.Values.auth.github.enabled
+  (not $.Values.auth.google.enabled)
+  (not $.Values.auth.oidc.enabled)
+  $recoveryUserId
+  (eq $.Values.auth.passwordSignIn "recovery-only")
+  (gt (len (default list $githubLists.allowedTeams)) 0)
+  (eq (len (default list $githubLists.allowedOrgs)) 0)
+-}}
+{{- if or $.Values.executionCluster.enabled (not $.Values.gatewayRouting.enabled) (ne $.Values.gatewayRouting.serviceType "ClusterIP") (not (or $.Values.egressAuthority.enabled $.Values.openshellGit.enabled)) $.Values.agentNativeAdmin.enabled (not (or $closedPassword $teamRestrictedUpgrade)) -}}
+{{- fail "preprovisionedNamespace requires single-cluster OpenShell, private gateway routing and no native admin; use closed password authentication or a GitHub Console upgrade with recovery-only passwords, a recovery user, explicit allowedTeams and empty allowedOrgs" -}}
 {{- end -}}
 {{- end -}}
 {{- if not (or (kindIs "invalid" $googleLists.allowedDomains) (kindIs "slice" $googleLists.allowedDomains)) -}}{{- fail "auth.google.allowedDomains must be a list of DNS domain names" -}}{{- end -}}
