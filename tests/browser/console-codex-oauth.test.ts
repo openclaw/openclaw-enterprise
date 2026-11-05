@@ -25,12 +25,14 @@ import {
   newPage,
   revokeAdministratorGrant,
   settlePageRequests,
-  trackSettledFetches,
   waitForEnabled,
+} from "./console-agents-browser-helpers.ts";
+import {
+  trackSettledFetches,
   waitForIdleFetches,
   waitForSettledFetches,
-} from "./console-agents-browser-helpers.mjs";
-import { createReadyConsoleNamespace as createUntypedReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+} from "./console-fetch-accounting.ts";
+import { createReadyConsoleNamespace as createUntypedReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   AGENT_DEVICE_LOGIN_CANCEL_DENIED,
   AGENT_DEVICE_LOGIN_POLL_DENIED,

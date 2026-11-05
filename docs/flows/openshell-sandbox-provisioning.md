@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-11-04
-last_updated_session: authoring-run/73695cc1-a0da-41a6-9cb1-c3fbde5f5a71
+updated: 2026-11-05
+last_updated_session: authoring-run/a169e925-2eda-47cf-b47c-192df70fcd3a
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -18,9 +18,8 @@ Kubernetes Compute provisions dedicated Codex/OpenClaw through OpenShell.
 - Source: `apps/controller/src/drivers/sandbox/openshell.ts:ensureNamespace`
 - Source: `apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness`
 - Source: `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`
-- Assumptions: Kubernetes Compute, OpenShell Sandbox and Credential Gateway share
-  one `openshell` Backend; Namespace isolation exists; the operator-mode Gateway
-  is ready.
+- Assumptions: shared `openshell` Backend, Namespace isolation and ready
+  operator-mode Gateway.
 
 ## Flow
 
@@ -195,6 +194,9 @@ selects a named provider and HTTPS Responses transport.
 
 `apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness`
 
+`sandboxDataMount` validates mounts; `OpenShellGitRuntime.prepare` supplies process-scoped,
+mount-specific `safe.directory` and `push.negotiate=true`.
+
 Dedicated Codex/OpenClaw requires Landlock. Kubernetes, filesystem, process and
 [binary-scoped network policy](agent-sandbox-policy.md) use pinned `v0.1.6`.
 Relocation preserves opaque `OCE_CODEX_CHATGPT_ACCOUNT` JSON.
@@ -210,30 +212,38 @@ Dedicated Codex requires one lowercase `APP_TOKEN_SHA` and two runtime files,
 each at most 65,536 bytes. `APP_SERVER_TOKEN` is forbidden. A second model proxy,
 malformed files and other Secret-backed environment fail before Gateway mutation.
 
-After login and egress enrollment, `agentRuntimeEntrypoint` calls
-`apps/controller/src/drivers/compute/kubernetes/codex-plugin-stdio.ts:withCodexPluginStdio`
-to install selections. Clean stdio exit precedes verifier-only WebSocket startup
-in the same home. Failure terminates the process group through TERM/KILL cleanup.
-The provider Gateway skips HMAC plugin status; readiness observes transport.
+After login, `agentRuntimeEntrypoint` calls
+`apps/controller/src/drivers/compute/kubernetes/codex-plugin-stdio.ts:withCodexPluginStdio`.
+Clean exit permits verifier WebSocket startup; failure triggers group TERM/KILL.
+Provider Gateway readiness checks transport, not HMAC plugin status.
 
-Providers `oce-codex-runtime` and `oce-openclaw-runtime` supply read-only setup/Gateway CA files. Codex requires `runtime.json`/`config.toml`; native OpenClaw refuses them. The validated envelope, including `bootstrapToken`, becomes `node-setup.json`. WebSocket rewriting is unsupported: device proof signs the literal token.
-Renewal requires an expired stored envelope, later live expiry, and unchanged
-endpoint, TLS fingerprint, runtime and CA configuration. Sandbox policy limits
-connections to that Gateway and `/usr/local/bin/node`. Foreign ownership or drift
-prevents creation.
+`oce-codex-runtime`/`oce-openclaw-runtime` provide read-only setup and Gateway CA.
+Only Codex accepts `runtime.json`/`config.toml`. Validated setup, including
+`bootstrapToken`, becomes `node-setup.json`. TLS-pinned setup requires `wss://`
+at admission and supervisor replacement. WebSocket rewriting is unsupported:
+device proofs sign the literal token.
+Renewal requires expired stored setup, later live expiry and unchanged endpoint,
+TLS fingerprint, runtime and CA. Policy permits that Gateway and `/usr/local/bin/node` only;
+foreign ownership/drift prevents creation.
 
-Version state uses `/sandbox/.openclaw-runtime`; persistent subpaths use `/sandbox/.openclaw-mounts`. Admitted `/home/node` paths move under `harnessHome` for native hook credentials. Codex hooks require the provider-file Gateway CA and node-reachable routing. `OPENCLAW_NODE_STATE_DIR` uses a process-created `state` child, avoiding root-owned mounts/symlinks.
+Version state mounts at `/sandbox/.openclaw-runtime`; persistent subpaths mount
+below `/sandbox/.openclaw-mounts`. Admitted `/home/node` paths move under
+`harnessHome` for native hook credentials. Codex hooks use the provider-file
+Gateway CA and node-reachable routing. `OPENCLAW_NODE_STATE_DIR` uses a created
+`state` child to avoid root-owned mounts and symlinks.
+
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:agentWithNodeEntrypoint`
 and `NATIVE_WORKER_ENTRYPOINT` apply `0700` before OpenClaw setup or migration,
 clearing setgid. Retries prepare children without changing retained state/workspace permissions. Permission failures stop startup. Workspace, node identity, sessions and images remain separate. The supervisor probes `/tmp`; native `TMPDIR` uses private runtime-home `tmp`.
 
-`prepareNativeWorkspace` uses a restricted Deployment for the Agent revision to privatize
-writable PVC subpaths, preserving retained entries. Mode and process ownership checks precede
-UID-fenced foreground deletion and writer Pod termination.
+`prepareNativeWorkspace` privatizes retained PVC subpaths through a restricted
+revision Deployment. Mode/ownership checks precede UID-fenced foreground deletion;
+completed preparation exits successfully on SIGTERM with normal termination grace.
+Sandbox creation waits for every writer Pod.
+
 Preparation requires `userNamespaces: false`, at most one operator-mode ServiceAccount
 and the pinned Gateway's default identity, without model credentials, ServiceAccount
-tokens, capabilities, or direct Pod creation. Mode support and admission report
-these setting requirements before deployment.
+tokens, capabilities, or direct Pod creation. Admission reports these requirements before deployment.
 
 After Sandbox readiness, `initializeWorkspace` verifies the private setup Secret's Namespace, Agent and setup identity, then sends the shared initializer/JSON stdin through authenticated `ExecSandbox`. Workspace `flock` serializes attempts; the Harness awaits completion. Document delivery is separate from native subpath preparation. See [workspace initialization](workspace-files.md#2-deployment-initializes-storage-before-execution).
 
@@ -289,13 +299,13 @@ Both planes use the Gateway's scoped WSS node route. Envoy rewrites worker-trans
 Compute verifies Namespace, Agent, ServicePrincipal and Agent revision IDs.
 Codex `harnessEndpoint` sets `APP_SERVER_URL`, `OPENCLAW_REMOTE_WORKSPACE_ROOT`
 and `OPENCLAW_CODEX_PROVIDER_PERMISSION_PROFILE`; owned k3d pins the provider host.
-`gatewayConfigurationDocument` keeps `/home/node/workspace`, mapped to the Sandbox
-root without Harness storage mounts. `gatewayNativeHookRelayConfiguration` uses
-`harnessHome`; Compute owns relay URL/auth. Egress permits only the provider
-peer/port. Compute keeps the direct Agent Service inactive and omits its Harness
-route. Preparation preserves a serving predecessor; activation rechecks the
-candidate. Without `harnessEndpoint`, Codex uses Kubernetes transport and
-`/home/node/workspace`. Native OpenClaw enrolls outbound into its admitted workspace.
+`gatewayConfigurationDocument` maps `/home/node/workspace` to the Sandbox root
+without Harness storage mounts. `gatewayNativeHookRelayConfiguration` uses
+`harnessHome` and Compute-owned relay URL/auth. Egress permits only the provider
+peer/port; the direct Agent Service stays inactive without a Harness route.
+Preparation preserves the serving predecessor; activation rechecks candidates.
+Without `harnessEndpoint`, Codex uses Kubernetes transport and `/home/node/workspace`.
+Native OpenClaw enrolls outbound into its admitted workspace.
 
 Activation requires the Harness Pod and enrolled Secret node. Retries reread provider setup, retaining valid values during projection outages. Until shutdown, Codex restarts workspace-node one second after each exit.
 
@@ -381,6 +391,6 @@ Workspace wire test checks request IDs and deletion outcomes. Live provider remo
 
 ## Changelog
 
-- 2026-11-04 19:20: Preserve cleanup ownership and observed Harness readiness. (authoring-run/73695cc1-a0da-41a6-9cb1-c3fbde5f5a71 - 3f3150ce8a8b024e902ecf493a5e41ff5b72c934)
+- 2026-11-05 05:35: Preserve journal cleanup, TLS setup validation and preparer shutdown while integrating main. (authoring-run/a169e925-2eda-47cf-b47c-192df70fcd3a - 7c113779d56e81637388a8a79b3a8de61bb15b59)
 
 [OpenShell Sandbox provisioning documentation history](openshell-sandbox-provisioning/history.md) preserves the older dated entries.

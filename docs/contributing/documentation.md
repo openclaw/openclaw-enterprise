@@ -60,6 +60,34 @@ result, so use a GitHub source link if the archive needs to be cited.
 The [documentation map](../README.md) links the seven sections. Use it and
 `docs.json` for current navigation.
 
+## Record human verification
+
+After a human verifies a page, add `human_verified` to its YAML `tags` list and
+set `last_verified` to the review date:
+
+```yaml
+---
+tags: [human_verified]
+last_verified: "2026-11-04"
+---
+```
+
+Use a real date in `YYYY-MM-DD` format. Update it only after another human review,
+not after an automated check or routine edit. Preserve any existing tags. The
+site shows a **Human verified** badge and the date below the page title. Select
+the badge with a pointer or keyboard to read its explanation.
+Pages without the tag have no badge; tags on embedded snippets do not transfer
+to the containing page. The badge is omitted from sidebar labels and search text.
+
+Human-verified pages can still be out of date. Later edits may not have been
+reviewed. These fields do not identify the reviewer or reviewed revision.
+
+Existing tagged pages have dates backfilled from the Git commits that recorded
+their verification tags. Each backfilled field has a comment with that commit.
+These dates show when verification was recorded; the actual review may have
+occurred earlier. After a new human review, replace the date and remove the
+backfill comment.
+
 ## Preview and check
 
 From the repository root, with the docs renderer dependencies installed:

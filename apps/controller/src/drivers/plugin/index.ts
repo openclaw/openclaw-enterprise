@@ -7,10 +7,10 @@ import {
   ConfigurationValidationError,
 } from "@openclaw-enterprise/contracts";
 import {
-  managedCredentialBinding,
+  managedCliCredentialBindings,
   managedInstalls,
   managedPluginCredentials,
-  managedMcpCredentialBinding,
+  managedMcpCredentialBindings,
 } from "./managed-catalog.ts";
 import { asRecord, deepFreeze, immutableCopy } from "@openclaw-enterprise/utils";
 import {
@@ -382,6 +382,15 @@ class BundledPluginDriverBase {
   }
 }
 
+function splitOpenClawSelections(selections: PluginDesiredState) {
+  const managed = managedInstalls.filter(({ id }) => Object.hasOwn(selections, id));
+  const native = { ...selections };
+  for (const { id } of managed) {
+    delete native[id];
+  }
+  return { managed, native };
+}
+
 export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDriver {
   readonly discoveryCredential = "none" as const;
   readonly credentials = managedPluginCredentials;
@@ -397,28 +406,21 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
   });
 
   validatePolicies(selections: PluginDesiredState, defaultApprovers?: PluginApprovers): void {
-    const managed = managedInstalls.find((pkg) => Object.hasOwn(selections, pkg.id));
-    if (!managed) {
-      this.validate("openclaw", selections, defaultApprovers);
-      return;
+    const { managed, native } = splitOpenClawSelections(selections);
+    this.validate("openclaw", native, defaultApprovers);
+    for (const pkg of managed) {
+      const policy = selections[pkg.id]!;
+      if (
+        typeof policy.enabled !== "boolean" ||
+        Object.keys(policy).some((key) => key !== "enabled" && key !== "driverPolicy")
+      ) {
+        throw new ConfigurationHarnessError(
+          `The ${pkg.entry.name} package supports enablement and an optional credential slot.`,
+        );
+      }
     }
-    if (Object.keys(selections).length !== 1) {
-      throw new ConfigurationHarnessError(
-        `${managed.entry.name} must be the only plugin selected for this release.`,
-      );
-    }
-    const policy = selections[managed.id]!;
-    if (
-      typeof policy.enabled !== "boolean" ||
-      Object.keys(policy).some((key) => key !== "enabled" && key !== "driverPolicy")
-    ) {
-      throw new ConfigurationHarnessError(
-        `The ${managed.entry.name} package supports enablement and an optional credential slot.`,
-      );
-    }
-    managedCredentialBinding(selections);
-    managedMcpCredentialBinding(selections);
-    this.validate("openclaw", {}, defaultApprovers);
+    managedCliCredentialBindings(selections);
+    managedMcpCredentialBindings(selections);
   }
 
   static validateConfiguration(): readonly ErrorDetail[] {
@@ -482,16 +484,21 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
       readonly gateway: string | undefined;
     },
   ): void {
-    const pkg = managedInstalls.find(({ id }) => Object.hasOwn(selections, id));
-    if (!pkg) {
-      return;
+    const { managed, native } = splitOpenClawSelections(selections);
+    const [nativeId] = Object.keys(native);
+    if (managed.length > 0 && nativeId !== undefined) {
+      const names = managed.map(({ entry }) => entry.name).join(", ");
+      throw new ConfigurationHarnessError(
+        `Select ${nativeId} on an embedded OpenClaw Agent. Use a dedicated OpenClaw Agent for ${names}.`,
+      );
     }
-    const { placement } = pkg;
-    if (harness.id !== placement.harnessId || harness.mode !== placement.mode) {
-      throw new ConfigurationHarnessError(`${pkg.entry.name} requires a dedicated OpenClaw Agent.`);
-    }
-    if (!placement.computeImplementations.includes(computeImplementation)) {
-      throw new ConfigurationHarnessError(`${pkg.entry.name} requires Kubernetes Compute.`);
+    for (const { placement, entry } of managed) {
+      if (harness.id !== placement.harnessId || harness.mode !== placement.mode) {
+        throw new ConfigurationHarnessError(`${entry.name} requires a dedicated OpenClaw Agent.`);
+      }
+      if (!placement.computeImplementations.includes(computeImplementation)) {
+        throw new ConfigurationHarnessError(`${entry.name} requires Kubernetes Compute.`);
+      }
     }
     requireManagedCredentialRuntime(
       selections,

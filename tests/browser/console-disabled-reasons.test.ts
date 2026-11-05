@@ -8,7 +8,7 @@ import type { Locator } from "playwright";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
 
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   AGENT_CREATE_DENIED,
   AGENT_DEPLOY_NOT_INCLUDED,
@@ -29,7 +29,7 @@ import {
   newPage,
   shippedPreset,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.ts";
 import { restrict } from "../helpers/iam-grants.mjs";
 

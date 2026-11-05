@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
 updated: 2026-11-03
-last_updated_session: authoring-run/1bd8c7a3-997a-45b2-93a4-e24d114c9ca8
+last_updated_session: authoring-run/e29308a5-ef76-4952-b439-23483c4dbd99
 ---
 
 # Agent Plugin Deployment Flow
@@ -128,13 +128,13 @@ Installation uses `GET /installation`; Agent editors use
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-OCC snapshots the validated Configuration, Driver and plugin selections in the queued Agent revision. Compute projects one package descriptor; shared startup verifies its release and CLI or MCP assets.
+OCC snapshots the validated Configuration, Driver and selections. Compute sends the Gateway and worker a descriptor per package. Each verifies the assets it uses.
 
-- **CLI packages.** The Gateway loads skill instructions. The Harness runs its image’s pinned executable. The shared guard checks operation and credential restrictions before injection.
-- **Hosted MCP packages.** With an account and selected tools, the worker advertises those tools from Compute’s pinned descriptor. Per-turn Gateway grants allow same-node execution. For other nodes or Gateway hooks, the Gateway returns structured results or policy denials to Code Mode. The credential driver attaches the source. Sandbox delivers its placeholder and scopes worker and script requests to the selection. OpenShell enforces exact MCP names and rejects overlapping routes.
-- **Native runtime plugins.** Startup installs packages and verifies native tool policy.
+- **CLI packages.** The Gateway loads skills. The Harness runs the pinned executable. The guard checks operation and credential restrictions before injection.
+- **Hosted MCP packages.** An account lets the worker advertise selected tools. The Gateway grants same-node execution per turn. Calls requiring Gateway hooks or another node return structured results or policy denials through the Gateway to Code Mode. The credential driver attaches the source. Sandbox supplies its placeholder and scopes worker and script requests. OpenShell enforces exact tool names and rejects overlapping routes.
+- **Native runtime plugins.** Startup installs packages and verifies tool policy.
 
-Credential withdrawal removes injection. Recovery preserves other attachments.
+Withdrawal removes credential injection. Recovery preserves other attachments.
 
 ### 3. Deliver requested state through Compute preparation
 
@@ -362,6 +362,8 @@ establish starvation.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-03 01:40: Trace startup of multiple managed packages on one dedicated Agent. (authoring-run/e29308a5-ef76-4952-b439-23483c4dbd99 - 54b2a30498f690e2a16a3198e84a6363f69d91ae)
 
 - 2026-11-03 01:10: Describe hosted MCP packages and Driver-owned request policy. (authoring-run/1bd8c7a3-997a-45b2-93a4-e24d114c9ca8 - 4178b555ac5dc711c818055bd7fe34c3e4d4943b)
 

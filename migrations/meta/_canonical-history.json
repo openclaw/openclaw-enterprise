@@ -533,8 +533,16 @@
     {
       "idx": 67,
       "version": "7",
+      "when": 1787000000067,
+      "tag": "0067_agent_credential_source_limit",
+      "breakpoints": true,
+      "sha256": "f4f49b8e2c1a7b5a499a0274eb9be49bcd80d8d8be7a7e49aaef2f6f67d209e1"
+    },
+    {
+      "idx": 68,
+      "version": "7",
       "when": 1793365038662,
-      "tag": "0067_namespace_lifecycle",
+      "tag": "0068_namespace_lifecycle",
       "breakpoints": true,
       "sha256": "72efd102f74ab146f093557bb8de2207acaf003e66cf6004d7296579dbf770d7"
     }
@@ -577,6 +585,10 @@
       "e4f1ce2a27d8561664fd107679c962b7c67060c658869bf3faa3fc47ce384a0b",
       "048eb30e1c7db94dde5c3ab7731b940b9acbfbed0b41dd20cfc705aebf2850ae"
     ],
+    "c74762d7f4d45b4215f42fcc8cf9e43d01fae03dbb80522d84c4e17370a2f7c3": [
+      "362e3a713a7754ca1cacff0de8393ccb98c4cb8409618993f489b2ee3407202a",
+      "62dca7efd114c9dc85c49785d90c746c9ba7efcfc5ffa3467a54eb11a14d228d"
+    ],
     "4d102ec8439d039d8a0cdae400d8cd6990509a4787416471bb48a38e2c526b7a": [
       "81c13a7acd9939a09c9e0aa91da6494cf3d33c532e5ce3240a7fae1f6ce546b0",
       "46381596aed1129e57f9b1d29fa1cf8baf75e6969e580c503ba6509845a6309b"
@@ -588,6 +600,10 @@
     "a85c5c0f8069e054d717c438209f6abd78963b52c5909f4cce8a0f4ea02a6fc8": [
       "d6318f0ddb8e9556fcabef99e020ce5041bba3593da381c652a0c98a146cc6bb",
       "e36a47882825bef4874b3362a785ecd7167b8cde68f81a08e36a68ec9726c8f4"
+    ],
+    "3ae552d3fb74f1aa558b0dce5889e7552f79d58316a87cdbacd53b437735bcd6": [
+      "604b445e48ec4d9e4b37d5acaa86a13ec95e10ea72d399265e41307243c08445",
+      "f4e4aa2b7ea9451430b9131bfd6575502017731bc8d883df61270fb51db5e84f"
     ]
   },
   "catalogs": {
@@ -596,7 +612,7 @@
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
-    "completed": "a85c5c0f8069e054d717c438209f6abd78963b52c5909f4cce8a0f4ea02a6fc8",
+    "completed": "3ae552d3fb74f1aa558b0dce5889e7552f79d58316a87cdbacd53b437735bcd6",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
     "agentProvisioning": "baac9e369ace8610f96948c1a930e6387431b1d0a33cefa3893765e52f8f7a52",
     "backendCompleted": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",
@@ -633,7 +649,8 @@
     "preGatewayManagedMode": "ead0bf1743197edac2cd369f4822fec0d9686d4c215b8f6dcc16745c9addf155",
     "preSelectedRepositorySet": "15676f224ccd3cbd54e1d541db393b12297e3b2aa8e8eb70b192b5350c4c3c59",
     "preAgentDeployIntent": "fd7ca52d240d5431c76167a39aa5187cd3631d6dceee959b260f7c82cc1edf40",
-    "preNamespaceLifecycle": "8706a0299f3ff74eb7c2b5861a746ded4ce6484ca8df4e617a8fd2e5061bb998"
+    "preAgentCredentialSourceLimit": "8706a0299f3ff74eb7c2b5861a746ded4ce6484ca8df4e617a8fd2e5061bb998",
+    "preNamespaceLifecycle": "c74762d7f4d45b4215f42fcc8cf9e43d01fae03dbb80522d84c4e17370a2f7c3"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

@@ -1998,7 +1998,8 @@ test(
       [63, "preGatewayManagedMode"],
       [64, "preSelectedRepositorySet"],
       [65, "preAgentDeployIntent"],
-      [66, "preNamespaceLifecycle"],
+      [66, "preAgentCredentialSourceLimit"],
+      [67, "preNamespaceLifecycle"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2030,7 +2031,13 @@ test(
         assert.ok(existingBindings.rows.length > 0);
         assert.ok(existingBindings.rows.every((row) => row.first_deployment_digest === null));
         await assertUpgradedAuthentication(db);
-        if (history === "preAgentDeployIntent" || history === "preNamespaceLifecycle") {
+        if (
+          [
+            "preAgentDeployIntent",
+            "preAgentCredentialSourceLimit",
+            "preNamespaceLifecycle",
+          ].includes(history)
+        ) {
           // Existing rows carry no proof that earlier infrastructure was never attempted.
           // A schema upgrade must not invent initial lifecycle authority for them.
           assert.equal(

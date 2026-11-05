@@ -10,7 +10,7 @@ import type { BrowserContextOptions, Locator, Page } from "playwright";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { RESOURCE_CONFLICT } from "../helpers/refusal-text.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   apiRequests,
   consoleViewports,
@@ -25,7 +25,7 @@ import {
   nonAuthWriteRequests,
   selectSecret,
   shippedPreset,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import { routeInstallationWithoutProvisioning } from "./console-agents-test-support.mjs";
 
 // The forms #2907 left on the browser's check (finding 1979): Plugin selections, the

@@ -8,6 +8,8 @@ This record preserves the dated changes to the OpenShell Sandbox provisioning fl
 
 ## Changelog
 
+- 2026-11-04 19:20: Preserve cleanup ownership and observed Harness readiness. (authoring-run/73695cc1-a0da-41a6-9cb1-c3fbde5f5a71 - 3f3150ce8a8b024e902ecf493a5e41ff5b72c934)
+
 - 2026-11-04 07:14: Preserve Namespace cleanup while retiring local middleware provisioning. (authoring-run/d89beadd-3258-4f64-873f-0033585df097 - dc5792f75970f2ac79ba462f6067019bdaa6c360)
 
 - 2026-11-04 04:08: Preserve cleanup ownership and quickstart policy/probe boundaries when integrating main. (authoring-run/9b858934-4857-4a62-80e1-dc6fc0aded6f - ca704785b3a06b45d637a99003cdfc41c81981ee)
@@ -231,3 +233,9 @@ This record preserves the dated changes to the OpenShell Sandbox provisioning fl
 - 2026-11-04 12:10: Use observed Harness readiness without the development startup delay. (authoring-run/858f56ce-7f7b-44cb-9d2f-845adc6299f4 - 0268defcf69d3d368d983f7dd2b4b973671fdaf1)
 
 - 2026-11-04 11:18: Exit native workspace preparation cleanly on SIGTERM after its synchronous writes. (authoring-run/858f56ce-7f7b-44cb-9d2f-845adc6299f4 - bb0314249dfee342458615a0d624d3342e8233f6)
+
+- 2026-11-05 02:27: Enable `push.negotiate`. (authoring-run/bbe8db1d-f7e2-4322-80db-fbdf882659e2 - b4c30b3593105309904715c7dfff29c987dbb885)
+
+- 2026-11-05 00:43: Trace exact workspace Git trust in the Sandbox environment. (authoring-run/5112cc08-58d9-46f9-9e8d-eb23191832e6 - 392d3f1d70fbf2d401afe0c1bdb2ddcf8f6341d9)
+
+- 2026-11-04 23:20: Reject plaintext setup with TLS pins. (authoring-run/63c54d1f-8f48-4ab3-a707-9b0d72978728 - 24c8c7f7c2b012bd1b802be333a3420645808533)

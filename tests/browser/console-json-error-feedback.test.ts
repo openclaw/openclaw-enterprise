@@ -11,7 +11,7 @@ import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/
 
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   detailUrl,
   fileBrowser,
@@ -20,7 +20,7 @@ import {
   nativeValues,
   newPage,
   shippedPreset,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import { SAVED_CONFIGURATION_CHANGED } from "../helpers/refusal-text.mjs";
 
 const defaultCodexPreset = await shippedPreset("default-codex");

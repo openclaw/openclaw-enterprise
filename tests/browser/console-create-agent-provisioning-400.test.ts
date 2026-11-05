@@ -55,9 +55,9 @@ import {
   revokeAdministratorGrant,
   selectSecret,
   setSlackSelection,
-  trackSettledFetches,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+import { trackSettledFetches } from "./console-fetch-accounting.ts";
 import {
   agentPostRequests,
   agentProvisionPostRequests,
@@ -68,7 +68,7 @@ import {
 } from "./console-agents-test-support.mjs";
 import { provisioningJob, routeProvisioningJob } from "./console-provisioning-job-fixture.ts";
 import { createRuntimeAuthFixture as rawRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
-import { createReadyConsoleNamespace as rawReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { createReadyConsoleNamespace as rawReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   AGENT_NAME_CONFLICT,
   CHANNEL_BINDING_FORM_REMEDY,

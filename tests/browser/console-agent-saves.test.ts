@@ -47,16 +47,15 @@ import {
   setSlackSelection,
   stopFocusTrail,
   takeLayoutShifts,
-  trackSettledFetches,
   waitForEnabled,
-  waitForIdleFetches,
   waitForInputValue,
   waitForShownInputValue,
   secretOptionLabel,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import { createRepositoryLaunchFixture } from "./console-agents-test-support.mjs";
-import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   CHANNEL_BINDING_CONSOLE_REMEDY,
   CHANNEL_SECRETS_CONFIGURATION_CHANGED,

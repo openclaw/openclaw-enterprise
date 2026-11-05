@@ -41,6 +41,7 @@ import {
   managedMcpInstalls,
   managedInstalls,
 } from "../plugin/managed-catalog.ts";
+import { managedGoogleInstall } from "../plugin/google-workspace/install.ts";
 import { openShellLogDecisions } from "./openshell-log-decisions.ts";
 import { qualifyOpenShellCodexArtifactRules } from "./openshell-codex-artifacts.ts";
 import { workspaceNodeNetworkPolicy } from "./openshell-workspace-node-policy.ts";
@@ -87,7 +88,9 @@ import {
   TransientDependencyError,
 } from "@openclaw-enterprise/occ";
 import { randomUUID } from "node:crypto";
+import { isUtf8 } from "node:buffer";
 import { setTimeout as delay } from "node:timers/promises";
+import { isWorkspaceNodeDeviceId } from "../../gateway/node-enrollment-client.ts";
 import { isDeepStrictEqual } from "node:util";
 import type {
   AgentRevision,
@@ -939,6 +942,20 @@ interface HarnessRuntimeCredentialMaterial {
   readonly binding?: WorkspaceNodeBinding;
 }
 
+function canonicalWorkspaceNodeTlsFingerprint(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const fingerprint = value.trim().replace(/^sha256:/iu, "");
+  if (
+    !/^[a-f0-9]{64}$/iu.test(fingerprint) &&
+    !/^(?:[a-f0-9]{2}:){31}[a-f0-9]{2}$/iu.test(fingerprint)
+  ) {
+    return undefined;
+  }
+  return fingerprint.replaceAll(":", "").toLowerCase();
+}
+
 async function harnessRuntimeCredentials(
   context: SandboxHarnessContext,
 ): Promise<HarnessRuntimeCredentialMaterial> {
@@ -974,9 +991,8 @@ async function harnessRuntimeCredentials(
       "Refusing a workspace node setup Secret without exact Agent ownership.",
     );
   }
-  const encoded = asRecord(asRecord(secret)?.data)?.[
-    nonempty(reference.key, "Workspace node setup Secret key")
-  ];
+  const secretData = asRecord(asRecord(secret)?.data);
+  const encoded = secretData?.[nonempty(reference.key, "Workspace node setup Secret key")];
   if (typeof encoded !== "string") {
     throw new OpenShellSandboxConfigurationFailure(
       "The workspace node setup Secret has no projected value.",
@@ -1003,8 +1019,12 @@ async function harnessRuntimeCredentials(
   }
   let payload: ConfigurationRecord;
   try {
+    const bytes = Buffer.from(setupCode, "base64url");
+    if (!isUtf8(bytes)) {
+      throw new Error("Invalid setup encoding.");
+    }
     payload = configurationObject(
-      JSON.parse(Buffer.from(setupCode, "base64url").toString("utf8")),
+      JSON.parse(bytes.toString("utf8")),
       "Workspace node setup envelope",
     );
   } catch {
@@ -1019,11 +1039,27 @@ async function harnessRuntimeCredentials(
     );
   }
   const bootstrapToken = nonempty(payload.bootstrapToken, "Workspace node setup bootstrap token");
+  const encodedDeviceId = secretData?.deviceId;
+  const deviceId =
+    typeof encodedDeviceId === "string"
+      ? Buffer.from(encodedDeviceId, "base64").toString("utf8")
+      : "";
+  const recordedDevice =
+    typeof encodedDeviceId === "string" &&
+    isWorkspaceNodeDeviceId(deviceId) &&
+    Buffer.from(deviceId, "utf8").toString("base64").replace(/=+$/u, "") ===
+      encodedDeviceId.replace(/=+$/u, "");
+  if (encodedDeviceId !== undefined && !recordedDevice) {
+    throw new OpenShellSandboxConfigurationFailure("The workspace node device ID is invalid.");
+  }
   const expiresAtMs = payload.expiresAtMs;
+  // A recorded device may reconnect after bootstrap expiry. Native still has
+  // to verify its retained identity, Gateway scope, pin and device token.
   if (
     typeof expiresAtMs !== "number" ||
     !Number.isSafeInteger(expiresAtMs) ||
-    expiresAtMs <= Date.now()
+    expiresAtMs <= 0 ||
+    (expiresAtMs <= Date.now() && !recordedDevice)
   ) {
     throw new OpenShellSandboxConfigurationFailure(
       "The workspace node setup envelope is expired or has no bounded expiry.",
@@ -1031,7 +1067,7 @@ async function harnessRuntimeCredentials(
   }
   if (
     payload.tlsFingerprint !== undefined &&
-    (typeof payload.tlsFingerprint !== "string" || payload.tlsFingerprint.length === 0)
+    canonicalWorkspaceNodeTlsFingerprint(payload.tlsFingerprint) === undefined
   ) {
     throw new OpenShellSandboxConfigurationFailure(
       "The workspace node setup TLS fingerprint is invalid.",
@@ -1039,7 +1075,14 @@ async function harnessRuntimeCredentials(
   }
   let endpoint: URL;
   try {
-    endpoint = new URL(nonempty(payload.url, "Workspace node setup URL"));
+    const rawUrl = nonempty(payload.url, "Workspace node setup URL").trim();
+    const hasInvalidCharacter = [...rawUrl].some(
+      (character) => character.charCodeAt(0) <= 0x20 || character === "\\",
+    );
+    if (!/^wss?:\/\/[^/\\]/iu.test(rawUrl) || hasInvalidCharacter) {
+      throw new Error("Invalid setup URL.");
+    }
+    endpoint = new URL(rawUrl);
   } catch {
     throw new OpenShellSandboxConfigurationFailure("The workspace node setup URL is invalid.");
   }
@@ -1052,6 +1095,11 @@ async function harnessRuntimeCredentials(
   ) {
     throw new OpenShellSandboxConfigurationFailure(
       "The workspace node setup URL must be an exact ws or wss endpoint without credentials, query, or fragment.",
+    );
+  }
+  if (payload.tlsFingerprint !== undefined && endpoint.protocol !== "wss:") {
+    throw new OpenShellSandboxConfigurationFailure(
+      "The workspace node setup TLS fingerprint requires a wss endpoint.",
     );
   }
   // TODO(openshell-workspace-node-proof-binding): Return the bootstrap token to
@@ -2937,13 +2985,14 @@ function runtimeProviderSetupEnvelope(
     return undefined;
   }
   const allowed = new Set(["url", "bootstrapToken", "expiresAtMs", "tlsFingerprint"]);
+  const tlsFingerprint = canonicalWorkspaceNodeTlsFingerprint(payload.tlsFingerprint);
   if (
     Object.keys(payload).some((key) => !allowed.has(key)) ||
     !isNonEmptyString(payload.url) ||
     !isNonEmptyString(payload.bootstrapToken) ||
     typeof payload.expiresAtMs !== "number" ||
     !Number.isSafeInteger(payload.expiresAtMs) ||
-    (payload.tlsFingerprint !== undefined && !isNonEmptyString(payload.tlsFingerprint))
+    (payload.tlsFingerprint !== undefined && tlsFingerprint === undefined)
   ) {
     return undefined;
   }
@@ -2951,7 +3000,7 @@ function runtimeProviderSetupEnvelope(
     url: payload.url,
     bootstrapToken: payload.bootstrapToken,
     expiresAtMs: payload.expiresAtMs,
-    ...(payload.tlsFingerprint === undefined ? {} : { tlsFingerprint: payload.tlsFingerprint }),
+    ...(tlsFingerprint === undefined ? {} : { tlsFingerprint }),
   };
 }
 
@@ -3760,6 +3809,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
             workspace,
             sandbox.resourceName,
             context.signal,
+            sandboxDataMount(this.options, context.requirements).mount_path,
             sandboxProviders(this.options, context.requirements),
             this.options.policy.networkPolicies.flatMap((policy) =>
               policy.endpoints.map((endpoint) => endpoint.host),
@@ -4011,7 +4061,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     // DetachSandboxProvider removes the provider, but keeps the Sandbox's original launch
     // environment and policy. A replacement is created above without either plugin setting.
     let expectedSpec = create.spec;
-    if (!plugin && managedCredentialBinding(context.revision.plugins?.plugins)) {
+    if (
+      !plugin &&
+      managedCredentialBinding(context.revision.plugins?.plugins, managedGoogleInstall)
+    ) {
       const previous = googleRequestPolicyFromSandbox(existing.spec?.policy);
       if (previous) {
         expectedSpec = {
@@ -4072,8 +4125,12 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         service.targetPort !== harnessPort(context.requirements) ||
         !["SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH", 2].includes(service.authorizationMode)
       ) {
+        const recovery =
+          !codex && service === undefined
+            ? "this revision has no verified workspace-node enrollment. Stop the Agent, wait for shutdown, then deploy a new revision."
+            : "remove the stale Sandbox before retrying.";
         throw new OpenShellSandboxConfigurationFailure(
-          `OpenShell Sandbox ${sandbox.resourceName} exists without its exact bearer-passthrough Harness service; remove the stale Sandbox before retrying.`,
+          `OpenShell Sandbox ${sandbox.resourceName} exists without its exact bearer-passthrough Harness service; ${recovery}`,
         );
       }
       validateHarnessServiceUrl(service.url);
@@ -5215,7 +5272,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     if (plugin) {
       assertPluginRequestPolicy(candidate, plugin);
     } else {
-      const binding = managedCredentialBinding(context.revision.plugins?.plugins);
+      const binding = managedCredentialBinding(
+        context.revision.plugins?.plugins,
+        managedGoogleInstall,
+      );
       if (
         binding &&
         Array.isArray(sandbox.spec?.providers) &&

@@ -151,6 +151,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 65 && completedCount > 65) {
     return "preAgentDeployIntent";
   }
+  if (count === 66 && completedCount > 66) {
+    return "preAgentCredentialSourceLimit";
+  }
   if (count === completedCount) {
     return "completed";
   }
@@ -262,7 +265,7 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 63) {
     return "preGatewayManagedMode";
   }
-  if (count === 66) {
+  if (count === 67) {
     return "preNamespaceLifecycle";
   }
   refuse("an incomplete or unsupported development history is installed");

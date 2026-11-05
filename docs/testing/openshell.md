@@ -1,5 +1,7 @@
 ---
 tags: [human_verified]
+# Backfilled from the verification tag recorded in 17ff921c5.
+last_verified: "2026-11-04"
 ---
 
 # OpenShell tests
@@ -307,8 +309,9 @@ model. Stage timings are retained in the [CI results](ci/openshell-execution.md#
 After verifying the ready default Namespace created by Local Setup, the test
 runs distinct Codex and native Agents concurrently. Codex uses its `codex-pat`
 source; native OpenClaw uses a separate `openai` source from `OPENAI_API_KEY`.
-The test drains both operations before shared denial checks and stack teardown. The native case uses the pinned runtime and
-production Drivers without the k3d helper's compatibility bridge.
+The test drains both operations before shared denial checks and stack teardown.
+The native case uses the pinned runtime and production Drivers without the k3d
+helper's compatibility bridge.
 
 To exercise an OpenAI-compatible service, set
 `OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE` to a private JSON file containing
@@ -323,7 +326,12 @@ changing only the embedded QA preset does not exercise this path.
 
 The case edits `USER.md` through the workspace API and verifies its marker through
 real model execution and `exec`. That turn writes a unique file in its session
-worktree. After a normal redeployment, the case checks replacement Sandbox and
+worktree. It waits for the enrolled node's actual setup expiry before a normal
+redeployment, adding up to ten minutes to the case. The successor must retain
+the owned setup Secret, credential, expiry and device identity while recording
+its own enrolled revision. Completion receipts must match while retained by the
+Gateway; after its 20-minute retention window, empty status is allowed. Durable
+Secret and execution assertions still apply; emitted events are not counted. The case also checks replacement Sandbox and
 Pod UIDs, the retained workspace PVC/subpath, and every owner file's bytes. It
 then resumes the same session ID and key, requiring another model turn and `exec`
 to read the original file with its original hash. Run placement must identify the

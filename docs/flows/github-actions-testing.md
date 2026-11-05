@@ -8,7 +8,7 @@ last_updated_session: authoring-run/c1bf6b1d-bea1-4de7-b3af-4a2ea197ba06
 
 ## Overview
 
-The [ordinary CI lanes](../testing/ci/required-checks.md) reject missing or skipped coverage. Docs-only runs check documentation and Suite Audit. Neither proves credentialed integrations.
+The [ordinary CI lanes](../testing/ci/required-checks.md) reject missing or skipped coverage. Docs-only runs execute Suite Audit and Static Checks. Neither proves credentialed integrations.
 
 ## Entry Points
 
@@ -21,9 +21,8 @@ The [ordinary CI lanes](../testing/ci/required-checks.md) reject missing or skip
 ```mermaid
 graph TD
   A["PR or other CI event"] --> S["Select impact mode"]
-  A --> N["Suite Audit"]
+  A --> N["Suite Audit and Static Checks: every mode"]
   S -->|full PR| Q["Report affected packages (advisory)"]
-  S -->|docs| D["Documentation checks"]
   S -->|full or tests| B["All ordinary or selected CI lanes"]
   B --> F["Prepare owned resources"]
   F -->|prepared| H["Run tests and validate cases"]
@@ -33,7 +32,6 @@ graph TD
   J --> G["CI Required: verify mode and job states"]
   S --> G
   N --> G
-  D --> G
   K --> G
   G -->|full or tests| L["Aggregate same-source lane results"]
   G -->|docs| M["Documentation coverage result"]
@@ -66,7 +64,7 @@ preparation. `runLane` uses the same selector and retains the file's expected
 cases, environment and cleanup. Results carry `scope: focused`;
 `validateLaneEvidence` rejects them for full-lane aggregation, even for a one-file lane.
 
-CI uses the event checkout without external service credentials. Impact and Suite Audit start independently. In every mode, `static-checks` verifies checkout identity and runs workspace, lint, format, OpenAPI and docs checks (no product tests), alone in docs mode. The [coverage map](../testing/ci/required-checks.md#scenarios) lists matrix jobs and the separate `runtime-image-fixture`; tests mode runs only selected lanes. Image startup parts 1 and 2, PostgreSQL Application and the `checks-baseline` and `checks-browser` parts use `blacksmith-32vcpu-ubuntu-2404` for its 8 CPUs, k3d fixture and observability for its NetworkPolicy-enforcing kernel; `runtime-image-fixture` uses `ubuntu-22.04`. Other lanes, Static Checks and audit use `blacksmith-16vcpu-ubuntu-2404`.
+CI uses the event checkout without external service credentials. `CI Impact` starts independently of `Suite Audit and Static Checks`, which verifies checkout identity and runs the [documented checks](../testing/ci/required-checks.md#scenarios) in every mode. Docs mode skips test lanes. The [coverage map](../testing/ci/required-checks.md#scenarios) lists matrix jobs and the separate `runtime-image-fixture`; tests mode runs only selected lanes. Image startup parts 1 and 2, PostgreSQL Application and the `checks-baseline` and `checks-browser` parts use `blacksmith-32vcpu-ubuntu-2404` for its 8 CPUs, k3d fixture and observability for its NetworkPolicy-enforcing kernel; `runtime-image-fixture` uses `ubuntu-22.04`. Other jobs use `blacksmith-16vcpu-ubuntu-2404`.
 
 The selector verifies that the tested merge has the event head as its second parent. It
 compares that tree with its first parent, the current base, using policy from the base.
@@ -79,7 +77,7 @@ the owning lanes from either tree, adds `checks-baseline-2` for TypeScript, and 
 `checks-baseline-1` if only the fixture job would run. Other changes and non-PR events
 select full CI. Missing policy or unverifiable source selects full or fails closed.
 
-`CI Required` rechecks the mode and selected lanes. Impact, audit and selected jobs must
+`CI Required` rechecks the mode and selected lanes. Impact, the combined static-checks job, and selected lanes must
 succeed; other jobs must be skipped. Full and tests modes aggregate results from the same
 source. Docs mode produces no test artifacts. The impact summary shows mode, fixed reason
 and accepted lanes; it omits paths and raw output. Selector errors fail the job, and missing
@@ -96,7 +94,9 @@ lane and CI suite; preflight includes `integration-qa`. QA waits for Slack to fi
 Aggregation requires QA and `dev-up-k3d` results. Cancellation stops QA.
 `all` requires `main`. Only `k3d-model`/`openshell` admit exact environment-granted
 branches; administrators remove temporary grants after verification.
-Credential-free `dev-up-k3d` also accepts branches and prepares Go, CLI, Chromium
+`skipper-prepared-git-installed` also accepts branches without a protected environment;
+it uses synthetic model and Git credentials. Credential-free `dev-up-k3d` accepts
+branches and prepares Go, CLI, Chromium
 and k3d on Ubuntu 22.04, with 150/180-minute file/job deadlines.
 Dispatches serialize without cancellation: standalone `dev-up-k3d` per branch,
 others in `full-integration`. Preflight rejects required reviewers and retains
@@ -120,7 +120,7 @@ The provider job uses `blacksmith-8vcpu-ubuntu-2404` for image-build and k3d-imp
 
 For `logging-collector`, `scripts/ci/prepare.mjs:prepareLane` pre-pulls the pinned Collector, Node, Prometheus and Grafana images before publishing lane inputs. The metrics test and preparation share the digests in `scripts/ci/metrics-monitoring-images.mjs:metricsMonitoringImages`. `scripts/ci/prepare.mjs:ensureDockerSourceImage` reuses a verified local repository digest or pulls through `scripts/ci/image-pull.ts:pullImage`, then verifies that digest before tests start containers. Registry 5xx and rate limits retry within the shared pull budget; missing manifests and authorization refusals fail preparation immediately. Explicit unpinned Node overrides keep the existing test-owned pull behavior.
 
-`checks-browser`, `checks-browser-2`, `postgres-auth`, `postgres-platform`, `images-runtime-startup`, `images-runtime-startup-2` and `images-runtime-startup-3` use separate runners and required artifacts. `scripts/ci/prepare.mjs:imageBuildArgs` enables scoped BuildKit caches for hosted image jobs: packaging exports; runtime startup restores. Images load into the job's Docker engine; cache credentials stay in preparation.
+`scripts/ci/prepare.mjs:imageBuildArgs` restores scoped BuildKit caches for hosted image jobs. Only the [CI Image Cache workflow](../../.github/workflows/ci-image-cache.yml) calls `warmImageCache` to export the shared controller/runtime cache. Images load into the job's Docker engine; cache credentials stay in preparation.
 
 Kubernetes preparation records host snapshots. Failed reads, bounded
 by time and size, save `<state-file>.diagnostics.json` outside the cluster directory.
@@ -152,7 +152,7 @@ manual profile. Production node provisioning remains outside CI ownership; see
 [Codex sandbox setup](../guides/deploy/codex-sandbox.md).
 
 `scripts/ci/staging-qualification.ts:pull` verifies release metadata and
-[isolates pull credentials](../testing/ci/staging-qualification.md).
+[isolates pull credentials](../release/staging-qualification.md).
 `smoke` runs trusted workflow code against the release images. Results identify
 both commits.
 

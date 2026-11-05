@@ -119,7 +119,7 @@ security/runtime holds until the amended behavior is proved.
 Component qualification passes: six real PostgreSQL/worker journal cases cover
 atomic reservation, CAS/restart, actual lease takeover, lock order, audit rollback,
 and a lost real COMMIT reply. The canonical migration/native-catalog and logical
-restore qualification passes 43 cases against the combined schema. Kubernetes controlled-SDK cases cover
+restore qualification passes 44 reported cases against the combined schema. Kubernetes controlled-SDK cases cover
 partial preparation, unknown creates, original UIDs, external release reply loss,
 parent handoff, and post-list replacement; they are not live cluster proof.
 OpenShell controlled-provider and pinned wire cases, Docker conformance, and SSH
@@ -194,6 +194,8 @@ and closed-Installation custody 1/1. RFC, security and genuine-provider proof ho
 remain.
 
 ## Delivery record
+
+- 2026-11-05: Main reserves migration 67 for the 64-source credential validator. The unchanged Namespace journal SQL moves to 68. PostgreSQL 18.6 passes 44 reported canonical install/prefix/restore cases (43 leaves plus one parent) and six separate journal cases, with no failures/skips. Native/direct-restore/prefix-upgrade fingerprints were measured with the migrator and limited application roles. Published prefixes 65/66/67 retain distinct receipt/catalog identities; unsupported unmerged journal67 receipts remain refused. This proves schema composition, not genuine provider cleanup.
 
 - 2026-11-04: Main reserves migration 66 for Agent first-deployment receipts. The unchanged Namespace journal SQL moves to 67. Native PostgreSQL 18.6 qualification passes 43 canonical install/prefix/restore cases plus six Namespace transaction/lease/audit cases, with no skips. Prefixes 65 and 66 retain their distinct shapes; existing rows gain neither journal authority nor a first-deployment digest. Native and both restore fingerprints were measured from actual migrator-owned databases with limited application grants. The registered disposable fixture was removed. This verifies schema composition, not live provider cleanup.
 

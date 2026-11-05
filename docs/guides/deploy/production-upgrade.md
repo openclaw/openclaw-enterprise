@@ -1,8 +1,8 @@
 # Upgrade production images
 
-Use the [production upgrade helper](../../../scripts/upgrade-production-images)
-and the matching [OCC CLI](../cli.md#connect-to-your-installation) to change
-images in an existing Helm installation with Kubernetes Compute. For a new
+Run `scripts/upgrade-production-images` from the release checkout to change
+images in an existing Helm installation with Kubernetes Compute. Use the
+matching [OCC CLI](../cli.md#connect-to-your-installation). For a new
 installation, follow [install the production control plane](production-installation.md).
 For one Agent, follow [deploy and verify production Agents](production-agents.md).
 Plan any traffic handoff separately from this in-place upgrade.
@@ -52,7 +52,7 @@ Prepare:
   database state;
 - the production kubeconfig, Helm values, Installation YAML, OCC service key,
   and optional CA bundle in protected files;
-- Node.js for startup preflight Pods. The Kubernetes identity must create and
+- Bash, Python 3, Node.js, Helm, kubectl, jq, yq, cmp and mktemp on the operator host. The Kubernetes identity must create and
   delete Pods, Secrets and NetworkPolicies and read Pod logs in the release
   namespace;
 - for the bundled Collector, [refresh its config Secret](../observability.md#refresh-the-collector-configuration-on-upgrade)
@@ -97,41 +97,31 @@ stopped. The helper stops only the selected Helm release's API and worker. For r
 upgrades, freeze Agent deployments and draft edits. Resolve queued or running
 deployments first. Keep restrictions through recovery.
 
-Paste the whole block into a dedicated Bash shell. If it exits, resolve the
-error and retry in a new Bash shell. Continue in the same shell after success.
+Start in the root of the clean checkout at the reviewed commit. In a dedicated
+Bash shell, set the connection and release inputs. Set `OCC_CA_BUNDLE` only
+if OCC uses a private certificate authority.
 
 ```bash
-{
-  release_checkout_error() {
-    echo "$1" >&2
-    exit 1
-  }
-  require_clean_release_checkout() {
-    local release_status
-    release_status=$(git status --porcelain --untracked-files=all 2>/dev/null) ||
-      release_checkout_error 'Git status failed. Check the release repository.'
-    [ -z "$release_status" ] ||
-      release_checkout_error 'The release checkout has local changes. Preserve and resolve them.'
-  }
-  umask 077
-  export OCC_URL='https://<internal-occ-host>'
-  export OCC_SERVICE_KEY_FILE='/secure/occ/operator-service-key.json'
-  export OCC_CA_BUNDLE='/secure/occ/occ-ca.pem'
-  export RELEASE_SOURCE_SHA='<full-40-character-git-sha>'
-  export UPGRADE_EVIDENCE="/secure/occ/upgrades/$(date -u +%Y%m%dT%H%M%SZ)"
-  cd /secure/src/openclaw-enterprise 2>/dev/null ||
-    release_checkout_error 'Cannot enter the release checkout. Check the directory and access.'
-  require_clean_release_checkout
-  git fetch origin >/dev/null 2>&1 ||
-    release_checkout_error 'Fetch failed. Check origin and Git access.'
-  git checkout --no-overwrite-ignore --detach "$RELEASE_SOURCE_SHA" >/dev/null 2>&1 ||
-    release_checkout_error 'Checkout failed. Verify the commit and resolve local conflicts.'
-  require_clean_release_checkout
-  unset -f release_checkout_error require_clean_release_checkout
-}
+umask 077
+export OCC_URL='https://<internal-occ-host>'
+export OCC_SERVICE_KEY_FILE='/secure/occ/operator-service-key.json'
+# export OCC_CA_BUNDLE='/secure/occ/occ-ca.pem'
+export RELEASE_SOURCE_SHA='<full-40-character-git-sha>'
+export UPGRADE_EVIDENCE="/secure/occ/upgrades/$(date -u +%Y%m%dT%H%M%SZ)"
+git rev-parse HEAD
+git status --short --untracked-files=all
 ```
 
-The evidence directory must not exist. The command creates it with mode `0700`.
+Continue only if `git rev-parse HEAD` reports the reviewed commit and the status
+command succeeds with no output. The evidence directory must not exist. The
+helper creates it with mode `0700`. Set the target once in the same shell:
+
+```bash
+target=(--kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>'
+        --namespace openclaw-system --release oce
+        --values /secure/occ/values.yaml --installation /secure/occ/installation.yaml
+        --source-revision "$RELEASE_SOURCE_SHA" --occ /secure/occ/bin/occ)
+```
 
 ### Include reviewed settings
 
@@ -210,9 +200,11 @@ bootstrap record disagree.
 
 `--preflight-only` checks target inputs and applicable repository image pairs,
 runs a Helm server dry run, and checks startup in temporary API and worker Pods.
-Writers stay active. Preflight prepares no deployment to resume. After
-[cleanup](production-upgrade-recovery.md#clean-up-preflight-resources), deploy
-without the flag. Reuse reviewed inputs. Use fresh private evidence each run.
+Add this flag to the controller or runtime command below. Use
+`--evidence-dir "${UPGRADE_EVIDENCE}-preflight"` for this run. Writers stay
+active. After [cleanup](production-upgrade-recovery.md#clean-up-preflight-resources),
+run the same command without `--preflight-only` and with the original, unused
+`"$UPGRADE_EVIDENCE"` directory.
 Live checks repeat. Keep writer and draft freezes through recovery.
 
 Time upgrade and recovery interruptions on an isolated, populated installation.
@@ -234,17 +226,9 @@ Set the controller image and run the command without `--runtime-image`:
 ```bash
 export CONTROLLER_IMAGE='<registry>/controller@sha256:<64-hex-digest>'
 
-scripts/upgrade-production-images \
-  --kubeconfig /secure/occ/kubeconfig \
-  --context '<reviewed-context>' \
-  --namespace openclaw-system \
-  --release oce \
-  --values /secure/occ/values.yaml \
-  --installation /secure/occ/installation.yaml \
+scripts/upgrade-production-images "${target[@]}" \
   --controller-image "$CONTROLLER_IMAGE" \
-  --source-revision "$RELEASE_SOURCE_SHA" \
-  --evidence-dir "$UPGRADE_EVIDENCE" \
-  --occ /secure/occ/bin/occ
+  --evidence-dir "$UPGRADE_EVIDENCE"
 ```
 
 For a repository-enabled release, set `BROKER_IMAGE` to the selected immutable
@@ -253,46 +237,14 @@ the protected values equal to live values; the helper preserves
 the running broker's exact hostname in the candidate. It qualifies the pair
 before cluster mutation and verifies the deployed pair and broker capability.
 
-Before it stops anything, the command runs a startup preflight: one-shot API and
-worker Pods on the selected controller image, built from the rendered chart (same
-environment, mounts and service account), with the candidate Installation in a
-temporary Secret and, when the rendered chart includes its dependency-egress
-policy, the chart's API and worker dependency egress in a temporary NetworkPolicy.
-The API Pod also checks its configured Console theme, including referenced images.
-Each loads the Installation, Drivers and `presets.files`, then
-runs the bundled Kubernetes Compute Driver's preflight as startup does, without
-opening the database. Each then checks the stored Installation name, which the
-command reads through OCC, against the image's Name rule. If either fails, as
-when a listed Preset file is missing from the image, split-layout tenants remain
-or the name
-[breaks the rule](production-upgrade-recovery.md#correct-an-invalid-installation-name),
-the command prints each failure, attempts to delete these resources, and stops;
-the old release keeps serving. Logs and status are saved as
-`preflight-<api|worker>.log` and `-status.json`, taking up to about 90 seconds
-past `--timeout-seconds`. When a create or cleanup fails, kubectl's error is saved
-as `preflight-<resource>-create.err` or `preflight-cleanup.err`. Runtime upgrades use the current
-controller image. For cleanup warnings or interruption, preserve evidence and any retained
-lock and follow [safe cleanup](production-upgrade-recovery.md#clean-up-preflight-resources)
-before retrying.
+If the startup preflight fails, the old release keeps serving. Inspect the
+API and worker preflight logs in the evidence directory. After a cleanup warning
+or interruption, preserve the evidence and lock and follow
+[preflight cleanup](production-upgrade-recovery.md#clean-up-preflight-resources).
 
-A runtime upgrade also sends each running Agent's saved Configuration to the API
-Pod, which applies the image's deploy rules that read only those values. A refused
-draft, such as one with a setting the new OpenClaw runtime retired or an unusable
-model provider URL, stops the command with each Agent and OCC's deploy message;
-Driver, credential, plugin and repository checks run only at deploy. Correct the draft or stop the Agent, then
-start again with a new evidence directory.
-
-The command scales the API and worker down, waits for their old Pods to terminate
-and confirms both remain at zero. It installs reviewed values and, if changed,
-the Installation at the baseline paths, updating the Secret only when its live
-contents differ from the candidate. Then Helm restores the candidate Deployments
-after its initialization hooks succeed. The helper verifies rollout and OCC access.
-
-Helm runs the candidate controller's database migration init container with the
-migration role, then runs bootstrap. The API and worker do not roll out unless
-both hooks succeed. The command does not request fleet inventory or Agent
-deployment authority. A later replacement version does not settle old cleanup
-or replay repository operations.
+The helper stops the release's API and worker before updating the protected
+inputs and Installation Secret. Helm runs migration and bootstrap before it
+restores the Deployments. The helper then verifies rollout and OCC access.
 
 Success looks like:
 
@@ -307,21 +259,19 @@ Set the runtime image and run the command:
 ```bash
 export RUNTIME_IMAGE='<registry>/runtime@sha256:<64-hex-digest>'
 
-scripts/upgrade-production-images \
-  --kubeconfig /secure/occ/kubeconfig \
-  --context '<reviewed-context>' \
-  --namespace openclaw-system \
-  --release oce \
-  --values /secure/occ/values.yaml \
-  --installation /secure/occ/installation.yaml \
+scripts/upgrade-production-images "${target[@]}" \
   --runtime-image "$RUNTIME_IMAGE" \
-  --source-revision "$RELEASE_SOURCE_SHA" \
-  --evidence-dir "$UPGRADE_EVIDENCE" \
-  --occ /secure/occ/bin/occ
+  --evidence-dir "$UPGRADE_EVIDENCE"
 ```
 
 When repository credentials are enabled, also pass `--controller-image` (current
 digest) and `--broker-image` (selected digest). The worker and broker still restart.
+
+Check the preflight warnings. The selected controller image checks saved Agent
+Configurations when it supports draft validation and the drafts fit in the
+temporary Secret. Otherwise, OCC checks them at deployment. If preflight
+refuses a draft, correct it or stop the Agent before running a new preflight.
+Driver, credential, plugin and repository checks still run at deployment.
 
 Before mutation, the command requires a complete authorized inventory with no
 deployment in progress. Every running Agent must have a readable selected version
@@ -389,9 +339,24 @@ After promotion, [verify the served Console](../../release/container-promotion.m
 
 ## Recover from a partial failure
 
-Keep evidence and applicable maintenance restrictions. Before retrying, follow
-[recovery](production-upgrade-recovery.md) for cleanup, resume eligibility,
-uncertain migrations, unknown Agent dispatches and older images.
+Keep the original evidence directory, the runtime upgrade's sibling
+`.dispatch-state` journal, and the applicable maintenance restrictions. If the
+terminal disconnected, inspect the `completed` marker and the recorded Helm,
+rollout and Agent results. A missing marker leaves the outcome uncertain.
+
+If initialization is unclear, inspect the current Helm initialization Job with
+the matching CLI and a trusted kubeconfig that can read the named Job:
+
+```bash
+job_target=(--kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>'
+            --kube-namespace openclaw-system --release oce)
+/secure/occ/bin/occ installation plan "${job_target[@]}"
+```
+
+Use `doctor` instead of `plan` for the Job status alone. Both are read-only.
+Without a recorded Job UID, the result describes the current Job. See [how to interpret the result](production-handoff.md#resume-an-installation-in-progress).
+The Job alone cannot establish the database state or whether the upgrade finished. Follow the [upgrade recovery procedure](production-upgrade-recovery.md)
+to reconcile migrations and Agent deployments before deciding whether to resume.
 
 ### Roll back across human sign-in
 
