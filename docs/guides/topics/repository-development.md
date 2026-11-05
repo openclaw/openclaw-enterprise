@@ -14,9 +14,9 @@ validation commands. Follow their contribution instructions instead.
   model CredentialSource, paired Credential Gateway and Sandbox, and an
   [authorized repository binding](../repository-credentials/openshell-git-push.md).
   Confirm an actual model response and ordinary Git/gh access first.
-- Package downloads need the [public network egress mode](../../reference/configuration/network-egress.md)
-  and compatible Gateway/supervisor images that report the applied mode. Stock
-  OpenShell 0.1.6 cannot provide it. Select the qualified images through the setup
+- This workflow selects [public network egress mode](../../reference/configuration/network-egress.md)
+  for package downloads, with compatible Gateway/supervisor images that report
+  the applied mode. Stock OpenShell 0.1.6 cannot provide it. Select the qualified images through the setup
   guide; changing an Installation setting requires a successor Agent revision.
   Public mode permits workspace data to reach public services. Managed credential
   destinations retain their authorization rules; public mode is not general UDP,
@@ -45,7 +45,9 @@ separate preparation. Stop if the checkout's pins differ from this example.
 
 Run the following in the Agent's Bash shell. Set `OCE_WORKSPACE` to its approved
 writable workspace and `OCE_REPO` to the trusted checkout within it. Keep the
-new tools directory outside the checkout:
+new tools directory outside the checkout. Use a private `0700` temporary
+directory under `/tmp`: protected credential fixtures reject shared writable
+ancestors, and short paths also avoid Unix-socket length limits.
 
 ```bash
 set -euo pipefail
@@ -62,10 +64,12 @@ df -h "$OCE_WORKSPACE"
 umask 077
 OCE_TOOLS=$(mktemp -d "$OCE_WORKSPACE/oce-devtools.XXXXXXXX")
 mkdir -p "$OCE_TOOLS/bin" "$OCE_TOOLS/bun" "$OCE_TOOLS/cache/corepack" \
-  "$OCE_TOOLS/cache/npm" "$OCE_TOOLS/cache/pnpm" "$OCE_TOOLS/tmp"
+  "$OCE_TOOLS/cache/npm" "$OCE_TOOLS/cache/pnpm"
 export COREPACK_HOME="$OCE_TOOLS/cache/corepack"
 export npm_config_cache="$OCE_TOOLS/cache/npm"
-export TMPDIR="$OCE_TOOLS/tmp"
+TMPDIR=$(mktemp -d /tmp/oce-dev.XXXXXXXX)
+chmod 700 "$TMPDIR"
+export TMPDIR
 export PATH="$OCE_TOOLS/bin:$PATH"
 corepack enable --install-directory "$OCE_TOOLS/bin"
 test "$(pnpm --version)" = 11.15.1
@@ -132,19 +136,9 @@ prepared [docs package checks](../../contributing/documentation.md), not runtime
 tests. A skipped case is not a pass, and these setup commands do not qualify the
 full test suite inside the Sandbox.
 
-For tests that create Unix-domain sockets, a long workspace path can exceed the
-socket path limit. Use a short private temporary directory for the selected test
-command rather than changing source or broadening permissions. For example:
-
-```bash
-OCE_TEST_TMP=$(mktemp -d /tmp/oce-tests.XXXXXXXX)
-TMPDIR="$OCE_TEST_TMP" NODE_ENV=development \
-  node --test tests/integration/qa-repository-installation.test.ts
-```
-
-Keep the log and exit status, then remove only the temporary directory you
-created. Tests using local UDP listeners can also be incompatible with Sandbox
-network enforcement; public TCP downloads do not establish UDP fixture support.
+Keep logs and exit statuses, then remove only the private temporary directory
+you created after all checks finish. Tests using local UDP listeners can also
+be incompatible with Sandbox network enforcement; public TCP downloads do not establish UDP fixture support.
 Report that limitation and run those checks in the supported contributor test
 environment. Do not weaken the Sandbox or label an incomplete suite successful.
 
