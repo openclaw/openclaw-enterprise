@@ -589,6 +589,13 @@ for (const outcome of [
         exact: true,
       });
       const otherDelete = page.getByRole("button", { name: "Delete Unaffected team", exact: true });
+      // A closed dialog leaves the role query before its queued close event restores focus.
+      await waitForFocusedLabel(
+        page,
+        outcome === "external focus"
+          ? "Delete Unaffected team"
+          : "Refresh Observed cleanup deletion status",
+      );
       assert.equal(await hasFocus(outcome === "external focus" ? otherDelete : recovery), true);
       assert.equal(await retry.count(), 0);
       // A retained DOM event must not revive a closed prompt, even after a successful read
