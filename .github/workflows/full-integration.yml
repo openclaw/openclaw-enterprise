@@ -31,7 +31,8 @@ permissions:
   deployments: read
 
 concurrency:
-  group: ${{ inputs.lane == 'dev-up-k3d' && format('full-integration-dev-up-k3d-{0}', github.ref) || inputs.lane == 'skipper-prepared-git-installed' && format('full-integration-skipper-prepared-git-installed-{0}', github.ref) || 'full-integration' }}
+  # Waiting for a manual review must not reserve the main push queue.
+  group: ${{ github.event_name == 'workflow_dispatch' && format('full-integration-manual-{0}', github.run_id) || 'full-integration' }}
   cancel-in-progress: false
 
 env:
@@ -322,6 +323,9 @@ jobs:
   slack:
     name: Slack Live
     runs-on: blacksmith-32vcpu-ubuntu-2404
+    concurrency:
+      group: full-integration-slack-live
+      cancel-in-progress: false
     needs: preflight
     if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'slack') }}
     timeout-minutes: 50
@@ -450,6 +454,9 @@ jobs:
   dev-up-k3d:
     name: Local Kubernetes Installation
     runs-on: ubuntu-22.04
+    concurrency:
+      group: full-integration-dev-up-k3d-${{ github.ref }}
+      cancel-in-progress: false
     needs: preflight
     if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'dev-up-k3d') }}
     timeout-minutes: 180
@@ -473,6 +480,9 @@ jobs:
 
   skipper-prepared-git-installed:
     name: Installed Skipper private Git and live withdrawal
+    concurrency:
+      group: full-integration-skipper-prepared-git-installed-${{ github.ref }}
+      cancel-in-progress: false
     needs: preflight
     if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'skipper-prepared-git-installed') }}
     # The First Agent Smoke runner supports the packaged Codex sandbox and k3d policy.

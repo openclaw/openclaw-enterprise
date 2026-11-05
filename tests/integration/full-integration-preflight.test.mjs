@@ -769,28 +769,35 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
       }
     }
   }
-  const group = workflow.concurrency.group.startsWith("${{")
-    ? workflow.concurrency.group.replace(/^\$\{\{\s*|\s*\}\}$/g, "")
-    : JSON.stringify(workflow.concurrency.group);
+  // A pending manual approval cannot occupy the push queue or replace another
+  // pending approval, even if both dispatchers select the same lane.
+  const queue = (eventName, runId) =>
+    workflowCondition(workflow.concurrency.group, {
+      github: { event_name: eventName, run_id: runId },
+      format: (template, value) => template.replace("{0}", value),
+    });
   assert.equal(workflow.concurrency["cancel-in-progress"], false);
-  // Protected lanes keep their existing queue; launcher runs serialize by branch,
-  // even when a later dispatch selects a different commit on that branch.
-  for (const lane of workflow.on.workflow_dispatch.inputs.lane.options) {
-    for (const ref of ["refs/heads/main", "refs/heads/reviewed-keycloak"]) {
-      for (const sha of ["first-commit", "later-commit"]) {
-        assert.equal(
-          runInNewContext(group, {
-            inputs: { lane },
-            github: { ref, sha },
-            format: (template, value) => template.replace("{0}", value),
-          }),
-          ["dev-up-k3d", "skipper-prepared-git-installed"].includes(lane)
-            ? `full-integration-${lane}-${ref}`
-            : "full-integration",
-          `${lane}: ${ref} at ${sha}`,
-        );
-      }
+  const pushQueue = queue("push", "100");
+  const manualQueue = queue("workflow_dispatch", "101");
+  assert.equal(pushQueue, queue("push", "102"));
+  assert.notEqual(pushQueue, manualQueue);
+  assert.notEqual(manualQueue, queue("workflow_dispatch", "103"));
+
+  // Both event types acquire the same resource lock only after authorization.
+  const resourceQueues = new Set();
+  for (const lane of ["slack", "dev-up-k3d", "skipper-prepared-git-installed"]) {
+    const job = workflow.jobs[lane];
+    assert.equal(job.needs, "preflight");
+    assert.equal(job.concurrency["cancel-in-progress"], false);
+    const group = job.concurrency.group;
+    assert.ok(group.startsWith("full-integration-"));
+    if (lane === "slack") {
+      assert.doesNotMatch(group, /\$\{/);
+    } else {
+      assert.equal(group, ["full-integration", lane, "${{ github.ref }}"].join("-"));
     }
+    assert.ok(!resourceQueues.has(group));
+    resourceQueues.add(group);
   }
   // Exercise the hosted workflow input through the same selector that determines
   // which credentials to materialize and which real installation cells run.
