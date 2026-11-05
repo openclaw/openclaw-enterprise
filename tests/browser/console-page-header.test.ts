@@ -10,7 +10,7 @@ import {
   newPage,
   settledView,
 } from "./console-agents-browser-helpers.mjs";
-import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { restrict } from "../helpers/iam-grants.mjs";
 
 // The page header (UX plan D3, spec 3.2): collections show the Namespace selector as one compact

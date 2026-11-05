@@ -1,5 +1,9 @@
+import {
+  enterManualModel,
+  openAdvancedSettings,
+  waitForLiveControls,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 import type { Page } from "playwright";
 
@@ -7,24 +11,19 @@ import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/
 
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   detailUrl,
   fileBrowser,
+  focusedId,
   login,
   nativeValues,
   newPage,
+  shippedPreset,
 } from "./console-agents-browser-helpers.mjs";
-import {
-  enterManualModel,
-  openAdvancedSettings,
-  waitForLiveControls,
-} from "./console-agents-test-support.mjs";
 import { SAVED_CONFIGURATION_CHANGED } from "../helpers/refusal-text.mjs";
 
-const defaultCodexPreset = JSON.parse(
-  await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
-);
+const defaultCodexPreset = await shippedPreset("default-codex");
 
 // The Configuration editor's errors read as errors and its hints as hints, including after the
 // editor is rebuilt from a kept draft (finding 1940).
@@ -181,7 +180,6 @@ test("Create Agent: Reset template clears a JSON error; a primary or fallback mo
   assert.equal(await jsonError.isHidden(), true);
   assert.equal(await json.getAttribute("aria-invalid"), null);
 
-  const focusedId = () => page.evaluate(() => globalThis.document.activeElement?.id);
   // The selected model under the OpenAI prefix, which Codex does not run: the primary-model
   // mismatch, the most common one (finding 1951).
   const values = JSON.parse(template);
@@ -197,7 +195,7 @@ test("Create Agent: Reset template clears a JSON error; a primary or fallback mo
       { exact: true },
     )
     .waitFor();
-  assert.equal(await focusedId(), "configuration-json");
+  assert.equal(await focusedId(page), "configuration-json");
 
   values.agents.defaults.model = {
     primary,
@@ -211,5 +209,5 @@ test("Create Agent: Reset template clears a JSON error; a primary or fallback mo
       { exact: true },
     )
     .waitFor();
-  assert.equal(await focusedId(), "configuration-json");
+  assert.equal(await focusedId(page), "configuration-json");
 });

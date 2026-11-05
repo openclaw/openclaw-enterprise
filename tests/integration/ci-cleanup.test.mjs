@@ -7,9 +7,9 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
-import { restoreLaneImages } from "../../scripts/ci/lane-images.mjs";
+import { restoreLaneImages } from "../../scripts/ci/lane-images.ts";
 import { postgresSuperuserPassword, runPostgresAdmin } from "../../scripts/ci/postgres-admin.mjs";
-import { withStateLock } from "../../scripts/ci/state-lock.mjs";
+import { withStateLock } from "../../scripts/ci/state-lock.ts";
 import { commandCalls, writeCommand } from "../helpers/fake-commands.mjs";
 import { startFakePostgres } from "../helpers/fake-postgres-server.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
@@ -1388,4 +1388,85 @@ test("QA image cleanup reports an unavailable final inventory without inventing 
     changed: null,
     missing: null,
   });
+});
+
+// Test ownership decisions against Docker's inspect contract. The credentialed
+// first-Agent shards separately prove creation and removal of real resources.
+test("first-Agent registry cleanup refuses foreign ownership and replaced containers", async (t) => {
+  for (const scenario of [
+    "owned",
+    "absent-container",
+    "foreign-image",
+    "foreign-container",
+    "replaced-container",
+    "foreign-owner",
+  ]) {
+    const root = await fixture(t);
+    const prefix = "openclaw-ci-local-first-images-test";
+    const name = "openclaw-ci-first-images-test";
+    const containerId = "b".repeat(64);
+    const controllerImage = `127.0.0.1:5000/${name}/controller@sha256:${"d".repeat(64)}`;
+    const log = join(root, "calls.jsonl");
+    const container = {
+      Id: scenario === "replaced-container" ? "c".repeat(64) : containerId,
+      Config: {
+        Labels: {
+          "openclaw.dev/ci-owner": scenario === "foreign-container" ? "another-owner" : prefix,
+        },
+      },
+    };
+    const docker = await writeCommand(
+      join(root, "bin"),
+      "docker",
+      `
+import { appendFileSync } from 'node:fs';
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
+if (${JSON.stringify(scenario)} === 'absent-container' && args[0] === 'container' && args[1] === 'inspect') { console.error('No such container'); process.exit(1); }
+if (args[1] === 'inspect') { console.log(JSON.stringify([${JSON.stringify(container)}])); }
+else if (args[1] !== 'rm') { process.exit(99); }
+`,
+      { interpreter: process.execPath },
+    );
+    const statePath = join(root, "state.json");
+    await writeState(statePath, {
+      version: 1,
+      repositoryRoot,
+      prefix,
+      resources: [
+        {
+          id: "first-images",
+          kind: "first-agent-image-registry",
+          owner: scenario === "foreign-owner" ? "another-owner" : prefix,
+          name,
+          port: 5000,
+          containerId,
+          controllerImage:
+            scenario === "foreign-image"
+              ? controllerImage.replace(name, "another-repository")
+              : controllerImage,
+        },
+      ],
+    });
+    const result = runCleanup(statePath, { OCC_DOCKER_BIN: docker });
+    const calls = await readFile(log, "utf8").catch((error) => {
+      if (error.code === "ENOENT") {
+        return "";
+      }
+      throw error;
+    });
+    if (["owned", "absent-container"].includes(scenario)) {
+      assert.equal(result.status, 0, result.stderr);
+      await assert.rejects(readFile(statePath), { code: "ENOENT" });
+      assert.ok(calls.includes(JSON.stringify(["image", "rm", controllerImage])));
+      assert.equal(
+        calls.includes(JSON.stringify(["container", "rm", "--force", "--volumes", containerId])),
+        scenario === "owned",
+      );
+    } else {
+      assert.equal(result.status, 1, result.stderr);
+      assert.equal(JSON.parse(await readFile(statePath, "utf8")).resources.length, 1);
+      assert.doesNotMatch(calls, /"rm"/);
+    }
+  }
 });

@@ -1,5 +1,9 @@
+import {
+  openAdvancedSettings,
+  openCreateSecretDialog,
+  waitForCreateFormReads,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
 import type { Locator, Page } from "playwright";
 
@@ -11,25 +15,22 @@ import {
   SECRET_NAME_CONFLICT,
 } from "../helpers/refusal-text.mjs";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   apiRequests,
   consoleViewports,
   countInvalidEvents,
   detailUrl,
   fileBrowser,
+  focusedId,
   holdRequests,
   login,
   nativeValues,
   newPage,
   nonAuthWriteRequests,
+  shippedPreset,
 } from "./console-agents-browser-helpers.mjs";
-import {
-  openAdvancedSettings,
-  openCreateSecretDialog,
-  routeInstallationWithoutProvisioning,
-  waitForCreateFormReads,
-} from "./console-agents-test-support.mjs";
+import { routeInstallationWithoutProvisioning } from "./console-agents-test-support.mjs";
 
 // Form fields share one pattern (UX plan C3): a label, the control, its error, then its help.
 // The console checks required fields itself, so the browser's transient bubble never shows; it
@@ -38,12 +39,8 @@ import {
 
 const browser = fileBrowser();
 
-const defaultCodexPreset = JSON.parse(
-  await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
-);
-const standardCodexPreset = JSON.parse(
-  await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
-);
+const defaultCodexPreset = await shippedPreset("default-codex");
+const standardCodexPreset = await shippedPreset("standard-codex");
 // The app options of every test here: the default Codex Preset.
 const presets = { defaultPresets: [defaultCodexPreset] };
 const createConsoleAppFixture = (t: TestContext, options = {}) =>
@@ -106,9 +103,6 @@ const errorPlacement = (control: Locator) =>
       danger: globalThis.getComputedStyle(error).color === danger,
     };
   });
-
-const focusedId = (page: Page) =>
-  page.evaluate(() => globalThis.document.activeElement?.id ?? null);
 
 async function assertFieldError(
   page: Page,

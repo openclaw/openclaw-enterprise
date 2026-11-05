@@ -35,6 +35,12 @@ export interface PluginDriver extends Driver {
   /** Matches only source metadata authorized by OCC. The Driver never receives credential values. */
   readonly credentials?: {
     choices(sources: readonly CredentialSource[]): readonly AgentPluginCredentialSlot[];
+    /** Returns a reviewed MCP discovery target only for a compatible slot and source. */
+    mcpToolDiscovery?(
+      pluginId: string,
+      slotId: string,
+      source: CredentialSource,
+    ): { readonly endpoint: string } | undefined;
     validate(
       selections: PluginDesiredState,
       sources: readonly CredentialSource[],

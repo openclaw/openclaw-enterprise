@@ -908,11 +908,12 @@ test("the Agent Secret answer names the readable Secrets a binding save would be
   for (const secret of [app, spares[0]]) {
     await fixture.grantAgentSecretOperate(agent, secret.ref);
   }
-  // Every authorization check passes: this fixture's Compute Driver then refuses the topology,
-  // which is no authorization denial.
+  // Every authorization check passes: Kubernetes Compute then refuses the draft, which selects
+  // no model (finding 3022), and that is no authorization denial.
   const deniedBeforeDeploy = denials().length;
   const admitted = await fixture.request("POST", deployPath, { session: blind.session });
-  assertApiError(admitted, 409, "RESOURCE_CONFLICT");
+  assertApiError(admitted, 400, "INVALID_REQUEST");
+  assert.match(admitted.body.error.message, /agents\.defaults\.model is required/);
   assert.equal(denials().length, deniedBeforeDeploy);
   const deniedAfterDeploy = denials().length;
   // A reader who may not deploy or update gets no count.

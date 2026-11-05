@@ -1,18 +1,16 @@
 ---
 created: "2026-10-14"
-updated: "2026-10-27"
-last_updated_session: authoring-run/53dd6d74-5181-417f-934c-dd6c8ef6db2d
+updated: 2026-11-04
+last_updated_session: authoring-run/62d369a1-b693-49c9-badd-c92eeda35a6b
 ---
 
 # Protected credential request flow
 
 ## Overview
 
-A process in a dedicated Agent asks GitHub for a repository's identity. The
-supervisor sends the authorized request and holds the reply until OpenClaw
-Control Plane (OCC) approves what the process may receive. This flow describes
-the exchange required of the supervisor. The bundled legacy supervisor lacks
-it. See the [release cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
+A dedicated Agent requests GitHub repository identity. The supervisor holds the
+reply until OpenClaw Control Plane (OCC) permits release. The bundled legacy
+supervisor lacks this exchange; see the [release cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
 and [threat model](../reference/security/credential-proxy.md).
 
 ## Entry Points
@@ -248,12 +246,13 @@ stream. Recovery can renew before expiry. A shorter authenticated peer lifetime 
 and held responses despite later progress.
 Limits: five minutes idle, fifteen minutes total, 4 MiB and 16,384 events.
 
-For Responses, check client-assembled SDK output-part snapshots, assistant text across
-parts, items or deltas, and Codex's completed and streamed Plan views. Reject ambiguous
-order or indexes. Inspect function arguments as bounded JSON without recursively
-decoding strings. The
+`openai-responses.ts:isResponsesEvent` validates Responses envelopes, including
+response-only null local-tool metadata and the optional effective image policy.
+Invalid or unknown fields withhold all bytes. Protection scans SDK snapshots,
+joined assistant text and completed/streamed Codex Plans; ambiguous order or indexes
+refuse. Function arguments parse once as bounded JSON. The
 [supported profile](../reference/credential-sources/protected-inference.md#static-source-and-response-policy)
-preserves safe response bytes. The origin has already received the credential.
+preserves safe bytes. The origin already received the credential.
 
 Only this exchange can claim the response. `EgressSendReceipts.observe` atomically records
 the decision and any exact rejection fence without bodies, headers, credentials or handles.
@@ -270,11 +269,15 @@ exact attempt without retrying; returning bytes does not prove delivery.
 
 ### 5. Configure the regular Harness caller
 
-Before credential access, the provider normalizes the nonsecret endpoint and classifies
-the actual request. `apps/controller/src/drivers/compute/plugin-runtime.ts:codexToml` keeps local tools and ordinary Harness components,
-disables provider tools, and uses HTTP Responses without WebSockets or automatic retries.
-The runtime manifest preserves this profile. Its `--ignore-user-config` probe sets request
-and stream retries to zero and never repeats a timed-out protected probe.
+`apps/controller/src/drivers/compute/plugin-runtime.ts:codexToml` keeps local tools,
+disables provider tools, and selects HTTP Responses without WebSockets or retries.
+Its `--ignore-user-config` probe disables
+request/stream retries and never repeats a timed-out protected probe.
+
+`apps/controller/src/drivers/egress-proxy/openai-provider.ts:createOpenAiStaticProvider`
+checks [request forms](../reference/credential-sources/protected-inference.md#static-source-and-response-policy)
+through `openai-responses.ts:validResponsesRequest` before Secret resolution.
+Inline developer tools keep the local-tool restrictions.
 
 ### 6. Reduce the live credential policy
 
@@ -335,6 +338,14 @@ the origin and caller independently.
 None.
 
 ## Changelog
+
+- 2026-11-04 08:59: Validate effective image policy in streamed response envelopes. (authoring-run/62d369a1-b693-49c9-badd-c92eeda35a6b - 54ad9dad2610ed99ab8ce8134fb03d3b10ed6be4)
+
+- 2026-11-04 05:11: Separate response metadata validation. (authoring-run/aa69859c-0fd2-4688-97b0-b99dbbd65f95 - b9741c28dacdd6012790be431b97872de6611969)
+
+- 2026-11-04 01:56: Trace inline tool validation. (authoring-run/c172d58e-be9c-43c1-a44d-7853dfb585af - fdca6e74421067adc66dce4f141d153af0355f68)
+
+- 2026-10-30 10:12: Retain guarded OpenShell 0.1.6 preview. (authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008 - 319e24a88facddd38a883bdfd5b226652d2a6e26)
 
 - 2026-10-27 16:00: Document provider pinning. (authoring-run/53dd6d74-5181-417f-934c-dd6c8ef6db2d - e2dfabf042852adea8ed797b48aae122927d6226)
 

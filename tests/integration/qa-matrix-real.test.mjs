@@ -151,6 +151,13 @@ test(
                       !f.retained && f.pendingRepositories.size === 0,
                       "blocked by unresolved repository cleanup",
                     );
+                    if (selectedCell.scenarios.includes("codex-search-config")) {
+                      f.configuration.drivers.compute.configuration.runtime.modelProvider = {
+                        protocol: "openai-responses",
+                        baseUrl: process.env.OCC_TEST_QA_CODEX_MODEL_BASE_URL,
+                      };
+                      await f.saveInstallation(f.configuration);
+                    }
                     return true;
                   },
                 );
@@ -166,7 +173,9 @@ test(
                         "preset deployment and supported authentication",
                         async () => {
                           assert.ok(ready, "blocked by preset preparation failure");
-                          return createQaAgent(f, preset, browser?.nativeOrigin, suffix);
+                          return createQaAgent(f, preset, browser?.nativeOrigin, suffix, {
+                            apiKeyAuth: name === "codex-search-config",
+                          });
                         },
                       );
                       await work(agent, (title, action) =>
@@ -350,6 +359,80 @@ test(
                 ];
                 if (preset === "Codex") {
                   scenarios.push(
+                    [
+                      "codex-search-config",
+                      async (agent, step) => {
+                        const readConfig = async () =>
+                          (
+                            await f.execRole(agent, "agent", [
+                              "node",
+                              "-e",
+                              "process.stdout.write(require('node:fs').readFileSync(require('node:path').join(process.env.CODEX_HOME,'config.toml'),'utf8'))",
+                            ])
+                          ).stdout;
+                        let baseline;
+                        await step(
+                          "installed API-key Agent starts without a search declaration",
+                          async () => {
+                            baseline = await readConfig();
+                            assert.equal(
+                              baseline.includes("supports_standalone_web_search"),
+                              false,
+                            );
+                            assert.ok(baseline.includes('model_provider = "openai-compatible"'));
+                            assert.equal(agent.harnessAuth.method, "api_key");
+                          },
+                        );
+                        for (const enabled of [false, true]) {
+                          await step(
+                            `search declaration ${enabled} through supported stop and deploy`,
+                            async () => {
+                              await stopQaAgent(f, agent);
+                              f.configuration.drivers.compute.configuration.runtime.modelProvider.supportsStandaloneWebSearch =
+                                enabled;
+                              await f.saveInstallation(f.configuration);
+                              await f.deployAndWait(agent);
+                              const actual = await readConfig();
+                              const expected = enabled
+                                ? baseline.replace(
+                                    "supports_websockets = false\n",
+                                    "supports_websockets = false\nsupports_standalone_web_search = true\n",
+                                  )
+                                : baseline;
+                              assert.equal(
+                                actual === expected,
+                                true,
+                                "only the explicit capability declaration changes",
+                              );
+                            },
+                          );
+                        }
+                        await step(
+                          "enabled declaration survives another supported stop and deploy",
+                          async () => {
+                            const before = await f.pod(agent, "agent");
+                            const config = await readConfig();
+                            await stopQaAgent(f, agent);
+                            await f.deployAndWait(agent);
+                            assert.notEqual(
+                              (await f.pod(agent, "agent")).metadata.uid,
+                              before.metadata.uid,
+                            );
+                            assert.equal((await readConfig()) === config, true);
+                            await f.record("codex-search-config", {
+                              agentId: agent.id,
+                              revisionId: agent.revision.id,
+                              omitted: false,
+                              explicitFalse: false,
+                              explicitTrue: true,
+                              persistedAfterRedeploy: true,
+                              proof:
+                                "installed user configuration and native startup, not live search",
+                            });
+                          },
+                        );
+                      },
+                    ],
                     [
                       "calendar",
                       async (agent, step) => {

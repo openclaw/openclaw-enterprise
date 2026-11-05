@@ -1,12 +1,16 @@
+import {
+  openAdvancedSettings,
+  openCreateSecretDialog,
+  waitForCreateFormReads,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
 import type { BrowserContextOptions, Locator, Page } from "playwright";
 
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { RESOURCE_CONFLICT } from "../helpers/refusal-text.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   apiRequests,
   consoleViewports,
@@ -20,13 +24,9 @@ import {
   newPage,
   nonAuthWriteRequests,
   selectSecret,
+  shippedPreset,
 } from "./console-agents-browser-helpers.mjs";
-import {
-  openAdvancedSettings,
-  openCreateSecretDialog,
-  routeInstallationWithoutProvisioning,
-  waitForCreateFormReads,
-} from "./console-agents-test-support.mjs";
+import { routeInstallationWithoutProvisioning } from "./console-agents-test-support.mjs";
 
 // The forms #2907 left on the browser's check (finding 1979): Plugin selections, the
 // authentication source form and the workspace file editor. Each now checks its fields itself
@@ -37,9 +37,7 @@ import {
 
 const browser = fileBrowser();
 
-const defaultCodexPreset = JSON.parse(
-  await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
-);
+const defaultCodexPreset = await shippedPreset("default-codex");
 
 // The control's error as a reader meets it: under the control, inside its field, in the danger
 // colour, linked to the control, which has focus.

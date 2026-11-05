@@ -1,7 +1,7 @@
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { createServer, request as httpRequest } from "node:http";
 import test from "node:test";
 
@@ -728,6 +728,86 @@ test("Saved Agent source discovery denies missing grants and rechecks revocation
       fixture.policy.bindings.push(binding);
     }
   }
+  gateway.withSourceToken = withSourceToken;
+
+  await t.test(
+    "source token read is cancelled when the client disconnects",
+    { timeout: 10_000 },
+    async (t) => {
+      // The loops above restored both grants. Prove this same Agent still reaches
+      // the normal synthetic token producer and catalog before holding its next read.
+      const live = await fixture.request("POST", path, { session, body: {} });
+      assert.equal(live.status, 200, JSON.stringify(live.body));
+      assert.equal(tokenReads(), ++reads);
+      assert.equal(fixture.calls.length, 2);
+      assert.deepEqual(live.data, { plugins: [catalogEntry], nextCursor: "second-page" });
+
+      const producer = new EventEmitter();
+      const entered = once(producer, "entered", { signal: t.signal });
+      const finished = once(producer, "finished", { signal: t.signal });
+      // Cleanup can reach this wait after the test deadline has already expired.
+      entered.catch(() => {});
+      finished.catch(() => {});
+      const resume = Promise.withResolvers();
+      let started = false;
+      let cancelled = false;
+      let client;
+      t.mock.method(gateway, "withSourceToken", async (context, use) => {
+        started = true;
+        producer.emit("entered", context.signal);
+        try {
+          await resume.promise;
+          // Return a token despite cancellation to test OCC's late callback guard too.
+          cancelled = context.signal.aborted;
+          return await withSourceToken(context, use);
+        } finally {
+          producer.emit("finished");
+        }
+      });
+      try {
+        const incoming = once(fixture.app.server, "request", { signal: t.signal });
+        client = httpRequest(fixture.origin + path, {
+          method: "POST",
+          headers: authenticatedHeaders(session, { "content-type": "application/json" }),
+          agent: false,
+        });
+        const result = once(client, "error", { signal: t.signal });
+        result.catch(() => {});
+        client.on("response", (reply) => reply.resume());
+        client.end(JSON.stringify({}));
+        const [raw, response] = await incoming;
+        const [signal] = await entered;
+        assert.ok(signal instanceof AbortSignal);
+        assert.equal(signal.aborted, false);
+        assert.equal(raw.readableEnded, true);
+        assert.equal(raw.complete, true);
+        const closed = once(response, "close", { signal: t.signal });
+        client.destroy();
+        await closed;
+        assert.equal(response.writableEnded, false);
+        // The actual server close must abort the source read, before its own timeout.
+        assert.equal(
+          signal.aborted,
+          true,
+          "source token read signal must abort on HTTP disconnect",
+        );
+        assert.equal((await result)[0].code, "ECONNRESET");
+        resume.resolve();
+        await finished;
+        assert.equal(cancelled, true, "the held producer saw the real source-read signal abort");
+        assert.equal(tokenReads(), reads + 1, "the late callback did yield a fixture token");
+        assert.equal(fixture.calls.length, 2, "a late source token must not reach discovery");
+      } finally {
+        // Release the producer even on the decisive red assertion; all event waits
+        // share the native test deadline so cleanup cannot remain held indefinitely.
+        resume.resolve();
+        client?.destroy();
+        if (started) {
+          await finished;
+        }
+      }
+    },
+  );
 });
 
 test("Saved Agent plugin discovery rechecks Secret authority after the backend read", async (t) => {
@@ -1050,6 +1130,23 @@ test("Saved Agent uses a credential-free curated catalog for an API-key Codex Ag
   });
   assert.equal(details.status, 200, JSON.stringify(details.body));
   assert.deepEqual(details.data, linear);
+  // The id the list just returned names the same entry; it is not a plugin the Driver lacks.
+  const byListedId = await fixture.request("POST", `${path}/details`, {
+    session,
+    body: { pluginId: linear.id },
+  });
+  assert.equal(byListedId.status, 200, JSON.stringify(byListedId.body));
+  assert.deepEqual(byListedId.data, linear);
+  // An id without its marketplace stays unknown, and the refusal names the listed id.
+  const unversioned = await fixture.request("POST", `${path}/details`, {
+    session,
+    body: { pluginId: "codex-plugin:linear" },
+  });
+  assertApiError(unversioned, 400, "INVALID_REQUEST");
+  assert.match(
+    unversioned.body.error.message,
+    /does not offer: codex-plugin:linear\. Use codex-plugin:linear@openai-curated-remote\.$/,
+  );
   assert.equal(secretReads(), 0);
 
   const embedded = await fixture.createAgent(
@@ -1728,10 +1825,14 @@ test("Curated discovery admits plugins with skills without provider I/O and save
   assert.ok(notion);
   assert.notEqual(notion.available, false);
   assert.equal(notion.selectableWithoutTools, true);
-  assert.equal(
-    (await fixture.request("POST", `${path}/details`, { body: { pluginId: "unknown" } })).status,
-    503,
-  );
+  // An unknown ID is the caller's error, named in the refusal (finding 2790); a cursor
+  // on the single-page catalog is still an invalid catalog response.
+  const unknown = await fixture.request("POST", `${path}/details`, {
+    body: { pluginId: "unknown" },
+  });
+  assert.equal(unknown.status, 400);
+  assert.equal(unknown.body.error.code, "INVALID_REQUEST");
+  assert.match(unknown.body.error.message, /\(codex-plugin\) does not offer: unknown\./);
   assert.equal((await fixture.request("POST", path, { body: { cursor: "unknown" } })).status, 503);
 
   // The exact selected ID and policy enter the real Agent and immutable revision path.

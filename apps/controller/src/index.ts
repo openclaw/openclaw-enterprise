@@ -34,6 +34,7 @@ import {
   type IAMDriver,
   type Installation,
   type OccApiRoute,
+  type DiscoverSavedAgentPluginDetailsBody,
   type PermissionAction,
   type ResourceKind,
   type ResourceRef,
@@ -96,6 +97,7 @@ import {
   type PreparedAuthAccount,
 } from "./auth/index.ts";
 import { CONSOLE_CONTENT_SECURITY_POLICY, readConsoleAsset } from "./console-assets.ts";
+import { listManagedMcpToolNames } from "./connections/mcp-tool-discovery.ts";
 import type { ConsoleTheme } from "./console-theme.ts";
 import {
   ControllerWorkspaceFileUnknownOutcomeError,
@@ -186,6 +188,7 @@ export interface ControllerAppOptions {
   readonly auth: ControllerAuth;
   readonly workspaceFilesAccess?: ControllerWorkspaceFilesAccess;
   readonly workspaceFileRequestTimeoutMs?: number;
+  readonly readManagedMcpToolNames?: typeof listManagedMcpToolNames;
   readonly nativeAdmin?: NativeAdminAccessConfig;
   readonly nativeAdminGatewayApiKey?: () => Promise<string>;
   /**
@@ -214,6 +217,7 @@ export interface ControllerApp {
 }
 
 interface RequiredPermission {
+  readonly phase?: "fresh_admission";
   readonly action: PermissionAction;
   readonly resourceKind: ResourceKind;
   readonly scope: "requested" | "installation" | "namespace" | "each_returned" | "request_body";
@@ -539,6 +543,22 @@ function operationTarget(
 }
 
 function requiredPermissions(operation: OccApiRoute): readonly RequiredPermission[] {
+  if (operation.operationId === "recoverAgentFirstDeployment") {
+    return [
+      { action: "deploy", resourceKind: "agent", scope: "requested" },
+      { action: "read", resourceKind: "configuration", scope: "requested" },
+    ];
+  }
+  if (operation.operationId === "deployAgentFirst") {
+    return requiredPermissions(
+      occApiRoutes.find((route) => route.operationId === "deployAgent")!,
+    ).map((permission) =>
+      permission.resourceKind === "configuration" ||
+      (permission.resourceKind === "agent" && permission.action === "deploy")
+        ? permission
+        : { ...permission, phase: "fresh_admission" as const },
+    );
+  }
   const permission = {
     action: operation.iamAction,
     resourceKind: operation.resourceKind,
@@ -997,6 +1017,18 @@ function permissionDescription(
   permissions: readonly RequiredPermission[],
   operation?: OccApiRoute,
 ): string {
+  if (operation?.operationId === "recoverAgentFirstDeployment") {
+    return "Requires deploy permission on the exact Agent and read permission on the reviewed Configuration named in the request path. These current permissions are checked for both receipts and misses. Recovery performs no admission or credential preparation.";
+  }
+  if (operation?.operationId === "deployAgentFirst") {
+    return (
+      "Fresh admission has the same permissions and conditional access requirements as ordinary deployment. Permissions marked fresh_admission apply only when creating the first revision. Recovery of a matching admission requires only current deploy permission on the exact Agent and read permission on the reviewed Configuration. " +
+      permissionDescription(
+        permissions,
+        occApiRoutes.find((route) => route.operationId === "deployAgent")!,
+      )
+    );
+  }
   if (
     operation?.operationId === "getAgentProvisioning" ||
     operation?.operationId === "retryAgentProvisioning"
@@ -1111,10 +1143,12 @@ function permissionDescription(
 function clientInstallation(
   installation: Readonly<Installation>,
   computeDriver: Readonly<ComputeDriver> | undefined,
+  nativeAdminEnabled: boolean,
 ): Record<string, unknown> {
   const agentProvisioning = computeDriver?.agentProvisioning;
   const capabilities = {
     ...installation.capabilities,
+    ...(nativeAdminEnabled ? { nativeAdmin: true } : {}),
     ...(agentProvisioning === undefined
       ? {}
       : {
@@ -1790,6 +1824,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     ...resourceHandlers,
     ...sandboxPolicyHandlers,
     ...createAgentHandlers({
+      nativeAdmin: options.nativeAdmin,
+      publicOrigin,
+      installationId,
       resolveHarness: options.resolveHarness,
       requireCredentialCsrf: (request) => requireWorkspaceFileCsrf(request, true),
       rejectDeployment: (request, context) =>
@@ -2174,7 +2211,11 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         });
         controller = created;
         reply.status(201).send({
-          data: clientInstallation(created.installation, options.computeDriver),
+          data: clientInstallation(
+            created.installation,
+            options.computeDriver,
+            options.nativeAdmin?.enabled === true,
+          ),
           meta: { requestId: request.id },
         });
         return;
@@ -2200,6 +2241,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         data: clientInstallation(
           await controller.getInstallation(context.actorId),
           options.computeDriver,
+          options.nativeAdmin?.enabled === true,
         ),
         meta: { requestId: request.id },
       });
@@ -2359,6 +2401,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           namespaceId,
           body?.harnessId as string,
           agentId,
+          (source, phase) =>
+            event(
+              operation,
+              request,
+              phase === "session_pending"
+                ? { kind: "agent", id: agentId ?? namespaceId, namespaceId }
+                : source.ref,
+              "mutation",
+              context,
+              undefined,
+              { outcome: "success", details: { phase, sourceId: source.id } },
+            ),
         );
       } else if (operation.operationId.startsWith("poll")) {
         result = await controller.pollAgentDeviceAuthorization(
@@ -2376,7 +2430,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         );
       }
       // Clients poll on the provider interval; audit the transition, not every pending poll.
-      if (result?.status !== "pending" || operation.operationId.startsWith("start")) {
+      if (!operation.operationId.startsWith("start") && result?.status !== "pending") {
         await options.auditSink.append(
           event(
             operation,
@@ -2489,13 +2543,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         context.actorId,
         namespaceId,
         params.agentId as string,
-        {
-          pluginId: body?.pluginId as string,
-          ...(body?.credentialSource === undefined
-            ? {}
-            : { credentialSource: body.credentialSource as CredentialSourceReference }),
-        },
+        body as DiscoverSavedAgentPluginDetailsBody,
         pluginDiscoveryRequestSignal(reply),
+        options.readManagedMcpToolNames ?? listManagedMcpToolNames,
       );
       reply.header("cache-control", "no-store");
       reply.send({ data: plugin, meta: { requestId: request.id } });

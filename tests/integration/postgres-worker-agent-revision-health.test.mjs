@@ -1,8 +1,9 @@
 import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
+import { closeWorkerComposition } from "../../apps/controller/src/worker/shutdown.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { writeFile } from "node:fs/promises";
+import { stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import test, { after } from "node:test";
@@ -828,5 +829,169 @@ test(
       events.some(({ event }) => event === "worker.health"),
       false,
     );
+  },
+);
+
+// Finding 2997: worker.mjs removed its readiness marker and closed the worker's parts while the
+// worker loop still ran. A health check in flight then rewrote the marker, which outlived the
+// process, and the loop could claim work after the Git owner had closed. Shutdown now stops the
+// loop and waits for its health checks before it removes the marker and closes the parts, and
+// it closes the worker's database pool last.
+
+// The revision fixture with worker.mjs's readiness writer. `holdNextHealth()` holds the next
+// health check before its write until the returned tick is released.
+async function readinessFixture(context, options = {}) {
+  const directory = await temporaryDirectory(context, "occ-worker-readiness-");
+  const readinessPath = join(directory, "ready");
+  let held;
+  const fixture = await setup(context, {
+    ...options,
+    async onHealthy() {
+      const tick = held;
+      held = undefined;
+      if (tick !== undefined) {
+        tick.entered.resolve();
+        await tick.release.promise;
+      }
+      await writeFile(readinessPath, `${Date.now()}\n`, { encoding: "utf8", mode: 0o600 });
+    },
+  });
+  return {
+    fixture,
+    readinessPath,
+    holdNextHealth() {
+      held = { entered: Promise.withResolvers(), release: Promise.withResolvers() };
+      return held;
+    },
+  };
+}
+
+// worker.mjs's shutdown, with parts that record their close in `events`. `onFirstPart` runs
+// when the first part closes.
+function shutdownWithParts(worker, readinessPath, events, onFirstPart = () => {}) {
+  const step = (name) => async () => {
+    onFirstPart();
+    events.push(name);
+  };
+  return closeWorkerComposition({
+    readinessPath,
+    repositoryGitTransport: { close: step("transport") },
+    preparedRepositoryGit: { close: step("prepared") },
+    receiptServer: { close: step("receipt") },
+    closeMetrics: step("metrics"),
+    preparedGitHub: { close: step("github") },
+    worker,
+  });
+}
+
+async function assertHeldHealthEndedBeforeParts(events, readinessPath) {
+  // The held check finished before any part closed, and the worker closed after them all.
+  assert.deepEqual(events, [
+    "worker.health",
+    "transport",
+    "prepared",
+    "receipt",
+    "metrics",
+    "github",
+    "worker.stopped",
+  ]);
+  // The marker that check wrote is gone, so a stopped worker never reports ready.
+  await assert.rejects(stat(readinessPath), { code: "ENOENT" });
+}
+
+// Records the worker's health and stop events; `onEvent` sees every event.
+function recordEvents(events, onEvent = () => {}) {
+  return (event) => {
+    if (event.event === "worker.health" || event.event === "worker.stopped") {
+      events.push(event.event);
+    }
+    onEvent(event);
+  };
+}
+
+test(
+  "worker shutdown waits for the health check in flight before it removes readiness and closes parts",
+  requiresPostgres,
+  async (context) => {
+    const { fixture, readinessPath, holdNextHealth } = await readinessFixture(context);
+    const events = [];
+    await fixture.start(fixture.compute, { emit: recordEvents(events) });
+    const worker = [...fixture.database.workers].at(-1);
+    await waitFor("the first readiness marker", async () =>
+      (await stat(readinessPath).catch(() => undefined)) === undefined ? undefined : true,
+    );
+
+    // The next idle health check (at most a second away) is now held before its write.
+    const tick = holdNextHealth();
+    try {
+      await tick.entered.promise;
+      events.length = 0;
+      const closing = shutdownWithParts(worker, readinessPath, events);
+      tick.release.resolve();
+      await closing;
+    } finally {
+      tick.release.resolve();
+    }
+    await assertHeldHealthEndedBeforeParts(events, readinessPath);
+  },
+);
+
+// A claim's lease heartbeat starts health checks that the worker loop does not await, so one can
+// still be in flight when the aborted loop ends.
+test(
+  "worker shutdown waits for a claim's background health check before it removes readiness",
+  requiresPostgres,
+  async (context) => {
+    // Renewals every 1.5 s, each able to start a health check once a second has passed.
+    const { fixture, readinessPath, holdNextHealth } = await readinessFixture(context, {
+      leaseDurationMs: 4_500,
+    });
+    const { candidate } = await fixture.admitInitialRevision("background-health");
+    const preparing = Promise.withResolvers();
+    const releaseCompute = Promise.withResolvers();
+    const passEnded = Promise.withResolvers();
+    const events = [];
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision(revision, deploymentContext) {
+          preparing.resolve();
+          await releaseCompute.promise;
+          return fixture.compute.prepareRevision(revision, deploymentContext);
+        },
+      },
+      {
+        emit: recordEvents(events, ({ event }) => {
+          if (["worker.pass-interrupted", "worker.completed", "worker.error"].includes(event)) {
+            passEnded.resolve();
+          }
+        }),
+      },
+    );
+    const worker = [...fixture.database.workers].at(-1);
+    await preparing.promise;
+    await fixture.work(candidate, "claimed");
+
+    // Compute holds the pass, so only the claim's heartbeat starts health checks: hold the next.
+    const tick = holdNextHealth();
+    try {
+      await tick.entered.promise;
+      events.length = 0;
+      // A shutdown that does not wait for that check closes the first part as soon as the
+      // pass ends, which releases the check after the marker's removal. A shutdown that waits
+      // gets it released 250 ms after the pass ends.
+      const closing = shutdownWithParts(worker, readinessPath, events, () =>
+        tick.release.resolve(),
+      );
+      releaseCompute.resolve();
+      await passEnded.promise;
+      await delay(250);
+      tick.release.resolve();
+      await closing;
+    } finally {
+      tick.release.resolve();
+      releaseCompute.resolve();
+    }
+    await assertHeldHealthEndedBeforeParts(events, readinessPath);
   },
 );

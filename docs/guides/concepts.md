@@ -95,5 +95,5 @@ the model service and model, not an Installation Backend.
 
 ## Next steps
 
-[Set up the platform locally](quickstart.md), then [deploy your first Agent](first-agent.md).
+[Set up OCE and an OpenShell Codex Agent locally](deploy/local-setup.md).
 For production, start with the [deployment guide](deploy.md).

@@ -203,6 +203,7 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
 function sandboxPolicyContract(candidate: Record<string, unknown>): boolean {
   const policy = candidate.networkPolicy;
   const methods = [
+    "admitProtectedCodexArtifactPolicy",
     "admitNetworkPolicy",
     "observeNetworkPolicy",
     "applyNetworkPolicy",
