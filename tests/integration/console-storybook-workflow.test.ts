@@ -992,8 +992,47 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
       assert.partialDeepStrictEqual(await (await request(agentPath)).json(), {
         data: { activeRevisionId: null, extraSetting: { retained: true } },
       });
-      assert.equal((await request(agentPath, "DELETE")).status, 202);
+      const deletion = await request(agentPath, "DELETE");
+      assert.equal(deletion.status, 202);
+      const { meta } = await deletion.json();
+      assert.equal(typeof meta.deletionReceiptId, "string");
+      const statusPath = `${agentPath}/deletion-status?receiptId=${meta.deletionReceiptId}`;
+      // The preview keeps the Agent while simulated cleanup progresses. An unrelated receipt
+      // must neither disclose that status nor advance this operation.
+      assert.equal(
+        (await request(`${agentPath}/deletion-status?receiptId=${id("aud", 999)}`)).status,
+        404,
+      );
+      for (const status of ["queued", "running", "deleted"]) {
+        if (status !== "deleted") {
+          const pending = await request(agentPath);
+          assert.equal(pending.status, 200);
+          assert.partialDeepStrictEqual(await pending.json(), { data: { status: "deleting" } });
+        }
+        const progress = await request(statusPath);
+        assert.equal(progress.status, 200);
+        assert.partialDeepStrictEqual(await progress.json(), {
+          data: {
+            agentId: id("agt", 100),
+            namespaceId: namespace,
+            receiptId: meta.deletionReceiptId,
+            status,
+          },
+        });
+      }
       assert.equal((await request(agentPath)).status, 404);
+      // Completion remains readable through the exact receipt after the Agent is removed.
+      assert.partialDeepStrictEqual(await (await request(statusPath)).json(), {
+        data: { status: "deleted" },
+      });
+      assert.equal(
+        (
+          await request(
+            `agents/${id("agt", 1)}/deletion-status?receiptId=${meta.deletionReceiptId}`,
+          )
+        ).status,
+        404,
+      );
     },
   );
 
