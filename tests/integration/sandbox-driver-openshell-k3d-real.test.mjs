@@ -90,6 +90,7 @@ assert.ok(
 );
 const networkPolicyOnly = selectedScenario === "network-policy";
 const pluginInstallOnly = selectedScenario === "plugin-install";
+const pluginImportOnly = ["plugin-import", "plugin-import-mcp"].includes(selectedScenario);
 const installationPluginId =
   process.env.OCC_TEST_CODEX_INSTALL_PLUGIN_ID ?? "codex-plugin:linear@openai-curated-remote";
 const pluginArtifactHosts = Object.freeze([
@@ -2117,6 +2118,10 @@ async function prepareProductionInstallation(
     openShellRuntimeClass,
     cluster: "k3d-openshell-sandboxdriver",
   });
+  if (pluginImportOnly) {
+    // Production loads package inspection and admission only for the selected Plugin Driver.
+    configuration.drivers.plugin = { id: "occ-plugin", configuration: {} };
+  }
   if (pluginInstallOnly) {
     configuration.drivers.plugin = {
       id: "codex-plugin",
@@ -2303,6 +2308,9 @@ async function prepareProductionInstallation(
   const initialWorkerDrivers = await loadWorkerDrivers();
   const { workerDrivers } = initialWorkerDrivers;
   let { diagnosticWorkerDrivers } = initialWorkerDrivers;
+  if (pluginImportOnly) {
+    assert.equal(drivers.pluginDriver?.id, "occ-plugin");
+  }
   assert.equal(drivers.sandboxDriver?.capability, "sandbox");
   assert.equal(drivers.sandboxDriver?.id, configuration.drivers.sandbox.id);
   assert.equal(drivers.credentialGatewayDriver?.capability, "credential_gateway");
@@ -2550,6 +2558,11 @@ async function prepareProductionInstallation(
       : nativeCodexConfiguration(workspaceGateway.nativeOptions.gatewayAuth);
   if (controlUiOrigin !== undefined) {
     nativeConfiguration.gateway.controlUi = { enabled: true, allowedOrigins: [controlUiOrigin] };
+  }
+  if (selectedScenario === "plugin-import") {
+    // Make the uploaded archive eligible under native config so we exercise the operator guard.
+    (nativeConfiguration.skills ??= {}).install ??= {};
+    nativeConfiguration.skills.install.allowUploadedArchives = true;
   }
   const agentConfiguration = await request("POST", `/namespaces/${namespaceId}/configurations`, {
     kind: "agent",
@@ -7453,6 +7466,29 @@ async function assertImportedNativeSkill(context, topology) {
     });
   }
 
+  // The OCE-owned configuration allows archives and this authenticated operator can read it.
+  // The managed Gateway must refuse both acquisition paths before either can alter the workspace.
+  assert.equal(topology.revision.gatewayManagedMode, true);
+  client = await connectGatewayOperator(context, topology, "http://127.0.0.1");
+  const { config } = await client.request("config.get", {});
+  assert.equal(config.skills.install.allowUploadedArchives, true);
+  const slug = `managed-install-${randomUUID()}`;
+  const denied = {
+    code: "UNAVAILABLE",
+    message: "Skill installation and publication are disabled on this managed Gateway.",
+  };
+  await assert.rejects(
+    client.request("skills.upload.begin", { kind: "skill-archive", slug, sizeBytes: 1 }),
+    denied,
+  );
+  await assert.rejects(
+    client.request("skills.install", { agentId: "main", source: "clawhub", slug }),
+    denied,
+  );
+  const status = await client.request("skills.status", { agentId: "main", refresh: true });
+  assert.ok(!status.skills.some((entry) => entry.name === slug));
+  await worker("test", "!", "-e", join(workspaceSkills, slug));
+
   const first = `PLUGIN_FIRST_${randomUUID()}`;
   const second = `PLUGIN_SECOND_${randomUUID()}`;
   const v1 = await publish(first);
@@ -8472,9 +8508,6 @@ test(
     const source = await topology.request("GET", configPath);
     assert.equal(source.status, 200, JSON.stringify(source.error));
     const values = structuredClone(source.data.values);
-    // Permit uploaded archives in native config so the managed Gateway itself must refuse them.
-    (values.skills ??= {}).install ??= {};
-    values.skills.install.allowUploadedArchives = true;
     values.tools ??= {};
     values.tools.gatewayPolicy = {
       ...structuredClone(proof.effectivePolicy.gatewayPolicy),
@@ -8536,28 +8569,6 @@ test(
     client = await connectGatewayOperator(context, topology, controlUiOrigin);
     const currentConfig = await client.request("config.get", {});
     assert.deepEqual(currentConfig.config.tools.gatewayPolicy, values.tools.gatewayPolicy);
-    const slug = `managed-install-${randomUUID()}`;
-    const denied = {
-      code: "UNAVAILABLE",
-      message: "Skill installation and publication are disabled on this managed Gateway.",
-    };
-    await assert.rejects(
-      client.request("skills.upload.begin", { kind: "skill-archive", slug, sizeBytes: 1 }),
-      denied,
-    );
-    await assert.rejects(
-      client.request("skills.install", { agentId: "main", source: "clawhub", slug }),
-      denied,
-    );
-    const status = await client.request("skills.status", { agentId: "main", refresh: true });
-    assert.ok(!status.skills.some((skill) => skill.name === slug));
-    // Read the worker's actual workspace to catch publication even if discovery omits the skill.
-    await execPod(topology.harnessPod, topology.placement, [
-      "test",
-      "!",
-      "-e",
-      join(workspaceMountPath, "skills", slug),
-    ]);
     await assert.rejects(
       client.request("cron.run", { id: humanCommandJob.id, mode: "force" }),
       /OPENCLAW_DISABLE_CRON_HOST_EXECUTION/,
@@ -8696,7 +8707,7 @@ test(
       const topology = await prepareProductionInstallation(context, {
         harnessId: selectedHarness,
         withImportedMcp: selectedScenario === "plugin-import-mcp",
-        ...(["plugin-import", "plugin-import-mcp"].includes(selectedScenario)
+        ...(pluginImportOnly
           ? {
               withOAuthToolSources: false,
               enableCompatibilityBridges: false,

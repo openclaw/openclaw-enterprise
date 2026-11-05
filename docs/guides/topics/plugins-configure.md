@@ -8,7 +8,7 @@ Codex Agents use a different catalog and approval policy; see
 
 ## Import a plugin for a dedicated OpenClaw Agent
 
-Open a dedicated OpenClaw Agent on Kubernetes, then **Create new version** → **Plugins** → **Import plugin**. A Namespace administrator with `namespace:publish_plugins` can publish to that Namespace. Installation administrators can publish to any Namespace they administer.
+The Installation must select the [OpenClaw Plugin Driver](../../reference/drivers/plugin-bundled.md) (`drivers.plugin.id: occ-plugin`). Open a dedicated OpenClaw Agent on Kubernetes, then **Create new version** → **Plugins** → **Import plugin**. A Namespace administrator with `namespace:publish_plugins` can publish to that Namespace. Installation administrators can publish to any Namespace they administer.
 
 1. Choose a tar or gzip-compressed tar package of up to 16 MiB. For a marketplace archive, also enter the name of the entry it contains.
 2. Select **Preview package**. Review the skills, hosted MCP servers and excluded components. **Publish to Namespace** makes that release available to Agents in the same Namespace.
