@@ -1202,7 +1202,8 @@ try {
         // The real managed read-only response has activePermissionProfile: null.
         // Exact text also excludes arbitrary profile values from the diagnostic.
         assert.equal(error.message, "thread/start: Codex did not grant the requested permission profile (requestSource=" +
-          source + ", selectors=" + selectors + ", comparison=field-null)");
+          source + ", selectors=" + selectors + ", comparison=field-null). " +
+          "Ask your workspace administrator to verify profile availability and runtime compatibility before retrying.");
         return true;
       });
     }
@@ -1229,7 +1230,8 @@ try {
       await assert.rejects(peer.request("thread/start", { ...request, permissions: ":workspace" },
         { timeoutMs: 5000 }), (error) => {
         assert.equal(error.message, "thread/start: Codex did not grant the requested permission profile " +
-          "(requestSource=permissions, selectors=single, comparison=field-absent)");
+          "(requestSource=permissions, selectors=single, comparison=field-absent). " +
+          "Ask your workspace administrator to verify profile availability and runtime compatibility before retrying.");
         return true;
       });
     } finally {
@@ -1917,7 +1919,7 @@ assert.equal(provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256, ${
     )});
 assert.deepEqual(provenance.patches, {
   "openclaw-codex-read-only-paths.patch": provenance.openclawBridgePatchSha256,
-  "openclaw-codex-full-access-profile.patch": ${historicalCodex} ? "7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a" : "3022b708a6499e0efc7aa9a08b3e01676fb44cf4080bf3eddb8c6877d68d668e",
+  "openclaw-codex-full-access-profile.patch": ${historicalCodex} ? "7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a" : "5112e56cf2e436abf794ad538774d72327eb2a95e111b7400db4caa970328ebe",
   "openclaw-required-worker-authority-regression.patch": provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256,
   "openclaw-google-worker-placeholder.patch": "55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31",
   ...(${historicalCodex} ? {

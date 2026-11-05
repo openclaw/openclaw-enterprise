@@ -1,7 +1,7 @@
 diff --git a/extensions/codex/src/app-server/client.ts b/extensions/codex/src/app-server/client.ts
 --- a/extensions/codex/src/app-server/client.ts
 +++ b/extensions/codex/src/app-server/client.ts
-@@ -352,7 +352,78 @@
+@@ -352,7 +352,80 @@
          ),
        );
      }
@@ -72,7 +72,9 @@ diff --git a/extensions/codex/src/app-server/client.ts b/extensions/codex/src/ap
 +          method +
 +            ": Codex did not grant the requested permission profile" +
 +            " (requestSource=" + requestSource +
-+            ", selectors=" + selectors + ", comparison=" + comparison + ")",
++            ", selectors=" + selectors + ", comparison=" + comparison + "). " +
++            "Ask your workspace administrator to verify profile availability and " +
++            "runtime compatibility before retrying.",
 +        );
 +      }
 +      return result;
