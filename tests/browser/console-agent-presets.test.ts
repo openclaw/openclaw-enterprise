@@ -47,7 +47,7 @@ import {
   backendFixtures,
 } from "../helpers/console-app.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
-import { consoleStorage } from "../helpers/console-storage.mjs";
+import { consoleStorage } from "../helpers/console-storage.ts";
 import {
   apiRequests,
   consoleViewports,
