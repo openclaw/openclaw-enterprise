@@ -1,16 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
-import {
-  chmod,
-  copyFile,
-  mkdir,
-  mkdtemp,
-  readFile,
-  rm,
-  symlink,
-  writeFile,
-} from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,6 +9,7 @@ import { after } from "node:test";
 
 import { commandPath, composeConfigurationProvider } from "./compose.mjs";
 import { bashString, commandShim, startCommandServer } from "./fixture-command-server.mjs";
+import { readJsonLines as readJsonLinesFile } from "./json-lines.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
@@ -27,6 +19,9 @@ const mismatchedInstallationId = "ins_9ce0e58a-415d-485e-90c2-20c3c5572505";
 const defaultRuntimeImage = "openclaw-enterprise-runtime:quickstart";
 const bashExecutable = "/bin/bash";
 
+// Callers isolate scenario environments in fixture.env and leave the parent PATH,
+// cwd and provider executables unchanged. Reuse discovery, never scenario renders.
+let configurationProvider;
 let cliBuild;
 let cliDirectory;
 after(async () => {
@@ -580,15 +575,15 @@ function lifecycleCommand(fake, invocation, io) {
             ["openclaw-development/import-b9b4e5950649:occ-dev-owned", "c".repeat(64)],
             [
               "openclaw-development/openshell-gateway:occ-dev-owned",
-              "ca0bc15a045017ee20bfab682f1a561eca6e6c6ed7d021d20641da24aaa6dfb6",
+              "f0b36dba21d282c52e498c25289658cfd6cd4f343b0069fde5609e25b002cdea",
             ],
             [
               "openclaw-development/openshell-sandbox:occ-dev-owned",
-              "e9adf9ecde328122414ad2ee8c6fc5d5b389e4cf168daf4357c46f5a77d55851",
+              "1038eb5c1f191fa3c34684fd7041b891c78ec570979d487f36e06e08f91bfb63",
             ],
             [
               "openclaw-development/openshell-supervisor:occ-dev-owned",
-              "fabcd01f656e9d23df4386f82e80b4f48b90f3452d7d5c58889007643a069161",
+              "ce859a7d77ee515d3fe0b3c7dc61286516f402eb1d25c761d806d9ae5ed96c0b",
             ],
           ]
             .map(
@@ -812,6 +807,11 @@ async function createFixture(t, options = {}) {
   const fixtureRepository = join(directory, "repository");
   await mkdir(join(fixtureRepository, "scripts"), { recursive: true });
   await mkdir(join(fixtureRepository, "bin"), { recursive: true });
+  await mkdir(join(fixtureRepository, "deploy/runtime"), { recursive: true });
+  await copyFile(
+    join(repository, "deploy/runtime/openclaw-source.json"),
+    join(fixtureRepository, "deploy/runtime/openclaw-source.json"),
+  );
   for (const script of ["dev-up", "dev-down"]) {
     const destination = join(fixtureRepository, "scripts", script);
     await copyFile(join(repository, "scripts", script), destination);
@@ -826,7 +826,7 @@ async function createFixture(t, options = {}) {
   await mkdir(bin);
   const engine = options.engine ?? "docker";
   const engineLog = join(directory, `${engine}.log`);
-  const provider = composeConfigurationProvider();
+  const provider = (configurationProvider ??= composeConfigurationProvider());
   const cli = await developmentCli();
   const fake = { directory, engine, options, cli, lifecycle: false };
   fake.server = await startCommandServer({
@@ -1072,20 +1072,10 @@ function runDevDown(env) {
   });
 }
 
-async function readJsonLines(path) {
-  try {
-    const content = await readFile(path, "utf8");
-    return content
-      .trim()
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line));
-  } catch (error) {
-    if (error.code === "ENOENT") {
-      return [];
-    }
-    throw error;
-  }
+// A dev-up log the fixture may not have written yet: a missing file is no records, and blank
+// lines are skipped.
+function readJsonLines(path) {
+  return readJsonLinesFile(path, { missingOk: true, skipBlank: true });
 }
 
 function composeInvocations(logs) {

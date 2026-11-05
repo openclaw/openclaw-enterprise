@@ -7,19 +7,44 @@ import type {
   SecretMetadata,
 } from "@openclaw-enterprise/contracts";
 import { requestFailure, responseFields } from "../api-client.mjs";
+import { sameValue } from "../carry.mjs";
 import type { createDraftStore } from "../drafts.mjs";
 import type { NamespacePageContext } from "../namespaces.mjs";
-import { element, button, field as formField, statusBlock, validateFields } from "../dom.mjs";
+import {
+  element,
+  button,
+  field as formField,
+  focusSaveOutcome,
+  setFieldError,
+  setUnavailable,
+  statusBlock,
+  validateFields,
+} from "../dom.mjs";
 import {
   renderPresetTemplate,
   requiredPresetVariables,
   validatePresetTemplate,
 } from "../preset-variables.mjs";
-import { message, namespacePath } from "./list.mjs";
+import { describeFailure, message, namespaceListNeed, namespacePath } from "./list.mjs";
+import type { SecretsOperateDenied } from "./credential-access.mjs";
+import {
+  NEW_SECRET_OPERATE_DENIED,
+  NEW_SECRET_OPERATE_REMEDY,
+  SECRET_OPERATE_DENIED,
+} from "./secret-picker.mjs";
+import {
+  askAdministratorTo,
+  NO_SECRETS_CREATE_DENIED,
+  SECRET_CREATE_DENIED,
+} from "./access-reasons.mjs";
 
 type PresetContext = Pick<NamespacePageContext, "request" | "isCurrent" | "onExpired"> & {
   namespaceId: string;
   drafts: ReturnType<ReturnType<typeof createDraftStore>["scope"]>;
+  // The readable Secrets the caller may not operate; undefined when the answer is unknown.
+  secretsOperateDenied?: SecretsOperateDenied | undefined;
+  // The Namespace permission answer's secrets.create: undefined when it is unknown.
+  secretsCreateAllowed?: (() => Promise<boolean | undefined>) | undefined;
 };
 
 interface VariableField {
@@ -37,6 +62,8 @@ interface SecretField extends VariableField {
   secretField: HTMLElement;
   restoredSecret: string | undefined;
   secrets: SecretMetadata[];
+  // Listed Secrets the caller may not operate: listed disabled, never used (finding 2469).
+  operateDenied: ReadonlySet<string>;
   secretsState: "loading" | "ready" | "failed";
 }
 
@@ -59,10 +86,154 @@ function saveField(field: VariableField | SecretField): SavedField {
     : { type };
 }
 
-interface PresetDraft {
+export interface PresetDraft {
   id: string;
   touched: boolean;
   fields: Record<string, SavedField> | undefined;
+}
+
+// Each Configuration setting a Preset variable filled, by its path segments (keys and array
+// indexes), with the variables that filled it. Create Agent maps a refusal that names a setting
+// back to these (finding 3122).
+export type PresetSettingVariables = { setting: readonly string[]; variables: string[] }[];
+
+// The Preset step reopened after Create Agent refused a setting its variables filled: the chooser
+// state to restore, and the variables to mark with the refusal.
+export interface PresetReturn {
+  draft: PresetDraft;
+  variables: readonly string[];
+  refusal: string;
+}
+
+const VARIABLE_REFERENCE = /(?<!\\)\{\{\s*vars\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g;
+
+const referencedVariables = (text: string) =>
+  [...text.matchAll(VARIABLE_REFERENCE)].map((match) => match[1] ?? "");
+
+// A key as the API shows it in a setting path: control, format, line and paragraph separator
+// characters show as ? (OCC's shownSettingKey).
+const shownSettingKey = (key: string) => key.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]|\p{Cs}/gu, "?");
+
+// A refusal's setting path as segments. The API writes an array index as `allow[0]` or
+// `allow.0`, and a key that is not a plain ID quoted, as `entries["my agent"].model` (OCC's
+// keyedSettingPath). A path it shortened with … names no exact setting.
+const SETTING_SEGMENT = /\.?([^.[\]"\s]+)|\[(\d+)\]|\[("(?:[^"\\]|\\.)*")\]/uy;
+
+function settingSegments(path: string): string[] | undefined {
+  if (path.endsWith("…")) {
+    return undefined;
+  }
+  const segments: string[] = [];
+  SETTING_SEGMENT.lastIndex = 0;
+  while (SETTING_SEGMENT.lastIndex < path.length) {
+    const match = SETTING_SEGMENT.exec(path);
+    const [, plain, index, quoted] = match ?? [];
+    const segment = quoted === undefined ? (plain ?? index) : parseQuotedKey(quoted);
+    if (segment === undefined) {
+      return undefined;
+    }
+    segments.push(segment);
+  }
+  return segments.length ? segments : undefined;
+}
+
+function parseQuotedKey(quoted: string): string | undefined {
+  try {
+    const key: unknown = JSON.parse(quoted);
+    return typeof key === "string" ? key : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// The setting a refusal names: plain, indexed and quoted segments, up to the colon, comma or
+// space after it.
+const REFUSED_SETTING =
+  /^Configuration setting ((?:[^\s"[]|\[\d+\]|\["(?:[^"\\]|\\.)*"\])+?)[:,]?\s/u;
+
+// Where each variable went in configuration.values. A key that holds a variable is named by its
+// rendered text, as the API names it.
+function presetSettingVariables(
+  template: PresetTemplate,
+  inputs: Record<string, string | number | boolean>,
+): PresetSettingVariables {
+  const found: PresetSettingVariables = [];
+  const visit = (value: unknown, setting: readonly string[]) => {
+    if (typeof value === "string") {
+      const variables = referencedVariables(value);
+      if (variables.length) {
+        found.push({ setting, variables });
+      }
+    } else if (Array.isArray(value)) {
+      value.forEach((child, index) => visit(child, [...setting, String(index)]));
+    } else if (value !== null && typeof value === "object") {
+      for (const [key, child] of Object.entries(value)) {
+        const keyVariables = referencedVariables(key);
+        const rendered = keyVariables.length
+          ? (Object.keys(
+              renderPresetTemplate(
+                { variables: template.variables ?? {}, configuration: { values: { [key]: null } } },
+                inputs,
+              ).configuration?.values ?? {},
+            )[0] ?? key)
+          : key;
+        const path = [...setting, shownSettingKey(rendered)];
+        if (keyVariables.length) {
+          found.push({ setting: path, variables: keyVariables });
+        }
+        visit(child, path);
+      }
+    }
+  };
+  visit(template.configuration?.values, []);
+  return found;
+}
+
+// The value at `segments` in Configuration values, or undefined.
+function settingValue(values: unknown, segments: readonly string[]): unknown {
+  let value = values;
+  for (const segment of segments) {
+    value =
+      value !== null && typeof value === "object" && Object.hasOwn(value, segment)
+        ? (value as Record<string, unknown>)[segment]
+        : undefined;
+  }
+  return value;
+}
+
+/** The Preset variables that filled the Configuration setting `refusal` names, or none: the setting
+ * itself or a value inside it. Never a value, only the setting's name (finding 3122). A setting
+ * the submitted values no longer hold as the Preset rendered it names none: the reader changed
+ * it after the Preset (finding 3125). */
+export function refusedPresetVariables(
+  refusal: string | undefined,
+  settings: PresetSettingVariables | undefined,
+  values: { submitted: unknown; rendered: unknown },
+): string[] {
+  const named = REFUSED_SETTING.exec(refusal ?? "")?.[1];
+  const refused = named === undefined ? undefined : settingSegments(named);
+  if (
+    !refused ||
+    !settings ||
+    !sameValue(settingValue(values.submitted, refused), settingValue(values.rendered, refused))
+  ) {
+    return [];
+  }
+  const variables = new Set<string>();
+  for (const { setting, variables: names } of settings) {
+    if (refused.every((segment, index) => setting[index] === segment)) {
+      names.forEach((name) => variables.add(name));
+    }
+  }
+  return [...variables];
+}
+
+/** The variables' field labels as one phrase: "Human", "Human and Team". */
+export function presetVariableLabels(names: readonly string[]) {
+  const labels = names.map(variableLabel);
+  return labels.length > 1
+    ? `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`
+    : (labels[0] ?? "");
 }
 
 type ModelSecret = { kind: "new" } | { kind: "existing"; secret: SecretMetadata };
@@ -109,10 +280,23 @@ function sameNamespaceSecret(context: PresetContext, value: unknown): value is S
   );
 }
 
-function renderSecretOptions(secrets: readonly SecretMetadata[]) {
+// A Secret the caller may read but not operate is listed disabled with the shared reason: Agent
+// create binds it as the Harness authentication Secret and would refuse it (finding 2469).
+function renderSecretOptions(
+  secrets: readonly SecretMetadata[],
+  operateDenied: ReadonlySet<string>,
+) {
   return [
     element("option", { value: "" }, "Choose an existing Secret"),
-    ...secrets.map((secret) => element("option", { value: secret.id }, secret.name)),
+    ...secrets.map((secret) =>
+      operateDenied.has(secret.id)
+        ? element(
+            "option",
+            { value: secret.id, disabled: true },
+            `${secret.name} (${SECRET_OPERATE_DENIED})`,
+          )
+        : element("option", { value: secret.id }, secret.name),
+    ),
   ];
 }
 
@@ -120,12 +304,21 @@ export function createPresetFields(
   context: PresetContext,
   apply: (
     settings: PresetLaunchSettings,
-    options: { modelSecret: ModelSecret | undefined; presetName: string },
+    options: {
+      modelSecret: ModelSecret | undefined;
+      presetName: string;
+      presetDraft: PresetDraft;
+      settingVariables: PresetSettingVariables;
+    },
     draft: Pick<PresetDraft, "touched">,
   ) => void,
+  returning?: PresetReturn,
 ) {
-  // This scoped draft is written only by the capture below.
-  let retained = context.drafts.get("preset") as PresetDraft | undefined;
+  // This scoped draft is written only by the capture below, unless Create Agent sent the reader
+  // back to change the variables it refused.
+  let retained = returning?.draft ?? (context.drafts.get("preset") as PresetDraft | undefined);
+  // Marked once, when the returned Preset's fields are built.
+  let refused = returning;
   const selector = element(
     "select",
     { id: "agent-preset", disabled: true },
@@ -221,23 +414,66 @@ export function createPresetFields(
       updatePasswordField(field);
     }
     try {
-      const secrets = await context.request(`${namespacePath(context.namespaceId)}/secrets`);
+      // The list shows once the operate answer is in, so no denied Secret is ever choosable.
+      const [secrets, operateDenied, createAllowed] = await Promise.all([
+        context.request(`${namespacePath(context.namespaceId)}/secrets`),
+        (context.secretsOperateDenied?.() ?? Promise.resolve(undefined)).catch(() => undefined),
+        (context.secretsCreateAllowed?.() ?? Promise.resolve(undefined)).catch(() => undefined),
+      ]);
       if (!context.isCurrent() || !section.isConnected || version !== loadVersion) {
         return;
       }
       for (const field of passwordFields) {
+        field.operateDenied = operateDenied ?? new Set();
         field.secrets = Array.isArray(secrets)
           ? secrets.filter((value: unknown): value is SecretMetadata =>
               sameNamespaceSecret(context, value),
             )
           : [];
         field.secretsState = "ready";
-        field.secretSelect.replaceChildren(...renderSecretOptions(field.secrets));
-        field.secretSelect.value = field.restoredSecret ?? "";
+        field.secretSelect.replaceChildren(
+          ...renderSecretOptions(field.secrets, field.operateDenied),
+        );
+        // A restored choice the answer now denies is not kept.
+        const restored = field.restoredSecret ?? "";
+        field.secretSelect.value = field.operateDenied.has(restored) ? "" : restored;
         field.restoredSecret = undefined;
-        field.secretStatus.textContent = field.secrets.length
-          ? "Existing Secrets in this Namespace are available. Secret values are never shown."
-          : "No existing Secrets are available in this Namespace. Create a new Secret instead.";
+        // Without Secret create, the create-new source is listed disabled with the reason and
+        // the field binds an existing Secret, as the other Secret fields do (finding 2483). So it
+        // is when operate is denied on any readable Secret: operate is then granted per Secret,
+        // and a new Secret has none, so Agent create would refuse it once saved (finding 2492).
+        const createDenied = createAllowed === false;
+        const newSecretDenied = createDenied
+          ? SECRET_CREATE_DENIED
+          : field.operateDenied.size
+            ? NEW_SECRET_OPERATE_DENIED
+            : undefined;
+        const createOption = field.mode.querySelector<HTMLOptionElement>(
+          `option[value="${NEW_SECRET}"]`,
+        );
+        if (createOption) {
+          createOption.disabled = newSecretDenied !== undefined;
+          createOption.textContent = newSecretDenied
+            ? `Create new Secret (${newSecretDenied})`
+            : "Create new Secret";
+        }
+        // Per-Secret operate also names the grant that would let an Agent use a new Secret.
+        const newSecretHint =
+          newSecretDenied === NEW_SECRET_OPERATE_DENIED
+            ? `${newSecretDenied} ${NEW_SECRET_OPERATE_REMEDY}`
+            : newSecretDenied;
+        if (newSecretDenied && field.mode.value === NEW_SECRET) {
+          field.mode.value = EXISTING_SECRET;
+          field.input.dataset.supplied = "false";
+        }
+        field.secretStatus.textContent =
+          createDenied && !field.secrets.length
+            ? NO_SECRETS_CREATE_DENIED
+            : newSecretDenied
+              ? `Choose an existing Secret. ${newSecretHint}`
+              : field.secrets.length
+                ? "Existing Secrets in this Namespace are available. Secret values are never shown."
+                : "No existing Secrets are available in this Namespace. Create a new Secret instead.";
         updatePasswordField(field);
       }
     } catch (error) {
@@ -254,7 +490,7 @@ export function createPresetFields(
         field.secretSelect.replaceChildren(
           element("option", { value: "" }, "Existing Secrets unavailable"),
         );
-        field.secretStatus.textContent = `Existing Secrets unavailable. ${message(error)} Choose create-new mode to enter a new token.`;
+        field.secretStatus.textContent = `Existing Secrets unavailable. ${message(error, false, namespaceListNeed("Secrets"))} Choose create-new mode to enter a new token.`;
         updatePasswordField(field);
       }
     }
@@ -282,6 +518,10 @@ export function createPresetFields(
             const secret = field.secrets.find((item) => item.id === field.secretSelect.value);
             if (!sameNamespaceSecret(context, secret)) {
               feedback.textContent = "Choose an existing Secret from this Namespace.";
+              return;
+            }
+            if (field.operateDenied.has(secret.id)) {
+              feedback.textContent = `${secret.name} cannot be chosen. ${SECRET_OPERATE_DENIED}`;
               return;
             }
             modelSecret = { kind: "existing", secret };
@@ -322,8 +562,23 @@ export function createPresetFields(
             }
           : template;
       const applied = renderPresetTemplate(settings, values);
-      // The form names the Preset it started from (UX plan A2, flows.md C8).
-      apply(applied, { modelSecret, presetName: selected.name }, { touched });
+      const presetDraft: PresetDraft = {
+        id: selector.value,
+        touched,
+        fields: Object.fromEntries(fields.map((field) => [field.name, saveField(field)])),
+      };
+      // The form names the Preset it started from (UX plan A2, flows.md C8), and keeps where
+      // each variable went, so a refused setting names the field that filled it (finding 3122).
+      apply(
+        applied,
+        {
+          modelSecret,
+          presetName: selected.name,
+          presetDraft,
+          settingVariables: presetSettingVariables(template, values),
+        },
+        { touched },
+      );
       for (const field of fields) {
         if (field.definition.type === "password") {
           field.input.value = "";
@@ -344,7 +599,14 @@ export function createPresetFields(
     applyButton,
     feedback,
   );
-  applyButton.disabled = true;
+  let applyUnavailable = true;
+  // An unavailable Use Preset is described by the line that says why (finding D793): the
+  // Preset's load failure, else the status line ("Choose a Preset or start with the default
+  // Preset."), and stays in the Tab order while it shows (finding 2878). Called wherever either
+  // line or the button changes.
+  const describeApply = () =>
+    setUnavailable(applyButton, applyUnavailable, feedback.textContent?.trim() ? feedback : status);
+  describeApply();
   selector.addEventListener("change", async () => {
     const version = ++loadVersion;
     const selectedId = selector.value;
@@ -359,12 +621,14 @@ export function createPresetFields(
     fields = [];
     inputs.replaceChildren();
     feedback.textContent = "";
-    applyButton.disabled = true;
+    applyUnavailable = true;
     if (!selectedId) {
       status.textContent = chooseHint();
+      describeApply();
       return;
     }
     status.textContent = "Loading Preset…";
+    describeApply();
     try {
       const value = await context.request(
         `${namespacePath(context.namespaceId)}/presets/${encodeURIComponent(selectedId)}`,
@@ -433,6 +697,7 @@ export function createPresetFields(
           }
           input.dataset.supplied = "true";
           feedback.textContent = "";
+          setFieldError(input, "");
         });
         input.addEventListener("change", () => {
           if (definition.type === "string") {
@@ -483,6 +748,7 @@ export function createPresetFields(
           secretField,
           restoredSecret: saved?.type === "password" ? saved.secret : undefined,
           secrets: [],
+          operateDenied: new Set(),
           secretsState: "loading",
         };
         mode.addEventListener("change", () => {
@@ -507,7 +773,24 @@ export function createPresetFields(
       });
       status.textContent =
         "Fill in the variables, then use this Preset to create an editable draft.";
-      applyButton.disabled = false;
+      applyUnavailable = false;
+      describeApply();
+      // Create Agent refused the setting these variables filled: its refusal shows under each,
+      // and focus moves to the first to change (finding 3122). Focus scrolls only the field into
+      // view, so at phone width the refusal under it can start below the fold: it scrolls in too.
+      const returned = refused?.draft.id === selectedId ? refused : undefined;
+      refused = undefined;
+      const marked = fields.filter(
+        (field) => returned?.variables.includes(field.name) && !("mode" in field),
+      );
+      for (const field of marked) {
+        setFieldError(field.input, returned?.refusal);
+      }
+      const first = marked[0]?.input;
+      if (first) {
+        first.focus();
+        document.getElementById(`${first.id}-error`)?.scrollIntoView({ block: "nearest" });
+      }
       if (applyDefault && fields.length === 0) {
         applyButton.click();
       }
@@ -522,9 +805,18 @@ export function createPresetFields(
       if (requestFailure(error).status === 401) {
         context.onExpired();
       } else {
-        feedback.textContent = message(error);
+        feedback.textContent = `This Preset could not be loaded. ${describeFailure(error)}`;
+        describeApply();
         // Use Preset stays disabled, so the filled style goes back to the shortcut.
         emphasize(false);
+        // Create Agent sent the reader back here and removed the button they pressed. With no
+        // field to mark, focus goes to the chooser heading, not the document (findings 1446,
+        // 3122).
+        if (refused) {
+          refused = undefined;
+          const chooser = section.closest(".launch-preset");
+          focusSaveOutcome(chooser ?? section, [], chooser?.querySelector("h2"));
+        }
       }
     } finally {
       if (version === loadVersion) {
@@ -561,7 +853,6 @@ export function createPresetFields(
       selector.disabled = false;
       starter =
         readablePresets.find((preset) => preset.name === "default-codex") ?? readablePresets[0];
-      startDefault.disabled = !starter;
       if (starter) {
         if (starter.name !== "default-codex") {
           startDefault.textContent = `Start with ${starter.name}`;
@@ -573,16 +864,23 @@ export function createPresetFields(
         defaultHint.hidden = false;
         startDefault.setAttribute("aria-describedby", defaultHint.id);
       }
+      if (!starter) {
+        defaultHint.textContent = "No readable starter Preset is available in this Namespace.";
+        defaultHint.hidden = false;
+      }
+      setUnavailable(startDefault, !starter, defaultHint);
       if (retained && presets.some((preset) => preset.id === retained?.id)) {
         selector.value = retained.id;
         selector.dispatchEvent(new Event("change"));
       }
       if (presets.length === 0) {
-        status.textContent =
-          "No Presets available to you in this Namespace. Ask an administrator to install a Preset or give you read access to one.";
+        status.textContent = `No Presets available to you in this Namespace. ${askAdministratorTo(
+          "install default-codex or another Preset, or to give you Preset read on one",
+        )}`;
       } else {
         status.textContent = chooseHint();
       }
+      describeApply();
     })
     .catch((error) => {
       if (!context.isCurrent() || !section.isConnected) {
@@ -591,7 +889,10 @@ export function createPresetFields(
       if (requestFailure(error).status === 401) {
         context.onExpired();
       } else {
-        status.textContent = `Presets unavailable. ${message(error)} Try again or ask an administrator to check Preset access.`;
+        status.textContent = `Presets unavailable. ${message(error, false, namespaceListNeed("Presets"))}`;
+        describeApply();
+        // The chooser stays unavailable, so its status says why the shortcut is too.
+        setUnavailable(startDefault, true, status);
       }
     });
   return { section, startDefault, defaultHint };

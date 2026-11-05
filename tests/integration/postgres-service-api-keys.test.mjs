@@ -6,7 +6,7 @@ import {
   composePostgresDevelopment,
   createPostgresControllerAuth,
 } from "../helpers/password-hasher.mjs";
-import { signInWithEmailPassword } from "../helpers/auth-session.mjs";
+import { signInToControllerApp } from "../helpers/auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
@@ -107,34 +107,6 @@ test(
   },
 );
 
-async function fetchFromInjectedApp(app, request) {
-  const url = new URL(request.url);
-  const headers = {};
-  request.headers.forEach((value, name) => {
-    headers[name] = value;
-  });
-  headers.host = url.host;
-  const body = request.body ? Buffer.from(await request.arrayBuffer()) : undefined;
-  const result = await app.inject({
-    method: request.method,
-    url: `${url.pathname}${url.search}`,
-    headers,
-    ...(body === undefined ? {} : { payload: body }),
-  });
-  const convertedHeaders = new Headers();
-  for (const [name, value] of Object.entries(result.headers)) {
-    for (const entry of Array.isArray(value) ? value : [value]) {
-      if (entry !== undefined) {
-        convertedHeaders.append(name, String(entry));
-      }
-    }
-  }
-  return new Response(result.statusCode === 204 ? null : new Uint8Array(result.rawPayload), {
-    status: result.statusCode,
-    headers: convertedHeaders,
-  });
-}
-
 // Real PostgreSQL development composition: Fastify, Better Auth storage, OCC state, and
 // the native IAM Driver reading live policy rows. An administrator gives automation (or a
 // member's CLI) access to one Namespace without sharing an Installation-wide credential.
@@ -169,11 +141,7 @@ test(
       computeDriver: createDevelopmentComputeDriver(),
       configurationDriver: createTestConfigurationDriver(),
     });
-    const session = await signInWithEmailPassword({
-      fetch: (request) => fetchFromInjectedApp(app, request),
-      email,
-      password,
-    });
+    const session = await signInToControllerApp(app, { email, password });
     const admin = (method, url, body) => injectJson(app, method, url, { session, body });
     const withKey = (key, method, url, body) => injectJson(app, method, url, { key, body });
     const namespaceIds = [];

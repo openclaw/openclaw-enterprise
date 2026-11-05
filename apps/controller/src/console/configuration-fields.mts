@@ -20,6 +20,24 @@ type FieldErrors = Readonly<ConsoleApiError["details"]>;
 
 const pointer = (key: string) => key.replaceAll("~", "~0").replaceAll("/", "~1");
 
+// The dotted setting path for a JSON pointer, as the API's own refusals name a setting
+// ("Configuration setting network.allow[0].host"), so no copy shows a pointer (finding 2538).
+function settingPath(path: string) {
+  return path
+    .split("/")
+    .slice(1)
+    .map((key) => key.replaceAll("~1", "/").replaceAll("~0", "~"))
+    .reduce(
+      (dotted, key) =>
+        /^\d+$/.test(key) ? `${dotted}[${key}]` : dotted ? `${dotted}.${key}` : key,
+      "",
+    );
+}
+
+// A field error's text: the API's sentence, or one that names no internal code when it sent none.
+const detailText = (detail: FieldErrors[number]) =>
+  detail.message ?? "This value does not match the setting's schema.";
+
 function initialValue(schema: FieldSchema | boolean): unknown {
   if (typeof schema === "boolean") {
     return "";
@@ -61,6 +79,15 @@ export function configurationFields(
     onEdit();
     onChange(structuredClone(draft));
   };
+
+  function focusField(path: string) {
+    const box = root.querySelector(`[data-configuration-path="${CSS.escape(path)}"]`);
+    const control =
+      box?.querySelector<HTMLElement>(
+        "input:enabled:not([readonly]), select:enabled, textarea:enabled:not([readonly])",
+      ) ?? box?.querySelector<HTMLButtonElement>("button:enabled");
+    control?.focus();
+  }
 
   function field(
     schema: FieldSchema | boolean,
@@ -147,11 +174,14 @@ export function configurationFields(
         row.append(
           button(
             `Remove ${label} ${index + 1}`,
-            () => {
+            (event) => {
               values.splice(index, 1);
               set(values);
               changed();
               render();
+              if (event.detail === 0) {
+                focusField(values.length ? `${path}/${Math.min(index, values.length - 1)}` : path);
+              }
             },
             { disabled: values.length <= (definition.minItems ?? 0) },
           ),
@@ -161,11 +191,14 @@ export function configurationFields(
       box.append(
         button(
           `Add ${label}`,
-          () => {
+          (event) => {
             values.push(initialValue(items));
             set(values);
             changed();
             render();
+            if (event.detail === 0) {
+              focusField(`${path}/${values.length - 1}`);
+            }
           },
           { disabled: values.length >= (definition.maxItems ?? Infinity) },
         ),
@@ -264,9 +297,7 @@ export function configurationFields(
       );
     }
     for (const detail of details.filter((item) => item.path === path)) {
-      box.append(
-        element("p", { role: "alert", className: "error" }, detail.message ?? detail.code),
-      );
+      box.append(element("p", { role: "alert", className: "error" }, detailText(detail)));
     }
     return box;
   }
@@ -292,7 +323,13 @@ export function configurationErrors(details: FieldErrors) {
     "ul",
     { role: "alert", className: "error" },
     ...details.map((detail) =>
-      element("li", {}, `${detail.path || "Configuration"}: ${detail.message ?? detail.code}`),
+      element(
+        "li",
+        {},
+        detail.path
+          ? `Configuration setting ${settingPath(detail.path)}: ${detailText(detail)}`
+          : detailText(detail),
+      ),
     ),
   );
 }

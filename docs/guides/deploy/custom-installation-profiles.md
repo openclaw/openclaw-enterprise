@@ -33,9 +33,9 @@ A failed rerender removes prior generated outputs; success writes `values.yaml`,
 
 Only the selection under `installation.drivers.plugin` is copied. Its `id` must
 be `occ-plugin` or `codex-plugin`. Omitted `configuration` becomes `{}`; supplied
-configuration must be an object. **The Driver validates its options at controller
-startup.** Rendering does not detect every option typo or prove startup or
-deployment. Review the selected Driver's documented options before applying Helm.
+configuration must be an object. The renderer refuses an invalid Codex
+`catalogSource` before it writes deployment files. The Driver validates all options
+at startup; rendering does not prove startup or deployment.
 
 Required strings `description`, `recommendedPreset`, `agentHarness` and
 `pluginSelection` are descriptive metadata. They do not override infrastructure,

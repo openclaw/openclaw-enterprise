@@ -26,7 +26,8 @@ gh api repos/OWNER/scratch-repo --jq .id
 
 ## Prepare inputs
 
-Build the emitted artifacts and both images as described in
+From the repository root, run `pnpm install --frozen-lockfile`. Then build the
+emitted artifacts and both images as described in
 [Run the repository credential service](standalone-service.md#container-images).
 Then create a private input directory owned by the UID the service runs as. Using
 your own UID avoids `sudo`:

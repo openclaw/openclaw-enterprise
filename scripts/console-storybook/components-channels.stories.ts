@@ -3,6 +3,10 @@ import { story } from "./story.ts";
 export default { title: "Components/Channels" };
 
 export const Slack = { ...story("slack"), name: "Slack configured" };
+export const SlackDisableReplaceDenied = {
+  ...story("slackDisableReplaceDenied"),
+  name: "Slack Disable, editor must replace the bot token Secret",
+};
 export const SlackDmPolicy = { ...story("slackDmPolicy") };
 export const SlackEnterpriseDm = { ...story("slackEnterpriseDm") };
 export const SlackThreadedDefault = { ...story("slackThreadedDefault") };
@@ -29,6 +33,10 @@ export const SlackChannelAccessIncomplete = {
   ...story("slackChannelAccessIncomplete"),
   name: "Slack sender access incomplete",
 };
+export const SlackTokensMissing = {
+  ...story("slackTokensMissing"),
+  name: "Slack token Secrets missing",
+};
 export const SlackSecretMenu = { ...story("slackSecretMenu"), name: "Slack Secret menu" };
 export const SlackSecretNameCollision = story("slackSecretNameCollision");
 export const SlackCreateSecretModal = {
@@ -42,6 +50,7 @@ export const SlackSecretStaged = {
 };
 export const SlackOpen = { ...story("slackOpen"), name: "Slack open policy" };
 export const SlackDisabled = { ...story("slackDisabled"), name: "Slack disabled policy" };
+export const SlackPluginDenied = { ...story("slackPluginDenied"), name: "Slack plugin denied" };
 export const SlackUnsupported = { ...story("slackUnsupported"), name: "Slack unsupported shape" };
 export const SlackMixedUsersUnsupported = {
   ...story("slackMixedUsersUnsupported"),

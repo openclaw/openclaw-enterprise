@@ -1,3 +1,4 @@
+import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
@@ -424,6 +425,7 @@ for (const scenario of [
               const sandbox = {
                 id: "sandbox-worker-fixture",
                 capability: "sandbox" as const,
+                supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
                 implementation: "sandbox-worker-fixture",
                 facets: ["networking"],
                 async cleanup() {},

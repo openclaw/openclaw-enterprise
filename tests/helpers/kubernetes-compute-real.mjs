@@ -94,12 +94,16 @@ export async function resources(kind, namespace) {
   return JSON.parse(await kubectlRead("get", kind, "--namespace", namespace, "-o", "json")).items;
 }
 
+function notFound(error) {
+  return /NotFound|not found/i.test(error.stderr ?? error.message);
+}
+
 export async function missing(kind, name, namespace) {
   try {
     await resource(kind, name, namespace);
     return false;
   } catch (error) {
-    if (/NotFound|not found/i.test(error.stderr ?? error.message)) {
+    if (notFound(error)) {
       return true;
     }
     throw error;
@@ -108,6 +112,29 @@ export async function missing(kind, name, namespace) {
 
 export function waitFor(description, operation, timeoutMs = 120_000) {
   return waitForResult(description, operation, { timeoutMs, intervalMs: 500 });
+}
+
+// Asserts a PersistentVolumeClaim's delete was already issued, then waits for the claim to go.
+// A deleted claim stays Terminating until Kubernetes' PVC-protection controller has seen every
+// Pod using it removed, which can trail the Pods' own removal (finding 2409).
+export async function waitForDeletedClaim(name, namespace) {
+  await waitFor(`PersistentVolumeClaim ${name} to be removed`, async () => {
+    let claim;
+    try {
+      claim = await resource("persistentvolumeclaim", name, namespace);
+    } catch (error) {
+      if (notFound(error)) {
+        return true;
+      }
+      throw error;
+    }
+    assert.notEqual(
+      claim.metadata?.deletionTimestamp,
+      undefined,
+      `PersistentVolumeClaim ${name} was not deleted`,
+    );
+    return undefined;
+  });
 }
 
 // Test cleanup deletes its randomly named namespaces without waiting: no later step reads
@@ -448,13 +475,25 @@ export async function assertReadyGateway(namespaceName, agentId, namespaceId, sn
           ...(snapshot.harness.id === "codex" && snapshot.harness.mode === "dedicated"
             ? {
                 // The paired Harness owns the real filesystem; the Gateway
-                // keeps a writable local key for native chat preparation.
+                // keeps a writable local key for native chat preparation. Compute
+                // also pins it on the main entry that carries the Agent name.
                 agents: {
                   ...snapshot.configuration.agents,
                   defaults: {
                     ...snapshot.configuration.agents?.defaults,
                     workspace: "/home/node/workspace",
                   },
+                  ...(snapshot.configuration.agents?.entries?.main === undefined
+                    ? {}
+                    : {
+                        entries: {
+                          ...snapshot.configuration.agents.entries,
+                          main: {
+                            ...snapshot.configuration.agents.entries.main,
+                            workspace: "/home/node/workspace",
+                          },
+                        },
+                      }),
                 },
               }
             : {}),
@@ -467,11 +506,33 @@ export async function assertReadyGateway(namespaceName, agentId, namespaceId, sn
             auth: {
               ...snapshot.configuration.gateway?.auth,
               mode: "trusted-proxy",
+              // Compute keeps explicit identities and grants; omission is machine-only.
+              // Admitting a human makes the Gateway require x-openclaw-scopes (finding 2183).
               trustedProxy: {
+                ...snapshot.configuration.gateway?.auth?.trustedProxy,
+                ...((snapshot.configuration.gateway?.auth?.trustedProxy?.allowUsers ?? []).some(
+                  (user) => user !== "occ-workspace-files",
+                )
+                  ? {
+                      requiredHeaders: [
+                        ...(snapshot.configuration.gateway?.auth?.trustedProxy?.requiredHeaders ??
+                          []),
+                        ...((
+                          snapshot.configuration.gateway?.auth?.trustedProxy?.requiredHeaders ?? []
+                        ).some((header) => header.toLowerCase() === "x-openclaw-scopes")
+                          ? []
+                          : ["x-openclaw-scopes"]),
+                      ],
+                    }
+                  : {}),
                 userHeader: "x-occ-identity",
-                allowUsers: ["occ-workspace-files"],
+                allowUsers: snapshot.configuration.gateway?.auth?.trustedProxy?.allowUsers ?? [
+                  "occ-workspace-files",
+                ],
               },
-              identityScopes: { "occ-workspace-files": ["operator.admin"] },
+              identityScopes: snapshot.configuration.gateway?.auth?.identityScopes ?? {
+                "occ-workspace-files": ["operator.admin"],
+              },
             },
           },
         };
@@ -522,16 +583,18 @@ export async function assertReadyGateway(namespaceName, agentId, namespaceId, sn
       optional: false,
     });
     const container = deployment.spec.template.spec.containers[0];
+    const unmanaged = snapshot.gatewayManagedMode === false;
     assert.deepEqual(
       container.volumeMounts.find(({ name }) => name === "openclaw-configuration"),
-      { name: "openclaw-configuration", mountPath: "/etc/openclaw", readOnly: true },
+      {
+        name: "openclaw-configuration",
+        mountPath: unmanaged ? "/etc/openclaw-managed" : "/etc/openclaw",
+        readOnly: true,
+      },
     );
     assert.equal(
-      container.env.some(
-        ({ name, value }) =>
-          name === "OPENCLAW_CONFIG_PATH" && value === "/etc/openclaw/openclaw.json",
-      ),
-      true,
+      container.env.find(({ name }) => name === "OPENCLAW_CONFIG_PATH")?.value,
+      unmanaged ? "/home/node/.openclaw/openclaw.json" : "/etc/openclaw/openclaw.json",
     );
     assert.equal(
       container.env.some(({ value }) => value === document),
