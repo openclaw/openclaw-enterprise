@@ -1153,6 +1153,7 @@ export class PostgresHumanAuthentication {
       throw new ScopeViolationError("The authentication audit identity is invalid.");
     }
     const hasRosterObservations = roster.length > 0;
+    const isolation = hasRosterObservations ? "read committed" : undefined;
     // Mapped settlement reads the roster after holding IAM configuration, including
     // changes that committed while the lock was pending.
     return this.state.transact(async (unit) => {
@@ -1210,7 +1211,7 @@ export class PostgresHumanAuthentication {
         ...audit,
       });
       return sessionFromRow(inserted);
-    }, hasRosterObservations ? "read committed" : undefined);
+    }, isolation);
   }
 
   /**

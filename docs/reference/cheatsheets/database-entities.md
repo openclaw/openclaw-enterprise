@@ -358,7 +358,7 @@ memberships of a configured Group can be deleted.
 - `namespace_id`
 - `group_id`
 - `principal_id`
-- `roster_source_id` — identifies the mapping that granted membership. A null value marks membership independent of GitHub mappings.
+- `roster_source_id` — references the GitHub roster source that granted membership. A null value marks membership independent of GitHub mappings.
 
 ### `github_roster_mappings`
 
