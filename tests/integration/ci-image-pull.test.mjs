@@ -250,6 +250,10 @@ test("pinned manifests bound cached files and chunked responses before verificat
       directory,
     }),
     (error) => {
+      assert.match(
+        error.message,
+        /Agent Sandbox download failed: manifest exceeds its 32 MiB size limit/,
+      );
       assert.match(error.cause?.message ?? "", /manifest exceeds its size limit/);
       return true;
     },

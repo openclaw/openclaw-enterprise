@@ -104,12 +104,18 @@ function sha256(data) {
 
 const manifestMaximumBytes = 32 * 1024 * 1024;
 
+class ManifestSizeError extends Error {
+  constructor() {
+    super("manifest exceeds its size limit");
+  }
+}
+
 async function readManifestBytes(chunks) {
   let bytes = Buffer.alloc(0);
   let length = 0;
   for await (const chunk of chunks) {
     if (chunk.length > manifestMaximumBytes - length) {
-      throw new Error("manifest exceeds its size limit");
+      throw new ManifestSizeError();
     }
     const nextLength = length + chunk.length;
     if (nextLength > bytes.length) {
@@ -190,7 +196,10 @@ export async function fetchPinnedBytes(
       transient = transientHttpStatus.test(String(response.status));
     } catch (error) {
       cause = error;
-      failure = error.cause?.code ?? error.name ?? "network error";
+      failure =
+        error instanceof ManifestSizeError
+          ? "manifest exceeds its 32 MiB size limit"
+          : (error.cause?.code ?? error.name ?? "network error");
       transient = isTransientFetchError(error);
     }
     if (!transient || attempt >= attempts || Date.now() - started + delayMs > budgetMs) {
@@ -220,7 +229,7 @@ export async function downloadPinnedArtifact({ artifact, directory }) {
       throw new Error("cached manifest must be an owned regular file");
     }
     if (info.size > manifestMaximumBytes) {
-      throw new Error("manifest exceeds its size limit");
+      throw new ManifestSizeError();
     }
     const existing = await readManifestBytes(cached.createReadStream({ autoClose: false }));
     if (sha256(existing) === artifact.sha256) {
