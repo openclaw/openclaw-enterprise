@@ -1123,7 +1123,7 @@ export class PostgresHumanAuthentication {
         groupId: mapping.groupId,
         denied,
       });
-    });
+    }, "read committed");
   }
 
   async issueSession(
