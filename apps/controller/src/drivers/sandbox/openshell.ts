@@ -146,7 +146,7 @@ import {
   compareResourceQuantities,
   isResourceQuantity,
 } from "../compute/kubernetes/resource-quantities.ts";
-import { nodeProgramArguments } from "../compute/node-program.ts";
+import { nodeProgramArguments, prependNodeProgramArguments } from "../compute/node-program.ts";
 import {
   requireWorkspaceSetupConfiguration,
   WORKSPACE_SETUP_NATIVE_FAILED_EXIT_STATUS,
@@ -1447,11 +1447,20 @@ function sandboxCommand(
   const bootstrap = `{\nconst fs = require("node:fs");\nconst path = require("node:path");\nfor (const [link, target] of ${JSON.stringify(
     links.map(({ path, target }) => [path, target]),
   )}) {\n  fs.mkdirSync(path.dirname(link), { recursive: true });\n  try {\n    const existing = fs.lstatSync(link);\n    if (!existing.isSymbolicLink() || fs.readlinkSync(link) !== target) {\n      throw new Error("OpenShell workspace link conflicts with existing runtime state: " + link);\n    }\n  } catch (error) {\n    if (error?.code !== "ENOENT") {\n      throw error;\n    }\n    fs.symlinkSync(target, link);\n  }\n}\n}\n`;
-  return [
+  const prelude = `${bootstrap}${native ? 'process.env.TMPDIR = require("node:path").join(process.env.HOME, "tmp");\n' : ""}${workspaceSetup === undefined ? "" : WORKSPACE_SETUP_WAIT}${loginMode === "chatgptAuthTokens" ? OPENSHELL_CHATGPT_AUTH_BOOTSTRAP : ""}`;
+  const composed = [
     ...command.slice(0, loaderIndex),
-    `${bootstrap}${native ? 'process.env.TMPDIR = require("node:path").join(process.env.HOME, "tmp");\n' : ""}${workspaceSetup === undefined ? "" : WORKSPACE_SETUP_WAIT}${loginMode === "chatgptAuthTokens" ? OPENSHELL_CHATGPT_AUTH_BOOTSTRAP : ""}${loader}`,
+    prelude + loader,
     ...command.slice(loaderIndex + 1),
   ];
+  // Preserve existing immutable Sandbox commands that fit. Larger preludes use
+  // the same codec as the Harness so the complete command retains its 64 KiB budget.
+  return Buffer.byteLength(JSON.stringify(composed)) <= 65_536
+    ? composed
+    : [
+        ...command.slice(0, loaderIndex),
+        ...prependNodeProgramArguments(prelude, command.slice(loaderIndex)),
+      ];
 }
 
 // OpenShell can report its Sandbox ready before the Harness starts. The Driver
