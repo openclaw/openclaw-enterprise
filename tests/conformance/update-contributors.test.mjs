@@ -8,13 +8,24 @@ import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 
 const generator = fileURLToPath(new URL("../../scripts/update-contributors.ts", import.meta.url));
 const initialReadme = "before\n<!-- contributors:start -->\n<!-- contributors:end -->\nafter\n";
-const corrections = { 3: { include: true, displayName: "A & B", reason: "Recognition", url: "https://example.com/evidence" } };
+const corrections = {
+  3: {
+    include: true,
+    displayName: "A & B",
+    reason: "Recognition",
+    url: "https://example.com/evidence",
+  },
+};
 
 function run(t, scenario, { readme = initialReadme, correctionData = corrections } = {}) {
   const directory = temporaryDirectorySync(t, "contributors-");
   mkdirSync(join(directory, "scripts"));
   mkdirSync(join(directory, "bin"));
-  const script = join(directory, "scripts", generator.endsWith(".ts") ? "update-contributors.ts" : "update-contributors.mjs");
+  const script = join(
+    directory,
+    "scripts",
+    generator.endsWith(".ts") ? "update-contributors.ts" : "update-contributors.mjs",
+  );
   copyFileSync(generator, script);
   writeFileSync(join(directory, "README.md"), readme);
   writeFileSync(join(directory, "scripts", "contributors.json"), JSON.stringify(correctionData));
@@ -67,7 +78,10 @@ test("generator collects paginated contributors, corrections and merged authors 
 });
 
 test("generator refuses to lose previously credited accounts", (t) => {
-  const readme = initialReadme.replace("<!-- contributors:end -->", '<img src="https://avatars.githubusercontent.com/u/99?s=48">\n<!-- contributors:end -->');
+  const readme = initialReadme.replace(
+    "<!-- contributors:end -->",
+    '<img src="https://avatars.githubusercontent.com/u/99?s=48">\n<!-- contributors:end -->',
+  );
   const actual = run(t, "normal", { readme });
   assert.equal(actual.result.status, 1);
   assert.match(actual.result.stderr, /Previously credited account 99 is missing/);
@@ -75,7 +89,9 @@ test("generator refuses to lose previously credited accounts", (t) => {
 });
 
 test("generator validates correction data before collecting", (t) => {
-  const actual = run(t, "normal", { correctionData: { 1: { include: "yes", reason: "x", url: "https://example.com" } } });
+  const actual = run(t, "normal", {
+    correctionData: { 1: { include: "yes", reason: "x", url: "https://example.com" } },
+  });
   assert.equal(actual.result.status, 1);
   assert.match(actual.result.stderr, /include must be a boolean/);
   assert.equal(actual.readme, initialReadme);
