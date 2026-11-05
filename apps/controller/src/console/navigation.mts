@@ -15,6 +15,8 @@ interface LoginIntent {
   revision: string | null;
   tab: string | null;
   receiptId?: string;
+  /** A Secrets page link's Secret, opened once the page shows (finding 2645). */
+  secret?: string | null;
 }
 
 interface NavigationOptions {
@@ -27,12 +29,22 @@ interface NavigationOptions {
   }): void;
 }
 
+// A page address with trailing slashes names the same page (finding 1906), however many there
+// are; `/console/` itself stays. The server answers both alike (console-assets.ts).
+function canonicalUrl(href: string) {
+  const url = new URL(href);
+  if (url.pathname.startsWith("/console/")) {
+    url.pathname = `/console/${url.pathname.slice("/console/".length).replace(/\/+$/, "")}`;
+  }
+  return url.href;
+}
+
 export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: NavigationOptions) {
   // The initial entry is position zero. Keep the position on replaceState, including sign-in,
   // so a refused Back or Forward can return to its starting entry without rewriting history.
   let position: number | null = entryPosition() ?? 0;
   let restoring: number | null = null;
-  replaceUrl(location.href);
+  replaceUrl(canonicalUrl(location.href));
 
   function route() {
     const url = new URL(location.href);
@@ -71,6 +83,7 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
   const namespaceId = new RegExp(`^ns_${resourceSuffix}$`);
 
   const revisionId = new RegExp(`^rev_${resourceSuffix}$`);
+  const secretId = new RegExp(`^sec_${resourceSuffix}$`);
   const agentTabs = new Set([
     "configuration",
     "plugins",
@@ -114,7 +127,12 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
           typeof intent.revision === "string" &&
           (intent.revision === "draft" || revisionId.test(intent.revision)))) &&
       (intent.tab === null ||
-        (detail && typeof intent.tab === "string" && agentTabs.has(intent.tab)))
+        (detail && typeof intent.tab === "string" && agentTabs.has(intent.tab))) &&
+      (intent.secret === undefined ||
+        intent.secret === null ||
+        (intent.feature === "secrets" &&
+          typeof intent.secret === "string" &&
+          secretId.test(intent.secret)))
     );
   }
 
@@ -126,14 +144,18 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
     if (url.origin !== location.origin) {
       return null;
     }
+    const feature = url.pathname.slice("/console/".length);
+    // Only a well-formed Secret ID on the Secrets page goes through sign-in; anything else drops.
+    const secret = url.searchParams.get("secret");
     const receiptId = url.searchParams.get("receiptId");
     const intent = {
-      kind: "console",
       ...(receiptId === null ? {} : { receiptId }),
-      feature: url.pathname.slice("/console/".length),
+      kind: "console",
+      feature,
       namespaceId: url.searchParams.get("namespace"),
       revision: url.searchParams.get("revision"),
       tab: url.searchParams.get("tab"),
+      secret: feature === "secrets" && secret !== null && secretId.test(secret) ? secret : null,
     };
     return validIntent(intent) ? intent : null;
   }
@@ -155,11 +177,18 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
     if (intent.receiptId !== undefined) {
       query.set("receiptId", intent.receiptId);
     }
+    if (typeof intent.secret === "string") {
+      query.set("secret", intent.secret);
+    }
     return `/console/${intent.feature}${query.size ? `?${query}` : ""}`;
   }
 
   function entryPosition() {
-    const index: unknown = history.state?.consolePosition;
+    const state: unknown = history.state;
+    if (typeof state !== "object" || state === null || !("consolePosition" in state)) {
+      return null;
+    }
+    const index = state.consolePosition;
     return typeof index === "number" && Number.isSafeInteger(index) ? index : null;
   }
 
@@ -168,7 +197,8 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
   }
 
   function pushUrl(url: string) {
-    position = (position ?? 0) + 1;
+    const next = (position ?? 0) + 1;
+    position = Number.isSafeInteger(next) ? next : null;
     history.pushState({ consolePosition: position }, "", url);
   }
 
@@ -212,13 +242,21 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: Nav
     void loadPage({
       fromNavigation,
       restoreHistory(url) {
-        if (position === null || previous === null || position === previous) {
-          // An older or untracked entry has no reliable direction. Keep it available to Back
-          // without risking history.go(0), which would reload the page during its write.
+        const delta = position === null || previous === null ? null : previous - position;
+        if (
+          delta === null ||
+          delta === 0 ||
+          Math.abs(delta) >= history.length ||
+          delta < -2147483648 ||
+          delta > 2147483647
+        ) {
+          // History.go converts to a signed 32-bit Web IDL long; overflow can become zero
+          // and reload during the write. Impossible steps do nothing. Keep the editor's URL
+          // with an available Back entry when the step is untracked, zero or unrestorable.
           pushUrl(url);
         } else {
           restoring = previous;
-          history.go(previous - position);
+          history.go(delta);
         }
       },
     });

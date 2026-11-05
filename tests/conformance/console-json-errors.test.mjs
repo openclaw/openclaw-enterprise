@@ -44,6 +44,65 @@ test("an invisible or space-like character elsewhere is named at its position", 
   );
 });
 
+test("space-like separators and curly quotes are named at their position (finding 1959)", () => {
+  const named = (where, fix) => `Invalid JSON${where}: ${fix}. Enter a valid JSON object.`;
+  for (const [character, name] of [
+    ["\u2028", "invisible line separator"],
+    ["\u2029", "invisible paragraph separator"],
+    ["\u202F", "narrow non-breaking space"],
+    ["\u3000", "full-width space"],
+  ]) {
+    assert.equal(
+      jsonObjectProblem(`{"a":${character}1}`),
+      named(" at line 1, column 6", `remove the ${name} there`),
+      codePoint(character),
+    );
+  }
+  // A word processor's quotes around a key or a value, and a chat app's single quotes.
+  assert.equal(
+    jsonObjectProblem("{\u201Cmodel\u201D: 1}"),
+    named(" at line 1, column 2", 'replace the curly quote \u201C there with a straight quote (")'),
+  );
+  assert.equal(
+    jsonObjectProblem('{\n  "model": \u201Cgpt\u201D\n}'),
+    named(
+      " at line 2, column 12",
+      'replace the curly quote \u201C there with a straight quote (")',
+    ),
+  );
+  assert.equal(
+    jsonObjectProblem("\u2018x\u2019"),
+    named("", 'replace the curly quote \u2018 at the start with a straight quote (")'),
+  );
+  // Autocorrect can also curl both quotes the closing way.
+  assert.equal(
+    jsonObjectProblem('{"a": \u201Db\u201D}'),
+    named(" at line 1, column 7", 'replace the curly quote \u201D there with a straight quote (")'),
+  );
+  assert.equal(
+    jsonObjectProblem("{\u2019a\u2019: 1}"),
+    named(" at line 1, column 2", 'replace the curly quote \u2019 there with a straight quote (")'),
+  );
+  // Inside a string they are ordinary text.
+  assert.equal(jsonObjectProblem('{"a": "\u201Cquoted\u201D\u2028\u3000"}'), undefined);
+});
+
+test("text of only invisible or space-like characters names the first one (finding 1959)", () => {
+  // String.prototype.trim() strips these, so they used to read as empty input.
+  assert.equal(
+    jsonObjectProblem("\uFEFF"),
+    "Invalid JSON: remove the invisible byte order mark at the start. Enter a valid JSON object.",
+  );
+  assert.equal(
+    jsonObjectProblem("\u00A0\u00A0"),
+    "Invalid JSON: remove the non-breaking space at the start. Enter a valid JSON object.",
+  );
+  assert.equal(
+    jsonObjectProblem("\n \u3000"),
+    "Invalid JSON at line 2, column 2: remove the full-width space there. Enter a valid JSON object.",
+  );
+});
+
 test("columns count characters as the reader sees them, not UTF-16 units (finding 1939)", () => {
   // V8 says "column 18" here; the stray x is the 16th visible character.
   assert.equal(jsonObjectProblem('{"name": "\u{1F600}\u{1F680}", x}'), at(1, 16));

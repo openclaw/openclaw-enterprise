@@ -16,7 +16,7 @@ import {
   newPage,
   nonAuthWriteRequests,
   settlePageRequests,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 
 test("the Console confirms deletion and reloads its receipt after the Agent and its grants are removed", async (t) => {
   const state = new InMemoryPlatformState();

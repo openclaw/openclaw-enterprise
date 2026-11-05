@@ -1,19 +1,19 @@
 ---
 created: 2026-09-04
-updated: 2026-10-23
-last_updated_session: authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d
+updated: 2026-11-03
+last_updated_session: authoring-run/c1bf6b1d-bea1-4de7-b3af-4a2ea197ba06
 ---
 
 # GitHub Actions testing flow
 
 ## Overview
 
-The [ordinary CI lanes](../testing/ci.md#ci) reject missing or skipped coverage. Docs-only runs check documentation and Suite Audit. Neither proves credentialed integrations.
+The [ordinary CI lanes](../testing/ci/required-checks.md) reject missing or skipped coverage. Docs-only runs execute Suite Audit and Static Checks. Neither proves credentialed integrations.
 
 ## Entry Points
 
 - `.github/workflows/ci.yml:jobs`: PR, main push, merge-group and manual checks on ephemeral runners.
-- `.github/workflows/qa-advisory.yml:jobs`: post-merge and 6-hourly QA on `main`; trusted pull requests opt in with `full-qa`.
+- `.github/workflows/qa-advisory.yml:jobs`: 6-hourly QA on `main`, and post-merge QA when `QA_ADVISORY_ON_PUSH` is `true`; trusted pull requests select [full or focused advisory QA](../testing/ci/qa-advisory.md).
 - `.github/workflows/full-integration.yml:jobs`: manual integrations from main or approved Kubernetes model/OpenShell branches, pinned to the dispatched commit.
 
 ## Flow
@@ -21,9 +21,8 @@ The [ordinary CI lanes](../testing/ci.md#ci) reject missing or skipped coverage.
 ```mermaid
 graph TD
   A["PR or other CI event"] --> S["Select impact mode"]
-  A --> N["Suite Audit"]
+  A --> N["Suite Audit and Static Checks: every mode"]
   S -->|full PR| Q["Report affected packages (advisory)"]
-  S -->|docs| D["Documentation checks"]
   S -->|full or tests| B["All ordinary or selected CI lanes"]
   B --> F["Prepare owned resources"]
   F -->|prepared| H["Run tests and validate cases"]
@@ -33,7 +32,6 @@ graph TD
   J --> G["CI Required: verify mode and job states"]
   S --> G
   N --> G
-  D --> G
   K --> G
   G -->|full or tests| L["Aggregate same-source lane results"]
   G -->|docs| M["Documentation coverage result"]
@@ -52,8 +50,6 @@ graph TD
 
 ### 1. Select one source commit and coverage group
 
-`scripts/ci/run-tests.mjs:main` audits, runs and aggregates both locally and in CI.
-
 `.github/workflows/ci.yml:jobs`, `.github/workflows/full-integration.yml:jobs`,
 `scripts/ci/full-integration-preflight.mjs:validateFullIntegrationPreflight`, and
 `scripts/ci/test-suites.mjs:loadTestSuites`
@@ -62,7 +58,13 @@ graph TD
 `scripts/ci/test-suites/<lane>.json` references for runners and preparation.
 Each lane owns its tests, environment, required inputs and preparation settings.
 
-CI uses the event checkout without external service credentials. Impact and Suite Audit start independently. In every mode, `static-checks` verifies checkout identity and runs workspace, lint, format, OpenAPI and docs checks (no product tests), alone in docs mode. The [coverage map](../testing/ci.md#tests-in-each-workflow) lists matrix jobs and the separate `runtime-image-fixture`; tests mode runs only selected lanes. Image startup, PostgreSQL Application and the `checks-baseline` and `checks-browser` parts use `blacksmith-32vcpu-ubuntu-2404` for its 8 CPUs, k3d fixture and observability for its NetworkPolicy-enforcing kernel; `runtime-image-fixture` uses `ubuntu-22.04`. Other lanes, Static Checks and audit use `blacksmith-16vcpu-ubuntu-2404`.
+For focused proof, `run-tests.mjs:selectLane` requires an exact file path from the
+selected lane. The composite action calls `check-selection` before tool setup or
+preparation. `runLane` uses the same selector and retains the file's expected
+cases, environment and cleanup. Results carry `scope: focused`;
+`validateLaneEvidence` rejects them for full-lane aggregation, even for a one-file lane.
+
+CI uses the event checkout without external service credentials. `CI Impact` starts independently of `Suite Audit and Static Checks`, which verifies checkout identity and runs the [documented checks](../testing/ci/required-checks.md#scenarios) in every mode. Docs mode skips test lanes. The [coverage map](../testing/ci/required-checks.md#scenarios) lists matrix jobs and the separate `runtime-image-fixture`; tests mode runs only selected lanes. Image startup parts 1 and 2, PostgreSQL Application and the `checks-baseline` and `checks-browser` parts use `blacksmith-32vcpu-ubuntu-2404` for its 8 CPUs, k3d fixture and observability for its NetworkPolicy-enforcing kernel; `runtime-image-fixture` uses `ubuntu-22.04`. Other jobs use `blacksmith-16vcpu-ubuntu-2404`.
 
 The selector verifies that the tested merge has the event head as its second parent. It
 compares that tree with its first parent, the current base, using policy from the base.
@@ -75,7 +77,7 @@ the owning lanes from either tree, adds `checks-baseline-2` for TypeScript, and 
 `checks-baseline-1` if only the fixture job would run. Other changes and non-PR events
 select full CI. Missing policy or unverifiable source selects full or fails closed.
 
-`CI Required` rechecks the mode and selected lanes. Impact, audit and selected jobs must
+`CI Required` rechecks the mode and selected lanes. Impact, the combined static-checks job, and selected lanes must
 succeed; other jobs must be skipped. Full and tests modes aggregate results from the same
 source. Docs mode produces no test artifacts. The impact summary shows mode, fixed reason
 and accepted lanes; it omits paths and raw output. Selector errors fail the job, and missing
@@ -92,7 +94,9 @@ lane and CI suite; preflight includes `integration-qa`. QA waits for Slack to fi
 Aggregation requires QA and `dev-up-k3d` results. Cancellation stops QA.
 `all` requires `main`. Only `k3d-model`/`openshell` admit exact environment-granted
 branches; administrators remove temporary grants after verification.
-Credential-free `dev-up-k3d` also accepts branches and prepares Go, CLI, Chromium
+`skipper-prepared-git-installed` also accepts branches without a protected environment;
+it uses synthetic model and Git credentials. Credential-free `dev-up-k3d` accepts
+branches and prepares Go, CLI, Chromium
 and k3d on Ubuntu 22.04, with 150/180-minute file/job deadlines.
 Dispatches serialize without cancellation: standalone `dev-up-k3d` per branch,
 others in `full-integration`. Preflight rejects required reviewers and retains
@@ -102,11 +106,11 @@ PostgreSQL migration and application suites own separate servers; each Kubernete
 
 The application lane gives the native IAM barrier test its own migrated PostgreSQL database; only that test receives its application and migrator connection details, which the CLI keeps out of `GITHUB_ENV`. Its unregistered supplier stays in that disposable database. This fixture does not establish production writer participation in the barrier.
 
-Full CI and Full Integration call the [run-ci-lane action](../../.github/actions/run-ci-lane/action.yml) for setup, selected baseline checks, preparation, execution, unconditional cleanup, and sanitized result upload. Callers own the commit, protected environment, explicit credentials and timeout; tests stop five minutes earlier.
+The [run-ci-lane action](../../.github/actions/run-ci-lane/action.yml) prepares, runs, and cleans up lanes and uploads sanitized results. Callers set the commit, environment, credentials, and timeout. Tests stop five minutes early.
 
 PR dependency caches stay within GitHub's PR merge-ref scope; main caches stay main-scoped. Results and credential-bearing state are not caches; protected jobs do not promote PR artifacts.
 
-The provider job uses the shared `blacksmith-8vcpu-ubuntu-2404` runner for image-build and k3d-import disk headroom; standard Ubuntu reached `DiskPressure` and evicted the seccomp probe before startup. Preparation copies the archive to each owned k3d node for node-local `ctr image import`; k3d `tools-node` can report success despite logged per-node failures. Imported manifest and CRI checks remain required before tests.
+The provider job uses `blacksmith-8vcpu-ubuntu-2404` for image-build and k3d-import disk space. Standard Ubuntu hit `DiskPressure` and evicted the seccomp probe. Preparation uses `ctr image import` on each owned node and verifies its manifest and CRI records. The k3d `tools-node` can report success despite per-node failures.
 
 ### 2. Prepare resources under the job owner
 
@@ -114,9 +118,9 @@ The provider job uses the shared `blacksmith-8vcpu-ubuntu-2404` runner for image
 
 [CI resource preparation](github-actions-testing/preparation.md) traces tool setup, image and cluster preparation, protected credentials, and resource ownership. Continue below when preparation has produced the lane state.
 
-For `logging-collector`, `scripts/ci/prepare.mjs:prepareLane` pre-pulls the pinned Collector, Node, Prometheus and Grafana images before publishing lane inputs. The metrics test and preparation share the digests in `scripts/ci/metrics-monitoring-images.mjs:metricsMonitoringImages`. `scripts/ci/prepare.mjs:ensureDockerSourceImage` reuses a verified local repository digest or pulls through `scripts/ci/image-pull.mjs:pullImage`, then verifies that digest before tests start containers. Registry 5xx and rate limits retry within the shared pull budget; missing manifests and authorization refusals fail preparation immediately. Explicit unpinned Node overrides keep the existing test-owned pull behavior.
+For `logging-collector`, `scripts/ci/prepare.mjs:prepareLane` pre-pulls the pinned Collector, Node, Prometheus and Grafana images before publishing lane inputs. The metrics test and preparation share the digests in `scripts/ci/metrics-monitoring-images.mjs:metricsMonitoringImages`. `scripts/ci/prepare.mjs:ensureDockerSourceImage` reuses a verified local repository digest or pulls through `scripts/ci/image-pull.ts:pullImage`, then verifies that digest before tests start containers. Registry 5xx and rate limits retry within the shared pull budget; missing manifests and authorization refusals fail preparation immediately. Explicit unpinned Node overrides keep the existing test-owned pull behavior.
 
-`checks-browser`, `checks-browser-2`, `postgres-auth`, `postgres-platform`, `images-model-probes`, `images-runtime-startup`, `images-runtime-startup-2` and `images-runtime-startup-3` use separate runners and required artifacts. `scripts/ci/prepare.mjs:imageBuildArgs` enables scoped BuildKit caches for hosted image jobs: packaging exports; probes and runtime startup restore. Images load into the job's Docker engine; cache credentials stay in preparation.
+`scripts/ci/prepare.mjs:imageBuildArgs` restores scoped BuildKit caches for hosted image jobs. Only the [CI Image Cache workflow](../../.github/workflows/ci-image-cache.yml) calls `warmImageCache` to export the shared controller/runtime cache. Images load into the job's Docker engine; cache credentials stay in preparation.
 
 Kubernetes preparation records host snapshots. Failed reads, bounded
 by time and size, save `<state-file>.diagnostics.json` outside the cluster directory.
@@ -146,6 +150,11 @@ Native runtime-image tests trust a dynamic Codex Docker seccomp profile only whe
 that state is not CI proof; the standalone fallback remains the pinned reviewed
 manual profile. Production node provisioning remains outside CI ownership; see
 [Codex sandbox setup](../guides/deploy/codex-sandbox.md).
+
+`scripts/ci/staging-qualification.ts:pull` verifies release metadata and
+[isolates pull credentials](../release/staging-qualification.md).
+`smoke` runs trusted workflow code against the release images. Results identify
+both commits.
 
 ### 3. Execute and account for actual cases
 
@@ -186,6 +195,17 @@ prevent retention.
 Fixture bootstrap diagnostics upload separately as `diagnostics-<artifact-prefix>-<lane>-attempt-<N>`.
 They survive cluster/private-state cleanup but cannot satisfy required test results.
 
+`tests/helpers/local-first-agent-native.mjs:nativeWorkerPlacementObservation`
+classifies public placement errors and projects environment/tunnel states, node
+connection and capability counts, and exact workspace-node matches. The expected
+node comes from the selected revision's Gateway Pod. Failure reads use
+`sessions.describe`, `environments.status` and `node.list` share a five-second
+budget; failed refreshes retain a labeled fallback observation.
+`reporter.mjs:nativeFirstAgentProofDiagnostic` validates the fixed categories,
+booleans and counters again. Raw errors and identifiers do not enter the record.
+Public RPCs do not expose workspace-binding readiness or restoration; a workspace
+reference does not prove either state.
+
 Per-file cleanup releases its database; job cleanup removes state-owned resources.
 Deleting an owned `k3d-cluster` removes its Collector Namespace and RBAC. Logging
 cleanup removes its Docker backend and JSONL/config directory even without
@@ -199,7 +219,7 @@ On POSIX, `scripts/ci/cleanup-command.mjs` leads each group. Caller exit,
 including SIGKILL or `process.exit()`, closes its private IPC channel;
 the supervisor kills its group. Completion drains output, kills grouped
 descendants, and returns command status.
-At its [deadline](../testing/ci.md#cleanup-command-deadlines), TERM then KILL
+At its [deadline](../testing/ci/configuration.md#runner-overrides), TERM then KILL
 bound the group despite direct-child exit. Escaped groups receive no signals;
 retained streams close after another grace. Windows provides direct-child
 termination and stream bounds, without this supervisor.
@@ -242,6 +262,12 @@ External reconciliation awaits an approved resource ledger.
 
 ## Changelog
 
+- 2026-11-03 01:07: Bind staging tests to release source. (authoring-run/c1bf6b1d-bea1-4de7-b3af-4a2ea197ba06 - d2fc28e1d6d70292e462956cedef0dae9281c48c)
+
+- 2026-11-02 23:56: Trace staging authentication. (authoring-run/5817dfd2-487d-44bc-a2f7-2d57659ea0fc - db2cc11c4fd767c47394d680ef46bf26e1202fbc)
+
+- 2026-10-29 02:11: Add focused Compose OpenShell selection and sanitized native worker observations. (authoring-run/01a17fae-f253-7d71-af12-d3f259c4faf0 - aa2cfe543b3bba361679e7e1a3028c3327d2c388)
+
 - 2026-10-23 07:40: Preserve upstream CI selection alongside locale-independent timestamp ordering after conflict resolution. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - a6a49a5192fa1c9cc5035801eed7d64b03336491)
 
 - 2026-10-23 03:43: Order Docker timestamps and retain twelve latest retry kinds independently of locale. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - 9bca605f5175bb225a522c3d5537a7ee6e1a7751)
@@ -259,27 +285,5 @@ External reconciliation awaits an approved resource ledger.
 - 2026-10-14 10:19: Retain cleanup ownership. (authoring-run/ee448fbe-3e0a-40d4-b7d1-3f122d3e5f1b - 10f34280f56dc2375f48df9d2161024520a35882)
 
 - 2026-10-14 09:44: Document command-group termination, pipes with shutdown deadlines, and abandoned runner and fixture handoffs in the accompanying fix. (authoring-run/6dec0b67-a5cd-4a9e-82dc-7609f956b115 - 47d5b8cc901e225e51227a905ee688c69c8ea729)
-
-- 2026-10-08 11:04: Isolate launcher queue. (authoring-run/09563984-5be9-4e9d-bf17-142ceb70d96d - 9e7a30a5da374826b1a2ba79b3bca9cdcb74d1f2)
-
-- 2026-10-08 09:57: Documented Keycloak egress repair and manual qualification. (authoring-run/e5c12029-7b1c-4214-a4b9-bde04d03ab41 - 12719f1d366291b774eb9d4948be451c9dd7d805)
-
-- 2026-10-06 02:00: Per-file Agent namespace watch files. (audit-followup-ci-runner)
-
-- 2026-10-04 03:44: Add a non-required affected-package advisory to the accompanying CI change. (authoring-run/5808365b-c590-4c11-92d6-4ee32efc3626 - 070147565f45e720918de9e649b93cad71820b07)
-
-- 2026-10-04 03:00: Split the baseline lane into two parallel parts. (ci-split-checks - 77323afe4d57960c37e07b62e684942a418d585a)
-
-- 2026-10-04 01:41: Document metrics image preparation, shared pins and pull failure handling in the accompanying changes. (authoring-run/091c2e1e-27cb-4514-a1ea-8308051d6ab9 - 61ce8407ac7f46c137f17e7d3bdaf8e9377fa4ff)
-
-- 2026-10-01 02:34: Document the advisory impact summary in the accompanying changes. (authoring-run/0f81a0c3-327f-4389-ae2e-89431878a2d7 - c61836797191a0924671eaaec074863fe2d80cfe)
-
-- 2026-10-01 01:06: Preserve Git path byte identity in the selector and document its coverage decision in the accompanying changes. (authoring-run/2403db12-cdf4-4070-aece-2f4b45ff0234 - 5e0906ccd42473596c2006474adf199d42ab74df)
-
-- 2026-09-29 22:55: Split browser, PostgreSQL authentication, and image model-probe lanes; cache hosted controller/runtime builds while retaining required result accounting. (01a0f0d0-002a-7dc3-af73-e7d25dfe92e2 - b8d7e48f5837d11e54e04dce40650f7ccc5100f0)
-
-- 2026-09-30 02:42: Document generated API reference selection in the accompanying changes. (authoring-run/cd1c4c87-0519-4df7-8bf2-abbff0d53424 - a56c027ff8ec22655cca49aa6a912081cb98b593)
-
-- 2026-09-30 02:03: Describe the documentation-only checks and required gate in the accompanying changes. (authoring-run/ac4af003-ce47-4e8d-83af-040e227a7673 - 20c06dffda90748e5ea16348eaa04feb79d551ab)
 
 [GitHub Actions testing documentation history](github-actions-testing/history.md) preserves the older dated entries.

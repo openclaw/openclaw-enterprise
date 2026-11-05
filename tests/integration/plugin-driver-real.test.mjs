@@ -349,13 +349,16 @@ test(
       codexCredential: credential,
     });
     const path = `/namespaces/${fixture.namespaceId}/agents/plugins`;
-    const catalog = await fixture.request("POST", path, {});
+    const catalog = await fixture.request("POST", path, { harnessId: "codex" });
     assert.equal(catalog.status, 200, JSON.stringify(catalog.error));
     const linear = catalog.data.plugins.find(
       (entry) => entry.id === "codex-plugin:linear@openai-curated-remote",
     );
     assert.ok(linear, "the configured catalog must offer Linear without a discovery token.");
-    const detail = await fixture.request("POST", `${path}/details`, { pluginId: linear.remoteId });
+    const detail = await fixture.request("POST", `${path}/details`, {
+      harnessId: "codex",
+      pluginId: linear.remoteId,
+    });
     assert.equal(detail.status, 200, JSON.stringify(detail.error));
     assert.equal(detail.data.id, linear.id);
 
@@ -387,9 +390,14 @@ test(
     const deployed = await fixture.deployAndWait(agent);
     assert.ok(Object.hasOwn(deployed.revision.plugins?.plugins ?? {}, linear.id));
     assert.deepEqual(deployed.status.warnings, []);
-    const [native] = await fixture.listCodexNativeCatalog(agent, [linear.id]);
-    assert.equal(native?.remotePluginId, linear.remoteId);
-    assert.ok(native.detailAvailable && native.appCount > 0);
+    // Read the selected native plugin to verify its installed identity and app mapping.
+    const native = await fixture.codexNativePluginDetail(agent, {
+      remotePluginId: linear.remoteId,
+    });
+    assert.equal(native.summaryId, "linear@openai-curated-remote");
+    assert.equal(native.installed, true);
+    assert.equal(native.enabled, true);
+    assert.ok(native.appCount > 0);
 
     // A transcript with the exact tool and result proves execution, not just selection.
     const turnMarker = `CODEX_LINEAR_CATALOG_${randomUUID()}`;

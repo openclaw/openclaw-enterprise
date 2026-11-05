@@ -11,7 +11,10 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
-import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
+import {
+  createDevelopmentComputeDriver,
+  registerAndSelectDrivers,
+} from "../helpers/development.mjs";
 import { bindRole, grantRole, permissionsFor, principalIAMState } from "../helpers/iam-grants.mjs";
 
 const installation = Object.freeze({
@@ -80,22 +83,14 @@ async function createFixture() {
             ? `cfg_00000000-0000-4000-8000-${String(++configurationSequence).padStart(12, "0")}`
             : `${kind}-${++sequence}`,
   });
-  controller.registerDriver(iam);
-  controller.selectDriver("iam", iam.id);
   const configurationDriver = createTestConfigurationDriver({ id: "configuration-read-test" });
-  controller.registerDriver(configurationDriver);
-  controller.selectDriver("configuration", configurationDriver.id);
   const compute = {
     ...createDevelopmentComputeDriver(),
     id: "compute-read-test",
     implementation: "deterministic-read-test",
   };
-  controller.registerDriver(compute);
-  controller.selectDriver("compute", compute.id);
-
   const secretDriver = createTestSecretDriver();
-  controller.registerDriver(secretDriver);
-  controller.selectDriver("secret", secretDriver.id);
+  registerAndSelectDrivers(controller, [iam, configurationDriver, compute, secretDriver]);
 
   const namespaceA = await controller.createNamespace("principal-admin", { name: "Namespace A" });
   const namespaceB = await controller.createNamespace("principal-admin", { name: "Namespace B" });

@@ -100,6 +100,32 @@ are still required for private marker packages before they are made public and
 for separately authorized private mirrors. Workflow package permissions do not
 grant a workstation credential additional scopes.
 
+## Check native images without publication
+
+Use [Check Native Container Images](../../.github/workflows/container-check.yml)
+to build and smoke-test controller and runtime images on native AMD64 and ARM64
+runners. Configure the [native runners and base image](configuration.md#build-settings).
+Select a ref containing this workflow version and its manual `source_sha` input.
+
+Replace both placeholders. Set `expected_sha` to the full 40-character commit
+SHA recorded independently during source review:
+
+```sh
+selected_ref='REPLACE_WITH_BRANCH_OR_TAG'
+expected_sha='REPLACE_WITH_REVIEWED_FULL_COMMIT_SHA'
+gh workflow run container-check.yml --repo openclaw/openclaw-enterprise \
+  --ref "$selected_ref" -f source_sha="$expected_sha"
+```
+
+The workflow checks out `github.sha` and compares it with `source_sha`. A
+mismatch, including a branch moved between review and dispatch, fails before
+image builds. An omitted or empty `source_sha` defaults to `github.sha`, with
+no independent check. Reusable callers must supply it.
+
+Successful runs upload OCI artifacts for one day; repository readers can
+download them. Review the image contents and audience, especially for public
+source. The workflow does not push images to a registry or install a release.
+
 ## Prepare and publish
 
 1. Merge the reviewed workflow and source changes to `main`. Wait for that exact
@@ -183,7 +209,9 @@ on `main` with:
 
 - `source_sha`: the original image source SHA.
 - `preparation_run_id` and `preparation_attempt`: the original **Enterprise
-  Containers** run, with successful validation and both prepare/smoke jobs.
+  Containers** run. Validation, all four native preparation jobs, and both
+  image assembly jobs must succeed. For older runs that assembled each image
+  in its preparation job, validation and both image jobs must succeed.
 - `workflow_ci_run_id`: successful main-push CI for the selected recovery workflow
   commit. This is separate from the original image's CI evidence in its seal.
 

@@ -53,6 +53,9 @@ tokens (Credentials tab and Channels drawer). See
 [Create and deploy in the console](../reference/console/create-and-deploy.md)
 for the supported installation workflow, prerequisites, and Teams deployment limits.
 
+The [repository collaborator walkthrough](../../scripts/console-storybook/repository-access-workflow.md)
+covers new selections, saved access during discovery, and explicit Read-only overrides.
+
 Repository previews cover access levels, empty or pending discovery, unavailable
 choices, denied or unverified authorization, and reselection after a rejected save.
 In **Locale-stable repository search**, search `ibm`, select `acme/platform`, and
@@ -85,6 +88,19 @@ or Namespaces, and return with Back/Forward. Check empty and invalid text, then
 explicit Cancel or Reload. The Configuration story keeps deployment disabled;
 workspace Save changes only the selected simulated file.
 
+**Components/Workspace → Save needs Agent operate** is only the first denial.
+**Operate answer on return** keeps that editor mounted. The preview runs the
+visits: the first Logs visit records the runtime-status refusal and Workspace
+files stays read-only; the next Logs visit reads a simulated operate grant and
+AGENTS.md is editable on return, the Stop row shows and Configuration offers Run
+diagnostics; after the edit, the following Logs visit reads a revocation, and
+returning keeps that unsaved text and makes the file read-only, hides Stop and
+disables Run diagnostics.
+Reset story replays it. The permission changes and the runtime refusal are
+simulated. A failed permission read is not this story; the page keeps the previous
+answer. The controller still authorizes every write. The browser test changes the
+controller's real IAM policy across the same tab visits.
+
 In **Flows → Keep an Agent draft**, fill a default starter form, leave, and
 re-enter, also after a refused Create: it returns; Cancel clears it.
 
@@ -110,6 +126,12 @@ In **Discard an unsaved Secret choice**, that Secret isn’t listed; reload to d
 In **Issued service accounts unavailable**, switch authentication methods:
 account feedback hides, then returns with the saved issued-account selection.
 
+**Components/Credentials → Parked authentication grant** opens Credentials while
+the simulated Namespace IAM read is still answering, selects Configuration, then
+returns with **Set up credentials**. The missing-grant warning is written on the
+parked form and is visible on return; Deploy stays disabled. The delay is
+simulated. The browser test holds the controller's real IAM read.
+
 In **Components/Channels → Slack Secret menu**, search names/IDs and select with
 arrows and Enter. **Slack create Secret modal** shows Name and masked value.
 In **Slack duplicate Secret name**, rename and retry without reentering the value;
@@ -134,7 +156,9 @@ turns.
 
 In **Create Agent / Discover plugins with a service account token**, expand
 **Access and credential setup** and inspect its links. Collapse it; at 390×844
-and 390×640, check scrolling and reachable pagination. **Add Calendar**, edit a
+and 390×640, check scrolling and reachable pagination. In **Short window plugin
+picker** at 1440×480, plugin names stay readable with setup open or closed;
+scroll the catalog browser to reach every control. **Add Calendar**, edit a
 tool, then **Done**: **Plugin selections JSON** shows the draft. **Search plugins**
 queries the catalog; **Filter tools** filters locally. Credential changes clear
 the catalog and keep selections.
@@ -194,9 +218,18 @@ Browsing never deploys. Deploy credential changes; workspace edits apply immedia
 Native JSON omits Agent-owned Backend and execution mode. See [versions and Slack
 sender access](../reference/console/versions-and-channel-drafts.md).
 
+In **Collaboration and safety**, Strict mode stages both locked-down values in the
+Configuration JSON and keeps focus; the viewer story shows every toggle unavailable.
+None proves a deployed Gateway's steering.
+
 In **Enable gateway password access**, Cancel discards the staged reference.
 To apply it, save Configuration, then deploy. Compare configured, save-denied,
-and save-in-progress stories; none proves credential delivery or login.
+and save-in-progress stories; none proves credential delivery or login. The
+unreadable-reference story shows a saved reference without a provider: the
+refusal, the button and a disabled **Deploy new version**. The refused-alias
+story shows an upper-case `secrets.defaults.env`: the alias refusal, no button
+and a disabled **Deploy new version**. The allowlist story shows a default env
+alias whose `allowlist` omits the variable: the reason and no button.
 
 ## Stop
 

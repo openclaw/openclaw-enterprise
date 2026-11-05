@@ -3,12 +3,15 @@ import { type ErrorDetail } from "@openclaw-enterprise/contracts";
 import { requireConfiguration, ConfigurationValidationError } from "@openclaw-enterprise/contracts";
 import { readFileSync } from "node:fs";
 import { stat } from "node:fs/promises";
+import { posix } from "node:path";
 import type {
   AgentRevision,
+  ConfigurationValidationOptions,
   HarnessAuthSnapshot,
   OpenClawConfigurationDocument,
   OpenClawConfigurationValue,
   RevisionHarnessDescriptor,
+  SecretBindings,
   ComputeAgentBinding,
   ComputeDriver,
   ComputeReadiness,
@@ -20,7 +23,14 @@ import type {
   WorkloadLaunchContext,
 } from "@openclaw-enterprise/contracts";
 import { admittedLoggingLevel } from "@openclaw-enterprise/contracts";
-import { ConfigurationHarnessError, configurationSettingMessage } from "@openclaw-enterprise/occ";
+import {
+  ComputeGatewaySettingError,
+  ConfigurationHarnessError,
+  configurationSettingMessage,
+  gatewayPasswordRequirement,
+  generatedGatewayPasswordReference,
+  keyedSettingPath,
+} from "@openclaw-enterprise/occ";
 import {
   asRecord,
   immutableCopy,
@@ -37,6 +47,7 @@ import {
   WORKSPACE_SETUP_RUNTIME,
 } from "../workspace-setup-runtime.ts";
 import { validatePlaintextNativeGateway } from "../native-gateway-transport.ts";
+import { validateGatewayToolPolicy } from "../gateway-tool-policy.ts";
 import { validateCodexApprovalPolicySetting } from "../../../gateway/codex-approval-policy.ts";
 import { unsupportedNativeGatewayAuthFields } from "../../../gateway/auth-fields.ts";
 import { SystemSshCommandExecutor, type SshCommandExecutor } from "./executor.ts";
@@ -88,6 +99,8 @@ const HELPER = readFileSync(new URL("./remote-helper.cjs", import.meta.url), "ut
 const OPERATION_TIMEOUT_MS = 180_000;
 // The helper enforces its own deadline below the transport timeout.
 const HELPER_DEADLINE_MS = OPERATION_TIMEOUT_MS - 10_000;
+/** OpenSSH refuses a longer `ConnectTimeout` ("invalid time value"), so every probe would fail. */
+const MAX_CONNECT_TIMEOUT_SECONDS = 2_147_483_647;
 // SSH joins remote argv through the login shell; systemd also expands specifiers.
 const PATH_PATTERN = "^/[A-Za-z0-9_./:@+-]*$";
 const PATH = new RegExp(PATH_PATTERN);
@@ -128,6 +141,41 @@ function path(value: unknown, description: string): void {
   }
 }
 
+// The unit runs with PrivateTmp=true, so a path under /tmp or /var/tmp is hidden from it: a
+// runtime.root there (its WorkingDirectory and state) times out every deploy (finding 2358), and
+// a Node or OpenClaw path there cannot start. The check is lexical; the controller cannot see a
+// host symlink into those directories.
+function privateTmpProblem(value: string): string | undefined {
+  // The host resolves "." and ".." segments, so /var/./tmp/x is in /var/tmp.
+  const segments = posix
+    .normalize(value)
+    .split("/")
+    .filter((segment) => segment !== "");
+  return segments[0] === "tmp" || (segments[0] === "var" && segments[1] === "tmp")
+    ? "Use a path outside /tmp and /var/tmp, such as /var/lib/openclaw-enterprise: the unit's PrivateTmp hides those."
+    : undefined;
+}
+
+// "/" or a "." or ".." segment makes the state root ambiguous.
+function stateRootProblem(root: string): string | undefined {
+  const segments = root.split("/").filter((segment) => segment !== "");
+  if (segments.length === 0 || segments.some((segment) => segment === "." || segment === "..")) {
+    return "Use a dedicated absolute directory without . or .. segments, such as /var/lib/openclaw-enterprise.";
+  }
+  return privateTmpProblem(root);
+}
+
+function requireUsablePath(
+  value: string,
+  pointer: string,
+  problem: (value: string) => string | undefined,
+): void {
+  const message = problem(value);
+  if (message !== undefined) {
+    throw new ConfigurationValidationError([{ path: pointer, code: "INVALID_VALUE", message }]);
+  }
+}
+
 function port(value: unknown, minimum: number, description: string): number {
   if (!isPositiveSafeInteger(value) || value < minimum || value > 65_535) {
     throw new ConfigurationFailure(`${description} must be an integer from ${minimum} to 65535.`);
@@ -154,6 +202,10 @@ function hasPluginSelections(revision: AgentRevision): boolean {
   return revision.plugins !== undefined && Object.keys(revision.plugins.plugins).length > 0;
 }
 
+// The passwords password mode renders as GATEWAY_PASSWORD_REFERENCE: the expression and a
+// default-provider reference to the generated password. SSH Compute admitted only these before it
+// read the authored reference (finding 3065), so they still render as before: the helper compares
+// the rendered document with the prepared snapshot's hash at teardown.
 function usesGatewayPasswordReference(value: unknown): boolean {
   if (value === GATEWAY_PASSWORD_EXPRESSION) {
     return true;
@@ -166,45 +218,126 @@ function usesGatewayPasswordReference(value: unknown): boolean {
   );
 }
 
+// Why `password` does not name the password SSH Compute generates, or undefined: it must be the
+// expression or an environment SecretRef to OPENCLAW_GATEWAY_PASSWORD, which the unit's
+// EnvironmentFile sets. Teardown checks only this shape, never whether OpenClaw reads the reference,
+// so a later reader change cannot leave an admitted revision unable to stop or retire (as teardown
+// skips the TLS rule).
+function gatewayPasswordShapeProblem(password: unknown, secrets: unknown): string | undefined {
+  const reference = asRecord(password);
+  if (
+    password === GATEWAY_PASSWORD_EXPRESSION ||
+    (reference?.source === "env" && reference.id === OPENCLAW_GATEWAY_PASSWORD)
+  ) {
+    return undefined;
+  }
+  const generated = generatedGatewayPasswordReference(secrets);
+  return `must be "${GATEWAY_PASSWORD_EXPRESSION}" or the environment SecretRef {source: "env", provider: "${generated.provider}", id: "${OPENCLAW_GATEWAY_PASSWORD}"}, whose value SSH Compute generates`;
+}
+
+// Why the Gateway cannot read the password SSH Compute generates through `password` with the
+// Configuration's `secrets`, or undefined. Every env provider reads the unit's environment, so any
+// environment SecretRef to OPENCLAW_GATEWAY_PASSWORD that OpenClaw reads
+// (`gatewayPasswordRequirement`) serves, on a custom default alias or a configured env provider too.
+function gatewayPasswordProblem(password: unknown, secrets: unknown): string | undefined {
+  return (
+    gatewayPasswordShapeProblem(password, secrets) ?? gatewayPasswordRequirement(password, secrets)
+  );
+}
+
+type SettingError = (setting: string, requirement: string) => Error;
+
+const preparationSettingError: SettingError = (setting, requirement) =>
+  new ConfigurationFailure(configurationSettingMessage(setting, requirement));
+
+// Gateway authentication SSH Compute can deliver. Deploy admission refuses the rest with the
+// setting's name (a 409, as Kubernetes does); preparation applies the same rule as defence in
+// depth. Teardown (`teardown`) checks only the password's shape, so it accepts what SSH admitted
+// before finding 3065 and what it admits now, and renders both as at admission. Returns the gateway
+// and auth records for rendering.
+function sshGatewayAuthentication(
+  configuration: Readonly<OpenClawConfigurationDocument>,
+  createError: SettingError = (setting, requirement) =>
+    new ComputeGatewaySettingError(setting, requirement),
+  teardown = false,
+): {
+  gateway: Record<string, OpenClawConfigurationValue>;
+  auth: Record<string, OpenClawConfigurationValue>;
+} {
+  const gatewayRecord = asRecord(configuration.gateway);
+  if (configuration.gateway !== undefined && gatewayRecord === undefined) {
+    throw createError("gateway", "must be an object");
+  }
+  const gateway = (gatewayRecord ?? {}) as Record<string, OpenClawConfigurationValue>;
+  const authRecord = asRecord(gateway.auth);
+  if (gateway.auth !== undefined && authRecord === undefined) {
+    throw createError("gateway.auth", "must be an object");
+  }
+  const auth = (authRecord ?? {}) as Record<string, OpenClawConfigurationValue>;
+  const unsupported = unsupportedNativeGatewayAuthFields(auth);
+  if (unsupported.length > 0) {
+    throw createError(
+      keyedSettingPath("gateway.auth", unsupported[0]!),
+      "is not a supported native gateway authentication field",
+    );
+  }
+  if (auth.mode !== undefined && auth.mode !== "trusted-proxy" && auth.mode !== "password") {
+    throw createError(
+      "gateway.auth.mode",
+      "must be trusted-proxy or password: SSH Compute supports only native trusted-proxy or password gateway authentication",
+    );
+  }
+  const checkPassword = teardown ? gatewayPasswordShapeProblem : gatewayPasswordProblem;
+  const problem =
+    auth.password === undefined ? undefined : checkPassword(auth.password, configuration.secrets);
+  if (problem !== undefined) {
+    throw createError("gateway.auth.password", problem);
+  }
+  // Password mode renders an unset password and the expression as GATEWAY_PASSWORD_REFERENCE,
+  // which a custom default env alias or an allowlist can leave unreadable: the Gateway would exit
+  // at every start, so offer the reference on the default alias instead, only when OpenClaw reads
+  // it (an allowlist or another source on that alias refuses it too). The refusal states why
+  // OpenClaw cannot read the rendered reference; its own offer is the step.
+  const rendered =
+    teardown || auth.mode === "trusted-proxy" || !rendersGatewayPasswordReference(auth.password)
+      ? undefined
+      : gatewayPasswordRequirement(GATEWAY_PASSWORD_REFERENCE, configuration.secrets, {
+          step: false,
+        });
+  if (rendered !== undefined) {
+    const generated = generatedGatewayPasswordReference(configuration.secrets);
+    const offer =
+      gatewayPasswordRequirement(generated, configuration.secrets) === undefined
+        ? `{source: "env", provider: "${generated.provider}", id: "${OPENCLAW_GATEWAY_PASSWORD}"}`
+        : `an env SecretRef to ${OPENCLAW_GATEWAY_PASSWORD} that OpenClaw reads`;
+    throw createError(
+      "gateway.auth.password",
+      `must be set to ${offer}: SSH Compute's default reference ${rendered}`,
+    );
+  }
+  return { gateway, auth };
+}
+
+// Whether password mode replaces `password` with GATEWAY_PASSWORD_REFERENCE; it renders any other
+// admitted reference as written.
+function rendersGatewayPasswordReference(password: unknown): boolean {
+  return password === undefined || usesGatewayPasswordReference(password);
+}
+
 function sshGatewayConfigurationDocument(
   configuration: OpenClawConfigurationDocument,
   validateTransport = true,
 ): OpenClawConfigurationDocument {
   if (validateTransport) {
     for (const validate of [validatePlaintextNativeGateway, validateCodexApprovalPolicySetting]) {
-      validate(
-        configuration,
-        (setting, requirement) =>
-          new ConfigurationFailure(`Configuration setting ${setting} ${requirement}.`),
-      );
+      validate(configuration, preparationSettingError);
     }
   }
-  const gatewayRecord = asRecord(configuration.gateway);
-  if (configuration.gateway !== undefined && gatewayRecord === undefined) {
-    throw new ConfigurationFailure("SSH native gateway configuration must be an object.");
-  }
-  const gateway = (gatewayRecord ?? {}) as Record<string, OpenClawConfigurationValue>;
-  const authRecord = asRecord(gateway.auth);
-  if (gateway.auth !== undefined && authRecord === undefined) {
-    throw new ConfigurationFailure("SSH native gateway auth must be an object.");
-  }
-  const auth = (authRecord ?? {}) as Record<string, OpenClawConfigurationValue>;
-  const unsupported = unsupportedNativeGatewayAuthFields(auth);
-  if (unsupported.length > 0) {
-    throw new ConfigurationFailure(
-      `SSH native gateway authentication contains unsupported field ${unsupported[0]}.`,
-    );
-  }
-  if (auth.mode !== undefined && auth.mode !== "trusted-proxy" && auth.mode !== "password") {
-    throw new ConfigurationFailure(
-      "SSH Compute supports only native trusted-proxy or password gateway authentication.",
-    );
-  }
-  if (auth.password !== undefined && !usesGatewayPasswordReference(auth.password)) {
-    throw new ConfigurationFailure(
-      "Gateway password authentication must use OPENCLAW_GATEWAY_PASSWORD.",
-    );
-  }
+  const { gateway, auth } = sshGatewayAuthentication(
+    configuration,
+    preparationSettingError,
+    !validateTransport,
+  );
   if (auth.mode === "trusted-proxy") {
     return configuration;
   }
@@ -215,7 +348,9 @@ function sshGatewayConfigurationDocument(
       auth: {
         ...auth,
         mode: "password",
-        password: GATEWAY_PASSWORD_REFERENCE,
+        password: rendersGatewayPasswordReference(auth.password)
+          ? GATEWAY_PASSWORD_REFERENCE
+          : auth.password!,
       },
     },
   } as OpenClawConfigurationDocument;
@@ -234,7 +369,11 @@ export class SshComputeDriver implements ComputeDriver {
         properties: {
           identityFile: PATH_SCHEMA,
           knownHostsFile: PATH_SCHEMA,
-          connectTimeoutSeconds: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+          connectTimeoutSeconds: {
+            type: "integer",
+            minimum: 1,
+            maximum: MAX_CONNECT_TIMEOUT_SECONDS,
+          },
         },
       },
       hosts: {
@@ -300,9 +439,18 @@ export class SshComputeDriver implements ComputeDriver {
           "ssh.connectTimeoutSeconds must be a positive safe integer.",
         );
       }
+      if ((ssh.connectTimeoutSeconds ?? 0) > MAX_CONNECT_TIMEOUT_SECONDS) {
+        throw new ConfigurationFailure(
+          `ssh.connectTimeoutSeconds must be at most ${MAX_CONNECT_TIMEOUT_SECONDS}, the longest OpenSSH accepts.`,
+        );
+      }
       const runtime = options.runtime;
       for (const key of ["nodePath", "openclawPath", "root"] as const) {
         path(runtime[key], `runtime.${key}`);
+      }
+      requireUsablePath(runtime.root, "/runtime/root", stateRootProblem);
+      for (const key of ["nodePath", "openclawPath"] as const) {
+        requireUsablePath(runtime[key], `/runtime/${key}`, privateTmpProblem);
       }
       if (runtime.systemdUnitDirectory !== undefined) {
         path(runtime.systemdUnitDirectory, "runtime.systemdUnitDirectory");
@@ -331,6 +479,11 @@ export class SshComputeDriver implements ComputeDriver {
         for (const key of ["nodePath", "openclawPath"] as const) {
           if (host[key] !== undefined) {
             path(host[key], `Host ${key}`);
+            // Startup reports problems under a map's own path, so the message names the host.
+            requireUsablePath(host[key], "/hosts", (value) => {
+              const problem = privateTmpProblem(value);
+              return problem === undefined ? undefined : `hosts.${name}.${key}: ${problem}`;
+            });
           }
         }
       }
@@ -463,23 +616,58 @@ export class SshComputeDriver implements ComputeDriver {
   validateGatewaySettings(configuration: Readonly<OpenClawConfigurationDocument>): void {
     validatePlaintextNativeGateway(configuration);
     validateCodexApprovalPolicySetting(configuration);
+    sshGatewayAuthentication(configuration);
   }
 
-  // Agent create and update refuse a roster the host helper refuses at deployment, where the
-  // refusal was retried until the deployment failed (finding 2285). The message is Docker's and
-  // Kubernetes's; the host still checks the workspace path, which lives under its Agent root.
+  // The host's embedded Gateway applies tools.gatewayPolicy natively, so Configuration save,
+  // Preset save and deployment refuse a policy it cannot assemble, with Kubernetes's text
+  // (finding 2695). Preparation does not: a running Agent keeps its passes until a redeploy.
+  validateConfiguration(
+    configuration: Readonly<OpenClawConfigurationDocument>,
+    options?: ConfigurationValidationOptions,
+  ): void {
+    validateGatewayToolPolicy(
+      configuration,
+      (setting, requirement) =>
+        new ConfigurationHarnessError(configurationSettingMessage(setting, requirement)),
+      options,
+    );
+  }
+
+  // Agent create and update refuse a roster or workspace the host helper refuses at deployment,
+  // where the refusal was retried until the deployment failed (findings 2285, 2289). The roster
+  // message is Docker's and Kubernetes's. The helper accepts only paths under a directory derived
+  // from each Agent's id, which a shared Configuration cannot name, so any explicit workspace is
+  // refused here; the helper still checks the path as defence in depth. Null counts as unset,
+  // as in the helper and the shared rule.
   validateWorkspaceSetup(
     _harness: RevisionHarnessDescriptor,
     configuration: Readonly<OpenClawConfigurationDocument>,
   ): void {
-    requireWorkspaceSetupMainEntry(
-      configuration,
-      (setting, requirement) =>
-        new ConfigurationHarnessError(configurationSettingMessage(setting, requirement)),
-    );
+    const settingError = (setting: string, requirement: string) =>
+      new ConfigurationHarnessError(configurationSettingMessage(setting, requirement));
+    const entry = requireWorkspaceSetupMainEntry(configuration, settingError);
+    const defaults = asRecord(asRecord(configuration.agents)?.defaults);
+    const setting =
+      entry.agent.workspace != null
+        ? `${entry.setting}.workspace`
+        : defaults?.workspace != null
+          ? "agents.defaults.workspace"
+          : undefined;
+    if (setting !== undefined) {
+      throw settingError(
+        setting,
+        "must be unset for initial workspace files on SSH Compute: the host chooses the workspace under the Agent's own directory",
+      );
+    }
   }
 
-  validateHarnessAuth(harness: RevisionHarnessDescriptor, auth: HarnessAuthSnapshot): void {
+  validateHarnessAuth(
+    harness: RevisionHarnessDescriptor,
+    auth: HarnessAuthSnapshot,
+    _configuration?: OpenClawConfigurationDocument,
+    secretBindings?: SecretBindings | null,
+  ): void {
     // The topology first: no authentication method helps another one.
     // TODO: Dedicated Codex requires authenticated transport and separate host credential delivery.
     if (harness.id !== "openclaw" || harness.mode !== "embedded") {
@@ -494,6 +682,13 @@ export class SshComputeDriver implements ComputeDriver {
     requireHarnessAuthMethod(SSH_HARNESS_AUTH_METHODS, auth.method);
     if (Object.keys(auth).length !== 1) {
       throw new ConfigurationFailure("SSH Compute requires operator-managed runtime credentials.");
+    }
+    // Deployment passes the Configuration's bindings (Agent save passes null): preparation
+    // refuses any, so every attempt would fail. Caller-owned content keeps the message (400).
+    if (secretBindings != null && Object.keys(secretBindings).length > 0) {
+      throw new ConfigurationHarnessError(
+        "Configuration secretBindings must be empty on SSH Compute: provision credentials in the operator-owned <agentDir>/env file.",
+      );
     }
   }
 
@@ -588,6 +783,11 @@ export class SshComputeDriver implements ComputeDriver {
     context?: ComputeRevisionContext,
   ): void {
     this.validateRevision(revision);
+    if (revision.gatewayManagedMode) {
+      throw new ConfigurationHarnessError(
+        "Agent setting gatewayManagedMode is not supported on SSH Compute.",
+      );
+    }
     sshGatewayConfigurationDocument(revision.configuration);
     if (
       (context?.secretEnvironment.length ?? 0) > 0 ||

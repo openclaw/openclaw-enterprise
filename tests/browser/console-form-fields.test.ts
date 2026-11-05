@@ -1,26 +1,36 @@
+import {
+  openAdvancedSettings,
+  openCreateSecretDialog,
+  waitForCreateFormReads,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
 import type { Locator, Page } from "playwright";
 
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
+import {
+  CONSOLE_NAMESPACE_NOT_READY,
+  RESOURCE_CONFLICT,
+  SECRET_CREATE_DENIED,
+  SECRET_NAME_CONFLICT,
+} from "../helpers/refusal-text.mjs";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   apiRequests,
   consoleViewports,
   countInvalidEvents,
   detailUrl,
   fileBrowser,
+  focusedId,
+  holdRequests,
   login,
   nativeValues,
   newPage,
   nonAuthWriteRequests,
-} from "./console-agents-browser-helpers.mjs";
-import {
-  openAdvancedSettings,
-  openCreateSecretDialog,
-  routeInstallationWithoutProvisioning,
-  waitForCreateFormReads,
-} from "./console-agents-test-support.mjs";
+  shippedPreset,
+} from "./console-agents-browser-helpers.ts";
+import { routeInstallationWithoutProvisioning } from "./console-agents-test-support.mjs";
 
 // Form fields share one pattern (UX plan C3): a label, the control, its error, then its help.
 // The console checks required fields itself, so the browser's transient bubble never shows; it
@@ -29,14 +39,12 @@ import {
 
 const browser = fileBrowser();
 
-const defaultCodexPreset = JSON.parse(
-  await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
-);
-const standardCodexPreset = JSON.parse(
-  await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
-);
+const defaultCodexPreset = await shippedPreset("default-codex");
+const standardCodexPreset = await shippedPreset("standard-codex");
+// The app options of every test here: the default Codex Preset.
+const presets = { defaultPresets: [defaultCodexPreset] };
 const createConsoleAppFixture = (t: TestContext, options = {}) =>
-  createBaseConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset], ...options });
+  createBaseConsoleAppFixture(t, { ...presets, ...options });
 
 function presetId(preset: unknown) {
   assert.ok(
@@ -95,9 +103,6 @@ const errorPlacement = (control: Locator) =>
       danger: globalThis.getComputedStyle(error).color === danger,
     };
   });
-
-const focusedId = (page: Page) =>
-  page.evaluate(() => globalThis.document.activeElement?.id ?? null);
 
 async function assertFieldError(
   page: Page,
@@ -366,9 +371,7 @@ test("Share Agent checks its fields without the browser bubble", async (t) => {
 // required" error; without that, the stale error and aria-invalid stayed under the field after a
 // refused Create (finding 1983).
 test("choosing a model credential Secret by click clears its required error", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Picker fields", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Picker fields", presets);
   await fixture.createSecret(namespace.id, "Picked model key", "synthetic-picked-key");
   const { page } = await newPage(t, fixture, { browser });
   const invalidEvents = await countInvalidEvents(page);
@@ -499,9 +502,7 @@ const closedPicker = { expanded: "false", listboxHidden: true, errorOnTop: true,
 
 for (const viewport of consoleViewports) {
   test(`Create Agent's required Secret error names its field and stays in sight at ${viewport.width}px`, async (t) => {
-    const fixture = await createConsoleAppFixture(t);
-    await fixture.bootstrap();
-    const namespace = await fixture.createNamespace("Picker label", { ready: true });
+    const { fixture, namespace } = await createReadyConsoleNamespace(t, "Picker label", presets);
     await fixture.createSecret(namespace.id, "Label model key", "synthetic-label-key");
     const { page } = await newPage(t, fixture, { browser, context: { viewport } });
     const invalidEvents = await countInvalidEvents(page);
@@ -568,20 +569,12 @@ for (const viewport of consoleViewports) {
 // 1989).
 for (const viewport of consoleViewports) {
   test(`a refused Create Secret keeps focus in the dialog, on the refusal, at ${viewport.width}px`, async (t) => {
-    const fixture = await createConsoleAppFixture(t);
-    await fixture.bootstrap();
-    const namespace = await fixture.createNamespace("Secret refusals", { ready: true });
+    const { fixture, namespace } = await createReadyConsoleNamespace(t, "Secret refusals", presets);
     const { page } = await newPage(t, fixture, { browser, context: { viewport } });
     await routeInstallationWithoutProvisioning(page, fixture);
-    const refusal = { status: 409, code: "NAMESPACE_NOT_READY" };
+    let refusal = apiErrorResponse(409, "NAMESPACE_NOT_READY", "refused");
     await page.route(`**/namespaces/${namespace.id}/secrets`, (route, request) =>
-      request.method() === "POST"
-        ? route.fulfill({
-            status: refusal.status,
-            contentType: "application/json",
-            body: JSON.stringify({ error: { code: refusal.code, message: "refused" } }),
-          })
-        : route.fallback(),
+      request.method() === "POST" ? route.fulfill(refusal) : route.fallback(),
     );
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
     await page.getByRole("button", { name: "Start with default Preset" }).click();
@@ -603,18 +596,34 @@ for (const viewport of consoleViewports) {
           inView: box.top >= 0 && box.bottom <= globalThis.innerHeight,
         };
       });
+    // The Secret API never answers 429: a rate limit in front of it (an ingress or proxy) does,
+    // with its own page and no API envelope.
     const cases = [
-      [409, "NAMESPACE_NOT_READY", "This Namespace is not ready, so it cannot store Secrets yet."],
-      [
-        403,
-        "FORBIDDEN",
-        "Access denied. You do not have permission to manage this Secret binding.",
-      ],
-      [429, "RATE_LIMITED", "Too many requests. Wait before trying again."],
+      [apiErrorResponse(409, "NAMESPACE_NOT_READY", "refused"), CONSOLE_NAMESPACE_NOT_READY],
+      [apiErrorResponse(403, "FORBIDDEN", "refused"), SECRET_CREATE_DENIED],
+      [proxyErrorResponse(429), "Too many requests. Wait before trying again."],
     ] as const;
-    for (const [status, code, text] of cases) {
-      refusal.status = status;
-      refusal.code = code;
+    // While the request runs, every control that could change or reveal the value is disabled.
+    const pending = await holdRequests(t, page, `**/namespaces/${namespace.id}/secrets`, {
+      once: true,
+      method: "POST",
+      fulfill: apiErrorResponse(409, "NAMESPACE_NOT_READY", "refused"),
+    });
+    await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
+    await pending.requested;
+    for (const control of [
+      dialog.getByRole("button", { name: "Create Secret", exact: true }),
+      dialog.getByRole("button", { name: "Show value", exact: true }),
+      dialog.getByLabel("Name", { exact: true }),
+      dialog.getByLabel("Value", { exact: true }),
+    ]) {
+      assert.equal(await control.isDisabled(), true, "disabled while creating");
+    }
+    pending.release();
+    await dialog.getByRole("alert").filter({ hasText: cases[0][1] }).waitFor();
+    for (const [response, text] of cases) {
+      const { status } = response;
+      refusal = response;
       await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
       await dialog.getByRole("alert").filter({ hasText: text }).waitFor();
       const focused = await focusedRefusal();
@@ -623,19 +632,32 @@ for (const viewport of consoleViewports) {
       assert.ok(focused.text.startsWith(text), `${status}: ${focused.text}`);
       assert.equal(focused.inView, true, `${status}: in view`);
     }
-    // A name conflict still puts focus on Name to change it.
-    refusal.code = "RESOURCE_CONFLICT";
-    refusal.status = 409;
+    // A name conflict shows the API's sentence and still puts focus on Name to change it.
+    refusal = apiErrorResponse(409, "RESOURCE_CONFLICT", SECRET_NAME_CONFLICT);
     await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
-    await dialog.getByRole("alert").filter({ hasText: "may already exist" }).waitFor();
+    await dialog.getByRole("alert").filter({ hasText: SECRET_NAME_CONFLICT }).waitFor();
     assert.equal(
       await focusedId(page),
       await dialog.getByLabel("Name", { exact: true }).getAttribute("id"),
     );
+    // A conflict that names no reason, either with no message at all (a body without the API's
+    // envelope) or with the API's generic text, keeps the dialog's name and Namespace guidance
+    // instead of the generic "Refresh, then try again" (review of #3690).
+    const unexplained =
+      "Secret creation conflicted. A Secret with this name may already exist in this Namespace. Check the name and Namespace state before trying again.";
+    for (const response of [
+      proxyErrorResponse(409),
+      apiErrorResponse(409, "RESOURCE_CONFLICT", RESOURCE_CONFLICT),
+    ]) {
+      refusal = response;
+      await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
+      await dialog.getByRole("alert").filter({ hasText: unexplained }).waitFor();
+      assert.equal(await dialog.getByText(/Refresh, then try again/).count(), 0);
+      assert.equal(await dialog.getByText(SECRET_NAME_CONFLICT).count(), 0);
+    }
     // An unknown outcome disables Name, Value and the submit, so its message takes focus like a
     // refusal (finding 2075). It is last: the dialog refuses another try until a refresh.
-    refusal.status = 503;
-    refusal.code = "SERVICE_UNAVAILABLE";
+    refusal = apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "refused");
     const unknown = "Secret creation outcome could not be confirmed. Refresh before trying again.";
     await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
     await dialog.getByRole("alert").filter({ hasText: unknown }).waitFor();
@@ -646,10 +668,13 @@ for (const viewport of consoleViewports) {
     assert.equal(focused.inView, true, "503: in view");
     for (const control of [
       dialog.getByRole("button", { name: "Create Secret", exact: true }),
+      dialog.getByRole("button", { name: "Show value", exact: true }),
       dialog.getByLabel("Name", { exact: true }),
       dialog.getByLabel("Value", { exact: true }),
     ]) {
       assert.equal(await control.isDisabled(), true, "503: no other try until a refresh");
     }
+    // The value the outcome may have stored is not kept in the page.
+    assert.equal(await dialog.getByLabel("Value", { exact: true }).inputValue(), "");
   });
 }

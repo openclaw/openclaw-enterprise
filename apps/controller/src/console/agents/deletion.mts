@@ -1,12 +1,22 @@
 import type { AgentRead } from "@openclaw-enterprise/contracts";
 import { requestFailure, responseFields } from "../api-client.mjs";
-import { button, element, setHidden, setText, statusBlock } from "../dom.mjs";
+import {
+  button,
+  element,
+  setHidden,
+  setText,
+  setUnavailable,
+  statusBlock,
+  requestIdLine,
+} from "../dom.mjs";
 import {
   type AgentLifecycleContext,
   DELETE_CONFIRMATION,
+  grantRefusal,
   keptResources,
 } from "./lifecycle-confirmation.mjs";
-import { message } from "./list.mjs";
+import { AGENT_STATUS_READ_NEED, describeFailure } from "./list.mjs";
+import { AGENT_DELETE_DENIED, deleteRefused } from "./access-reasons.mjs";
 import { requestAgentDeletion } from "./deletion-status.mjs";
 
 export function createAgentDeletion(
@@ -15,13 +25,17 @@ export function createAgentDeletion(
   agent: AgentRead,
   onDeleting: (options?: { receiptId?: string }) => void,
   allowed?: Promise<boolean | undefined>,
+  permissionReadsStarted: () => number = () => 0,
 ) {
   // One row of the Agent page's danger zone (UX spec 3.9); the confirmation carries the detail.
   const section = element("section", {
     className: "danger-zone-row deletion-note",
     "aria-labelledby": "agent-deletion-title",
   });
-  const permissionNotice = "Your access does not include deleting this Agent.";
+  const permissionNotice = AGENT_DELETE_DENIED;
+  let refusedAfterReads = 0;
+  let refused = false;
+  let deleteAnswered = false;
   let restrictConfirmation: (() => void) | undefined;
   const feedback = element("div", { className: "danger-zone-feedback" });
   const actions = element("div", { className: "danger-zone-actions" });
@@ -86,19 +100,33 @@ export function createAgentDeletion(
       } else if (status === 403 || status === 404) {
         onDeleting();
       } else {
-        render("Could not refresh deletion status. " + message(cause), "danger");
+        render(
+          "Could not refresh deletion status. " +
+            describeFailure(cause, { need: AGENT_STATUS_READ_NEED }),
+          "danger",
+        );
       }
     } finally {
       state.pending = false;
       setText(refresh, "Refresh deletion status");
+      if (context.isCurrent()) {
+        render();
+      }
     }
   }
 
-  function render(text?: string, tone: "info" | "danger" = "info") {
+  function render(text?: string, tone: "info" | "danger" = "info", requestId?: string) {
     if (text) {
-      feedback.replaceChildren(statusBlock(tone, null, text));
+      feedback.replaceChildren(
+        statusBlock(tone, null, text, [], { id: "agent-deletion-error" }),
+        ...(requestId ? [requestIdLine(requestId)] : []),
+      );
     }
-    remove.disabled = state.needsRefresh || state.forbidden || state.pending;
+    setUnavailable(
+      remove,
+      state.needsRefresh || state.forbidden || state.pending || refused,
+      state.pending ? null : (feedback.firstElementChild as HTMLElement | null),
+    );
     setHidden(refresh, !state.needsRefresh);
     setHidden(section, state.forbidden && !state.used);
   }
@@ -116,7 +144,7 @@ export function createAgentDeletion(
     cancel: HTMLButtonElement,
     confirm: HTMLButtonElement,
   ) {
-    if (state.pending || state.forbidden || state.needsRefresh || !context.isCurrent()) {
+    if (state.pending || state.forbidden || state.needsRefresh || refused || !context.isCurrent()) {
       return;
     }
     state.pending = true;
@@ -140,8 +168,9 @@ export function createAgentDeletion(
       dialog.close();
       let text;
       if (error.status === 403) {
-        text =
-          "You do not have permission to delete this Agent. Ask an administrator for Agent delete access.";
+        refused = true;
+        refusedAfterReads = permissionReadsStarted();
+        text = (!grantRefusal(cause) && error.serverMessage) || deleteRefused(agent.name);
       } else if (error.status === 404) {
         state.needsRefresh = true;
         text =
@@ -151,13 +180,13 @@ export function createAgentDeletion(
         text =
           "This Agent could not be deleted in its current state. Refresh its status before trying again.";
       } else if (error.status === 400 || error.status === 429) {
-        text = message(cause);
+        text = describeFailure(cause, { mutation: true });
       } else {
         state.needsRefresh = true;
         text =
           "Outcome unknown. Deletion may have started. Refresh deletion status before trying again.";
       }
-      render(error.requestId ? text + " Request ID: " + error.requestId : text, "danger");
+      render(text, "danger", error.requestId);
     } finally {
       if (context.isCurrent()) {
         state.pending = false;
@@ -168,7 +197,7 @@ export function createAgentDeletion(
   }
 
   function openConfirmation() {
-    if (state.forbidden || state.pending || state.needsRefresh) {
+    if (state.forbidden || state.pending || state.needsRefresh || refused) {
       return;
     }
     state.used = true;
@@ -195,8 +224,8 @@ export function createAgentDeletion(
       if (!dialog.open || state.pending) {
         return;
       }
-      confirm.disabled = true;
       description.textContent = permissionNotice;
+      setUnavailable(confirm, true, description);
       cancel.focus();
     };
     restrictConfirmation = showRestriction;
@@ -233,14 +262,33 @@ export function createAgentDeletion(
     cancel.focus();
   }
 
+  function applyDelete(permitted: boolean | undefined, read: number) {
+    if (!context.isCurrent()) {
+      return;
+    }
+    const regranted = permitted === true && refused && read > refusedAfterReads;
+    state.forbidden = permitted === false;
+    if (state.forbidden) {
+      restrictConfirmation?.();
+    } else if (regranted) {
+      refused = false;
+      feedback.replaceChildren();
+    }
+    render(state.forbidden && state.used ? permissionNotice : undefined);
+  }
+
   actions.append(remove, refresh);
   render();
   void allowed?.then((permitted) => {
-    if (permitted === false && context.isCurrent()) {
-      state.forbidden = true;
-      restrictConfirmation?.();
-      render(state.used ? permissionNotice : undefined);
+    if (!deleteAnswered && permitted === false) {
+      applyDelete(permitted, 0);
     }
   });
-  return { section };
+  return {
+    section,
+    applyDelete(permitted: boolean | undefined, read: number) {
+      deleteAnswered = true;
+      applyDelete(permitted, read);
+    },
+  };
 }

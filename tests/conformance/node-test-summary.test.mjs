@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assertAllPassed, nodeTestSummary } from "../helpers/node-test-summary.mjs";
+import { assertAllPassed, nodeTestSummary } from "../helpers/node-test-summary.ts";
 
 function report(counts, prefix = "ℹ") {
   const all = {

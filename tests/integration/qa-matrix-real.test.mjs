@@ -19,12 +19,12 @@ test(
   async (context) => {
     const selection = selectQaMatrix();
     validateQaInputs(selection);
-    const { createQaInstallation, prepareQaPreset, createQaAgent } =
+    const { createQaInstallation, prepareQaPluginCatalogs, createQaAgent } =
       await import("../helpers/qa-installation.mjs");
     const { protectedText } = await import("../helpers/qa-secrets.mjs");
     const { createQaReport } = await import("../helpers/qa-report.mjs");
     const { createQaBrowser } = await import("../helpers/qa-browser.mjs");
-    const { prepareQaRepository, verifyQaRepository, stopQaAgentForCleanup } =
+    const { prepareQaRepository, verifyQaRepository, stopQaAgent, stopQaAgentForCleanup } =
       await import("../helpers/qa-repository.mjs");
     const { verifyCalendarReviewPolicy } = await import("../helpers/calendar-review.mjs");
     const { verifyQaSlack } = await import("../helpers/qa-slack.mjs");
@@ -47,7 +47,9 @@ test(
       executionFilters,
       concurrency,
       exclusions: [
-        "Linear READ: explicitly excluded; provider currently broken",
+        ...(selection.linearRead
+          ? []
+          : ["OpenShell Linear READ requires the explicit openshell-linear-read scenario"]),
         "Embedded OpenClaw Slack: unsupported",
         "OpenClaw Codex-native approvals: not applicable",
       ],
@@ -63,6 +65,25 @@ test(
         () => verifyQaSandboxPolicy(artifacts),
       );
     }
+    if (selection.pluginInstall) {
+      const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
+      await stage(
+        context,
+        "kubernetes/Codex/OpenShell",
+        "selected native plugin installation",
+        () => verifyQaSandboxPolicy(artifacts, "plugin-install"),
+      );
+    }
+    if (selection.linearRead) {
+      const { verifyOpenShellLinearRead } = await import("../helpers/openshell-linear-read.mjs");
+      await stage(
+        context,
+        "kubernetes/Codex/OpenShell",
+        "installed Linear plugin executes a real read",
+        () => verifyOpenShellLinearRead(context, artifacts),
+        "openshell-linear-read",
+      );
+    }
     for (const installation of selection.installations.filter((value) =>
       selection.cells.some((cell) => cell.installation === value && cell.scenarios.length > 0),
     )) {
@@ -73,11 +94,19 @@ test(
           const f = await stage(
             installationContext,
             installation,
-            "shipped startup, default Namespace and presets",
-            () =>
-              createQaInstallation(installationContext, installation, artifacts, {
-                repositoryInputs: selection.repository,
-              }),
+            "shipped startup, default Namespace, presets and both plugin catalogs",
+            async () => {
+              const fixture = await createQaInstallation(
+                installationContext,
+                installation,
+                artifacts,
+                {
+                  repositoryInputs: selection.repository,
+                },
+              );
+              await prepareQaPluginCatalogs(fixture);
+              return fixture;
+            },
           );
           const cells = selection.cells.filter(
             (cell) => cell.installation === installation && cell.scenarios.length > 0,
@@ -112,11 +141,26 @@ test(
               `Standard ${preset}`,
               { timeout: 3_000_000 },
               async (cellContext) => {
-                const ready = await stage(cellContext, cell, "prepare preset runtime", async () => {
-                  assert.ok(f, "blocked by installation startup failure");
-                  await prepareQaPreset(f, preset);
-                  return true;
-                });
+                const ready = await stage(
+                  cellContext,
+                  cell,
+                  "check preset prerequisites",
+                  async () => {
+                    assert.ok(f, "blocked by installation startup failure");
+                    assert.ok(
+                      !f.retained && f.pendingRepositories.size === 0,
+                      "blocked by unresolved repository cleanup",
+                    );
+                    if (selectedCell.scenarios.includes("codex-search-config")) {
+                      f.configuration.drivers.compute.configuration.runtime.modelProvider = {
+                        protocol: "openai-responses",
+                        baseUrl: process.env.OCC_TEST_QA_CODEX_MODEL_BASE_URL,
+                      };
+                      await f.saveInstallation(f.configuration);
+                    }
+                    return true;
+                  },
+                );
                 async function runScenario(parent, name, work) {
                   // Keep the preset's overall deadline; a shorter worker deadline
                   // could interrupt cleanup after individually valid stage durations.
@@ -131,7 +175,9 @@ test(
                         "preset deployment and supported authentication",
                         async () => {
                           assert.ok(ready, "blocked by preset preparation failure");
-                          return createQaAgent(f, preset, browser?.nativeOrigin, suffix);
+                          return createQaAgent(f, preset, browser?.nativeOrigin, suffix, {
+                            apiKeyAuth: name === "codex-search-config",
+                          });
                         },
                       );
                       afterStop = await work(agent, (title, action) =>
@@ -164,10 +210,11 @@ test(
                     "console-secrets",
                     async (agent, step) => {
                       const verified = await step(
-                        "console Secret lifecycle and Agent Configuration references",
+                        "console Secret lifecycle, Agent references and Namespace deletion blockers",
                         async () => {
                           assert.ok(browser, "blocked by browser setup failure");
                           await browser.verifySecrets(agent);
+                          await browser.verifyNamespaceDeletionBlockers(agent);
                           return true;
                         },
                       );
@@ -207,6 +254,7 @@ test(
                               (await f.pod(agent, "gateway")).metadata.uid,
                               gateway.pod.metadata.uid,
                             );
+                            assert.equal(agent.revision.gatewayManagedMode, true);
                             assert.equal(
                               (
                                 await f.api(
@@ -221,6 +269,7 @@ test(
                             await f.record(`${preset}-model`, {
                               agentId: agent.id,
                               revisionId: agent.revision.id,
+                              gatewayManagedMode: agent.revision.gatewayManagedMode,
                               podUid: gateway.pod.metadata.uid,
                               nativePodUid: nativePod.metadata.uid,
                               images: gateway.pod.status.containerStatuses.map(
@@ -237,6 +286,64 @@ test(
                           }
                         },
                       );
+                      if (preset === "OpenClaw") {
+                        await step(
+                          "embedded configured-provider Secret and real model turn",
+                          async () => {
+                            // Keep the admitted model and Secret, changing only the logical provider.
+                            const values = structuredClone(agent.configuration.values);
+                            const selected = values.agents.defaults.model;
+                            const primary =
+                              typeof selected === "string" ? selected : selected.primary;
+                            const id = primary.slice(primary.indexOf("/") + 1);
+                            const custom = `configured/${id}`;
+                            values.models.providers = {
+                              configured: {
+                                ...values.models.providers.openai,
+                                apiKey: {
+                                  source: "env",
+                                  provider: "default",
+                                  id: "OCE_MODEL_API_KEY",
+                                },
+                              },
+                            };
+                            values.agents.defaults.model = custom;
+                            values.agents.defaults.models = {
+                              [custom]: {
+                                ...values.agents.defaults.models[primary],
+                                agentRuntime: { id: "openclaw" },
+                              },
+                            };
+                            await f.api(
+                              "PATCH",
+                              `/namespaces/${agent.namespaceId}/configurations/${agent.configuration.id}`,
+                              { values },
+                            );
+                            await f.deployAndWait(agent);
+                            const gateway = await f.gatewayUrl(agent);
+                            try {
+                              await assertGatewayModelTurn({
+                                gatewayUrl: gateway.url,
+                                gatewayPassword: gateway.gatewayPassword,
+                                nonce: `QA_CUSTOM_${randomUUID()}`,
+                                secrets: [
+                                  await protectedText(
+                                    process.env.OCC_TEST_QA_OPENAI_KEY_FILE,
+                                    "model credential",
+                                  ),
+                                ],
+                              });
+                            } finally {
+                              await gateway.close();
+                            }
+                            await f.record("embedded-configured-provider", {
+                              agentId: agent.id,
+                              revisionId: agent.revision.id,
+                              model: custom,
+                            });
+                          },
+                        );
+                      }
                       await step(
                         "trusted native UI and live WebSocket model response",
                         async () => {
@@ -261,6 +368,80 @@ test(
                 ];
                 if (preset === "Codex") {
                   scenarios.push(
+                    [
+                      "codex-search-config",
+                      async (agent, step) => {
+                        const readConfig = async () =>
+                          (
+                            await f.execRole(agent, "agent", [
+                              "node",
+                              "-e",
+                              "process.stdout.write(require('node:fs').readFileSync(require('node:path').join(process.env.CODEX_HOME,'config.toml'),'utf8'))",
+                            ])
+                          ).stdout;
+                        let baseline;
+                        await step(
+                          "installed API-key Agent starts without a search declaration",
+                          async () => {
+                            baseline = await readConfig();
+                            assert.equal(
+                              baseline.includes("supports_standalone_web_search"),
+                              false,
+                            );
+                            assert.ok(baseline.includes('model_provider = "openai-compatible"'));
+                            assert.equal(agent.harnessAuth.method, "api_key");
+                          },
+                        );
+                        for (const enabled of [false, true]) {
+                          await step(
+                            `search declaration ${enabled} through supported stop and deploy`,
+                            async () => {
+                              await stopQaAgent(f, agent);
+                              f.configuration.drivers.compute.configuration.runtime.modelProvider.supportsStandaloneWebSearch =
+                                enabled;
+                              await f.saveInstallation(f.configuration);
+                              await f.deployAndWait(agent);
+                              const actual = await readConfig();
+                              const expected = enabled
+                                ? baseline.replace(
+                                    "supports_websockets = false\n",
+                                    "supports_websockets = false\nsupports_standalone_web_search = true\n",
+                                  )
+                                : baseline;
+                              assert.equal(
+                                actual === expected,
+                                true,
+                                "only the explicit capability declaration changes",
+                              );
+                            },
+                          );
+                        }
+                        await step(
+                          "enabled declaration survives another supported stop and deploy",
+                          async () => {
+                            const before = await f.pod(agent, "agent");
+                            const config = await readConfig();
+                            await stopQaAgent(f, agent);
+                            await f.deployAndWait(agent);
+                            assert.notEqual(
+                              (await f.pod(agent, "agent")).metadata.uid,
+                              before.metadata.uid,
+                            );
+                            assert.equal((await readConfig()) === config, true);
+                            await f.record("codex-search-config", {
+                              agentId: agent.id,
+                              revisionId: agent.revision.id,
+                              omitted: false,
+                              explicitFalse: false,
+                              explicitTrue: true,
+                              persistedAfterRedeploy: true,
+                              proof:
+                                "installed user configuration and native startup, not live search",
+                            });
+                          },
+                        );
+                      },
+                    ],
                     [
                       "calendar",
                       async (agent, step) => {
@@ -319,7 +500,7 @@ test(
                   });
                 } else if (preset === "OpenClaw") {
                   cellContext.diagnostic(
-                    "Slack and Codex-native approval policy: not applicable to Standard OpenClaw. Linear READ excluded throughout.",
+                    "Slack and Codex-native approval policy: not applicable to Standard OpenClaw. Linear READ uses its separate OpenShell scenario.",
                   );
                 }
               },

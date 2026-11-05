@@ -6,6 +6,7 @@ import { createOccMetrics } from "../../apps/controller/src/metrics/index.ts";
 import { PostgresMetricsSnapshot } from "../../packages/occ/src/index.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
+import { expireWorkLease } from "../helpers/postgres-worker-revision-support.mjs";
 
 // A TCP relay between one pool and PostgreSQL. `silence()` keeps every connection open but
 // forwards nothing, like a failover or partition that drops packets without a reset: queries
@@ -172,12 +173,10 @@ test(
     assert.equal(original.rows[0].state, "claimed");
     assert.equal(original.rows[0].attempt_count, 1);
 
-    await observerPool.query(
-      `UPDATE occ.controller_work
-       SET lease_expires_at = clock_timestamp() - interval '1 second'
-       WHERE idempotency_key = $1 AND claim_token = $2::uuid`,
-      [idempotencyKey, original.rows[0].claim_token],
-    );
+    await expireWorkLease(observerPool, {
+      key: idempotencyKey,
+      claimToken: original.rows[0].claim_token,
+    });
     const recoveryQueue = new PostgresWorkQueue(observerPool, {
       leaseDurationMs: 30_000,
       maxAttempts: 5,
@@ -549,12 +548,7 @@ test(
     assert.ok(late[0].durationMs > leaseDurationMs, `durationMs ${late[0].durationMs}`);
 
     // The claim stays with lease recovery; once it expires the work runs again and converges.
-    await observerPool.query(
-      `UPDATE occ.controller_work
-       SET lease_expires_at = clock_timestamp() - interval '1 second'
-       WHERE idempotency_key = $1 AND state = 'claimed'`,
-      [idempotencyKey],
-    );
+    await expireWorkLease(observerPool, { key: idempotencyKey, state: "claimed" });
     await waitFor("the recovered work to converge the Namespace", async () => {
       const rows = await observerPool.query(
         `SELECT namespaces.status, work.state, work.attempt_count
@@ -814,15 +808,17 @@ test(
       { Pool },
       { createControllerWorker },
       { createDevelopmentComputeDriver },
-      { DEVELOPMENT_HARNESS_DESCRIPTOR },
+      { PRODUCTION_HARNESS_DESCRIPTOR },
+      { CodexPluginDriver },
       { PostgresPlatformState },
       { PostgresWorkQueue },
-      { authorizedPrincipal, ensureInstallation },
+      { authorizedPrincipal, createBackendWorkerDrivers, ensureInstallation },
     ] = await Promise.all([
       import("pg"),
       import("../../apps/controller/src/worker.ts"),
       import("../helpers/development.mjs"),
       import("../../apps/controller/src/composition/production-harness.ts"),
+      import("../../apps/controller/src/drivers/plugin/index.ts"),
       import("../../packages/occ/src/state/postgres-state.ts"),
       import("../../packages/occ/src/state/postgres-work-queue.ts"),
       import("../helpers/postgres-backend-state.mjs"),
@@ -861,7 +857,8 @@ test(
       configurationId: `cfg_${randomUUID()}`,
       backendId: null,
       harnessAuth: { method: "runtime" },
-      executionMode: "embedded",
+      executionMode: "dedicated",
+      gatewayManagedMode: true,
       servicePrincipalId: `service-agent-${randomUUID()}`,
       createdAt: new Date().toISOString(),
     };
@@ -877,7 +874,8 @@ test(
       configurationId: owner.configurationId,
       configurationKind: "agent",
       configurationGeneration: 1,
-      harness: { ...DEVELOPMENT_HARNESS_DESCRIPTOR, mode: "embedded" },
+      gatewayManagedMode: owner.gatewayManagedMode,
+      harness: { ...PRODUCTION_HARNESS_DESCRIPTOR, mode: "dedicated" },
       compute: {
         id: compute.id,
         implementation: compute.implementation,
@@ -916,30 +914,43 @@ test(
       });
     });
 
-    const prepareStarted = Promise.withResolvers();
-    worker = createControllerWorker({
-      pool: workerPool,
-      installationId: installation.id,
-      pollIntervalMs: 20,
-      leaseDurationMs: 30_000,
-      maxAttempts: 5,
-      computeDriver: {
-        ...compute,
-        async prepareRevision(candidate) {
-          prepareStarted.resolve();
-          await releasePreparation.promise;
-          return {
-            namespaceId: candidate.namespaceId,
-            agentId: candidate.agentId,
-            revisionId: candidate.id,
-            ready: true,
-            warnings: [{ code: "PLUGIN_INSTALL_FAILED", pluginId }],
-          };
+    const warningWorker = (pool, beforePrepare) =>
+      createControllerWorker({
+        pool,
+        installationId: installation.id,
+        pollIntervalMs: 20,
+        leaseDurationMs: 30_000,
+        maxAttempts: 5,
+        drivers: {
+          ...createBackendWorkerDrivers(
+            {
+              ...compute,
+              async prepareRevision(candidate) {
+                await beforePrepare?.();
+                return {
+                  namespaceId: candidate.namespaceId,
+                  agentId: candidate.agentId,
+                  revisionId: candidate.id,
+                  ready: true,
+                  warnings: [{ code: "PLUGIN_INSTALL_FAILED", pluginId }],
+                };
+              },
+            },
+            [],
+          ),
+          pluginDrivers: [new CodexPluginDriver()],
         },
-      },
+      });
+    let preparing = false;
+    worker = warningWorker(workerPool, async () => {
+      preparing = true;
+      await releasePreparation.promise;
     });
     await worker.start();
-    await prepareStarted.promise;
+    await waitFor(
+      "the first worker to prepare the pinned Codex revision",
+      async () => preparing || undefined,
+    );
 
     const original = await observerPool.query(
       `SELECT state, claim_token, attempt_count
@@ -949,12 +960,10 @@ test(
     assert.equal(original.rows[0].state, "claimed");
     assert.equal(original.rows[0].attempt_count, 1);
 
-    await observerPool.query(
-      `UPDATE occ.controller_work
-       SET lease_expires_at = clock_timestamp() - interval '1 second'
-       WHERE idempotency_key = $1 AND claim_token = $2::uuid`,
-      [idempotencyKey, original.rows[0].claim_token],
-    );
+    await expireWorkLease(observerPool, {
+      key: idempotencyKey,
+      claimToken: original.rows[0].claim_token,
+    });
     const recoveryQueue = new PostgresWorkQueue(recoveryPool, {
       leaseDurationMs: 30_000,
       maxAttempts: 5,
@@ -985,26 +994,7 @@ test(
     worker = undefined;
     await recoveryQueue.retry(recovered, { code: "TEST_RECOVERY_HANDOFF" });
 
-    const recoveredCompute = createDevelopmentComputeDriver();
-    worker = createControllerWorker({
-      pool: recoveredWorkerPool,
-      installationId: installation.id,
-      pollIntervalMs: 20,
-      leaseDurationMs: 30_000,
-      maxAttempts: 5,
-      computeDriver: {
-        ...recoveredCompute,
-        async prepareRevision(candidate) {
-          return {
-            namespaceId: candidate.namespaceId,
-            agentId: candidate.agentId,
-            revisionId: candidate.id,
-            ready: true,
-            warnings: [{ code: "PLUGIN_INSTALL_FAILED", pluginId }],
-          };
-        },
-      },
-    });
+    worker = warningWorker(recoveredWorkerPool);
     await worker.start();
 
     const terminal = await waitFor("recovered worker successful plugin warning", async () => {

@@ -57,7 +57,7 @@ jobs:
         with:
           lane: k3d-observability-demo
           profile: k3d
-          node-version: "24.16.0"
+          node-version: "24.22.1"
           artifact-prefix: demo-results
           job-timeout-minutes: 20
       - name: Show Docker Hub pull endpoints

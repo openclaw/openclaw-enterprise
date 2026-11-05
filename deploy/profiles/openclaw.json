@@ -6,10 +6,12 @@
   "pluginSelection": "manual-or-api",
   "installation": {
     "drivers": {
-      "plugin": {
-        "id": "occ-plugin",
-        "configuration": {}
-      }
+      "plugin": [
+        {
+          "id": "occ-plugin",
+          "configuration": {}
+        }
+      ]
     }
   }
 }

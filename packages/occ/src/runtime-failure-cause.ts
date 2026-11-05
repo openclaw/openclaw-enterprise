@@ -27,7 +27,7 @@ const RUNTIME_FAILURE_CAUSE_DETAILS: Readonly<
   PROCESS_EXIT:
     /^(?:exit-[1-9][0-9]{0,2}|signal-SIG[A-Z0-9]{1,10}|error-E[A-Z0-9]{1,15}|UNRECOGNIZED)$/u,
   PROBE_STATUS:
-    /^(?:format|rate_limit|billing|unknown|no_model|other|turn-failed|error-event|tool-event|unexpected-event|no-reply)$/u,
+    /^(?:format|rate_limit|billing|unknown|model_not_found|no_model|other|turn-failed|error-event|tool-event|unexpected-event|no-reply)$/u,
   INVALID_OUTPUT: /^(?:json|shape)$/u,
   WRAPPER_ERROR: undefined,
 });

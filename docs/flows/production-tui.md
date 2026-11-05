@@ -9,8 +9,7 @@ last_updated_session: authoring-run/ffffed03-0b85-4984-990e-aa0705a91645
 ## Overview
 
 An operator provisions a production Namespace and embedded OpenClaw Agent
-through the authenticated OCC API, waits for the worker to activate an immutable
-AgentRevision, then attaches to the Agent-owned gateway Pod with
+through the authenticated OCC API, waits for the worker to activate an AgentRevision, then attaches to the Agent-owned gateway Pod with
 `node /app/openclaw.mjs tui`. This flow starts at the first protected API
 request after production startup and ends when the operator exits the TUI
 client. It does not cover Helm installation internals, remote shared-cluster
@@ -97,7 +96,7 @@ existing workspaces with bootstrap files are unaffected. The bodyless deploy req
 requires the Namespace to be `ready`, reauthorizes `deploy` on the Agent,
 reauthorizes `read` on the selected Configuration, validates the required API-key
 `harnessAuth` and any gateway Secret bindings, resolves the approved `openclaw`
-embedded Harness, and stores an immutable AgentRevision. Both the actor and Agent
+embedded Harness, and stores an AgentRevision. Both the actor and Agent
 service principal need exact Secret `operate`; the API checks physical backend
 identity before admission. An administrator with controller-owned IAM-state access
 must establish the Agent grant before this request.

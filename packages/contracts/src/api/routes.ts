@@ -17,6 +17,8 @@ import { Type } from "typebox";
 
 import {
   AgentParams,
+  FirstDeploymentIntent,
+  FirstDeploymentRecoveryTuple,
   AgentId,
   AuditId,
   NamespaceId,
@@ -72,6 +74,8 @@ import {
   AgentListResponse,
   AgentDeletionAcceptedResponse,
   AgentDeletionStatusResponse,
+  FirstDeploymentReceiptResponse,
+  FirstDeploymentRecoveryResponse,
   AgentDeviceAuthorizationResponse,
   AgentModelListResponse,
   AgentPluginCatalogResponse,
@@ -90,7 +94,9 @@ import {
   AgentRuntimeImagesResponse,
   AgentHarnessStatusResponse,
   AgentCallerPermissionsResponse,
+  AgentSecretPermissionsResponse,
   NamespaceCallerPermissionsResponse,
+  NamespaceSecretPermissionsResponse,
   AgentResponse,
   AgentReadResponse,
   AgentRevisionListResponse,
@@ -507,6 +513,23 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: NamespaceParams,
       response: { 200: NamespaceCallerPermissionsResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "getNamespaceSecretPermissions",
+    method: "GET",
+    path: "/namespaces/:namespaceId/permissions/secrets",
+    action: "openclaw.namespaces.permissions.read",
+    iamAction: "read",
+    resourceKind: "namespace",
+    authorizationTarget: "namespace",
+    summary:
+      "Report the readable Secrets that the caller may not bind to a new Agent, not authorization for a later operation",
+    tags: ["Namespaces"],
+    schema: {
+      querystring: EmptyQuery,
+      params: NamespaceParams,
+      response: { 200: NamespaceSecretPermissionsResponse, ...readErrors },
     },
   },
   {
@@ -1222,7 +1245,7 @@ export const occApiRoutes = [
     resourceKind: "agent",
     authorizationTarget: "agent",
     summary:
-      "Read plugin details for an active Agent; caller needs Agent read/update. Curated discovery needs no Secret; hosted discovery needs the Agent's bound Service Accounts Secret with caller and Agent Secret operate grants",
+      "Read plugin details for an active Agent with Agent read/update access. Hosted discovery uses the Agent's bound credential. Managed MCP discovery uses an eligible saved connection. The caller and Agent need operate access to the credential",
     tags: ["Agents"],
     schema: {
       querystring: EmptyQuery,
@@ -1272,7 +1295,7 @@ export const occApiRoutes = [
         409: ErrorResponseRef,
         503: Type.Ref("ErrorResponse", {
           description:
-            "Check `error.code`: `REPOSITORY_OPTIONS_UNAVAILABLE` means optional repository discovery is unavailable after Namespace lifecycle and Agent create authorization checks. Creation without repository bindings remains available subject to fresh authorization. `DEPENDENCY_UNAVAILABLE` includes IAM and other required dependency failures and does not permit proceeding. Successful discovery returns a data array, including an empty array when no repositories are approved.",
+            "Check `error.code`: `REPOSITORY_OPTIONS_UNAVAILABLE` means optional repository discovery is unavailable after Namespace lifecycle and Agent create authorization checks, because the selected Compute or Sandbox Driver cannot support repository credentials or the selected repository Driver is unavailable. Without repository settings the answer is 200 with `meta.notConfigured` instead. Creation without repository bindings remains available subject to fresh authorization. `DEPENDENCY_UNAVAILABLE` includes IAM and other required dependency failures and does not permit proceeding. Successful discovery returns a data array, including an empty array when no repositories are approved.",
         }),
       },
     },
@@ -1324,7 +1347,7 @@ export const occApiRoutes = [
     resourceKind: "agent",
     authorizationTarget: "namespace_collection",
     summary:
-      "Check an unsaved Agent Configuration, plugin selections and initial workspace files as Configuration and Agent create would, without saving anything",
+      "Check an unsaved Agent Configuration, plugin selections, initial workspace files and Harness authentication as Configuration and Agent create would, without saving anything",
     tags: ["Agents"],
     schema: {
       querystring: EmptyQuery,
@@ -1393,6 +1416,8 @@ export const occApiRoutes = [
           meta: Type.Object({ requestId: Type.String() }),
         }),
         ...readErrors,
+        // The Agent's saved repository selections are no longer approved.
+        409: ErrorResponseRef,
       },
     },
   },
@@ -1464,7 +1489,7 @@ export const occApiRoutes = [
     iamAction: "administer",
     resourceKind: "installation",
     authorizationTarget: "installation",
-    summary: "Inspect selected Driver startup configuration schemas",
+    summary: "Inspect selected Driver accepted startup values and configuration schemas",
     tags: ["Installation"],
     schema: {
       querystring: EmptyQuery,
@@ -1745,6 +1770,23 @@ export const occApiRoutes = [
     },
   },
   {
+    operationId: "getAgentSecretPermissions",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/permissions/secrets",
+    action: "openclaw.agents.permissions.read",
+    iamAction: "read",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary:
+      "Report the readable Secrets that the caller may not bind to a readable Agent, not authorization for a later operation",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: AgentParams,
+      response: { 200: AgentSecretPermissionsResponse, ...readErrors },
+    },
+  },
+  {
     operationId: "provisionAgentRuntimeCredentials",
     method: "POST",
     path: "/namespaces/:namespaceId/agents/:agentId/runtime-credentials",
@@ -1759,6 +1801,50 @@ export const occApiRoutes = [
       params: AgentParams,
       body: AgentRuntimeCredentialsBody,
       response: { 200: AgentRuntimeCredentialResponse, ...createErrors },
+    },
+  },
+  {
+    operationId: "deployAgentFirst",
+    method: "POST",
+    path: "/namespaces/:namespaceId/agents/:agentId/deploy-first",
+    action: "openclaw.agents.deploy",
+    iamAction: "deploy",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary:
+      "Admit the first deployment of an exact reviewed Configuration; requires Configuration read",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: AgentParams,
+      body: FirstDeploymentIntent,
+      response: { 202: FirstDeploymentReceiptResponse, ...createErrors },
+    },
+  },
+  {
+    operationId: "recoverAgentFirstDeployment",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/deploy-first/:key/:expectedConfigurationId/:expectedGeneration",
+    action: "openclaw.agents.deploy",
+    iamAction: "deploy",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary:
+      "Read an exact first-deployment receipt; null does not prove failure; requires Configuration read",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: Type.Object(
+        { ...AgentParams.properties, ...FirstDeploymentRecoveryTuple.properties },
+        { additionalProperties: false },
+      ),
+      response: {
+        200: {
+          ...FirstDeploymentRecoveryResponse,
+          headers: { "Cache-Control": Type.Literal("no-store") },
+        },
+        ...readErrors,
+      },
     },
   },
   {
@@ -1806,7 +1892,14 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: WorkspaceFileParams,
-      response: { 200: WorkspaceFileResponse, ...readErrors },
+      response: {
+        200: WorkspaceFileResponse,
+        ...readErrors,
+        409: Type.Ref("ErrorResponse", {
+          description:
+            "Conflict. The Agent has no running version: deploy it, or wait until its deployment finishes.",
+        }),
+      },
     },
   },
   {
