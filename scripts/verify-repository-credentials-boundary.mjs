@@ -79,6 +79,9 @@ const reviewedImports = {
   "drivers/repo/github/public-read/git.ts": { "node:https": ["request"] },
   "drivers/repo/github/public-read/transport.mjs": {
     "node:child_process": ["spawn", "spawnSync"],
+    // Fixed isolated API child: built-in proxy transport and in-memory CA only.
+    "node:https": ["Agent", "request"],
+    "node:tls": ["getCACertificates", "setDefaultCACertificates"],
     // Parse only public certificates; bounded regular-file reads and operation
     // cleanup compose tool trust without changing system or installed material.
     "node:crypto": ["X509Certificate"],
@@ -368,9 +371,8 @@ const rawGlobals = new Set([
 const reviewedProcessMembers = {
   "drivers/repo/github/public-read/server.ts": ["env"],
   "drivers/repo/github/public-read/transport.mjs": [
-    // Linux API trust uses fixed isolated Python memfd/sealing then execs curl;
-    // other standalone hosts retain existing scratch. No runtime selector knob.
-    "platform",
+    // Fixed API child receives bounded request/trust bytes, never argv secrets.
+    "stdin",
     "getuid",
     "argv",
     "env",

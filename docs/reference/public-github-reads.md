@@ -199,8 +199,10 @@ Follow the target with `rel="next"` through this same mode until no next relatio
 remains. A failed command or an unfinished next link means the listing is
 incomplete. Body-only `--api-get` does not expose pagination.
 
-Metadata mode accepts at most 16 KiB of response headers, including informational
-responses, and an 8 KiB Link. It rejects malformed, duplicate or cross-resource
+The HTTP parser limits each header block to 16 KiB. The helper also limits
+aggregate parsed informational/final headers to 16 KiB, counting canonical status
+lines and separators; original wire whitespace is not retained. Metadata mode
+limits Link to 8 KiB and rejects malformed, duplicate or cross-resource
 links; each relative target retains the 2048-character route limit. Other headers
 are discarded. Non-success, invalid JSON or invalid metadata emits no success
 envelope or body. Neither mode automatically paginates or follows redirects.
@@ -245,17 +247,27 @@ that operation's directory. Uncatchable termination can leave a public-CA
 residue in the workspace; the helper does not scavenge other operations' files.
 It does not change Git configuration or index state.
 
-Linux API reads use the same validated current trust without workspace or temporary
-files. An isolated image-provided Python process fills a sealed anonymous memory
-file, then becomes the image's curl process. The public CA descriptor survives that
-exec; the authorization header still uses stdin. This permits API GET in an
-explicitly read-only native profile without granting writes. An unavailable or
-denied memory-file primitive fails closed; Linux never retries through disk.
-The API's 24-second parent deadline covers preparation and transfer, including
-child startup and CA streaming. Cancellation and process exit close the memory
-file; no workspace residue remains. Standalone non-Linux API callers retain the
-scratch-file behavior and write requirement described above. Native and protected
-runtime qualification remain separate; see [verification](../testing/repository-credentials.md).
+API reads use the same validated current trust entirely in memory on every
+supported host. A fixed child of the existing Node executable receives request
+data, capability and CA bytes on bounded stdin. It uses Node's built-in HTTPS
+Agent and proxy support; no workspace, temporary file or descriptor pathname is
+needed. The child has an empty environment so inherited Node debugging, preload,
+insecure-TLS and key-log settings do not enter it. Origin TLS uses only the
+composed tool roots. HTTPS proxy TLS uses those roots plus the selected Node
+defaults and operating-system roots, configured only in that child before any connection.
+
+The pinned Node runtime supports direct, HTTP-proxy and HTTPS-proxy reads with
+hostname verification. Proxy selection preserves lowercase/uppercase HTTPS then
+ALL_PROXY precedence; an explicitly empty selection means direct. Invalid or
+unsupported proxy schemes fail before contact, and ambient NO_PROXY cannot
+bypass a selected proxy. HTTPS proxies requiring SNI are not qualified by Node's
+built-in connector; failure never selects a different transport. Custom Node
+builds using an unenumerated OpenSSL default CA store are not qualified.
+
+The API's 24-second parent deadline covers startup, DNS, proxy establishment, TLS
+and response transfer. Cancellation kills the child and its pending connections;
+no API files remain after termination. Read-only native and protected runtime
+qualification remain separate; see [verification](../testing/repository-credentials.md).
 
 The launcher also supplies reader trust through `CODEX_CA_CERTIFICATE` before
 Codex starts so its proxy can verify the upstream reader. This affects only the

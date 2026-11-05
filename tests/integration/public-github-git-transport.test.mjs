@@ -439,10 +439,25 @@ test("managed API metadata follows real reader pagination without exposing other
   fixture.reader.removeAllListeners("request");
   let headers = { "x-unrelated": fixture.token };
   let status = 200;
-  fixture.reader.on("request", (_req, res) => {
-    res.writeEarlyHints({ link: '</style.css>; rel="preload"' });
+  let folded = false;
+  let informational = 1;
+  let oversizedBody = false;
+  fixture.reader.on("request", (req, res) => {
+    for (let index = 0; index < informational; index++) {
+      res.writeEarlyHints({ link: '</style.css>; rel="preload"', "x-fixture": "x".repeat(2048) });
+    }
+    if (folded) {
+      req.socket.end(
+        'HTTP/1.1 200 OK\r\nLink: </repos/example/project/pulls?page=2>;\r\n rel="next"\r\nContent-Length: 2\r\n\r\n{}',
+      );
+      return;
+    }
     res.writeHead(status, headers);
-    res.end(JSON.stringify({ title: "must-not-escape-on-refusal" }));
+    res.end(
+      oversizedBody
+        ? Buffer.alloc(12 * 1024 * 1024 + 1, 32)
+        : JSON.stringify({ title: "must-not-escape-on-refusal" }),
+    );
   });
   const success = await read("/repos/example/project/pulls");
   assert.deepEqual(success, {
@@ -463,6 +478,35 @@ test("managed API metadata follows real reader pagination without exposing other
       (error) => error.code !== 0 && error.stdout === "" && !error.stderr.includes(fixture.token),
     );
   }
+  headers = {
+    link: [
+      '</repos/example/project/pulls?page=2>; rel="next"',
+      '</repos/example/project/pulls?page=1>; rel="prev"',
+    ],
+  };
+  await assert.rejects(
+    read("/repos/example/project/pulls"),
+    (error) => error.code !== 0 && error.stdout === "",
+  );
+  headers = {};
+  folded = true;
+  await assert.rejects(
+    read("/repos/example/project/pulls"),
+    (error) => error.code !== 0 && error.stdout === "",
+  );
+  folded = false;
+  informational = 9;
+  await assert.rejects(
+    read("/repos/example/project/pulls"),
+    (error) => error.code !== 0 && error.stdout === "",
+  );
+  informational = 1;
+  oversizedBody = true;
+  await assert.rejects(
+    read("/repos/example/project/pulls"),
+    (error) => error.code !== 0 && error.stdout === "",
+  );
+  oversizedBody = false;
   headers = { "x-unrelated": "x".repeat(17 * 1024) };
   await assert.rejects(
     read("/repos/example/project/pulls"),
@@ -743,9 +787,6 @@ test("managed operations use the admitted runtime workspace when ambient tempora
   ]) {
     const operationEnv = { ...env, OPENCLAW_WORKSPACE_DIR };
     for (const operation of [
-      ...(process.platform === "linux"
-        ? []
-        : [() => execute(process.execPath, args, { env: operationEnv })]),
       () => fixture.git(operationEnv, "ls-remote", "https://github.com/example/project.git"),
     ]) {
       const failure = await operation().then(
@@ -763,13 +804,10 @@ test("managed operations use the admitted runtime workspace when ambient tempora
   assert.deepEqual(await readdir(readonly), []);
 });
 
-test("managed API isolates startup, composes large trust, and needs no Linux scratch", async (t) => {
+test("managed API isolates startup, composes large trust, and needs no filesystem scratch", async (t) => {
   const fixture = await materialFixture(t);
   const env = await fixture.install();
   const script = path.join(env.GIT_EXEC_PATH, "transport.mjs");
-  const python = path.join(fixture.directory, "python-startup");
-  await mkdir(python);
-  await writeFile(path.join(python, "sitecustomize.py"), "import os; os._exit(93)\n");
   const roots = [];
   // Distinct valid public roots survive deduplication and cross the carrier's
   // read chunk size. Reusing the fixture key avoids needless key generation.
@@ -796,12 +834,9 @@ test("managed API isolates startup, composes large trust, and needs no Linux scr
     const context = {
       ...env,
       CURL_CA_BUNDLE: bundlePath,
-      PYTHONPATH: python,
-      PYTHONSTARTUP: path.join(python, "sitecustomize.py"),
-      PYTHONINSPECT: "1",
-      ...(process.platform === "linux"
-        ? { OPENCLAW_WORKSPACE_DIR: root, TMPDIR: root, PATH: "/nonexistent" }
-        : {}),
+      OPENCLAW_WORKSPACE_DIR: root,
+      TMPDIR: root,
+      PATH: "/nonexistent",
     };
     for (const mode of ["--api-get", "--api-get-metadata"]) {
       const result = await execute(
@@ -822,6 +857,144 @@ test("managed API isolates startup, composes large trust, and needs no Linux scr
     }
   }
   assert.deepEqual((await readdir(fixture.directory)).sort(), before);
+});
+
+test("managed API uses verified HTTP and HTTPS proxies without bypass or startup credential disclosure", async (t) => {
+  const fixture = await materialFixture(t);
+  const env = await fixture.install();
+  const script = path.join(env.GIT_EXEC_PATH, "transport.mjs");
+  const args = [script, "--api-get", "/repos/example/project/pulls/27"];
+  const proxyTls = await selfSigned(fixture.directory, { name: "distinct-proxy" });
+  for (const secure of [false, true]) {
+    const sockets = new Set();
+    const proxy = secure ? https.createServer(proxyTls) : http.createServer();
+    let connected = 0;
+    proxy.on("connect", (req, socket, head) => {
+      connected++;
+      assert.equal(req.url, new URL(fixture.endpoint).host);
+      assert.equal(req.headers.authorization, undefined);
+      assert.equal(
+        req.headers["proxy-authorization"],
+        "Basic " + Buffer.from("fixture-proxy:private-proxy-sentinel").toString("base64"),
+      );
+      const upstream = net.connect(Number(new URL(fixture.endpoint).port), "127.0.0.1", () => {
+        socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+        upstream.write(head);
+        socket.pipe(upstream);
+        upstream.pipe(socket);
+      });
+      for (const child of [socket, upstream]) {
+        sockets.add(child);
+        child.on("close", () => sockets.delete(child));
+      }
+      socket.on("error", () => upstream.destroy());
+      upstream.on("error", () => socket.destroy());
+      socket.on("close", () => upstream.destroy());
+    });
+    const port = await listen(t, proxy);
+    t.after(() => {
+      for (const socket of sockets) {
+        socket.destroy();
+      }
+    });
+    const url = new URL(`${secure ? "https" : "http"}://127.0.0.1:${port}`);
+    url.username = "fixture-proxy";
+    url.password = "private-proxy-sentinel";
+    const context = {
+      ...env,
+      https_proxy: url.href,
+      HTTPS_PROXY: "http://127.0.0.1:1",
+      NO_PROXY: "*",
+      no_proxy: "*",
+      CURL_CA_BUNDLE: proxyTls.certPath,
+      NODE_DEBUG: "http,https,tls,child_process",
+      NODE_TLS_REJECT_UNAUTHORIZED: "0",
+      OPENCLAW_WORKSPACE_DIR: "/unavailable-private-sentinel",
+      TMPDIR: "/unavailable-private-sentinel",
+    };
+    const result = await execute(process.execPath, args, { env: context, timeout: 30000 });
+    assert.equal(JSON.parse(result.stdout).title, "provider-only-pull");
+    assert.equal(connected, 1);
+    assert.ok(!result.stderr.includes(fixture.token));
+    assert.doesNotMatch(result.stderr, /private-proxy-sentinel|unavailable-private-sentinel/);
+    assert.equal(fixture.requests.at(-1).headers["proxy-authorization"], undefined);
+    if (secure) {
+      const before = fixture.requests.length;
+      await assert.rejects(
+        execute(process.execPath, args, {
+          env: { ...context, CURL_CA_BUNDLE: env.CODEX_CA_CERTIFICATE },
+        }),
+        (error) =>
+          error.code === 60 && error.stdout === "" && !error.stderr.includes(fixture.token),
+      );
+      assert.equal(fixture.requests.length, before);
+      assert.equal(
+        connected,
+        1,
+        "untrusted proxy must fail before CONNECT, despite ambient insecure TLS",
+      );
+      if (process.platform === "linux") {
+        // Node's Linux system store honors an isolated OpenSSL CA directory.
+        // This root is not a selected tool input: trust it for proxy TLS only.
+        const system = path.join(fixture.directory, "proxy-system-roots");
+        await mkdir(system);
+        const hash = (
+          await execute("openssl", ["x509", "-hash", "-noout", "-in", proxyTls.certPath])
+        ).stdout.trim();
+        assert.match(hash, /^[a-f0-9]{8}$/);
+        await writeFile(path.join(system, hash + ".0"), proxyTls.cert);
+        const platform = {
+          ...context,
+          CURL_CA_BUNDLE: env.CODEX_CA_CERTIFICATE,
+          SSL_CERT_DIR: system,
+        };
+        assert.equal(
+          JSON.parse((await execute(process.execPath, args, { env: platform })).stdout).title,
+          "provider-only-pull",
+        );
+        const requests = fixture.requests.length;
+        fixture.reader.setSecureContext(proxyTls);
+        try {
+          await assert.rejects(
+            execute(process.execPath, args, { env: platform }),
+            (error) => error.code === 60 && error.stdout === "",
+          );
+        } finally {
+          fixture.reader.setSecureContext(fixture.serviceTls);
+        }
+        assert.equal(
+          fixture.requests.length,
+          requests,
+          "proxy-only platform roots cannot authenticate the origin",
+        );
+      }
+    }
+    // Empty lowercase selection intentionally means direct, even with an invalid
+    // higher-priority-looking uppercase value and inherited bypass settings.
+    assert.equal(
+      JSON.parse(
+        (await execute(process.execPath, args, { env: { ...context, https_proxy: "" } })).stdout,
+      ).title,
+      "provider-only-pull",
+    );
+  }
+  const before = fixture.requests.length;
+  for (const proxy of [
+    "socks5://127.0.0.1:1",
+    "ftp://127.0.0.1:1",
+    "not-a-proxy",
+    "http://127.0.0.1:1/path",
+  ]) {
+    await assert.rejects(
+      execute(process.execPath, args, { env: { ...env, https_proxy: proxy } }),
+      (error) => error.code === 1 && error.stdout === "" && !error.stderr.includes(fixture.token),
+    );
+  }
+  assert.equal(
+    fixture.requests.length,
+    before,
+    "invalid proxy configuration must not fall back to direct",
+  );
 });
 
 test("managed API cancels and bounds a stalled real response without retaining trust", async (t) => {
@@ -856,9 +1029,7 @@ test("managed API cancels and bounds a stalled real response without retaining t
         throw new Error("API child exited before response hold");
       }),
     ]);
-    if (process.platform === "linux") {
-      assert.deepEqual((await readdir(fixture.directory)).sort(), before);
-    }
+    assert.deepEqual((await readdir(fixture.directory)).sort(), before);
     if (signal !== undefined) {
       child.kill(signal);
     }
@@ -873,6 +1044,92 @@ test("managed API cancels and bounds a stalled real response without retaining t
     assert.ok(!stderr.includes(fixture.token));
     assert.deepEqual((await readdir(fixture.directory)).sort(), before);
   }
+});
+
+test("managed API cancellation and deadline close pending CONNECT before authorization reaches an origin", async (t) => {
+  const fixture = await materialFixture(t);
+  const env = await fixture.install();
+  const script = path.join(env.GIT_EXEC_PATH, "transport.mjs");
+  const proxy = http.createServer();
+  const port = await listen(t, proxy);
+  for (const signal of ["SIGTERM", "SIGINT", undefined]) {
+    let connected;
+    const connection = new Promise((resolve) => {
+      connected = resolve;
+    });
+    let socketClosed;
+    const socketCompletion = new Promise((resolve) => {
+      socketClosed = resolve;
+    });
+    proxy.once("connect", (req, socket) => {
+      assert.equal(req.headers.authorization, undefined);
+      socket.on("error", () => {});
+      // CONNECT transfers a half-open socket to this peer. Client process death
+      // produces EOF; close the peer's remaining write half rather than waiting
+      // for a close event that the fixture itself would otherwise prevent.
+      socket.once("end", () => {
+        assert.equal(socket.readableEnded, true);
+        socket.end();
+        socketClosed();
+      });
+      socket.resume();
+      t.after(() => socket.destroy());
+      connected();
+    });
+    const child = spawn(
+      process.execPath,
+      [script, "--api-get", "/repos/example/project/pulls/27"],
+      {
+        env: {
+          ...env,
+          https_proxy: `http://127.0.0.1:${port}`,
+          OPENCLAW_WORKSPACE_DIR: "/nonexistent-private-sentinel",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    t.after(() => child.kill("SIGKILL"));
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    const closed = new Promise((resolve) =>
+      child.once("close", (code, closedSignal) => resolve({ code, signal: closedSignal })),
+    );
+    await Promise.race([
+      connection,
+      closed.then(() => {
+        throw new Error("API exited before pending CONNECT");
+      }),
+    ]);
+    if (signal !== undefined) {
+      child.kill(signal);
+    }
+    const result = await closed;
+    if (signal !== undefined) {
+      assert.equal(result.signal, signal);
+    } else {
+      assert.equal(result.code, 28);
+      assert.match(stderr, /managed public API read timed out/);
+    }
+    assert.equal(stdout, "");
+    assert.ok(!stderr.includes(fixture.token));
+    await Promise.race([
+      socketCompletion,
+      new Promise((_, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error("pending CONNECT leaked after caller exit")),
+          3000,
+        );
+        timer.unref();
+      }),
+    ]);
+  }
+  assert.equal(fixture.requests.length, 0);
 });
 
 test("material installation refuses redirected or shared private-home parents", async (t) => {
@@ -1324,9 +1581,6 @@ test("managed refusals report only fixed operation phases and codes before conta
     ],
     [{ CURL_CA_BUNDLE: privatePath + "-absent" }, "trust-input", "ENOENT"],
     [{ CURL_CA_BUNDLE: privatePath }, "trust-composition", "unknown"],
-    ...(process.platform === "linux"
-      ? []
-      : [[{ TMPDIR: privatePath + "-absent" }, "trust-files", "ENOENT"]]),
   ];
   for (const [overrides, phase, code] of cases) {
     const failure = await execute(process.execPath, args, { env: { ...env, ...overrides } }).then(
@@ -1348,7 +1602,7 @@ test("managed refusals report only fixed operation phases and codes before conta
     );
   }
   assert.equal(fixture.requests.length, 0);
-  // A legitimate API call still succeeds and cleans its operation bundle.
+  // A legitimate API call succeeds without creating an operation bundle.
   const success = await execute(process.execPath, args, { env });
   assert.equal(JSON.parse(success.stdout).title, "provider-only-pull");
   assert.equal(success.stderr, "");

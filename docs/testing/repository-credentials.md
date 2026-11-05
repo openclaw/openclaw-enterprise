@@ -67,14 +67,14 @@ a bound provider challenge must still reach its authenticated askpass. Concurren
 verify private directory/file modes and independent cleanup of public-only bundles.
 The native fixture supplies the same existing workspace variable as production,
 without changing its filesystem grants. These tests do not establish cleanup after
-uncatchable termination; Git or non-Linux API public-CA residue can remain.
-Linux API cases instead ignore unavailable scratch roots and exercise sealed-memory
-trust, Python startup poisoning, large distinct public-root bundles, SIGTERM/SIGINT
-and the 24-second parent deadline. Run these owners on Linux to qualify that branch;
-a macOS host pass covers the retained standalone file path only. The native fixture
-adds a separate Limited read-only API body/metadata control, asserts workspace write
-denial and no residue, and supplies a poisoned Python module path. It retains the
-Limited workspace-write POST-denial and Full workspace-write Git controls: a
+uncatchable termination; Git public-CA residue can remain.
+API cases instead ignore unavailable scratch roots and exercise in-memory
+trust, isolated Node startup, large distinct public-root bundles, SIGTERM/SIGINT
+and the 24-second parent deadline, including a proxy holding CONNECT. Host checks
+exercise the same Node client; the native filesystem/proxy still needs Linux proof.
+The native fixture adds a separate Limited read-only API body/metadata control,
+asserts workspace write denial and no residue, and retains the Limited
+workspace-write POST-denial and Full workspace-write Git controls: a
 read-only clone failure would not prove POST denial. All native controls still need
 actual Linux execution. The tests also follow a real reader's two-page list through the fixed metadata mode,
 reject malformed/oversized continuation data and suppress unrelated headers.

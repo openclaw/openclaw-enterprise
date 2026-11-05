@@ -1,7 +1,7 @@
 ---
 created: "2026-10-15"
-updated: "2026-11-04"
-last_updated_session: authoring-run/93407fe4-b349-48fd-b3c0-c2d9b3534e5b
+updated: "2026-11-05"
+last_updated_session: authoring-run/01a19cef-6046-7960-88eb-e30de1c96e9e
 ---
 
 # Public GitHub read flow
@@ -153,27 +153,33 @@ only that directory. Concurrent operations remain independent. Uncatchable
 termination can leave public certificates in the workspace; no scavenger removes
 other operations' state. Capabilities never enter these files.
 
-For Linux API reads, `apiGet` passes the validated bundle to `runChild` on an extra
-pipe. The constant `apiTrustCarrier` runs with Python `-I -S -B`, ignores ambient
-Python startup/import settings, and creates a bounded mode-0400 sealed memfd.
-It closes its input, rewinds the CA, and execs fixed `/usr/bin/curl` with the
-inherited descriptor path. Authorization stays on stdin. No directory is created,
-no network executable is added, and no filesystem permission is expanded. Linux
-carrier failure stops the operation without retrying scratch storage. The native
-read-only API path and Git's workspace-write path remain distinct.
-`runChild` bounds API preparation and transfer with one 24-second parent deadline,
-handles early pipe closure, and forwards cancellation. Closing the process's
-anonymous descriptor releases the CA even after uncatchable termination.
+For API reads, `apiGet` sends the capability, validated current CA bundle,
+selected proxy, request inputs and supported platform CA defaults on bounded
+stdin to a fixed child of `process.execPath`. `apiClient` uses Node's built-in
+HTTPS Agent, including its CONNECT implementation. No API filesystem path or
+extra network executable is needed. The empty child environment excludes
+startup debugging, preload, insecure-TLS and key-log settings. Its origin Agent
+has explicit tool CA roots; its thread-local default CA store also preserves
+Node defaults and operating-system roots for HTTPS proxy TLS. The Agent parent's trust is unchanged.
+
+`runChild` owns one 24-second deadline across startup, DNS, pending CONNECT, TLS
+and transfer. It kills the child on deadline or forwards cancellation, so sockets
+not yet assigned to an HTTP request are still released. Raw child stderr is
+consumed, and output is withheld until successful exit. The native read-only API
+path and Git's workspace-write path remain distinct. There is no disk fallback.
 
 `transport.mjs:apiGet` accepts only reader-relative `/repos/` GET routes. The
-managed skill invokes it without supplying an origin, proxy, credentials or curl
-options. The helper uses configured authorization, ignores curl configuration,
+managed skill invokes it without supplying an origin, proxy, credentials or client
+options. The helper uses configured authorization,
 refuses redirects and buffers responses within the reader's 12 MiB/24-second
 limits. Its capability header goes through child stdin, never a temporary file.
 The fixed `--api-get-metadata` mode returns `{status, link, body}` only after a
-successful response. `responseMetadata` discards informational/proxy headers and
-exposes only the final status and bounded relative Link alongside parsed JSON.
-Headers are limited to 16 KiB and Link to 8 KiB; malformed, duplicate or
+successful response. Node parses HTTP framing and rejects folded headers.
+`responseMetadata` exposes only the final status and bounded relative Link alongside
+parsed JSON. Each response header block has a 16 KiB parser limit; the helper also
+bounds aggregate parsed informational/final metadata to 16 KiB, counting canonical
+status/header separators. Original whitespace is not retained by Node, so this is
+not a byte-exact cumulative wire-size limit. Link is limited to 8 KiB; malformed, duplicate or
 cross-resource continuation fails without output. The Agent follows relative
 next links through the same helper and reports interrupted listings as incomplete.
 Body-only `--api-get` remains unchanged.
@@ -243,6 +249,10 @@ that the owning runtime has stopped.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 11:28: Deliver API trust as in-memory bytes through the built-in Node HTTPS client (accompanying correction; authoring-run/01a19cef-6046-7960-88eb-e30de1c96e9e - 572595236e9d0455e1655a8434374be5083d4210)
+
+- 2026-11-04 19:19: Preserve ownership-specific readiness while composing public material launchers (accompanying merge; authoring-run/d4e614d9-3bbe-4909-b408-51d492dd2c46 - ecc2835dd214203bd4896328bd1104a44557268c)
 
 - 2026-11-04 18:32: Deliver Linux API trust through a sealed memory file under read-only profiles (accompanying correction; authoring-run/93407fe4-b349-48fd-b3c0-c2d9b3534e5b - 95b6c02bb86f72841f30ee9da14bc9d4ebbc26ff)
 

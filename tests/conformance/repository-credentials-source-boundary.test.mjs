@@ -630,9 +630,21 @@ test("credential source boundary rejects new raw capabilities in the real source
       "drivers/repo/github/public-read/transport.mjs",
     ],
     [
-      "public API platform selection does not admit changing process identity",
+      "public API child isolation does not admit changing process identity",
       "process.setuid(0);",
       /raw process capability setuid/,
+      "drivers/repo/github/public-read/transport.mjs",
+    ],
+    [
+      "public API proxy transport cannot acquire raw TLS sockets",
+      'import { connect } from "node:tls";',
+      /unreviewed runtime import from node:tls/,
+      "drivers/repo/github/public-read/transport.mjs",
+    ],
+    [
+      "public API client cannot acquire HTTPS listeners",
+      'import { createServer } from "node:https";',
+      /unreviewed runtime import from node:https/,
       "drivers/repo/github/public-read/transport.mjs",
     ],
     [

@@ -15,6 +15,8 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { Agent, request } from "node:https";
+import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -185,109 +187,161 @@ function authorization(config) {
   );
 }
 
-function responseMetadata(bytes, route) {
-  let offset = 0;
-  while (true) {
-    const end = bytes.indexOf("\r\n\r\n", offset);
-    if (end === -1) {
-      if (bytes.length > 16 * 1024) {
-        throw new Error("API response headers exceed their bound.");
+function responseMetadata(status, rawHeaders, route) {
+  const links = rawHeaders.filter(
+    (_, index) => index % 2 && rawHeaders[index - 1].toLowerCase() === "link",
+  );
+  if (links.length > 1) {
+    throw new Error("Ambiguous API pagination metadata.");
+  }
+  const link = links.length ? links[0].trim() : null;
+  if (link !== null) {
+    if (!link || link.length > 8192) {
+      throw new Error("API pagination metadata exceeds its bound.");
+    }
+    const relations = new Set();
+    for (const entry of link.split(/,\s*/)) {
+      const match = /^<([^>]+)>;\s*rel="(next|prev|first|last)"$/.exec(entry);
+      if (!match || relations.has(match[2])) {
+        throw new Error("Invalid API pagination metadata.");
       }
-      return undefined;
-    }
-    if (end + 4 > 16 * 1024) {
-      throw new Error("API response headers exceed their bound.");
-    }
-    const [statusLine, ...lines] = bytes.subarray(offset, end).toString("latin1").split("\r\n");
-    if (lines.some((line) => /^[ \t]/.test(line))) {
-      throw new Error("Folded API response metadata is unsupported.");
-    }
-    const status = /^HTTP\/(?:1\.[01]|2|3) (\d{3})(?: .*)?$/.exec(statusLine)?.[1];
-    if (!status) {
-      throw new Error("Invalid API response status.");
-    }
-    offset = end + 4;
-    if (Number(status) < 200) {
-      continue;
-    }
-    const links = lines.filter((line) => /^link:/i.test(line));
-    if (links.length > 1) {
-      throw new Error("Ambiguous API pagination metadata.");
-    }
-    const link = links.length ? links[0].slice(5).trim() : null;
-    if (link !== null) {
-      if (!link || link.length > 8192) {
-        throw new Error("API pagination metadata exceeds its bound.");
+      validateApiRoute(match[1]);
+      if (match[1].split("?")[0] !== route.split("?")[0]) {
+        throw new Error("API pagination changed its resource.");
       }
-      const relations = new Set();
-      for (const entry of link.split(/,\s*/)) {
-        const match = /^<([^>]+)>;\s*rel="(next|prev|first|last)"$/.exec(entry);
-        if (!match || relations.has(match[2])) {
-          throw new Error("Invalid API pagination metadata.");
+      relations.add(match[2]);
+    }
+  }
+  return { status, link };
+}
+
+// Serialized into a fixed, isolated Node child. Only bounded stdin carries
+// authorization and public trust; no path-based CA carrier or protocol shim.
+async function apiClient() {
+  const input = [];
+  let inputSize = 0;
+  for await (const chunk of process.stdin) {
+    inputSize += chunk.length;
+    if (inputSize > 4 * 1024 * 1024) {
+      throw new Error("API input exceeds its bound.");
+    }
+    input.push(chunk);
+  }
+  const { endpoint, route, token, ca, defaults, proxy, metadata } = JSON.parse(
+    Buffer.concat(input),
+  );
+  setDefaultCACertificates([...defaults, ca]);
+  const agent = new Agent({
+    ca,
+    rejectUnauthorized: true,
+    keepAlive: false,
+    maxCachedSessions: 0,
+    proxyEnv: { https_proxy: proxy, HTTPS_PROXY: proxy, no_proxy: "", NO_PROXY: "" },
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      let headerSize = 0;
+      const headers = (response) => {
+        headerSize += Buffer.byteLength(
+          `HTTP/${response.httpVersion} ${response.statusCode} ${response.statusMessage}\r\n\r\n`,
+          "latin1",
+        );
+        for (let index = 0; index < response.rawHeaders.length; index += 2) {
+          headerSize += Buffer.byteLength(
+            response.rawHeaders[index] + ": " + response.rawHeaders[index + 1] + "\r\n",
+            "latin1",
+          );
         }
-        validateApiRoute(match[1]);
-        if (match[1].split("?")[0] !== route.split("?")[0]) {
-          throw new Error("API pagination changed its resource.");
+        if (headerSize > 16 * 1024) {
+          throw new Error("API response headers exceed their bound.");
         }
-        relations.add(match[2]);
-      }
-    }
-    return { status: Number(status), link, offset };
+      };
+      const req = request(
+        endpoint + route,
+        {
+          agent,
+          method: "GET",
+          headers: { authorization: "Bearer " + token },
+          maxHeaderSize: 16 * 1024,
+          insecureHTTPParser: false,
+          timeout: 24_000,
+        },
+        (response) => {
+          const chunks = [];
+          let size = 0;
+          let details;
+          try {
+            headers(response);
+            if (response.statusCode < 200 || response.statusCode >= 300) {
+              throw Object.assign(new Error("Unsuccessful API response."), {
+                exitCode: response.statusCode >= 400 ? 22 : 1,
+              });
+            }
+            if (metadata) {
+              details = responseMetadata(response.statusCode, response.rawHeaders, route);
+            }
+          } catch (error) {
+            response.destroy();
+            reject(error);
+            return;
+          }
+          response.on("error", reject);
+          response.on("data", (chunk) => {
+            size += chunk.length;
+            if (size > 12 * 1024 * 1024) {
+              response.destroy(new Error("API body exceeds its bound."));
+            } else {
+              chunks.push(chunk);
+            }
+          });
+          response.on("end", () => {
+            try {
+              const body = Buffer.concat(chunks);
+              process.stdout.write(
+                metadata
+                  ? JSON.stringify({ ...details, body: JSON.parse(body.toString("utf8")) }) + "\n"
+                  : body,
+              );
+              resolve();
+            } catch (error) {
+              reject(error);
+            }
+          });
+        },
+      );
+      req.on("information", (response) => {
+        try {
+          headers(response);
+        } catch (error) {
+          req.destroy(error);
+        }
+      });
+      req.on("upgrade", (_response, socket) => {
+        socket.destroy();
+        reject(new Error("API upgrade refused."));
+      });
+      req.on("error", reject);
+      req.end();
+    });
+  } finally {
+    agent.destroy();
   }
 }
 
-// Linux API reads must work in a read-only native profile. This fixed isolated
-// child creates only a sealed anonymous public-CA file, then becomes curl. FD0
-// remains the authorization input; no producer grandchild or filesystem exists.
-const apiTrustCarrier = String.raw`import os, sys
-try:
-    import fcntl
-    fd = os.memfd_create("public-ca", os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
-    size = 0
-    while True:
-        chunk = os.read(3, 65536)
-        if not chunk:
-            break
-        size += len(chunk)
-        if size > 1048576:
-            raise ValueError()
-        offset = 0
-        while offset < len(chunk):
-            offset += os.write(fd, chunk[offset:])
-    os.close(3)
-    os.fchmod(fd, 0o400)
-    fcntl.fcntl(fd, fcntl.F_ADD_SEALS,
-                fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL)
-    os.lseek(fd, 0, os.SEEK_SET)
-    os.dup2(fd, 3, inheritable=True)
-    os.close(fd)
-    os.execv("/usr/bin/curl", ["curl", *sys.argv[1:]])
-except BaseException:
-    os.write(2, b"The managed public Git transport refused this invocation.\npublic-git-refusal:child-setup:unknown\n")
-    sys.exit(1)
-`;
-
-function runChild(binary, args, env, input, metadataRoute, trustBundle) {
+function runChild(binary, args, env, input) {
   refusalPhase = "child-dispatch";
   const child = spawn(binary, args, {
     env,
-    stdio:
-      input === undefined
-        ? "inherit"
-        : trustBundle === undefined
-          ? ["pipe", "pipe", "inherit"]
-          : ["pipe", "pipe", "inherit", "pipe"],
+    stdio: input === undefined ? "inherit" : ["pipe", "pipe", "pipe"],
   });
   refusalPhase = "child-setup";
   const chunks = [];
   let responseSize = 0;
-  let metadata;
   let invalidResponse = false;
   let timedOut = false;
-  let carrierFailed = false;
   let requestedSignal;
-  // Curl's own limit starts after exec. Bound the same API operation across
-  // interpreter startup and CA streaming too, including a child that stalls.
+  // The parent owns the whole operation, including DNS and pending CONNECT
+  // sockets not yet assigned to the Node request. Process death closes them all.
   const deadline =
     input === undefined
       ? undefined
@@ -296,36 +350,17 @@ function runChild(binary, args, env, input, metadataRoute, trustBundle) {
           child.kill("SIGKILL");
         }, 24_000);
   deadline?.unref();
-  const trustInput = trustBundle === undefined ? undefined : child.stdio[3];
-  if (trustInput !== undefined) {
-    trustInput.on("error", () => {
-      carrierFailed = true;
-      child.kill("SIGTERM");
-    });
-    trustInput.end(trustBundle);
-  }
   if (input !== undefined) {
-    // A child that refuses before reading headers can close stdin early; its
-    // error/close result below remains the authority for operation failure.
     child.stdin.on("error", () => {});
     child.stdin.end(input);
+    child.stderr.resume(); // Never forward Node/OpenSSL errors or startup diagnostics.
     child.stdout.on("data", (chunk) => {
       responseSize += chunk.length;
-      try {
-        const headerAllowance = metadataRoute === undefined ? 0 : 16 * 1024;
-        if (responseSize > 12 * 1024 * 1024 + headerAllowance + 4) {
-          throw new Error("API response exceeds its bound.");
-        }
-        chunks.push(chunk);
-        if (metadataRoute !== undefined && metadata === undefined) {
-          metadata = responseMetadata(Buffer.concat(chunks), metadataRoute);
-        }
-        if (metadata !== undefined && responseSize - metadata.offset > 12 * 1024 * 1024 + 4) {
-          throw new Error("API body exceeds its bound.");
-        }
-      } catch {
+      if (responseSize > 12 * 1024 * 1024 + 16 * 1024) {
         invalidResponse = true;
         child.kill("SIGTERM");
+      } else {
+        chunks.push(chunk);
       }
     });
   }
@@ -345,7 +380,6 @@ function runChild(binary, args, env, input, metadataRoute, trustBundle) {
   });
   child.once("close", (code, signal) => {
     clearTimeout(deadline);
-    trustInput?.destroy();
     process.off("SIGTERM", term);
     process.off("SIGINT", interrupt);
     cleanupTrust();
@@ -353,43 +387,18 @@ function runChild(binary, args, env, input, metadataRoute, trustBundle) {
       process.stderr.write("The managed public API read timed out.\n");
       process.exitCode = 28;
     } else if (requestedSignal !== undefined) {
-      // Cancellation can close the CA pipe too. Preserve the caller's signal
-      // rather than reporting that consequential EPIPE as a carrier failure.
       process.kill(process.pid, requestedSignal);
-    } else if (carrierFailed) {
-      process.stderr.write("The managed public API trust carrier failed.\n");
-      process.exitCode = 1;
     } else if (invalidResponse) {
       process.stderr.write("The managed public API read refused the response.\n");
       process.exitCode = 1;
     } else if (signal) {
       process.kill(process.pid, signal);
     } else if (input !== undefined && code === 0) {
-      const response = Buffer.concat(chunks);
-      try {
-        const status = response.subarray(-4).toString("ascii");
-        if (!/^\n2\d\d$/.test(status)) {
-          throw new Error("Unsuccessful API response.");
-        }
-        if (metadataRoute === undefined) {
-          process.stdout.write(response.subarray(0, -4));
-        } else {
-          if (metadata === undefined || metadata.status !== Number(status)) {
-            throw new Error("Invalid API response metadata.");
-          }
-          process.stdout.write(
-            JSON.stringify({
-              status: metadata.status,
-              link: metadata.link,
-              body: JSON.parse(response.subarray(metadata.offset, -4).toString("utf8")),
-            }) + "\n",
-          );
-        }
-      } catch {
-        process.stderr.write("The managed public API read refused the response.\n");
-        process.exitCode = 1;
-      }
+      process.stdout.write(Buffer.concat(chunks));
     } else {
+      if (input !== undefined) {
+        process.stderr.write("The managed public API read refused the response.\n");
+      }
       process.exitCode = code !== null && code >= 0 ? code : 1;
     }
   });
@@ -418,47 +427,52 @@ function apiGet(route, metadata = false) {
   validateApiRoute(route);
   const config = configuration(process.env.OCE_PUBLIC_GITHUB_READ_CONFIG);
   const token = authorization(config);
-  const trustBundle =
-    process.platform === "linux" ? composeTrust(readTrust(config.caPath, 1024 * 1024)) : undefined;
-  const ca = trustBundle === undefined ? operationTrust(config) : "/proc/self/fd/3";
-  const env = { ...process.env };
-  const proxy = env.https_proxy ?? env.HTTPS_PROXY ?? env.all_proxy ?? env.ALL_PROXY ?? "";
-  // No curl config, redirects, ambient client identity, cookies or caller options.
-  // Header input keeps the capability out of argv and temporary files.
-  runChild(
-    trustBundle === undefined ? "curl" : "/usr/bin/python3",
-    [
-      ...(trustBundle === undefined ? [] : ["-I", "-S", "-B", "-c", apiTrustCarrier]),
-      "-q",
-      "--silent",
-      "--show-error",
-      "--fail-with-body",
-      "--globoff",
-      "--proto",
-      "=https",
-      "--max-time",
-      "24",
-      "--max-filesize",
-      String(12 * 1024 * 1024),
-      "--proxy",
-      proxy,
-      "--noproxy",
-      "",
-      "--cacert",
-      ca,
-      "--header",
-      "@-",
-      "--write-out",
-      "\n%{http_code}",
-      ...(metadata ? ["--include", "--suppress-connect-headers"] : []),
-      "--url",
-      config.endpoint + route,
-    ],
-    env,
-    "Authorization: Bearer " + token + "\n",
-    metadata ? route : undefined,
-    trustBundle,
-  );
+  const ca = composeTrust(readTrust(config.caPath, 1024 * 1024));
+  const env = process.env;
+  const selected = env.https_proxy ?? env.HTTPS_PROXY ?? env.all_proxy ?? env.ALL_PROXY ?? "";
+  let proxy = "";
+  if (selected !== "") {
+    const parsed = new URL(selected);
+    if (
+      !/^https?:\/\//.test(selected) ||
+      !["http:", "https:"].includes(parsed.protocol) ||
+      Array.from(selected).some(
+        (character) => character.charCodeAt(0) <= 32 || character.charCodeAt(0) === 127,
+      ) ||
+      parsed.pathname !== "/" ||
+      parsed.search ||
+      parsed.hash
+    ) {
+      throw new Error("Unsupported API proxy.");
+    }
+    proxy = parsed.href;
+  }
+  // Preserve Node defaults plus the OS roots curl used for the HTTPS proxy leg
+  // before stripping child startup controls. Origin trust remains explicit ca.
+  const input = JSON.stringify({
+    endpoint: config.endpoint,
+    route,
+    token,
+    ca,
+    defaults: [...new Set([...getCACertificates("default"), ...getCACertificates("system")])],
+    proxy,
+    metadata,
+  });
+  if (Buffer.byteLength(input) > 4 * 1024 * 1024) {
+    throw new Error("API input exceeds its bound.");
+  }
+  const program = `import { Agent, request } from "node:https";
+import { setDefaultCACertificates } from "node:tls";
+let refusalPhase;
+${validateApiRoute.toString()}
+${responseMetadata.toString()}
+(${apiClient.toString()})().catch(error => {
+  const tls = ["DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "CERT_HAS_EXPIRED", "CERT_NOT_YET_VALID", "ERR_TLS_CERT_ALTNAME_INVALID"].includes(error?.code);
+  process.exitCode = tls ? 60 : error?.exitCode === 22 ? 22 : 1;
+});`;
+  // No inherited Node options/debugging, proxy bypass, CA paths, client identity,
+  // preload or key-log settings. All request/trust data arrives only on stdin.
+  runChild(process.execPath, ["--input-type=module", "-e", program], {}, input);
 }
 
 function configuration(path) {

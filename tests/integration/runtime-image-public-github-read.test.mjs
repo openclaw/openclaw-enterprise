@@ -132,7 +132,7 @@ async function readerWithPrivateProvider() {
 // OpenClaw permission profile, then give it to Codex command/exec without a model turn.
 async function readWithStockCodex() {
   const assert = (await import("node:assert/strict")).default;
-  const { accessSync, constants, mkdirSync, readdirSync, writeFileSync } = await import("node:fs");
+  const { accessSync, constants, mkdirSync, readdirSync } = await import("node:fs");
   const { spawnSync } = await import("node:child_process");
   const { createRequire } = await import("node:module");
   const { pluginConfig, skillPath, materialSetup, manifest, mode, readOnly } = JSON.parse(
@@ -176,11 +176,6 @@ async function readWithStockCodex() {
   const { resolveProviderIdForAuth } = await import("openclaw/plugin-sdk/provider-auth-aliases");
   const workspace = "/home/node/workspace";
   mkdirSync(workspace, { recursive: true });
-  if (readOnly) {
-    // The interpreter must not import an Agent-controlled module from cwd or
-    // PYTHONPATH. The actual Linux caller's -I selection is the boundary.
-    writeFileSync(workspace + "/fcntl.py", 'raise RuntimeError("synthetic-startup-refusal")\n');
-  }
   const workspaceBefore = readdirSync(workspace).sort();
   const dist = "/app/node_modules/openclaw/dist/";
   async function bundledFunction(chunk, name) {
@@ -248,7 +243,6 @@ async function readWithStockCodex() {
         CODEX_HOME: "/tmp/public-codex",
         // Match the production Harness root used by managed operation scratch.
         OPENCLAW_WORKSPACE_DIR: workspace,
-        ...(readOnly ? { PYTHONPATH: workspace, PYTHONSTARTUP: workspace + "/fcntl.py" } : {}),
         ...publicEnvironment,
       },
       clearEnv: ["CODEX_ACCESS_TOKEN", "CODEX_API_KEY", "OPENAI_API_KEY"],
@@ -285,73 +279,6 @@ async function readWithStockCodex() {
       'denied=$(curl -q --silent --connect-timeout 3 --max-time 5 --noproxy "" --proxy "$proxy" --output /dev/null --write-out "%{http_connect}" https://unselected.invalid:8080/ 2>/dev/null || :)',
       'test "$denied" = 403',
     ];
-    // Diagnose CA-path visibility without changing the native profile or the real
-    // API assertion. The marker is public; only fixed fields and errno categories
-    // leave the child. An inherited alarm bounds both Python exec stages.
-    const fdProbe = String.raw`import os, sys
-try:
-    import signal
-    signal.alarm(5)
-    import fcntl
-    reserved = os.pipe()
-    fd = os.memfd_create("public-fd-probe", os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
-    os.write(fd, b"public-fd-probe")
-    os.fchmod(fd, 0o400)
-    fcntl.fcntl(fd, fcntl.F_ADD_SEALS,
-        fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL)
-    for item in reserved:
-        os.close(item)
-    os.lseek(fd, 0, os.SEEK_SET)
-    os.dup2(fd, 3, inheritable=True)
-    os.close(fd)
-    child = r"""
-import os, sys
-try:
-    import errno, json, stat
-    allowed = {"ENOENT", "EACCES", "EPERM", "EBADF", "ENOTDIR", "ELOOP", "ENXIO"}
-    def check(path=None, directory=False):
-        opened = None
-        try:
-            if directory:
-                return {"ok": stat.S_ISDIR(os.stat(path).st_mode)}
-            if path is None:
-                current = 3
-            else:
-                opened = os.open(path, os.O_RDONLY)
-                current = opened
-            os.lseek(current, 0, os.SEEK_SET)
-            return {"ok": os.read(current, 32) == b"public-fd-probe"}
-        except OSError as error:
-            code = errno.errorcode.get(error.errno, "unknown")
-            return {"ok": False, "code": code if code in allowed else "unknown"}
-        finally:
-            if opened is not None:
-                os.close(opened)
-    receipt = {
-        "direct": check(),
-        "proc": check("/proc", directory=True),
-        "proc_fd": check("/proc/self/fd/3"),
-        "dev_fd": check("/dev/fd/3")
-    }
-    os.close(3)
-    os.write(2, ("public-fd-probe " + json.dumps(receipt, separators=(",", ":")) + "\n").encode())
-except BaseException:
-    sys.exit(1)
-"""
-    os.execv("/usr/bin/python3", ["python3", "-I", "-S", "-B", "-c", child])
-except BaseException:
-    sys.exit(1)
-`;
-    const diagnostic =
-      mode === "limited" && !readOnly
-        ? [
-            // Shell-quote the fixed program, never interpolate it as JSON or use
-            // a heredoc that could need a writable temporary file.
-            "if ! /usr/bin/python3 -I -S -B -c '" +
-              fdProbe.replaceAll("'", "'\\''") +
-              `'; then printf '%s\\n' 'public-fd-probe {"setup":{"ok":false,"code":"unknown"}}' >&2; fi`,
-          ]
-        : [];
     const operation = readOnly
       ? [
           "stage=read-only-workspace",
@@ -394,7 +321,7 @@ except BaseException:
             "stage=remote-url",
             "git -C clone remote get-url origin",
           ];
-    const shell = [...guards, ...diagnostic, ...operation, "trap - EXIT"].join("\n");
+    const shell = [...guards, ...operation, "trap - EXIT"].join("\n");
     const result = await client.request("command/exec", {
       permissionProfile: profileName,
       cwd: workspace,
