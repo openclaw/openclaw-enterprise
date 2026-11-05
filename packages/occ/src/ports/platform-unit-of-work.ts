@@ -15,6 +15,11 @@ export function bindPlatformUnitOfWork(
       "save",
       "authorize",
     ]),
+    pluginReleases: bindRepository(repositories.pluginReleases, lifetime, [
+      "find",
+      "list",
+      "publish",
+    ]),
     sandboxPolicies: bindRepository(repositories.sandboxPolicies, lifetime, ["find", "save"]),
     installations: bindRepository(repositories.installations, lifetime, [
       "findInstallation",

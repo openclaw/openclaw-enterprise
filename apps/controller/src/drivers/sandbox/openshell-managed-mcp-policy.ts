@@ -5,7 +5,8 @@ import { openShellProviderName } from "../../backends/openshell.ts";
 import {
   type ManagedMcpInstall,
   managedMcpCredentialBinding,
-  managedMcpInstalls,
+  managedSelectionsForRevision,
+  managedMcpInstallsForRevision,
 } from "../plugin/managed-catalog.ts";
 import { openShellProfileEndpoint } from "./openshell-gateway-client.ts";
 import { sameOpenShellPolicy } from "./openshell-policy.ts";
@@ -57,12 +58,18 @@ function openShellManagedMcpPolicy(
   revision: Readonly<AgentRevision>,
   requirements: HarnessWorkloadRequirements,
   installationProviders: readonly string[],
+  selections: ReturnType<typeof managedSelectionsForRevision>,
 ) {
-  const binding = managedMcpCredentialBinding(revision.plugins?.plugins, install);
+  const binding = managedMcpCredentialBinding(selections, install);
   const { host, port, path } = install.endpoint;
+  const ownsScope = (scope: (typeof requirements.credentialAttachments)[number]["requestScope"]) =>
+    scope?.importedPluginTemplate?.releaseSha256 ===
+      install.importedPluginTemplate?.releaseSha256 &&
+    scope?.importedPluginTemplate?.serverName === install.importedPluginTemplate?.serverName;
   const attached = requirements.credentialAttachments.filter(
     ({ sourceId, requestScope }) =>
-      sourceId === binding?.sourceId || (requestScope?.host === host && requestScope.port === port),
+      sourceId === binding?.sourceId ||
+      (ownsScope(requestScope) && requestScope?.host === host && requestScope.port === port),
   );
   const selected = attached[0];
   // Compute drops withdrawn sources from the dispatch even when the immutable revision names one.
@@ -75,7 +82,9 @@ function openShellManagedMcpPolicy(
   if (
     attached.length !== 1 ||
     !selected ||
+    (install.importedPluginTemplate && !binding?.active) ||
     selected.ref !== openShellProviderName(selected.sourceId) ||
+    !ownsScope(selected.requestScope) ||
     selected.requestScope?.host !== host ||
     selected.requestScope.port !== port ||
     selected.requestScope.path !== path ||
@@ -94,6 +103,7 @@ function openShellManagedMcpPolicy(
   }
   return {
     install,
+    sourceId: selected.sourceId,
     provider: {
       name: "_provider_" + selected.ref.replaceAll("-", "_"),
       binaries: [{ path: install.binaryPath }],
@@ -113,15 +123,27 @@ export function openShellManagedMcpPolicies(
   requirements: HarnessWorkloadRequirements,
   installationProviders: readonly string[],
 ) {
-  return managedMcpInstalls.flatMap((install) => {
+  const selections = managedSelectionsForRevision(revision);
+  const policies = managedMcpInstallsForRevision(revision).flatMap((install) => {
     const policy = openShellManagedMcpPolicy(
       install,
       revision,
       requirements,
       installationProviders,
+      selections,
     );
     return policy ? [policy] : [];
   });
+  if (
+    requirements.credentialAttachments.some(
+      (attachment) =>
+        attachment.requestScope?.importedPluginTemplate &&
+        !policies.some((policy) => policy.sourceId === attachment.sourceId),
+    )
+  ) {
+    unsupported("An imported MCP provider requires its active revision tool policy.");
+  }
+  return policies;
 }
 
 /** Matching OpenShell allowances compose. A second route must not permit

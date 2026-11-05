@@ -981,7 +981,7 @@ export function createOpenShellKubernetesFixture({
    */
   async function installOpenShellGateway(
     namespace,
-    { sandboxServiceAccountName, extraTrustPem } = {},
+    { sandboxServiceAccountName, extraTrustPem, upstreamProxy } = {},
   ) {
     await kubectl(
       "label",
@@ -1044,6 +1044,25 @@ export function createOpenShellKubernetesFixture({
     if (sandboxServiceAccountName !== undefined) {
       values.push("--set=sandboxServiceAccount.create=false");
       values.push(`--set-string=sandboxServiceAccount.name=${sandboxServiceAccountName}`);
+    }
+    if (upstreamProxy) {
+      // Only this disposable release trusts the controlled MCP provider. The supervisor still
+      // verifies the upstream TLS certificate and applies its normal request policy.
+      const configMap = "test-mcp-provider-ca";
+      await kubectl(
+        "create",
+        "configmap",
+        configMap,
+        "--namespace",
+        namespace,
+        "--from-file=ca.crt=" + upstreamProxy.caFile,
+      );
+      values.push(
+        "--set-string=upstreamProxy.url=" + upstreamProxy.url,
+        "--set-json=upstreamProxy.noProxy=" + JSON.stringify(upstreamProxy.noProxy),
+        "--set=upstreamProxy.connectByHostname=true",
+        "--set-string=upstreamProxy.caBundle.configMapName=" + configMap,
+      );
     }
     if (extraTrustPem !== undefined) {
       const trust = "oce-gateway-extra-trust";

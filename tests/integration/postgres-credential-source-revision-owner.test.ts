@@ -7,6 +7,7 @@ import type {
   Agent,
   AgentRevision,
   CredentialSource,
+  InspectedPluginPackage,
   Secret,
 } from "../../packages/contracts/src/index.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
@@ -327,5 +328,78 @@ test(
       );
       assert.deepEqual(await bytes(fresh), before);
     });
+  },
+);
+
+test(
+  "PostgreSQL keeps a plugin publication and a template source in the same Namespace",
+  options,
+  async (t) => {
+    const { pool, store, ns, sources } = await fixture(t);
+    const digest = "1".repeat(64);
+    const release: InspectedPluginPackage = {
+      name: "reports",
+      format: "agent-plugins",
+      digest,
+      archiveSha256: "2".repeat(64),
+      skills: [],
+      mcpServers: [{ name: "report", url: "https://reports.example.test/mcp" }],
+      unsupported: [],
+    };
+    const source: CredentialSource = {
+      ...sources[0]!,
+      id: id("cs"),
+      name: id("template"),
+      type: "bearer-token",
+      config: {
+        protocol: "mcp",
+        host: "reports.example.test",
+        path: "/mcp",
+        env_var: "REPORTS_TOKEN",
+      },
+      importedPluginTemplate: { releaseSha256: digest, serverName: "report" },
+      secrets: { token: sources[0]!.secrets.api_key! },
+    };
+    await assert.rejects(
+      store.transact((state) => state.credentialSources.createCredentialSource(source)),
+      {
+        name: "ScopeViolationError",
+        message: "The resource violates its exact platform ownership or state.",
+      },
+    );
+    await store.transact(async (state) => {
+      await state.pluginReleases.publish(ns.id, "publisher", release);
+      await state.credentialSources.createCredentialSource(source);
+    });
+    await store.transact((state) =>
+      state.pluginReleases.publish(ns.id, "other-publisher", { ...release, name: "overwritten" }),
+    );
+    await store.read(async (state) => {
+      assert.deepEqual(await state.pluginReleases.find(ns.id, digest), release);
+      assert.deepEqual(
+        (await state.credentialSources.findCredentialSource(ns.id, source.id))
+          ?.importedPluginTemplate,
+        source.importedPluginTemplate,
+      );
+      assert.deepEqual(await state.pluginReleases.list(ns.id), [
+        { name: release.name, digest, mcpServers: release.mcpServers },
+      ]);
+    });
+    // A compromised app write cannot repoint an existing source or replace an admitted release's content.
+    await assert.rejects(
+      pool.query("UPDATE occ.credential_sources SET plugin_server_name=$2 WHERE id=$1", [
+        source.id,
+        "other",
+      ]),
+      { code: "42501" },
+    );
+    await assert.rejects(
+      pool.query("UPDATE occ.plugin_releases SET actor_id=$3 WHERE namespace_id=$1 AND digest=$2", [
+        ns.id,
+        digest,
+        "other-actor",
+      ]),
+      { code: "42501" },
+    );
   },
 );

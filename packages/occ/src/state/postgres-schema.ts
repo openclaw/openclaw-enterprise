@@ -1,6 +1,7 @@
 import type { CredentialPolicyReductionState } from "./platform-state.ts";
 import type {
   InitialWorkspaceFiles,
+  InspectedPluginPackage,
   ProtectedEgressSource,
   EgressInstallation,
   AgentDesiredRuntimeState,
@@ -112,6 +113,25 @@ export const namespaces = occSchema.table(
     check(
       "namespaces_tombstone_valid",
       sql`${table.deletedAt} IS NULL OR (${table.status} = 'deleting' AND ${table.deletedAt} >= ${table.createdAt})`,
+    ),
+  ],
+);
+
+export const pluginReleases = occSchema.table(
+  "plugin_releases",
+  {
+    namespaceId: text("namespace_id")
+      .notNull()
+      .references(() => namespaces.id),
+    digest: text("digest").notNull(),
+    actorId: text("actor_id").notNull(),
+    document: jsonb("document").$type<InspectedPluginPackage>().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.namespaceId, table.digest] }),
+    check(
+      "plugin_releases_digest_valid",
+      sql`${table.digest} ~ '^[a-f0-9]{64}$' AND ${table.document} @> jsonb_build_object('digest', ${table.digest})`,
     ),
   ],
 );
@@ -479,6 +499,8 @@ export const credentialSources = occSchema.table(
     name: collatedText("name").notNull(),
     type: text("type").notNull(),
     config: jsonb("config").$type<Readonly<Record<string, string>>>().notNull(),
+    pluginReleaseDigest: text("plugin_release_digest"),
+    pluginServerName: text("plugin_server_name"),
     egress: jsonb("egress").$type<ProtectedEgressSource>(),
     driverId: text("driver_id").notNull(),
     ownerCapability: text("owner_capability").$type<CredentialSourceOwnerCapability>().notNull(),
@@ -494,6 +516,15 @@ export const credentialSources = occSchema.table(
       AND ${table.config}->'repository_id' = ${table.egress} #> '{grant,repositoryId}' AND ${table.config}->'repository' = ${table.egress} #> '{grant,repository}'
       AND occ.credential_free_metadata_source_is_valid(${table.egress}, ${table.namespaceId}, ${table.id})
     ELSE ${table.egress} IS NULL OR occ.egress_source_is_valid(${table.egress}, ${table.namespaceId}, ${table.id}) END IS TRUE`,
+    ),
+    foreignKey({
+      name: "credential_source_template_release",
+      columns: [table.namespaceId, table.pluginReleaseDigest],
+      foreignColumns: [pluginReleases.namespaceId, pluginReleases.digest],
+    }),
+    check(
+      "credential_source_template_provenance",
+      sql`(${table.pluginReleaseDigest} IS NULL AND ${table.pluginServerName} IS NULL) OR (${table.pluginReleaseDigest} IS NOT NULL AND ${table.pluginServerName} IS NOT NULL AND char_length(${table.pluginServerName}) BETWEEN 1 AND 128 AND ${table.type} = 'bearer-token' AND ${table.ownerCapability} = 'credential_gateway' AND ${table.config} @> '{"protocol":"mcp"}'::jsonb AND ${table.egress} IS NULL)`,
     ),
     unique("credential_sources_namespace_id_id_unique").on(table.namespaceId, table.id),
     unique("credential_sources_namespace_id_name_unique").on(table.namespaceId, table.name),
@@ -1173,7 +1204,7 @@ export const iamRestrictions = occSchema.table(
   (table) => [
     check(
       "iam_restrictions_action_valid",
-      sql`${table.action} IN ('create', 'read', 'update', 'delete', 'deploy', 'operate', 'administer', 'read_logs', 'manage_policy')`,
+      sql`${table.action} IN ('create', 'read', 'update', 'delete', 'deploy', 'operate', 'administer', 'read_logs', 'manage_policy', 'publish_plugins')`,
     ),
     check(
       "iam_restrictions_resource_kind_valid",

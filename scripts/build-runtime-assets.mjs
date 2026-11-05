@@ -50,6 +50,10 @@ const appliedPatches = [
     file: "openclaw-managed-skill-installs.patch",
     sha256: "1e19885e42f6958244de9ef563f6223b5599a062c82569e793c9f554f7e4207f",
   },
+  {
+    file: "openclaw-pinned-skill-sources.patch",
+    sha256: "e08b0872595284cb8760578c06243382d7a26a7d44227acc6425270d4b8cac08",
+  },
 ];
 const [command, sourceRoot, output, sourceManifest] = process.argv.slice(2);
 const root = await realpath(sourceRoot);

@@ -151,6 +151,18 @@ const plugin = {
   description: "Search the documentation service.",
   tools: null,
 };
+const pluginPackageArchive =
+  "H4sIAAAAAAACA+3UzU7EIBQFYNZ9ioa4tPzEjpPwBsbZzROQGdKihRKgLjS+u0wxYzJ7GxPPt6G5t7QL7iFMy2A9e0mzJ79FFI99v67F7Srkbnd9XutSyIc9aQXZwJKyjuX35H/6oHfpNBqnqaJjziEpzvVgfO7COhmJzXHg9ZXEJRNM8NphtbiODr2nXjtTvhFNmGO2fiilNxOTLU1F1330k8Bfk17tNCVej40fn58OB+bOG+df9jf5l/tyJSD/G+i6rrlEV7V1BJqzSadoQy7BVe1xcU5H+25a/d1nzWXHTz2P5tpBmgAAAAAAAAAAAAAAAAAAAAC29wVtDqOTACgAAA==";
+const publishedPluginRelease = {
+  archiveSha256: "f84641cc425249d58538a46747a9a6a1cc5aff8bc0dacd946e55afdfa748de8d",
+  name: "reporting",
+  version: "1.0.0",
+  format: "agent-plugins",
+  digest: "62ca5087c5dde09b9ef0613b508ba0a46e6838da65d12d43ebe2e822095e4f3a",
+  skills: ["report"],
+  mcpServers: [],
+  unsupported: [],
+};
 const catalog = { plugins: [plugin], nextCursor: null };
 const repository = {
   repositoryRef: "documentation",
@@ -275,6 +287,12 @@ export const requestExamples = {
     provider: "openai",
     authMethod: "api_key",
     apiKey: "replace-with-your-authorized-model-key",
+  },
+  previewPluginRelease: { archiveBase64: pluginPackageArchive },
+  publishPluginRelease: {
+    archiveBase64: pluginPackageArchive,
+    digest: publishedPluginRelease.digest,
+    archiveSha256: publishedPluginRelease.archiveSha256,
   },
   discoverAgentPlugins: { secretRef },
   discoverAgentPluginDetails: { secretRef, pluginId: plugin.id },
@@ -453,6 +471,7 @@ export const responseExamples = {
     update: true,
   },
   getNamespaceCallerPermissions: {
+    publishPlugins: true,
     delete: true,
     agents: { create: true },
     installation: { administer: true },
@@ -465,6 +484,8 @@ export const responseExamples = {
   pollAgentDeviceAuthorization: device,
   pollSavedAgentDeviceAuthorization: device,
   discoverAgentModels: [{ id: "gpt-5.1-codex", name: "gpt-5.1-codex" }],
+  previewPluginRelease: publishedPluginRelease,
+  publishPluginRelease: publishedPluginRelease,
   discoverAgentPlugins: catalog,
   discoverSavedAgentPlugins: catalog,
   discoverAgentPluginDetails: plugin,
@@ -623,6 +644,7 @@ export const errorExamples = {
   404: ["NOT_FOUND", "The requested platform resource was not found."],
   409: ["RESOURCE_CONFLICT", "The requested operation conflicts with the current resource state."],
   413: ["PAYLOAD_TOO_LARGE", "The request body exceeds the permitted size."],
+  422: ["INVALID_REQUEST", "The uploaded plugin package cannot be inspected."],
   415: ["UNSUPPORTED_MEDIA_TYPE", "The request content type is not supported."],
   429: ["RATE_LIMITED", "Too many requests. Retry later."],
   500: ["INTERNAL_ERROR", "The platform request could not be completed."],

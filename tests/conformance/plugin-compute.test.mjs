@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash, createHmac } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,6 +32,12 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { startupPhaseHelper } from "../../apps/controller/src/drivers/compute/runtime-startup.ts";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import {
+  importedMcpInstall,
+  managedPluginCredentials,
+} from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import { openShellManagedMcpPolicies } from "../../apps/controller/src/drivers/sandbox/openshell-managed-mcp-policy.ts";
+import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import { managedGoogleInstall } from "../../apps/controller/src/drivers/plugin/google-workspace/install.ts";
 import {
   PLUGIN_RUNTIME_CODEX_CONFIG,
@@ -36,7 +51,14 @@ import {
   pluginRuntimeEnvironment,
   pluginRuntimeSpecForRevision,
 } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
-import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import {
+  admitLoggingConfiguration,
+  canonicalPluginPackageContent,
+} from "../../packages/contracts/src/index.ts";
+import {
+  importedPluginMaterial,
+  importedPluginDeployment,
+} from "../../apps/controller/src/drivers/compute/kubernetes/imported-plugin-skills.ts";
 import { validateConfigurationSettings } from "../../packages/occ/src/configuration-settings.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
 import { MAX_TIMER_DELAY_MS } from "../../packages/utils/src/index.ts";
@@ -5635,4 +5657,169 @@ test("Kubernetes plugin-free Codex gateway receives explicit Agent approvers", (
       true,
     );
   }
+});
+
+test("Gateway init verifies every projected chunk before publishing the selected skill files", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "oce-imported-plugin-init-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const input = join(root, "input");
+  const output = join(root, "output");
+  mkdirSync(input);
+  mkdirSync(output);
+  const resource = Buffer.alloc(680 * 1024, 0xab);
+  const script = "#!/bin/sh\ncat references/example.bin\n";
+  const files = [
+    ["SKILL.md", Buffer.from("---\nname: sample\ndescription: Read an example.\n---\n"), false],
+    ["references/example.bin", resource, false],
+    ["scripts/read.sh", Buffer.from(script), true],
+  ];
+  const content = {
+    format: "agent-plugins",
+    name: "sample",
+    skills: [
+      {
+        name: "sample",
+        files: files.map(([path, bytes, executable]) => ({
+          path,
+          contentBase64: bytes.toString("base64"),
+          executable,
+        })),
+      },
+    ],
+    mcpServers: [],
+    unsupported: [],
+  };
+  const digest = createHash("sha256").update(canonicalPluginPackageContent(content)).digest("hex");
+  const id = "occ-import:" + digest;
+  const release = { ...content, digest, archiveSha256: "0".repeat(64) };
+  const material = importedPluginMaterial("snapshot", { [id]: release });
+  assert.ok(material.chunks.length > 1);
+  for (const [index, chunk] of material.chunks.entries()) {
+    writeFileSync(join(input, "chunk-" + index), chunk.content);
+  }
+  const { initContainer } = importedPluginDeployment(material, "runtime");
+  const launch = () =>
+    spawnSync(
+      process.execPath,
+      [...initContainer.command.slice(1), input, output, initContainer.args[2]],
+      { encoding: "utf8" },
+    );
+  // These are real Node init processes reading the exact format kubelet projects into the Pod.
+  const success = launch();
+  assert.equal(success.status, 0, success.stderr);
+  assert.deepEqual(readFileSync(join(output, "skills/sample/references/example.bin")), resource);
+  assert.equal(readFileSync(join(output, "skills/sample/scripts/read.sh"), "utf8"), script);
+  assert.equal(statSync(join(output, "skills/sample/scripts/read.sh")).mode & 0o111, 0o111);
+  assert.deepEqual(JSON.parse(readFileSync(join(output, "release.json"), "utf8")), {
+    ids: [id],
+    pins: { sample: join(output, "skills/sample/SKILL.md") },
+  });
+  // A replaced chunk must fail before the init operation modifies its private output directory.
+  const first = Buffer.from(material.chunks[0].content, "base64");
+  const offset = first.indexOf("sample");
+  assert.ok(offset >= 0);
+  first[offset] = 0x74;
+  writeFileSync(join(input, "chunk-0"), first.toString("base64"));
+  rmSync(output, { recursive: true });
+  mkdirSync(output);
+  const corrupt = launch();
+  assert.notEqual(corrupt.status, 0);
+  assert.match(corrupt.stderr, /failed digest verification/);
+  assert.deepEqual(readdirSync(output), []);
+});
+
+test("the selected template owns a single credentialed route even when its host matches a bundled MCP server", () => {
+  const server = { name: "inventory.v2", url: "https://mcp.slack.com/mcp" };
+  const content = {
+    format: "agent-plugins",
+    name: "inventory",
+    skills: [],
+    mcpServers: [server],
+    unsupported: [],
+  };
+  const digest = createHash("sha256").update(canonicalPluginPackageContent(content)).digest("hex");
+  const release = { ...content, digest, archiveSha256: "0".repeat(64) };
+  const pluginId = "occ-import:" + digest;
+  const install = importedMcpInstall(release, server);
+  const source = {
+    id: "cs_00000000-0000-4000-8000-000000000025",
+    name: "Inventory account",
+    namespaceId: "ns_a",
+    type: "bearer-token",
+    ownerCapability: "credential_gateway",
+    secrets: { token: { namespaceId: "ns_a" } },
+    state: "ready",
+    importedPluginTemplate: install.importedPluginTemplate,
+    config: managedPluginCredentials.templateConfig(release, server),
+  };
+  const selection = {
+    enabled: true,
+    driverPolicy: {
+      releaseSha256: digest,
+      servers: { [server.name]: { sourceId: source.id, toolNames: ["read_inventory"] } },
+    },
+  };
+  const revision = {
+    harness: { id: "openclaw", mode: "dedicated" },
+    plugins: {
+      driver: { implementation: "occ/openclaw-plugin" },
+      plugins: { [pluginId]: selection },
+      importedReleases: { [pluginId]: release },
+    },
+  };
+  const access = (requestScope, activeRevision = revision) =>
+    openShellManagedMcpPolicies(
+      activeRevision,
+      {
+        credentialAttachments: [
+          { sourceId: source.id, ref: openShellProviderName(source.id), requestScope },
+        ],
+      },
+      [],
+    );
+  const exact = { ...install.endpoint, importedPluginTemplate: source.importedPluginTemplate };
+  const policies = access(exact);
+  assert.equal(policies.length, 1);
+  const [endpoint] = policies[0].network.endpoints;
+  assert.equal(endpoint.host, install.endpoint.host);
+  assert.deepEqual(
+    endpoint.rules.filter((rule) => rule.allow.method === "tools/call"),
+    [{ allow: { method: "tools/call", params: { name: { glob: "read_inventory" } } } }],
+  );
+  assert.throws(
+    () =>
+      access({
+        ...exact,
+        importedPluginTemplate: { ...source.importedPluginTemplate, serverName: "other" },
+      }),
+    /reviewed OpenShell provider/,
+  );
+  // A stale attachment delivered after release removal cannot fall back to a generic provider.
+  assert.throws(
+    () => access(exact, { ...revision, plugins: undefined }),
+    /active revision tool policy/,
+  );
+  // A source created for another published template must not authorize discovery at an identical URL.
+  const other = {
+    ...source,
+    importedPluginTemplate: { releaseSha256: "f".repeat(64), serverName: server.name },
+  };
+  assert.deepEqual(
+    managedPluginCredentials.mcpToolDiscovery(pluginId, server.name, source, release),
+    { endpoint: server.url },
+  );
+  assert.equal(
+    managedPluginCredentials.mcpToolDiscovery(pluginId, server.name, other, release),
+    undefined,
+  );
+  assert.throws(
+    () =>
+      managedPluginCredentials.validate(
+        revision.plugins.plugins,
+        [other],
+        undefined,
+        revision.plugins.importedReleases,
+      ),
+    /created from this release/,
+  );
 });

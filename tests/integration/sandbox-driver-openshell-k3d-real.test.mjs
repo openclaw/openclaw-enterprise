@@ -29,6 +29,11 @@ import { createAuthenticatedControllerRequest } from "../helpers/auth-session.mj
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
+  importedMcpProbeScript,
+  startImportedMcpEndpoint,
+} from "../helpers/imported-mcp-endpoint.mjs";
+import { importedPluginPackage } from "../helpers/imported-plugin-package.mjs";
+import {
   assertNativeCronRunSucceeded,
   assertCodexPolicyChild,
   findCodexPolicyChild,
@@ -78,7 +83,9 @@ import {
 const executeFile = promisify(execFile);
 const selectedScenario = process.env.OCC_TEST_OPENSHELL_SCENARIO ?? "full";
 assert.ok(
-  ["full", "network-policy", "plugin-install"].includes(selectedScenario),
+  ["full", "network-policy", "plugin-install", "plugin-import", "plugin-import-mcp"].includes(
+    selectedScenario,
+  ),
   "Unknown OpenShell scenario.",
 );
 const networkPolicyOnly = selectedScenario === "network-policy";
@@ -1390,7 +1397,7 @@ function createIntegrationSandboxDriverFactory(
   GrpcOpenShellGatewayClient,
   OpenShellGateway,
   operatorKubernetes,
-  { enableCompatibilityBridges, gatewayTrustPem },
+  { enableCompatibilityBridges, gatewayTrustPem, upstreamProxy },
 ) {
   const gatewayState = new Map();
   const endpointClients = new Map();
@@ -1532,6 +1539,7 @@ function createIntegrationSandboxDriverFactory(
       await installOpenShellGateway(namespaceName, {
         sandboxServiceAccountName,
         ...(gatewayTrustPem === undefined ? {} : { extraTrustPem: gatewayTrustPem }),
+        upstreamProxy,
       });
       throwOpenShellAbortReason(context.signal);
       const forward = await startOpenShellGatewayPortForward(namespaceName);
@@ -2002,11 +2010,22 @@ async function prepareProductionInstallation(
     controllerPort,
     controlUiOrigin,
     gatewayManagedMode,
+    withImportedMcp = false,
     withOAuthToolSources = true,
     enableCompatibilityBridges = harnessId === "openclaw",
   } = {},
 ) {
   const kubeconfig = await validateOpenShellPrerequisites();
+  const importedMcp = withImportedMcp
+    ? await startImportedMcpEndpoint(context, kubectl, gatewayImage)
+    : undefined;
+  if (importedMcp) {
+    assert.notEqual(
+      new URL(importedMcp.url).hostname,
+      modelEndpoint.hostname,
+      "the synthetic MCP account must use the fixture-only CONNECT path",
+    );
+  }
   const policyFixtureUrl = process.env.OCC_TEST_OPENSHELL_POLICY_MIGRATION_DATABASE_URL;
   if (harnessId === "codex") {
     assert.ok(
@@ -2229,6 +2248,19 @@ async function prepareProductionInstallation(
     {
       enableCompatibilityBridges,
       ...(keycloak === undefined ? {} : { gatewayTrustPem: keycloak.caPem }),
+      ...(importedMcp
+        ? {
+            upstreamProxy: {
+              ...importedMcp.upstreamProxy,
+              noProxy: [
+                modelEndpoint.hostname,
+                ".svc.cluster.local",
+                "localhost",
+                "127.0.0.1",
+              ].join(","),
+            },
+          }
+        : {}),
     },
   );
   const drivers = await loadInstallationConfiguration({
@@ -2895,6 +2927,7 @@ async function prepareProductionInstallation(
     appServerToken: transport.appServerToken,
     modelSecretId: modelSecret.data.id,
     sourceRoleId: sourceRole.data.id,
+    importedMcp,
     controllerUrl,
     // This is the existing authenticated Envoy route, including the host TLS relay.
     gatewayAdminUrl: `wss://${workspaceGatewayHostname(workspaceGateway)}:${workspaceGateway.routing.endpointPort}/namespaces/${namespaceId}/agents/${agent.data.id}`,
@@ -7295,6 +7328,451 @@ if (demoStatePath !== undefined) {
   assert.equal(selectedHarness, "openclaw", "the OpenShell browser demo requires openclaw.");
 }
 
+function nativePluginWorkflow(topology) {
+  const namespace = `/namespaces/${topology.namespaceId}`;
+  const agent = `${namespace}/agents/${topology.agent.id}`;
+  const request = async (method, path, body, expected = 200) => {
+    const result = await topology.request(method, path, body);
+    assert.equal(result.status, expected, JSON.stringify(result.error));
+    return result.data;
+  };
+
+  async function publish(archiveBase64) {
+    const path = namespace + "/plugin-releases";
+    const preview = await request("POST", path + "/preview", { archiveBase64 });
+    assert.deepEqual(preview.unsupported, []);
+    const saved = await request("POST", path, {
+      archiveBase64,
+      digest: preview.digest,
+      archiveSha256: preview.archiveSha256,
+    });
+    assert.equal(saved.digest, preview.digest);
+    return saved;
+  }
+  async function deploy(configuration) {
+    await request("PATCH", agent, {
+      configurationId: topology.agent.configurationId,
+      ...configuration,
+    });
+    const revision = await request("POST", `${agent}/deploy`, undefined, 202);
+    assert.equal(revision.gatewayManagedMode, true);
+    assert.equal(revision.harness.id, "openclaw");
+    await waitFor(`native plugin revision ${revision.id}`, async () => {
+      const deployment = await request("GET", `${agent}/deployments/${revision.id}`);
+      assert.notEqual(deployment.status, "failed", JSON.stringify(deployment.error));
+      return (await request("GET", agent)).activeRevisionId === revision.id || undefined;
+    });
+    topology.harnessPod = await waitForProviderHarnessPod(topology.placement, revision);
+    return revision;
+  }
+  return { namespace, request, publish, deploy };
+}
+
+async function assertImportedNativeSkill(context, topology) {
+  const workflow = nativePluginWorkflow(topology);
+  const skill = "import-probe";
+  const workspaceSkills = join(workspaceMountPath, "skills");
+  const shadow = join(workspaceSkills, skill);
+  const { namespace, request } = workflow;
+  // The disposable Installation administrator can publish through the Namespace API.
+  assert.equal((await request("GET", `${namespace}/permissions`)).publishPlugins, true);
+
+  async function publish(marker) {
+    const saved = await workflow.publish(await importedPluginPackage(context, marker));
+    assert.deepEqual(saved.skills, [skill]);
+    return "occ-import:" + saved.digest;
+  }
+
+  let client;
+  async function deploy(plugins) {
+    await client?.stopAndWait();
+    await workflow.deploy({ plugins });
+    client = await connectGatewayOperator(context, topology, "http://127.0.0.1");
+  }
+  const worker = (...args) =>
+    kubectl(
+      "exec",
+      topology.harnessPod.metadata.name,
+      "-n",
+      topology.placement,
+      "-c",
+      "agent",
+      "--",
+      ...args,
+    );
+  const freshSession = async () => {
+    const key = `agent:main:plugin-import-${randomUUID()}`;
+    const created = await client.request("sessions.create", { key, agentId: "main", message: "" });
+    assert.equal(created.key, key);
+    return key;
+  };
+  const runSkill = async (key) => {
+    const sent = await client.request("chat.send", {
+      sessionKey: key,
+      idempotencyKey: randomUUID(),
+      message:
+        "Use the import-probe skill. Run the executable that its instructions name and return only its output.",
+    });
+    assert.ok(sent.runId);
+    // A timeout from agent.wait is a polling result until the actual turn becomes terminal.
+    return waitFor(
+      "imported skill turn",
+      async () => {
+        const outcome = await client.request("agent.wait", { runId: sent.runId, timeoutMs: 3_000 });
+        return outcome.status === "ok" || outcome.status === "error" ? outcome : undefined;
+      },
+      180_000,
+    );
+  };
+  async function proveMarker(marker) {
+    const key = await freshSession();
+    // Only the published sibling file contains this nonce. The workspace starts without the skill.
+    await worker("test", "!", "-e", shadow);
+    const outcome = await runSkill(key);
+    assert.equal(outcome.status, "ok", JSON.stringify(outcome.error));
+    await waitFor("the imported executable's worker result", async () => {
+      const { messages } = await client.request("chat.history", { sessionKey: key, limit: 40 });
+      const calls = messages
+        .filter((message) => message.role === "assistant" && Array.isArray(message.content))
+        .flatMap((message) => message.content)
+        .filter(
+          (part) =>
+            part.type === "toolCall" &&
+            part.name === "exec" &&
+            String(part.arguments?.command ?? "").includes("scripts/read-marker"),
+        );
+      return (
+        messages.some(
+          (message) =>
+            message.role === "toolResult" &&
+            message.isError === false &&
+            calls.some((call) => call.id === message.toolCallId) &&
+            JSON.stringify(message.content).includes(marker),
+        ) || undefined
+      );
+    });
+  }
+
+  const first = `PLUGIN_FIRST_${randomUUID()}`;
+  const second = `PLUGIN_SECOND_${randomUUID()}`;
+  const v1 = await publish(first);
+  await deploy({ [v1]: { enabled: true } });
+  const v2 = await publish(second);
+  assert.notEqual(v2, v1);
+  // Publishing v2 leaves v1 active until the Agent owner selects and deploys the new digest.
+  await proveMarker(first);
+  await deploy({ [v2]: { enabled: true } });
+  await proveMarker(second);
+
+  // A persistent workspace skill with the same name must not replace deployed instructions.
+  const shadowFile = join(shadow, "SKILL.md");
+  const shadowContent =
+    "---\nname: import-probe\ndescription: Workspace skill.\n---\nReturn WORKSPACE_SHADOW.\n";
+  await worker("mkdir", "-p", workspaceSkills);
+  await worker("mkdir", shadow);
+  await worker(
+    "node",
+    "-e",
+    'require("node:fs").writeFileSync(process.argv[1], process.argv[2], {flag:"wx"});',
+    shadowFile,
+    shadowContent,
+  );
+  const key = await freshSession();
+  await client.request("skills.status", { agentId: "main", sessionKey: key, refresh: true });
+  const conflict = await runSkill(key).catch((error) => {
+    // A synchronous refusal also carries a correlated response from the real Gateway.
+    if (!error.gatewayCode) {
+      throw error;
+    }
+    return { status: "error", error: error.message };
+  });
+  assert.equal(conflict.status, "error");
+  const gatewayPod = await currentGatewayPod(topology);
+  const gatewayLogs = await kubectl(
+    "logs",
+    gatewayPod,
+    "-n",
+    topology.gatewayPlacement,
+    "-c",
+    "gateway",
+    "--tail=1000",
+  );
+  const history = await client.request("chat.history", { sessionKey: key, limit: 40 });
+  const evidence = [JSON.stringify(conflict), JSON.stringify(history), gatewayLogs];
+  assert.ok(
+    evidence.some((text) => text.includes("conflicts with its deployment-pinned Gateway source.")),
+    "The failed turn must identify the conflicting skill source",
+  );
+  assert.ok(
+    !history.messages.some(
+      (msg) =>
+        msg.role === "toolResult" && JSON.stringify(msg.content).includes("WORKSPACE_SHADOW"),
+    ),
+  );
+
+  await worker("rm", shadowFile);
+  await worker("rmdir", shadow);
+  await deploy({});
+  const removed = await client.request("skills.status", {
+    agentId: "main",
+    sessionKey: await freshSession(),
+    refresh: true,
+  });
+  assert.ok(!removed.skills.some((entry) => entry.name === skill));
+  await worker("test", "!", "-e", shadow);
+}
+
+async function assertImportedNativeMcp(context, topology, provider) {
+  const { request, namespace, publish, deploy } = nativePluginWorkflow(topology);
+  const release = await publish(
+    await importedPluginPackage(context, randomUUID(), { mcpUrl: provider.url }),
+  );
+  assert.deepEqual(release.mcpServers, [
+    { name: "probe", url: provider.url, bearerEnv: "PROBE_BEARER" },
+  ]);
+  const secret = await request(
+    "POST",
+    namespace + "/secrets",
+    { name: "mcp-probe", value: provider.token },
+    201,
+  );
+  async function createAccount(release) {
+    const source = await request(
+      "POST",
+      namespace + "/credential-sources",
+      {
+        name: "MCP probe " + release.digest.slice(0, 12),
+        type: "bearer-token",
+        importedPluginTemplate: { releaseSha256: release.digest, serverName: "probe" },
+        secrets: { token: secret.ref },
+      },
+      201,
+    );
+    await request(
+      "POST",
+      namespace + "/iam/access-bindings",
+      {
+        subjectKind: "identity",
+        subjectId: topology.agent.servicePrincipalId,
+        roleId: topology.sourceRoleId,
+        resourceKind: "credential_source",
+        resourceId: source.id,
+      },
+      201,
+    );
+    return source;
+  }
+  function selectTools(release, source, toolNames) {
+    return {
+      ["occ-import:" + release.digest]: {
+        enabled: true,
+        driverPolicy: {
+          releaseSha256: release.digest,
+          servers: { probe: { sourceId: source.id, toolNames } },
+        },
+      },
+    };
+  }
+  const source = await createAccount(release);
+  await deploy({
+    credentialSources: [...topology.agent.credentialSources, { sourceId: source.id }],
+    plugins: selectTools(release, source, ["get_allowed"]),
+  });
+  const client = await connectGatewayOperator(context, topology, "http://127.0.0.1");
+  async function turn(message, expectedCall, expectedResult) {
+    const key = "agent:main:imported-mcp-" + randomUUID();
+    await client.request("sessions.create", { key, agentId: "main", message: "" });
+    const sent = await client.request("chat.send", {
+      sessionKey: key,
+      idempotencyKey: randomUUID(),
+      message,
+    });
+    const terminal = await waitFor(
+      "dedicated MCP turn",
+      async () => {
+        const result = await client.request("agent.wait", { runId: sent.runId, timeoutMs: 3000 });
+        return ["ok", "error"].includes(result.status) ? result : undefined;
+      },
+      180_000,
+    );
+    assert.equal(terminal.status, "ok");
+    return waitFor("native MCP tool result", async () => {
+      const { messages } = await client.request("chat.history", { sessionKey: key, limit: 40 });
+      const ids = new Set(
+        messages
+          .filter((entry) => entry.role === "assistant" && Array.isArray(entry.content))
+          .flatMap((entry) => entry.content)
+          .filter((part) => part.type === "toolCall" && expectedCall(part))
+          .map((part) => part.id),
+      );
+      return (
+        messages.some(
+          (entry) =>
+            entry.role === "toolResult" &&
+            entry.isError === false &&
+            ids.has(entry.toolCallId) &&
+            entry.content.some((item) => item.type === "text" && expectedResult(item.text)),
+        ) || undefined
+      );
+    });
+  }
+  await turn(
+    "Use the configured MCP get_allowed tool. Return its result.",
+    (call) => call.name.endsWith("get_allowed"),
+    (text) => text.includes(provider.marker),
+  );
+  assert.ok(
+    (await provider.receipts()).some(
+      (entry) => entry.name === "get_allowed" && entry.authenticated,
+    ),
+    "the provider must receive an authenticated tool call",
+  );
+
+  // The worker only advertises the allowed tool. A real exec turn attempts the excluded
+  // JSON-RPC call anyway, so a filtered catalog cannot satisfy this enforcement check.
+  const nonce = randomUUID();
+  const path = join(workspaceMountPath, "mcp-policy-" + randomUUID() + ".mjs");
+  assert.equal(typeof source.config.env_var, "string");
+  await kubectl(
+    "exec",
+    topology.harnessPod.metadata.name,
+    "-n",
+    topology.placement,
+    "-c",
+    "agent",
+    "--",
+    "node",
+    "-e",
+    'require("node:fs").writeFileSync(process.argv[1],process.argv[2],{mode:0o444})',
+    path,
+    importedMcpProbeScript(provider.url, source.config.env_var, nonce),
+  );
+  const before = (await provider.receipts()).length;
+  try {
+    await turn(
+      "Use the exec tool to run exactly this command and return its output:\n/usr/local/bin/node --use-env-proxy " +
+        path,
+      (call) => call.name === "exec" && String(call.arguments?.command ?? "").includes(path),
+      (text) =>
+        [200, 401].some((status) =>
+          text.includes(nonce + "_MCP_CONTROL_" + status + "_EXCLUDED_403"),
+        ),
+    );
+    const receipts = (await provider.receipts()).slice(before);
+    assert.ok(
+      receipts.some((entry) => entry.name === "get_allowed" && entry.id === nonce + "-control"),
+      "the same shell must reach the receiver for its positive control",
+    );
+    assert.ok(
+      !receipts.some((entry) => entry.name === "get_denied"),
+      "the receiver must never receive the excluded tool, even without a credential",
+    );
+  } finally {
+    await kubectl(
+      "exec",
+      topology.harnessPod.metadata.name,
+      "-n",
+      topology.placement,
+      "-c",
+      "agent",
+      "--",
+      "rm",
+      "-f",
+      path,
+    );
+  }
+  // Retain both Agent accounts during the same-host cutover. OpenShell must attach only
+  // the new release's provider and the native worker must use its newly allowed tool.
+  const replacement = await publish(
+    await importedPluginPackage(context, randomUUID(), { mcpUrl: provider.url }),
+  );
+  const nextSource = await createAccount(replacement);
+  const credentialSources = [
+    ...topology.agent.credentialSources,
+    { sourceId: source.id },
+    { sourceId: nextSource.id },
+  ];
+  const cutover = await deploy({
+    credentialSources,
+    plugins: selectTools(replacement, nextSource, ["get_denied"]),
+  });
+  async function assertProviders(revision, expectNewSource) {
+    const sandbox = await waitForSandbox(topology.placement, revision);
+    const active = await topology
+      .gatewayClient()
+      .getSandbox(
+        { workspace: topology.placement, name: sandbox.metadata.name },
+        AbortSignal.timeout(10_000),
+      );
+    assert.ok(Array.isArray(active?.spec?.providers));
+    assert.ok(!active.spec.providers.includes(openShellProviderName(source.id)));
+    assert.equal(
+      active.spec.providers.includes(openShellProviderName(nextSource.id)),
+      expectNewSource,
+    );
+  }
+  await assertProviders(cutover, true);
+  await turn(
+    "Use the configured MCP get_denied tool. Return its result.",
+    (call) => call.name.endsWith("get_denied"),
+    (text) => text.includes(provider.marker),
+  );
+  assert.ok(
+    (await provider.receipts()).some((entry) => entry.name === "get_denied" && entry.authenticated),
+  );
+
+  // Clearing the tool selection leaves both accounts on the Agent for future revisions.
+  // The new Sandbox must carry neither source, even though the saved policy still names one.
+  const disabled = await deploy({
+    credentialSources,
+    plugins: selectTools(replacement, nextSource, []),
+  });
+  await assertProviders(disabled, false);
+  const saved = await request("GET", namespace + "/agents/" + topology.agent.id);
+  assert.deepEqual(saved.credentialSources, credentialSources);
+}
+
+async function connectGatewayOperator(context, topology, controlUiOrigin) {
+  const apiSecret = await resource(
+    "secret",
+    topology.gatewayApiKeySecretName,
+    topology.platformNamespace,
+  );
+  const apiKey = Buffer.from(apiSecret.data.occ, "base64").toString();
+  const { GatewayClient } = await import(controllerRequire.resolve("@openclaw/gateway-client"));
+  const connected = Promise.withResolvers();
+  // Envoy authenticates the fixture API key and supplies the configured identity.
+  // The Gateway derives controlUiAdmin after authentication; no internal flags
+  // or device-auth exceptions are supplied by this test.
+  const connectedClient = new GatewayClient({
+    url: topology.gatewayAdminUrl,
+    origin: controlUiOrigin,
+    edgeAuthHeaders: { "x-api-key": apiKey },
+    clientName: "openclaw-control-ui",
+    mode: "ui",
+    role: "operator",
+    scopes: [],
+    deviceIdentity: null,
+    onHelloOk: connected.resolve,
+    onConnectError: connected.reject,
+  });
+  context.after(() => connectedClient.stopAndWait());
+  const helloTimeout = setTimeout(
+    () => connected.reject(new Error("Gateway admin connection timed out")),
+    15_000,
+  );
+  connectedClient.start();
+  let hello;
+  try {
+    hello = await connected.promise;
+  } finally {
+    clearTimeout(helloTimeout);
+  }
+  assert.equal(hello.auth?.role, "operator");
+  assert.ok(hello.auth.scopes.includes("operator.admin"));
+  return connectedClient;
+}
+
 // Exercise the regular dedicated Agent path with live inference and a real
 // administrator-origin chat. Direct tools.invoke probes are recorded separately:
 // an unavailable tool in a model response is not an invocation-denial proof.
@@ -7311,47 +7789,7 @@ test(
       withOAuthToolSources: false,
       enableCompatibilityBridges: false,
     });
-    const apiSecret = await resource(
-      "secret",
-      topology.gatewayApiKeySecretName,
-      topology.platformNamespace,
-    );
-    const apiKey = Buffer.from(apiSecret.data.occ, "base64").toString();
-    const { GatewayClient } = await import(controllerRequire.resolve("@openclaw/gateway-client"));
-    const connectGateway = async () => {
-      const connected = Promise.withResolvers();
-      // Envoy authenticates the fixture API key and supplies the configured identity.
-      // The Gateway derives controlUiAdmin after authentication; no internal flags
-      // or device-auth exceptions are supplied by this test.
-      const connectedClient = new GatewayClient({
-        url: topology.gatewayAdminUrl,
-        origin: controlUiOrigin,
-        edgeAuthHeaders: { "x-api-key": apiKey },
-        clientName: "openclaw-control-ui",
-        mode: "ui",
-        role: "operator",
-        scopes: [],
-        deviceIdentity: null,
-        onHelloOk: connected.resolve,
-        onConnectError: connected.reject,
-      });
-      context.after(() => connectedClient.stopAndWait());
-      const helloTimeout = setTimeout(
-        () => connected.reject(new Error("Gateway admin connection timed out")),
-        15_000,
-      );
-      connectedClient.start();
-      let hello;
-      try {
-        hello = await connected.promise;
-      } finally {
-        clearTimeout(helloTimeout);
-      }
-      assert.equal(hello.auth?.role, "operator");
-      assert.ok(hello.auth.scopes.includes("operator.admin"));
-      return connectedClient;
-    };
-    let client = await connectGateway();
+    let client = await connectGatewayOperator(context, topology, controlUiOrigin);
     assert.equal(topology.revision.gatewayManagedMode, false);
     const sessionKey = `agent:main:gateway-policy-${randomUUID()}`;
     const execPod = async (pod, namespace, args) => ({
@@ -8092,7 +8530,7 @@ test(
         ) || undefined
       );
     });
-    client = await connectGateway();
+    client = await connectGatewayOperator(context, topology, controlUiOrigin);
     const currentConfig = await client.request("config.get", {});
     assert.deepEqual(currentConfig.config.tools.gatewayPolicy, values.tools.gatewayPolicy);
     const slug = `managed-install-${randomUUID()}`;
@@ -8230,6 +8668,8 @@ test(
 test(
   {
     "plugin-install": "OpenShell installs selected Codex plugins before WebSocket startup",
+    "plugin-import": "OpenShell delivers imported plugin skills to dedicated OpenClaw",
+    "plugin-import-mcp": "OpenShell enforces imported MCP tools on dedicated OpenClaw",
     "network-policy": "OpenShell Agent network policy lifecycle",
     full: "OpenShell enforces provider delivery and authenticated Codex exposure",
   }[selectedScenario],
@@ -8252,6 +8692,14 @@ test(
       process.stderr.write(`OpenShell integration: selected real ${selectedScenario} workflow.\n`);
       const topology = await prepareProductionInstallation(context, {
         harnessId: selectedHarness,
+        withImportedMcp: selectedScenario === "plugin-import-mcp",
+        ...(["plugin-import", "plugin-import-mcp"].includes(selectedScenario)
+          ? {
+              withOAuthToolSources: false,
+              enableCompatibilityBridges: false,
+              controlUiOrigin: "http://127.0.0.1",
+            }
+          : {}),
         ...(pluginInstallOnly ? { withOAuthToolSources: false } : {}),
         ...(demoStatePath === undefined ? {} : { controllerPort: demoConsolePort }),
       });
@@ -8260,6 +8708,16 @@ test(
         openShellAgentName(topology.agent.id),
       );
       assert.ok(topology.sandbox.metadata.name);
+      if (topology.importedMcp) {
+        assert.equal(selectedHarness, "openclaw");
+        await assertImportedNativeMcp(context, topology, topology.importedMcp);
+        return;
+      }
+      if (selectedScenario === "plugin-import") {
+        assert.equal(selectedHarness, "openclaw");
+        await assertImportedNativeSkill(context, topology);
+        return;
+      }
       if (selectedHarness === "openclaw") {
         // A native worker exposes held startup failures only until its node enrolls.
         // Confirm Workspace visibility before treating an absent service as withdrawn.

@@ -29,6 +29,9 @@ export {
 export type { PreparedGitHubMetadataAdmission } from "./state/prepared-github-state.ts";
 import {
   assertExecutionAdmission,
+  PluginPackageInspectionError,
+  importedPluginDigest,
+  namespaceRoleMayGrant,
   assertExecutionReleaseAllowed,
   credentialFreeMetadataGrant,
   isInstallationRepositoryProfile,
@@ -160,6 +163,7 @@ import type {
   CredentialSourceReference,
   CredentialSourceMetadata,
   CredentialSourceSnapshot,
+  ImportedPluginConnectionTemplate,
   CredentialSourceStatus,
   CredentialWithdrawal,
   CredentialWithdrawalStatus,
@@ -192,6 +196,7 @@ import type {
   PluginDiscoveryAuthentication,
   PluginCatalogPage,
   PluginDriver,
+  InspectedPluginPackage,
   ChannelDriver,
   ChannelDirectoryResult,
   ChannelDirectoryLookupInput,
@@ -942,6 +947,7 @@ interface RemoveStandingApprovalInput {
 }
 
 export interface UpdateAgentInput {
+  readonly expectedCredentialSources?: readonly AgentCredentialSourceBinding[];
   readonly repositoryStandingApproval?: {
     readonly repositoryRef: string;
     readonly approvalId: string;
@@ -1008,6 +1014,7 @@ export interface CreateSecretInput {
 }
 
 export interface CreateCredentialSourceInput {
+  readonly importedPluginTemplate?: ImportedPluginConnectionTemplate;
   readonly namespaceId: string;
   readonly name: string;
   readonly type: string;
@@ -2008,6 +2015,21 @@ type InstallationRepositoryAdmission = Readonly<{
   };
   backendId: string;
 }>;
+
+function importedCatalogEntry(
+  release: Pick<InspectedPluginPackage, "name" | "version" | "description" | "digest">,
+): PluginCatalogEntry {
+  return {
+    id: `occ-import:${release.digest}`,
+    policyScope: "enablement_only",
+    name: [release.name, release.version, `(${release.digest.slice(0, 12)})`]
+      .filter(Boolean)
+      .join(" "),
+    ...(release.description === undefined ? {} : { description: release.description }),
+    selectableWithoutTools: true,
+    tools: [],
+  };
+}
 
 export class OpenClawController {
   private installationRepositoryAdmission?: InstallationRepositoryAdmission;
@@ -3327,11 +3349,17 @@ export class OpenClawController {
         id: namespace.id,
         namespaceId: namespace.id,
       });
-      this.validatePluginPolicies(plugins, pluginApprovers);
+      await this.admitNamespacePluginPolicies(
+        state,
+        namespace.id,
+        principalId,
+        plugins,
+        pluginApprovers,
+      );
       this.validatePluginConfiguration(plugins, configurationInput.values);
       // Provisioning creates the Agent before it has tool sources. Bind the account
       // on the saved Agent after the initial install.
-      this.validatePluginCredentialSources(plugins, []);
+      await this.validatePluginCredentialSources(state, namespace.id, principalId, plugins, []);
       await this.authorizeProvisioningSources(
         state,
         principalId,
@@ -6600,7 +6628,6 @@ export class OpenClawController {
     if (!isName(input.name)) {
       throw new ScopeViolationError("The credential source name is invalid.");
     }
-    const written = Object.freeze({ ...(input.config ?? {}) });
     const secretRefs = Object.freeze({ ...(input.secrets ?? {}) });
     this.namespaceIdentity(input.namespaceId);
     const registration = await this.mutate(async (state) => {
@@ -6617,6 +6644,34 @@ export class OpenClawController {
       if (locked.status !== "ready") {
         throw new NamespaceNotReadyError();
       }
+      const template = input.importedPluginTemplate;
+      let written = input.config ?? {};
+      if (template) {
+        if (input.type !== "bearer-token" || input.config !== undefined) {
+          throw new ResourceStateConflictError(
+            "A plugin connection template supplies the bearer destination. Supply only its token Secret.",
+          );
+        }
+        await this.authorize(principalId, "read", {
+          kind: "namespace",
+          id: locked.id,
+          namespaceId: locked.id,
+        });
+        const release = await state.pluginReleases.find(locked.id, template.releaseSha256);
+        const server = release?.mcpServers.find(({ name }) => name === template.serverName);
+        const driverCredentials = this.pluginDriver().credentials;
+        if (!release || !server || !driverCredentials?.templateConfig) {
+          throw new ResourceStateConflictError(
+            "The plugin connection template is unavailable in this Namespace.",
+          );
+        }
+        if (!selected?.importedPluginTemplates || this.selections.has("credential_proxy")) {
+          throw new ResourceStateConflictError(
+            "The selected credential runtime cannot enforce this plugin connection template.",
+          );
+        }
+        written = driverCredentials.templateConfig(release, server);
+      }
       const type = protectedType?.type ?? (await this.credentialSourceType(selected!, input.type));
       credentialSourceFieldsMatch(type, "config", written);
       credentialSourceFieldsMatch(type, "secrets", secretRefs);
@@ -6625,7 +6680,11 @@ export class OpenClawController {
       const config = Object.freeze({
         ...(protectedType
           ? written
-          : (selected!.validateSourceConfig({ type: type.type, config: written }) ?? written)),
+          : (selected!.validateSourceConfig({
+              type: type.type,
+              config: written,
+              ...(template && { importedPluginTemplate: template }),
+            }) ?? written)),
       });
       credentialSourceFieldsMatch(type, "config", config);
       const refreshDriver =
@@ -6678,6 +6737,7 @@ export class OpenClawController {
           ...(egress === undefined ? {} : { egress }),
           namespaceId: locked.id,
           name: input.name,
+          ...(template && { importedPluginTemplate: template }),
           type: type.type,
           config,
           secrets: secretRefs,
@@ -8265,6 +8325,70 @@ export class OpenClawController {
     }
   }
 
+  async importPluginRelease(
+    principalId: string,
+    namespaceId: string,
+    input: { archiveBase64: string; marketplaceEntry?: string },
+    publication?: { digest: string; archiveSha256: string; audit: (digest: string) => AuditEvent },
+  ) {
+    const resource = { kind: "namespace" as const, id: namespaceId, namespaceId };
+    await this.authorize(principalId, "publish_plugins", resource);
+    await this.read((state) => this.exactNamespace(state, namespaceId));
+    const driver = this.pluginDriver();
+    if (driver.inspectPackage === undefined) {
+      throw new NotImplementedError(
+        "plugin_releases.import",
+        "The selected Plugin Driver cannot import a plugin package.",
+      );
+    }
+    const archive = Buffer.from(input.archiveBase64, "base64");
+    if (archive.toString("base64") !== input.archiveBase64) {
+      throw new PluginPackageInspectionError("The upload must contain one base64-encoded package.");
+    }
+    const release: InspectedPluginPackage = await driver.inspectPackage(
+      archive,
+      input.marketplaceEntry,
+    );
+    if (publication !== undefined) {
+      if (
+        release.digest !== publication.digest ||
+        release.archiveSha256 !== publication.archiveSha256
+      ) {
+        throw new ResourceStateConflictError(
+          "The package differs from the preview. Review it again before publishing.",
+        );
+      }
+      if (!release.skills.length && !release.mcpServers.length) {
+        throw new PluginPackageInspectionError(
+          "The package has no supported skills or hosted MCP servers to publish.",
+        );
+      }
+      await this.mutate(async (state) => {
+        const namespace = await this.lockNamespace(state, namespaceId);
+        await this.authorize(principalId, "publish_plugins", resource);
+        if (namespace.status !== "ready" && namespace.status !== "provisioning") {
+          throw new ResourceStateConflictError(
+            "The Namespace is unavailable for plugin publication.",
+          );
+        }
+        await state.pluginReleases.publish(namespace.id, principalId, release);
+        await state.audit.append(publication.audit(release.digest));
+      });
+    }
+    const { name, version, description, format, digest, mcpServers, unsupported } = release;
+    return {
+      name,
+      version,
+      description,
+      format,
+      digest,
+      archiveSha256: release.archiveSha256,
+      skills: release.skills.map((skill) => skill.name),
+      mcpServers,
+      unsupported,
+    };
+  }
+
   async discoverAgentPlugins(
     principalId: string,
     namespaceId: string,
@@ -8290,7 +8414,10 @@ export class OpenClawController {
           if (authentication.accessToken === undefined && driver.discoveryCredential !== "none") {
             throw new PluginDiscoveryError("credentials_rejected");
           }
-          return driver.discoverCatalog!(
+          return this.namespacePluginCatalog(
+            principalId,
+            namespaceId,
+            driver,
             {
               ...authentication,
               ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
@@ -8515,12 +8642,65 @@ export class OpenClawController {
           if (authentication.accessToken === undefined && driver.discoveryCredential !== "none") {
             throw new PluginDiscoveryError("credentials_rejected");
           }
-          return driver.getCatalogPlugin!({ ...authentication, pluginId: input.pluginId }, signal);
+          return this.namespacePluginEntry(
+            principalId,
+            namespaceId,
+            driver,
+            { ...authentication, pluginId: input.pluginId },
+            signal,
+          );
         };
       },
       recheck,
       signal,
     );
+  }
+
+  private async namespacePluginCatalog(
+    principalId: string,
+    namespaceId: string,
+    driver: PluginDriver,
+    input: PluginDiscoveryAuthentication & { cursor?: string; q?: string },
+    signal?: AbortSignal,
+  ): Promise<PluginCatalogPage> {
+    const page = await driver.discoverCatalog!(input, signal);
+    if (
+      !driver.inspectPackage ||
+      input.cursor ||
+      !(await this.canRead(principalId, { kind: "namespace", id: namespaceId, namespaceId }))
+    ) {
+      return page;
+    }
+    const releases = await this.read((state) => state.pluginReleases.list(namespaceId));
+    const query = input.q?.toLowerCase() ?? "";
+    return {
+      ...page,
+      plugins: [
+        ...page.plugins,
+        ...releases
+          .filter((release) => release.name.toLowerCase().includes(query))
+          .map(importedCatalogEntry),
+      ],
+    };
+  }
+
+  private async namespacePluginEntry(
+    principalId: string,
+    namespaceId: string,
+    driver: PluginDriver,
+    input: PluginDiscoveryAuthentication & { pluginId: string },
+    signal?: AbortSignal,
+  ): Promise<PluginCatalogEntry> {
+    const digest = importedPluginDigest(input.pluginId);
+    if (!driver.inspectPackage || !digest) {
+      return driver.getCatalogPlugin!(input, signal);
+    }
+    await this.authorize(principalId, "read", { kind: "namespace", id: namespaceId, namespaceId });
+    const release = await this.read((state) => state.pluginReleases.find(namespaceId, digest));
+    if (!release) {
+      throw new PluginPolicyValidationError("unknownPlugin", driver.id, input.pluginId);
+    }
+    return importedCatalogEntry(release);
   }
 
   /**
@@ -8732,11 +8912,18 @@ export class OpenClawController {
           }
         }
       }
+      const releases =
+        driver.inspectPackage &&
+        driver.credentials &&
+        agent.executionMode === "dedicated" &&
+        (await this.canRead(principalId, { kind: "namespace", id: namespaceId, namespaceId }))
+          ? await state.pluginReleases.list(namespaceId)
+          : [];
       return immutableCopy({
         driver: { id: driver.id, implementation: driver.implementation },
         ...driver.policyCapabilities,
         ...(driver.credentials && agent.executionMode === "dedicated"
-          ? { credentialSlots: driver.credentials.choices(sources) }
+          ? { credentialSlots: driver.credentials.choices(sources, releases) }
           : {}),
         discoveryCredential: driver.discoveryCredential ?? "required",
       });
@@ -8767,7 +8954,10 @@ export class OpenClawController {
           );
         }
         return (authentication) =>
-          driver.discoverCatalog!(
+          this.namespacePluginCatalog(
+            principalId,
+            namespaceId,
+            driver,
             {
               ...authentication,
               ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
@@ -8841,7 +9031,13 @@ export class OpenClawController {
           );
         }
         return (authentication) =>
-          driver.getCatalogPlugin!({ ...authentication, pluginId: input.pluginId }, signal);
+          this.namespacePluginEntry(
+            principalId,
+            namespaceId,
+            driver,
+            { ...authentication, pluginId: input.pluginId },
+            signal,
+          );
       },
       input.credentialSource,
       signal,
@@ -8882,11 +9078,20 @@ export class OpenClawController {
           namespace.id,
           sourceRef.id,
         );
+        const digest = importedPluginDigest(pluginId);
+        if (digest) {
+          await this.authorize(principalId, "read", {
+            kind: "namespace",
+            id: namespaceId,
+            namespaceId,
+          });
+        }
+        const release = digest ? await state.pluginReleases.find(namespaceId, digest) : undefined;
         const target =
           namespace.status === "ready" &&
           source?.state === "ready" &&
           agent.credentialSources?.some(({ sourceId }) => sourceId === sourceRef.id)
-            ? driver.credentials?.mcpToolDiscovery?.(pluginId, connection.slot, source)
+            ? driver.credentials?.mcpToolDiscovery?.(pluginId, connection.slot, source, release)
             : undefined;
         const secretRef = source?.secrets.token;
         if (!target || !secretRef) {
@@ -8899,7 +9104,13 @@ export class OpenClawController {
     };
 
     const target = await currentTarget();
-    const entry = await driver.getCatalogPlugin?.({ pluginId }, signal);
+    const entry = await this.namespacePluginEntry(
+      principalId,
+      namespaceId,
+      driver,
+      { pluginId },
+      signal,
+    );
     if (!entry || entry.id !== pluginId) {
       throw new PluginDiscoveryError("invalid_response");
     }
@@ -9929,7 +10140,13 @@ export class OpenClawController {
         harnessAuth,
         plugins,
       );
-      this.validatePluginPolicies(plugins, pluginApprovers);
+      await this.admitNamespacePluginPolicies(
+        state,
+        namespace.id,
+        principalId,
+        plugins,
+        pluginApprovers,
+      );
       const agentId = this.nextIdentifier("agent");
       await this.authorizeBindings(
         state,
@@ -10058,7 +10275,13 @@ export class OpenClawController {
       // createConfiguration's order.
       await this.configurationDriver().validateSize?.(values);
       this.validateConfigurationContent(values, undefined, secretBindings);
-      this.validatePluginPolicies(plugins, pluginApprovers);
+      await this.admitNamespacePluginPolicies(
+        state,
+        namespace.id,
+        principalId,
+        plugins,
+        pluginApprovers,
+      );
       // Shaped like the saved Configuration createAgent reads; only its values are checked.
       const configuration: () => Promise<Readonly<Configuration>> = async () =>
         Object.freeze({
@@ -10242,7 +10465,11 @@ export class OpenClawController {
     if (input.configurationId !== undefined && !isNonEmptyString(input.configurationId)) {
       throw new ScopeViolationError("The exact Agent Configuration identity is missing.");
     }
-    if (input.configurationId === undefined && input.gatewayManagedMode === undefined) {
+    if (
+      input.configurationId === undefined &&
+      input.gatewayManagedMode === undefined &&
+      (input.credentialSources === undefined || input.expectedCredentialSources === undefined)
+    ) {
       throw new ScopeViolationError(
         "An Agent update must name a Configuration or Gateway managed mode.",
       );
@@ -10250,6 +10477,7 @@ export class OpenClawController {
     const requestedAuth =
       input.harnessAuth === undefined ? undefined : this.harnessAuthBinding(input.harnessAuth);
     const requestedSources = this.agentCredentialSources(input.credentialSources);
+    const expectedSources = this.agentCredentialSources(input.expectedCredentialSources);
     if (input.executionMode !== undefined && !validExecutionMode(input.executionMode)) {
       throw new ScopeViolationError("The Agent Harness execution mode is invalid.");
     }
@@ -10275,6 +10503,18 @@ export class OpenClawController {
       }
       if (agent.status !== "active") {
         throw new AgentDeletingError();
+      }
+      if (
+        expectedSources !== undefined &&
+        (!requestedSources ||
+          !isDeepStrictEqual(
+            expectedSources.map(({ sourceId }) => sourceId).sort(),
+            (agent.credentialSources ?? []).map(({ sourceId }) => sourceId).sort(),
+          ))
+      ) {
+        throw new ResourceStateConflictError(
+          "The Agent credentials changed. Refresh the saved Agent before attaching this source.",
+        );
       }
       const configurationId = input.configurationId ?? agent.configurationId;
       if (gatewayManagedMode !== undefined) {
@@ -10352,7 +10592,10 @@ export class OpenClawController {
         settings === undefined ? undefined : (settings.repositoryBindings ?? []);
       const repositoryAccess =
         settings === undefined ? undefined : (settings.repositoryAccess ?? null);
-      this.validatePluginPolicies(
+      await this.admitNamespacePluginPolicies(
+        state,
+        namespace.id,
+        principalId,
         plugins ?? agent.plugins,
         pluginApprovers === null ? undefined : (pluginApprovers ?? agent.pluginApprovers),
         plugins === undefined ? "stored" : "request",
@@ -11146,16 +11389,20 @@ export class OpenClawController {
       const pluginState =
         lockedAgent.plugins === undefined || Object.keys(lockedAgent.plugins).length === 0
           ? undefined
-          : (() => {
+          : await (async () => {
               const driver = this.pluginDriver();
-              this.validatePluginPolicies(
+              const importedReleases = await this.admitNamespacePluginPolicies(
+                state,
+                namespace.id,
+                principalId,
                 lockedAgent.plugins,
                 lockedAgent.pluginApprovers,
                 "stored",
               );
               return immutableCopy({
                 driver: { id: driver.id, implementation: driver.implementation },
-                plugins: lockedAgent.plugins,
+                plugins: lockedAgent.plugins!,
+                ...(Object.keys(importedReleases).length === 0 ? {} : { importedReleases }),
               } satisfies PluginRevisionState);
             })();
       // Agent saves check the plugins against the Configuration they name, but a later
@@ -12811,19 +13058,36 @@ export class OpenClawController {
       sources.push(source);
     }
     this.assertHarnessSourceListed(bindings, harnessAuth);
-    this.validatePluginCredentialSources(plugins, sources, harnessAuth);
+    await this.validatePluginCredentialSources(
+      state,
+      namespaceId,
+      principalId,
+      plugins,
+      sources,
+      harnessAuth,
+    );
   }
 
-  private validatePluginCredentialSources(
+  private async validatePluginCredentialSources(
+    state: PlatformReadView,
+    namespaceId: string,
+    principalId: string,
     plugins: PluginDesiredState | undefined,
     sources: readonly CredentialSource[],
     harnessAuth?: HarnessAuthBinding | null,
-  ): void {
+  ): Promise<void> {
     if (plugins && Object.keys(plugins).length) {
+      const releases = await this.selectedNamespacePluginReleases(
+        state,
+        namespaceId,
+        principalId,
+        plugins,
+      );
       this.pluginDriver().credentials?.validate(
         plugins,
         sources,
         harnessAuth?.method === "credential_source" ? harnessAuth.sourceId : undefined,
+        releases,
       );
     }
   }
@@ -12840,7 +13104,14 @@ export class OpenClawController {
   ): Promise<readonly CredentialSourceSnapshot[]> {
     const bindings = agent.credentialSources ?? [];
     if (bindings.length === 0) {
-      this.validatePluginCredentialSources(agent.plugins, [], agent.harnessAuth);
+      await this.validatePluginCredentialSources(
+        state,
+        agent.namespaceId,
+        principalId,
+        agent.plugins,
+        [],
+        agent.harnessAuth,
+      );
       return [];
     }
     // A state refusal, so HTTP keeps the message instead of the generic "already exists".
@@ -13101,7 +13372,10 @@ export class OpenClawController {
     // the stored work, so an Installation Plugin Driver switch does not turn it into a 400.
     if (!statusRead) {
       const plugins = normalizeAgentPlugins(record.plan.plugins as PluginDesiredState | undefined);
-      this.validatePluginPolicies(
+      await this.admitNamespacePluginPolicies(
+        state,
+        namespaceId,
+        principalId,
         plugins,
         normalizeAgentPluginApprovers(record.plan.pluginApprovers as PluginApprovers | undefined),
         "stored",
@@ -14670,6 +14944,9 @@ export class OpenClawController {
       name: source.name,
       type: source.type,
       ownerCapability: source.ownerCapability,
+      ...(source.importedPluginTemplate && {
+        importedPluginTemplate: source.importedPluginTemplate,
+      }),
       config: source.config,
       secrets: source.secrets,
       ...(source.egress === undefined
@@ -14860,10 +15137,10 @@ export class OpenClawController {
           `Namespace IAM Roles cannot grant ${permission.resourceKind} Permissions.`,
         );
       }
-      if (permission.resourceKind === "namespace" && permission.action !== "read") {
+      if (!namespaceRoleMayGrant(permission)) {
         throw new IAMPolicyValidationError(
           `/permissions/${index}/action`,
-          "Namespace IAM Roles support only namespace:read on the Namespace itself.",
+          "Namespace IAM Roles can grant namespace:read or namespace:publish_plugins on the Namespace itself.",
         );
       }
       const key = `${permission.action}\u0000${permission.resourceKind}`;
@@ -15168,17 +15445,75 @@ export class OpenClawController {
     };
   }
 
+  private async admitNamespacePluginPolicies(
+    state: PlatformReadView,
+    namespaceId: string,
+    principalId: string,
+    plugins: PluginDesiredState | undefined,
+    approvers?: PluginApprovers,
+    source: "request" | "stored" = "request",
+  ): Promise<Record<string, InspectedPluginPackage>> {
+    const imported = await this.selectedNamespacePluginReleases(
+      state,
+      namespaceId,
+      principalId,
+      plugins,
+    );
+    this.validatePluginPolicies(plugins, approvers, source, imported);
+    return imported;
+  }
+
+  private async selectedNamespacePluginReleases(
+    state: PlatformReadView,
+    namespaceId: string,
+    principalId: string,
+    plugins: PluginDesiredState | undefined,
+  ) {
+    const imported: Record<string, InspectedPluginPackage> = {};
+    const names = new Set<string>();
+    for (const [id, selection] of Object.entries(plugins ?? {})) {
+      const digest = importedPluginDigest(id);
+      if (!digest) {
+        continue;
+      }
+      await this.authorize(principalId, "read", {
+        kind: "namespace",
+        id: namespaceId,
+        namespaceId,
+      });
+      const release = await state.pluginReleases.find(namespaceId, digest);
+      if (!release || !this.pluginDriver().inspectPackage) {
+        throw new ConfigurationHarnessError(
+          "The imported plugin release is unavailable in this Namespace.",
+        );
+      }
+      if (selection.enabled) {
+        for (const skill of release.skills) {
+          if (names.has(skill.name)) {
+            throw new ConfigurationHarnessError(
+              "Selected plugin releases declare the same skill name.",
+            );
+          }
+          names.add(skill.name);
+        }
+        imported[id] = release;
+      }
+    }
+    return imported;
+  }
+
   private validatePluginPolicies(
     plugins: PluginDesiredState | undefined,
     pluginApprovers?: PluginApprovers,
     source: "request" | "stored" = "request",
+    releases?: Readonly<Record<string, InspectedPluginPackage>>,
   ): void {
     if (
       (plugins !== undefined && Object.keys(plugins).length > 0) ||
       (pluginApprovers !== undefined && pluginApprovers.length > 0)
     ) {
       try {
-        this.pluginDriver().validatePolicies(plugins ?? {}, pluginApprovers);
+        this.pluginDriver().validatePolicies(plugins ?? {}, pluginApprovers, releases);
       } catch (error) {
         // Stored selections are not the caller's request body: keep the message, drop the path.
         if (source === "stored" && error instanceof PluginPolicyValidationError) {

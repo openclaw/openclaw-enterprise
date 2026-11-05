@@ -1,3 +1,4 @@
+import { PluginPackageInspectionError } from "@openclaw-enterprise/contracts";
 import type { FastifyError, FastifyReply } from "fastify";
 import { PresetValidationError } from "@openclaw-enterprise/contracts";
 import { UNTRUSTED_ORIGIN_MESSAGE } from "../admission/admission-verifier.ts";
@@ -798,6 +799,9 @@ export function requestFailure(error: unknown, denied?: DeniedRequest): RequestF
   }
   if (error instanceof SecretValueError) {
     return failure(400, "INVALID_REQUEST", error.message, [{ path: "/value", code: error.code }]);
+  }
+  if (error instanceof PluginPackageInspectionError) {
+    return failure(422, "INVALID_REQUEST", error.message);
   }
   if (error instanceof ConfigurationHarnessError) {
     return failure(400, "INVALID_REQUEST", error.message);

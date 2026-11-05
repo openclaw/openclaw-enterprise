@@ -13,7 +13,10 @@ import {
 } from "../../sandbox/openshell-plugin-runtime.ts";
 import { CODEX_PLUGIN_STDIO_HELPER } from "./codex-plugin-stdio.ts";
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
-import { GATEWAY_TOOL_POLICY_RUNTIME } from "../gateway-tool-policy.ts";
+import {
+  GATEWAY_TOOL_POLICY_RUNTIME,
+  GATEWAY_TOOL_POLICY_SOURCE_COMMIT,
+} from "../gateway-tool-policy.ts";
 import { OPENCLAW_CONFIG_ISSUE_HELPER } from "../openclaw-config-issues.ts";
 import { nodeProgramArguments } from "../node-program.ts";
 import { HARNESS_EGRESS_ENROLLMENT_HELPER } from "../harness-egress-enrollment.ts";
@@ -301,7 +304,23 @@ function managedPluginInstallations() {
   return (Array.isArray(settings) ? settings : [settings]).map(readManagedPluginInstallation);
 }
 
-function readManagedPluginInstallation({ id, kind, packageName, releaseSha256, slotId, toolNames = [] }) {
+function validManagedMcpToolNames(server, names) {
+  return Array.isArray(names) && names.every((name) => typeof name === "string" &&
+    /^[a-zA-Z](?:[a-zA-Z0-9_-]*[a-zA-Z0-9])?$/.test(name) && ("oce_mcp_" + server + "_" + name).length <= 64) &&
+    new Set(names.map((name) => name.toLowerCase())).size === names.length;
+}
+
+function readManagedPluginInstallation({ id, kind, packageName, releaseSha256, slotId, toolNames = [], manifestName, server, url, environment }) {
+  if (kind === "imported-mcp") {
+    const suffix = require("node:crypto").createHash("sha256").update(releaseSha256 + ":" + manifestName).digest("hex").slice(0, 24);
+    const endpoint = URL.parse(url);
+    if (!/^[a-f0-9]{64}$/.test(releaseSha256) || typeof manifestName !== "string" ||
+        !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(manifestName) || server !== (/^[a-zA-Z](?:[a-zA-Z0-9_-]{0,21}[a-zA-Z0-9])?$/.test(manifestName) ? manifestName : "import_" + suffix.slice(0,16)) ||
+        environment !== "PLUGIN_MCP_" + suffix.toUpperCase() + "_TOKEN" ||
+        !endpoint || endpoint.href !== url || endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash ||
+        !validManagedMcpToolNames(server, toolNames)) throw new Error("Invalid revision-owned MCP connection.");
+    return {id, kind:"mcp", imported:true, mcp:{server, localServer:"oce_mcp_" + server, url, delivery:{env:environment},toolNames}};
+  }
   if ((kind !== "cli" && kind !== "mcp") || typeof packageName !== "string" || !/^[a-z][a-z0-9-]*$/.test(packageName)) {
     throw new Error("The managed plugin package type or name is invalid.");
   }
@@ -325,11 +344,7 @@ function readManagedPluginInstallation({ id, kind, packageName, releaseSha256, s
     )) throw new Error("The managed CLI installation paths are invalid.");
     return { id, kind, root, release, skills, skill, credential };
   }
-  if (!Array.isArray(toolNames) || (release ? !credential?.mcp?.server : toolNames.length > 0) ||
-      !toolNames.every((name) => typeof name === "string" &&
-        /^[a-zA-Z](?:[a-zA-Z0-9_-]*[a-zA-Z0-9])?$/.test(name) &&
-        ("oce_mcp_" + credential?.mcp?.server + "_" + name).length <= 64) ||
-      new Set(toolNames.map((name) => name.toLowerCase())).size !== toolNames.length) {
+  if ((release ? !credential?.mcp?.server : toolNames.length > 0) || !validManagedMcpToolNames(credential?.mcp?.server, toolNames)) {
     throw new Error("The selected MCP tools must have distinct literal names and OpenClaw aliases within 64 characters.");
   }
   const mcp = credential && {
@@ -2683,18 +2698,35 @@ function requireWorkspaceNodePlugins(config) {
 }
 
 function installGatewayPlugins(runtime, failures, installs) {
-  if (installs.length === 0) return installOpenClawPlugins(runtime, failures);
-
-  // Only native packages go through OpenClaw's installer. Managed releases are in the image.
   const selections = { ...runtime.manifest.selections };
-  for (const { id, release, skill } of installs) {
-    if (skill) verifiedPluginFile(skill.instructions, release.skillSha256);
-    if (selections[id]?.enabled !== Boolean(release)) throw new Error("The managed plugin selection differs from the runtime release.");
-    delete selections[id];
+  const importedIds = Object.keys(selections).filter((id) => id.startsWith("occ-import:")).sort();
+  if (installs.length === 0 && importedIds.length === 0) return installOpenClawPlugins(runtime, failures);
+
+  // The init container verified these release bytes and mounted the output read-only.
+  const selectedImports = importedIds.filter((id) => selections[id].enabled);
+  if (selectedImports.length) {
+    const provenance = JSON.parse(pluginReadFileSync("/opt/oce/runtime/provenance.json", "utf8"));
+    if (provenance.source !== "https://github.com/openclaw/openclaw" || provenance.commit !== ${JSON.stringify(GATEWAY_TOOL_POLICY_SOURCE_COMMIT)} || provenance.patches?.["openclaw-pinned-skill-sources.patch"] !== "e08b0872595284cb8760578c06243382d7a26a7d44227acc6425270d4b8cac08") throw new Error("This OCE Gateway image cannot verify imported skill sources.");
+    const material = JSON.parse(pluginReadFileSync("/run/oce/imported-plugins/release.json", "utf8"));
+    if (JSON.stringify(material.ids) !== JSON.stringify(selectedImports)) throw new Error("The imported plugin material does not match this Agent revision.");
+    process.env.OPENCLAW_PINNED_SKILL_FILES = JSON.stringify(material.pins);
   }
+  // Only native packages go through OpenClaw's installer. Managed releases are in the image.
+  for (const { id, release, skill, imported } of installs) {
+    if (skill) verifiedPluginFile(skill.instructions, release.skillSha256);
+    if (selections[id]?.enabled !== Boolean(release || imported)) throw new Error("The managed plugin selection differs from the runtime release.");
+  }
+  for (const { id } of installs) delete selections[id];
+  for (const id of importedIds) delete selections[id];
   const native = { ...runtime, manifest: { ...runtime.manifest, selections } };
   const result = installOpenClawPlugins(native, failures);
   const config = readOpenClawConfig();
+  if (selectedImports.length) {
+    const load = (config.skills ??= {}).load ??= {};
+    load.extraDirs = [...new Set([...(load.extraDirs ?? []), "/run/oce/imported-plugins/skills"])];
+    writeOpenClawConfig(config);
+    result.successfulPluginIds.push(...selectedImports);
+  }
   for (const { id, release, skills: skillsDirectory, skill } of installs) {
     if (skill || (skillsDirectory && config.skills?.load?.extraDirs?.includes(skillsDirectory))) {
       const skills = config.skills ??= {};
@@ -2703,7 +2735,7 @@ function installGatewayPlugins(runtime, failures, installs) {
       load.extraDirs = skill ? [...directories, skillsDirectory] : directories;
       writeOpenClawConfig(config);
     }
-    if (release) result.successfulPluginIds.push(id);
+    if (release && !selectedImports.includes(id)) result.successfulPluginIds.push(id);
   }
   return result;
 }
@@ -5086,10 +5118,10 @@ for (const install of installs) {
   }
   // A withdrawn account leaves only its own MCP definition staged with discovery disabled.
   if (!install.mcp) continue;
-  const bytes = verifiedPluginFile(join(install.root, "mcp.json"), release.mcpServersSha256);
-  const manifest = JSON.parse(bytes);
   const { delivery, server, localServer, toolNames } = install.mcp;
-  const endpoint = manifest.mcpServers[server];
+  const endpoint = install.imported
+    ? { type:"streamable-http", url:install.mcp.url }
+    : JSON.parse(verifiedPluginFile(join(install.root, "mcp.json"), release.mcpServersSha256)).mcpServers[server];
   if (endpoint?.type !== "streamable-http" || new URL(endpoint.url).protocol !== "https:") {
     throw new Error("The managed MCP server declaration is invalid.");
   }

@@ -436,3 +436,49 @@ export function pluginApproverScenarios(draft: string) {
     },
   } satisfies Record<string, PluginScenario>;
 }
+
+export function pluginImportScenarios(draft: string) {
+  const editor = {
+    group: "Pages/Agent detail",
+    path: draft + "&tab=plugins",
+    harnessId: "openclaw",
+    pluginDiscoveryCredential: "none",
+    agentPlugins: {},
+    extraSecrets: [{ id: "sec_reports", name: "Reporting service token" }],
+    pluginCapabilities: {
+      ...pluginCapabilities,
+      driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+    },
+    pluginDiscovery: { pages: { initial: { plugins: [], nextCursor: null } }, details: {} },
+    gap: "The fixture simulates package inspection, publication and catalog refresh. It does not deploy a worker.",
+  };
+  return {
+    pluginImport: {
+      ...editor,
+      pluginImport: "admin",
+      name: "Publish a Namespace plugin",
+      description:
+        "Preview a package, publish its release to this Namespace, and select it in the Agent draft.",
+      actions: [],
+      steps: [
+        "Open Import plugin. Choose a .tgz file; for a marketplace archive, enter its entry name.",
+        "Preview the fixture, publish it, then choose Configure plugins to select weekly-reports.",
+        "Keep reports disconnected to select the skill alone. To use tools, create a connection for reports with the existing token Secret, attach it to the Agent, choose the account, and load its tools.",
+      ],
+    },
+    pluginImportDenied: {
+      ...editor,
+      pluginImport: "denied",
+      name: "Plugin publication permission denied",
+      description: "This caller can edit Agent selections and lacks Namespace publication access.",
+      actions: [],
+    },
+    pluginImportInvalid: {
+      ...editor,
+      pluginImport: "invalid",
+      name: "Unsupported plugin archive",
+      description: "The fixture rejects inspection and preserves the upload control for retry.",
+      actions: [],
+    },
+  } as const;
+}

@@ -4,6 +4,10 @@ export const PluginsOAuthRevision = story("pluginsOAuthRevision");
 
 export default { title: "Pages/Agent detail" };
 
+export const PublishNamespacePlugin = story("pluginImport");
+export const PluginPublicationDenied = story("pluginImportDenied");
+export const UnsupportedPluginArchive = story("pluginImportInvalid");
+
 export const Draft = story("draft");
 export const Layout = story("agentDetailLayout");
 export const EmptyDeployment = story("deploymentEmpty");

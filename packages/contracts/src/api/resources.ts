@@ -15,6 +15,7 @@ import {
   CredentialSourceId,
   CredentialSourceReference,
   CredentialSourceSecrets,
+  ImportedPluginConnectionTemplateSchema,
   CredentialSourceType,
   GatewayManagedModeSchema,
   HarnessExecutionModeSchema,
@@ -114,6 +115,53 @@ const PluginCatalogLinkSchema = Type.Object(
   { additionalProperties: false },
 );
 
+const pluginPackageInput = {
+  archiveBase64: Type.String({
+    minLength: 4,
+    maxLength: 4 * Math.ceil((16 * 1024 * 1024) / 3),
+    description: "A base64-encoded plugin or marketplace tar archive, optionally gzip-compressed.",
+  }),
+  marketplaceEntry: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+};
+const pluginDigest = Type.String({ pattern: "^[a-f0-9]{64}$" });
+export const InspectPluginPackageBody = Type.Object(pluginPackageInput, {
+  additionalProperties: false,
+});
+export const PublishPluginPackageBody = Type.Object(
+  { ...pluginPackageInput, digest: pluginDigest, archiveSha256: pluginDigest },
+  { additionalProperties: false },
+);
+export const PluginPackagePreviewResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        name: Type.String(),
+        version: Type.Optional(Type.String()),
+        description: Type.Optional(Type.String()),
+        format: Type.Union([Type.Literal("agent-plugins"), Type.Literal("claude")]),
+        digest: pluginDigest,
+        archiveSha256: pluginDigest,
+        skills: Type.Array(Type.String()),
+        mcpServers: Type.Array(
+          Type.Object(
+            { name: Type.String(), url: Type.String(), bearerEnv: Type.Optional(Type.String()) },
+            { additionalProperties: false },
+          ),
+        ),
+        unsupported: Type.Array(
+          Type.Object(
+            { component: Type.String(), reason: Type.String() },
+            { additionalProperties: false },
+          ),
+        ),
+      },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);
+
 const PluginCatalogEntrySchema = Type.Object(
   {
     id: Type.String(),
@@ -128,6 +176,7 @@ const PluginCatalogEntrySchema = Type.Object(
     unavailableReason: Type.Optional(Type.String()),
     unavailableHelp: Type.Optional(PluginCatalogLinkSchema),
     selectableWithoutTools: Type.Optional(Type.Boolean()),
+    policyScope: Type.Optional(Type.Literal("enablement_only")),
     tools: Type.Union([
       Type.Null(),
       Type.Array(
@@ -668,6 +717,7 @@ export const CredentialSourceSchema = Type.Object(
     namespaceId: NamespaceId,
     name: Name,
     type: CredentialSourceType,
+    importedPluginTemplate: Type.Optional(ImportedPluginConnectionTemplateSchema),
     ownerCapability: Type.Union(
       [Type.Literal("credential_gateway"), Type.Literal("credential_proxy")],
       {
@@ -850,6 +900,9 @@ export const NamespaceCallerPermissionsResponse = Type.Object(
   {
     data: Type.Object(
       {
+        publishPlugins: Type.Boolean({
+          description: "Whether the caller may publish plugin releases in this Namespace.",
+        }),
         delete: Type.Boolean({
           description:
             "Whether the selected IAM Driver allows deletion of this exact Namespace now. Advisory only: remaining resources, required Preset deletion permissions, or a later authorization decision can still prevent deletion.",

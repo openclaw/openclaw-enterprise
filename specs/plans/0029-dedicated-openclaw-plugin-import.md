@@ -15,6 +15,10 @@ rfc: ../rfcs/0029-dedicated-openclaw-plugin-import.md
 3. Extend [Compute preparation](../../apps/controller/src/drivers/compute/plugin-runtime.ts) and the [Kubernetes launcher](../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts) to verify and expose the selected skill trees and server descriptors on deployment. Use the existing credential discovery and [request enforcement](../../apps/controller/src/drivers/sandbox/openshell-plugin-policy.ts) for hosted tools.
 4. Enforce managed-mode skill installation refusal in the pinned OpenClaw Gateway, before registry access, installation or workspace mutation. Carry the native control in the OCE runtime and surface the refusal to a native client. Update the [operator workflow](../../docs/guides/topics/plugins-configure.md), [plugin reference](../../docs/reference/agent-plugins.md), [runtime flow](../../docs/flows/agent-plugins.md) and [managed mode reference](../../docs/reference/agents/gateway-managed-mode.md) when each behavior ships.
 
+## Move enforcement to the Credential Proxy Driver
+
+The first implementation uses the existing dedicated OpenShell Sandbox and Credential Gateway. When the execution-scoped Credential Proxy Driver takes ownership, it must resolve the same Namespace template and source into a revision grant, classify MCP requests and enforce the literal tool names before forwarding the token. Its worker must bind requests to that execution and withdraw access on revocation. The acceptance test must exercise a permitted and denied call against one real server and verify which requests arrive there. An Installation that selects today's Credential Proxy Driver cannot register these template sources.
+
 ## Verification
 
 - Through the Console, import a skill-only package and deploy version 1 to a dedicated OpenClaw Agent. Ask the Agent to use a supporting file that gives a result absent from the prompt. Verify the actual worker result. Restart from the same Agent revision with the import source unavailable and repeat.

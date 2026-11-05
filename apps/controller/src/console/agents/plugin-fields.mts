@@ -29,7 +29,7 @@ export type ManagedToolDiscovery = {
   message?: string;
 };
 export type CatalogEntry = PluginCatalogEntry & {
-  managedTools?: ManagedToolDiscovery | undefined;
+  managedTools?: Readonly<Record<string, ManagedToolDiscovery>> | undefined;
   toolStatus?: "loading" | "loaded" | undefined;
   toolError?: string | undefined;
 };
@@ -67,6 +67,7 @@ export interface PluginFieldsOptions {
     | null;
   onLoadPlugins?: ((direction: CatalogDirection, query: string) => void) | null;
   onCancelDiscovery?: (() => void) | null;
+  onCreateConnection?: (slot: AgentPluginCredentialSlot, parent: HTMLDialogElement) => void;
   onLoadTools?: ((id: string, managedConnection?: ManagedToolConnection) => void) | null;
   saveHint?: string;
   createApproverField?: (options: ApproverFieldOptions) => HTMLElement & {
@@ -204,6 +205,7 @@ export function createPluginFields({
   onLoadPlugins = null,
   onCancelDiscovery = null,
   onLoadTools = null,
+  onCreateConnection,
   saveHint = "Changes are saved when you create the Agent.",
   createApproverField,
 }: PluginFieldsOptions) {
@@ -441,6 +443,56 @@ export function createPluginFields({
     });
   }
 
+  function managedBinding(selection: EditableSelection, slot: AgentPluginCredentialSlot) {
+    const policy = selection.driverPolicy;
+    if (slot.pluginId.startsWith("occ-import:")) {
+      const servers = isObject(policy?.servers) ? policy.servers : {};
+      const server = servers[slot.id];
+      return isObject(server) ? server : {};
+    }
+    const credentials = policy?.credentials;
+    return {
+      sourceId: isObject(credentials) ? credentials[slot.id] : undefined,
+      toolNames: policy?.toolNames,
+    };
+  }
+
+  function setManagedBinding(
+    selection: EditableSelection,
+    slot: AgentPluginCredentialSlot,
+    sourceId: string,
+    toolNames?: string[],
+  ) {
+    let policy: Record<string, unknown> | undefined;
+    if (slot.pluginId.startsWith("occ-import:")) {
+      const current = selection.driverPolicy;
+      const other =
+        current?.releaseSha256 === slot.releaseSha256 && isObject(current.servers)
+          ? current.servers
+          : {};
+      const servers = { ...other };
+      if (sourceId) {
+        servers[slot.id] = { sourceId, toolNames: toolNames ?? [] };
+      } else {
+        delete servers[slot.id];
+      }
+      if (Object.keys(servers).length) {
+        policy = { releaseSha256: slot.releaseSha256, servers };
+      }
+    } else if (sourceId) {
+      policy = {
+        releaseSha256: slot.releaseSha256,
+        credentials: { [slot.id]: sourceId },
+        ...(toolNames ? { toolNames } : {}),
+      };
+    }
+    if (policy) {
+      selection.driverPolicy = policy;
+    } else {
+      delete selection.driverPolicy;
+    }
+  }
+
   function managedToolPicker(
     entry: CatalogEntry,
     slot: AgentPluginCredentialSlot,
@@ -448,11 +500,8 @@ export function createPluginFields({
     selected: EditableSelection,
   ) {
     const connection = { slot: slot.id, sourceId };
-    const result =
-      entry.managedTools?.connection.slot === slot.id &&
-      entry.managedTools.connection.sourceId === sourceId
-        ? entry.managedTools
-        : undefined;
+    const loaded = entry.managedTools?.[slot.id];
+    const result = loaded?.connection.sourceId === sourceId ? loaded : undefined;
     const load = button("Load tools", () => onLoadTools?.(entry.id, connection), {
       "aria-label": `Load tools for ${entry.name}`,
     });
@@ -487,7 +536,7 @@ export function createPluginFields({
         picker.append(element("p", { className: "hint" }, "This account returned no tools."));
       }
       for (const tool of tools) {
-        const toolNames = selected.driverPolicy?.toolNames;
+        const toolNames = managedBinding(selected, slot).toolNames;
         const checkbox = element("input", {
           type: "checkbox",
           checked: Array.isArray(toolNames) && toolNames.includes(tool.id),
@@ -495,22 +544,22 @@ export function createPluginFields({
         });
         checkbox.addEventListener("change", () =>
           updateSelection(entry.id, (selection) => {
-            const policy = selection.driverPolicy;
-            const credentials = policy?.credentials;
+            const binding = managedBinding(selection, slot);
             if (
-              policy?.releaseSha256 !== slot.releaseSha256 ||
-              !isObject(credentials) ||
-              credentials[slot.id] !== sourceId
+              selection.driverPolicy?.releaseSha256 !== slot.releaseSha256 ||
+              binding.sourceId !== sourceId
             ) {
               return;
             }
-            const allowed = new Set(Array.isArray(policy.toolNames) ? policy.toolNames : []);
+            const allowed = new Set<string>(
+              Array.isArray(binding.toolNames) ? binding.toolNames : [],
+            );
             if (checkbox.checked) {
               allowed.add(tool.id);
             } else {
               allowed.delete(tool.id);
             }
-            selection.driverPolicy = { ...policy, toolNames: [...allowed] };
+            setManagedBinding(selection, slot, sourceId, [...allowed]);
           }),
         );
         picker.append(element("label", { className: "plugin-toggle" }, checkbox, tool.name));
@@ -971,13 +1020,17 @@ export function createPluginFields({
       const hasManagedTools = credentialSlots.some((slot) => slot.toolDiscovery);
       if (selected?.enabled) {
         for (const slot of credentialSlots) {
-          const bindings = selected.driverPolicy?.credentials;
-          const current = isObject(bindings) ? bindings[slot.id] : undefined;
+          const current = managedBinding(selected, slot).sourceId;
           const stale =
             typeof current === "string" &&
             selected.driverPolicy?.releaseSha256 !== slot.releaseSha256;
           const options: Choice[] = [
-            ["", "Install without an account"],
+            [
+              "",
+              slot.pluginId.startsWith("occ-import:")
+                ? "Leave this server off"
+                : "Install without an account",
+            ],
             ...slot.sources.map(({ id, name }) => [id, name] as const),
           ];
           if (stale) {
@@ -989,18 +1042,18 @@ export function createPluginFields({
               stale ? "stale" : typeof current === "string" ? current : "",
               options,
               (sourceId) =>
-                updateSelection(entry.id, (selection) => {
-                  if (sourceId) {
-                    selection.driverPolicy = {
-                      releaseSha256: slot.releaseSha256,
-                      credentials: { [slot.id]: sourceId },
-                    };
-                  } else {
-                    delete selection.driverPolicy;
-                  }
-                }),
+                updateSelection(entry.id, (selection) =>
+                  setManagedBinding(selection, slot, sourceId),
+                ),
             ),
           );
+          if (entry.id.startsWith("occ-import:") && onCreateConnection) {
+            details.append(
+              button("Create connection for " + slot.id, () => onCreateConnection(slot, dialog), {
+                size: "sm",
+              }),
+            );
+          }
           if (!slot.sources.length) {
             details.append(
               element(
@@ -1023,7 +1076,9 @@ export function createPluginFields({
           }
         }
       }
-      const enablementOnly = capabilities?.policyScopeByPlugin?.[entry.id] === "enablement_only";
+      const enablementOnly =
+        entry.policyScope === "enablement_only" ||
+        capabilities?.policyScopeByPlugin?.[entry.id] === "enablement_only";
       if (selected && !hasManagedTools) {
         const defaults = enablementOnly ? {} : (selected.toolDefaults ?? {});
         const writeDefault: WritePolicy = (key, value) => writeToolPolicy(entry.id, key, value);

@@ -3,6 +3,7 @@ import { ConfigurationValidationError, type ErrorDetail } from "@openclaw-enterp
 import { requireConfiguration } from "@openclaw-enterprise/contracts";
 import type {
   Backend,
+  ImportedPluginConnectionTemplate,
   CredentialAttachmentStatus,
   CredentialGatewayContext,
   CredentialGatewayDriver,
@@ -30,6 +31,8 @@ import { managedMcpProviderEndpoint } from "../sandbox/openshell-managed-mcp-pol
 import {
   managedCredentialBinding,
   managedMcpCredentialBindings,
+  managedMcpInstallsForRevision,
+  managedSelectionsForRevision,
   managedMcpInstallForSourceConfig,
   managedMcpSlotAcceptsSource,
 } from "../plugin/managed-catalog.ts";
@@ -116,6 +119,7 @@ interface OpenShellSourceType {
     config: Readonly<Record<string, string>>,
     options: OpenShellCredentialGatewayOptions,
     gateway: () => OpenShellGatewayPlacement | undefined,
+    template?: ImportedPluginConnectionTemplate,
   ): Readonly<Record<string, string>> | void;
   /** Catalog secret field → the provider credential key OpenShell exposes. */
   credentials(config: Readonly<Record<string, string>>): Readonly<Record<string, string>>;
@@ -126,6 +130,7 @@ interface OpenShellSourceType {
     options: OpenShellCredentialGatewayOptions,
     gateway?: OpenShellGatewayPlacement,
     modelProvider?: ModelProviderConfiguration,
+    template?: ImportedPluginConnectionTemplate,
   ): Omit<OpenShellProviderProfile, "annotations">;
 }
 
@@ -653,12 +658,18 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
       ]),
       rotation: "none",
     }),
-    validate: (config, options) => {
+    validate: (config, options, _gateway, template) => {
       validateEndpointConfig("bearer-token", config);
+      if (template && config.protocol !== "mcp") {
+        throw new CredentialSourceConfigError(
+          "protocol",
+          "Published MCP connections require their exact MCP profile.",
+        );
+      }
       if (config.protocol === undefined) {
         return;
       }
-      const install = managedMcpInstallForSourceConfig(config);
+      const install = managedMcpInstallForSourceConfig(config, template);
       if (!install) {
         throw new CredentialSourceConfigError(
           "protocol",
@@ -673,7 +684,7 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
       }
     },
     credentials: (config) => Object.freeze({ token: config.env_var ?? "" }),
-    profile: (sourceId, config, options) => {
+    profile: (sourceId, config, options, _gateway, _model, template) => {
       checkStoredHost(config);
       const profile = bearerProfile(
         sourceId,
@@ -687,7 +698,7 @@ const SOURCE_TYPES: readonly OpenShellSourceType[] = Object.freeze([
       if (config.protocol === undefined) {
         return profile;
       }
-      const install = managedMcpInstallForSourceConfig(config);
+      const install = managedMcpInstallForSourceConfig(config, template);
       if (!install) {
         throw new StoredCredentialSourceConfigError("protocol");
       }
@@ -946,6 +957,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
 
   readonly id: string;
   readonly capability = "credential_gateway" as const;
+  readonly importedPluginTemplates = true as const;
   readonly implementation: string;
   private readonly options: OpenShellCredentialGatewayOptions;
   private readonly modelProvider: ModelProviderConfiguration | undefined;
@@ -994,14 +1006,23 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
   }
 
   validateSourceConfig(
-    input: Pick<CredentialSourceInput, "type" | "config">,
+    input: Pick<CredentialSourceInput, "type" | "config"> & {
+      readonly importedPluginTemplate?: ImportedPluginConnectionTemplate;
+    },
   ): Readonly<Record<string, string>> | void {
     // A gateway in each tenant namespace is known only with the tenant's Kubernetes namespace:
     // registration's profile check refuses those names before any gateway write.
+    if (input.importedPluginTemplate && input.type !== "bearer-token") {
+      throw new CredentialSourceConfigError(
+        "type",
+        "A published MCP connection requires a bearer-token source.",
+      );
+    }
     const normalized = sourceType(input.type, this.options, this.refresh).validate(
       input.config,
       this.options,
       () => this.backend.client.placement(),
+      input.importedPluginTemplate,
     );
     if (input.type === "openai") {
       const authorized = validateOpenAiSourceBaseUrl(
@@ -1027,7 +1048,12 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     // validateSourceConfig does (400); OCC passes this ScopeViolationError through, while a
     // CredentialSourceConfigError would surface as a 503 (finding 2536).
     try {
-      type.validate(input.config, this.options, () => this.placement(context));
+      type.validate(
+        input.config,
+        this.options,
+        () => this.placement(context),
+        context.source.importedPluginTemplate,
+      );
     } catch (error) {
       if (error instanceof CredentialSourceConfigError) {
         throw new CredentialSourceRegistrationConfigError(error.field, error.message);
@@ -1057,6 +1083,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       input.config,
       this.placement(context),
       context.signal,
+      context.source.importedPluginTemplate,
     );
     try {
       await client.createProvider(
@@ -1125,6 +1152,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       context.source.config,
       this.placement(context),
       context.signal,
+      context.source.importedPluginTemplate,
     );
     await client.updateProviderCredentials(
       workspace,
@@ -1205,9 +1233,12 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       context.revision.plugins?.plugins,
       managedGoogleInstall,
     );
-    for (const { install, sourceId } of managedMcpCredentialBindings(
-      context.revision.plugins?.plugins,
-    )) {
+    const revisionInstalls = managedMcpInstallsForRevision(context.revision);
+    const bindings = managedMcpCredentialBindings(
+      managedSelectionsForRevision(context.revision),
+      revisionInstalls,
+    );
+    for (const { install, sourceId } of bindings) {
       const source = context.sources.find(({ id }) => id === sourceId);
       if (source && !managedMcpSlotAcceptsSource(install, source)) {
         throw new ScopeViolationError(
@@ -1216,8 +1247,20 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       }
     }
     for (const source of context.sources.filter(({ config }) => config.protocol === "mcp")) {
-      const install = managedMcpInstallForSourceConfig(source.config);
-      if (!install || !managedMcpSlotAcceptsSource(install, source)) {
+      const install = managedMcpInstallForSourceConfig(
+        source.config,
+        source.importedPluginTemplate,
+      );
+      if (
+        !install ||
+        !revisionInstalls.some((entry) => entry.id === install.id && entry.url === install.url) ||
+        (source.importedPluginTemplate &&
+          !bindings.some(
+            (binding) =>
+              binding.install.id === install.id && binding.sourceId === source.id && binding.active,
+          )) ||
+        !managedMcpSlotAcceptsSource(install, source)
+      ) {
         throw new ScopeViolationError(
           "The attached credential does not match a reviewed MCP slot.",
         );
@@ -1315,6 +1358,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         source.config,
         this.placement(context),
         context.signal,
+        source.importedPluginTemplate,
       );
       attachments.push(
         Object.freeze({
@@ -1322,6 +1366,9 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
           ref: name,
           ...((source.id === binding?.sourceId || source.config.protocol === "mcp") && {
             requestScope: {
+              ...(source.importedPluginTemplate && {
+                importedPluginTemplate: source.importedPluginTemplate,
+              }),
               ...bearerTokenEndpoint(source.config),
               scopes: (source.config.scope ?? "").split(/\s+/).filter(Boolean),
             },
@@ -1497,8 +1544,19 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     config: Readonly<Record<string, string>>,
     gateway: OpenShellGatewayPlacement | undefined,
     signal: AbortSignal,
+    template?: ImportedPluginConnectionTemplate,
   ): Promise<void> {
-    const base = type.profile(sourceId, config, this.options, gateway, this.modelProvider);
+    if (template && (type.catalog.type !== "bearer-token" || config.protocol !== "mcp")) {
+      throw new StoredCredentialSourceConfigError("protocol");
+    }
+    const base = type.profile(
+      sourceId,
+      config,
+      this.options,
+      gateway,
+      this.modelProvider,
+      template,
+    );
     const digest = sha256Hex(JSON.stringify(base));
     const profile: OpenShellProviderProfile = {
       ...base,

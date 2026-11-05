@@ -577,7 +577,8 @@
         "revision insertion owns its snapshot before a source lock wait",
         "reversed source lists commit in their original order",
         "direct insertion respects OCC Namespace Agent source lock order",
-        "deleting source refuses waiting insertion and preserves archived bytes"
+        "deleting source refuses waiting insertion and preserves archived bytes",
+        "PostgreSQL keeps a plugin publication and a template source in the same Namespace"
       ]
     },
     {

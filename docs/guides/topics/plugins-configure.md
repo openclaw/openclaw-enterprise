@@ -6,6 +6,15 @@ bundled Diffs plugin on an embedded OpenClaw Agent running on Kubernetes. Dedica
 Codex Agents use a different catalog and approval policy; see
 [plugin support](../../reference/agent-plugins.md#current-support).
 
+## Import a plugin for a dedicated OpenClaw Agent
+
+Open a dedicated OpenClaw Agent on Kubernetes, then **Create new version** → **Plugins** → **Import plugin**. A Namespace administrator with `namespace:publish_plugins` can publish to that Namespace. Installation administrators can publish to any Namespace they administer.
+
+1. Choose a tar or gzip-compressed tar package of up to 16 MiB. For a marketplace archive, also enter the name of the entry it contains.
+2. Select **Preview package**. Review the skills, hosted MCP servers and excluded components. **Publish to Namespace** makes that release available to Agents in the same Namespace.
+3. Open **Configure plugins**, add the published release and choose the hosted servers to use. You can leave a server off and use the skills. To enable a server, create a connection from its template with an existing token Secret, attach it to the Agent, then select the account and allowed tools.
+4. Choose **Save plugin selections**, then **Deploy new version**. To upgrade, publish the changed package, replace the old release in the draft and deploy again. To remove its skills and tools, remove the selection and deploy.
+
 ## Use the console
 
 Open **Agents**, select the Agent, then open **Create new version** → **Plugins**.

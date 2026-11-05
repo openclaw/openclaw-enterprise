@@ -8,10 +8,7 @@ last_updated_session: authoring-run/e29308a5-ef76-4952-b439-23483c4dbd99
 
 ## Overview
 
-An authorized caller saves plugin selections, then deploys. OCC validates and
-snapshots policy, selections, and Driver. Startup resolves metadata, translates
-policy, and prepares the version. Version selection may precede cutover; the
-Harness owns tools and approvals.
+OCC freezes the Agent's selections, policy and Driver at deployment. For an import, the [reader](../../apps/controller/src/drivers/plugin/import-package.ts) previews the package. OCC publishes it in the Namespace and resolves the selected digest. [Compute](../../apps/controller/src/drivers/compute/kubernetes/imported-plugin-skills.ts) verifies the files and mounts them read-only in the Gateway for delivery to the worker. The [OpenShell policy](../../apps/controller/src/drivers/sandbox/openshell-managed-mcp-policy.ts) enforces the template account and selected tools.
 
 ## Entry Points
 
@@ -329,23 +326,10 @@ The OpenClaw model probe's CPU-based deadline cannot exceed 600 seconds. CPU wai
 delta; throttled time is capped by throttled periods. Missing, nonfinite or reset samples give no delta and cannot
 establish starvation.
 
-- Compare `Agent.plugins` with the selected version snapshot and deployment status.
-  A successful Agent write alone is not runtime installation evidence.
-- Invalid or unsupported policy leaves Agent desired state unchanged. Catalog
-  membership, authenticated metadata, ownership, and effective native configuration
-  are checked during startup; failure keeps the candidate unready.
-- Check missing native packages, release drift, connector authentication, and
-  effective policy when readiness fails; preserve credential values in protected
-  runtime state rather than copying them into logs.
-- Before host effects, SSH Compute rejects nonempty requested Agent plugin maps or
-  default plugin approver policies. Clear both or use compatible Kubernetes.
-- For plugin warnings, check deployment status for `PLUGIN_INSTALL_FAILED` or
-  `PLUGIN_AUTH_REQUIRED` and the admitted `pluginId`. Confirm the corresponding
-  runtime and gateway entries are disabled. Do not infer plugin attribution
-  from arbitrary native logs.
-- Prove behavior with a model-chosen plugin call in a normal Agent turn, then
-  disable or remove the plugin and verify another Agent is unchanged. Source or
-  fixture tests are not native runtime proof.
+- Compare `Agent.plugins`, the revision snapshot and deployment status. Startup verifies catalog membership, package ownership, authentication and native configuration.
+- Check `PLUGIN_INSTALL_FAILED` or `PLUGIN_AUTH_REQUIRED` for the affected `pluginId`. Verify its runtime and Gateway entries are disabled. Keep credentials out of logs.
+- SSH Compute rejects plugin selections and default approvers before host effects. Use compatible Kubernetes Compute or clear both.
+- Verify a plugin call in a normal Agent turn, then remove the selection, redeploy and check behavior on that Agent and a second Agent.
 
 ## Related docs
 

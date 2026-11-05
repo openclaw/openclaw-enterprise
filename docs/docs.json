@@ -330,6 +330,7 @@
               "reference/agents",
               "reference/agents/workspace-files",
               "reference/agent-plugins",
+              "reference/namespace-plugin-releases",
               "reference/presets"
             ]
           },

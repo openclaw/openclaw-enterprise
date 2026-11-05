@@ -2323,16 +2323,22 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       // Targets match Namespace deletion, operationTarget() for creation, and
       // requireInstallationAdmin. The console reads this answer
       // instead of an Installation-only read, which the API audits when it is refused.
-      const [namespaceDelete, agentCreate, secretCreate, installationAdminister] =
+      const [namespaceDelete, agentCreate, secretCreate, installationAdminister, publishPlugins] =
         await Promise.all([
           callerMay(context.actorId, "delete", { kind: "namespace", id: namespaceId, namespaceId }),
           ...(["agent", "secret"] as const).map((kind) =>
             callerMay(context.actorId, "create", { kind, id: namespaceId, namespaceId }),
           ),
           callerMay(context.actorId, "administer", { kind: "installation", id: installationId }),
+          callerMay(context.actorId, "publish_plugins", {
+            kind: "namespace",
+            id: namespaceId,
+            namespaceId,
+          }),
         ]);
       reply.send({
         data: {
+          publishPlugins,
           delete: namespaceDelete,
           agents: { create: agentCreate },
           secrets: { create: secretCreate },
@@ -2458,6 +2464,41 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       });
       reply.header("cache-control", "no-store");
       reply.send({ data: models, meta: { requestId: request.id } });
+      return;
+    }
+
+    if (
+      operation.operationId === "previewPluginRelease" ||
+      operation.operationId === "publishPluginRelease"
+    ) {
+      const result = await controller.importPluginRelease(
+        context.actorId,
+        namespaceId,
+        {
+          archiveBase64: body?.archiveBase64 as string,
+          ...(body?.marketplaceEntry === undefined
+            ? {}
+            : { marketplaceEntry: body.marketplaceEntry as string }),
+        },
+        operation.operationId === "publishPluginRelease"
+          ? {
+              digest: body?.digest as string,
+              archiveSha256: body?.archiveSha256 as string,
+              audit: (digest) =>
+                event(
+                  operation,
+                  request,
+                  { kind: "namespace", id: namespaceId, namespaceId },
+                  "mutation",
+                  context,
+                  undefined,
+                  { outcome: "success", details: { digest } },
+                ),
+            }
+          : undefined,
+      );
+      reply.header("cache-control", "no-store");
+      reply.send({ data: result, meta: { requestId: request.id } });
       return;
     }
 
@@ -4445,18 +4486,21 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       routes.route({
         method: operation.method as HTTPMethods,
         url: operation.path,
-        ...(operation.operationId === "putAgentWorkspaceFile"
-          ? { bodyLimit: WORKSPACE_FILE_BODY_LIMIT }
-          : operation.operationId === "createAgent" ||
-              operation.operationId === "validateAgentCreate" ||
-              operation.operationId === "provisionAgent"
-            ? { bodyLimit: options.maxBodyBytes ?? AGENT_CREATE_BODY_LIMIT }
-            : operation.operationId === "createPreset" || operation.operationId === "updatePreset"
-              ? { bodyLimit: options.maxBodyBytes ?? PRESET_BODY_LIMIT }
-              : operation.operationId === "createConfiguration" ||
-                  operation.operationId === "updateConfiguration"
-                ? { bodyLimit: options.maxBodyBytes ?? CONFIGURATION_BODY_LIMIT }
-                : {}),
+        ...(operation.operationId === "previewPluginRelease" ||
+        operation.operationId === "publishPluginRelease"
+          ? { bodyLimit: options.maxBodyBytes ?? 4 * Math.ceil((16 * 1024 * 1024) / 3) + 1024 }
+          : operation.operationId === "putAgentWorkspaceFile"
+            ? { bodyLimit: WORKSPACE_FILE_BODY_LIMIT }
+            : operation.operationId === "createAgent" ||
+                operation.operationId === "validateAgentCreate" ||
+                operation.operationId === "provisionAgent"
+              ? { bodyLimit: options.maxBodyBytes ?? AGENT_CREATE_BODY_LIMIT }
+              : operation.operationId === "createPreset" || operation.operationId === "updatePreset"
+                ? { bodyLimit: options.maxBodyBytes ?? PRESET_BODY_LIMIT }
+                : operation.operationId === "createConfiguration" ||
+                    operation.operationId === "updateConfiguration"
+                  ? { bodyLimit: options.maxBodyBytes ?? CONFIGURATION_BODY_LIMIT }
+                  : {}),
         schema,
         onRequest: async (request) => {
           await admit(request, operation);

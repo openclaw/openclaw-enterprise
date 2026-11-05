@@ -82,6 +82,8 @@
 - [`getNamespaceCallerPermissions`](../api.md#get-namespacesnamespaceidpermissions): Report advisory primary IAM permissions on a readable Namespace, not authorization for a later operation.
 - [`getNamespaceSecretPermissions`](../api.md#get-namespacesnamespaceidpermissionssecrets): Report the readable Secrets that the caller may not bind to a new Agent, not authorization for a later operation.
 - [`createNamespace`](../api.md#post-namespaces): Create an Installation-owned Namespace.
+- [`previewPluginRelease`](../api.md#post-namespacesnamespaceidpluginreleasespreview): Inspect the components of a plugin package or marketplace entry.
+- [`publishPluginRelease`](../api.md#post-namespacesnamespaceidpluginreleases): Publish a reviewed plugin release in this Namespace.
 - [`deleteNamespace`](../api.md#delete-namespacesnamespaceid): Begin or retry deletion of an empty Installation-owned Namespace.
 
 ### Agents

@@ -1,0 +1,62 @@
+diff --git a/src/config/config-env-values.ts b/src/config/config-env-values.ts
+index 0b1faf0..04079aa 100644
+--- a/src/config/config-env-values.ts
++++ b/src/config/config-env-values.ts
+@@ -22,6 +22,7 @@ export function isConfigRuntimeEnvVarAllowed(key: string, value: string): boolea
+     upperKey !== "OPENCLAW_DISABLE_GATEWAY_LOCAL_TERMINALS" &&
+     upperKey !== "OPENCLAW_DISABLE_CRON_HOST_EXECUTION" &&
+     upperKey !== "OPENCLAW_DISABLE_SKILL_INSTALLS" &&
++    upperKey !== "OPENCLAW_PINNED_SKILL_FILES" &&
+     upperKey !== "OPENCLAW_DEV_RELOAD_BUNDLED_PLUGINS" &&
+     !isDangerousHostEnvVarName(key) &&
+     !isDangerousHostEnvOverrideVarName(key) &&
+diff --git a/src/skills/runtime/resources.test.ts b/src/skills/runtime/resources.test.ts
+index 5a106a8..c006b4c 100644
+--- a/src/skills/runtime/resources.test.ts
++++ b/src/skills/runtime/resources.test.ts
+@@ -73,6 +73,19 @@ async function expectFile(base: string, name: string, content: string, mode?: nu
+   }
+ }
+ 
++it("refuses a workspace skill shadowing a deployment-pinned Gateway name before delivery", async () => {
++  await writeSkill("guide");
++  const snapshot = await loadSnapshot();
++  vi.stubEnv("OPENCLAW_PINNED_SKILL_FILES", JSON.stringify({ guide: "/managed/guide/SKILL.md" }));
++  try {
++    await expect(prepare(snapshot)).rejects.toThrow(
++      'Skill "guide" conflicts with its deployment-pinned Gateway source.',
++    );
++  } finally {
++    vi.unstubAllEnvs();
++  }
++});
++
+ it("accepts 8 MiB of combined resources and identifies aggregate overflow", async () => {
+   let lastSupport = "";
+   for (const name of ["alpha", "beta"]) {
+diff --git a/src/skills/runtime/resources.ts b/src/skills/runtime/resources.ts
+index cfde657..fd738cf 100644
+--- a/src/skills/runtime/resources.ts
++++ b/src/skills/runtime/resources.ts
+@@ -261,6 +261,21 @@ export async function prepareSkillResourceDelivery(
+       }),
+     ),
+   ];
++  // Deployment-owned skills must resolve to the selected Gateway file after workspace and
++  // explicit selections have been merged. A remote host can report a matching path.
++  if (process.env.OPENCLAW_PINNED_SKILL_FILES) {
++    const pins: Record<string, string> = JSON.parse(process.env.OPENCLAW_PINNED_SKILL_FILES);
++    for (const skill of candidates) {
++      if (
++        Object.hasOwn(pins, skill.name) &&
++        (resolveSkillFileHost(skill) !== "gateway" || skill.filePath !== pins[skill.name])
++      ) {
++        throw new Error(
++          `Skill "${skill.name}" conflicts with its deployment-pinned Gateway source.`,
++        );
++      }
++    }
++  }
+   let manifests: Awaited<ReturnType<typeof readSkillLibrarySelectionManifests>>;
+   for (const skill of candidates) {
+     if (skill.filePath.startsWith("node://")) {

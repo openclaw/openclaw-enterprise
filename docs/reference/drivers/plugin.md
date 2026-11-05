@@ -20,6 +20,10 @@ are not selectable. See [Driver selection](selection.md) and the
 
 ## Interface
 
+### Package import
+
+The optional `inspectPackage(archive, marketplaceEntry?)` reads package metadata and skill files without executing the package. It returns the effective components, omitted declarations and a content digest. OCC authorizes and stores the release in the destination Namespace. For hosted servers, the Driver derives connection settings from that published release and checks each selected source against its template. See [Agent plugins](../agent-plugins.md#current-support).
+
 ### Selection and catalogs
 
 The [shared interface](../../../packages/contracts/src/drivers/plugin/index.ts) exposes:

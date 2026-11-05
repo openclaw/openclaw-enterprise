@@ -1,4 +1,5 @@
 import type { Static } from "typebox";
+import type { InspectedPluginPackage } from "./drivers/plugin/import-package.ts";
 import type { HarnessAuthBindingSchema } from "./api/common.ts";
 import type { ComputeAgentProvisioningCapabilities } from "./drivers/compute/index.ts";
 import type { DriverCapability } from "./drivers/index.ts";
@@ -512,8 +513,14 @@ export type CredentialSourceState = "registering" | "ready" | "deleting";
 /** Driver IDs are scoped to a capability. Both parts of a source owner are immutable. */
 export type CredentialSourceOwnerCapability = "credential_gateway" | "credential_proxy";
 
+export interface ImportedPluginConnectionTemplate {
+  readonly releaseSha256: string;
+  readonly serverName: string;
+}
+
 /** OCC source admission, including its owner and Secret references, never credential values. */
 export interface CredentialSource {
+  readonly importedPluginTemplate?: ImportedPluginConnectionTemplate;
   readonly egress?: ProtectedEgressSource;
   readonly id: string;
   readonly namespaceId: string;
@@ -528,6 +535,7 @@ export interface CredentialSource {
 }
 
 export interface CredentialSourceMetadata {
+  readonly importedPluginTemplate?: ImportedPluginConnectionTemplate;
   readonly ownerCapability: CredentialSourceOwnerCapability;
   readonly egress?: Pick<ProtectedEgressSource, "adoption" | "retention">;
   readonly id: string;
@@ -769,6 +777,7 @@ export interface PluginCatalogEntry {
   readonly unavailableReason?: string;
   readonly unavailableHelp?: PluginCatalogLink;
   readonly selectableWithoutTools?: boolean;
+  readonly policyScope?: "enablement_only";
   readonly tools: readonly PluginToolCatalogEntry[] | null;
 }
 
@@ -778,7 +787,13 @@ export interface PluginCatalogPage {
   readonly setup?: { readonly message: string; readonly links: readonly PluginCatalogLink[] };
 }
 
+export function importedPluginDigest(id: string): string | undefined {
+  return /^occ-import:([a-f0-9]{64})$/u.exec(id)?.[1];
+}
+
 export interface PluginRevisionState {
+  /** Internal material for the immutable release IDs admitted by OCC in this Agent's Namespace. */
+  readonly importedReleases?: Readonly<Record<string, InspectedPluginPackage>>;
   readonly driver: PluginDriverIdentity;
   readonly plugins: PluginDesiredState;
 }
@@ -839,7 +854,9 @@ export function validPluginRevisionState(value: unknown): value is PluginRevisio
   const record = asRecord(value);
   if (
     record === undefined ||
-    Object.keys(record).some((key) => key !== "driver" && key !== "plugins")
+    Object.keys(record).some(
+      (key) => key !== "driver" && key !== "plugins" && key !== "importedReleases",
+    )
   ) {
     return false;
   }
@@ -847,9 +864,20 @@ export function validPluginRevisionState(value: unknown): value is PluginRevisio
     return false;
   }
   try {
-    normalizePluginDesiredState(record.plugins, (message) => {
+    const selections = normalizePluginDesiredState(record.plugins, (message) => {
       throw new Error(message);
     });
+    const imported = asRecord(record.importedReleases);
+    const ids = Object.keys(selections ?? {}).filter(
+      (id) => selections?.[id]?.enabled && importedPluginDigest(id),
+    );
+    if (
+      (record.importedReleases !== undefined && !imported) ||
+      Object.keys(imported ?? {}).length !== ids.length ||
+      !ids.every((id) => asRecord(imported?.[id])?.digest === importedPluginDigest(id))
+    ) {
+      return false;
+    }
   } catch {
     return false;
   }
@@ -1205,6 +1233,7 @@ export const PERMISSION_ACTIONS = Object.freeze([
   "administer",
   "read_logs",
   "manage_policy",
+  "publish_plugins",
 ] as const);
 
 export type PermissionAction = (typeof PERMISSION_ACTIONS)[number];
@@ -1218,7 +1247,7 @@ export const SUPPORTED_PERMISSION_ACTIONS: Readonly<
   Record<ResourceKind, readonly PermissionAction[]>
 > = Object.freeze({
   installation: Object.freeze(["read", "administer"] as const),
-  namespace: Object.freeze(["create", "read", "delete"] as const),
+  namespace: Object.freeze(["create", "read", "delete", "publish_plugins"] as const),
   configuration: Object.freeze(["create", "read", "update", "delete"] as const),
   preset: Object.freeze(["create", "read", "update", "delete"] as const),
   service_account: Object.freeze(["create", "read", "update", "delete"] as const),
@@ -1238,6 +1267,15 @@ export const SUPPORTED_PERMISSION_ACTIONS: Readonly<
   ] as const),
   agent_revision: Object.freeze(["read"] as const),
 });
+
+/** Only these operations on a Namespace itself can be delegated by a Namespace Role. */
+export function namespaceRoleMayGrant(permission: Readonly<Permission>): boolean {
+  return (
+    permission.resourceKind !== "namespace" ||
+    permission.action === "read" ||
+    permission.action === "publish_plugins"
+  );
+}
 
 export function isSupportedPermission(permission: Readonly<Permission>): boolean {
   return SUPPORTED_PERMISSION_ACTIONS[permission.resourceKind].includes(permission.action);
@@ -1420,6 +1458,16 @@ export type {
   SandboxHarnessRestart,
   SandboxHarnessObservation,
 } from "./drivers/sandbox/index.ts";
+export {
+  canonicalPluginPackageContent,
+  PluginPackageInspectionError,
+} from "./drivers/plugin/import-package.ts";
+export type {
+  ImportedPluginSkill,
+  ImportedMcpServer,
+  PluginConnectionRelease,
+  InspectedPluginPackage,
+} from "./drivers/plugin/import-package.ts";
 export type {
   PluginDriver,
   PluginDriverContext,

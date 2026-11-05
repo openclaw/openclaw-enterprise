@@ -84,7 +84,7 @@ the paths.
 | [Authentication](#authentication) | 27 operations |
 | [Backends](#backends) | 1 operation |
 | [Installation](#installation) | 5 operations |
-| [Namespaces](#namespaces) | 6 operations |
+| [Namespaces](#namespaces) | 8 operations |
 | [Agents](#agents) | 50 operations |
 | [Agent deployments](#agent-deployments) | 4 operations |
 | [Agent revisions](#agent-revisions) | 2 operations |
@@ -2142,6 +2142,8 @@ Example response
 | [`GET /namespaces/{namespaceId}`](#get-namespacesnamespaceid) | Get an exact Installation-owned Namespace |
 | [`GET /namespaces/{namespaceId}/permissions`](#get-namespacesnamespaceidpermissions) | Report advisory primary IAM permissions on a readable Namespace, not authorization for a later operation |
 | [`GET /namespaces/{namespaceId}/permissions/secrets`](#get-namespacesnamespaceidpermissionssecrets) | Report the readable Secrets that the caller may not bind to a new Agent, not authorization for a later operation |
+| [`POST /namespaces/{namespaceId}/plugin-releases`](#post-namespacesnamespaceidpluginreleases) | Publish a reviewed plugin release in this Namespace |
+| [`POST /namespaces/{namespaceId}/plugin-releases/preview`](#post-namespacesnamespaceidpluginreleasespreview) | Inspect the components of a plugin package or marketplace entry |
 
 #### `GET /namespaces`
 
@@ -2448,6 +2450,7 @@ Report advisory primary IAM permissions on a readable Namespace, not authorizati
 | `data.delete` | `boolean` | Yes | Whether the selected IAM Driver allows deletion of this exact Namespace now. Advisory only: remaining resources, required Preset deletion permissions, or a later authorization decision can still prevent deletion. |
 | `data.installation` | `object` | Yes | — |
 | `data.installation.administer` | `boolean` | Yes | Whether the selected IAM Driver allows Installation administer now, which Installation-wide operations such as listing Backends need. The check targets the Installation, not this Namespace. Advisory only: a later authorization decision can still prevent the operation. |
+| `data.publishPlugins` | `boolean` | Yes | Whether the caller may publish plugin releases in this Namespace. |
 | `data.secrets` | `object` | Yes | — |
 | `data.secrets.create` | `boolean` | Yes | Whether the selected IAM Driver allows Secret creation in this Namespace now. Advisory only: other required permissions, lifecycle state, or a later authorization decision can still prevent the operation. |
 | `meta` | `object` | Yes | — |
@@ -2464,6 +2467,7 @@ Example response
     "installation": {
       "administer": true
     },
+    "publishPlugins": true,
     "secrets": {
       "create": true
     }
@@ -2520,6 +2524,203 @@ Example response
 {
   "data": {
     "operateDenied": []
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /namespaces/{namespaceId}/plugin-releases`
+
+<span id="post-namespacesnamespaceidpluginreleases"></span>
+
+Publish a reviewed plugin release in this Namespace
+
+**Operation ID:** `publishPluginRelease`
+
+**Permissions:** Requires publish_plugins permission on the requested Namespace.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `publish_plugins` | `namespace` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `archiveBase64` | `string` | Yes | min length: 4; max length: 22369624; A base64-encoded plugin or marketplace tar archive, optionally gzip-compressed. |
+| `archiveSha256` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `digest` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `marketplaceEntry` | `string` | No | min length: 1; max length: 128 |
+
+Example request
+```json
+{
+  "archiveBase64": "H4sIAAAAAAACA+3UzU7EIBQFYNZ9ioa4tPzEjpPwBsbZzROQGdKihRKgLjS+u0wxYzJ7GxPPt6G5t7QL7iFMy2A9e0mzJ79FFI99v67F7Srkbnd9XutSyIc9aQXZwJKyjuX35H/6oHfpNBqnqaJjziEpzvVgfO7COhmJzXHg9ZXEJRNM8NphtbiODr2nXjtTvhFNmGO2fiilNxOTLU1F1330k8Bfk17tNCVej40fn58OB+bOG+df9jf5l/tyJSD/G+i6rrlEV7V1BJqzSadoQy7BVe1xcU5H+25a/d1nzWXHTz2P5tpBmgAAAAAAAAAAAAAAAAAAAAC29wVtDqOTACgAAA==",
+  "archiveSha256": "f84641cc425249d58538a46747a9a6a1cc5aff8bc0dacd946e55afdfa748de8d",
+  "digest": "62ca5087c5dde09b9ef0613b508ba0a46e6838da65d12d43ebe2e822095e4f3a"
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `409` | The requested operation conflicts with the current resource state. |
+| `413` | The request body exceeds the permitted size. |
+| `415` | The request content type is not supported. |
+| `422` | The uploaded plugin package cannot be inspected. |
+| `500` | The platform request could not be completed. |
+| `501` | The selected Driver does not support this operation. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.archiveSha256` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `data.description` | `string` | No | — |
+| `data.digest` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `data.format` | `"agent-plugins" or "claude"` | Yes | — |
+| `data.mcpServers` | `array<object>` | Yes | — |
+| `data.mcpServers[].bearerEnv` | `string` | No | — |
+| `data.mcpServers[].name` | `string` | Yes | — |
+| `data.mcpServers[].url` | `string` | Yes | — |
+| `data.name` | `string` | Yes | — |
+| `data.skills` | `array<string>` | Yes | — |
+| `data.unsupported` | `array<object>` | Yes | — |
+| `data.unsupported[].component` | `string` | Yes | — |
+| `data.unsupported[].reason` | `string` | Yes | — |
+| `data.version` | `string` | No | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "archiveSha256": "f84641cc425249d58538a46747a9a6a1cc5aff8bc0dacd946e55afdfa748de8d",
+    "digest": "62ca5087c5dde09b9ef0613b508ba0a46e6838da65d12d43ebe2e822095e4f3a",
+    "format": "agent-plugins",
+    "mcpServers": [],
+    "name": "reporting",
+    "skills": [
+      "report"
+    ],
+    "unsupported": [],
+    "version": "1.0.0"
+  },
+  "meta": {
+    "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+  }
+}
+```
+
+#### `POST /namespaces/{namespaceId}/plugin-releases/preview`
+
+<span id="post-namespacesnamespaceidpluginreleasespreview"></span>
+
+Inspect the components of a plugin package or marketplace entry
+
+**Operation ID:** `previewPluginRelease`
+
+**Permissions:** Requires publish_plugins permission on the requested Namespace.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `publish_plugins` | `namespace` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints | Example |
+| --- | --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` | "ns_123e4567-e89b-42d3-a456-426614174000" |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `archiveBase64` | `string` | Yes | min length: 4; max length: 22369624; A base64-encoded plugin or marketplace tar archive, optionally gzip-compressed. |
+| `marketplaceEntry` | `string` | No | min length: 1; max length: 128 |
+
+Example request
+```json
+{
+  "archiveBase64": "H4sIAAAAAAACA+3UzU7EIBQFYNZ9ioa4tPzEjpPwBsbZzROQGdKihRKgLjS+u0wxYzJ7GxPPt6G5t7QL7iFMy2A9e0mzJ79FFI99v67F7Srkbnd9XutSyIc9aQXZwJKyjuX35H/6oHfpNBqnqaJjziEpzvVgfO7COhmJzXHg9ZXEJRNM8NphtbiODr2nXjtTvhFNmGO2fiilNxOTLU1F1330k8Bfk17tNCVej40fn58OB+bOG+df9jf5l/tyJSD/G+i6rrlEV7V1BJqzSadoQy7BVe1xcU5H+25a/d1nzWXHTz2P5tpBmgAAAAAAAAAAAAAAAAAAAAC29wVtDqOTACgAAA=="
+}
+```
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | The request does not match the operation contract. |
+| `401` | The caller did not provide valid credentials. |
+| `403` | The caller is not allowed to perform this operation. |
+| `404` | The requested platform resource was not found. |
+| `422` | The uploaded plugin package cannot be inspected. |
+| `500` | The platform request could not be completed. |
+| `501` | The selected Driver does not support this operation. |
+| `503` | A required dependency is unavailable. |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.archiveSha256` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `data.description` | `string` | No | — |
+| `data.digest` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `data.format` | `"agent-plugins" or "claude"` | Yes | — |
+| `data.mcpServers` | `array<object>` | Yes | — |
+| `data.mcpServers[].bearerEnv` | `string` | No | — |
+| `data.mcpServers[].name` | `string` | Yes | — |
+| `data.mcpServers[].url` | `string` | Yes | — |
+| `data.name` | `string` | Yes | — |
+| `data.skills` | `array<string>` | Yes | — |
+| `data.unsupported` | `array<object>` | Yes | — |
+| `data.unsupported[].component` | `string` | Yes | — |
+| `data.unsupported[].reason` | `string` | Yes | — |
+| `data.version` | `string` | No | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+Example response
+```json
+{
+  "data": {
+    "archiveSha256": "f84641cc425249d58538a46747a9a6a1cc5aff8bc0dacd946e55afdfa748de8d",
+    "digest": "62ca5087c5dde09b9ef0613b508ba0a46e6838da65d12d43ebe2e822095e4f3a",
+    "format": "agent-plugins",
+    "mcpServers": [],
+    "name": "reporting",
+    "skills": [
+      "report"
+    ],
+    "unsupported": [],
+    "version": "1.0.0"
   },
   "meta": {
     "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
@@ -3212,6 +3413,7 @@ Example request
 | `data.plugins[].id` | `string` | Yes | — |
 | `data.plugins[].logoUrl` | `string` | No | — |
 | `data.plugins[].name` | `string` | Yes | — |
+| `data.plugins[].policyScope` | `"enablement_only"` | No | — |
 | `data.plugins[].privacyPolicyUrl` | `string` | No | — |
 | `data.plugins[].remoteId` | `string` | No | — |
 | `data.plugins[].selectableWithoutTools` | `boolean` | No | — |
@@ -3318,6 +3520,7 @@ Example request
 | `data.id` | `string` | Yes | — |
 | `data.logoUrl` | `string` | No | — |
 | `data.name` | `string` | Yes | — |
+| `data.policyScope` | `"enablement_only"` | No | — |
 | `data.privacyPolicyUrl` | `string` | No | — |
 | `data.remoteId` | `string` | No | — |
 | `data.selectableWithoutTools` | `boolean` | No | — |
@@ -4162,6 +4365,8 @@ Replace an exact Namespace-owned Agent's editable draft
 | `credentialSources` | `array<object>` | No | max items: 8; Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values. |
 | `credentialSources[].sourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `executionMode` | `"embedded" or "dedicated"` | No | — |
+| `expectedCredentialSources` | `array<object>` | No | max items: 8; Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values. |
+| `expectedCredentialSources[].sourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `gatewayManagedMode` | `boolean` | No | Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment. |
 | `harnessAuth` | `object or object or object or object or null` | No | — |
 | `pluginApprovers` | `PluginApprovers or null` | No | — |
@@ -5401,6 +5606,7 @@ Example request
 | `data.plugins[].id` | `string` | Yes | — |
 | `data.plugins[].logoUrl` | `string` | No | — |
 | `data.plugins[].name` | `string` | Yes | — |
+| `data.plugins[].policyScope` | `"enablement_only"` | No | — |
 | `data.plugins[].privacyPolicyUrl` | `string` | No | — |
 | `data.plugins[].remoteId` | `string` | No | — |
 | `data.plugins[].selectableWithoutTools` | `boolean` | No | — |
@@ -5610,6 +5816,7 @@ Example request
 | `data.id` | `string` | Yes | — |
 | `data.logoUrl` | `string` | No | — |
 | `data.name` | `string` | Yes | — |
+| `data.policyScope` | `"enablement_only"` | No | — |
 | `data.privacyPolicyUrl` | `string` | No | — |
 | `data.remoteId` | `string` | No | — |
 | `data.selectableWithoutTools` | `boolean` | No | — |
@@ -8384,6 +8591,9 @@ List readable credential sources without revealing credential values
 | `data[].egress.adoption` | `"live" or "prepared" or "credential_free"` | Yes | — |
 | `data[].egress.retention` | `"none"` | Yes | — |
 | `data[].id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data[].importedPluginTemplate` | `object` | No | — |
+| `data[].importedPluginTemplate.releaseSha256` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `data[].importedPluginTemplate.serverName` | `string` | Yes | min length: 1; max length: 128 |
 | `data[].name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].ownerCapability` | `"credential_gateway" or "credential_proxy"` | Yes | The Driver capability that admitted this source. Changing the selected Driver does not transfer ownership. |
@@ -8479,6 +8689,9 @@ Register a credential source with the selected Credential Gateway
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `config` | `object<string, string>` | No | Non-secret source configuration keyed by catalog field name. |
+| `importedPluginTemplate` | `object` | No | — |
+| `importedPluginTemplate.releaseSha256` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `importedPluginTemplate.serverName` | `string` | Yes | min length: 1; max length: 128 |
 | `name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `secrets` | `object<string, object>` | No | Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. |
 | `type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type from the selected Credential Gateway catalog, for example `openai`. |
@@ -8524,6 +8737,9 @@ Example request
 | `data.egress.adoption` | `"live" or "prepared" or "credential_free"` | Yes | — |
 | `data.egress.retention` | `"none"` | Yes | — |
 | `data.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.importedPluginTemplate` | `object` | No | — |
+| `data.importedPluginTemplate.releaseSha256` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `data.importedPluginTemplate.serverName` | `string` | Yes | min length: 1; max length: 128 |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.ownerCapability` | `"credential_gateway" or "credential_proxy"` | Yes | The Driver capability that admitted this source. Changing the selected Driver does not transfer ownership. |
@@ -8654,6 +8870,9 @@ Get one credential source and its live Credential Gateway status
 | `data.egress.adoption` | `"live" or "prepared" or "credential_free"` | Yes | — |
 | `data.egress.retention` | `"none"` | Yes | — |
 | `data.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.importedPluginTemplate` | `object` | No | — |
+| `data.importedPluginTemplate.releaseSha256` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `data.importedPluginTemplate.serverName` | `string` | Yes | min length: 1; max length: 128 |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.ownerCapability` | `"credential_gateway" or "credential_proxy"` | Yes | The Driver capability that admitted this source. Changing the selected Driver does not transfer ownership. |
@@ -8780,6 +8999,9 @@ Example request
 | `data.egress.adoption` | `"live" or "prepared" or "credential_free"` | Yes | — |
 | `data.egress.retention` | `"none"` | Yes | — |
 | `data.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.importedPluginTemplate` | `object` | No | — |
+| `data.importedPluginTemplate.releaseSha256` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `data.importedPluginTemplate.serverName` | `string` | Yes | min length: 1; max length: 128 |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.ownerCapability` | `"credential_gateway" or "credential_proxy"` | Yes | The Driver capability that admitted this source. Changing the selected Driver does not transfer ownership. |
@@ -8877,6 +9099,9 @@ Force the Credential Refresh Driver to mint a new token for a refresh-type sourc
 | `data.egress.adoption` | `"live" or "prepared" or "credential_free"` | Yes | — |
 | `data.egress.retention` | `"none"` | Yes | — |
 | `data.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.importedPluginTemplate` | `object` | No | — |
+| `data.importedPluginTemplate.releaseSha256` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `data.importedPluginTemplate.serverName` | `string` | Yes | min length: 1; max length: 128 |
 | `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.ownerCapability` | `"credential_gateway" or "credential_proxy"` | Yes | The Driver capability that admitted this source. Changing the selected Driver does not transfer ownership. |
@@ -9251,7 +9476,7 @@ List exact Namespace IAM Roles
 | `data[].name` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data[].namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].permissions` | `array<object>` | Yes | min items: 1; max items: 64 |
-| `data[].permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy"` | Yes | — |
+| `data[].permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "publish_plugins"` | Yes | — |
 | `data[].permissions[].resourceKind` | `"installation" or "namespace" or "configuration" or "preset" or "service_account" or "secret" or "agent" or "agent_revision" or "credential_source" or "sandbox_policy"` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -9319,7 +9544,7 @@ Create an immutable Namespace IAM Role
 | --- | --- | --- | --- |
 | `name` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `permissions` | `array<object>` | Yes | min items: 1; max items: 64 |
-| `permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy"` | Yes | — |
+| `permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "publish_plugins"` | Yes | — |
 | `permissions[].resourceKind` | `"namespace" or "agent" or "agent_revision" or "configuration" or "credential_source" or "sandbox_policy" or "preset" or "secret" or "service_account"` | Yes | — |
 
 Example request
@@ -9359,7 +9584,7 @@ Example request
 | `data.name` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.permissions` | `array<object>` | Yes | min items: 1; max items: 64 |
-| `data.permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy"` | Yes | — |
+| `data.permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "publish_plugins"` | Yes | — |
 | `data.permissions[].resourceKind` | `"installation" or "namespace" or "configuration" or "preset" or "service_account" or "secret" or "agent" or "agent_revision" or "credential_source" or "sandbox_policy"` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
@@ -9462,7 +9687,7 @@ Get an exact Namespace IAM Role
 | `data.name` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.permissions` | `array<object>` | Yes | min items: 1; max items: 64 |
-| `data.permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy"` | Yes | — |
+| `data.permissions[].action` | `"create" or "read" or "update" or "delete" or "deploy" or "operate" or "administer" or "read_logs" or "manage_policy" or "publish_plugins"` | Yes | — |
 | `data.permissions[].resourceKind` | `"installation" or "namespace" or "configuration" or "preset" or "service_account" or "secret" or "agent" or "agent_revision" or "credential_source" or "sandbox_policy"` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |

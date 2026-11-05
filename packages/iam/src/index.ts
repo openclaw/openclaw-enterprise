@@ -3,6 +3,7 @@ import { isImmutableSnapshot, isNonEmptyString } from "@openclaw-enterprise/util
 import { randomUUID } from "node:crypto";
 import {
   PERMISSION_ACTIONS,
+  namespaceRoleMayGrant,
   RESOURCE_KINDS,
   type AccessBinding,
   type AuthorizationDecision,
@@ -162,7 +163,7 @@ export function createAuthPrincipalSeed(
         action,
         resourceKind: "installation" as const,
       })),
-      ...(["create", "read", "delete"] as const).map((action) => ({
+      ...(["create", "read", "delete", "publish_plugins"] as const).map((action) => ({
         action,
         resourceKind: "namespace" as const,
       })),
@@ -334,8 +335,8 @@ function validatedManagedPermissions(permissions: readonly Permission[]): readon
       "managed Role permission resource kind is invalid",
     );
     assertCondition(
-      permission.resourceKind !== "namespace" || permission.action === "read",
-      "managed Namespace Role permissions support only read",
+      namespaceRoleMayGrant(permission),
+      "managed Namespace Roles can read the Namespace or publish plugins",
     );
     const key = `${permission.action}\u0000${permission.resourceKind}`;
     assertCondition(!keys.has(key), "managed Role permissions must be duplicate-free");

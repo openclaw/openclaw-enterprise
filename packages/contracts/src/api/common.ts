@@ -407,10 +407,19 @@ export const CredentialSourceSecrets = Type.Record(CredentialSourceFieldName, Se
     "Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value.",
 });
 
+export const ImportedPluginConnectionTemplateSchema = Type.Object(
+  {
+    releaseSha256: Type.String({ pattern: "^[a-f0-9]{64}$" }),
+    serverName: Type.String({ minLength: 1, maxLength: 128 }),
+  },
+  { additionalProperties: false },
+);
+
 export const CreateCredentialSourceBody = Type.Object(
   {
     name: Name,
     type: CredentialSourceType,
+    importedPluginTemplate: Type.Optional(ImportedPluginConnectionTemplateSchema),
     config: Type.Optional(CredentialSourceConfig),
     secrets: Type.Optional(CredentialSourceSecrets),
   },
@@ -609,6 +618,7 @@ export const PermissionActionSchema = Type.Union([
   Type.Literal("administer"),
   Type.Literal("read_logs"),
   Type.Literal("manage_policy"),
+  Type.Literal("publish_plugins"),
 ]);
 
 export const ResourceKindSchema = Type.Union([
@@ -915,6 +925,7 @@ export const UpdateAgentBody = Type.Object(
     backendId: Type.Optional(Type.Union([BackendId, Type.Null()])),
     harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),
     credentialSources: Type.Optional(AgentCredentialSourcesSchema),
+    expectedCredentialSources: Type.Optional(AgentCredentialSourcesSchema),
     executionMode: Type.Optional(HarnessExecutionModeSchema),
     gatewayManagedMode: Type.Optional(GatewayManagedModeSchema),
     plugins: Type.Optional(Type.Ref("PluginDesiredState")),
@@ -924,7 +935,11 @@ export const UpdateAgentBody = Type.Object(
   },
   {
     additionalProperties: false,
-    anyOf: [{ required: ["configurationId"] }, { required: ["gatewayManagedMode"] }],
+    anyOf: [
+      { required: ["configurationId"] },
+      { required: ["gatewayManagedMode"] },
+      { required: ["credentialSources", "expectedCredentialSources"] },
+    ],
   },
 );
 

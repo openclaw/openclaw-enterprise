@@ -2395,6 +2395,8 @@ async function loadPage({
       namespace: namespaces.find((item) => item.id === namespaceId),
       secretsCreateAllowed,
       agentsCreateAllowed,
+      publishPluginsAllowed: () =>
+        namespacePermissions().then((permissions) => permissions?.publishPlugins),
       request: viewRequest,
       mutationVersion: () => viewState.mutations,
       navigate,

@@ -188,6 +188,12 @@ and can be cleared to inherit. Tool IDs match the JSON keys.
 **Plugins** preloads the catalog with its Service Accounts Secret. In **Configure
 plugins**, add Documents, change Calendar's policy, save, and deploy. The deployment details show the saved plugin settings.
 
+## Import a package for a dedicated OpenClaw Agent
+
+Open **Pages / Agent detail / Publish a Namespace plugin**. On the Agent's draft Plugins tab, open **Import plugin**. Choose a local tar or compressed tar package. Enter an entry name when testing a packaged marketplace. Select **Preview package** and review the skill, hosted MCP server, bearer binding requirement, and excluded hook. Select **Publish to Namespace**, open **Configure plugins**, and choose **weekly-reports** from the refreshed catalog. Leave **reports** off to select the skill alone. To select server tools, choose **Create connection for reports**, use the existing **Reporting service token** Secret, then select **Attach to Agent**. Choose the account, load its tools, and select **report_summary**. Save plugin selections separately.
+
+The Storybook response always describes the weekly reports fixture. **Unsupported plugin archive** simulates an inspection error. **Plugin publication permission denied** lets the caller edit Agent selections and omits the import control. These stories exercise Console requests and state transitions. Runtime deployment and package inspection require integration verification.
+
 ## Update
 
 Compare **New version in progress** (v7 deploying) with **Current version during

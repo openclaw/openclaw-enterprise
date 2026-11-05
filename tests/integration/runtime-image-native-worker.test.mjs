@@ -21,6 +21,7 @@ import {
   NATIVE_WORKER_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
+  importedMcpInstall,
   managedInstalls,
   managedMcpInstalls,
 } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
@@ -453,6 +454,50 @@ console.log(require("node:fs").readFileSync(process.env.OPENCLAW_CONFIG_PATH, "u
       await assert.rejects(run(["List*"]), (error) =>
         error.stderr.includes("The selected MCP tools must have distinct literal names"),
       );
+    },
+  );
+
+  test(
+    "the worker uses a published custom MCP URL and the exact template placeholder",
+    imageTestOptions,
+    async () => {
+      const release = { digest: "2".repeat(64) };
+      const server = { name: "inventory.v2", url: "https://tools.inventory.example:8443/v2/mcp" };
+      const install = importedMcpInstall(release, server);
+      const marker = "openshell:resolve:env:v7_" + install.credentialEnvironment;
+      const descriptor = {
+        kind: "imported-mcp",
+        releaseSha256: release.digest,
+        manifestName: server.name,
+        server: install.server,
+        url: server.url,
+        environment: install.credentialEnvironment,
+        toolNames: ["read_inventory"],
+      };
+      const inspect = async (value) => {
+        const result = await runManagedWorker(
+          [
+            "-e",
+            "console.log(require('node:fs').readFileSync(process.env.OPENCLAW_CONFIG_PATH, 'utf8'))",
+          ],
+          [],
+          [managedPackages(descriptor), install.credentialEnvironment + "=" + value],
+        );
+        return JSON.parse(result.stdout).nodeHost.mcp.servers["oce_mcp_" + install.server];
+      };
+      assert.deepEqual(await inspect(marker), {
+        enabled: true,
+        transport: "streamable-http",
+        url: server.url,
+        headers: { Authorization: "Bearer " + marker },
+        toolFilter: { include: ["read_inventory"] },
+      });
+      // A raw value under the same name must never travel to the package's server.
+      assert.deepEqual(await inspect("not-an-openshell-placeholder"), {
+        enabled: false,
+        transport: "streamable-http",
+        url: server.url,
+      });
     },
   );
 

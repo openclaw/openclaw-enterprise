@@ -679,6 +679,15 @@
                 "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                 "type": "string"
               },
+              "importedPluginTemplate": {
+                "additionalProperties": false,
+                "properties": {
+                  "releaseSha256": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                  "serverName": { "maxLength": 128, "minLength": 1, "type": "string" }
+                },
+                "required": ["releaseSha256", "serverName"],
+                "type": "object"
+              },
               "name": {
                 "maxLength": 200,
                 "minLength": 1,
@@ -16388,6 +16397,7 @@
                               "id": { "type": "string" },
                               "logoUrl": { "type": "string" },
                               "name": { "type": "string" },
+                              "policyScope": { "const": "enablement_only", "type": "string" },
                               "privacyPolicyUrl": { "type": "string" },
                               "remoteId": { "type": "string" },
                               "selectableWithoutTools": { "type": "boolean" },
@@ -16741,6 +16751,7 @@
                         "id": { "type": "string" },
                         "logoUrl": { "type": "string" },
                         "name": { "type": "string" },
+                        "policyScope": { "const": "enablement_only", "type": "string" },
                         "privacyPolicyUrl": { "type": "string" },
                         "remoteId": { "type": "string" },
                         "selectableWithoutTools": { "type": "boolean" },
@@ -19763,7 +19774,8 @@
                 "additionalProperties": false,
                 "anyOf": [
                   { "required": ["configurationId"] },
-                  { "required": ["gatewayManagedMode"] }
+                  { "required": ["gatewayManagedMode"] },
+                  { "required": ["credentialSources", "expectedCredentialSources"] }
                 ],
                 "properties": {
                   "backendId": {
@@ -19803,6 +19815,23 @@
                       { "const": "embedded", "type": "string" },
                       { "const": "dedicated", "type": "string" }
                     ]
+                  },
+                  "expectedCredentialSources": {
+                    "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "sourceId": {
+                          "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["sourceId"],
+                      "type": "object"
+                    },
+                    "maxItems": 8,
+                    "type": "array",
+                    "uniqueItems": true
                   },
                   "gatewayManagedMode": {
                     "description": "Whether OCE restricts Gateway-local administration. Defaults on when the selected Compute Driver supports it, otherwise off. Changing the setting requires Installation administer permission and takes effect on deployment.",
@@ -25862,6 +25891,7 @@
                               "id": { "type": "string" },
                               "logoUrl": { "type": "string" },
                               "name": { "type": "string" },
+                              "policyScope": { "const": "enablement_only", "type": "string" },
                               "privacyPolicyUrl": { "type": "string" },
                               "remoteId": { "type": "string" },
                               "selectableWithoutTools": { "type": "boolean" },
@@ -26485,6 +26515,7 @@
                         "id": { "type": "string" },
                         "logoUrl": { "type": "string" },
                         "name": { "type": "string" },
+                        "policyScope": { "const": "enablement_only", "type": "string" },
                         "privacyPolicyUrl": { "type": "string" },
                         "remoteId": { "type": "string" },
                         "selectableWithoutTools": { "type": "boolean" },
@@ -33575,6 +33606,15 @@
                             "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                             "type": "string"
                           },
+                          "importedPluginTemplate": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "releaseSha256": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                              "serverName": { "maxLength": 128, "minLength": 1, "type": "string" }
+                            },
+                            "required": ["releaseSha256", "serverName"],
+                            "type": "object"
+                          },
                           "name": {
                             "maxLength": 200,
                             "minLength": 1,
@@ -33835,6 +33875,15 @@
                     "additionalProperties": { "maxLength": 2048, "minLength": 1, "type": "string" },
                     "description": "Non-secret source configuration keyed by catalog field name.",
                     "maxProperties": 32,
+                    "type": "object"
+                  },
+                  "importedPluginTemplate": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "releaseSha256": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                      "serverName": { "maxLength": 128, "minLength": 1, "type": "string" }
+                    },
+                    "required": ["releaseSha256", "serverName"],
                     "type": "object"
                   },
                   "name": {
@@ -35561,7 +35610,8 @@
                                     { "const": "operate", "type": "string" },
                                     { "const": "administer", "type": "string" },
                                     { "const": "read_logs", "type": "string" },
-                                    { "const": "manage_policy", "type": "string" }
+                                    { "const": "manage_policy", "type": "string" },
+                                    { "const": "publish_plugins", "type": "string" }
                                   ]
                                 },
                                 "resourceKind": {
@@ -35730,7 +35780,8 @@
                             { "const": "operate", "type": "string" },
                             { "const": "administer", "type": "string" },
                             { "const": "read_logs", "type": "string" },
-                            { "const": "manage_policy", "type": "string" }
+                            { "const": "manage_policy", "type": "string" },
+                            { "const": "publish_plugins", "type": "string" }
                           ]
                         },
                         "resourceKind": {
@@ -35811,7 +35862,8 @@
                                   { "const": "operate", "type": "string" },
                                   { "const": "administer", "type": "string" },
                                   { "const": "read_logs", "type": "string" },
-                                  { "const": "manage_policy", "type": "string" }
+                                  { "const": "manage_policy", "type": "string" },
+                                  { "const": "publish_plugins", "type": "string" }
                                 ]
                               },
                               "resourceKind": {
@@ -36142,7 +36194,8 @@
                                   { "const": "operate", "type": "string" },
                                   { "const": "administer", "type": "string" },
                                   { "const": "read_logs", "type": "string" },
-                                  { "const": "manage_policy", "type": "string" }
+                                  { "const": "manage_policy", "type": "string" },
+                                  { "const": "publish_plugins", "type": "string" }
                                 ]
                               },
                               "resourceKind": {
@@ -36759,6 +36812,7 @@
                         "agents": { "create": true },
                         "delete": true,
                         "installation": { "administer": true },
+                        "publishPlugins": true,
                         "secrets": { "create": true }
                       },
                       "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
@@ -36797,6 +36851,10 @@
                           "required": ["administer"],
                           "type": "object"
                         },
+                        "publishPlugins": {
+                          "description": "Whether the caller may publish plugin releases in this Namespace.",
+                          "type": "boolean"
+                        },
                         "secrets": {
                           "additionalProperties": false,
                           "properties": {
@@ -36809,7 +36867,7 @@
                           "type": "object"
                         }
                       },
-                      "required": ["delete", "agents", "secrets", "installation"],
+                      "required": ["publishPlugins", "delete", "agents", "secrets", "installation"],
                       "type": "object"
                     },
                     "meta": {
@@ -37024,6 +37082,495 @@
         "tags": ["Namespaces"],
         "x-openclaw-permissions": [
           { "action": "read", "resourceKind": "namespace", "scope": "requested" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/plugin-releases": {
+      "post": {
+        "description": "Requires publish_plugins permission on the requested Namespace.",
+        "operationId": "publishPluginRelease",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "ns_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "summary": "Example request",
+                  "value": {
+                    "archiveBase64": "H4sIAAAAAAACA+3UzU7EIBQFYNZ9ioa4tPzEjpPwBsbZzROQGdKihRKgLjS+u0wxYzJ7GxPPt6G5t7QL7iFMy2A9e0mzJ79FFI99v67F7Srkbnd9XutSyIc9aQXZwJKyjuX35H/6oHfpNBqnqaJjziEpzvVgfO7COhmJzXHg9ZXEJRNM8NphtbiODr2nXjtTvhFNmGO2fiilNxOTLU1F1330k8Bfk17tNCVej40fn58OB+bOG+df9jf5l/tyJSD/G+i6rrlEV7V1BJqzSadoQy7BVe1xcU5H+25a/d1nzWXHTz2P5tpBmgAAAAAAAAAAAAAAAAAAAAC29wVtDqOTACgAAA==",
+                    "archiveSha256": "f84641cc425249d58538a46747a9a6a1cc5aff8bc0dacd946e55afdfa748de8d",
+                    "digest": "62ca5087c5dde09b9ef0613b508ba0a46e6838da65d12d43ebe2e822095e4f3a"
+                  }
+                }
+              },
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "archiveBase64": {
+                    "description": "A base64-encoded plugin or marketplace tar archive, optionally gzip-compressed.",
+                    "maxLength": 22369624,
+                    "minLength": 4,
+                    "type": "string"
+                  },
+                  "archiveSha256": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                  "digest": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                  "marketplaceEntry": { "maxLength": 128, "minLength": 1, "type": "string" }
+                },
+                "required": ["archiveBase64", "digest", "archiveSha256"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "archiveSha256": "f84641cc425249d58538a46747a9a6a1cc5aff8bc0dacd946e55afdfa748de8d",
+                        "digest": "62ca5087c5dde09b9ef0613b508ba0a46e6838da65d12d43ebe2e822095e4f3a",
+                        "format": "agent-plugins",
+                        "mcpServers": [],
+                        "name": "reporting",
+                        "skills": ["report"],
+                        "unsupported": [],
+                        "version": "1.0.0"
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "archiveSha256": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                        "description": { "type": "string" },
+                        "digest": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                        "format": {
+                          "anyOf": [
+                            { "const": "agent-plugins", "type": "string" },
+                            { "const": "claude", "type": "string" }
+                          ]
+                        },
+                        "mcpServers": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "bearerEnv": { "type": "string" },
+                              "name": { "type": "string" },
+                              "url": { "type": "string" }
+                            },
+                            "required": ["name", "url"],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "name": { "type": "string" },
+                        "skills": { "items": { "type": "string" }, "type": "array" },
+                        "unsupported": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "component": { "type": "string" },
+                              "reason": { "type": "string" }
+                            },
+                            "required": ["component", "reason"],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "version": { "type": "string" }
+                      },
+                      "required": [
+                        "name",
+                        "format",
+                        "digest",
+                        "archiveSha256",
+                        "skills",
+                        "mcpServers",
+                        "unsupported"
+                      ],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/RESOURCE_CONFLICT" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested operation conflicts with the current resource state."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/PAYLOAD_TOO_LARGE" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request body exceeds the permitted size."
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/UNSUPPORTED_MEDIA_TYPE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request content type is not supported."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The uploaded plugin package cannot be inspected."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "501": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_IMPLEMENTED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The selected Driver does not support this operation."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "Publish a reviewed plugin release in this Namespace",
+        "tags": ["Namespaces"],
+        "x-openclaw-permissions": [
+          { "action": "publish_plugins", "resourceKind": "namespace", "scope": "requested" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/plugin-releases/preview": {
+      "post": {
+        "description": "Requires publish_plugins permission on the requested Namespace.",
+        "operationId": "previewPluginRelease",
+        "parameters": [
+          {
+            "examples": {
+              "example": {
+                "summary": "Example parameter; replace resource IDs with values from your Installation.",
+                "value": "ns_123e4567-e89b-42d3-a456-426614174000"
+              }
+            },
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "summary": "Example request",
+                  "value": {
+                    "archiveBase64": "H4sIAAAAAAACA+3UzU7EIBQFYNZ9ioa4tPzEjpPwBsbZzROQGdKihRKgLjS+u0wxYzJ7GxPPt6G5t7QL7iFMy2A9e0mzJ79FFI99v67F7Srkbnd9XutSyIc9aQXZwJKyjuX35H/6oHfpNBqnqaJjziEpzvVgfO7COhmJzXHg9ZXEJRNM8NphtbiODr2nXjtTvhFNmGO2fiilNxOTLU1F1330k8Bfk17tNCVej40fn58OB+bOG+df9jf5l/tyJSD/G+i6rrlEV7V1BJqzSadoQy7BVe1xcU5H+25a/d1nzWXHTz2P5tpBmgAAAAAAAAAAAAAAAAAAAAC29wVtDqOTACgAAA=="
+                  }
+                }
+              },
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "archiveBase64": {
+                    "description": "A base64-encoded plugin or marketplace tar archive, optionally gzip-compressed.",
+                    "maxLength": 22369624,
+                    "minLength": 4,
+                    "type": "string"
+                  },
+                  "marketplaceEntry": { "maxLength": 128, "minLength": 1, "type": "string" }
+                },
+                "required": ["archiveBase64"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": {
+                    "summary": "Example response",
+                    "value": {
+                      "data": {
+                        "archiveSha256": "f84641cc425249d58538a46747a9a6a1cc5aff8bc0dacd946e55afdfa748de8d",
+                        "digest": "62ca5087c5dde09b9ef0613b508ba0a46e6838da65d12d43ebe2e822095e4f3a",
+                        "format": "agent-plugins",
+                        "mcpServers": [],
+                        "name": "reporting",
+                        "skills": ["report"],
+                        "unsupported": [],
+                        "version": "1.0.0"
+                      },
+                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "archiveSha256": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                        "description": { "type": "string" },
+                        "digest": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                        "format": {
+                          "anyOf": [
+                            { "const": "agent-plugins", "type": "string" },
+                            { "const": "claude", "type": "string" }
+                          ]
+                        },
+                        "mcpServers": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "bearerEnv": { "type": "string" },
+                              "name": { "type": "string" },
+                              "url": { "type": "string" }
+                            },
+                            "required": ["name", "url"],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "name": { "type": "string" },
+                        "skills": { "items": { "type": "string" }, "type": "array" },
+                        "unsupported": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "component": { "type": "string" },
+                              "reason": { "type": "string" }
+                            },
+                            "required": ["component", "reason"],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "version": { "type": "string" }
+                      },
+                      "required": [
+                        "name",
+                        "format",
+                        "digest",
+                        "archiveSha256",
+                        "skills",
+                        "mcpServers",
+                        "unsupported"
+                      ],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The request does not match the operation contract."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/UNAUTHENTICATED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller did not provide valid credentials."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/FORBIDDEN" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The caller is not allowed to perform this operation."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_FOUND" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The requested platform resource was not found."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INVALID_REQUEST" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The uploaded plugin package cannot be inspected."
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/INTERNAL_ERROR" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The platform request could not be completed."
+          },
+          "501": {
+            "content": {
+              "application/json": {
+                "examples": { "example": { "$ref": "#/components/examples/NOT_IMPLEMENTED" } },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "The selected Driver does not support this operation."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "examples": {
+                  "example": { "$ref": "#/components/examples/DEPENDENCY_UNAVAILABLE" }
+                },
+                "schema": { "$ref": "#/components/schemas/def-7" }
+              }
+            },
+            "description": "A required dependency is unavailable."
+          }
+        },
+        "summary": "Inspect the components of a plugin package or marketplace entry",
+        "tags": ["Namespaces"],
+        "x-openclaw-permissions": [
+          { "action": "publish_plugins", "resourceKind": "namespace", "scope": "requested" }
         ]
       }
     },

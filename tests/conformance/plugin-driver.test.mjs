@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { gzipSync } from "node:zlib";
 import {
   CodexPluginDriver,
   OCCPluginDriver,
@@ -1962,4 +1964,170 @@ test("bundled Plugin Drivers enforce Harness identity", async () => {
 
   await assert.rejects(occ.listCatalog(context("dedicated")), NotImplementedError);
   await assert.rejects(codex.listCatalog(context("embedded")), NotImplementedError);
+});
+
+function packagedFiles(entries) {
+  const { pack } = createRequire(new URL("../../apps/controller/package.json", import.meta.url))(
+    "tar-stream",
+  );
+  const archive = pack();
+  for (const [path, contents, mode = 0o644, type = "file"] of entries) {
+    archive.entry({ name: path, mode, type, mtime: new Date(0) }, contents);
+  }
+  archive.finalize();
+  return Array.fromAsync(archive).then((chunks) => Buffer.concat(chunks));
+}
+
+test("dedicated package inspection retains skill resources and reports omitted MCP declarations without copying credentials", async () => {
+  const scope = "https://agent-plugins.org/schemas/1.0.0/";
+  const manifest = JSON.stringify({ $schema: scope + "plugin.schema.json", name: "reporting" });
+  const mcp = JSON.stringify({
+    $schema: scope + "mcp.schema.json",
+    mcpServers: {
+      reports: {
+        type: "streamable-http",
+        url: "https://reports.example.com/mcp",
+        headers: { authorization: "Bearer ${REPORTS_TOKEN}" },
+      },
+      secret: {
+        type: "streamable-http",
+        url: "https://reports.example.com/mcp",
+        headers: { authorization: "Bearer private-test-value" },
+      },
+      local: { type: "stdio", command: "unused" },
+    },
+  });
+  const files = [
+    ["package/plugin.json", manifest],
+    ["package/mcp.json", mcp],
+    [
+      "package/skills/report/SKILL.md",
+      "---\nname: report\ndescription: Generate a report\n---\nRead scripts/run.",
+    ],
+    ["package/skills/report/scripts/run", Buffer.from([0, 127, 128, 255]), 0o755],
+  ];
+  const driver = new OCCPluginDriver();
+  const result = await driver.inspectPackage(gzipSync(await packagedFiles(files)));
+  assert.deepEqual(result.skills[0].files[1], {
+    path: "scripts/run",
+    contentBase64: "AH+A/w==",
+    executable: true,
+  });
+  assert.deepEqual(result.mcpServers, [
+    { name: "reports", url: "https://reports.example.com/mcp", bearerEnv: "REPORTS_TOKEN" },
+  ]);
+  assert.deepEqual(
+    result.unsupported.map(({ component }) => component),
+    ["mcp:local", "mcp:secret"],
+  );
+  assert.ok(!JSON.stringify(result).includes("private-test-value"));
+  const reordered = await driver.inspectPackage(await packagedFiles([...files].reverse()));
+  assert.equal(reordered.digest, result.digest);
+  files[3][2] = 0o644;
+  assert.notEqual((await driver.inspectPackage(await packagedFiles(files))).digest, result.digest);
+});
+
+test("a Claude root skill includes its supporting files and reports sibling executables", async () => {
+  const driver = new OCCPluginDriver();
+  for (const skills of [undefined, "."]) {
+    const result = await driver.inspectPackage(
+      await packagedFiles([
+        [".claude-plugin/plugin.json", JSON.stringify({ name: "root-skill", skills })],
+        ["SKILL.md", "Read references/value.txt."],
+        ["references/value.txt", "root skill data"],
+        ["bin/receipt", "not on the worker PATH", 0o755],
+      ]),
+    );
+    assert.deepEqual(
+      result.skills.map(({ name, files }) => [name, files.map(({ path }) => path)]),
+      [["root-skill", ["SKILL.md", "references/value.txt"]]],
+    );
+    assert.deepEqual(
+      result.unsupported.map(({ component }) => component),
+      ["executables"],
+    );
+  }
+});
+
+test("Claude marketplace inspection follows the selected entry and resolves the last effective hosted server", async () => {
+  const hosted = (url) => ({ type: "http", url });
+  const skills = (name) => "---\nname: " + name + "\ndescription: A skill\n---\n";
+  const entries = [
+    [
+      "repo/.claude-plugin/marketplace.json",
+      JSON.stringify({
+        plugins: [
+          {
+            name: "chosen",
+            source: "./plugins/chosen",
+            skills: ["./extras/"],
+            mcpServers: { ignored: hosted("https://ignored.example.com/mcp") },
+          },
+          { name: "other", source: "./plugins/other" },
+        ],
+      }),
+    ],
+    [
+      "repo/plugins/chosen/.claude-plugin/plugin.json",
+      JSON.stringify({
+        name: "chosen",
+        version: "2",
+        mcpServers: [
+          "./config/servers.json",
+          { reports: hosted("https://selected.example.com/mcp") },
+        ],
+        hooks: {},
+      }),
+    ],
+    [
+      "repo/plugins/chosen/.mcp.json",
+      JSON.stringify({ mcpServers: { reports: hosted("https://default.example.com/mcp") } }),
+    ],
+    [
+      "repo/plugins/chosen/config/servers.json",
+      JSON.stringify({ other: hosted("https://also-selected.example.com/mcp") }),
+    ],
+    ["repo/plugins/chosen/extras/report/SKILL.md", skills("report")],
+    ["repo/plugins/other/skills/other/SKILL.md", skills("other")],
+  ];
+  const driver = new OCCPluginDriver();
+  const archive = await packagedFiles(entries);
+  await assert.rejects(driver.inspectPackage(archive), /Choose one entry/u);
+  const chosen = await driver.inspectPackage(archive, "chosen");
+  assert.deepEqual(
+    chosen.skills.map(({ name }) => name),
+    ["report"],
+  );
+  assert.deepEqual(chosen.mcpServers, [
+    { name: "other", url: "https://also-selected.example.com/mcp" },
+    { name: "reports", url: "https://selected.example.com/mcp" },
+  ]);
+  assert.deepEqual(
+    chosen.unsupported.map(({ component }) => component),
+    ["hooks"],
+  );
+});
+
+test("inspection rejects escaping archive entries, links and oversized worker files", async () => {
+  const driver = new OCCPluginDriver();
+  const json = JSON.stringify({ name: "chosen" });
+  const manifest = [".claude-plugin/plugin.json", json];
+  await assert.rejects(
+    driver.inspectPackage(await packagedFiles([manifest, ["../outside", "escape"]])),
+    /unsafe relative path/u,
+  );
+  await assert.rejects(
+    driver.inspectPackage(await packagedFiles([manifest, ["skills/linked", "", 0o777, "symlink"]])),
+    /link or a special file/u,
+  );
+  await assert.rejects(
+    driver.inspectPackage(
+      await packagedFiles([
+        manifest,
+        ["skills/large/SKILL.md", "Read resource."],
+        ["skills/large/resource", Buffer.alloc(1024 * 1024 + 1)],
+      ]),
+    ),
+    /worker limit/u,
+  );
 });

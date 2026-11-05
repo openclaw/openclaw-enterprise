@@ -28,7 +28,11 @@ import {
   credentialsRecoveryScenarios,
   credentialsThemeScenario,
 } from "./scenario-groups/credentials.mts";
-import { pluginsScenarios, pluginApproverScenarios } from "./scenario-groups/plugins.mts";
+import {
+  pluginsScenarios,
+  pluginApproverScenarios,
+  pluginImportScenarios,
+} from "./scenario-groups/plugins.mts";
 import { channelsScenarios } from "./scenario-groups/channels.mts";
 import {
   createAgentFormScenarios,
@@ -922,6 +926,7 @@ const authoredScenarios = {
   ...createAgentOutcomeScenarios,
   ...agentDetailScenarios.configuration,
   ...pluginApproverScenarios(draft),
+  ...pluginImportScenarios(draft),
   ...agentDetailScenarios.versions,
   agentsLongName: {
     group: "Pages/Agents",

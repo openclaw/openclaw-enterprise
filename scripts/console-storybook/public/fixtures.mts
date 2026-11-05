@@ -49,6 +49,7 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     observabilityUrl?: string;
     repositoryOptions?: readonly RepositoryOption[];
     credentialRegistrationOutcome?: string;
+    pluginImport?: "admin" | "denied" | "invalid";
     pluginDiscovery?: Parameters<typeof servePluginDiscovery>[0];
     pluginCapabilities?: Omit<
       NonNullable<Parameters<typeof installationFixture>[0]["pluginCapabilities"]>,
@@ -186,6 +187,10 @@ const auth: HarnessAuthBinding = { method: "api_key", source: secretRef("sec_dem
 // This is a presentation fixture, not a controller implementation or backend test double.
 // Every request stays inside this frame. Unsupported requests fail visibly, never go live.
 export function installFixture(scenario: FixtureScenario, evidence: FixtureEvidence) {
+  let publishedPlugin = false;
+  const previewDigest = "4db48de7d3d1e7d2986f913a3687b238d08744b86585a6f14900e5c5c8d47e74";
+  const previewPluginId = "occ-import:" + previewDigest;
+  const importedSources = new Map<string, { id: string; name: string }>();
   const namespaceRechecks = [...(scenario.namespaceRechecks ?? [])];
   let podRolloverStatusReads = 0;
   let signedIn = !scenario.signedOut;
@@ -652,6 +657,48 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
         const selectedPreset = presets.find((item) => item.id === resource.split("/")[1]);
         return selectedPreset ? response(selectedPreset) : error(404);
       }
+      if (
+        scenario.pluginImport &&
+        method === "POST" &&
+        (resource === "plugin-releases/preview" || resource === "plugin-releases")
+      ) {
+        if (scenario.pluginImport === "denied") {
+          return error(403, "FORBIDDEN");
+        }
+        if (scenario.pluginImport === "invalid") {
+          return error(422, "INVALID_REQUEST", "The package contains an unsafe relative path.");
+        }
+        const preview = {
+          format: "claude",
+          name: "weekly-reports",
+          version: "1.0.0",
+          description: "Prepare a weekly summary from the reporting service.",
+          digest: previewDigest,
+          archiveSha256: "0".repeat(64),
+          skills: ["weekly-summary"],
+          mcpServers: [
+            { name: "reports", url: "https://reports.example.com/mcp", bearerEnv: "REPORTS_TOKEN" },
+          ],
+          unsupported: [
+            {
+              component: "hooks",
+              reason: "This component does not run on the dedicated OpenClaw worker.",
+            },
+          ],
+        };
+        if (resource === "plugin-releases") {
+          if (
+            typeof body !== "object" ||
+            body === null ||
+            !("digest" in body) ||
+            body.digest !== preview.digest
+          ) {
+            return error(422, "INVALID_REQUEST");
+          }
+          publishedPlugin = true;
+        }
+        return response(preview, resource === "plugin-releases" ? 201 : 200);
+      }
       if (resource === "agents/plugins" && method === "POST" && scenario.pluginDiscovery) {
         return servePluginDiscovery(scenario.pluginDiscovery, "catalog", body, response, error);
       }
@@ -703,6 +750,13 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
             createdAt,
           };
           credentialSources.set(saved.id, saved);
+          if (
+            "importedPluginTemplate" in input &&
+            "name" in input &&
+            typeof input.name === "string"
+          ) {
+            importedSources.set(saved.id, { id: saved.id, name: input.name });
+          }
           if (uncertain) {
             // Preserve the server-owned registration after an uncertain response;
             // recovery operates on the saved source, never another model Secret.
@@ -743,6 +797,7 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
       }
       if (resource === "permissions" && method === "GET") {
         return response({
+          publishPlugins: scenario.pluginImport === "admin" || scenario.pluginImport === "invalid",
           delete: !scenario.namespaceDeleteDenied && !scenario.namespaceDeleteRestricted,
           agents: {
             create: !scenario.readOnlyPermissionSummary && !scenario.agentCreateRestricted,
@@ -786,6 +841,68 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
           return response({
             ...scenario.pluginCapabilities,
             discoveryCredential: scenario.pluginDiscoveryCredential ?? "required",
+            ...(publishedPlugin && {
+              credentialSlots: [
+                {
+                  pluginId: previewPluginId,
+                  releaseSha256: previewDigest,
+                  id: "reports",
+                  label: "reports",
+                  toolDiscovery: true,
+                  sources: (Array.isArray(saved.credentialSources)
+                    ? saved.credentialSources
+                    : []
+                  ).flatMap((binding: unknown) => {
+                    if (
+                      !binding ||
+                      typeof binding !== "object" ||
+                      !("sourceId" in binding) ||
+                      typeof binding.sourceId !== "string"
+                    ) {
+                      return [];
+                    }
+                    const source = importedSources.get(binding.sourceId);
+                    return source ? [source] : [];
+                  }),
+                },
+              ],
+            }),
+          });
+        }
+        if (
+          suffix === "/plugins/details" &&
+          method === "POST" &&
+          publishedPlugin &&
+          body &&
+          typeof body === "object" &&
+          "pluginId" in body &&
+          body.pluginId === previewPluginId
+        ) {
+          return response({
+            id: previewPluginId,
+            name: "weekly-reports 1.0.0 (4db48de7d3d1)",
+            tools: [
+              {
+                id: "report_summary",
+                name: "report_summary",
+                description: "Read the weekly summary.",
+              },
+            ],
+          });
+        }
+        if (suffix === "/plugins" && method === "POST" && publishedPlugin) {
+          return response({
+            plugins: [
+              {
+                id: previewPluginId,
+                name: "weekly-reports 1.0.0 (4db48de7d3d1)",
+                policyScope: "enablement_only",
+                description: "Prepare a weekly summary from the reporting service.",
+                selectableWithoutTools: true,
+                tools: [],
+              },
+            ],
+            nextCursor: null,
           });
         }
         if (suffix === "/plugins" && method === "POST" && scenario.pluginDiscovery) {

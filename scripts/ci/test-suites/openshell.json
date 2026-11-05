@@ -81,7 +81,11 @@
     },
     {
       "path": "tests/integration/openshell-plugin-install-real.test.ts",
-      "expectedTests": ["OpenShell Agent workflow installs and retains selected Codex plugins"],
+      "expectedTests": [
+        "OpenShell Agent workflow installs and retains selected Codex plugins",
+        "OpenShell Agent workflow deploys, updates, and removes imported OpenClaw skills",
+        "OpenShell Agent workflow enforces imported hosted MCP tool policy"
+      ],
       "requiredEnv": [
         "OCC_TEST_KUBERNETES_KUBECONFIG",
         "OCC_TEST_KUBERNETES_CONTEXT",

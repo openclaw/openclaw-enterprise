@@ -194,6 +194,7 @@ test("the Namespace Secret create answer matches what Secret creation checks", a
     agents: { create: true },
     secrets: { create: false },
     installation: { administer: false },
+    publishPlugins: false,
   });
   // A false answer is not an attempted operation: only the real POST is audited as denied.
   const denials = () => authorizationDenials(fixture.auditSink);
@@ -404,6 +405,7 @@ test("caller permission summaries report primary IAM decisions without authorizi
     agents: { create: true },
     secrets: { create: true },
     installation: { administer: true },
+    publishPlugins: true,
   });
 
   // Namespace read plus exact read and deploy on one Agent: only deploy is reported.
@@ -480,6 +482,7 @@ test("caller permission summaries report primary IAM decisions without authorizi
     agents: { create: false },
     secrets: { create: false },
     installation: { administer: false },
+    publishPlugins: false,
   });
   // A false flag is an answer, not an attempted operation, so nothing is audited as denied.
   const denials = () => authorizationDenials(fixture.auditSink);
