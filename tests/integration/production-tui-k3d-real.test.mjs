@@ -900,6 +900,14 @@ test(
         const running = pods.items.filter((pod) => pod.status.phase === "Running");
         assert.ok(running.length > 0, `${component} must have a running metrics target`);
         for (const pod of running) {
+          // The same unlisted destination is reachable from the installed API while
+          // the worker remains subject to the deployment's egress restrictions.
+          const egress = await probe(system, pod.metadata.name, foreignIP, 8123, component);
+          if (component === "api") {
+            assert.equal(egress, "connected");
+          } else {
+            assert.ok(["timeout", "ECONNREFUSED", "EHOSTUNREACH"].includes(egress), egress);
+          }
           const host = pod.status.podIP;
           assert.equal(await probe(system, "operator", host, 9464), "connected");
           assert.ok(
