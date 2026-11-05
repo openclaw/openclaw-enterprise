@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
+import type { TestContext } from "node:test";
+import type { BrowserContext, Page, Request } from "playwright";
 import { within } from "./wait-for.mjs";
 
 // CI sets this only for lanes whose browser tests use disposable fixtures. When
@@ -15,23 +17,46 @@ export const browserFailureTraceVariable = "OPENCLAW_CI_BROWSER_FAILURE_TRACE";
 const eventLimit = 500;
 const screenshotTimeoutMs = 5_000;
 const traceTimeoutMs = 20_000;
-const trackers = new WeakMap();
+type PendingRequest = {
+  startMs: number;
+  method: string;
+  url: string;
+  resourceType: string;
+  status?: number;
+};
+
+type PageTracker = {
+  elapsed: () => number;
+  lastUrl: string;
+  navigations: { atMs: number; url: string }[];
+  console: { atMs: number; type: string; text: string }[];
+  pageErrors: { atMs: number; message: string; stack: string | undefined }[];
+  requests: (PendingRequest & {
+    outcome: "finished" | "failed";
+    detail?: string;
+    endMs: number;
+  })[];
+  notes: { atMs: number; text: string }[];
+  pending: Map<Request, PendingRequest>;
+};
+
+const trackers = new WeakMap<Page, PageTracker>();
 
 function failureDirectory() {
   const value = process.env[browserFailureDirectoryVariable];
   return value === undefined || value.length === 0 ? undefined : value;
 }
 
-function keep(list, entry) {
+function keep<T>(list: T[], entry: T) {
   list.push(entry);
   if (list.length > eventLimit) {
     list.shift();
   }
 }
 
-function trackPage(page, startedAt) {
+function trackPage(page: Page, startedAt: number) {
   const elapsed = () => Date.now() - startedAt;
-  const tracker = {
+  const tracker: PageTracker = {
     elapsed,
     lastUrl: page.url(),
     navigations: [],
@@ -39,9 +64,9 @@ function trackPage(page, startedAt) {
     pageErrors: [],
     requests: [],
     notes: [],
-    pending: new Map(),
+    pending: new Map<Request, PendingRequest>(),
   };
-  function settle(request, outcome, detail) {
+  function settle(request: Request, outcome: "finished" | "failed", detail?: string) {
     const entry = tracker.pending.get(request);
     if (entry === undefined) {
       return;
@@ -89,7 +114,7 @@ function trackPage(page, startedAt) {
  * Requests the page has sent that have not finished or failed yet, oldest
  * first. Returns undefined when failure diagnostics are disabled.
  */
-export function pendingBrowserRequests(page) {
+export function pendingBrowserRequests(page: Page) {
   const tracker = trackers.get(page);
   if (tracker === undefined) {
     return undefined;
@@ -99,7 +124,7 @@ export function pendingBrowserRequests(page) {
 }
 
 /** Formats pendingBrowserRequests for an error message. */
-export function describePendingBrowserRequests(page) {
+export function describePendingBrowserRequests(page: Page) {
   const pending = pendingBrowserRequests(page);
   if (pending === undefined) {
     return `not tracked (set ${browserFailureDirectoryVariable})`;
@@ -117,14 +142,22 @@ export function describePendingBrowserRequests(page) {
 }
 
 /** Adds a line to the page's failure timeline; a no-op when diagnostics are disabled. */
-export function noteBrowserEvent(page, text) {
+export function noteBrowserEvent(page: Page, text: string) {
   const tracker = trackers.get(page);
   if (tracker !== undefined) {
     keep(tracker.notes, { atMs: tracker.elapsed(), text });
   }
 }
 
-function describeError(error, depth = 0) {
+type ErrorDescription = {
+  name?: unknown;
+  code?: unknown;
+  message?: unknown;
+  stack?: unknown;
+  cause?: ErrorDescription | undefined;
+};
+
+function describeError(error: unknown, depth = 0): ErrorDescription | undefined {
   if (error === undefined || error === null) {
     return undefined;
   }
@@ -132,17 +165,17 @@ function describeError(error, depth = 0) {
     return { message: String(error) };
   }
   return {
-    name: error.name,
-    code: error.code,
-    message: error.message,
-    stack: error.stack,
-    ...(depth < 3 && error.cause !== undefined
+    name: "name" in error ? error.name : undefined,
+    code: "code" in error ? error.code : undefined,
+    message: "message" in error ? error.message : undefined,
+    stack: "stack" in error ? error.stack : undefined,
+    ...(depth < 3 && "cause" in error && error.cause !== undefined
       ? { cause: describeError(error.cause, depth + 1) }
       : {}),
   };
 }
 
-function slug(value) {
+function slug(value: string) {
   const text = value
     .replace(/[^A-Za-z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "")
@@ -156,23 +189,30 @@ function slug(value) {
  * Playwright trace) for one test's browser context. Call capture() from
  * cleanup before the context closes: only when the test failed, it writes a
  * screenshot per open page, failure.json and any trace into
- * $OPENCLAW_CI_BROWSER_FAILURE_DIR. Passing tests write nothing.
+ * $OPENCLAW_CI_BROWSER_FAILURE_DIR/<file>/<test>/context-<unique>/.
+ * Each failing context atomically allocates its own directory under the existing
+ * file/test prefix, so overlapping captures cannot overwrite one another.
+ * Passing tests allocate no directory and write nothing.
  */
-export async function watchBrowserContext(t, context) {
+export async function watchBrowserContext(t: TestContext, context: BrowserContext) {
   const root = failureDirectory();
   if (root === undefined) {
     return { capture: async () => {} };
   }
   const startedAt = Date.now();
-  const pages = [];
-  function attach(page) {
-    pages.push(page);
-    trackPage(page, startedAt);
+  const pages: Page[] = [];
+  function attach(page: Page) {
+    try {
+      trackPage(page, startedAt);
+      pages.push(page);
+    } catch {
+      // A page can close while diagnostics attach; preserve the test outcome.
+    }
   }
-  context.pages().forEach(attach);
-  context.on("page", attach);
   let tracing = false;
   try {
+    context.pages().forEach(attach);
+    context.on("page", attach);
     if (process.env[browserFailureTraceVariable] === "1") {
       await context.tracing.start({ screenshots: true, snapshots: true, title: t.name });
       tracing = true;
@@ -184,27 +224,29 @@ export async function watchBrowserContext(t, context) {
   let captured = false;
   return {
     async capture() {
-      if (captured || t.passed !== false) {
-        return;
-      }
-      captured = true;
-      const file = t.filePath ?? process.argv[1] ?? "unknown";
-      const testName = t.fullName ?? t.name;
-      const directory = join(root, slug(basename(file)), slug(testName));
-      const summary = {
-        test: testName,
-        file,
-        capturedAt: new Date().toISOString(),
-        elapsedMs: Date.now() - startedAt,
-        error: describeError(t.error),
-        pages: [],
-        captureErrors: [],
-      };
       try {
-        await mkdir(directory, { recursive: true });
+        if (captured || t.passed !== false) {
+          return;
+        }
+        captured = true;
+        const file = t.filePath ?? process.argv[1] ?? "unknown";
+        const testName = t.fullName ?? t.name;
+        const testDirectory = join(root, slug(basename(file)), slug(testName));
+        const capturedAt = new Date().toISOString();
+        const elapsedMs = Date.now() - startedAt;
+        const error = describeError(t.error);
+        const pageEntries = [];
+        const captureErrors: string[] = [];
+        let trace: string | undefined;
+        await mkdir(testDirectory, { recursive: true });
+        const directory = await mkdtemp(join(testDirectory, "context-"));
         for (const [index, page] of pages.entries()) {
           const tracker = trackers.get(page);
+          if (tracker === undefined) {
+            continue;
+          }
           const closed = page.isClosed();
+          let screenshot: string | undefined;
           const entry = {
             index,
             url: closed ? tracker.lastUrl : page.url(),
@@ -217,23 +259,25 @@ export async function watchBrowserContext(t, context) {
             requests: tracker.requests,
           };
           if (!closed) {
-            const screenshot = `page-${index}.png`;
+            const screenshotName = `page-${index}.png`;
             try {
               await within(
                 page.screenshot({
-                  path: join(directory, screenshot),
+                  path: join(directory, screenshotName),
                   fullPage: true,
                   timeout: screenshotTimeoutMs,
                 }),
                 "screenshot",
                 screenshotTimeoutMs + 1_000,
               );
-              entry.screenshot = screenshot;
+              screenshot = screenshotName;
             } catch (error) {
-              summary.captureErrors.push(`page ${index} screenshot: ${error.message}`);
+              captureErrors.push(
+                `page ${index} screenshot: ${error instanceof Error ? error.message : String(error)}`,
+              );
             }
           }
-          summary.pages.push(entry);
+          pageEntries.push({ ...entry, screenshot });
         }
         if (tracing) {
           try {
@@ -242,15 +286,31 @@ export async function watchBrowserContext(t, context) {
               "trace export",
               traceTimeoutMs,
             );
-            summary.trace = "trace.zip";
+            trace = "trace.zip";
           } catch (error) {
-            summary.captureErrors.push(`trace: ${error.message}`);
+            captureErrors.push(`trace: ${error instanceof Error ? error.message : String(error)}`);
           }
         }
+        const summary = {
+          test: testName,
+          file,
+          capturedAt,
+          elapsedMs,
+          error,
+          pages: pageEntries,
+          captureErrors,
+          trace,
+        };
         await writeFile(join(directory, "failure.json"), `${JSON.stringify(summary, null, 2)}\n`);
       } catch (error) {
         // Diagnostics must never replace the test's own failure.
-        process.stderr.write(`browser failure diagnostics failed: ${error.message}\n`);
+        try {
+          process.stderr.write(
+            `browser failure diagnostics failed: ${error instanceof Error ? error.message : String(error)}\n`,
+          );
+        } catch {
+          // Even reporting a diagnostic error must not replace the test failure.
+        }
       }
     },
   };

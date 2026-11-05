@@ -14,7 +14,7 @@ import { apiErrorResponse } from "../helpers/api-error.mjs";
 import {
   describePendingBrowserRequests,
   noteBrowserEvent,
-} from "../helpers/browser-failure-diagnostics.mjs";
+} from "../helpers/browser-failure-diagnostics.ts";
 import {
   createConsoleAppFixture as createBaseConsoleAppFixture,
   fileConsoleApp,
