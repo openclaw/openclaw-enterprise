@@ -3361,6 +3361,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
             workspace,
             sandbox.resourceName,
             context.signal,
+            sandboxDataMount(this.options, context.requirements).mount_path,
             sandboxProviders(this.options, context.requirements),
             this.options.policy.networkPolicies.flatMap((policy) =>
               policy.endpoints.map((endpoint) => endpoint.host),

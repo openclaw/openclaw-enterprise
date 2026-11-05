@@ -401,7 +401,15 @@ async function repositoryGitJourney(
     async prepareRevision(r: AgentRevision, custody: ComputeRevisionContext) {
       let stage = "provider-bootstrap";
       try {
-        const p = await runtime.prepare(r, client, workspace, state.sandbox, t.signal, ["openai"]);
+        const p = await runtime.prepare(
+          r,
+          client,
+          workspace,
+          state.sandbox,
+          t.signal,
+          "/sandbox/enterprise",
+          ["openai"],
+        );
         // This is the synthetic process launch, after its preview registration.
         // Both scopes must report this event, not the earlier fixture construction.
         if (!wire.world.id) {
