@@ -444,6 +444,13 @@
       ]
     },
     {
+      "path": "tests/integration/dev-up-startup-disposition.test.ts",
+      "expectedTests": [
+        "OpenShell startup diagnostics distinguish child process failures",
+        "CI results retain only closed OpenShell startup diagnostics"
+      ]
+    },
+    {
       "path": "tests/integration/dev-up.test.mjs",
       "expectedTests": [
         "Kubernetes dev-up authenticates the Installation and cleanup uses its saved endpoint and Compose configuration",
