@@ -39,7 +39,7 @@ import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   apiRequests,

@@ -17,7 +17,7 @@ import {
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import {
   apiRequests,

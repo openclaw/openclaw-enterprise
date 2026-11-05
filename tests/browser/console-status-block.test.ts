@@ -9,7 +9,7 @@ import type { PermissionAction } from "../../packages/contracts/src/index.ts";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   consoleViewports,
   detailUrl,

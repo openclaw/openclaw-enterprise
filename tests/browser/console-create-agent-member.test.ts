@@ -16,7 +16,7 @@ import type {
 
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { authorizationDenials, createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { restrict } from "../helpers/iam-grants.mjs";
 import {
   deniedCreateSecretOption,
