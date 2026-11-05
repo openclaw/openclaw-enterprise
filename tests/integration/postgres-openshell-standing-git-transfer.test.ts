@@ -108,14 +108,14 @@ test(
     const executionId = revision.id;
     const sandboxId = randomUUID();
     const model = "original-model";
-    const expired = Date.now() - 120_000;
+    const deadline = persisted.repositoryCredentials!.deadlineWallMs;
     const calls: string[] = [];
     const { client, world } = await gitExpiryGateway(t, {
       workspace,
       sandbox,
       revisionId: executionId,
       model,
-      deadline: expired,
+      deadline,
       platformProfile: false,
       configure(methods) {
         // Observe requests, preserving every stock handler, including DETACH.
@@ -174,13 +174,12 @@ test(
       profileVersion: storedProfile.resourceVersion,
       resourceVersion: provider.resourceVersion,
       credentialState: "active" as const,
-      expiresAt: new Date(expired).toISOString(),
+      expiresAt: new Date(deadline).toISOString(),
     };
-    // Capture the actual controlled stock report, never manufacture an observation
-    // by marking an expired credential READY or replacing a reader's result.
+    // Persist the original historical witness while its environment is still READY.
+    // Once expiry withholds the whole environment, a cold reader cannot reconstruct it.
     const status = await client.getSandboxProviderStatus(workspace, sandbox, profile.id, t.signal);
-    assert.equal(status.state, "PROVIDER_READINESS_STATE_FAILED");
-    assert.equal(status.reason, "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED");
+    assert.equal(status.state, "PROVIDER_READINESS_STATE_READY");
     const desired = status.receipt?.desired;
     const report = status.observed;
     assert.ok(desired && report && status.networkInstanceId);
@@ -408,7 +407,18 @@ test(
       timeoutMs: 23_000,
       intervalMs: 200,
     });
-    assert.deepEqual(await access.verifyExecution(context), identity);
+    // Stock expiration withholds the model as well as Git. The original durable witness
+    // still permits later subtraction, but cannot authorize cold execution verification.
+    for (const provider of [profile.id, model]) {
+      const expired = await client.getSandboxProviderStatus(workspace, sandbox, provider, t.signal);
+      assert.equal(expired.state, "PROVIDER_READINESS_STATE_WITHHELD");
+      assert.equal(expired.reason, "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED");
+      assert.equal(expired.observed?.credentialsInstalled, false);
+      assert.equal(expired.observed?.launchEnvironmentInstalled, false);
+    }
+    assert.equal(await access.verifyExecution(context), undefined);
+    assert.equal(cold["entries"].size, 0);
+    assert.deepEqual(await routes.standing(persisted), accepted);
     assert.deepEqual(await durable(), baseline);
     assert.deepEqual(mutations(), before);
     assert.equal(authorityCalls, 0);

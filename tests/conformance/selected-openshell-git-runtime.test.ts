@@ -1487,7 +1487,8 @@ test("finite v5 Git expiry refuses resolver substitution and never replays an un
       const absent = removed && name === prepared.provider;
       assert.ok(name === prepared.provider || name === "openai");
       reads.push({ provider: name, operation, absent });
-      const oldExpired = !removed && name === prepared.provider;
+      // Stock withholds the entire attachment while its Git credential is expired.
+      const oldExpired = !removed;
       if (oldExpired && fault === "version churn" && !state) {
         state = "churned";
         Object.assign(expiryBox, { resourceVersion: "2" });
@@ -1508,7 +1509,7 @@ test("finite v5 Git expiry refuses resolver substitution and never replays an un
       const now = new Date().toISOString();
       const result = {
         state: oldExpired
-          ? "PROVIDER_READINESS_STATE_FAILED"
+          ? "PROVIDER_READINESS_STATE_WITHHELD"
           : absent
             ? "PROVIDER_READINESS_STATE_REVOKED"
             : "PROVIDER_READINESS_STATE_READY",
