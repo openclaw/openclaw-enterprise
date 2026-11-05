@@ -44,7 +44,43 @@ Platform-only inputs remain in setup: local `OCC_DEVELOPMENT_STATE_DIRECTORY`; c
 
 Use the same matching release checkout when running source-dependent setup commands. Retain service-key files, chart files and the private session directory; moving or deleting them breaks the saved session. A timed-out mutation has an unknown outcome. Read the existing resource or saved deployment ID before submitting it again.
 
-`upgrade_installation` checks that saved values, live Helm values and the running API select the same Secret and key. It binds an initially unannotated Secret to the authenticated Installation with `openclaw.dev/installation-id`; an existing annotation must match. It preserves other Secret data and metadata; a concurrent Secret change rejects the patch. The printed private evidence directory retains the original Secret, live values and proposed update. A failed or interrupted patch or Helm upgrade may have changed the Secret: inspect it and Helm status before another mutation, and follow [Installation-change recovery](production-installation-changes.md) to restore a refused change. Saved values advance only after Helm succeeds.
+## Update and recover the Installation
+
+The operator needs Secret read/patch access and permission to upgrade this release. Exclude other Installation, Helm install/upgrade/rollback and initialization Job writers from preparation through rollout. This includes other operator sessions. The helper's status checks detect observed overlap; they do not lock out another writer.
+
+`upgrade_installation` requires a deployed Helm release and checks its revision again before patching. Saved values, live values and the verified API Pod must select the same Secret and key. The helper reads the Installation ID through that Pod. It initializes a missing `openclaw.dev/installation-id` annotation; an existing annotation must match. The patch preserves other data and metadata and rejects a concurrent Secret change.
+
+`INSTALLATION_FILE` and `VALUES_FILE` are **proposals**, including edits made by Git enrollment. The printed private evidence directory saves the original Secret and live values separately. A failed or interrupted patch or Helm upgrade may have changed the Secret. Inspect the saved evidence and Helm status before another mutation.
+
+To undo a refused change, keep other writers excluded. Use the printed evidence directory below. Confirm that no later upgrade or intended edit superseded this attempt and that Helm has no operation in progress. If the attempt's outcome is unknown, resolve it before recovery. These commands do not require a ready API:
+
+```bash
+set -euo pipefail
+change=/absolute/path/to/printed/installation-upgrade.directory
+helm --kubeconfig "$KUBECONFIG" --kube-context "$CONTEXT" -n "$PLATFORM_NS" status "$RELEASE"
+secret=$(jq -er '.installation.secretName' "$change/live-values.json")
+key=$(jq -er '.installation.key' "$change/live-values.json")
+kube -n "$PLATFORM_NS" get secret "$secret" -o json > "$change/recovery-current.json"
+# Refuse replacement or a different document; retain current unrelated keys and metadata.
+jq -e --arg key "$key" --slurpfile before "$change/secret-before.json" \
+  --slurpfile proposed "$change/patch.json" '
+  .metadata.uid == $before[0].metadata.uid and
+  (.data[$key] == $before[0].data[$key] or .data[$key] == $proposed[0].data[$key])' \
+  "$change/recovery-current.json" >/dev/null
+jq --arg key "$key" --slurpfile before "$change/secret-before.json" '
+  {metadata: {uid: .metadata.uid, resourceVersion: .metadata.resourceVersion},
+   data: {($key): $before[0].data[$key]}}' "$change/recovery-current.json" \
+  > "$change/recovery-patch.json"
+kube -n "$PLATFORM_NS" patch secret "$secret" --type merge --patch-file "$change/recovery-patch.json"
+jq -jr --arg key "$key" '.data[$key] | @base64d' "$change/secret-before.json" > "$INSTALLATION_FILE"
+cp "$change/live-values.json" "$VALUES_FILE"
+helm --kubeconfig "$KUBECONFIG" --kube-context "$CONTEXT" -n "$PLATFORM_NS" \
+  upgrade "$RELEASE" "$OCE_CHART" -f "$VALUES_FILE" --wait
+kube -n "$PLATFORM_NS" rollout status deployment/openclaw-enterprise-api
+kube -n "$PLATFORM_NS" rollout status deployment/openclaw-enterprise-worker
+```
+
+Stop on any failed check. The UID/resourceVersion patch rejects a change after the recovery read. Preserve the evidence if recovery fails and inspect before retrying. See [Installation startup rejection](production-installation-changes.md) for the startup-check limits and logs.
 
 ## Where setup supplies the session
 

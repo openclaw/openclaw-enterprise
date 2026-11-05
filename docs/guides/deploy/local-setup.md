@@ -90,26 +90,10 @@ The [configuration script](../../snippets/openshell-quickstart/configure-install
 node "$RUN_DIR/configure-installation.mjs"
 ```
 
-Reload the edited file through Helm. Use a new Secret name for each change. Helm rolls the API and worker when the referenced name changes. Wait for both deployments before provisioning the Agent.
-
-```bash
-# Verify the generated kubeconfig targets this run before changing the release.
-state=$OCC_DEVELOPMENT_STATE_DIRECTORY
-export KUBECONFIG="$state/kubeconfig"
-CONTEXT="k3d-$(jq -er .cluster "$state/state.json")"
-PLATFORM_NS=$(jq -er .platformNamespace "$state/state.json")
-(
-  set -e
-  test "$(kubectl config current-context)" = "$CONTEXT"
-
-  # Point Helm at a new, versioned Secret so that the API and worker reload the changes.
-  secret="oce-openshell-codex-$(date +%s)"
-  kubectl --context "$CONTEXT" -n "$PLATFORM_NS" create secret generic "$secret" \
-    --from-file="installation.yaml=$state/installation.yaml"
-  helm --kube-context "$CONTEXT" upgrade openclaw-enterprise deploy/helm/openclaw-enterprise \
-    -n "$PLATFORM_NS" -f "$state/helm-values.json" --set-string installation.secretName="$secret" --wait
-)
-```
+Step 4 reloads this edit through the authenticated operator session, preserving the
+startup Secret and its Installation identity. Exclude other release and initialization writers
+through rollout; see [update and recovery](quickstart-session.md#update-and-recover-the-installation).
+Finish that step before provisioning an Agent.
 
 [Helm warned that `api.trustedProxy` is unset?](../operate/local-setup-troubleshooting.md#helm-warns-that-apitrustedproxy-is-unset)
 
@@ -120,6 +104,11 @@ If your network intercepts HTTPS, [install its approved public CA in the OpenShe
 Use the service key that the launcher generated for REST requests. The helper sends requests through the selected API Pod. Keep the key in the private run directory.
 
 ```bash
+state=$OCC_DEVELOPMENT_STATE_DIRECTORY
+export KUBECONFIG="$state/kubeconfig"
+CONTEXT="k3d-$(jq -er .cluster "$state/state.json")"
+PLATFORM_NS=$(jq -er .platformNamespace "$state/state.json")
+test "$(kubectl config current-context)" = "$CONTEXT"
 PLATFORM=local-k3d
 RELEASE=openclaw-enterprise
 OCE_CHART="$(pwd)/deploy/helm/openclaw-enterprise"
@@ -140,6 +129,7 @@ repository_network() { :; }
 SH
 source "$RUN_DIR/operator-session.sh"
 source "$RUN_DIR/platform.sh"
+upgrade_installation
 namespace=$(request GET /namespaces | jq -er '[.data[]|select(.name=="default" and .status=="ready")]|select(length==1)|first.id')
 base="/namespaces/$namespace"
 TENANT_NAMESPACE=$(kube get ns -l "openclaw.dev/namespace=$namespace" -o json |

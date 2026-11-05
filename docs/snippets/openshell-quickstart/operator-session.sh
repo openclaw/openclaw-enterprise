@@ -11,15 +11,19 @@ api_pod() {
       select(length==1) | first | [.metadata.name,.status.podIP] | @tsv'
 }
 _request() {
-  local response_mode=$1 method=$2 path=$3 pod ip body_file
-  shift 3
+  local pod ip
+  read -r pod ip < <(api_pod) || return 1
+  _request_at_pod "$pod" "$ip" "$@"
+}
+_request_at_pod() {
+  local pod=$1 ip=$2 response_mode=$3 method=$4 path=$5 body_file
+  shift 5
   body_file=$(mktemp "$RUN_DIR/request.XXXXXXXX") || return 1
   if (( $# == 0 )); then printf 'null' > "$body_file"
   elif (( $# == 2 )) && [[ $1 == --data-binary && $2 == @- ]]; then cat > "$body_file"
   elif (( $# == 2 )) && [[ $1 == --data ]]; then printf '%s' "$2" > "$body_file"
   else rm -f "$body_file"; return 2
   fi
-  if ! read -r pod ip < <(api_pod); then rm -f "$body_file"; return 1; fi
   local rc=0
   jq -nc --arg method "$method" --arg path "$path" --arg ip "$ip" --arg mode "$response_mode" \
     --slurpfile key "$OCC_SERVICE_KEY_FILE" --slurpfile body "$body_file" \
@@ -72,6 +76,13 @@ upgrade_installation() {
   evidence=$(mktemp -d "$RUN_DIR/installation-upgrade.XXXXXXXX") || return 1
   printf 'Installation change evidence: %s\n' "$evidence"
   helm --kubeconfig "$KUBECONFIG" --kube-context "$CONTEXT" -n "$PLATFORM_NS" \
+    status "$RELEASE" -o json > "$evidence/helm-before.json" || return 1
+  jq -e '.info.status == "deployed" and (.version | numbers | . > 0)' \
+    "$evidence/helm-before.json" >/dev/null || {
+    printf 'Resolve the current Helm release before changing its Installation.\n' >&2
+    return 1
+  }
+  helm --kubeconfig "$KUBECONFIG" --kube-context "$CONTEXT" -n "$PLATFORM_NS" \
     get values "$RELEASE" --all -o json > "$evidence/live-values.json" || return 1
   secret=$(jq -er '.installation.secretName | strings | select(length>0)' "$evidence/live-values.json") || return 1
   key=$(jq -er '.installation.key | strings | select(length>0)' "$evidence/live-values.json") || return 1
@@ -95,7 +106,7 @@ upgrade_installation() {
     printf 'Running API does not use the selected Installation Secret binding.\n' >&2
     return 1
   }
-  installation=$(request GET /installation | jq -er '.data.id | strings | select(length>0)') || return 1
+  installation=$(_request_at_pod "$pod" "$ip" body GET /installation | jq -er '.data.id | strings | select(length>0)') || return 1
   kube -n "$PLATFORM_NS" get secret "$secret" -o json > "$evidence/secret-before.json" || return 1
   jq -e --arg installation "$installation" --arg key "$key" '
     ((.metadata.annotations // {} | has("openclaw.dev/installation-id") | not) or
@@ -118,6 +129,14 @@ upgrade_installation() {
        annotations: {"openclaw.dev/installation-id": $installation}},
      data: {($key): ($document | @base64)}}' "$evidence/secret-before.json" \
     > "$evidence/patch.json" || return 1
+  helm --kubeconfig "$KUBECONFIG" --kube-context "$CONTEXT" -n "$PLATFORM_NS" \
+    status "$RELEASE" -o json > "$evidence/helm-current.json" || return 1
+  jq -e --slurpfile before "$evidence/helm-before.json" '
+    .info.status == "deployed" and .version == $before[0].version' \
+    "$evidence/helm-current.json" >/dev/null || {
+    printf 'Helm changed during preparation; no Installation patch was submitted.\n' >&2
+    return 1
+  }
   kube -n "$PLATFORM_NS" patch secret "$secret" --type merge \
     --patch-file "$evidence/patch.json" -o json > "$evidence/secret-after.json" || return 1
   helm --kubeconfig "$KUBECONFIG" --kube-context "$CONTEXT" -n "$PLATFORM_NS" \

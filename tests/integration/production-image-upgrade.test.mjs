@@ -36,6 +36,12 @@ test("quickstart Installation updates preserve the bound Secret and stop on unsa
   for (const failure of [
     "",
     "unannotated",
+    "pod-handoff",
+    "pod-gone",
+    "helm-pending",
+    "helm-failed",
+    "helm-changed",
+    "helm-started",
     "binding",
     "mounted-binding",
     "identity",
@@ -62,7 +68,7 @@ test("quickstart Installation updates preserve the bound Secret and stop on unsa
         },
         data: { "custom.yaml": Buffer.from("old").toString("base64"), retained: "a2VlcA==" },
       };
-      if (failure === "unannotated") {
+      if (["unannotated", "pod-handoff"].includes(failure)) {
         delete secret.metadata.annotations["openclaw.dev/installation-id"];
       }
       const apiPod = {
@@ -117,8 +123,17 @@ test("quickstart Installation updates preserve the bound Secret and stop on unsa
         "kubectl",
         `
 case "$*" in
-  *"get pods"*) printf '%s\\n' '{"items":[{"metadata":{"name":"api"},"status":{"podIP":"127.0.0.1","containerStatuses":[{"name":"api","ready":true}]}}]}' ;;
-  *"exec -i"*) cat > "$RUN_DIR/api-request.json"; printf '%s\\n' '{"data":{"id":"ins_selected"}}' ;;
+  *"get pods"*)
+    pod=api
+    if [[ $FAILURE == pod-handoff && -f "$RUN_DIR/pod-selected" ]]; then pod=replacement; fi
+    touch "$RUN_DIR/pod-selected"
+    printf '{"items":[{"metadata":{"name":"%s"},"status":{"podIP":"127.0.0.1","containerStatuses":[{"name":"api","ready":true}]}}]}\\n' "$pod" ;;
+  *"exec -i"*)
+    cat > "$RUN_DIR/api-request.json"
+    if [[ $FAILURE == pod-gone ]]; then exit 9; fi
+    if [[ "$*" == *"exec -i replacement"* ]]; then
+      printf '%s\\n' '{"data":{"id":"ins_replacement"}}'
+    else printf '%s\\n' '{"data":{"id":"ins_selected"}}'; fi ;;
   *"get pod "*) cat "$RUN_DIR/api-pod.json" ;;
   *"get secret"*) cat "$RUN_DIR/secret.json" ;;
   *"patch secret"*)
@@ -146,6 +161,17 @@ esac
         "helm",
         `
 case "$*" in
+  *" status "*)
+    version=3
+    status=deployed
+    if [[ $FAILURE == helm-pending ]]; then status=pending-upgrade; fi
+    if [[ $FAILURE == helm-failed ]]; then status=failed; fi
+    if [[ -f "$RUN_DIR/status-read" ]]; then
+      if [[ $FAILURE == helm-changed ]]; then version=4; fi
+      if [[ $FAILURE == helm-started ]]; then status=pending-upgrade; fi
+    fi
+    touch "$RUN_DIR/status-read"
+    printf '{"version":%s,"info":{"status":"%s"}}\\n' "$version" "$status" ;;
   *"get values"*) cat "$RUN_DIR/live-values.json" ;;
   *"upgrade"*)
     while (($#)); do
@@ -184,9 +210,13 @@ esac
         (result) => ({ ...result, code: 0 }),
         (error) => error,
       );
-      const success = !failure || failure === "unannotated";
+      const success = !failure || ["unannotated", "pod-handoff"].includes(failure);
       assert.equal(result.code, success ? 0 : 1, result.stderr);
       const commands = await readFile(log, "utf8");
+      if (failure === "pod-handoff") {
+        assert.match(commands, /exec -i api/);
+        assert.doesNotMatch(commands, /exec -i replacement/);
+      }
       const after = JSON.parse(await readFile(join(directory, "secret.json"), "utf8"));
       assert.deepEqual(
         after.metadata,
@@ -207,7 +237,18 @@ esac
         after.data["custom.yaml"],
         changed ? Buffer.from(document).toString("base64") : secret.data["custom.yaml"],
       );
-      if (["binding", "mounted-binding", "identity"].includes(failure)) {
+      if (
+        [
+          "binding",
+          "mounted-binding",
+          "identity",
+          "pod-gone",
+          "helm-pending",
+          "helm-failed",
+          "helm-changed",
+          "helm-started",
+        ].includes(failure)
+      ) {
         assert.doesNotMatch(commands, /patch secret| upgrade /);
       } else {
         const patch = JSON.parse(await readFile(join(directory, "submitted-patch.json"), "utf8"));

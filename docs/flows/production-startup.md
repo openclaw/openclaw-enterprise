@@ -324,8 +324,8 @@ response's `meta.installationId`. The operator records that ID in the Installati
 startup Secret's `openclaw.dev/installation-id` annotation; coordinated upgrades
 use this marker to bind their OCC endpoint to the selected Installation.
 The quickstart's `docs/snippets/openshell-quickstart/operator-session.sh:upgrade_installation`
-initializes or verifies that binding, patches the Secret with UID/resourceVersion preconditions,
-and sets `controlPlane.installationChecksum` before Helm.
+checks Helm's deployed revision and API Pod binding, initializes missing annotations,
+patches using UID/resourceVersion preconditions, and sets `controlPlane.installationChecksum`.
 Agent runtime, Gateway WebSocket authentication and model calls remain unproven
 until tenant deployment/TUI procedures run.
 
