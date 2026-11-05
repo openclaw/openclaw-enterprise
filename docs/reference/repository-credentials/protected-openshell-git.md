@@ -1,14 +1,13 @@
 # Protected repository access with OpenShell
 
-Selected repositories require a pre-credentials request binding. Before issuing
-credentials, OCE verifies the registration and matches a held launcher request to
-an authenticated middleware denial. The Agent starts after credential installation
-and signed release.
+Before issuing repository credentials, OCE verifies registration and matches a held
+launcher request to an authenticated middleware denial. The Agent starts after
+credential installation and signed release.
 
 Follow [OpenShell enrollment](../../guides/repository-credentials/openshell-enrollment.md).
-Select repositories sharing an explicit permission map. OCE requests their canonical
-IDs and verifies GitHub’s returned scope. GitHub governs refs and REST/GraphQL
-operations. Changing or removing a grant blocks subsequent use of that grant.
+Select repositories sharing an explicit permission map. OCE requests canonical IDs
+and verifies GitHub’s returned scope. GitHub governs refs and REST/GraphQL.
+Changed or removed grants block subsequent use.
 
 Existing `git-write` grants retain their exact ref policy. OCE qualifies the live
 sender by its configured capabilities and runtime evidence. `git-read` and
@@ -21,8 +20,6 @@ existing installation, follow the
 [compatibility upgrade](../../guides/deploy/credential-proxy-upgrade.md#check-compatibility-before-interrupting-access).
 
 ## Prerequisites
-
-Check these before qualifying a release:
 
 - **Kernel.** The Driver requires Landlock (`hard_requirement`). Sandboxes need ABI
   v3 or later and Linux 6.2 or newer. Ubuntu 22.04's 5.15 kernel cannot start them.
@@ -206,11 +203,13 @@ The Sandbox sets process-scoped `safe.directory` for its approved mount,
 allowing root-owned workspaces without trusting nested repositories or changing
 persistent Git configuration. `push.negotiate=true` reduces redundant transfers; [push request limits](../../guides/repository-credentials/openshell-enrollment.md#plan-for-request-limits) apply.
 
-With `github-repository`, use selected HTTPS Git URLs. API operations
-use token permissions. Both API scopes refuse runner-token and deploy-key
-creation. For selected repositories, the sender accepts the CLI’s
-`Time-Zone: Etc/UTC` and, on GraphQL POSTs, `Graphql-Features: merge_queue`.
-Duplicate headers are refused. Each request requires current authorization.
+With `github-repository`, use selected HTTPS Git URLs; API operations use token
+permissions. Both API scopes refuse runner-token and deploy-key creation.
+Selected-repository requests to `api.github.com` accept `Time-Zone: Etc/UTC`;
+GraphQL POSTs also accept `Graphql-Features: merge_queue` and `X-GH-CACHE-TTL`
+hints of 1–64 characters without control characters (such as `24h0m0s`).
+Hints support `gh pr list --search`; OCE ignores their values and checks current
+authorization. Duplicate headers are refused.
 
 With `git-write`, use exactly
 `https://github.com/$OCE_OPENSHELL_GIT_REPOSITORY.git` for clone, fetch and push.
