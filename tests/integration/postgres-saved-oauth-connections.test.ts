@@ -236,7 +236,6 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
     host: pluginWorkflow ? "gmail.googleapis.com" : "api.connections.test",
     port: 443,
     path: "/**",
-    access: "full",
   };
   const registered = await inject("POST", "/oauth-clients", {
     displayName: "Saved accounts",
@@ -250,7 +249,7 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
   });
   assert.equal(registered.statusCode, 201, registered.body);
   const oauthClientId = registered.json().data.id;
-  const template = await inject("POST", "/connection-templates", {
+  const manualConfig = {
     mode: "manual",
     displayName: "Keycloak",
     namespaceId,
@@ -260,15 +259,18 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
     oauthClientId,
     scopes,
     recipient,
-  });
+  };
+  const template = await inject("POST", "/connection-templates", manualConfig);
   assert.equal(template.statusCode, 201, template.body);
   const manual = { connectionTemplateId: template.json().data.id };
   const input: { connectionTemplateId: string; selectedScopes?: string[] } = { ...manual };
+  const ownerId = principal.id;
+  const owner = await accountSession(app, adminAccount.email, adminAccount.password);
   if (!pluginWorkflow) {
     // The selected client may support revocation even though this manual version omits the endpoint.
     const manualStart = await inject("POST", connections, manual);
     assert.equal(manualStart.statusCode, 201, manualStart.body);
-    const mcp = await inject("POST", "/connection-templates", {
+    const mcpConfig = {
       displayName: "Scope selection",
       namespaceId,
       mode: "mcp_discovery",
@@ -276,7 +278,8 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
       serverUrl: "https://api.connections.test/mcp",
       scopes: ["openid", "profile"],
       oauthClientId,
-    });
+    };
+    const mcp = await inject("POST", "/connection-templates", mcpConfig);
     assert.equal(mcp.statusCode, 201, mcp.body);
     input.connectionTemplateId = mcp.json().data.id;
     input.selectedScopes = ["openid"];
@@ -287,9 +290,72 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
       });
       assert.equal(refused.statusCode, 400, refused.body);
     }
+    // With no configured scope list, discovery suggests scopes and its challenge still requires openid.
+    const unrestrictedMcp = await inject("POST", "/connection-templates", {
+      ...mcpConfig,
+      scopes: [],
+      displayName: "Open MCP scope selection",
+    });
+    assert.equal(unrestrictedMcp.statusCode, 201, unrestrictedMcp.body);
+    const unrestrictedId = unrestrictedMcp.json().data.id;
+    assert.equal(
+      (await inject("POST", connections, { connectionTemplateId: unrestrictedId })).statusCode,
+      400,
+    );
+    const manyScopes = ["openid", ...Array.from({ length: 32 }, (_, i) => "custom." + i)];
+    const freeStart = await inject("POST", connections, {
+      connectionTemplateId: unrestrictedId,
+      selectedScopes: manyScopes,
+    });
+    assert.equal(freeStart.statusCode, 201, freeStart.body);
+    assert.equal(
+      new URL(freeStart.json().data.authorizationUrl).searchParams.get("scope"),
+      manyScopes.join(" "),
+    );
+    // Let Keycloak choose a default on this isolated registration. The account must record it
+    // as a provider grant while preserving that the person did not request an explicit scope.
+    const unrestrictedManual = await inject("POST", "/connection-templates", {
+      ...manualConfig,
+      scopes: [],
+      displayName: "Provider defaults",
+    });
+    assert.equal(unrestrictedManual.statusCode, 201, unrestrictedManual.body);
+    const [keycloakClient] = await keycloakRealmAdmin(
+      issuer,
+      secrets.admin,
+      "GET",
+      "/clients?clientId=" + clientId,
+    );
+    const realmScopes = await keycloakRealmAdmin(issuer, secrets.admin, "GET", "/client-scopes");
+    const profile = realmScopes.find((scope: { name: string }) => scope.name === "profile");
+    assert.ok(profile);
+    const defaultPath = "/clients/" + keycloakClient.id + "/default-client-scopes/" + profile.id;
+    await keycloakRealmAdmin(issuer, secrets.admin, "PUT", defaultPath);
+    const defaults = await owner("POST", connections, {
+      connectionTemplateId: unrestrictedManual.json().data.id,
+      selectedScopes: [],
+    });
+    assert.equal(defaults.statusCode, 201, defaults.body);
+    const defaultsUrl = defaults.json().data.authorizationUrl;
+    assert.equal(new URL(defaultsUrl).searchParams.has("scope"), false);
+    const defaultCallback = await owner(
+      "GET",
+      await consentRedirect(defaultsUrl, "alice", secrets.users.alice.password),
+    );
+    assert.match(String(defaultCallback.headers.location), /connection=connected/);
+    const defaultsId = defaults.json().data.credentialSourceId;
+    const defaultAccounts = await owner("GET", connections);
+    const defaultAccount = defaultAccounts
+      .json()
+      .data.find(
+        (account: { credentialSourceId: string }) => account.credentialSourceId === defaultsId,
+      );
+    assert.deepEqual(defaultAccount.requestedScopes, []);
+    assert.deepEqual(defaultAccount.grantedScopes, ["profile"]);
+    await keycloakRealmAdmin(issuer, secrets.admin, "DELETE", defaultPath);
+    const disconnected = await owner("DELETE", connections + "/" + defaultsId);
+    assert.equal(disconnected.statusCode, 204, disconnected.body);
   }
-  const ownerId = principal.id;
-  const owner = await accountSession(app, adminAccount.email, adminAccount.password);
   async function begin(
     path = connections,
     body: Record<string, unknown> = input,
@@ -502,7 +568,7 @@ test(
         clientId,
         issuer,
         tokenUrl,
-        { host: "api.connections.test", port: 443, path: "/mcp", access: "full" },
+        { host: "api.connections.test", port: 443, path: "/mcp" },
         ["openid"],
         ["openid"],
       ],
@@ -537,6 +603,25 @@ test(
     const original = await prepared();
     const alice = await subject(original);
     assert.ok(alice);
+    // Lose access to the operator's registration before dispatch. The scheduler must back off
+    // without losing the user's grant, and the owner can retry as soon as access returns.
+    const unavailable = t.mock.method(refresh, "readClientSecret", async () => {
+      throw new Error("registration store unavailable");
+    });
+    assert.equal((await owner("POST", source + "/rotate")).statusCode, 503);
+    unavailable.mock.restore();
+    const unavailableStatus = (await owner("GET", source)).json().data.status.refresh;
+    assert.deepEqual(
+      [unavailableStatus.state, unavailableStatus.failureCode, unavailableStatus.recoveryAction],
+      ["failed", "client_unavailable", "retry"],
+    );
+    const deferred = await pool.query(
+      "SELECT next_refresh_at > now() AS deferred FROM occ.connection_token_custody WHERE namespace_id=$1 AND credential_source_id=$2",
+      [namespaceId, id],
+    );
+    assert.equal(deferred.rows[0].deferred, true);
+    assert.equal((await owner("POST", source + "/rotate")).statusCode, 200);
+    assert.equal(await subject(await prepared()), alice);
     // The original grant must refresh after the provider and the OCE administrator rotate the client.
     await rotateClientSecret(source);
     const rotated = await inject("POST", `${source}/rotate`, undefined);
