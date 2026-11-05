@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import test, { before } from "node:test";
@@ -481,19 +481,23 @@ export function registerInstallationKeycloak() {
           },
         );
         assert.equal(typeof token.access_token, "string");
-        const realm = JSON.parse(
-          await readFile(join(repository, "tests/fixtures/keycloak/realm-oce.json"), "utf8"),
+        const authorization = `Bearer ${token.access_token}`;
+        const users = await publishedJSON(
+          keycloak,
+          "/admin/realms/oce/users?username=alice&exact=true",
+          {
+            headers: { authorization },
+          },
         );
-        const alice = realm.users.find(({ username }) => username === "alice");
-        assert.ok(alice?.id);
+        assert.equal(users.length, 1);
+        const [alice] = users;
+        assert.equal(alice.username, "alice");
+        assert.match(alice.id, /^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/iu);
         alicePassword = randomUUID();
         await publishedJSON(keycloak, `/admin/realms/oce/users/${alice.id}/reset-password`, {
           method: "PUT",
           expectedStatus: 204,
-          headers: {
-            authorization: `Bearer ${token.access_token}`,
-            "content-type": "application/json",
-          },
+          headers: { authorization, "content-type": "application/json" },
           body: JSON.stringify({ type: "password", value: alicePassword, temporary: false }),
         });
         const before = JSON.parse(

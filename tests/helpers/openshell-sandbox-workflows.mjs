@@ -5503,6 +5503,8 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
   // Forced deletion requests native approval even in full-access mode. Use non-forced
   // cleanup of this fresh probe directory so the command reaches the OpenShell boundary.
   const deniedConfigCommand = `probe_home=$(mktemp -d) && (trap 'rm -r -- "$probe_home"' EXIT; ln -s "$CODEX_HOME/auth.json" "$probe_home/auth.json" && CODEX_HOME="$probe_home" codex -c 'cli_auth_credentials_store="file"' -c 'chatgpt_base_url="${deniedBackend}"' features list)`;
+  const approvedCurl = "curl -fsSI --max-time 30 https://www.openclaw.org";
+  const deniedCurl = "curl -fsSI --max-time 10 https://acme.com";
   const result = await requestCodexTurnFromGatewayPod({
     namespace: topology.gatewayPlacement,
     gatewayPod: topology.gatewayPod.metadata.name,
@@ -5514,8 +5516,8 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
       `(2) ${approvedRead}; ` +
       `(3) touch ${readonlyPath}; ` +
       `(4) touch ${escapedPath}; ` +
-      `(5) curl -fsSI --max-time 30 https://www.openclaw.org; ` +
-      `(6) curl -fsSI --max-time 10 https://acme.com; ` +
+      `(5) ${approvedCurl}; ` +
+      `(6) ${deniedCurl}; ` +
       `Commands 1, 2, and 5 must succeed; commands 3, 4, and 6 must fail. ` +
       `Reply with exactly ${nonce}, WORKSPACE_WRITABLE, APPROVED_PATH_READABLE, ` +
       `READONLY_DENIED, ESCAPE_DENIED, OPENCLAW_ALLOWED, and ACME_DENIED ` +
@@ -5525,12 +5527,15 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
     .filter(({ method }) => method === "item/completed")
     .map(({ params }) => params?.item)
     .filter(({ type }) => type === "commandExecution");
-  const approvedCommand = completedCommands.find(({ command }) =>
-    String(command).includes("www.openclaw.org"),
-  );
-  const deniedCommand = completedCommands.find(({ command }) =>
-    String(command).includes("acme.com"),
-  );
+  // The Harness records either the command itself or its shell invocation.
+  const findCurl = (expected) =>
+    completedCommands.find(
+      ({ command }) =>
+        command === expected ||
+        /^(?:[\w./-]+\/)?(?:bash|sh|zsh) -l?c (["'])([^"']+)\1$/u.exec(command)?.[2] === expected,
+    );
+  const approvedCommand = findCurl(approvedCurl);
+  const deniedCommand = findCurl(deniedCurl);
   const workspaceCommand = completedCommands.find(({ command }) =>
     String(command).includes(writablePath),
   );
