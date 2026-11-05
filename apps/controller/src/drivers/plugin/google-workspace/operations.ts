@@ -144,6 +144,18 @@ export function isGoogleWorkspaceRecipient(host: string, port: number, path: str
   return port === 443 && googleOperationsAt({ host, path }).length > 0;
 }
 
+/** Only reviewed operations at this destination need to enter the runtime request policy. */
+export function googleWorkspaceDeliveryScopes(
+  recipient: Pick<GoogleRequestScope, "host" | "path">,
+  grantedScopes: readonly string[],
+): string[] {
+  const granted = new Set(grantedScopes);
+  const supported = new Set(
+    googleOperationsAt(recipient).flatMap(([, operation]) => operation.scopes),
+  );
+  return [...supported].filter((scope) => granted.has(scope));
+}
+
 export function eligibleGoogleOperations(scope: GoogleRequestScope) {
   return googleOperationsAt(scope).filter(([, op]) =>
     op.scopes.some((value) => scope.scopes.includes(value)),

@@ -4824,6 +4824,8 @@ export class OpenClawController {
           mode: current.mode,
           scopes: current.scopes,
           requiredScopes: current.observed?.requestedScopes ?? [],
+          offeredScopes:
+            current.observed?.resourceScopes ?? current.observed?.supportedScopes ?? [],
         }));
     });
   }

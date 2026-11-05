@@ -2396,7 +2396,7 @@ Connect an account and attach it to a saved Agent plugin slot
 | `expectedCredentialSourceId` | `string or null` | Yes | — |
 | `pluginId` | `string` | Yes | min length: 1; max length: 256 |
 | `releaseSha256` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
-| `selectedScopes` | `array<string>` | No | min items: 1; max items: 32 |
+| `selectedScopes` | `array<string>` | No | — |
 | `slotId` | `string` | Yes | min length: 1; max length: 128 |
 
 Example request
@@ -2588,6 +2588,7 @@ List compatible OAuth templates for a saved Agent plugin slot
 | `data[].displayName` | `string` | Yes | — |
 | `data[].id` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].mode` | `"manual" or "mcp_discovery"` | Yes | — |
+| `data[].offeredScopes` | `array<string>` | Yes | — |
 | `data[].requiredScopes` | `array<string>` | Yes | — |
 | `data[].scopes` | `array<string>` | Yes | — |
 | `data[].version` | `integer` | Yes | minimum: 1 |

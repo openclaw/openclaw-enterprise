@@ -13,7 +13,10 @@ import {
   validPluginCredentialNames,
 } from "./credential-environment.ts";
 import { exactDnsName } from "../credential-source-endpoint.ts";
-import { isGoogleWorkspaceRecipient } from "./google-workspace/operations.ts";
+import {
+  googleWorkspaceDeliveryScopes,
+  isGoogleWorkspaceRecipient,
+} from "./google-workspace/operations.ts";
 import { googleWorkspaceCredentialPolicy } from "./google-workspace/credential-policy.ts";
 import { Type } from "typebox";
 import { Check } from "typebox/value";
@@ -399,9 +402,6 @@ export function managedPluginAccountSlot(
     issuers: [slot.issuer],
     acceptsRecipient(target: PluginAccountTarget) {
       const { recipient, mcp } = target;
-      if (recipient.access !== "full") {
-        return false;
-      }
       if (install.kind === "mcp") {
         return (
           mcp?.serverUrl === install.url &&
@@ -418,12 +418,14 @@ export function managedPluginAccountSlot(
       );
     },
     delivery(target: PluginAccountTarget, grantedScopes: readonly string[]) {
-      const { host, port, path, access } = target.recipient;
+      const { host, port, path } = target.recipient;
       const config: Record<string, string> = {
         host,
         port: String(port),
         path,
-        access,
+        // Both reviewed senders use POST for protected requests. Each operation or tool
+        // remains subject to its plugin's request policy.
+        access: "full",
         env_var: slot.delivery.env,
         ...(slot.delivery.envAliases && { env_var_aliases: slot.delivery.envAliases.join(",") }),
         token_url: target.tokenUrl,
@@ -432,7 +434,10 @@ export function managedPluginAccountSlot(
       if (install.kind === "mcp") {
         config.protocol = "mcp";
       } else {
-        config.scope = grantedScopes.join(" ");
+        const scopes = googleWorkspaceDeliveryScopes(target.recipient, grantedScopes);
+        if (scopes.length) {
+          config.scope = scopes.join(" ");
+        }
       }
       return { type: install.kind === "mcp" ? "bearer-token" : "oauth2-refresh-token", config };
     },

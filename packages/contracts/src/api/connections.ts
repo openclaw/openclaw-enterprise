@@ -77,13 +77,7 @@ export const StartPluginConnectionBody = Type.Object(
     pluginId: PluginId,
     slotId: SlotId,
     releaseSha256: Type.String({ pattern: "^[a-f0-9]{64}$" }),
-    selectedScopes: Type.Optional(
-      Type.Array(Type.String({ minLength: 1, maxLength: 256 }), {
-        minItems: 1,
-        maxItems: 32,
-        uniqueItems: true,
-      }),
-    ),
+    selectedScopes: Type.Optional(Type.Array(OAuthScope, { uniqueItems: true })),
     expectedCredentialSourceId: Type.Union([CredentialSourceId, Type.Null()]),
   },
   { additionalProperties: false },
@@ -99,6 +93,7 @@ export const PluginTemplateChoicesResponse = Type.Object(
           mode: Type.Union([Type.Literal("manual"), Type.Literal("mcp_discovery")]),
           scopes: Type.Array(Type.String()),
           requiredScopes: Type.Array(Type.String()),
+          offeredScopes: Type.Array(Type.String()),
         },
         { additionalProperties: false },
       ),

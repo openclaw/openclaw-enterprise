@@ -9,6 +9,7 @@ export interface SlotTemplate {
   mode: "manual" | "mcp_discovery";
   scopes: readonly string[];
   requiredScopes: readonly string[];
+  offeredScopes: readonly string[];
 }
 
 export interface SlotConnection {
@@ -19,6 +20,72 @@ export interface SlotConnection {
     template: SlotTemplate,
     selectedScopes?: readonly string[],
   ): Promise<void>;
+}
+
+function consentScopes(template: SlotTemplate, setSelection: (scopes: string[] | null) => void) {
+  const unrestricted = template.scopes.length === 0;
+  const fieldset = element(
+    "fieldset",
+    { className: "stack" },
+    element("legend", {}, "Permissions for this connection"),
+  );
+  const suggestions = unrestricted ? template.offeredScopes : template.scopes;
+  const choices = [...new Set([...template.requiredScopes, ...suggestions])].map((scope) => {
+    const required = template.requiredScopes.includes(scope);
+    const input = element("input", { type: "checkbox", value: scope });
+    input.checked = input.disabled = required;
+    fieldset.append(
+      element(
+        "label",
+        { className: "plugin-toggle" },
+        input,
+        required ? `${scope} (required)` : scope,
+      ),
+    );
+    return input;
+  });
+  const extra = unrestricted
+    ? element("input", {
+        type: "text",
+        spellcheck: false,
+        autocapitalize: "none",
+        autocomplete: "off",
+      })
+    : null;
+  const problem = element("p", { className: "hint", role: "status" });
+  if (extra) {
+    fieldset.append(
+      element("label", { className: "plugin-control" }, "Additional scopes", extra),
+      element("p", { className: "hint" }, "Separate scope names with spaces."),
+      problem,
+    );
+    if (template.requiredScopes.length === 0) {
+      fieldset.append(
+        element("p", { className: "hint" }, "Leave all scopes empty to use the provider defaults."),
+      );
+    }
+  }
+  function update() {
+    const checked = choices.filter((input) => input.checked).map((input) => input.value);
+    const added = extra?.value.trim().split(/\s+/).filter(Boolean) ?? [];
+    const invalid = added.some(
+      (scope) => scope.length > 512 || !/^[\x21\x23-\x5b\x5d-\x7e]+$/.test(scope),
+    );
+    const message = invalid
+      ? "Use printable ASCII scope names of up to 512 characters, without double quotes or backslashes."
+      : "";
+    if (extra) {
+      extra.setCustomValidity(message);
+      extra.setAttribute("aria-invalid", String(invalid));
+      problem.textContent = message;
+      problem.hidden = !message;
+    }
+    const selected = [...new Set([...checked, ...added])];
+    setSelection(invalid || (!unrestricted && !selected.length) ? null : selected);
+  }
+  fieldset.addEventListener("input", update);
+  update();
+  return fieldset;
 }
 
 export function pluginConnectionControl(
@@ -88,14 +155,13 @@ export function pluginConnectionControl(
         element("option", { value: "" }, "Choose a template"),
         ...templates.map((item) => element("option", { value: item.id }, item.displayName)),
       );
-      const scopeChoices = element("fieldset", { className: "stack" });
-      scopeChoices.hidden = true;
-      let selectedScopes: string[] | undefined;
+      const scopeChoices = element("div");
+      let selectedScopes: string[] | null | undefined;
       const consent = button(
         currentName ? "Authorize and replace account" : "Connect and attach",
         () => {
           const template = templates.find((item) => item.id === picker.value);
-          if (template && available() && (!selectedScopes || selectedScopes.length > 0)) {
+          if (template && available() && selectedScopes !== null) {
             void start(template, consent, selectedScopes);
           }
         },
@@ -105,32 +171,15 @@ export function pluginConnectionControl(
       picker.addEventListener("change", () => {
         const template = templates.find((item) => item.id === picker.value);
         scopeChoices.replaceChildren();
-        scopeChoices.hidden = template?.mode !== "mcp_discovery";
         selectedScopes = undefined;
         consent.disabled = !template;
-        if (template?.mode === "mcp_discovery") {
-          scopeChoices.append(element("legend", {}, "Permissions for this connection"));
-          const choices = template.scopes.map((scope) => {
-            const required = template.requiredScopes.includes(scope);
-            const input = element("input", { type: "checkbox", value: scope });
-            input.checked = required;
-            input.disabled = required;
-            scopeChoices.append(
-              element(
-                "label",
-                { className: "plugin-toggle" },
-                input,
-                required ? `${scope} (required)` : scope,
-              ),
-            );
-            return input;
-          });
-          const updateScopes = () => {
-            selectedScopes = choices.filter((input) => input.checked).map((input) => input.value);
-            consent.disabled = selectedScopes.length === 0;
-          };
-          scopeChoices.onchange = updateScopes;
-          updateScopes();
+        if (template && (template.mode === "mcp_discovery" || template.scopes.length === 0)) {
+          scopeChoices.append(
+            consentScopes(template, (scopes) => {
+              selectedScopes = scopes;
+              consent.disabled = scopes === null;
+            }),
+          );
         }
       });
       open.hidden = true;

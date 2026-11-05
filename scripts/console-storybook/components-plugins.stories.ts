@@ -29,3 +29,5 @@ export const ConnectionTemplatesLoading = story("pluginConnectLoading");
 
 export const NamedSlotAccounts = story("namedSlotAccounts");
 export const AuthorizeForAnotherServer = story("namedSlotAuthorize");
+
+export const UnrestrictedConnectionScopes = story("unrestrictedSlotScopes");

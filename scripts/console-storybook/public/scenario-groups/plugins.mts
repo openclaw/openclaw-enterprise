@@ -44,7 +44,8 @@ type PluginScenario = {
 const pluginPreviewGap =
   "Catalog entries, local placeholder logos, and Driver capabilities are passed directly to the production component as Storybook fixtures. These previews do not verify PAT access, plugin availability, or runtime policy enforcement.";
 
-type ConnectionPreview = "choose" | "bound" | "empty" | "denied" | "loading" | "named";
+type ConnectionPreview =
+  "choose" | "bound" | "empty" | "denied" | "loading" | "named" | "unrestricted";
 
 function googleSlotStory(preview: ConnectionPreview) {
   const pluginId = "occ-plugin:google@1.0.0";
@@ -188,6 +189,18 @@ export const pluginsScenarios = {
     ...namedSlotScenario,
     name: "Authorize a saved account for this server",
     actions: [...namedSlotScenario.actions, click("Authorize for this server")],
+  },
+  unrestrictedSlotScopes: {
+    ...namedSlotScenario,
+    name: "Choose OAuth scopes without a template limit",
+    connectionPreview: "unrestricted",
+    actions: [...namedSlotScenario.actions, click("Authorize for this server")],
+    description:
+      "Review required and suggested permissions for the Support account. An unrestricted template also accepts additional scope names.",
+    steps: [
+      "Select Support MCP. Keep the required read permission, leave the optional write permission unchecked, and enter another scope. Connect and attach shows the selected scopes at the simulated provider handoff.",
+      "Reset and choose Support OAuth. Connect with the Additional scopes field empty to request provider defaults.",
+    ],
   },
   pluginConnectChoose: googleSlotStory("choose"),
   pluginConnectBound: googleSlotStory("bound"),

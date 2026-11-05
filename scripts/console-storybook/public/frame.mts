@@ -134,6 +134,29 @@ if (scenario.component === "plugins") {
                 mode: "mcp_discovery",
                 scopes: ["messages.read", "messages.write"],
                 requiredScopes: ["messages.read"],
+                offeredScopes: ["messages.read", "messages.write"],
+              },
+            ];
+          }
+          if (scenario.connectionPreview === "unrestricted") {
+            return [
+              {
+                id: "discovered-open",
+                displayName: "Support MCP",
+                version: 1,
+                mode: "mcp_discovery",
+                scopes: [],
+                requiredScopes: ["messages.read"],
+                offeredScopes: ["messages.read", "messages.write"],
+              },
+              {
+                id: "manual-open",
+                displayName: "Support OAuth",
+                version: 1,
+                mode: "manual",
+                scopes: [],
+                requiredScopes: [],
+                offeredScopes: [],
               },
             ];
           }
@@ -148,6 +171,7 @@ if (scenario.component === "plugins") {
               mode: "manual",
               scopes: ["gmail.readonly"],
               requiredScopes: [],
+              offeredScopes: [],
             },
             {
               id: "second",
@@ -156,6 +180,7 @@ if (scenario.component === "plugins") {
               mode: "manual",
               scopes: ["gmail.readonly"],
               requiredScopes: [],
+              offeredScopes: [],
             },
           ];
         },
@@ -169,7 +194,9 @@ if (scenario.component === "plugins") {
           receipt.append(output);
           if (selectedScopes) {
             const permissions = document.createElement("p");
-            permissions.textContent = `Requested scopes: ${selectedScopes.join(", ")}`;
+            permissions.textContent = selectedScopes.length
+              ? `Requested scopes: ${selectedScopes.join(", ")}`
+              : "Provider defaults requested.";
             receipt.append(permissions);
           }
           document.getElementById("app")?.replaceChildren(receipt);

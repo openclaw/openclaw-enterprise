@@ -1186,3 +1186,74 @@ test("plugin prefetch remains usable after leaving during its debounce", async (
     initialSelections,
   );
 });
+
+test("an unrestricted plugin connection requests only required or explicitly chosen OAuth scopes", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, "/console");
+  await page.locator(settledView).waitFor();
+
+  // Mount the served picker with a discovered template and a manual one, recording its
+  // consent request before the provider redirect. The integration lane exercises the issuer.
+  await page.evaluate(async () => {
+    const path = "/console/agents/plugin-connection.mjs";
+    const { pluginConnectionControl } = (await import(
+      path
+    )) as typeof import("../../apps/controller/src/console/agents/plugin-connection.mjs");
+    const output = document.createElement("output");
+    output.id = "chosen-scopes";
+    const slot = {
+      id: "support",
+      pluginId: "occ-plugin:support@1.0.0",
+      releaseSha256: "0".repeat(64),
+      label: "Support account",
+      sources: [],
+    };
+    const picker = pluginConnectionControl(slot, {
+      unavailable: () => undefined,
+      async list() {
+        return [
+          {
+            id: "mcp",
+            displayName: "Support MCP",
+            version: 1,
+            mode: "mcp_discovery",
+            scopes: [],
+            offeredScopes: ["read", "write"],
+            requiredScopes: ["read"],
+          },
+          {
+            id: "manual",
+            displayName: "Support OAuth",
+            version: 1,
+            mode: "manual",
+            scopes: [],
+            offeredScopes: [],
+            requiredScopes: [],
+          },
+        ];
+      },
+      async start(_slot, _template, selected) {
+        output.value = JSON.stringify(selected);
+      },
+    });
+    document.body.replaceChildren(picker, output);
+  });
+  await page.getByRole("button", { name: "Choose a connection template" }).click();
+  const template = page.getByRole("combobox", { name: "Connection template for Support account" });
+  await template.selectOption("mcp");
+  const required = page.getByRole("checkbox", { name: "read (required)" });
+  assert.ok((await required.isDisabled()) && (await required.isChecked()));
+  assert.equal(await page.getByRole("checkbox", { name: "write" }).isChecked(), false);
+  const extra = page.getByLabel("Additional scopes");
+  const connect = page.getByRole("button", { name: "Connect and attach" });
+  await extra.fill('bad"scope');
+  assert.equal(await connect.isEnabled(), false);
+  await extra.fill("archive read archive");
+  await connect.click();
+  assert.equal(await page.locator("#chosen-scopes").textContent(), '["read","archive"]');
+  await template.selectOption("manual");
+  await connect.click();
+  assert.equal(await page.locator("#chosen-scopes").textContent(), "[]");
+});

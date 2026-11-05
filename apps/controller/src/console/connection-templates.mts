@@ -2,30 +2,23 @@ import type {
   ConnectionTemplate,
   McpAuthorizationMetadata,
   Namespace,
-  OAuthClient,
 } from "@openclaw-enterprise/contracts";
 import { refusedAsNonAdministrator, requestFailure } from "./api-client.mjs";
+import {
+  availabilitySelect,
+  availabilityNamespace,
+  oauthClientRegistration,
+  oauthClients,
+  oauthFailure as failure,
+  type PublicClient,
+} from "./oauth-clients.mjs";
 import { button, element, field, validateFields } from "./dom.mjs";
+import { googleOAuthProvider } from "./oauth-providers.mjs";
 import type { ConsolePageContext } from "./page-context.mjs";
 
 type Context = Pick<ConsolePageContext, "request" | "isCurrent">;
-const installationWide = "installation-wide";
-
-type PublicClient = Omit<OAuthClient, "credentialRefreshDriverId">;
-
 function option(value: string, label: string) {
   return element("option", { value }, label);
-}
-
-function failure(cause: unknown, operation: string) {
-  const { status, serverMessage } = requestFailure(cause);
-  if (status === 403) {
-    return "Your access does not include this Installation operation.";
-  }
-  if (status === 400 || status === 409) {
-    return serverMessage || "OCC refused these values. Review the form and try again.";
-  }
-  return `Could not confirm ${operation}. Refresh the catalog before trying again.`;
 }
 
 export function renderConnectionTemplates(
@@ -64,17 +57,27 @@ export function renderConnectionTemplates(
     try {
       const [templates, available] = await Promise.all([
         context.request("/connection-templates", { installationAdministration: "required" }),
-        context.request("/oauth-clients", {
-          installationAdministration: "required",
-          includeMeta: true,
-        }),
+        oauthClients(context),
       ]);
       if (!context.isCurrent()) {
         return;
       }
-      const clientList = available as { data: PublicClient[]; meta?: { redirectUri?: string } };
+      const clientList = available;
       clients = clientList.data;
       redirectUri = clientList.meta?.redirectUri;
+      catalog.append(
+        element(
+          "section",
+          { className: "connection-template-row" },
+          element("h3", {}, googleOAuthProvider.displayName),
+          element(
+            "p",
+            { className: "hint" },
+            "Built-in template · Use your own Google OAuth client.",
+          ),
+          button("Set up Google OAuth", () => edit(undefined, googleOAuthProvider), { size: "sm" }),
+        ),
+      );
       for (const template of templates as ConnectionTemplate[]) {
         const scope = template.namespaceId
           ? `Namespace · ${namespaces.find((item) => item.id === template.namespaceId)?.name ?? template.namespaceId}`
@@ -96,9 +99,7 @@ export function renderConnectionTemplates(
       }
       notice.textContent =
         saved ||
-        ((templates as ConnectionTemplate[]).length
-          ? ""
-          : "No connection templates have been created.");
+        ((templates as ConnectionTemplate[]).length ? "" : "No saved connection templates.");
       create.disabled = false;
     } catch (cause) {
       if (!context.isCurrent()) {
@@ -113,8 +114,9 @@ export function renderConnectionTemplates(
     }
   }
 
-  function edit(template?: ConnectionTemplate) {
+  function edit(template?: ConnectionTemplate, preset?: typeof googleOAuthProvider) {
     const version = template?.current;
+    const initialProvider = version ?? preset;
     const dialog = element("dialog", {
       className: "dialog dialog--framed connection-template-dialog",
       "aria-label": template ? "Edit connection template" : "Create connection template",
@@ -122,22 +124,9 @@ export function renderConnectionTemplates(
     const name = element("input", {
       required: true,
       maxLength: 200,
-      value: template?.displayName ?? "",
+      value: template?.displayName ?? preset?.displayName ?? "",
     });
-    const scope = element(
-      "select",
-      { disabled: !!template, required: true },
-      element("option", { value: "", disabled: true }, "Choose availability"),
-      option(installationWide, "Installation-wide"),
-      ...namespaces.map((item) => option(item.id, `Namespace · ${item.name}`)),
-    );
-    if (template?.namespaceId && !namespaces.some((item) => item.id === template.namespaceId)) {
-      scope.append(option(template.namespaceId, template.namespaceId));
-    }
-    scope.value = template
-      ? (template.namespaceId ?? installationWide)
-      : (namespaces.find((item) => item.id === currentNamespace)?.id ?? "");
-    const selectedNamespaceId = () => (scope.value === installationWide ? undefined : scope.value);
+    const scope = availabilitySelect(namespaces, currentNamespace, template);
     const mode = element(
       "select",
       { id: "connection-template-mode" },
@@ -145,18 +134,25 @@ export function renderConnectionTemplates(
       option("mcp_discovery", "Discover from an MCP server URL"),
     );
     mode.value = version?.mode ?? "manual";
-    const issuer = element("input", { type: "url", required: true, value: version?.issuer ?? "" });
+    const issuer = element("input", {
+      type: "url",
+      required: true,
+      value: initialProvider?.issuer ?? "",
+    });
     const authorizationUrl = element("input", {
       type: "url",
       required: true,
-      value: version?.authorizationUrl ?? "",
+      value: initialProvider?.authorizationUrl ?? "",
     });
     const tokenUrl = element("input", {
       type: "url",
       required: true,
-      value: version?.tokenUrl ?? "",
+      value: initialProvider?.tokenUrl ?? "",
     });
-    const revocationUrl = element("input", { type: "url", value: version?.revocationUrl ?? "" });
+    const revocationUrl = element("input", {
+      type: "url",
+      value: initialProvider?.revocationUrl ?? "",
+    });
     const host = element("input", { required: true, value: version?.recipient.host ?? "" });
     const port = element("input", {
       type: "number",
@@ -223,49 +219,33 @@ export function renderConnectionTemplates(
     scopeLimit.addEventListener("change", showScopeLimit);
     showScopeLimit();
     const parameters = element("textarea", { rows: 2 });
-    parameters.value = Object.entries(version?.authorizationParameters ?? {})
+    parameters.value = Object.entries(initialProvider?.authorizationParameters ?? {})
       .map(([key, value]) => `${key}=${value}`)
       .join("\n");
     const client = element("select");
-    const clientName = element("input", { required: true });
-    const clientId = element("input", { required: true, autocomplete: "off" });
-    const method = element(
-      "select",
-      {},
-      option("client_secret_basic", "Client secret in Authorization header"),
-      option("client_secret_post", "Client secret in request body"),
-      option("none", "Public client (no secret)"),
-    );
-    const secret = element("input", {
-      type: "password",
-      required: true,
-      autocomplete: "new-password",
-    });
-    const secretField = field({ label: "Client secret", control: secret });
-    const register = button("Register OAuth client", () => void registerClient(), { size: "sm" });
+    const status = element("p", { className: "hint", role: "status" });
     const registerPanel = element(
       "details",
       {},
       element("summary", {}, "Register a new OAuth client"),
-      element(
-        "p",
-        { className: "hint" },
-        "Create the OAuth client with the provider first, then enter the client details it issued.",
-      ),
-      redirectUri
-        ? field({
-            label: "Redirect URI",
-            control: element("input", { readonly: true, value: redirectUri }),
-            help: "Register this URI with the provider before using its client.",
-          })
-        : null,
-      field({ label: "OAuth client name", control: clientName }),
-      field({ label: "Provider client ID", control: clientId }),
-      field({ label: "Client authentication", control: method }),
-      secretField,
-      register,
+      oauthClientRegistration(context, {
+        scope,
+        dialog,
+        provider,
+        redirectUri,
+        status,
+        setBusy(pending, unconfirmed) {
+          uncertain ||= unconfirmed;
+          setBusy(pending);
+        },
+        onCreated(created) {
+          clients.push(created);
+          clientChoices(created.id);
+          registerPanel.open = false;
+          status.textContent = `Registered ${created.displayName}. Save the template to associate this client.`;
+        },
+      }).form,
     );
-    const status = element("p", { className: "hint", role: "status" });
     const save = button(template ? "Save new version" : "Create template", () => void submit(), {
       tone: "primary",
     });
@@ -307,7 +287,6 @@ export function renderConnectionTemplates(
     );
     section.append(dialog);
     dialog.addEventListener("close", () => {
-      secret.value = "";
       dialog.remove();
       if (uncertain) {
         void refresh();
@@ -428,62 +407,6 @@ export function renderConnectionTemplates(
         event.preventDefault();
       }
     });
-    async function registerClient() {
-      if (busy || !validateFields([scope])) {
-        return;
-      }
-      const oauth = provider();
-      if (!oauth?.issuer || !oauth.tokenUrl) {
-        status.textContent = "Enter or discover the OAuth provider before registering its client.";
-        return;
-      }
-      if (!validateFields([clientName, clientId, ...(method.value !== "none" ? [secret] : [])])) {
-        return;
-      }
-      setBusy(true);
-      status.textContent = "Registering OAuth client…";
-      try {
-        const created = (await context.request("/oauth-clients", {
-          method: "POST",
-          expectedStatus: 201,
-          body: {
-            displayName: clientName.value.trim(),
-            namespaceId: selectedNamespaceId(),
-            issuer: oauth.issuer,
-            tokenUrl: oauth.tokenUrl,
-            ...(oauth.revocationUrl && { revocationUrl: oauth.revocationUrl }),
-            clientId: clientId.value.trim(),
-            tokenEndpointAuthMethod: method.value,
-            ...(method.value !== "none" && { clientSecret: secret.value }),
-          },
-        })) as PublicClient;
-        if (!context.isCurrent() || !dialog.open) {
-          return;
-        }
-        if (
-          !created.id ||
-          created.issuer !== oauth.issuer ||
-          created.tokenUrl !== oauth.tokenUrl ||
-          created.clientId !== clientId.value.trim() ||
-          created.namespaceId !== selectedNamespaceId()
-        ) {
-          throw Error("Unconfirmed OAuth client");
-        }
-        clients.push(created);
-        clientChoices(created.id);
-        registerPanel.open = false;
-        status.textContent = `Registered ${created.displayName}. Save the template to associate this client.`;
-      } catch (cause) {
-        const code = requestFailure(cause).status;
-        uncertain = code === undefined || code >= 500 || code === 408;
-        if (dialog.open) {
-          status.textContent = failure(cause, "OAuth client registration");
-        }
-      } finally {
-        secret.value = "";
-        setBusy(false);
-      }
-    }
     async function submit() {
       if (
         busy ||
@@ -515,7 +438,7 @@ export function renderConnectionTemplates(
         scopeLimit.value === "restricted" ? [...new Set(scopes.value.trim().split(/\s+/))] : [];
       const body = {
         displayName: name.value.trim(),
-        ...(!template && { namespaceId: selectedNamespaceId() }),
+        ...(!template && { namespaceId: availabilityNamespace(scope) }),
         ...(client.value && { oauthClientId: client.value }),
         scopes: approved,
         authorizationParameters,
@@ -584,10 +507,6 @@ export function renderConnectionTemplates(
     for (const control of [issuer, tokenUrl, revocationUrl, scope]) {
       control.addEventListener("input", () => clientChoices());
     }
-    method.addEventListener("change", () => {
-      secretField.hidden = secret.disabled = method.value === "none";
-      secret.value = "";
-    });
     showMode();
     clientChoices(version?.oauthClientId);
     dialog.showModal();

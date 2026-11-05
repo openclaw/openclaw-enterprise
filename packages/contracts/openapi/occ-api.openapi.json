@@ -21948,9 +21948,12 @@
                   "pluginId": { "maxLength": 256, "minLength": 1, "type": "string" },
                   "releaseSha256": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
                   "selectedScopes": {
-                    "items": { "maxLength": 256, "minLength": 1, "type": "string" },
-                    "maxItems": 32,
-                    "minItems": 1,
+                    "items": {
+                      "maxLength": 512,
+                      "minLength": 1,
+                      "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
+                      "type": "string"
+                    },
                     "type": "array",
                     "uniqueItems": true
                   },
@@ -28709,6 +28712,7 @@
                               { "const": "mcp_discovery", "type": "string" }
                             ]
                           },
+                          "offeredScopes": { "items": { "type": "string" }, "type": "array" },
                           "requiredScopes": { "items": { "type": "string" }, "type": "array" },
                           "scopes": { "items": { "type": "string" }, "type": "array" },
                           "version": { "minimum": 1, "type": "integer" }
@@ -28719,7 +28723,8 @@
                           "version",
                           "mode",
                           "scopes",
-                          "requiredScopes"
+                          "requiredScopes",
+                          "offeredScopes"
                         ],
                         "type": "object"
                       },

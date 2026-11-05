@@ -8,6 +8,8 @@ In Console, open **Credentials → Connection templates**. Choose **Create conne
 
 Use `POST /oauth-clients` to register a provider client ID and its token endpoint authentication method. A public client uses `none`. Confidential clients use `client_secret_basic` or `client_secret_post` and require a write-only client secret. The selected Refresh Driver stores each confidential secret. OCC records the owning Driver ID and its private handle so that rotation uses the same store. The API rejects `private_key_jwt`; this integration supports client secrets and public clients. Register the callback URI returned in the response metadata with the provider.
 
+To register a client independently, open **Credentials → OAuth clients → Register OAuth client**. Choose availability, then select **Google** or enter the provider's issuer and endpoints. Register the displayed redirect URI with the provider and enter the client ID and authentication method it issued. For a confidential client, enter its secret. The catalog shows the client's issuer, availability and authentication method. You can then select it in a connection template.
+
 List clients with `GET /oauth-clients`. Use `POST /oauth-clients/{oauthClientId}/rotate-secret` to replace the current secret. OCC replaces the secret at the same private reference. New code exchanges and later refreshes for existing accounts use the current secret. If the response is lost, retry with the same secret. Use `DELETE /oauth-clients/{oauthClientId}` after deleting the templates whose versions reference the client.
 
 When starting consent for an MCP template, send the nonempty `selectedScopes` the account owner chose. The choice must come from the approved version and include each scope in its resource challenge. Configured manual OAuth uses its fixed scopes. OCC keeps the selection with the private attempt and records it with the resulting grant.
@@ -15,6 +17,8 @@ When starting consent for an MCP template, send the nonempty `selectedScopes` th
 ## Create a template
 
 In **Credentials → Connection templates → Create connection template**, **Template availability** starts with the current readable Namespace. If there is none, choose availability before registering a client or saving the template. Choose **Installation-wide** to share the template across Namespaces. Availability is fixed after creation.
+
+Choose **Set up Google OAuth** to start with Google’s published issuer and OAuth endpoints. Select the API destination, scope limit, and your registered Google client. Saving creates a template with the availability you selected. Google connections request offline access so the Token Service can refresh the account after consent.
 
 A new template starts with **Limit to approved scopes**. Enter the scopes callers may request, or select **No template limit**. In the API, `scopes: []` selects the latter. There is no scope-count limit. Required MCP scopes still apply at consent.
 

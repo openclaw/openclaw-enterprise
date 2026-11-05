@@ -10,6 +10,7 @@ import type {
   LeaveGuard,
   TabNavigation,
 } from "./page-context.mjs";
+import { renderOAuthClients } from "./oauth-clients.mjs";
 import { renderConnectionTemplates } from "./connection-templates.mjs";
 import { renderInstallationConfigurations } from "./driver-configurations.mjs";
 import {
@@ -41,7 +42,12 @@ import {
   type RequestOptions,
 } from "./api-client.mjs";
 import { createViewLifetime } from "./view-lifetime.mjs";
-import { connectionTemplatesPage, createNavigation, pages } from "./navigation.mjs";
+import {
+  connectionTemplatesPage,
+  oauthClientsPage,
+  createNavigation,
+  pages,
+} from "./navigation.mjs";
 import {
   brandContents,
   createShell,
@@ -2340,7 +2346,7 @@ async function loadPage({
     if (shell.diagnostics) {
       attachDiagnostics(shell.diagnostics);
     }
-    if (current.feature === connectionTemplatesPage) {
+    if (current.feature === connectionTemplatesPage || current.feature === oauthClientsPage) {
       // Re-enter with current administrator access and a fresh editor on history navigation.
       viewState.reusable = false;
       const view = shell.view;
@@ -2348,16 +2354,16 @@ async function loadPage({
         panel(
           view,
           "Installation administrator access required",
-          "Installation administrators manage connection templates.",
+          current.feature === oauthClientsPage
+            ? "Installation administrators manage OAuth clients."
+            : "Installation administrators manage connection templates.",
         );
       if (installationAdmin) {
         viewState.administrationEnded.add(showRequiredAccess);
+        const render =
+          current.feature === oauthClientsPage ? renderOAuthClients : renderConnectionTemplates;
         view.append(
-          renderConnectionTemplates(
-            { request: viewRequest, isCurrent: viewIsCurrent },
-            namespaces,
-            selectedNamespace,
-          ),
+          render({ request: viewRequest, isCurrent: viewIsCurrent }, namespaces, selectedNamespace),
         );
       } else if (installationAdmin === false) {
         showRequiredAccess();
