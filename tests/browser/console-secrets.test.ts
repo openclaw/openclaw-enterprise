@@ -127,7 +127,12 @@ test("a template needs an explicit availability when the administrator has no Na
   await editor.getByLabel("Issuer URL", { exact: true }).fill("https://identity.example.test");
   await editor.getByLabel("Authorization URL").fill("https://identity.example.test/authorize");
   await editor.getByLabel("Token URL").fill("https://identity.example.test/token");
-  await editor.getByLabel("Destination host").fill("tools.example.test");
+  await editor.getByRole("textbox", { name: "Host", exact: true }).fill("tools.example.test");
+  await editor.getByRole("button", { name: "Add destination" }).click();
+  const archive = editor.getByRole("row").last();
+  await archive.getByLabel("Host", { exact: true }).fill("archive.example.test");
+  await archive.getByLabel("Port", { exact: true }).fill("8443");
+  await archive.getByLabel("Path", { exact: true }).fill("/reports/**");
   await editor.getByLabel("Approved OAuth scopes").fill("tools.read");
   const register = editor.getByRole("button", {
     name: "Create template and register OAuth client",
@@ -159,6 +164,10 @@ test("a template needs an explicit availability when the administrator has no Na
   assert.equal(response.status(), 201, await response.text());
   const template = (await response.json()).data;
   assert.deepEqual(template.current.scopes, []);
+  assert.deepEqual(template.current.destinations, [
+    { host: "archive.example.test", port: 8443, path: "/reports/**" },
+    { host: "tools.example.test", port: 443, path: "/**" },
+  ]);
   assert.equal(template.namespaceId, undefined);
   const registration = dialog(page, "Register OAuth client");
   assert.equal(
@@ -223,15 +232,34 @@ test("registering a provider-issued client uses a saved or newly created templat
   const editor = dialog(page, "Create connection template");
   await editor.getByRole("button", { name: "Use Google OAuth settings" }).click();
   assert.equal(await editor.getByLabel("Template availability").inputValue(), namespace.id);
-  assert.equal(await editor.getByLabel("API destination").inputValue(), "google_apis");
-  assert.equal(await editor.getByLabel("Destination host").isVisible(), false);
+  // The Google starter proposes concrete reviewed routes. Remove Gmail before saving so a
+  // later use of the starter or a catalog update cannot reintroduce it in this version.
+  const table = editor.getByRole("table", { name: "HTTPS destinations" });
+  const gmail = table
+    .getByRole("row")
+    .filter({ has: page.locator('input[value="gmail.googleapis.com"]') });
+  await gmail.getByRole("button", { name: "Remove destination" }).click();
   await editor.getByLabel("OAuth scope limit").selectOption({ label: "No template limit" });
   const posted = responseTo(page, "POST", fixture.origin + "/connection-templates");
   await editor.getByRole("button", { name: "Create template", exact: true }).click();
   const result = await posted;
   assert.equal(result.status(), 201, await result.text());
   const template = (await result.json()).data;
-  assert.deepEqual(template.current.recipient, { kind: "google_apis" });
+  const savedDestinations: { host: string; path: string }[] = template.current.destinations;
+  assert.equal(
+    savedDestinations.some(({ host }) => host === "gmail.googleapis.com"),
+    false,
+  );
+  assert.ok(
+    savedDestinations.some(
+      ({ host, path }) => host === "www.googleapis.com" && path === "/calendar/**",
+    ),
+  );
+  assert.ok(
+    savedDestinations.some(
+      ({ host, path }) => host === "www.googleapis.com" && path === "/drive/**",
+    ),
+  );
   assert.equal(template.current.oauthClientId, undefined);
   await form.getByLabel("Client ID", { exact: true }).waitFor();
   assert.equal(await templateChoice.inputValue(), template.id);

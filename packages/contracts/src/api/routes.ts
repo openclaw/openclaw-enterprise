@@ -18,6 +18,7 @@ import {
   ConnectionStartResponse,
   SavedConnectionListResponse,
   StartNamespaceConnectionBody,
+  UsableConnectionTemplatesResponse,
 } from "./connections.ts";
 import {
   ConnectionTemplateListResponse,
@@ -1065,7 +1066,7 @@ export const occApiRoutes = [
     schema: {
       querystring: EmptyQuery,
       params: NamespaceParams,
-      response: { 200: ConnectionTemplateListResponse, ...readErrors },
+      response: { 200: UsableConnectionTemplatesResponse, ...readErrors },
     },
   },
   {

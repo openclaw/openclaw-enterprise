@@ -11,7 +11,6 @@ import { validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.t
 import { PostgresHumanAuthentication } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
 import { keycloakRealmAdmin, rotateKeycloakClientSecret } from "../helpers/ci-keycloak-realm.mjs";
-import { connectFixtureGoogleAccount } from "../helpers/google-api-saved-account.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import { selectTemplateDrivers } from "../helpers/connection-template-drivers.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
@@ -105,7 +104,7 @@ test(
     });
 
     // The real Token Service and OpenShell Drivers run against recording Secret/OpenShell stores.
-    // Keycloak issues real tokens for this issuer. A separate Google case controls only the token endpoint.
+    // Keycloak issues real tokens for the saved accounts.
     const secretDriver = { ...createTestSecretDriver(), capability: "secret" as const };
     const preparedTokens = new TokenService(
       new OAuthConnectionTokens(secretDriver, refreshPinnedOAuthGrant),
@@ -174,18 +173,22 @@ test(
     const base = `/namespaces/${namespaceId}`;
     const connections = `${base}/connections`;
     const recipient = { host: "api.connections.test", port: 443, path: "/mcp" };
+    const manualDestinations = [
+      recipient,
+      { host: "files.connections.test", port: 443, path: "/exports/**" },
+    ];
     const manualConfig = {
       mode: "manual",
-      displayName: "Keycloak",
-      namespaceId,
       issuer,
       authorizationUrl: `${issuer}/protocol/openid-connect/auth`,
       tokenUrl,
-      recipient,
+      destinations: manualDestinations,
       scopes: ["openid"],
     };
     const template = await inject("POST", "/connection-templates", {
       ...manualConfig,
+      namespaceId,
+      displayName: "Keycloak",
       revocationUrl: `${issuer}/protocol/openid-connect/revoke`,
     });
     assert.equal(template.statusCode, 201, template.body);
@@ -281,6 +284,7 @@ test(
     // as a provider grant while preserving that the person did not request an explicit scope.
     const unrestrictedManual = await inject("POST", "/connection-templates", {
       ...manualConfig,
+      namespaceId,
       oauthClientId,
       scopes: [],
       displayName: "Provider defaults",
@@ -304,6 +308,7 @@ test(
     assert.equal(defaults.statusCode, 201, defaults.body);
     const defaultsUrl = defaults.json().data.authorizationUrl;
     assert.equal(new URL(defaultsUrl).searchParams.has("scope"), false);
+    assert.equal(new URL(defaultsUrl).searchParams.has("resource"), false);
     const defaultCallback = await owner(
       "GET",
       await consentRedirect(defaultsUrl, secrets.users.alice.password),
@@ -318,6 +323,41 @@ test(
       );
     assert.deepEqual(defaultAccount.requestedScopes, []);
     assert.deepEqual(defaultAccount.grantedScopes, ["profile"]);
+    assert.deepEqual(defaultAccount.destinations, manualDestinations);
+    // New destinations require new consent. The pinned version also rejects a forged wider receipt.
+    const widened = [
+      ...manualDestinations,
+      { host: "other.connections.test", port: 443, path: "/**" },
+    ];
+    const updated = await inject(
+      "PATCH",
+      "/connection-templates/" + defaultAccount.connectionTemplateId,
+      {
+        ...manualConfig,
+        oauthClientId,
+        scopes: [],
+        destinations: widened,
+      },
+    );
+    assert.equal(updated.statusCode, 200, updated.body);
+    assert.deepEqual(updated.json().data.current.destinations, widened);
+    const savedAgain = await owner("GET", connections);
+    assert.equal(savedAgain.statusCode, 200, savedAgain.body);
+    const approved = savedAgain
+      .json()
+      .data.find((row: { credentialSourceId: string }) => row.credentialSourceId === defaultsId);
+    assert.deepEqual(approved.destinations, manualDestinations);
+    assert.ok(approved.connectionTemplateVersion < updated.json().data.current.version);
+    await assert.rejects(
+      pool.query(
+        `INSERT INTO occ.saved_connections
+         SELECT (jsonb_populate_record(NULL::occ.saved_connections,
+           to_jsonb(s) || jsonb_build_object('destinations', $2::jsonb))).*
+         FROM occ.saved_connections s WHERE credential_source_id = $1`,
+        [defaultsId, JSON.stringify(widened)],
+      ),
+      { code: "23514", message: /approved template version/ },
+    );
     await keycloakRealmAdmin(issuer, secrets.admin, "DELETE", defaultPath);
     const disconnected = await owner("DELETE", connections + "/" + defaultsId);
     assert.equal(disconnected.statusCode, 204, disconnected.body);
@@ -386,43 +426,17 @@ test(
     const privateRef = custody.rows[0].secret_ref;
     assert.ok(secretDriver.has(privateRef));
     const account = accounts.json().data[0];
-    // Google is the controlled exchange in this case. A receipt for an exact Google
-    // template with the same client cannot claim the wider provider recipient.
-    const google = await connectFixtureGoogleAccount(t, owner, namespaceId, [
-      "https://www.googleapis.com/auth/gmail.readonly",
-    ]);
-    const exact = await owner("POST", "/connection-templates", {
-      ...google.templateInput,
-      displayName: "Gmail only",
-      recipient: { host: "gmail.googleapis.com", port: 443, path: "/**" },
-    });
-    assert.equal(exact.statusCode, 201, exact.body);
-    await assert.rejects(
-      pool.query(
-        `INSERT INTO occ.saved_connections
-         SELECT (jsonb_populate_record(NULL::occ.saved_connections,
-           to_jsonb(s) || jsonb_build_object('connection_template_id',$2::text))).*
-         FROM occ.saved_connections s WHERE credential_source_id=$1`,
-        [google.credentialSourceId, exact.json().data.id],
-      ),
-      { code: "23514" },
-    );
-    assert.equal(
-      (await owner("DELETE", connections + "/" + google.credentialSourceId)).statusCode,
-      204,
-    );
-
     assert.deepEqual(
       [
         account.oauthClientId,
         account.clientId,
         account.issuer,
         account.tokenUrl,
-        account.recipient,
+        account.destinations,
         account.requestedScopes,
         account.grantedScopes,
       ],
-      [oauthClientId, clientId, issuer, tokenUrl, recipient, ["openid"], ["openid"]],
+      [oauthClientId, clientId, issuer, tokenUrl, [recipient], ["openid"], ["openid"]],
     );
     // The trusted Token Service consumer can use the grant. Saving/rotating alone creates no sender.
     async function prepared() {

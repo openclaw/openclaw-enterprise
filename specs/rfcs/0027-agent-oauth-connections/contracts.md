@@ -186,21 +186,18 @@ administrators, who hold every action through the built-in administrator role.
 
 ## Protected egress
 
-Use [RFC-0023 admission and sender contracts](../0023-egress-proxy-credential-lifecycle/contracts.md)
-for the deployed revision. Limit the authorized route to the endpoint the owner
-approved. Attaching a source cannot expand an installation's egress ceiling.
+Apply [RFC-0023 admission and sender contracts](../0023-egress-proxy-credential-lifecycle/contracts.md)
+within the Installation’s egress ceiling. A protected request must match the
+host, port and path of one approved destination. The Plugin Driver selects
+routes both the saved account and the release allow. Manual destination rows
+constrain credential delivery. MCP discovery supplies the OAuth resource.
 
-The template pins the recipient's host, port and path. The plugin and deployed
-request policy govern allowed operations there. MCP sends both read and write
-tool calls by HTTP POST. [MCP Streamable HTTP transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#sending-messages-to-the-server)
-
-Every remote Streamable HTTP plugin uses the same credential policy helper. When
-binding a ready connection, OCE matches its approved server URL and OAuth resource
-to the plugin descriptor and release. The helper derives the bearer route from
-the server URL’s HTTPS host, effective port and literal path. OpenShell permits
-`POST` for messages, `GET` for streams and `DELETE` for session closure at that
-endpoint. Installing the plugin alone grants no route.
-OAuth metadata discovery, registration and refresh use separate management endpoints.
+Remote MCP plugins share one credential policy helper. It matches the approved
+server URL and resource to the plugin release. OpenShell binds the bearer to
+the server’s HTTPS host, effective port and literal path. It permits `POST` for
+messages, `GET` for streams and `DELETE` for session closure. Discovery,
+registration and refresh use separate management endpoints.
+[MCP Streamable HTTP transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#sending-messages-to-the-server)
 
 The sender authenticates the deployed execution and checks its current authority
 to use the attached source. It evaluates the actual request before presenting the
@@ -212,10 +209,9 @@ name against the deployed selection for that Agent and server and enforces any
 argument restrictions before forwarding the call.
 If the selected route cannot enforce a promised restriction, refuse deployment.
 
-For a [Google APIs recipient](index.md), the Credential Gateway prepares one
-presentation with exact endpoints across reviewed APIs. Each credentialed
-request must pass the Google operation guard. MCP credentials stay bound to
-their approved server and protected resource.
+For Google, the Credential Gateway prepares one presentation from the intersection
+of the saved destinations, reviewed operations and granted scopes. The sender
+checks each credentialed request against those operations.
 
 ## Failure and recovery
 

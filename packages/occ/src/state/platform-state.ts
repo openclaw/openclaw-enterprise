@@ -1,8 +1,7 @@
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import {
   assertExecutionAdmission,
-  validateConnectionTemplateRecipient,
-  isGoogleApisRecipient,
+  validateConnectionTemplateDestinations,
 } from "@openclaw-enterprise/contracts";
 import { memoryEgressSendReceipts } from "./egress-send-receipts.ts";
 import type { EgressSendReceiptRepository, StoredSendReceipt } from "../egress-send-receipts.ts";
@@ -1968,7 +1967,7 @@ function repositories(
     template: ConnectionTemplate,
     version: OAuthConnectionTemplateVersion,
   ) => {
-    validateConnectionTemplateRecipient(version);
+    validateConnectionTemplateDestinations(version);
     if (!version.oauthClientId) {
       return;
     }
@@ -2281,25 +2280,23 @@ function repositories(
     createSavedConnection: async (connection) => {
       assertInitialized(snapshot);
       assertConnectionScope(connection);
-      if (isGoogleApisRecipient(connection.recipient)) {
-        const version = snapshot.oauthConnectionTemplateVersions.get(
-          versionKey(connection.connectionTemplateId, connection.connectionTemplateVersion),
+      const version = snapshot.oauthConnectionTemplateVersions.get(
+        versionKey(connection.connectionTemplateId, connection.connectionTemplateVersion),
+      );
+      const client = snapshot.clientRegistrations.get(connection.oauthClientId);
+      if (
+        !version ||
+        !isDeepStrictEqual(version.destinations, connection.destinations) ||
+        version.issuer !== connection.issuer ||
+        version.tokenUrl !== connection.tokenUrl ||
+        version.oauthClientId !== connection.oauthClientId ||
+        client?.clientId !== connection.clientId ||
+        version.mcp?.serverUrl !== connection.mcpServerUrl ||
+        version.mcp?.resource !== connection.resource
+      ) {
+        throw new ResourceStateConflictError(
+          "The saved account must match its approved template version and OAuth client.",
         );
-        const client = snapshot.clientRegistrations.get(connection.oauthClientId);
-        if (
-          !version ||
-          !isGoogleApisRecipient(version.recipient) ||
-          connection.mcpServerUrl ||
-          connection.resource ||
-          version.issuer !== connection.issuer ||
-          version.tokenUrl !== connection.tokenUrl ||
-          version.oauthClientId !== connection.oauthClientId ||
-          client?.clientId !== connection.clientId
-        ) {
-          throw new ResourceStateConflictError(
-            "The saved Google APIs recipient must match its approved template and client.",
-          );
-        }
       }
       const key = agentKey(connection.namespaceId, connection.credentialSourceId);
       if (snapshot.savedConnections.has(key)) {

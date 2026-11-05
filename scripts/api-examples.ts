@@ -199,7 +199,7 @@ const connectionTemplateInput = {
   tokenUrl: oauthClient.tokenUrl,
   oauthClientId,
   scopes: ["profile.read"],
-  recipient: { host: "api.example.com", port: 443, path: "/profile" },
+  destinations: [{ host: "api.example.com", port: 443, path: "/profile" }],
 };
 const connectionTemplate = {
   id: connectionTemplateId,
@@ -232,7 +232,7 @@ const savedAccount = {
   tokenUrl: oauthClient.tokenUrl,
   oauthClientId,
   clientId: oauthClient.clientId,
-  recipient: connectionTemplateInput.recipient,
+  destinations: connectionTemplateInput.destinations,
   requestedScopes: connectionTemplateInput.scopes,
   grantedScopes: connectionTemplateInput.scopes,
   namespaceId,

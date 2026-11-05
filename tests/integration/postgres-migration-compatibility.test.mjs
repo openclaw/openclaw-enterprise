@@ -2053,11 +2053,10 @@ test(
               db.app.query(
                 `INSERT INTO occ.oauth_connection_template_versions
                    (template_id, version, oauth_client_id, issuer, mode, authorization_url,
-                    token_url, scopes, authorization_parameters, recipient_kind, recipient_host, recipient_port,
-                    recipient_path, created_at)
+                    token_url, scopes, authorization_parameters, destinations, created_at)
                  VALUES ($1, 1, $2, 'https://issuer.example.test', 'manual',
                     'https://issuer.example.test/auth', 'https://issuer.example.test/token',
-                    ARRAY['read'], '{}', 'endpoint', 'api.example.test', 443, '/', now())`,
+                    ARRAY['read'], '{}', '[{"host":"api.example.test","port":443,"path":"/"}]', now())`,
                 [templateId, registrationId],
               ),
               { code: "23514", message: /registration must belong to the template scope/ },

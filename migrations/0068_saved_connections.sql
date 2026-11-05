@@ -13,12 +13,7 @@ CREATE TABLE occ.saved_connections (
   oauth_client_id text NOT NULL REFERENCES occ.oauth_clients(id) ON DELETE RESTRICT,
   client_id text NOT NULL,
   issuer text NOT NULL,
-  recipient jsonb NOT NULL CONSTRAINT saved_connections_recipient_object CHECK (
-    recipient = '{"kind":"google_apis"}'::jsonb OR (
-      jsonb_typeof(recipient) = 'object' AND recipient ?& ARRAY['host','port','path']
-      AND recipient - ARRAY['host','port','path'] = '{}'::jsonb
-    )
-  ),
+  destinations jsonb NOT NULL,
   token_url text NOT NULL,
   mcp_server_url text,
   resource text,
@@ -92,16 +87,16 @@ CREATE FUNCTION occ.guard_saved_connection() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 BEGIN
   IF TG_OP = 'INSERT' THEN
-    -- A receipt can represent Google APIs only when that provider-wide destination was approved.
-    IF NEW.recipient = '{"kind":"google_apis"}'::jsonb AND
-       (NEW.resource IS NOT NULL OR NOT EXISTS (
-         SELECT 1 FROM occ.oauth_connection_template_versions v
-           JOIN occ.oauth_clients c ON c.id = v.oauth_client_id
-          WHERE v.template_id = NEW.connection_template_id AND v.version = NEW.connection_template_version
-            AND v.recipient_kind = 'google_apis' AND v.issuer = NEW.issuer AND v.token_url = NEW.token_url
-            AND c.id = NEW.oauth_client_id AND c.client_id = NEW.client_id
-       )) THEN
-      RAISE EXCEPTION 'The saved Google APIs recipient must match its approved template and client' USING ERRCODE = '23514';
+    -- The version already validates its destinations. Only that complete approved list can enter a receipt.
+    IF NOT EXISTS (
+      SELECT 1 FROM occ.oauth_connection_template_versions v JOIN occ.oauth_clients c ON c.id = v.oauth_client_id
+      WHERE v.template_id = NEW.connection_template_id AND v.version = NEW.connection_template_version
+        AND v.destinations = NEW.destinations AND v.issuer = NEW.issuer AND v.token_url = NEW.token_url
+        AND c.id = NEW.oauth_client_id AND c.client_id = NEW.client_id
+        AND (v.observed_metadata->>'serverUrl') IS NOT DISTINCT FROM NEW.mcp_server_url
+        AND (v.observed_metadata->>'resource') IS NOT DISTINCT FROM NEW.resource
+    ) THEN
+      RAISE EXCEPTION 'The saved account must match its approved template version and OAuth client' USING ERRCODE = '23514';
     END IF;
     RETURN NEW;
   END IF;

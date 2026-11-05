@@ -31,8 +31,7 @@ import {
   PENDING_OAUTH_CONNECTION,
   connectionValuesChanged,
   isOAuthScopeToken,
-  validateConnectionTemplateRecipient,
-  isGoogleApisRecipient,
+  normalizeConnectionDestinations,
   validateConnectionTemplateAuthorization,
   ConnectionTemplateValidationError,
   assertExecutionAdmission,
@@ -169,8 +168,6 @@ import type {
   McpAuthorizationMetadata,
   ConnectionTemplate,
   ConnectionTemplateValues,
-  GoogleApisRecipient,
-  ConnectionRecipient,
   CredentialRefreshDriver,
   CredentialRefreshStatus,
   CredentialSource,
@@ -1041,36 +1038,14 @@ type TemplateInput = ApprovedTemplateSettings &
         readonly authorizationUrl: string;
         readonly tokenUrl: string;
         readonly revocationUrl?: string;
-        readonly recipient:
-          | GoogleApisRecipient
-          | {
-              readonly host: string;
-              readonly port?: number;
-              readonly path?: string;
-            };
+        readonly destinations: readonly {
+          readonly host: string;
+          readonly port?: number;
+          readonly path?: string;
+        }[];
       }
     | { readonly mode: "mcp_discovery"; readonly serverUrl: string; readonly issuer: string }
   );
-function manualConnectionRecipient(
-  recipient: Extract<TemplateInput, { mode: "manual" }>["recipient"],
-): ConnectionRecipient {
-  if (isGoogleApisRecipient(recipient)) {
-    return { kind: "google_apis" };
-  }
-  const { host, port = 443, path = "/**" } = recipient;
-  if (
-    !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(host) ||
-    !/^\/[!-~]*$/.test(path) ||
-    /[?#\\]/.test(path)
-  ) {
-    throw new ConnectionTemplateValidationError(
-      "recipient",
-      "Choose a DNS host and HTTPS request path for this account.",
-    );
-  }
-  return { host, port, path };
-}
-
 function templateAcceptsAuthMethod(
   observed: McpAuthorizationMetadata | undefined,
   method: OAuthClient["tokenEndpointAuthMethod"],
@@ -4754,7 +4729,7 @@ export class OpenClawController {
           | "mcpServerUrl"
           | "oauthClientId"
           | "clientId"
-          | "recipient"
+          | "destinations"
           | "resource"
           | "requestedScopes"
           | "grantedScopes"
@@ -4837,7 +4812,7 @@ export class OpenClawController {
               tokenUrl: version.tokenUrl,
               oauthClientId: client.id,
               clientId: client.clientId,
-              recipient: version.recipient,
+              destinations: version.destinations,
               ...(version.mcp
                 ? { resource: version.mcp.resource, mcpServerUrl: version.mcp.serverUrl }
                 : {}),
@@ -5299,7 +5274,7 @@ export class OpenClawController {
         authorizationUrl: input.authorizationUrl,
         tokenUrl: input.tokenUrl,
         ...(input.revocationUrl && { revocationUrl: input.revocationUrl }),
-        recipient: manualConnectionRecipient(input.recipient),
+        destinations: normalizeConnectionDestinations(input.destinations),
       };
     } else {
       const observed = await discover(input.serverUrl, input.issuer);
@@ -5335,17 +5310,18 @@ export class OpenClawController {
         authorizationUrl: observed.authorizationUrl,
         tokenUrl: observed.tokenUrl,
         ...(observed.revocationUrl && { revocationUrl: observed.revocationUrl }),
-        recipient: {
-          host: server.hostname,
-          port: Number(server.port || 443),
-          path: server.pathname,
-        },
+        destinations: normalizeConnectionDestinations([
+          {
+            host: server.hostname,
+            port: Number(server.port || 443),
+            path: server.pathname,
+          },
+        ]),
         mcp: { serverUrl: observed.serverUrl, resource: observed.resource },
         observed,
       };
     }
     validateConnectionTemplateAuthorization(values);
-    validateConnectionTemplateRecipient(values);
     return values;
   }
 

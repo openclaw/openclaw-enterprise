@@ -20,13 +20,13 @@ When starting consent for an MCP template, send the nonempty `selectedScopes` th
 
 In **Credentials → Connection templates → Create connection template**, **Template availability** starts with the current readable Namespace. If there is none, choose availability before registering a client or saving the template. Choose **Installation-wide** to share the template across Namespaces. Availability is fixed after creation.
 
-Choose **Set up Google OAuth** to start with Google’s published issuer and OAuth endpoints. The starter selects **Google APIs**, so one account can be used across Google APIs. Choose the scope limit and your registered Google client. Select **Specific endpoint** if you want to limit the template to one API host and path. Saving creates a template with the availability you selected. Google connections request offline access so the Token Service can refresh the account after consent.
+Choose **Set up Google OAuth** to fill in Google’s OAuth URLs and the API destinations from the Google Workspace plugin’s reviewed operations. Review each host, port and path. For example, Calendar and Drive both use `www.googleapis.com:443`, with paths `/calendar/**` and `/drive/**`. Add or remove rows before saving. Choose your scope limit and registered client. Saving freezes the list on this version. Existing connections keep the list they approved. Google connections request offline access for refresh after consent.
 
 A new template starts with **Limit to approved scopes**. Enter the scopes callers may request, or select **No template limit**. In the API, `scopes: []` selects the latter. There is no scope-count limit. Required MCP scopes still apply at consent.
 
 Use `POST /connection-templates` with one of these setup methods.
 
-- With `mode: manual`, supply the issuer, OAuth URLs, approved scopes, and a recipient. Supply its exact host, port and path, or use `{"kind":"google_apis"}` with Google’s published issuer and OAuth endpoints. The plugin and deployed request policy control operations at that destination. For example, an authorization server at `accounts.example.test` may issue credentials for `mail.example.test`.
+- With `mode: manual`, supply the issuer, OAuth URLs, scopes and a nonempty `destinations` array. Each object has a host, port and path, for example `{"host":"mail.example.test","port":443,"path":"/inbox/**"}`. A credentialed request must match all three in one row. The plugin and deployed request policy determine the allowed operations.
 - With `mode: mcp_discovery`, preview metadata with `POST /connection-templates/discover`. Send the MCP server URL. When the resource advertises several issuers, select one and repeat discovery. The response includes the protected resource, advertised capabilities and scopes. Choose the scopes allowed for this template. OCC repeats discovery when saving and pins the approved issuer, resource and exact MCP server URL. Discovery can report a registration endpoint. Register the client separately.
 
 A template may be saved before a client exists. Associate a compatible `oauthClientId` before using it for consent. Use `PATCH /connection-templates/{connectionTemplateId}` with the full configuration to change its approved values. This creates an immutable version. Changing only `displayName` renames the template. Deleting a template leaves its independently managed client available.
@@ -46,7 +46,7 @@ See the [API reference](api.md#connections) for request and response fields.
    `GET /namespaces/{namespaceId}/connections`. Other users see it only if
    they have permission to read the source. Keep the credential source ID to
    refer to the account. The response names the selected OAuth client, issuer,
-   recipient, and requested and granted scopes. An account connected with the Google APIs preset retains the Google APIs recipient across refreshes. MCP accounts also record the
+   destinations, and requested and granted scopes. Refresh preserves the destination list from consent. MCP accounts also record the
    approved server URL and protected resource. The Token Service keeps the tokens
    and uses the pinned client method and protected resource when it renews them.
 

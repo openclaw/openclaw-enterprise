@@ -838,6 +838,20 @@
             "type": "string"
           },
           "createdAt": { "type": "string" },
+          "destinations": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "host": { "type": "string" },
+                "path": { "type": "string" },
+                "port": { "type": "integer" }
+              },
+              "required": ["host", "port", "path"],
+              "type": "object"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
           "issuer": { "maxLength": 2048, "pattern": "^https://[^\\s/]", "type": "string" },
           "mcp": {
             "additionalProperties": false,
@@ -916,26 +930,6 @@
             "required": ["serverUrl", "resource", "issuers", "requestedScopes"],
             "type": "object"
           },
-          "recipient": {
-            "anyOf": [
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "host": { "type": "string" },
-                  "path": { "type": "string" },
-                  "port": { "type": "integer" }
-                },
-                "required": ["host", "port", "path"],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "properties": { "kind": { "const": "google_apis", "type": "string" } },
-                "required": ["kind"],
-                "type": "object"
-              }
-            ]
-          },
           "revocationUrl": { "maxLength": 2048, "pattern": "^https://[^\\s/]", "type": "string" },
           "scopes": {
             "description": "Scopes approved by the administrator. An empty list leaves scope selection to the account owner and provider.",
@@ -963,7 +957,7 @@
           "issuer",
           "authorizationUrl",
           "tokenUrl",
-          "recipient",
+          "destinations",
           "scopes",
           "authorizationParameters"
         ],
@@ -12356,7 +12350,12 @@
                     "summary": "No readable resources",
                     "value": {
                       "data": [],
-                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                      "meta": {
+                        "googleWorkspaceDestinations": [
+                          { "host": "gmail.googleapis.com", "path": "/gmail/**", "port": 443 }
+                        ],
+                        "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+                      }
                     }
                   },
                   "example": {
@@ -12369,14 +12368,12 @@
                             "authorizationParameters": {},
                             "authorizationUrl": "https://accounts.example.com/authorize",
                             "createdAt": "2026-10-01T12:00:00.000Z",
+                            "destinations": [
+                              { "host": "api.example.com", "path": "/profile", "port": 443 }
+                            ],
                             "issuer": "https://accounts.example.com",
                             "mode": "manual",
                             "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
-                            "recipient": {
-                              "host": "api.example.com",
-                              "path": "/profile",
-                              "port": 443
-                            },
                             "scopes": ["profile.read"],
                             "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
                             "tokenUrl": "https://accounts.example.com/token",
@@ -12387,7 +12384,12 @@
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000"
                         }
                       ],
-                      "meta": { "requestId": "req_123e4567-e89b-42d3-a456-426614174000" }
+                      "meta": {
+                        "googleWorkspaceDestinations": [
+                          { "host": "gmail.googleapis.com", "path": "/gmail/**", "port": 443 }
+                        ],
+                        "requestId": "req_123e4567-e89b-42d3-a456-426614174000"
+                      }
                     }
                   }
                 },
@@ -12398,13 +12400,27 @@
                     "meta": {
                       "additionalProperties": false,
                       "properties": {
+                        "googleWorkspaceDestinations": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "host": { "type": "string" },
+                              "path": { "type": "string" },
+                              "port": { "type": "integer" }
+                            },
+                            "required": ["host", "port", "path"],
+                            "type": "object"
+                          },
+                          "minItems": 1,
+                          "type": "array"
+                        },
                         "redirectUri": { "type": "string" },
                         "requestId": {
                           "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         }
                       },
-                      "required": ["requestId"],
+                      "required": ["requestId", "googleWorkspaceDestinations"],
                       "type": "object"
                     }
                   },
@@ -12489,12 +12505,14 @@
                   "summary": "Example request",
                   "value": {
                     "authorizationUrl": "https://accounts.example.com/authorize",
+                    "destinations": [
+                      { "host": "api.example.com", "path": "/profile", "port": 443 }
+                    ],
                     "displayName": "Example account",
                     "issuer": "https://accounts.example.com",
                     "mode": "manual",
                     "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
                     "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
-                    "recipient": { "host": "api.example.com", "path": "/profile", "port": 443 },
                     "scopes": ["profile.read"],
                     "tokenUrl": "https://accounts.example.com/token"
                   }
@@ -12515,6 +12533,25 @@
                         "pattern": "^https://[^\\s/]",
                         "type": "string"
                       },
+                      "destinations": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "host": { "maxLength": 253, "minLength": 1, "type": "string" },
+                            "path": {
+                              "maxLength": 512,
+                              "minLength": 1,
+                              "pattern": "^/",
+                              "type": "string"
+                            },
+                            "port": { "maximum": 65535, "minimum": 1, "type": "integer" }
+                          },
+                          "required": ["host"],
+                          "type": "object"
+                        },
+                        "minItems": 1,
+                        "type": "array"
+                      },
                       "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
                       "issuer": {
                         "maxLength": 2048,
@@ -12529,31 +12566,6 @@
                       "oauthClientId": {
                         "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                         "type": "string"
-                      },
-                      "recipient": {
-                        "anyOf": [
-                          {
-                            "additionalProperties": false,
-                            "properties": {
-                              "host": { "maxLength": 253, "minLength": 1, "type": "string" },
-                              "path": {
-                                "maxLength": 512,
-                                "minLength": 1,
-                                "pattern": "^/",
-                                "type": "string"
-                              },
-                              "port": { "maximum": 65535, "minimum": 1, "type": "integer" }
-                            },
-                            "required": ["host"],
-                            "type": "object"
-                          },
-                          {
-                            "additionalProperties": false,
-                            "properties": { "kind": { "const": "google_apis", "type": "string" } },
-                            "required": ["kind"],
-                            "type": "object"
-                          }
-                        ]
                       },
                       "revocationUrl": {
                         "maxLength": 2048,
@@ -12584,7 +12596,7 @@
                       "issuer",
                       "authorizationUrl",
                       "tokenUrl",
-                      "recipient"
+                      "destinations"
                     ],
                     "type": "object"
                   },
@@ -12651,14 +12663,12 @@
                           "authorizationParameters": {},
                           "authorizationUrl": "https://accounts.example.com/authorize",
                           "createdAt": "2026-10-01T12:00:00.000Z",
+                          "destinations": [
+                            { "host": "api.example.com", "path": "/profile", "port": 443 }
+                          ],
                           "issuer": "https://accounts.example.com",
                           "mode": "manual",
                           "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
-                          "recipient": {
-                            "host": "api.example.com",
-                            "path": "/profile",
-                            "port": 443
-                          },
                           "scopes": ["profile.read"],
                           "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
                           "tokenUrl": "https://accounts.example.com/token",
@@ -13168,14 +13178,12 @@
                           "authorizationParameters": {},
                           "authorizationUrl": "https://accounts.example.com/authorize",
                           "createdAt": "2026-10-01T12:00:00.000Z",
+                          "destinations": [
+                            { "host": "api.example.com", "path": "/profile", "port": 443 }
+                          ],
                           "issuer": "https://accounts.example.com",
                           "mode": "manual",
                           "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
-                          "recipient": {
-                            "host": "api.example.com",
-                            "path": "/profile",
-                            "port": 443
-                          },
                           "scopes": ["profile.read"],
                           "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
                           "tokenUrl": "https://accounts.example.com/token",
@@ -13328,6 +13336,25 @@
                         "pattern": "^https://[^\\s/]",
                         "type": "string"
                       },
+                      "destinations": {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "host": { "maxLength": 253, "minLength": 1, "type": "string" },
+                            "path": {
+                              "maxLength": 512,
+                              "minLength": 1,
+                              "pattern": "^/",
+                              "type": "string"
+                            },
+                            "port": { "maximum": 65535, "minimum": 1, "type": "integer" }
+                          },
+                          "required": ["host"],
+                          "type": "object"
+                        },
+                        "minItems": 1,
+                        "type": "array"
+                      },
                       "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
                       "issuer": {
                         "maxLength": 2048,
@@ -13338,31 +13365,6 @@
                       "oauthClientId": {
                         "pattern": "^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                         "type": "string"
-                      },
-                      "recipient": {
-                        "anyOf": [
-                          {
-                            "additionalProperties": false,
-                            "properties": {
-                              "host": { "maxLength": 253, "minLength": 1, "type": "string" },
-                              "path": {
-                                "maxLength": 512,
-                                "minLength": 1,
-                                "pattern": "^/",
-                                "type": "string"
-                              },
-                              "port": { "maximum": 65535, "minimum": 1, "type": "integer" }
-                            },
-                            "required": ["host"],
-                            "type": "object"
-                          },
-                          {
-                            "additionalProperties": false,
-                            "properties": { "kind": { "const": "google_apis", "type": "string" } },
-                            "required": ["kind"],
-                            "type": "object"
-                          }
-                        ]
                       },
                       "revocationUrl": {
                         "maxLength": 2048,
@@ -13392,7 +13394,7 @@
                       "issuer",
                       "authorizationUrl",
                       "tokenUrl",
-                      "recipient"
+                      "destinations"
                     ],
                     "type": "object"
                   },
@@ -13455,14 +13457,12 @@
                           "authorizationParameters": {},
                           "authorizationUrl": "https://accounts.example.com/authorize",
                           "createdAt": "2026-10-01T12:00:00.000Z",
+                          "destinations": [
+                            { "host": "api.example.com", "path": "/profile", "port": 443 }
+                          ],
                           "issuer": "https://accounts.example.com",
                           "mode": "manual",
                           "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
-                          "recipient": {
-                            "host": "api.example.com",
-                            "path": "/profile",
-                            "port": 443
-                          },
                           "scopes": ["profile.read"],
                           "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
                           "tokenUrl": "https://accounts.example.com/token",
@@ -34934,14 +34934,12 @@
                             "authorizationParameters": {},
                             "authorizationUrl": "https://accounts.example.com/authorize",
                             "createdAt": "2026-10-01T12:00:00.000Z",
+                            "destinations": [
+                              { "host": "api.example.com", "path": "/profile", "port": 443 }
+                            ],
                             "issuer": "https://accounts.example.com",
                             "mode": "manual",
                             "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
-                            "recipient": {
-                              "host": "api.example.com",
-                              "path": "/profile",
-                              "port": 443
-                            },
                             "scopes": ["profile.read"],
                             "templateId": "ctp_123e4567-e89b-42d3-a456-426614174000",
                             "tokenUrl": "https://accounts.example.com/token",
@@ -34963,7 +34961,6 @@
                     "meta": {
                       "additionalProperties": false,
                       "properties": {
-                        "redirectUri": { "type": "string" },
                         "requestId": {
                           "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
@@ -35087,16 +35084,14 @@
                           "connectionTemplateVersion": 1,
                           "createdAt": "2026-10-01T12:00:00.000Z",
                           "credentialSourceId": "cs_123e4567-e89b-42d3-a456-426614174000",
+                          "destinations": [
+                            { "host": "api.example.com", "path": "/profile", "port": 443 }
+                          ],
                           "grantedScopes": ["profile.read"],
                           "issuer": "https://accounts.example.com",
                           "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
                           "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
                           "ownerPrincipalId": "user-docs-admin",
-                          "recipient": {
-                            "host": "api.example.com",
-                            "path": "/profile",
-                            "port": 443
-                          },
                           "requestedScopes": ["profile.read"],
                           "tokenUrl": "https://accounts.example.com/token"
                         }
@@ -35123,6 +35118,20 @@
                             "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                             "type": "string"
                           },
+                          "destinations": {
+                            "items": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "host": { "type": "string" },
+                                "path": { "type": "string" },
+                                "port": { "type": "integer" }
+                              },
+                              "required": ["host", "port", "path"],
+                              "type": "object"
+                            },
+                            "minItems": 1,
+                            "type": "array"
+                          },
                           "grantedScopes": { "items": { "type": "string" }, "type": "array" },
                           "issuer": { "type": "string" },
                           "mcpServerUrl": { "type": "string" },
@@ -35132,28 +35141,6 @@
                           },
                           "oauthClientId": { "type": "string" },
                           "ownerPrincipalId": { "type": "string" },
-                          "recipient": {
-                            "anyOf": [
-                              {
-                                "additionalProperties": false,
-                                "properties": {
-                                  "host": { "type": "string" },
-                                  "path": { "type": "string" },
-                                  "port": { "type": "integer" }
-                                },
-                                "required": ["host", "port", "path"],
-                                "type": "object"
-                              },
-                              {
-                                "additionalProperties": false,
-                                "properties": {
-                                  "kind": { "const": "google_apis", "type": "string" }
-                                },
-                                "required": ["kind"],
-                                "type": "object"
-                              }
-                            ]
-                          },
                           "requestedScopes": { "items": { "type": "string" }, "type": "array" },
                           "resource": { "type": "string" },
                           "tokenUrl": { "type": "string" }
@@ -35166,7 +35153,7 @@
                           "oauthClientId",
                           "clientId",
                           "issuer",
-                          "recipient",
+                          "destinations",
                           "requestedScopes",
                           "grantedScopes",
                           "connectionTemplateId",

@@ -27,7 +27,7 @@ export function createConnectionTemplateFixture(
               tokenUrl: issuer + "/token",
               scopes: ["messages.read"],
               authorizationParameters: {},
-              recipient: { host: "mcp.example.com", port: 443, path: "/mcp" },
+              destinations: [{ host: "mcp.example.com", port: 443, path: "/mcp" }],
               mcp: {
                 serverUrl: "https://mcp.example.com/mcp",
                 resource: "https://mcp.example.com/mcp",
@@ -64,7 +64,13 @@ export function createConnectionTemplateFixture(
       : [];
   return (path: string, method: string, body: unknown): Response | undefined => {
     if (path === "/connection-templates" && method === "GET") {
-      return response(oauthTemplates);
+      return response(oauthTemplates, 200, undefined, {
+        googleWorkspaceDestinations: [
+          { host: "gmail.googleapis.com", port: 443, path: "/gmail/**" },
+          { host: "www.googleapis.com", port: 443, path: "/calendar/**" },
+          { host: "www.googleapis.com", port: 443, path: "/drive/**" },
+        ],
+      });
     }
     if (path === "/oauth-clients" && method === "GET") {
       return response(oauthClients, 200, undefined, {
@@ -130,7 +136,7 @@ export function createConnectionTemplateFixture(
                 authorizationUrl: observed.authorizationUrl,
                 tokenUrl: observed.tokenUrl,
                 mcp: { serverUrl: observed.serverUrl, resource: observed.resource },
-                recipient: { host: "mcp.example.com", port: 443, path: "/mcp" },
+                destinations: [{ host: "mcp.example.com", port: 443, path: "/mcp" }],
                 observed,
               }
             : {}),

@@ -1,10 +1,17 @@
 import { Type } from "typebox";
 import { CredentialSourceId, Meta, NamespaceId } from "./common.ts";
 import {
-  ConnectionRecipientSchema,
+  ConnectionDestinationsSchema,
   ConnectionTemplateId,
+  ConnectionTemplateResponse,
   OAuthScope,
 } from "./connection-templates.ts";
+
+/** Namespace use lists connectable templates; the Installation's editor presets stay in the admin catalog. */
+export const UsableConnectionTemplatesResponse = Type.Object(
+  { data: Type.Array(ConnectionTemplateResponse.properties.data), meta: Meta },
+  { additionalProperties: false },
+);
 
 export const StartNamespaceConnectionBody = Type.Object(
   {
@@ -39,7 +46,7 @@ const SavedConnectionSchema = Type.Object(
     oauthClientId: Type.String(),
     clientId: Type.String(),
     issuer: Type.String(),
-    recipient: ConnectionRecipientSchema,
+    destinations: ConnectionDestinationsSchema,
     resource: Type.Optional(Type.String()),
     requestedScopes: Type.Array(Type.String()),
     grantedScopes: Type.Array(Type.String()),
