@@ -24,6 +24,15 @@ They do not prove backend authorization, persistence, or infrastructure cleanup.
 5. **Delete outcome unknown** requires **Refresh status** before another
    deletion request. **Delete cleanup recovery** keeps status and deliberate
    retry controls on an already deleting Namespace.
+6. Open **Delete retry status unavailable**. Select Engineering's **Request
+   deletion again** and leave the confirmation open. The next background status
+   check returns a simulated 503 once. The confirmation closes, **Refresh status**
+   receives focus, and retry disappears. No deletion request is sent. Activate
+   **Refresh status**: the check succeeds, the Namespace remains **Deleting…**,
+   and **Request deletion again** returns. Open the new confirmation and wait
+   through another status check; it stays usable. Cancel, or confirm a deliberate
+   retry. Reset the story to repeat the failure. **Delete cleanup recovery**
+   remains the healthy comparison.
 
 Capture desktop and phone screenshots and a short walkthrough outside the
 checkout. Record the source revision and label these as simulated UI evidence.

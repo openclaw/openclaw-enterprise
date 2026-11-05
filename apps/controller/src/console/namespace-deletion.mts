@@ -52,6 +52,7 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
   let removed = false;
   let poll: ReturnType<typeof setTimeout> | undefined;
   let confirmation: HTMLDialogElement | undefined;
+  let invalidateConfirmation: (() => void) | undefined;
   let message = "";
   let requestId: string | undefined;
   const remove = button(resourceActionIcon("delete"), () => openConfirmation(), {
@@ -182,6 +183,8 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
       }
       const error = requestFailure(cause);
       if (error.status === 401) {
+        accessEnded = true;
+        invalidateConfirmation?.();
         context.onExpired();
         return;
       }
@@ -194,6 +197,7 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
       }
       accessEnded = error.status === 403;
       unknown = true;
+      invalidateConfirmation?.();
       message = accessEnded
         ? "This Namespace is no longer readable. It may have been deleted or your access changed. Refresh Namespaces to check your access."
         : "Could not check deletion status. Select Refresh status to check again.";
@@ -332,6 +336,17 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
       "aria-describedby": "namespace-delete-description",
     });
     confirmation = dialog;
+    let invalidated = false;
+    let recoverFocus = false;
+    invalidateConfirmation = () => {
+      if (!dialog.open || pending) {
+        return;
+      }
+      invalidated = true;
+      recoverFocus = dialog.contains(document.activeElement);
+      confirm.disabled = true;
+      dialog.close();
+    };
     const cancel = button("Cancel", () => dialog.close());
     const confirm = button(
       repeating ? "Request deletion again" : "Delete Namespace",
@@ -387,8 +402,21 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
     dialog.addEventListener(
       "close",
       () => {
-        confirmation = undefined;
+        if (confirmation === dialog) {
+          confirmation = undefined;
+          invalidateConfirmation = undefined;
+        }
         dialog.remove();
+        // close() can restore the opener before its queued close event. The hidden retry
+        // is no longer a recovery action; preserve any focus moved elsewhere meanwhile.
+        if (
+          recoverFocus &&
+          current() &&
+          (mayReturnFocus(dialog) || document.activeElement === opener)
+        ) {
+          refresh.focus();
+          return;
+        }
         if (
           current() &&
           !pending &&
@@ -421,7 +449,15 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
     cancel.focus();
 
     async function send() {
-      if (pending || denied || !current()) {
+      if (
+        pending ||
+        denied ||
+        unknown ||
+        accessEnded ||
+        invalidated ||
+        !dialog.open ||
+        !current()
+      ) {
         return;
       }
       pending = true;
@@ -458,6 +494,8 @@ export function createNamespaceDeletion(context: DeletionContext, namespace: Nam
           return;
         }
         if (error.code === "NAMESPACE_NOT_EMPTY") {
+          invalidated = true;
+          invalidateConfirmation = undefined;
           showBlockers(dialog, cause);
           return;
         }
