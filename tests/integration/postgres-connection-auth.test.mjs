@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import test from "node:test";
@@ -9,6 +9,8 @@ import { promisify } from "node:util";
 import { startupDependencyFailure } from "../../apps/controller/src/startup-failure.ts";
 import { createPostgresPool } from "../../packages/occ/src/state/postgres-pool.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
+import { certificateAuthority, signedLeaf } from "../helpers/certificates.mjs";
+import { setEnvironment, withEnvironment } from "../helpers/environment.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
@@ -68,12 +70,9 @@ test("the real pg client retains the Azure token callback and verified TLS after
     AZURE_CLIENT_ID: "00000000-0000-0000-0000-000000000002",
     AZURE_FEDERATED_TOKEN_FILE: "/unused-in-construction-test",
   };
-  const previous = Object.fromEntries(
-    Object.keys(environment).map((key) => [key, process.env[key]]),
-  );
+  setEnvironment(context, environment);
   let pool;
   try {
-    Object.assign(process.env, environment);
     pool = await createPostgresPool(
       "postgresql://occ_app@localhost/occ?sslmode=verify-full&application_name=occ-worker",
       { authMode: "azure-workload-identity", max: 2 },
@@ -117,13 +116,6 @@ test("the real pg client retains the Azure token callback and verified TLS after
   } finally {
     if (pool) {
       await pool.end();
-    }
-    for (const [key, value] of Object.entries(previous)) {
-      if (value === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = value;
-      }
     }
   }
 });
@@ -273,45 +265,23 @@ test("verify-full checks the server certificate against an IP database host", as
     await handshake(v4, url("localhost", v4.port, `${verified}&host=127.0.0.1`)),
     refused,
   );
-  const previous = { PGHOST: process.env.PGHOST, PGPORT: process.env.PGPORT };
-  try {
-    Object.assign(process.env, { PGHOST: "127.0.0.1", PGPORT: String(v4.port) });
-    assert.deepEqual(
-      await handshake(v4, `postgresql://occ_app@/occ?sslnegotiation=direct&${verified}`),
-      refused,
-    );
-  } finally {
-    for (const [key, value] of Object.entries(previous)) {
-      if (value === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = value;
-      }
-    }
-  }
+  assert.deepEqual(
+    await withEnvironment({ PGHOST: "127.0.0.1", PGPORT: String(v4.port) }, () =>
+      handshake(v4, `postgresql://occ_app@/occ?sslnegotiation=direct&${verified}`),
+    ),
+    refused,
+  );
   const environment = {
     AZURE_TENANT_ID: "00000000-0000-0000-0000-000000000001",
     AZURE_CLIENT_ID: "00000000-0000-0000-0000-000000000002",
     AZURE_FEDERATED_TOKEN_FILE: join(directory, "unused-token"),
   };
-  const azurePrevious = Object.fromEntries(
-    Object.keys(environment).map((key) => [key, process.env[key]]),
+  assert.deepEqual(
+    await withEnvironment(environment, () =>
+      handshake(v4, url("127.0.0.1", v4.port), "azure-workload-identity"),
+    ),
+    refused,
   );
-  try {
-    Object.assign(process.env, environment);
-    assert.deepEqual(
-      await handshake(v4, url("127.0.0.1", v4.port), "azure-workload-identity"),
-      refused,
-    );
-  } finally {
-    for (const [key, value] of Object.entries(azurePrevious)) {
-      if (value === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = value;
-      }
-    }
-  }
 
   // DNS hosts keep pg's servername-based check and an unchanged configuration.
   assert.deepEqual(await handshake(v4, url("localhost", v4.port)), {
@@ -396,69 +366,16 @@ test("the IP host identity check leaves other connection configurations unchange
 });
 
 async function databaseCertificates(directory) {
-  const file = (name) => join(directory, name);
-  const run = (args) => execute("openssl", args, { timeout: 10000 });
-  await run([
-    "req",
-    "-x509",
-    "-newkey",
-    "ec",
-    "-pkeyopt",
-    "ec_paramgen_curve:prime256v1",
-    "-nodes",
-    "-days",
-    "2",
-    "-subj",
-    "/CN=occ-test-database-ca",
-    "-addext",
-    "basicConstraints=critical,CA:TRUE",
-    "-addext",
-    "keyUsage=critical,keyCertSign",
-    "-keyout",
-    file("ca.key"),
-    "-out",
-    file("ca.pem"),
-  ]);
+  const run = (command, args) => execute(command, args, { timeout: 10000 });
+  const ca = await certificateAuthority(directory, { caName: "occ-test-database-ca", run });
   const leaf = async (name, subjectAltName) => {
-    await run([
-      "req",
-      "-newkey",
-      "ec",
-      "-pkeyopt",
-      "ec_paramgen_curve:prime256v1",
-      "-nodes",
-      "-subj",
-      "/CN=localhost",
-      "-keyout",
-      file(`${name}.key`),
-      "-out",
-      file(`${name}.csr`),
-    ]);
-    await writeFile(
-      file(`${name}.ext`),
-      `subjectAltName=${subjectAltName}\nbasicConstraints=critical,CA:FALSE\nextendedKeyUsage=serverAuth\n`,
-    );
-    await run([
-      "x509",
-      "-req",
-      "-in",
-      file(`${name}.csr`),
-      "-CA",
-      file("ca.pem"),
-      "-CAkey",
-      file("ca.key"),
-      "-CAcreateserial",
-      "-days",
-      "2",
-      "-extfile",
-      file(`${name}.ext`),
-      "-out",
-      file(`${name}.pem`),
-    ]);
-    return {
-      key: await readFile(file(`${name}.key`), "utf8"),
-      cert: await readFile(file(`${name}.pem`), "utf8"),
-    };
+    const { key, cert } = await signedLeaf(directory, ca, {
+      name,
+      commonName: "localhost",
+      subjectAltName,
+      run,
+    });
+    return { key, cert };
   };
   return {
     dnsLocalhost: await leaf("dns-localhost", "DNS:localhost"),

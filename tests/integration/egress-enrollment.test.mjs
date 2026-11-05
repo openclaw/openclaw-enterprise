@@ -19,7 +19,10 @@ import {
   pluginRuntimeSpecForRevision,
 } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
+import { PROXY_REGISTRATION_UNAVAILABLE } from "../helpers/refusal-text.mjs";
 
 import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
 import { waitFor } from "../helpers/qa-utils.mjs";
@@ -78,10 +81,30 @@ test(
     const { port } = reservation;
     const transport = new GrpcOpenShellGatewayClient({ endpoint: `http://127.0.0.1:${port}` });
     t.after(() => transport.close());
+    const admissionCompute = createTestKubernetesComputeDriver("launch-compute", {
+      channelRuntime: true,
+    });
     const f = await staticEgressFixture(t, {
+      // Keep local lifecycle observations, but run the actual Compute admission at
+      // the normal deploy route and read its immutable result back from State.
+      appFactory: (t, options) =>
+        createConsoleAppFixture(t, {
+          ...options,
+          computeDriver: {
+            ...options.computeDriver,
+            id: admissionCompute.id,
+            implementation: admissionCompute.implementation,
+            admitRevision: admissionCompute.admitRevision.bind(admissionCompute),
+          },
+        }),
       recordInstallation: false,
       physicalPlacement: true,
       serviceTransport: transport,
+    });
+    // Render with the provider the fixture selected for this admitted revision.
+    const compute = createTestKubernetesComputeDriver(admissionCompute.id, {
+      channelRuntime: true,
+      sandboxDriver: f.sandboxDriver,
     });
     f.observed.service = {
       url: serviceUrl,
@@ -117,7 +140,23 @@ test(
     const modelPort = model.address().port;
     const callsPath = join(directory, "calls.jsonl");
     const script = join(directory, "entrypoint.cjs");
-    await writeFile(script, AGENT_RUNTIME_ENTRYPOINT);
+    assert.equal(f.revision.compute.admission, "protected-codex-no-connection-retry:v1");
+    const legacy = { ...f.revision, compute: { ...f.revision.compute, admission: undefined } };
+    assert.equal(compute.pluginRuntimeSnapshot(legacy).entrypoint, AGENT_RUNTIME_ENTRYPOINT);
+    const ordinary = {
+      ...legacy,
+      executionAdmission: { version: 2, mode: "unprotected" },
+      egressPlan: undefined,
+      sandboxDriverId: undefined,
+    };
+    assert.equal(compute.admitRevision(ordinary), undefined);
+    for (const revision of [
+      { ...ordinary, compute: f.revision.compute },
+      { ...legacy, compute: { ...legacy.compute, admission: "unknown:v1" } },
+    ]) {
+      assert.throws(() => compute.pluginRuntimeSnapshot(revision), /Compute admission is invalid/);
+    }
+    await writeFile(script, compute.pluginRuntimeSnapshot(f.revision).entrypoint);
     await writeFile(callsPath, "");
     await writeCommand(
       directory,
@@ -231,6 +270,35 @@ test(
     const currentChallenge = await getChallenge();
     await reservation.release();
     assert.notEqual(currentChallenge.startupId, oldChallenge.startupId);
+    // The real generated listeners report correlatable startup hashes, never the signed
+    // challenge identity itself. A restart remains a new release owner.
+    for (const [runtime, challenge] of [
+      [first, oldChallenge],
+      [second, currentChallenge],
+    ]) {
+      const observed = await waitFor(
+        "hashed startup diagnostic",
+        () =>
+          runtime
+            .diagnostics()
+            .split("\n")
+            .flatMap((line) => {
+              try {
+                const event = JSON.parse(line);
+                return event.event === "runtime.protected_startup" ? [event] : [];
+              } catch {
+                return [];
+              }
+            })[0],
+        2000,
+      );
+      assert.equal(
+        observed.startupHash,
+        createHash("sha256").update(challenge.startupId).digest("hex"),
+      );
+      assert.equal(runtime.diagnostics().includes(challenge.startupId), false);
+      assert.equal(JSON.stringify(observed).includes(token), false);
+    }
     assert.equal((await post(oldChallenge)).status, 409);
     assert.equal(businessRequests, 0);
 
@@ -328,6 +396,13 @@ test(
     assert.equal(probes.length, 1);
     assert.ok(probes[0].includes("model_providers.openai-compatible.request_max_retries=0"));
     assert.ok(probes[0].includes("model_providers.openai-compatible.stream_max_retries=0"));
+    const servers = (await calls()).filter((args) => args.includes("app-server"));
+    assert.equal(servers.length, 1);
+    for (const args of [probes[0], servers[0]]) {
+      const feature = args.indexOf("unbounded_connection_retries");
+      assert.ok(feature > 0);
+      assert.equal(args[feature - 1], "--disable");
+    }
     // A repeated reconciliation observes the already-serving Harness and cannot
     // replay either the release or the first model request.
     await f.sandboxDriver.enrollHarness(enrollmentContext, installed, () =>
@@ -385,7 +460,8 @@ test("zero-route admission has no business allow and an older supplier cannot cl
   );
   const assertAvailable = () => f.egress.sourceControl.assertAvailable(AbortSignal.timeout(5000));
   await assertAvailable();
-  const unavailable = /no negotiated protected egress authority/;
+  // A gateway state an operator fixes: a 503 that names it (finding 2536).
+  const unavailable = { name: "RetryLaterError", message: PROXY_REGISTRATION_UNAVAILABLE };
   observed.requiredCapabilities = old;
   await assert.rejects(assertAvailable, unavailable, "complete supported, incomplete required");
   delete observed.requiredCapabilities;

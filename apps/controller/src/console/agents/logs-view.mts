@@ -8,6 +8,24 @@ import type {
 import { element } from "../dom.mjs";
 import { displayDate } from "./list.mjs";
 
+type LogLine = Extract<RuntimeLogRecord, { type: "line" }>;
+
+// Only fields the row renderer consumes. Labels and reasons remain extensible.
+export type LogRecordView =
+  | (Pick<LogLine, "type" | "time" | "message"> & {
+      kind: string;
+      level: string;
+      subsystem?: LogLine["subsystem"];
+      fields?: LogLine["fields"];
+    })
+  | (Pick<Extract<RuntimeLogRecord, { type: "gap" }>, "type" | "remedy"> & {
+      reason: string;
+      stream?: { source: string } | null | undefined;
+    })
+  | (Pick<Extract<RuntimeLogRecord, { type: "withheld" }>, "type" | "count"> & {
+      reason: string;
+    });
+
 export const SOURCE_LABELS = {
   gateway: "Gateway",
   agent: "Agent (Harness)",
@@ -43,8 +61,12 @@ export function visibleText(value: unknown) {
   });
 }
 
-function withheldText({ count, reason }: Extract<RuntimeLogRecord, { type: "withheld" }>) {
-  const label = WITHHELD_LABELS[reason];
+function reasonLabel(labels: Readonly<Record<string, string>>, reason: string) {
+  return Object.hasOwn(labels, reason) ? labels[reason] : undefined;
+}
+
+function withheldText({ count, reason }: Extract<LogRecordView, { type: "withheld" }>) {
+  const label = reasonLabel(WITHHELD_LABELS, reason);
   const lines = count === 1 ? "line" : "lines";
   return `${count} ${label ? `${label} ${lines}` : lines} withheld (${reason})`;
 }
@@ -228,7 +250,7 @@ function formatLogTime(time: string | null) {
   return Number.isNaN(date.getTime()) ? date.toString() : logTimeFormat.format(date);
 }
 
-export function recordRow(record: RuntimeLogRecord) {
+export function recordRow(record: LogRecordView) {
   if (record.type === "gap") {
     return element(
       "div",
@@ -238,7 +260,8 @@ export function recordRow(record: RuntimeLogRecord) {
         {},
         record.reason === "stream_replaced" && record.stream?.source === "sandbox"
           ? "Sandbox recreated"
-          : (GAP_LABELS[record.reason] ?? record.reason),
+          : // A reason this console does not know gets a label, not its raw code (finding 2538).
+            (reasonLabel(GAP_LABELS, record.reason) ?? "Lines missing"),
       ),
       element("span", {}, ` ${record.remedy}`),
     );

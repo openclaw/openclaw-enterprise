@@ -259,9 +259,8 @@ acquisition, and forwarding engine.
 PATCH still requires `configurationId`. Malformed/empty IDs return
 `400 INVALID_REQUEST`; unknown nonempty IDs return `404 NOT_FOUND`.
 No Backend is inferred from model configuration or an account, and saving an
-Agent makes no upstream call. Deployment copies `backendId` into an immutable
-AgentRevision; later draft edits cannot change that snapshot. PostgreSQL stores
-the snapshot in the immutable Agent revision row's `backend_id` column.
+Agent makes no upstream call. At deployment, OCC writes the chosen Backend ID to the Agent revision.
+PostgreSQL stores it in the `backend_id` column. Later draft edits leave that value unchanged.
 
 A GitHub Backend ID is invalid in this field; the general `/backends` inventory
 includes both types. Configure this association through the Agent API or a Preset.

@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { assertApiError } from "../helpers/api-error.mjs";
 import {
   assertProviderAttached,
   assertReservedLane,
+  changeAccount,
   clientAddresses,
   consoleOrigin as origin,
   githubSignIn,
@@ -92,8 +94,7 @@ test(
         };
         assert.equal((await replace({ cookie: secondHeaders.cookie }, body)).statusCode, 403);
         const taken = await replace(secondHeaders, body);
-        assert.equal(taken.statusCode, 403, "a narrower administrator cannot take it");
-        assert.equal(taken.json().error.code, "FORBIDDEN");
+        assertApiError(taken, 403, "FORBIDDEN", "a narrower administrator cannot take it");
         assert.equal(
           (await replace(secondHeaders, { ...body, expectedCurrentUserId: second.id })).statusCode,
           409,
@@ -168,20 +169,15 @@ test(
         });
         // The former holder still administers the Installation, so it stays reserved too.
         assert.deepEqual(lane, { fresh: 429, former: 200, holder: 200 });
+        const disabled = await changeAccount(app, adminHeaders, holder.id, "disable");
         assert.equal(
-          (
-            await app.inject({
-              method: "POST",
-              url: `/api/auth/accounts/${holder.id}/disable`,
-              headers: adminHeaders,
-              payload: {
-                expectedVersion: (await readAccount(app, adminHeaders, holder.id)).version,
-              },
-            })
-          ).statusCode,
+          disabled.statusCode,
           409,
           "the new holder is protected like the recovery account",
         );
+        // Enable answers 409 too for an account that is not disabled; only the recovery guard
+        // names the recovery account.
+        assert.equal(disabled.json().error.message, "The recovery account cannot be disabled.");
       },
     );
 

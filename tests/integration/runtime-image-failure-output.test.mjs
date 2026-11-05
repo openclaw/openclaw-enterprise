@@ -7,6 +7,7 @@ import { chmod, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { inspect } from "node:util";
 import test from "node:test";
+import { setEnvironment } from "../helpers/environment.mjs";
 import { fileTemporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const reporterMessageLimit = 16_384;
@@ -123,8 +124,7 @@ function assertKeptTail(message, label, limit) {
 }
 
 test("readiness and plugin list failures keep the end of their command output", async (t) => {
-  process.env.FAKE_DOCKER_MODE = "running";
-  t.after(() => delete process.env.FAKE_DOCKER_MODE);
+  setEnvironment(t, { FAKE_DOCKER_MODE: "running" });
   const readiness = await waitForGatewayReady("fake-container", 1).then(
     () => assert.fail("readiness should time out when every probe fails"),
     (failure) => failure,
@@ -158,8 +158,7 @@ test("a Gateway smoke failure with over 16 KiB of logs keeps their final lines w
 });
 
 test("a Gateway smoke failure from a docker command keeps the end of its stderr and of the logs", async (t) => {
-  process.env.FAKE_DOCKER_MODE = "inspect-fails";
-  t.after(() => delete process.env.FAKE_DOCKER_MODE);
+  setEnvironment(t, { FAKE_DOCKER_MODE: "inspect-fails" });
   const error = await runGatewaySmoke(t, "openclaw").then(
     () => assert.fail("the Gateway smoke should fail when docker inspect fails"),
     (failure) => failure,
@@ -199,8 +198,7 @@ test("a log wait fails at once when the container stops first, keeping the end o
 });
 
 test("a follower whose docker wait never returns takes the exit, and its time, from inspect", async (t) => {
-  process.env.FAKE_DOCKER_MODE = "wait-hangs";
-  t.after(() => delete process.env.FAKE_DOCKER_MODE);
+  setEnvironment(t, { FAKE_DOCKER_MODE: "wait-hangs" });
   const follower = followContainer(t, "fake-container");
   assert.equal(follower.read().exitedAt, undefined);
   assert.deepEqual(await follower.inspect(), {
@@ -218,8 +216,7 @@ test("a follower whose docker wait never returns takes the exit, and its time, f
 });
 
 test("an inspect without a real exit time counts the exit from when it was seen", async (t) => {
-  process.env.FAKE_DOCKER_MODE = "wait-hangs-no-finish";
-  t.after(() => delete process.env.FAKE_DOCKER_MODE);
+  setEnvironment(t, { FAKE_DOCKER_MODE: "wait-hangs-no-finish" });
   const follower = followContainer(t, "fake-container");
   const before = Date.now();
   assert.equal((await follower.inspect()).finishedAt, undefined);
@@ -227,8 +224,7 @@ test("an inspect without a real exit time counts the exit from when it was seen"
 });
 
 test("a failed docker wait asks inspect, and an exit older than the start counts from now", async (t) => {
-  process.env.FAKE_DOCKER_MODE = "wait-fails-restarted";
-  t.after(() => delete process.env.FAKE_DOCKER_MODE);
+  setEnvironment(t, { FAKE_DOCKER_MODE: "wait-fails-restarted" });
   const before = Date.now();
   const follower = followContainer(t, "fake-container");
   while (follower.read().exitedAt === undefined) {
@@ -243,8 +239,7 @@ test("a failed docker wait asks inspect, and an exit older than the start counts
 // Finding 2184: a docker run whose output was empty failed with an empty message, so neither
 // the exit code nor a timeout could be told from the CI diagnostics.
 async function dockerFailure(t, mode, args, options) {
-  process.env.FAKE_DOCKER_MODE = mode;
-  t.after(() => delete process.env.FAKE_DOCKER_MODE);
+  setEnvironment(t, { FAKE_DOCKER_MODE: mode });
   return runDocker(args, options).then(
     () => assert.fail(`docker ${mode} should fail`),
     (failure) => failure,
@@ -281,12 +276,7 @@ test("a docker failure never shows a planted synthetic key", async (t) => {
   // One key in the sk- shape the CI redaction knows, one plain value the caller names.
   const key = "sk-oce-planted-synthetic-key-2184";
   const plain = "planted-plain-value-2184";
-  process.env.FAKE_DOCKER_KEY = key;
-  process.env.FAKE_DOCKER_PLAIN = plain;
-  t.after(() => {
-    delete process.env.FAKE_DOCKER_KEY;
-    delete process.env.FAKE_DOCKER_PLAIN;
-  });
+  setEnvironment(t, { FAKE_DOCKER_KEY: key, FAKE_DOCKER_PLAIN: plain });
   const error = await dockerFailure(
     t,
     "leak-key",
@@ -314,8 +304,7 @@ test("a docker failure never shows a planted synthetic key", async (t) => {
 });
 
 test("a docker command's stdin reaches it, and an early exit reports the exit, not the pipe", async (t) => {
-  t.after(() => delete process.env.FAKE_DOCKER_MODE);
-  process.env.FAKE_DOCKER_MODE = "cat";
+  setEnvironment(t, { FAKE_DOCKER_MODE: "cat" });
   const { stdout } = await runDocker(["exec", "-i", "fake-container", "cat"], {}, "stdin text\n");
   assert.equal(stdout, "stdin text\n");
   // The stand-in exits 3 without reading 4 MiB of input.

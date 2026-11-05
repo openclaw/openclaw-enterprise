@@ -1,9 +1,17 @@
-# Testing
+---
+tags: [human_verified]
+# Backfilled from the verification tag recorded in 17ff921c5.
+last_verified: "2026-11-04"
+---
+
+# Testing and CI
 
 ## Overview
 
-Run tests from the repository root. This page lists the test suites and links to
-setup for suites that need external services.
+Choose [local tests](local.md) to check a change, or open the
+[CI check pages](ci.md#checks-and-gates) to see what runs automatically and what
+each result proves. Run commands from the repository root. This page links test
+suites and setup for dependencies such as databases, clusters, and providers.
 
 | Test                  | Purpose                                               | Location                                                                    |
 | --------------------- | ----------------------------------------------------- | --------------------------------------------------------------------------- |
@@ -20,7 +28,7 @@ and which failures block merge, publication, or deployment.
 
 ## Requirements and credentials
 
-Install Node.js 24 or newer, the pnpm version in [`package.json`](../../package.json),
+Install Node.js 24.22.1 or newer, the pnpm version in [`package.json`](../../package.json),
 the Go version in [`go.mod`](../../go.mod), Git, and `tar`:
 
 ```sh
@@ -73,8 +81,8 @@ Choose the scope you need:
 | Scope                     | What it runs                                                                                                                                                  | Setup and commands                                                                                                 |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | Local integration tests   | Component workflows in `tests/integration`; real-service cases skip unless configured.                                                                        | `pnpm test:integration`; use the suite guides under [Further reading](#further-reading) for external dependencies. |
-| Full Integration workflow | Manually selected CI lanes for databases, containers, clusters, and real providers. `all` runs every selectable lane, including `qa-matrix` and `dev-up-k3d`. | [Lane coverage and hosted dispatch](ci.md#run-a-protected-integration-lane).                                       |
-| QA matrix                 | Agent journeys across supported installations.                                                                                                                | [Scenarios, credentials, and commands](ci.md#qa-matrix).                                                           |
+| Full Integration workflow | Manually selected CI lanes for databases, containers, clusters, and real providers. `all` runs every selectable lane, including `qa-matrix` and `dev-up-k3d`. | [Lane coverage and hosted dispatch](ci/full-integration.md#run-a-protected-integration-lane).                      |
+| QA matrix                 | Agent journeys across supported installations.                                                                                                                | [Scenarios, credentials, and commands](ci/qa-advisory.md).                                                         |
 
 For real-service cases, prepare the selected suite first. Some create remote
 resources or send messages. Use authorized disposable resources, scope selectors
@@ -83,7 +91,7 @@ to one run, and run prepared suites one at a time.
 ### Run the hosted local installation lane
 
 For the six `dev-up-k3d` cases, see [local Kubernetes setup](kubernetes.md#local-kubernetes-installation)
-or [hosted dispatch](ci.md#run-the-hosted-local-installation-lane).
+or [hosted dispatch](ci/full-integration.md#run-the-hosted-local-installation-lane).
 
 ## Results, cleanup, and troubleshooting
 
@@ -96,10 +104,12 @@ only resources created by the run.
 
 - [GitHub Actions cheat sheet](../reference/cheatsheets/github-actions.md): workflows, triggers, and blocking failures.
 - [Local, browser, and metrics tests](local.md)
-- [CI configuration and hosted test lanes](ci.md)
+- [Manual tests](manual-tests.md): lanes without GitHub workflows and their setup requirements.
+- [CI checks](ci.md), [configuration](ci/configuration.md), and [lane execution](ci/run-lanes.md)
 - [PostgreSQL](postgresql.md)
 - [Docker, images, and Helm](docker.md)
 - [Kubernetes, Keycloak, gateway routing, and production TUI](kubernetes.md)
+- [Populated controller return](populated-controller-return.md) checks that the previous controller can read a draft saved by the candidate after a database restore.
 - [OpenShell](openshell.md)
 - [Protected inference](static-egress.md): source checks, PostgreSQL proof, and prepared OpenShell qualification.
 - [Protected repository custody](protected-repository-custody.md): qualify dispatch and response handling on an installed controller and OpenShell pair.
@@ -108,6 +118,5 @@ only resources created by the run.
 - [Repository credentials](repository-credentials.md)
 - [Slack and ChatGPT service accounts](slack.md)
 - [Test fixtures and scenarios](fixtures-and-scenarios.md)
-- [Module and repository boundaries](module-boundaries.md)
 - [Developer skills](developer-skills.md)
 - [Code review](autoreview.md)

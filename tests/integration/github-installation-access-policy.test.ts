@@ -12,6 +12,10 @@ import { signComputeExecutionRelease } from "../../apps/controller/src/drivers/c
 import { validateGitHubRepositoryRegistry as registry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { normalizedRepositoryAccess } from "../../packages/occ/src/state/repository-credential-state.ts";
 
+// Runtime policy decisions cannot detect accidental widening of this constructor input.
+// @ts-expect-error Repository policy receives identity fields, never a transport client.
+type _PolicyTransport = ConstructorParameters<typeof GitHubRepositoryPolicy>[0]["client"];
+
 const namespaceId = "first";
 const repositoryRef = "team-installation";
 const policy = { namespaceId, accessMode: "installation" };
@@ -48,11 +52,31 @@ function config(namespacePolicy: unknown, options = {}) {
 }
 function driver(options: unknown) {
   return new GitHubRepositoryPolicy(
-    { id: registration.backendId, drivers: { repo: "repo" }, client: undefined },
+    { driverId: "repo", backendId: registration.backendId },
     registry(options),
     { sessionDurationSeconds: 600 },
   );
 }
+
+test("policy validates the registry against the selected Backend", () => {
+  const build = (owner: ConstructorParameters<typeof GitHubRepositoryPolicy>[0], duration = 600) =>
+    new GitHubRepositoryPolicy(owner, registry(config(policy)), {
+      sessionDurationSeconds: duration,
+    });
+  const selected = { driverId: "selected-repo", backendId: registration.backendId };
+  assert.equal(build(selected).id, selected.driverId);
+  assert.throws(
+    () => build({ ...selected, backendId: "another-backend" }),
+    /invalid-repository-registry/,
+  );
+  // An untyped caller must not disable the registry validator's optional expected-ID check.
+  // @ts-expect-error The selected Backend is required.
+  assert.throws(() => build({ driverId: selected.driverId }), /owning Backend/);
+  for (const driverId of ["", "bad\nidentity", "é".repeat(257)]) {
+    assert.throws(() => build({ ...selected, driverId }), /repository policy Driver/);
+  }
+  assert.throws(() => build(selected, 601), /session duration exceeds/);
+});
 
 test("only explicit Namespace and Agent selections allow GitHub installation scope", async () => {
   const options = config(policy);

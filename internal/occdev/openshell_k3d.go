@@ -23,7 +23,7 @@ import (
 const (
 	developmentAPINodePort = 30080
 	developmentController  = "openclaw-enterprise-controller:kubernetes-quickstart"
-	developmentNodeBase    = "docker.io/library/node:24-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0"
+	developmentNodeBase    = "docker.io/library/node:24.22.1-bookworm@sha256:6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a"
 	developmentPostgres    = "docker.io/library/postgres:18.6@sha256:86c951e05bf56c93d95d397747fb8820ac76cc3bedb78f43abd83eedbe3666ae"
 )
 
@@ -57,8 +57,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	if len(opts.ComposeArgs) != 0 {
 		return fmt.Errorf("the Kubernetes-only profile does not accept Compose options")
 	}
-	protectedEgress, err := r.protectedEgressSelection("kubernetes", sandboxDriver)
-	if err != nil {
+	if err := r.protectedEgressSelection(); err != nil {
 		return err
 	}
 	databaseName, err := r.selectedDevelopmentDatabase("kubernetes")
@@ -88,22 +87,19 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	if err != nil {
 		return err
 	}
-	if apiPort == kubernetesPort {
-		return fmt.Errorf("development API and Kubernetes API ports must differ")
+	if err := checkAPIKubernetesPorts(apiPort, kubernetesPort); err != nil {
+		return err
 	}
 	signIn, err := developmentSignIn(r.env)
 	if err != nil {
 		return err
 	}
-	browserPort := 0
-	if sandboxDriver == "none" {
-		browserPort, err = positiveSetting(r, "OCC_DEVELOPMENT_BROWSER_PORT", 8443, 65535)
-		if err != nil {
-			return err
-		}
-		if browserPort == apiPort || browserPort == kubernetesPort {
-			return fmt.Errorf("browser, development API, and Kubernetes API ports must differ")
-		}
+	browserPort, err := positiveSetting(r, "OCC_DEVELOPMENT_BROWSER_PORT", 8443, 65535)
+	if err != nil {
+		return err
+	}
+	if browserPort == apiPort || browserPort == kubernetesPort {
+		return fmt.Errorf("browser, development API, and Kubernetes API ports must differ")
 	}
 	if signIn == developmentSignInKeycloak && (browserPort == developmentKeycloakHostPort || apiPort == developmentKeycloakHostPort || kubernetesPort == developmentKeycloakHostPort) {
 		return fmt.Errorf("port 443 is reserved for Keycloak; browser, development API, and Kubernetes API ports must use other ports")
@@ -120,9 +116,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		SandboxNetworkPolicies:      networkPolicies,
 		SandboxNetworkPolicyCeiling: ceiling,
 		Version:                     3,
-		ProtectedEgress:             protectedEgress,
 		DatabaseName:                databaseName,
-		OpenShellHostGatewayIP:      r.env["OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP"],
 		Repository:                  opts.Repository,
 		ComputeDriver:               "kubernetes",
 		SandboxDriver:               sandboxDriver,
@@ -138,6 +132,11 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	}
 	if err := validateClusterName(state.Cluster); err != nil {
 		return err
+	}
+	if sandboxDriver == "openshell" {
+		consoleHost, agentDomain, _ := developmentBrowserHosts(state.Cluster)
+		state.BrowserOrigin = developmentBrowserOrigin(consoleHost, browserPort)
+		state.NativeAdminDomain = agentDomain
 	}
 	if signIn == developmentSignInKeycloak {
 		if err := checkDevelopmentKeycloakHostPort(fmt.Sprintf("127.0.0.1:%d", developmentKeycloakHostPort)); err != nil {
@@ -164,11 +163,6 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 			return fmt.Errorf("%s is required on PATH", name)
 		}
 	}
-	if state.ProtectedEgress {
-		if err := r.checkProtectedOpenShellChart(ctx, state, openShellImages); err != nil {
-			return err
-		}
-	}
 	if err := r.selectImageEngine(ctx, r.setting("OCC_DEVELOPMENT_CONTAINER_ENGINE", "auto")); err != nil {
 		return err
 	}
@@ -179,6 +173,10 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		return err
 	}
 	if err := r.checkLegacyNATTable(ctx); err != nil {
+		return err
+	}
+	// The revision checks read images the local engine lacks from the registry.
+	if err := r.selectDevelopmentImageRegistry(ctx); err != nil {
 		return err
 	}
 	if err := r.validateDevelopmentImageRevisions(ctx); err != nil {
@@ -210,6 +208,13 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	defer func() {
 		defer lock.Close()
 		if result == nil {
+			return
+		}
+		if os.Getenv("OCC_DEVELOPMENT_KEEP_ON_FAILURE") != "" {
+			// Inspection override: keep the failed stack, the state directory, and
+			// any copied service key for diagnosis; occ dev down with the same
+			// state directory performs the cleanup.
+			fmt.Fprintf(r.opts.Out, "OCC_DEVELOPMENT_KEEP_ON_FAILURE is set; kept the failed stack and %s for inspection. Run occ dev down with the same state directory to clean up.\n", directory)
 			return
 		}
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -270,63 +275,101 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	}
 	r.env["KUBECONFIG"] = filepath.Join(directory, "kubeconfig")
 	timeout := time.Duration(timeoutSeconds) * time.Second
+	// The node pulls registry-pinned images while the registry is attached to
+	// the cluster network. The last pull detaches it; the checks below and the
+	// deferred detach (which runs before the rollback deletes the network)
+	// cover images that were never pulled.
+	if err := r.attachDevelopmentImageRegistry(ctx, state); err != nil {
+		return errors.Join(err, r.detachDevelopmentImageRegistry(ctx))
+	}
+	defer func() {
+		if err := r.detachDevelopmentImageRegistry(ctx); err != nil {
+			result = errors.Join(result, err)
+		}
+	}()
 
 	var runtimeImage string
-	var codexSeccompProfile string
 	if sandboxDriver == "none" {
 		runtimeImage, err = r.importRuntime(ctx, state)
 		if err != nil {
 			return err
 		}
-		codexSeccompProfile, err = r.prepareDevelopmentCodexSandbox(ctx, state, runtimeImage, timeoutSeconds)
-		if err != nil {
-			return err
-		}
 	}
 
-	// Dedicated Harnesses, including OpenShell-owned Codex, require private
-	// Agent Gateway routing for workspace-node enrollment.
-	fmt.Fprintln(r.opts.Out, "Installing pinned private routing controllers...")
-	routingPodCIDR, err := r.installDevelopmentRoutingControllers(ctx, state, timeout)
-	if err != nil {
-		return err
-	}
-	if sandboxDriver == "openshell" {
-		runtimeImage, err = r.importRuntime(ctx, state)
-		if err != nil {
-			return err
-		}
-	}
-	controllerImage, err := r.importDevelopmentController(ctx, state)
-	if err != nil {
-		return err
-	}
-	postgresImage, err := r.importDevelopmentPostgres(ctx, state)
-	if err != nil {
-		return err
-	}
-	var repositoryImage string
-	if repositoryInputs != nil {
-		repositoryImage, err = r.importDevelopmentRepositoryService(ctx, state)
-		if err != nil {
-			return err
-		}
-	}
-	if routingPodCIDR != "" {
-		fmt.Fprintln(r.opts.Out, "Verifying Kubernetes network isolation before configuring gateway trust...")
-		if err := r.verifyDevelopmentNetworkPolicy(ctx, state, controllerImage, "", "", false, timeout); err != nil {
-			return err
-		}
-	}
+	// Nothing below needs the controller, PostgreSQL or repository images until
+	// the network check, so import them while the Codex sandbox check and the
+	// routing controller rollouts wait on the cluster. OpenShell's runtime follows
+	// PostgreSQL/repository imports in the same sibling, so builds stay serial. The
+	// network check needs only the controller image and runs in this overlap
+	// too; the platform install below still waits for it.
+	var codexSeccompProfile, routingPodCIDR string
+	var controllerImage, postgresImage, repositoryImage string
 	var assets *openShellDevelopmentAssets
-	if sandboxDriver == "openshell" {
-		// Import the larger platform images first so image garbage collection cannot
-		// evict idle OpenShell images before their workloads are installed.
-		fmt.Fprintln(r.opts.Out, "Preparing pinned OpenShell development assets...")
-		assets, err = r.prepareOpenShell(ctx, state, timeout)
-		if err != nil {
-			return err
+	err = r.concurrently(ctx, func(ctx context.Context, r *runner) error {
+		var err error
+		if sandboxDriver == "none" {
+			codexSeccompProfile, err = r.prepareDevelopmentCodexSandbox(ctx, state, runtimeImage, timeoutSeconds)
+			if err != nil {
+				return err
+			}
 		}
+		// Dedicated Harnesses, including OpenShell-owned Codex, require private
+		// Agent Gateway routing for workspace-node enrollment.
+		fmt.Fprintln(r.opts.Out, "Installing pinned private routing controllers...")
+		routingPodCIDR, err = r.installDevelopmentRoutingControllers(ctx, state, timeout)
+		if err != nil {
+			return fmt.Errorf("install the private routing controllers: %w", err)
+		}
+		return nil
+	}, func(ctx context.Context, r *runner) error {
+		var err error
+		fmt.Fprintln(r.opts.Out, "Importing the controller and PostgreSQL images alongside the cluster checks...")
+		controllerImage, err = r.importDevelopmentController(ctx, state)
+		if err != nil {
+			return fmt.Errorf("import the development controller image: %w", err)
+		}
+		// The probe Pods run the controller image. The check creates its own
+		// Namespaces and policy and no routing resources, and its probes wait on
+		// timeouts, so it runs while the remaining images import. When a sibling
+		// fails, the check still removes its probe resources before the rollback.
+		return r.concurrently(ctx, func(ctx context.Context, r *runner) error {
+			fmt.Fprintln(r.opts.Out, "Verifying Kubernetes network isolation before configuring gateway trust...")
+			return r.verifyDevelopmentNetworkPolicy(ctx, state, controllerImage, "", "", false, timeout)
+		}, func(ctx context.Context, r *runner) error {
+			var err error
+			postgresImage, err = r.importDevelopmentPostgres(ctx, state)
+			if err != nil {
+				return fmt.Errorf("import the development PostgreSQL image: %w", err)
+			}
+			if repositoryInputs != nil {
+				repositoryImage, err = r.importDevelopmentRepositoryService(ctx, state)
+				if err != nil {
+					return fmt.Errorf("import the development repository service image: %w", err)
+				}
+			}
+			if sandboxDriver == "openshell" {
+				runtimeImage, err = r.importRuntime(ctx, state)
+				if err != nil {
+					return err
+				}
+				// Large image imports finish before the smaller OpenShell assets, so
+				// image GC cannot evict them. Prepare the controller/CRDs and images
+				// while probes finish; platform trust and credentials still wait below
+				// for successful network verification and every preparation branch.
+				fmt.Fprintln(r.opts.Out, "Preparing pinned OpenShell development assets...")
+				assets, err = r.prepareOpenShell(ctx, state, timeout)
+				if err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+	})
+	if err != nil {
+		return err
+	}
+	if err := r.detachDevelopmentImageRegistry(ctx); err != nil {
+		return err
 	}
 	if err := r.installDevelopmentPlatform(ctx, state, developmentPlatformInputs{
 		openShell: assets, runtimeImage: runtimeImage, controllerImage: controllerImage,
@@ -402,7 +445,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	return nil
 }
 
-// Install the interdependent platform releases before their final readiness gate.
+// Install the authenticated Gateway before the ordinary OCE release.
 // The caller owns cluster rollback, including a partially installed release.
 type developmentPlatformInputs struct {
 	openShell                                    *openShellDevelopmentAssets
@@ -414,11 +457,6 @@ func (r *runner) installDevelopmentPlatform(ctx context.Context, state *developm
 	if err := r.ensureKubernetesNamespace(ctx, state.PlatformNamespace); err != nil {
 		return err
 	}
-	if state.ProtectedEgress {
-		if err := r.prepareDevelopmentEgress(ctx, state); err != nil {
-			return err
-		}
-	}
 	if state.SandboxDriver == "openshell" {
 		fmt.Fprintf(r.opts.Out, "Installing OpenShell Gateway and OCE in Namespace %s...\n", state.PlatformNamespace)
 		if err := r.installOpenShellGateway(ctx, state, inputs.openShell, state.PlatformNamespace, timeout); err != nil {
@@ -426,11 +464,6 @@ func (r *runner) installDevelopmentPlatform(ctx context.Context, state *developm
 		}
 	} else {
 		fmt.Fprintf(r.opts.Out, "Installing OCE in Namespace %s...\n", state.PlatformNamespace)
-	}
-	if state.ProtectedEgress {
-		if err := r.readDevelopmentEgressKeyID(ctx, state); err != nil {
-			return err
-		}
 	}
 	statusProxySource, err := r.developmentStatusProxySource(ctx, state)
 	if err != nil {
@@ -510,6 +543,10 @@ func (r *runner) validateDevelopmentImageRevisions(ctx context.Context) error {
 	if controller == "" {
 		return nil
 	}
+	return r.validateSelectedDevelopmentImageRevisions(ctx, controller, r.env["OCC_KUBERNETES_RUNTIME_IMAGE"])
+}
+
+func (r *runner) validateSelectedDevelopmentImageRevisions(ctx context.Context, images ...string) error {
 	checkout, err := r.output(ctx, "git", "rev-parse", "--verify", "HEAD")
 	if err != nil {
 		return fmt.Errorf("resolve the checkout revision for selected images: %w", err)
@@ -518,23 +555,56 @@ func (r *runner) validateDevelopmentImageRevisions(ctx context.Context) error {
 	if len(revision) != 40 || strings.Trim(revision, "0123456789abcdef") != "" {
 		return fmt.Errorf("the checkout must have a full Git commit revision")
 	}
-	for _, image := range []string{controller, r.env["OCC_KUBERNETES_RUNTIME_IMAGE"]} {
-		label, err := r.output(ctx, r.engine, "image", "inspect", "--format", `{{ index .Config.Labels "org.opencontainers.image.revision" }}`, image)
+	for _, image := range images {
+		label, err := r.developmentImageRevision(ctx, image)
 		if err != nil {
-			return fmt.Errorf("selected image must exist locally and expose its source revision: %s", image)
+			return err
 		}
-		if string(label) != revision {
+		if label != revision {
 			return fmt.Errorf("selected image revision does not match checkout %s: %s", revision, image)
 		}
 	}
 	return nil
 }
 
+// developmentImageRevision reads a selected image's source revision label from
+// the local engine. An image the engine lacks may instead be pinned by digest
+// to the development image registry, whose verified config is read.
+func (r *runner) developmentImageRevision(ctx context.Context, image string) (string, error) {
+	label, err := r.output(ctx, r.engine, "image", "inspect", "--format", `{{ index .Config.Labels "org.opencontainers.image.revision" }}`, image)
+	if err == nil {
+		return string(label), nil
+	}
+	if _, _, ok := r.imageRegistry.source(image); !ok {
+		return "", fmt.Errorf("selected image must exist locally and expose its source revision: %s", image)
+	}
+	selected, err := r.readRegistryImage(ctx, image)
+	if err != nil {
+		return "", fmt.Errorf("selected image must exist locally or in the development image registry and expose its source revision: %w", err)
+	}
+	return selected.Labels["org.opencontainers.image.revision"], nil
+}
+
+// requireSelectedDevelopmentImage checks that an explicitly selected image
+// exists locally, or in the development image registry that serves it.
+func (r *runner) requireSelectedDevelopmentImage(ctx context.Context, role, image string) error {
+	if _, err := r.output(ctx, r.engine, "image", "inspect", image); err == nil {
+		return nil
+	}
+	if _, _, ok := r.imageRegistry.source(image); ok {
+		if _, err := r.readRegistryImage(ctx, image); err != nil {
+			return fmt.Errorf("explicitly selected %s image must already exist locally or in the development image registry: %w", role, err)
+		}
+		return nil
+	}
+	return fmt.Errorf("explicitly selected %s image must already exist locally: %s", role, image)
+}
+
 func (r *runner) importDevelopmentController(ctx context.Context, state *developmentState) (string, error) {
 	image := r.setting("OCC_DEVELOPMENT_CONTROLLER_IMAGE", developmentController)
 	if r.env["OCC_DEVELOPMENT_CONTROLLER_IMAGE"] != "" {
-		if _, err := r.output(ctx, r.engine, "image", "inspect", image); err != nil {
-			return "", fmt.Errorf("explicitly selected controller image must already exist locally: %s", image)
+		if err := r.requireSelectedDevelopmentImage(ctx, "controller", image); err != nil {
+			return "", err
 		}
 	} else {
 		base := r.setting("OCC_DEVELOPMENT_NODE_BASE_IMAGE", developmentNodeBase)
@@ -651,9 +721,8 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 	if err := r.writeAndApply(ctx, state, "bootstrap-password-prepare", prepare); err != nil {
 		return err
 	}
-	if err := r.waitPodSucceeded(ctx, namespace, "bootstrap-password-prepare", timeout); err != nil {
-		return err
-	}
+	// PostgreSQL does not mount the bootstrap volume, so it starts while the
+	// prepare Pod runs.
 	// A StatefulSet, not a bare Pod: k3d cluster stop/start and host reboots
 	// delete bare Pods, and the controller recreates PostgreSQL on its claim.
 	postgresLabels := map[string]string{"app": "postgres", "app.kubernetes.io/managed-by": "openclaw-development"}
@@ -686,6 +755,10 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 		return err
 	}
 	if err := r.run(ctx, "kubectl", "-n", namespace, "rollout", "status", "statefulset/postgres", "--timeout", timeout.String()); err != nil {
+		return err
+	}
+	// The chart's bootstrap writes to the prepared volume.
+	if err := r.waitPodSucceeded(ctx, namespace, "bootstrap-password-prepare", timeout); err != nil {
 		return err
 	}
 	postgresIP, err := r.output(ctx, "kubectl", "-n", namespace, "get", "pod", "postgres-0", "-o", "jsonpath={.status.podIP}")
@@ -722,18 +795,18 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 		return err
 	}
 	values := map[string]any{
-		"images":       map[string]string{"controller": controllerImage},
-		"installation": map[string]string{"name": "Kubernetes development"},
-		"auth":         map[string]string{"baseUrl": fmt.Sprintf("http://127.0.0.1:%d", state.APIPort)},
-		"bootstrap":    map[string]any{"adminEmail": developmentAdministratorEmail, "password": map[string]string{"claimName": "bootstrap-password"}},
-		"database":     map[string]any{"cidrs": []string{string(postgresIP) + "/32"}},
-		"cluster":      map[string]any{"cidrs": []string{string(clusterIP) + "/32"}, "port": clusterPort},
-		"api":          map[string]any{"clients": []any{map[string]any{"namespace": namespace, "podLabels": map[string]string{"app.kubernetes.io/name": "occ-kubernetes-dev-client"}}}},
-		"resources":    resources,
+		"images":         map[string]string{"controller": controllerImage},
+		"installation":   map[string]string{"name": "Kubernetes development"},
+		"auth":           map[string]string{"baseUrl": fmt.Sprintf("http://127.0.0.1:%d", state.APIPort)},
+		"bootstrap":      map[string]any{"adminEmail": developmentAdministratorEmail, "password": map[string]string{"claimName": "bootstrap-password"}},
+		"database":       map[string]any{"cidrs": []string{string(postgresIP) + "/32"}},
+		"cluster":        map[string]any{"cidrs": []string{string(clusterIP) + "/32"}, "port": clusterPort},
+		"api":            map[string]any{"clients": []any{map[string]any{"namespace": namespace, "podLabels": map[string]string{"app.kubernetes.io/name": "occ-kubernetes-dev-client"}}}},
+		"resources":      resources,
+		"gatewayRouting": map[string]any{"enabled": routing},
 	}
-	if state.ProtectedEgress {
+	if state.authenticatedOpenShell() {
 		values["backend"] = map[string]any{"openshell": map[string]string{"clientSecretName": "openshell-client-tls"}}
-		values["egressAuthority"] = developmentEgressChartValues(state)
 	}
 	if routing {
 		gatewayKey, err := randomDevelopmentSecret()
@@ -744,8 +817,6 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 		if err := r.writeAndApply(ctx, state, "gateway-api-key", gatewaySecret); err != nil {
 			return err
 		}
-		// Private Agent routing does not imply a published HTTPS Console. The
-		// OpenShell profile signs in through the loopback HTTP API instead.
 		if state.BrowserPort != 0 {
 			consoleHost, agentDomain, cookieDomain := developmentBrowserHosts(state.Cluster)
 			if err := writeDevelopmentTLS(state.directory, "browser", "OCC development browser CA", []string{consoleHost, "*." + agentDomain}); err != nil {
@@ -764,10 +835,7 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 				return err
 			}
 			values["auth"] = map[string]string{"baseUrl": developmentBrowserOrigin(consoleHost, state.BrowserPort)}
-			// OpenShell-owned Harnesses do not serve the native admin UI.
-			if state.SandboxDriver == "none" {
-				values["agentNativeAdmin"] = map[string]any{"enabled": true, "domain": agentDomain, "sharedCookieDomain": cookieDomain}
-			}
+			values["agentNativeAdmin"] = map[string]any{"enabled": true, "domain": agentDomain, "sharedCookieDomain": cookieDomain}
 		}
 		values["gatewayRouting"] = map[string]any{"enabled": true, "gatewayClassName": "eg", "apiKeySecretName": "occ-private-gateway-key"}
 		if hostname := developmentRoutingHostname(state); hostname != "" {
@@ -782,26 +850,10 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 	if err := exclusiveWrite(valuesPath, valuesData, 0600); err != nil {
 		return err
 	}
-	// The protected Gateway needs the API's authority to become ready. Keep
-	// the worker from claiming bootstrap work until its access and Gateway are
-	// in place. Override only this release, not the saved steady-state values.
-	install := []string{"--install"}
-	if state.ProtectedEgress {
-		install = append(install, "--set", "worker.replicaCount=0")
-	}
-	if err := r.helmUpgrade(ctx, state, valuesPath, timeout, install...); err != nil {
+	if err := r.helmUpgrade(ctx, state, valuesPath, timeout, "--install"); err != nil {
 		return err
 	}
-	if err := r.installDevelopmentAPIProxy(ctx, state, controllerImage, timeout); err != nil {
-		return err
-	}
-	if !state.ProtectedEgress {
-		return nil
-	}
-	if err := r.waitProtectedOpenShell(ctx, state, timeout); err != nil {
-		return fmt.Errorf("wait for protected OpenShell Gateway rollout before starting worker: %w", err)
-	}
-	return r.helmUpgrade(ctx, state, valuesPath, timeout, "--set", "worker.replicaCount=1")
+	return r.installDevelopmentAPIProxy(ctx, state, controllerImage, timeout)
 }
 
 // helmUpgrade installs or upgrades the chart from one complete values file.
@@ -1105,7 +1157,9 @@ func (r *runner) copyAndVerifyKubernetesKey(ctx context.Context, state *developm
 	reader := map[string]any{
 		"apiVersion": "v1", "kind": "Pod", "metadata": kubernetesMetadata("bootstrap-key-reader", state.PlatformNamespace, labels),
 		"spec": map[string]any{
-			"restartPolicy": "Never", "automountServiceAccountToken": false,
+			// Node runs as PID 1 and ignores SIGTERM, so the deferred delete below
+			// would otherwise wait out the default 30-second grace period.
+			"restartPolicy": "Never", "automountServiceAccountToken": false, "terminationGracePeriodSeconds": 1,
 			"securityContext": map[string]any{"runAsNonRoot": true, "runAsUser": 1000, "runAsGroup": 1000, "fsGroup": 1000, "seccompProfile": map[string]string{"type": "RuntimeDefault"}},
 			"containers": []any{map[string]any{
 				"name": "reader", "image": controllerImage, "imagePullPolicy": "Never", "command": []string{"node", "-e", "setInterval(()=>{},1<<30)"},

@@ -10,8 +10,8 @@ import { once } from "node:events";
 import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join } from "node:path";
-import { teamReviewProof } from "../../tests/fixtures/skipper-team-review-journey.mjs";
-import { imageConfigDigest } from "./image-config-digest.mjs";
+import { skipperInstalledProof, skipperImageScope } from "./skipper-release.ts";
+import { imageConfigDigest } from "./image-config-digest.ts";
 import { createInterface } from "node:readline";
 import {
   kubectl,
@@ -63,20 +63,7 @@ const privateResult = join(directory, "selected-test-result.json");
 const registry = env.OCC_SKIPPER_IMAGE_REGISTRY_CONTAINER;
 assert.match(registry, /^[a-f0-9]{64}$/);
 const cleanup = [() => run("docker", ["rm", "--force", "--volumes", registry])];
-const proof = [
-  "deployed-revision-gateway-and-harness-ready",
-  "chat-before-private-git-verified",
-  "prepared-before-native-git",
-  ...(env.OCC_TEST_SKIPPER_TEAM_REVIEW === "1"
-    ? teamReviewProof
-    : ["native-commit-confirmed-by-independent-fetch"]),
-  "wrong-repository-hook-refusal-and-broker-denied-mixed-push",
-  "native-authenticated-post-after-withdrawal-refused",
-  "fresh-authenticated-fetch-after-effective-withdrawal-refused",
-  "same-compute-owned-skipper-chat-after-git-withdrawal-verified",
-  "same-compute-owned-skipper-chat-git-and-live-withdrawal-observed",
-  "owned-agent-retired-cluster-cleanup-still-required",
-];
+const proof = skipperInstalledProof(env.OCC_TEST_SKIPPER_TEAM_REVIEW === "1");
 const progress = (name) => console.log("Private Git acceptance: " + name);
 const noCluster = async () => {
   const names = await output("docker", ["ps", "-a", "--format", "{{.Names}}"]);
@@ -434,6 +421,7 @@ if (failed) {
     counts,
     exitCode,
     imageDigests,
+    imageScope: skipperImageScope,
     files: [{ path, status, counts, cleanup: testCleanup, tests: [{ name, status, durationMs }] }],
     proof: [...proof, "owned-cluster-and-synthetic-model-removed"],
   };

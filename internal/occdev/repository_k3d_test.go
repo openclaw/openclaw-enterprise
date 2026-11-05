@@ -288,6 +288,10 @@ func parseGeneratedRepositoryStartup(t *testing.T, realNode string, state *devel
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The broker checks every ancestor of its private files. t.TempDir's mode depends on the caller's umask.
+	if err := os.Chmod(root, 0700); err != nil {
+		t.Fatal(err)
+	}
 	// The broker derives its prepared-material socket beside the control socket,
 	// and a Unix socket path must stay short.
 	sockets, err := os.MkdirTemp("/tmp", "rc-")

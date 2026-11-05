@@ -10,14 +10,20 @@
 {{- end -}}
 {{- toYaml .value -}}
 {{- end -}}
+{{- /* YAML and --set read yes/no, on/off, true/false or a bare number as a boolean or number, which would otherwise render as the name "true" or "1". Same rule and message as the openclaw-enterprise chart's openclaw.requireString. */ -}}
+{{- define "openclaw-execution.requireString" -}}
+{{- if not (kindIs "string" .value) -}}
+{{- fail (printf "%s must be a string: quote a value YAML reads as a number or boolean, or pass it with --set-string" .label) -}}
+{{- end -}}
+{{- end -}}
 {{- $r := .Values.routing }}
 {{- if or (not $r.hostname) (not $r.gatewayClassName) (not $r.tlsSecretName) (not $r.controlPlaneCidrs) }}
 {{- fail "routing requires hostname, GatewayClass, TLS Secret, and observed control-plane source CIDRs" }}
 {{- end }}
-{{- /* YAML and --set read an all-digit or true/false hostname as a number or boolean, which len cannot measure. */ -}}
-{{- if not (kindIs "string" $r.hostname) }}
-{{- fail "routing.hostname must be a string: quote a hostname YAML reads as a number or boolean, or pass it with --set-string" }}
+{{- range $key := list "hostname" "gatewayClassName" "gatewayName" "envoyNamespace" "tlsSecretName" }}
+{{- include "openclaw-execution.requireString" (dict "label" (printf "routing.%s" $key) "value" (index $r $key)) }}
 {{- end }}
+{{- include "openclaw-execution.requireString" (dict "label" "dns.namespace" "value" $.Values.dns.namespace) }}
 {{- /* Compute validateDnsHostname refuses the same harness routing hostname at startup. */ -}}
 {{- if or (gt (len $r.hostname) 253) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$" $r.hostname)) }}
 {{- fail "routing.hostname must be a DNS hostname without a port or path" }}

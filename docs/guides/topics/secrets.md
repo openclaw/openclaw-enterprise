@@ -34,9 +34,8 @@ The API procedure below supports protected-file input.
    explains who can grant it. Namespace access or possession of the Secret ID
    does not grant permission to consume the value.
 
-For an Installation created by the local Quickstart, [Deploy your first Agent](../first-agent.md)
-grants that exact permission to the Agent it creates. Shared Installations still
-require an administrator with access to the configured IAM authority.
+Follow [Grant the Agent access to its model Secret](../deploy/production-agents.md#grant-the-agent-access-to-its-model-secret).
+This requires an administrator with access to the configured IAM authority.
 
 ## Rotate or remove a Secret
 

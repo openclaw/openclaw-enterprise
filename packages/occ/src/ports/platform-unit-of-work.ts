@@ -111,6 +111,7 @@ export function bindPlatformUnitOfWork(
       "listAgentsForBrowsing",
       "findAgent",
       "listAgents",
+      "hasAgentNamed",
       "listAgentReferences",
       "createAgent",
       "lockAgent",
@@ -122,6 +123,7 @@ export function bindPlatformUnitOfWork(
       "transitionAgentStatus",
     ]),
     revisions: bindRepository(repositories.revisions, lifetime, [
+      "findFirstDeploymentReceipt",
       "findRevisionForBrowsing",
       "listRevisionsForBrowsing",
       "findRevision",

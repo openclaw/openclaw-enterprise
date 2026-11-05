@@ -82,8 +82,8 @@ export function createMarkdownRenderer() {
   md.renderer.rules.heading_close = (tokens, idx, options, env, self) => {
     const headingOpen = tokens[idx - 2];
     const id = headingOpen?.type === "heading_open" ? headingOpen.attrGet("id") : "";
-    const copyAnchor = id ? headingAnchorButton(id) : "";
-    return `${copyAnchor}${renderHeadingClose(tokens, idx, options, env, self)}`;
+    const anchor = id ? headingAnchorLink(id) : "";
+    return `${anchor}${renderHeadingClose(tokens, idx, options, env, self)}`;
   };
   md.renderer.rules.fence = renderFence;
   return md;
@@ -93,8 +93,8 @@ function renderToken(tokens, idx, options, _env, self) {
   return self.renderToken(tokens, idx, options);
 }
 
-function headingAnchorButton(id) {
-  return `<button type="button" class="heading-anchor" data-heading-anchor="${escapeAttr(id)}" data-copy-label="Copy link to section" aria-label="Copy link to section">${headingLinkIcon()}${headingCheckIcon()}</button>`;
+function headingAnchorLink(id) {
+  return `<a href="#${escapeAttr(encodeURIComponent(id))}" class="heading-anchor" data-heading-anchor="${escapeAttr(id)}" aria-label="Link to section">${headingLinkIcon()}${headingCheckIcon()}</a>`;
 }
 
 function headingLinkIcon() {

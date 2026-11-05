@@ -1,17 +1,28 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { appendFile, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { appendFile, cp, mkdir, readFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 test("CLI release builds four installable platform binaries and rejects changed assets", async (t) => {
   const directory = await temporaryDirectory(t, "oce-cli-release-test-");
+  // Keep current-directory packaging inside an owned source fixture, never the checkout.
+  const source = join(directory, "source");
+  await mkdir(source);
+  for (const path of ["cmd", "internal", "go.mod", "go.sum", "package.json"]) {
+    await cp(path, join(source, path), { recursive: true });
+  }
+  await mkdir(join(source, "deploy/helm/openclaw-enterprise"), { recursive: true });
+  await cp(
+    "deploy/helm/openclaw-enterprise/Chart.yaml",
+    join(source, "deploy/helm/openclaw-enterprise/Chart.yaml"),
+  );
   const output = join(directory, "dist");
   // Builds use the toolchain's normal cache (GOCACHEPROG or the setup-go cache on CI, the user
   // cache locally). A fresh cache recompiled the standard library for four platforms every run.
-  const script = "scripts/ci/cli-release.mjs";
-  execFileSync(process.execPath, [script, "package", output]);
+  const script = resolve("scripts/ci/cli-release.mjs");
+  execFileSync(process.execPath, [script, "package", output], { cwd: source });
 
   const { version } = JSON.parse(await readFile("package.json", "utf8"));
   const names = [
@@ -40,13 +51,14 @@ test("CLI release builds four installable platform binaries and rejects changed 
     execFileSync(join(output, native), ["installation", "--help"], { encoding: "utf8" }),
     /installation/u,
   );
-  execFileSync(process.execPath, [script, "verify", output]);
+  execFileSync(process.execPath, [script, "verify", output], { cwd: source });
 
   // Rebuilding the same source after a partial publication must preserve the
-  // exact binary bytes so a draft-release retry can compare them safely.
-  const retry = join(directory, "retry");
+  // exact binary bytes so a draft-release retry can compare them safely. Use the
+  // current source directory on retry, which must execute the built file rather than search PATH.
+  const retry = source;
   await new Promise((resolve) => setTimeout(resolve, 2_000));
-  execFileSync(process.execPath, [script, "package", retry]);
+  execFileSync(process.execPath, [script, "package", "."], { cwd: source });
   assert.deepEqual(
     await readFile(join(output, "SHA256SUMS")),
     await readFile(join(retry, "SHA256SUMS")),
@@ -54,7 +66,10 @@ test("CLI release builds four installable platform binaries and rejects changed 
 
   // A changed executable must be rejected before the publication job uploads it.
   await appendFile(join(output, native), "changed");
-  const rejected = spawnSync(process.execPath, [script, "verify", output], { encoding: "utf8" });
+  const rejected = spawnSync(process.execPath, [script, "verify", output], {
+    encoding: "utf8",
+    cwd: source,
+  });
   assert.notEqual(rejected.status, 0);
   assert.match(rejected.stderr, /differs from SHA256SUMS/u);
 });

@@ -1,3 +1,4 @@
+import { createStatusWirePrimitives } from "./status-wire.ts";
 import { servePrivateRepositoryRequest } from "./private-request-server.ts";
 import type { PlatformStateStore } from "@openclaw-enterprise/occ";
 import { isBoundInput, snapshotSessionInput } from "../../drivers/repo/credentials/sessions.ts";
@@ -9,18 +10,9 @@ const admissionPattern =
 const generationPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const sessionPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
-function object(value: unknown, fields: readonly string[]): Record<string, unknown> {
-  if (
-    !value ||
-    typeof value !== "object" ||
-    Array.isArray(value) ||
-    Object.keys(value).length !== fields.length ||
-    fields.some((field) => !Object.hasOwn(value, field))
-  ) {
-    throw new Error("INVALID_RECEIPT_REQUEST");
-  }
-  return value as Record<string, unknown>;
-}
+const { object, identity, counter } = createStatusWirePrimitives(() => {
+  throw new Error("INVALID_RECEIPT_REQUEST");
+});
 
 function status(value: unknown): SessionStatus {
   const input = object(value, [
@@ -40,26 +32,6 @@ function status(value: unknown): SessionStatus {
     "uncertain",
     "auxiliaryPending",
   ]);
-  const counter = (entry: unknown): number => {
-    if (typeof entry !== "number" || !Number.isSafeInteger(entry) || entry < 0) {
-      throw new Error("INVALID_RECEIPT_REQUEST");
-    }
-    return entry;
-  };
-  const identity = (entry: unknown): string => {
-    if (
-      typeof entry !== "string" ||
-      entry.length === 0 ||
-      Buffer.byteLength(entry) > 512 ||
-      [...entry].some((character) => {
-        const code = character.charCodeAt(0);
-        return code <= 31 || code === 127;
-      })
-    ) {
-      throw new Error("INVALID_RECEIPT_REQUEST");
-    }
-    return entry;
-  };
   if (
     typeof input.sessionId !== "string" ||
     !sessionPattern.test(input.sessionId) ||
@@ -110,14 +82,10 @@ export async function startRepositoryReceiptServer(options: {
     const fields =
       parsed.kind === "bind" || parsed.kind === "dispose"
         ? ["kind", "admissionId", "generation", "input", "status"]
-        : parsed.kind === "authorize-standing"
-          ? ["kind", "admissionId", "generation", "input", "sessionId"]
-          : ["kind", "admissionId", "generation", "input"];
+        : ["kind", "admissionId", "generation", "input"];
     const command = object(parsed, fields);
     if (
-      !["reserve", "recover", "bind", "dispose", "fence", "authorize-standing"].includes(
-        String(command.kind),
-      ) ||
+      !["reserve", "recover", "bind", "dispose", "fence"].includes(String(command.kind)) ||
       typeof command.admissionId !== "string" ||
       !admissionPattern.test(command.admissionId) ||
       typeof command.generation !== "string" ||
@@ -140,18 +108,6 @@ export async function startRepositoryReceiptServer(options: {
     if (command.kind === "fence") {
       await store.fence(command.admissionId, input, command.generation);
       return { kind: "acknowledged" };
-    }
-    if (command.kind === "authorize-standing") {
-      if (typeof command.sessionId !== "string" || !sessionPattern.test(command.sessionId)) {
-        throw new Error("INVALID_RECEIPT_REQUEST");
-      }
-      await store.authorizeStanding(
-        command.admissionId,
-        input,
-        command.generation,
-        command.sessionId,
-      );
-      return { kind: "authorized" };
     }
     const observed = status(command.status);
     if (command.kind === "bind") {

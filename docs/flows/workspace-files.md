@@ -1,7 +1,7 @@
 ---
 created: 2026-08-31
-updated: 2026-10-16
-last_updated_session: Codex/01a13654-be66-7741-b54f-f8ae80f2d496
+updated: 2026-11-05
+last_updated_session: authoring-run/813d3dd8-d371-45db-a6f1-d70156152311
 ---
 
 # Agent Workspace Files Flow
@@ -12,8 +12,8 @@ OCC privately stages authenticated creation inputs: `AGENTS.md`, `SOUL.md`,
 `IDENTITY.md`, and `USER.md`. Compute prepares storage; the execution provider
 initializes it before activation.
 
-Subsequent file operations authorize the exact active Agent and use its
-Compute-resolved private endpoint through Envoy Gateway.
+File operations authorize the exact active Agent through its Compute-resolved
+private Envoy endpoint.
 
 Dedicated execution initializes the Harness workspace for Codex and native
 OpenClaw; see [workspace and launcher boundaries](../reference/drivers/kubernetes-compute/storage-and-credentials.md#shared-contracts-and-the-codex-implementation).
@@ -26,7 +26,8 @@ See [two-cluster transport](../testing/kubernetes.md#two-cluster-validation) for
   `POST /namespaces/:namespaceId/agents` and handles live `GET` and
   `PUT /namespaces/:namespaceId/agents/:agentId/workspace/files/:name`.
 - `packages/occ/src/index.ts:createAgent` authorizes creation and persists private
-  setup state; `apps/controller/src/worker.ts` passes it to Compute on deployment.
+  setup state; `deployAgentWithAuthorization` rechecks it, completed too, before
+  each revision.
 
 Live access requires the Agent's private HTTPRoute and native gateway. Configure
 Envoy Gateway, trust, and network restrictions through
@@ -83,6 +84,11 @@ record keyed by exact Namespace/Agent. No AgentRevision is created. Inputs do
 not enter the Agent, Configuration, Agent revision snapshot, public response, or
 metadata-only create audit. API strings are preserved; Console textareas use LF newlines.
 
+`packages/occ/src/index.ts:updateAgent` keeps an omitted Configuration ID.
+Completed setup is rechecked when the resolved Configuration ID or execution
+mode changes. Saving Gateway managed mode alone keeps both. Pending setup is
+checked on each update.
+
 ### 2. Deployment initializes storage before execution
 
 `apps/controller/src/worker.ts` reads private setup state into
@@ -112,8 +118,10 @@ configuration, arguments and environment; remote output is discarded. The launch
 waits for completion. A workspace `flock` serializes attempts after lost
 acknowledgments. The verifier uses `OPENCLAW_WORKSPACE_DIR` after relocation.
 
-The runner validates identity, paths, OpenClaw `2026.9.9`, and template digest
-against Console defaults; identities must match, and links or conflicts fail.
+The runner validates setup identity and workspace paths, rejecting symlinks and
+conflicting contents. First setup requires the installed OpenClaw version and
+template digest to match `WORKSPACE_DEFAULTS_VERSION` and `WORKSPACE_DEFAULTS_ID`
+in `packages/contracts/src/workspace-defaults.mjs`.
 Native `setup` initializes workspace/Git without starting Gateway. Kubernetes init
 containers use Gateway resource budgets. Supplied files, including empty strings,
 atomically replace only absent, stock, or already-submitted content. The runner
@@ -125,9 +133,11 @@ Missing or mismatched markers after recorded completion block startup, preservin
 later edits. Errors omit document contents.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:safeRuntimeFailureObservation`
-reports a refusal (exit 2) as `WORKSPACE_SETUP_REFUSED`, failing at once, as
-does `SandboxWorkspaceSetupRefusedError` (OpenShell). Kubernetes restarts other
-failures (`WORKSPACE_SETUP_RETRYING`). `checkedAt` is termination or observation time.
+reports refusals (exit 2) as `WORKSPACE_SETUP_REFUSED`; OpenShell raises
+`SandboxWorkspaceSetupRefusedError`. Kubernetes retries other failures
+(`WORKSPACE_SETUP_RETRYING`). OpenShell reports only RPC status or setup
+exit/timeout. Docker retries failed setup; preparation never stops a running one
+and stays unready meanwhile. `checkedAt` records termination/observation time.
 
 ### 3. Activation clears staged contents and keeps completion metadata
 
@@ -135,22 +145,19 @@ failures (`WORKSPACE_SETUP_RETRYING`). `checkedAt` is termination or observation
 transaction only after checking the selected Agent revision ID and work claim.
 `workspaceSetups.complete` removes document bytes and retains identity and
 completion metadata. Drivers remove or replace private delivery bytes with
-metadata; subsequent startup verifies the durable workspace marker.
+metadata.
 
 Failed or never-deployed Agents retain pending inputs. Agent deletion removes
 the setup record through `packages/occ/src/index.ts:deleteAgent`; Driver
-cleanup owns runtime storage. There is no public setup read
-or update endpoint.
-Live edits after activation follow the independent path below and do not
-update the setup record.
+cleanup owns runtime storage. No public endpoint reads or updates setup, and
+live edits after activation do not update it.
 
 ### 4. Composition configures private access
 
 `apps/controller/src/api-startup.mjs:startApi` validates the optional absolute
 `OCC_GATEWAY_API_KEY_PATH` before opening the database. Production and
 PostgreSQL development composition bind the selected Compute Driver to
-`createWorkspaceFilesAccess`. The worker uses the same mounted service key
-for native node enrollment.
+`createWorkspaceFilesAccess`. The worker uses that key for node enrollment.
 
 API and worker Pods wait for the root Secret and load only public CA trust through `NODE_EXTRA_CA_CERTS` at
 startup, never the CA signing key; the
@@ -166,7 +173,9 @@ without endpoint support cannot serve workspace files.
 session or scoped service API key. Native Agent credentials cannot invoke this
 administration surface. `GET` needs Agent `read`; `PUT` needs Agent `operate`
 and, for session callers, passes the browser CSRF boundary. OCC resolves the
-selected AgentRevision before Compute endpoint resolution.
+selected AgentRevision before Compute endpoint resolution. After that grant, an
+Agent with no running version (stopped, never deployed, or still activating)
+gets `409 RESOURCE_CONFLICT` naming the Agent and the next step.
 
 Names, the `PUT` body, and content and body limits follow the
 [live file contract](../reference/agents.md#live-file-access). The deadline and
@@ -182,40 +191,48 @@ prove readiness.
 
 `kubernetes/index.ts:reconcileGatewayRoute` provisions operator routing plus an
 exact `/node` HTTPRoute and SecurityPolicy for dedicated runtimes.
-Only operator routes allow native admin UI subpaths; both strip authorization
-and cookies.
+Only operator routes allow admin UI subpaths; both strip authorization and cookies.
 The [node endpoint contract](../reference/gateway-routing.md#native-node-endpoint)
 owns route ownership across preparation, activation, stop and retirement.
 
 `prepareWorkspaceNode` calls
 `gateway/node-enrollment-client.ts:createGatewayNodeEnrollment` after Gateway
-readiness. An Agent-owned Secret per Harness kind keeps the setup code and
-device ID; preparation renews expired setup codes.
-A Codex Harness reads the code from an optional Secret volume, so
-enrollment restarts neither workload ([Harness storage](../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)).
-Other Harnesses are replaced, restarting their Gateway.
+readiness. Each Harness kind uses an Agent-owned setup/identity Secret.
+`confirmWorkspaceNodeSetup` retains `setupReceiptDeviceId` before `node.describe`.
+`packages/gateway-client/src/client.ts` saves and reads back the token,
+reconnecting token-only. `src/gateway/server-methods/nodes.read.ts` reports
+`deviceTokenAuthenticated` from `src/gateway/node-registry.ts`, bound to the
+current session and pairing generation. Promotion requires true; live
+approval invalidates proof and forces reauthentication.
 
-- Readiness requires `file.fetch`, `file.stat`, `file.write`, `file.create`,
-  `dir.list`, `workspace.memory`, and `workspace.skills`. Gateway admits these
-  commands before pairing, preserving explicit denies.
-- `addNodeEnrollmentState` mounts Agent-scoped identity at `/home/node/.openclaw-node`
-  from the existing Harness PVC volume (`0700`, nonroot initializer), preserving it
-  across versions until Agent deletion.
-- `AGENT_WITH_NODE_ENTRYPOINT` runs native `setup --baseline` before supervising
-  Codex and the node under `tini`. It passes admitted bootstrap options, preserves
-  existing edits, and stops on setup failure. Codex starts at once with the
-  managed PATH; the node waits for a complete code. Neither gets OCC's key.
+After OCC retains a receipt, expired status cannot trigger fresh credentials.
+First reconciliation after Gateway's 20-minute retention can renew setup without
+recovering its receipt (readiness TODO).
+[Harness storage](../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
+owns recovery. Native provisioning requires Sandbox; expired unpaired setup awaits Gateway.
+
+- Gateway admits the seven file and workspace commands before pairing,
+  preserving explicit denies.
+- `addNodeEnrollmentState` retains Agent-scoped identity until Agent deletion in
+  the Harness PVC's `/home/node/.openclaw-node` (`0700`, nonroot initializer).
+- `AGENT_WITH_NODE_ENTRYPOINT` runs `setup --baseline` with admitted options,
+  preserving edits, then supervises Codex and node under `tini`. Setup failure
+  holds; stop waits for setup. Codex starts on managed PATH; node awaits complete
+  setup. Neither receives OCC's key.
+- Both supervisors poll setup files. Validated changes replace only the node
+  group after exit; malformed inputs preserve it. Operator stop cancels renewal.
+  [Harness storage](../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
+  defines timing and validation.
+- The native renewal bridge returns bounded `NODE_NOT_READY` responses for
+  invocations received before credential verification, permitting Gateway retry
+  without premature execution.
 - With the status proxy, a Codex Gateway hot-loads `file-transfer` from an
-  Agent-owned ConfigMap (replacing the Codex plugin runtime); activation awaits
-  OpenClaw's report or fails with its cause. The wrapper queries `plugins.list`
-  through the public Gateway SDK, not a CLI process; each query has an
-  eight-second deadline and cancels its connection on timeout, and later polls
-  can retry. Acknowledging the binding still requires an active plugin in the
-  newly loaded registry. A Gateway that refuses that SDK connection's own
-  credentials (a fixed auth refusal such as `AUTH_UNAUTHORIZED`, not rate
-  limiting or pairing) reports `GATEWAY_UNAUTHORIZED` at once, and activation
-  fails with `AGENT_GATEWAY_UNAUTHORIZED`.
-  Otherwise the ID is set at Gateway start; losing it fails.
+  Agent-owned ConfigMap, replacing Codex's plugin runtime. Activation requires
+  OpenClaw's report and an active plugin. The wrapper polls `plugins.list` through
+  the Gateway SDK, cancelling timed-out connections after eight seconds.
+  Fixed auth refusal reports `GATEWAY_UNAUTHORIZED` and fails activation with
+  `AGENT_GATEWAY_UNAUTHORIZED`; rate limits and pairing still wait. Without the
+  proxy, the ID is set at Gateway start; losing it fails.
 - The Gateway's own `/home/node/workspace` stays empty. Through
   `codexDynamicToolsExclude` (keeping owner entries) Codex loses OpenClaw tools
   acting in the Gateway Pod (`ls`, `read`, `write`, `edit`, `apply_patch`,
@@ -233,17 +250,15 @@ Other Harnesses are replaced, restarting their Gateway.
   OpenClaw's built-in runtime with
   `/model <ref> --runtime openclaw` runs in the Gateway with no reachable model,
   and Codex never hands that runtime a turn.
-- At each start the Gateway logs one `runtime.gateway_settings_overridden`
-  event naming (never valuing) the owner settings it replaced or dropped.
-  `occ agent logs` shows the setting names; the Collector exports only the
-  [event name](common-logging.md#7-collector-exports-only-operational-classes).
-  Deployment admission rejects the shapes it cannot rewrite: a non-list
-  `codexDynamicToolsExclude`, a non-object Codex plugin `config`, `cron`,
-  `cron.triggers`, `models`, `models.providers`, or a non-object on the
-  `agents.defaults.compaction.memoryFlush` path. The deploy fails with
-  `400 INVALID_REQUEST` naming the setting path, and no Agent revision is created.
-  OCC's model check refuses earlier, with the same error, a provider row that is
-  not an object or whose `models` is not a catalog list for the Agent's models.
+- At startup Gateway emits `runtime.gateway_settings_overridden` naming, never
+  valuing, replaced or dropped settings. `occ agent logs` exposes names; the
+  Collector exports only the [event](common-logging.md#7-collector-exports-only-operational-classes).
+  Admission rejects non-list `codexDynamicToolsExclude` and non-object Codex plugin
+  `config`, `cron`, `cron.triggers`, `models`, `models.providers`, or components of
+  `agents.defaults.compaction.memoryFlush`. It returns `400 INVALID_REQUEST`
+  naming the path without creating a revision. OCC's earlier model check returns
+  the same error for non-object provider rows or `models` that are not Agent-model
+  catalog lists.
 - Default reads cover the enrolled Agent's Harness workspace and managed skill
   roots for previews, browsing, bootstrap and outputs. Symlinks are not followed;
   explicit policies remain authoritative.
@@ -253,17 +268,16 @@ Other Harnesses are replaced, restarting their Gateway.
   node and wildcard policies unchanged. `file.create` preserves existing files.
   Reads above 16 MiB retain caller and node limits; command admission does not replace path authorization.
 
-The chart supplies worker credentials/public trust and Compute installs node
-access to Envoy. Memory uses node duplex with existing native file workers;
-index and embedding configuration stay on Gateway. Skills uses remote discovery,
-reads and policy-checked dependency installation. Each host initializes its own
-image assets. Gateway-provided Skill sources stay local; native worker turns can
-receive temporary resource copies. See the
+The chart supplies worker credentials/public trust; Compute installs Envoy access.
+Memory uses node duplex and native file workers; index/embedding configuration
+stays on Gateway. Skills uses remote discovery, reads and policy-checked dependency
+installation. Hosts initialize their own image assets. Gateway Skill sources stay
+local; native turns can receive temporary resource copies. See the
 [ownership table](../../specs/plans/30-storage-split-integration.md#where-data-lives).
 Remote channel menus remain deferred to [#241](https://github.com/openclaw/openclaw-enterprise/issues/241).
 
 Only Harness mounts the dedicated workspace, generated images and Codex rollouts.
-Rollouts retain execution history, not a guarantee of restart recovery; see
+Rollouts retain history without guaranteeing restart recovery; see
 [restart limits](../reference/harness-execution.md#isolation-and-activation).
 The rest of `CODEX_HOME` stays Pod-local. External OAuth uses ephemeral placeholders
 and metadata; the token service owns refresh. Codex's remote-media reader retrieves
@@ -275,9 +289,9 @@ owns RWO, downtime and recovery limits. These contracts require matching runtime
 images; local checks do not prove deployed acceptance.
 
 The API reads the mounted key per operation, so new connections pick up
-Secret rotation without a restart. Missing routing, missing or invalid
-keys, expired deadlines, and unavailable targets fail closed. No URL
-or credential comes from caller JSON or headers.
+Secret rotation without a restart. Missing routing or keys, invalid keys,
+expired deadlines, and unavailable targets fail closed. No URL or credential
+comes from the caller.
 
 ### 7. Envoy authenticates and routes the native connection
 
@@ -344,9 +358,9 @@ replays it. Cleanup closes the native client.
 - An authenticated native upgrade failure can indicate missing trusted-proxy
   configuration, a simultaneous token, a loopback real IP, or absent native
   identity scopes. Do not fix it by inventing a forwarded address.
-- [Testing](../testing/README.md) distinguishes fixture and runtime proof. A
-  calculated URL, ready proxy, or rendered chart does not establish file writes
-  or model consumption.
+- [Testing](../testing/README.md) distinguishes fixture and runtime proof: a
+  calculated URL, ready proxy or rendered chart does not prove file writes or
+  model use.
 
 ## Related docs
 
@@ -362,26 +376,23 @@ replays it. Cleanup closes the native client.
 
 ## Changelog
 
+- 2026-11-05 00:00: Clarify enrollment limits. (authoring-run/813d3dd8-d371-45db-a6f1-d70156152311 - a23d33a4d561d0678410a993e5c10a8cddf1a720)
+
+- 2026-11-04 23:20: Require credential possession before enrollment. (authoring-run/63c54d1f-8f48-4ab3-a707-9b0d72978728 - 24c8c7f7c2b012bd1b802be333a3420645808533)
+
+- 2026-11-04 10:02: Document setup renewal with retained identity. (authoring-run/689059e8-4902-4d70-b7c0-56353dcc9ca3 - b927adfdaef17693496f076bfedf36afe0fccf7d)
+
+- 2026-11-04 09:51: Refresh file-delivered setup without restarting Codex or resetting node identity. (authoring-run/c90ec001-aeb3-4f1d-b60c-04e78883528c - b927adfdaef17693496f076bfedf36afe0fccf7d)
+
+- 2026-10-27 07:45: Resolve omitted Configuration IDs before checking Agent update topology. (Codex/01a16ff3-354f-7873-a064-92d0ff2bcf0f - 46f6f41f4763335da2512d5127e7082987df77f8)
+- 2026-10-26 22:29: Point workspace setup to the version and template digest it checks. (authoring-run/f4c463b0-af6d-4850-a166-c663a7e78c64 - 855eeed7cb66c8f85b0ad9672d561bf0a825e621)
+
+- 2026-10-26: An Agent with no running version answers `409` instead of `503`. (fix-dogfood-r51)
+
 - 2026-10-14: Merge current contracts with native provisioning and retained-workspace preparation. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496)
 
 - 2026-10-13 09:37: Reconcile current admission and lifecycle behavior with external OAuth custody in the accompanying merge. (authoring-run/fd902939-ed58-4508-8d33-95a863d966af - e8d39978d801e7a5a8ac7242f32035f426da94e1)
 
 - 2026-10-12 22:30: Initial workspace files in a Sandbox are refused at save with a `409`. (fix-1144-1145b - 8aa391300)
-
-- 2026-10-10 12:04: Preserve SDK initializer timestamps. (authoring-run/0e9aadda-36b5-4f99-af17-ffde7a3cd26d - f8a837e33b5c03bc0c92065e979485ee06960150)
-
-- 2026-10-09 20:28: Keep private workspace repair while removing retired native OAuth storage. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - ece639c78)
-
-- 2026-10-09 19:20: Dedicated Codex deployment requires `main`. (fix-969)
-
-- 2026-10-10 01:26: Follow embedded sole-roster Hello metadata while retaining explicit and dedicated targets. (authoring-run/20e38f57-7665-4641-bd09-f3a162733d69 - 5d3c6ac0ca3dc5ab3a6ffc46de8f054da3f7df2d)
-
-- 2026-10-08 23:20: Initialize the approved Harness PVC before Sandbox provisioning, retain exact completion guards after relocation, and remove private writers during shutdown. (01a0e8ec-d02f-7b93-a59b-5b7fccf2ebaa)
-
-- 2026-10-08 14:42: Initialize OpenShell workspaces privately before Harness startup. (authoring-run/91f18132-f597-42a4-b024-036a23b5313d - ece639c78765727a67753639f6ab225a243e064d)
-
-- 2026-10-07 17:36: Remove the persistent OAuth exception from Harness credential storage. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - da984340ae4aafb03bb0c66bfd94ba40252625a5)
-
-- 2026-10-06 18:40: Say that OCC's model check refuses malformed provider rows before the Codex Gateway shape check, without naming the path. (dogfood-r38)
 
 [Agent workspace files documentation history](workspace-files/history.md) preserves the older dated entries.

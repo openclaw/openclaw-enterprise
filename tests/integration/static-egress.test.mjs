@@ -17,6 +17,7 @@ import {
 } from "../../apps/controller/src/composition/installation-config.ts";
 import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { PROXY_REGISTRATION_UNAVAILABLE } from "../helpers/refusal-text.mjs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { OpenShellEgressIdentity } from "../../apps/controller/src/drivers/egress-proxy/openshell-identity.ts";
@@ -374,7 +375,12 @@ test("protected admission requires the actual counterpart and exact loaded polic
   assert.ok(manifest.extension.required_capabilities.includes(capability));
   f.observed.available = false;
   const refused = await f.request("POST", f.path, {
-    body: { name: "unsupported-peer", type: "openai", secrets: { api_key: f.secret.ref } },
+    body: {
+      name: "unsupported-peer",
+      type: "openai",
+      config: { authorized_base_url: f.modelProvider.baseUrl },
+      secrets: { api_key: f.secret.ref },
+    },
   });
   assert.equal(refused.status, 503, JSON.stringify(refused.body));
   assert.equal(
@@ -383,7 +389,8 @@ test("protected admission requires the actual counterpart and exact loaded polic
     "failed candidate cannot leave admitted source metadata",
   );
   await assert.rejects(f.egress.configureRevision(f.context), {
-    name: "DependencyUnavailableError",
+    name: "RetryLaterError",
+    message: PROXY_REGISTRATION_UNAVAILABLE,
   });
   f.observed.available = true;
   const expectedPolicy = structuredClone(f.observed.policy);
@@ -487,7 +494,7 @@ test("legacy approved copies survive Secret rotation and failed live adoption; o
   const { id, namespaceId } = f.legacySource;
   await f.controller.transact(async ({ credentialSources: sources }) => {
     const { egress } = await sources.findCredentialSource(namespaceId, id);
-    assert.equal(egress.key.provider.generation, 2);
+    assert.equal(egress.key.provider.generation, 3);
     const key = {
       ...egress.key,
       source: { id, generation: egress.key.source.generation + 1 },
@@ -1176,11 +1183,81 @@ test("selected Codex Responses wire admits local tools and finite SSE while reje
   await check.wireBody(body);
   assert.deepEqual(f.providerRequests[0].body, wire.request);
   await check.wireBody(body.replaceAll("\n", "\r\n"), { label: "CRLF" });
+
+  // A reduced, sanitized packaged-client capture uses developer input for local tools.
+  // Its format header participates in the signed request. This proves the OCE
+  // contract with a fixture sender, not native relay or model-provider support.
+  const inline = JSON.parse(
+    readFileSync(new URL("../fixtures/static-egress/codex-inline-tools.json", import.meta.url)),
+  );
+  const captured = f.capture(inline.request);
+  captured.request.headers.push(
+    ...Object.entries(inline.headers).map(([name, value]) => ({ name, value })),
+  );
+  const { ready } = await f.resolve(captured);
+  assert.ok(ready, "packaged inline local tools resolve through the installed provider");
+  assert.ok((await f.authorize(f.permitRequest(captured, ready))).allowed);
+  f.setResponse({ status: 200, contentType: "text/event-stream", rawBody: body });
+  const protectedReply = await f.protect(captured, await f.send(captured, ready));
+  assert.equal(protectedReply.response_complete, true);
+  assert.equal(protectedReply.body.toString(), body);
+  assert.deepEqual(f.providerRequests.at(-1).body, inline.request);
+
+  // Inline declarations cannot expand the admitted local-tool grant or let
+  // client metadata select authority. Refuse before another Secret read/send.
+  const inlineReads = f.secretReads;
+  const inlineSends = f.providerRequests.length;
+  const mutations = [
+    ...["system", "user", "assistant"].map((role) => (request) => {
+      request.input[0].role = role;
+    }),
+    (request) => {
+      request.input[0].tools.push({ type: "web_search" });
+    },
+    (request) => {
+      request.input[0].tools[0].tools.push({ type: "web_search" });
+    },
+    (request) => {
+      request.input[0].authority = "owner";
+    },
+    (request) => {
+      request.input[0].tools[1].tools[0].parameters.properties.message.encrypted = false;
+    },
+    (request) => {
+      request.input[0].tools[1].tools[0].parameters.properties.message.type = "number";
+    },
+    (request) => {
+      const metadata = JSON.parse(request.client_metadata["x-codex-turn-metadata"]);
+      metadata.reasoning_effort = "unrecognized";
+      request.client_metadata["x-codex-turn-metadata"] = JSON.stringify(metadata);
+    },
+    (request) => {
+      request.client_metadata.namespace_id = f.namespace.id;
+    },
+    (request) => {
+      request.text.format = {
+        type: "json_schema",
+        name: "output",
+        schema: { type: "string", encrypted: true },
+      };
+    },
+    (request) => {
+      request.store = true;
+    },
+  ];
+  for (const mutate of mutations) {
+    const request = structuredClone(inline.request);
+    mutate(request);
+    assert.ok((await f.resolve(f.capture(request))).refused);
+  }
+  assert.equal(f.secretReads, inlineReads, "unsupported inline requests cannot read credentials");
+  assert.equal(f.providerRequests.length, inlineSends, "unsupported inline requests cannot send");
   const beforeReads = f.secretReads;
   for (const body of [
     { ...wire.request, tools: [...wire.request.tools, ...wire.refusedTools] },
     { ...wire.request, tools: [{ type: "mcp", server_url: "https://remote.example.test" }] },
     { ...wire.request, tools: [{ type: "namespace", name: "remote", tools: wire.refusedTools }] },
+    { ...wire.request, tools: [{ ...wire.request.tools[0], strict: null }] },
     { ...wire.request, previous_response_id: "unadmitted-state" },
     {
       ...wire.request,
@@ -1395,6 +1472,77 @@ test("live-shaped Responses envelopes pass while undeclared or credential-bearin
     { ...completed, sequence_number: base.length + 1 },
   ];
   await check.events(live, false, "documented envelope fields on every envelope event");
+  // The provider reports its effective image policy even when the request omits it.
+  // Check each envelope event and preserve its original bytes through signed egress.
+  const withImage = (image) =>
+    live.map((event) =>
+      event.response ? { ...event, response: { ...event.response, image } } : event,
+    );
+  for (const context_compression of ["enabled", "disabled"]) {
+    await check.events(
+      withImage({ context_compression }),
+      false,
+      `documented image context compression: ${context_compression}`,
+    );
+  }
+  for (const [label, image] of [
+    ["null image policy", null],
+    ["missing image context compression", {}],
+    ["request-only automatic image policy", { context_compression: "auto" }],
+    ["wrong image context compression type", { context_compression: true }],
+    ["unknown image policy member", { context_compression: "enabled", extra: false }],
+    ["image policy reflects selected material", { context_compression: selectedMaterial }],
+  ]) {
+    await check.events(withImage(image), true, label);
+  }
+  // The admitted local declarations omit optional fields. Responses may echo their
+  // documented null defaults; they must not turn an otherwise valid turn into a 502.
+  const functionTool = {
+    type: "function",
+    name: "fixture_local",
+    parameters: { type: "object", properties: {} },
+  };
+  const customTool = { type: "custom", name: "fixture_custom" };
+  const localTools = [
+    functionTool,
+    customTool,
+    { type: "namespace", name: "fixture_namespace", tools: [functionTool, customTool] },
+  ];
+  const localRequest = { ...wire.request, tools: localTools };
+  const responseFunction = {
+    ...functionTool,
+    description: null,
+    strict: null,
+    defer_loading: null,
+  };
+  const responseCustom = { ...customTool, description: null, defer_loading: null, format: null };
+  const echoedTools = [
+    responseFunction,
+    responseCustom,
+    { ...localTools[2], tools: [responseFunction, responseCustom] },
+  ];
+  const withTools = (tools) =>
+    live.map((event) =>
+      event.response ? { ...event, response: { ...event.response, tools } } : event,
+    );
+  await check.events(
+    withTools(echoedTools),
+    false,
+    "nullable local-tool response defaults",
+    true,
+    localRequest,
+  );
+  for (const [label, tools] of [
+    ["wrong strict type", [{ ...responseFunction, strict: "false" }]],
+    ["wrong description type", [{ ...responseCustom, description: {} }]],
+    ["wrong defer_loading type", [{ ...responseFunction, defer_loading: 0 }]],
+    ["unknown custom format", [{ ...responseCustom, format: { type: "remote" } }]],
+    ["unknown function field", [{ ...responseFunction, remote_execution: true }]],
+    ["hosted tool", [{ type: "web_search" }]],
+    ["nested hosted tool", [{ ...localTools[2], tools: [{ type: "web_search" }] }]],
+  ]) {
+    await check.events(withTools(tools), true, label, true, localRequest);
+  }
   // Documented fields that the admitted request cannot ask for still have to be absent,
   // and documented optional structures are typed, not free-form.
   const nullableStructures = structuredClone(live);
@@ -1494,24 +1642,50 @@ test("signed supervisor instance and UUIDv7 creation horizon refuse old callers 
 
 test(
   "sustained sequential operations outlive replay capacity without waiting for JWT expiry",
-  { timeout: 180_000 },
+  { timeout: 30_000 },
   async (t) => {
+    // A fixed base keeps real time out of the advanced clock, so the horizon margin below holds
+    // on a runner of any speed. The base is set again after setup (below).
+    let start = Date.now();
     let elapsed = 0;
-    const f = await staticEgressFixture(t, { now: () => new Date(Date.now() + elapsed) });
+    // Configured bounds, validated like an Installation's requestCapacity, release through the
+    // same registry code as the defaults, so the loop needs only about a hundred operations.
+    const capacity = {
+      operations: 16,
+      authenticatingOperations: 4,
+      sandboxOperations: 4,
+      requestIds: 256,
+      sandboxRequestIds: 64,
+    };
+    const f = await staticEgressFixture(t, {
+      now: () => new Date(start + elapsed),
+      credentialProxyCapacity: capacity,
+    });
+    assert.deepEqual(
+      f.controller.createCredentialProxy({}).capacity,
+      capacity,
+      "the controller builds the exchange's proxy with the configured bounds",
+    );
     const peer = f.metadata({ exp: Math.floor(Date.now() / 1000) + 3600 });
     // Advance the controller's supported clock while keeping genuine signed identity, IAM,
     // Secret SDK, authority transport and HTTPS provider. Completion must release active capacity;
     // fixed operation horizons must release replay capacity during the same long-lived JWT.
-    // One Sandbox at 40 requests/s holds about 1200 replay entries per 30 s horizon, under its
-    // share. Its share is the first replay bound it meets, so each operation past the share
-    // needs an expired entry released. Operation slots must also return on completion, or the
-    // loop stops at the operation share or capacity. "one Sandbox's replay share bounds it
-    // without refusing other Sandboxes" covers the installation-wide table's expiry.
-    const step = 25;
-    const operations = REPLAY_SANDBOX_SHARE + 64;
-    assert.ok(30_000 / step < REPLAY_SANDBOX_SHARE);
-    assert.ok(REPLAY_SANDBOX_SHARE < REPLAY_TABLE_CAPACITY);
-    assert.ok(OPERATION_CAPACITY < operations);
+    // One Sandbox at one request per 800 ms holds about 38 replay entries per 30 s horizon,
+    // under its share of 64; a horizon twice as long would reach it. Its share is the first
+    // replay bound it meets, so each operation past the share needs an expired entry released.
+    // Operation slots must also return on completion, or the loop stops at the operation share
+    // or capacity. "one Sandbox's replay share bounds it without refusing other Sandboxes"
+    // covers the installation-wide table's expiry.
+    const step = 800;
+    const operations = capacity.sandboxRequestIds + 64;
+    assert.ok(30_000 / step < capacity.sandboxRequestIds);
+    assert.ok(60_000 / step > capacity.sandboxRequestIds);
+    assert.ok(capacity.sandboxRequestIds < capacity.requestIds);
+    assert.ok(capacity.operations < operations);
+    // The Kubernetes Secret driver stamps each read with the wall clock, and the proxy refuses
+    // material observed after its own clock. Setup can take longer than one step on a busy
+    // runner, so start the advanced clock from the wall clock after setup, not before it.
+    start = Date.now();
     for (let i = 0; i < operations; i += 1) {
       elapsed += step;
       const captured = f.capture();
@@ -2913,8 +3087,8 @@ test("receipt persistence failure, lost acknowledgment and late authorization ne
           elapsed = 31_000;
         }
         if (scenario === "check_deadline") {
-          // The actual successful final policy transaction has committed. A new
-          // capture prunes the expired handle before that check returns to its owner.
+          // The final policy-and-receipt transaction has committed. Prune the
+          // expired handle before its acknowledgment returns; no permit may escape.
           assert.ok((await f.resolve(f.capture())).ready);
         }
         if (cancellation) {
@@ -2948,9 +3122,14 @@ test("receipt persistence failure, lost acknowledgment and late authorization ne
         const replay = (await f.resolve(captured)).ready;
         assert.ok((await f.authorize(f.permitRequest(captured, replay))).refused);
       }
-      if (["revoke", "deadline", "check_deadline"].includes(scenario)) {
+      if (["revoke", "deadline"].includes(scenario)) {
         assert.equal(stored.outcome.kind, "refused");
         assert.equal(stored.outcome.dispatched, false);
+      }
+      if (scenario === "check_deadline") {
+        assert.ok(stored.authorization?.association.custodyId);
+        assert.deepEqual(stored.outcome, { kind: "uncertain", dispatch: "possible" });
+        assert.equal(stored.settled, false);
       }
       if (scenario === "deny_lost_ack") {
         assert.equal(stored.settled, true, "refusal committed before its acknowledgment was lost");
@@ -3067,6 +3246,7 @@ test("production Compute refuses protected admission and release, including empt
   assert.equal((await compute.prepareRevision(unprotected)).ready, false);
   await compute.activateRevision({
     ...unprotected,
+    gatewayManagedMode: false,
     compute: { id: compute.id, implementation: compute.implementation },
   });
 

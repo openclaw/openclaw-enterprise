@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 import { commandPath } from "../helpers/fake-commands.mjs";
+import { readJsonLinesSync } from "../helpers/json-lines.mjs";
+import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 
 const script = resolve("scripts/pr-status.mjs");
 
 function setup(t) {
-  const directory = mkdtempSync(join(tmpdir(), "pr-status-"));
-  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const directory = temporaryDirectorySync(t, "pr-status-");
   const log = join(directory, "calls");
   // getBuiltinModule, not require: the stand-in loads as ESM when TMPDIR is inside this repo.
   writeFileSync(
@@ -59,7 +59,7 @@ test("reports observed PR and target separately without asserting merge readines
   assert.match(result.stdout, /PR-reported base: old-base/);
   assert.match(result.stdout, /Native: SKIPPED/);
   assert.match(result.stdout, /does not decide merge readiness/);
-  const calls = readFileSync(log, "utf8").trim().split("\n").map(JSON.parse);
+  const calls = readJsonLinesSync(log);
   assert.deepEqual(
     calls.map((call) => call[0]),
     ["api", "pr", "api"],

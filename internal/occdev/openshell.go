@@ -32,11 +32,13 @@ const (
 	openShellSupervisorRole         = "supervisor"
 	openShellNodePort               = 30051
 	openShellK3sImage               = "docker.io/rancher/k3s:v1.36.4-k3s1@sha256:edad48e12bf81c3a09ac1c05c0c0ffaaa22145980b989d6fae84543a76b83657"
-	openShellGatewayImage           = "ghcr.io/nvidia/openshell/gateway:0.1.5@sha256:ca0bc15a045017ee20bfab682f1a561eca6e6c6ed7d021d20641da24aaa6dfb6"
-	openShellSandboxImage           = "ghcr.io/nvidia/openshell/sandbox:0.1.5@sha256:e9adf9ecde328122414ad2ee8c6fc5d5b389e4cf168daf4357c46f5a77d55851"
-	openShellSupervisorImage        = "ghcr.io/nvidia/openshell/supervisor:0.1.5@sha256:fabcd01f656e9d23df4386f82e80b4f48b90f3452d7d5c58889007643a069161"
+	openShellGatewayImage           = "ghcr.io/nvidia/openshell/gateway:0.1.6@sha256:f0b36dba21d282c52e498c25289658cfd6cd4f343b0069fde5609e25b002cdea"
+	openShellSandboxImage           = "ghcr.io/nvidia/openshell/sandbox:0.1.6@sha256:1038eb5c1f191fa3c34684fd7041b891c78ec570979d487f36e06e08f91bfb63"
+	openShellSupervisorImage        = "ghcr.io/nvidia/openshell/supervisor:0.1.6@sha256:ce859a7d77ee515d3fe0b3c7dc61286516f402eb1d25c761d806d9ae5ed96c0b"
 	openShellAdmissionContainerPath = "/etc/openclaw-development/openshell-pod-security-admission.yaml"
-	openShellAllowedPodLabelsValue  = `--set-json=gatewayConfig.openshell\.drivers\.kubernetes.allowed_pod_labels=["openclaw.dev/*","app.kubernetes.io/name","app.kubernetes.io/managed-by"]`
+	// Keep in step with OPENSHELL_HARNESS_POD_LABEL_ALLOWLIST in the OpenShell Sandbox Driver;
+	// TestKubernetesOnlyOpenShellGatewayInstallsImportedImagesBehindAClusterIP compares them.
+	openShellAllowedPodLabelsValue = `--set-json=gatewayConfig.openshell\.drivers\.kubernetes.allowed_pod_labels=["openclaw.dev/*","app.kubernetes.io/name","app.kubernetes.io/managed-by"]`
 )
 
 type openShellDevelopmentAssets struct {
@@ -301,14 +303,22 @@ func (r *runner) importOpenShellImage(ctx context.Context, state *developmentSta
 	if !strings.HasPrefix(platform, "linux/") {
 		return "", fmt.Errorf("OpenShell %s image must contain a Linux platform", component)
 	}
+	childStaged, err := r.stageDevelopmentPlatformChild(ctx, source, platform, stagingTag)
+	if err != nil {
+		return "", err
+	}
 	archive := filepath.Join(root, component+"-image.tar")
 	defer func() {
 		if err := os.Remove(archive); err != nil && !os.IsNotExist(err) {
 			resultErr = errors.Join(resultErr, fmt.Errorf("remove OpenShell %s image archive: %w", component, err))
 		}
 	}()
+	// The staging tag names one complete image once it points at the platform
+	// child, so the archive needs no platform selection. Without a resolved
+	// child, keep the platform filter: it still works where the engine can
+	// resolve it, and names the failure otherwise.
 	saveArgs := []string{"image", "save"}
-	if r.engine == "docker" {
+	if r.engine == "docker" && !childStaged {
 		saveArgs = append(saveArgs, "--platform", platform)
 	}
 	saveArgs = append(saveArgs, "--output", archive, recorded)
@@ -359,32 +369,34 @@ func (r *runner) importOpenShellImage(ctx context.Context, state *developmentSta
 	return runtimeReference, nil
 }
 
+// Kubernetes-only installations always authenticate the Gateway.
+// Compose keeps its existing profile.
+func (state *developmentState) authenticatedOpenShell() bool {
+	return state.DeploymentMode == "k3d" && state.SandboxDriver == "openshell"
+}
+
 func (r *runner) installOpenShellGateway(ctx context.Context, state *developmentState, assets *openShellDevelopmentAssets, namespace string, timeout time.Duration) error {
 	if _, err := r.output(ctx, "kubectl", "get", "namespace", namespace); err != nil {
 		if err := r.run(ctx, "kubectl", "create", "namespace", namespace); err != nil {
 			return err
 		}
 	}
-	if !state.ProtectedEgress {
+	if !state.authenticatedOpenShell() {
 		if err := r.ensureOpenShellJWTSecret(ctx, state, namespace); err != nil {
 			return err
 		}
 	}
-	var protectedValues string
-	if state.ProtectedEgress {
+	var gatewayValues string
+	if state.authenticatedOpenShell() {
 		var err error
-		protectedValues, err = r.writeProtectedOpenShellValues(state)
+		gatewayValues, err = r.writeOpenShellGatewayValues(state)
 		if err != nil {
 			return err
 		}
 	}
 	args := []string{"upgrade", "--install", openShellGatewayService, assets.gatewayChart, "--namespace", namespace, "--kubeconfig", filepath.Join(state.directory, "kubeconfig"), "--kube-context", "k3d-" + state.Cluster, "--timeout", timeout.String()}
-	// The registry contacts OCC at startup. Install both releases before waiting
-	// for the protected Gateway; native PKI hooks still complete synchronously.
-	if !state.ProtectedEgress {
-		args = append(args, "--wait")
-	}
-	args = append(args, openShellGatewayValues(state, assets, protectedValues)...)
+	args = append(args, "--wait")
+	args = append(args, openShellGatewayValues(state, assets, gatewayValues)...)
 	if err := r.run(ctx, "helm", args...); err != nil {
 		return err
 	}
@@ -400,7 +412,7 @@ func (r *runner) installOpenShellGateway(ctx context.Context, state *development
 	return nil
 }
 
-func openShellGatewayValues(state *developmentState, assets *openShellDevelopmentAssets, protectedValues string) []string {
+func openShellGatewayValues(state *developmentState, assets *openShellDevelopmentAssets, gatewayValues string) []string {
 	values := []string{
 		"--set-string=fullnameOverride=" + openShellGatewayService,
 		"--set-string=serviceAccount.name=" + openShellGatewayService,
@@ -419,8 +431,8 @@ func openShellGatewayValues(state *developmentState, assets *openShellDevelopmen
 		"--set=sandboxRuntime.image.pullPolicy=Never",
 		"--set=supervisor.image.pullPolicy=Never",
 	}
-	if protectedValues != "" {
-		values = append(values, "-f", protectedValues)
+	if gatewayValues != "" {
+		values = append(values, "-f", gatewayValues)
 	} else {
 		values = append(values, "--set=pkiInitJob.enabled=false", "--set=server.disableTls=true", "--set=server.auth.allowUnauthenticatedUsers=true")
 	}

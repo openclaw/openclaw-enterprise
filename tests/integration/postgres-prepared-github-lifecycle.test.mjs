@@ -6,20 +6,24 @@ import { join } from "node:path";
 import test from "node:test";
 import pg from "pg";
 import { setTimeout as delay } from "node:timers/promises";
-import { captureMetadata, dispatchMetadata } from "../helpers/github-metadata-exchange.mjs";
+import {
+  captureMetadata,
+  dispatchMetadata,
+  raceMaintenance,
+} from "../helpers/github-metadata-exchange.mjs";
 import { postgresEgressSendReceipts } from "../../packages/occ/src/state/egress-send-receipts.ts";
 import { bindRuntimeSource } from "../helpers/postgres-protected-scenarios.mjs";
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { staticEgressFixture, wireTime } from "../helpers/static-egress.mjs";
 import {
+  listenOnNewOrigin,
   startGitHubFixture,
   fixtureAppId,
   fixtureInstallationId,
   fixtureRepositoryId,
   fixtureRepository,
 } from "../fixtures/repository-credentials/github.mjs";
-import { listen } from "../fixtures/repository-credentials/process.mjs";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
 import { PostgresPreparedGitHubLifecycle } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-lifecycle.ts";
 import { preparedAttemptSettled } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-postgres.ts";
@@ -53,9 +57,10 @@ test(
     // Two workers race over a real family. Only the durable claim holder reaches the issuer.
     const competitor = createOwner();
     await competitor.connect(f.pool);
-    const results = await Promise.all([lifecycle.maintain(signal), competitor.maintain(signal)]);
+    // The family is cold, so the loser has nothing to retire.
+    const losers = await raceMaintenance([lifecycle, competitor], signal);
     await competitor.close();
-    assert.deepEqual(results.sort(), ["committed", "idle"]);
+    assert.deepEqual(losers, ["idle"]);
     const old = await lifecycle.readWarm(source, readWindow());
     assert.equal(old.ownerEpoch, 1);
     assert.deepEqual(gh.issuesOfTokens[0].permissions, { metadata: "read" });
@@ -460,7 +465,14 @@ test(
           assert.equal(selection.material_version, old.materialVersion);
           await due(); // Only advance the periodic scan, not eligibility, owner or any token bytes.
           const reports = [];
-          fresh.startWorker((code) => reports.push(code));
+          const diagnostics = [];
+          fresh.startWorker((code, context, severity = "error") => {
+            if (severity === "error") {
+              reports.push(code);
+            } else {
+              diagnostics.push({ code, context });
+            }
+          });
           // Observe only the ledger. No request or readiness call drives this proactive renewal.
           await waitUntil(
             "the background loop to proactively renew",
@@ -480,6 +492,28 @@ test(
           await fresh.connect(f.pool);
           assert.deepEqual(reports, []);
           renewed = await fresh.readWarm(source, readWindow());
+          // Correlate the background report with actual encrypted PostgreSQL publication.
+          assert.equal(diagnostics.length, 1);
+          assert.equal(diagnostics[0].code, "PREPARED_GITHUB_ISSUANCE_DIAGNOSTIC");
+          const diagnostic = diagnostics[0].context;
+          const {
+            rows: [attempt],
+          } = await f.pool.query(
+            "SELECT id FROM occ.prepared_github_attempts WHERE source_id=$1 AND material_version=$2",
+            [source.key.source.id, renewed.materialVersion],
+          );
+          assert.equal(diagnostic.attemptId, attempt.id);
+          assert.equal(diagnostic.httpStatus, 201);
+          assert.equal(diagnostic.responseComplete, true);
+          assert.equal(diagnostic.requestEndCalled, true);
+          assert.equal(diagnostic.candidateIdentified, true);
+          assert.equal(diagnostic.validationKind, "validated");
+          assert.equal(diagnostic.publication, "committed");
+          assert.equal(diagnostic.clockTolerance, true);
+          assert.equal(diagnostic.firstFailureStage, undefined);
+          for (const secret of [old.value, renewed.value, String(secretValue), "PRIVATE KEY"]) {
+            assert.equal(JSON.stringify(diagnostics).includes(secret), false);
+          }
           assert.notEqual(renewed.materialVersion, old.materialVersion);
           const issues = gh.issuesOfTokens.length;
           const reads = f.secretReads;
@@ -509,8 +543,7 @@ test(
     // B is reachable with the same trusted CA and would falsely acknowledge A's revocation.
     // Record only whether a credential arrived. A client must not rely on B rejecting A's token.
     let credentialRequestsAtB = 0;
-    const originB = await listen(
-      t,
+    const originB = await listenOnNewOrigin(t, () =>
       createServer(gh.tls, (req, res) => {
         if (req.headers.authorization) {
           credentialRequestsAtB++;

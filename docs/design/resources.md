@@ -32,7 +32,7 @@ service-account, inference, compute, sandbox, secret, and messaging capabilities
 An Installation-scoped `Backend` owns an authenticated client and related
 capability-specific Drivers; neither the Backend nor its client is a Driver or
 an OCC resource. Each Agent has a nullable `backendId`, copied into each
-immutable AgentRevision. Backend membership does not change model configuration
+AgentRevision. Backend membership does not change model configuration
 or authorize operations. The configured provider workspace is
 provider connection context, not an OCC Namespace mapping. A platform Namespace
 retains its tenant ownership across physical runtime targets; it is not

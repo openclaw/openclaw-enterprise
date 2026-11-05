@@ -53,3 +53,45 @@ export async function waitFor(description, read, options = {}) {
 export async function waitUntil(description, check, options) {
   await waitFor(description, async () => ((await check()) ? true : undefined), options);
 }
+
+// Polls `read` like waitFor (same options, passed through), except that `false` also
+// means "not yet": for reads that answer false until they can return the awaited value.
+// Unlike waitUntil, other falsy results (null, 0, "") end the wait and are returned.
+export function waitForResult(description, read, options) {
+  return waitFor(
+    description,
+    async () => {
+      const value = await read();
+      return value === false ? undefined : value;
+    },
+    options,
+  );
+}
+
+/**
+ * Returns `promise`'s outcome, or rejects with `Timed out after <timeoutMs> ms: <message>` if
+ * it has not settled by then, so a stalled step fails with its own message instead of running
+ * into the test timeout. The timer is cleared as soon as `promise` settles. `message` may be a
+ * function, called at the deadline, to report state gathered while waiting.
+ * @template T
+ * @param {Promise<T>} promise
+ * @param {string | (() => string)} message
+ * @param {number} [timeoutMs]
+ * @returns {Promise<T>}
+ */
+export async function within(promise, message, timeoutMs = 10_000) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          const text = typeof message === "function" ? message() : message;
+          reject(new Error(`Timed out after ${timeoutMs} ms: ${text}`));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import test from "node:test";
-import { isTransientPullFailure, pullImage } from "../../scripts/ci/image-pull.mjs";
+import { isTransientPullFailure, pullImage } from "../../scripts/ci/image-pull.ts";
 import { fetchPinnedBytes, isTransientFetchError } from "../../scripts/ci/routing.mjs";
 import { listen } from "../helpers/listen.mjs";
 

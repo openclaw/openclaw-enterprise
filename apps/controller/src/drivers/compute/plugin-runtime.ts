@@ -1,7 +1,10 @@
 import {
   type AgentRevision,
   assertExecutionAdmission,
+  CODEX_PLUGIN_DRIVER_IMPLEMENTATION,
+  OPENCLAW_PLUGIN_DRIVER_IMPLEMENTATION,
   type PluginDesiredState,
+  pluginRuntimeHarnessRequirement,
   validPluginRevisionState,
   validPluginApprovers,
 } from "@openclaw-enterprise/contracts";
@@ -52,6 +55,7 @@ export interface CodexRepositoryBrokerNetworkPolicy {
 export interface CodexModelEndpoint {
   readonly baseUrl: string;
   readonly modelProvider: "openai-compatible";
+  readonly supportsStandaloneWebSearch?: true;
 }
 
 export type PluginRuntimeSpec =
@@ -76,28 +80,20 @@ function validateDriverMatchesRuntime(
   revision: Readonly<AgentRevision>,
   runtime: PluginRuntimeSpec,
 ): void {
-  if (runtime.kind === "codex") {
-    if (!(
-      (revision.harness.id === "codex" && revision.harness.mode === "dedicated") ||
-      (revision.harness.id === "openclaw" && revision.harness.mode === "embedded")
-    )) {
-      throw new Error(
-        "Codex plugin runtime artifacts require a dedicated Codex Harness or embedded OpenClaw Harness.",
-      );
-    }
-    if (revision.plugins?.driver.implementation !== "occ/codex-plugin") {
-      throw new Error("Codex plugin runtime artifacts require the Codex PluginDriver.");
-    }
-    return;
+  const [implementation, artifacts, driver] =
+    runtime.kind === "codex"
+      ? [CODEX_PLUGIN_DRIVER_IMPLEMENTATION, "Codex plugin runtime artifacts", "Codex PluginDriver"]
+      : [
+          OPENCLAW_PLUGIN_DRIVER_IMPLEMENTATION,
+          "OpenClaw plugin runtime artifacts",
+          "OpenClaw PluginDriver",
+        ];
+  const harness = pluginRuntimeHarnessRequirement(implementation, revision.harness);
+  if (harness !== undefined) {
+    throw new Error(`${artifacts} require ${harness}.`);
   }
-  if (
-    revision.harness.id !== "openclaw" ||
-    (revision.harness.mode !== "embedded" && revision.harness.mode !== "dedicated")
-  ) {
-    throw new Error("OpenClaw plugin runtime artifacts require an OpenClaw Harness.");
-  }
-  if (revision.plugins?.driver.implementation !== "occ/openclaw-plugin") {
-    throw new Error("OpenClaw plugin runtime artifacts require the OpenClaw PluginDriver.");
+  if (revision.plugins?.driver.implementation !== implementation) {
+    throw new Error(`${artifacts} require the ${driver}.`);
   }
 }
 
@@ -246,7 +242,7 @@ function codexToml(
   }
   return endpoint === undefined
     ? configuration
-    : `model_provider = ${JSON.stringify(endpoint.modelProvider)}\n\n${configuration}\n[model_providers.${endpoint.modelProvider}]\nname = "OpenAI-compatible"\nbase_url = ${JSON.stringify(endpoint.baseUrl)}\nwire_api = "responses"\nrequires_openai_auth = true\nsupports_websockets = false\n${runtime.providerTools === "none" ? "request_max_retries = 0\nstream_max_retries = 0\n" : ""}`;
+    : `model_provider = ${JSON.stringify(endpoint.modelProvider)}\n\n${configuration}\n[model_providers.${endpoint.modelProvider}]\nname = "OpenAI-compatible"\nbase_url = ${JSON.stringify(endpoint.baseUrl)}\nwire_api = "responses"\nrequires_openai_auth = true\nsupports_websockets = false\n${endpoint.supportsStandaloneWebSearch === true && runtime.providerTools !== "none" ? "supports_standalone_web_search = true\n" : ""}${runtime.providerTools === "none" ? "request_max_retries = 0\nstream_max_retries = 0\n" : ""}`;
 }
 
 /**

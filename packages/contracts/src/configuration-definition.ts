@@ -15,7 +15,8 @@ import {
 } from "typebox/schema";
 import { Has as hasFormat } from "typebox/format";
 import { ErrorDetail } from "./api/common.ts";
-import type { JSONSchema, DriverCapability } from "./index.ts";
+import type { DriverCapability } from "./drivers/index.ts";
+import type { JSONSchema } from "./index.ts";
 
 export type ConfigurationResult<T> =
   | { readonly success: true; readonly data: T }
@@ -46,6 +47,8 @@ export interface DriverConfigurationDescriptor {
   readonly key: string;
   readonly configurationSchema: JSONSchema;
   readonly binding: "installation-startup" | "sandbox-policy";
+  /** Absent when startup values cannot be inspected safely. */
+  readonly startupConfiguration?: Readonly<Record<string, unknown>>;
   readonly actions: Partial<
     Record<
       "read" | "validate" | "save" | "apply",
@@ -129,16 +132,41 @@ function schemaReferences(schema: JSONSchema, stack: XStack) {
   return references;
 }
 
+const dialect = "https://json-schema.org/draft/2020-12/schema";
+
+// The meta-schema check is a pure function of the schema's JSON text and costs about
+// 20 ms for the largest bundled Driver schemas. Every controller, worker and registry
+// setup checks the same schemas again, so the texts that passed are kept per process.
+// The key is the full text, so a changed schema is always checked again.
+const metaSchemaPasses = new Set<string>();
+const metaSchemaPassLimit = 128;
+
+function satisfiesMetaSchema(text: string): boolean {
+  if (metaSchemaPasses.has(text)) {
+    return true;
+  }
+  if (!Check(Meta[dialect], JSON.parse(text))) {
+    return false;
+  }
+  if (metaSchemaPasses.size >= metaSchemaPassLimit) {
+    metaSchemaPasses.clear();
+  }
+  metaSchemaPasses.add(text);
+  return true;
+}
+
 /** Reject schemas the installed TypeBox evaluator would silently weaken or cannot resolve. */
 export function assertConfigurationSchema(schema: JSONSchema): void {
   try {
     if (schema === null || typeof schema !== "object" || Array.isArray(schema)) {
       throw new Error();
     }
-    const serialized = JSON.parse(JSON.stringify(schema));
-    const dialect = "https://json-schema.org/draft/2020-12/schema";
+    const text: unknown = JSON.stringify(schema);
+    if (typeof text !== "string") {
+      throw new Error();
+    }
     // TypeBox schemas carry nonenumerable metadata that JSON intentionally omits.
-    if (!isJsonInput(schema) || !Check(Meta[dialect], serialized)) {
+    if (!isJsonInput(schema) || !satisfiesMetaSchema(text)) {
       throw new Error();
     }
     const seen = new Set<object>();
@@ -177,7 +205,7 @@ export function assertConfigurationSchema(schema: JSONSchema): void {
   }
 }
 
-// Alternatives and references can declare the same safe field path. Dynamic map keys never do.
+// Follow same-value references and branches; callers decide how their child schemas apply.
 function schemaAlternatives(
   schema: XSchema,
   stack: XStack,
@@ -186,7 +214,7 @@ function schemaAlternatives(
   if (typeof schema !== "object" || schema === null || seen.has(schema)) {
     return [];
   }
-  seen.add(schema);
+  seen = new Set(seen).add(schema);
   const record = schema as JSONSchema;
   const current = NextStack(stack, record);
   const result = [{ schema: record, stack: current }];
@@ -195,7 +223,7 @@ function schemaAlternatives(
       result.push(...schemaAlternatives(reference.schema, reference.stack, seen));
     }
   }
-  for (const key of ["allOf", "anyOf", "oneOf", "then", "else"]) {
+  for (const key of ["allOf", "anyOf", "oneOf", "if", "then", "else", "not"]) {
     const branches = record[key];
     for (const branch of Array.isArray(branches) ? branches : [branches]) {
       if (branch && typeof branch === "object") {
@@ -203,7 +231,104 @@ function schemaAlternatives(
       }
     }
   }
+  for (const key of ["dependentSchemas", "dependencies"]) {
+    const dependencies = record[key];
+    if (dependencies && typeof dependencies === "object" && !Array.isArray(dependencies)) {
+      for (const dependency of Object.values(dependencies)) {
+        if (dependency && typeof dependency === "object" && !Array.isArray(dependency)) {
+          result.push(...schemaAlternatives(dependency, current, seen));
+        }
+      }
+    }
+  }
   return result;
+}
+
+/** Copy accepted startup values, combining writeOnly annotations across branches conservatively. */
+export function serializeStartupConfiguration(
+  schema: JSONSchema,
+  input: unknown,
+): Readonly<Record<string, unknown>> | undefined {
+  assertConfigurationSchema(schema);
+  if (!isJsonInput(input) || input === null || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("Startup inspection requires a JSON object.");
+  }
+  type Candidate = { schema: XSchema; stack: XStack };
+  function redact(value: unknown, candidates: Candidate[]): unknown {
+    const alternatives = candidates.flatMap(({ schema, stack }) =>
+      schemaAlternatives(schema, stack),
+    );
+    if (alternatives.some(({ schema }) => schema.writeOnly === true)) {
+      return "[redacted]";
+    }
+    for (const { schema: current } of alternatives) {
+      // Evaluated-location tracking and encoded content are not part of this serializer.
+      for (const keyword of ["unevaluatedProperties", "unevaluatedItems", "contentSchema"]) {
+        if (typeof current[keyword] === "object" && current[keyword] !== null) {
+          throw new Error("Startup inspection does not support this schema form.");
+        }
+      }
+    }
+    if (value === null || typeof value !== "object") {
+      return value;
+    }
+    // A write-only property-name annotation must not reveal the names in the containing object.
+    if (
+      !Array.isArray(value) &&
+      Object.keys(value).length > 0 &&
+      alternatives.some(
+        ({ schema, stack }) =>
+          schema.propertyNames &&
+          redact("", [{ schema: schema.propertyNames as XSchema, stack }]) === "[redacted]",
+      )
+    ) {
+      return "[redacted]";
+    }
+    const entries = Object.entries(value).map(([key, child]) => {
+      const next: Candidate[] = [];
+      const add = (schema: unknown, stack: XStack) => {
+        if (
+          typeof schema === "boolean" ||
+          (schema && typeof schema === "object" && !Array.isArray(schema))
+        ) {
+          next.push({ schema: schema as XSchema, stack });
+        }
+      };
+      for (const { schema: current, stack } of alternatives) {
+        if (Array.isArray(value)) {
+          const tuple = current.prefixItems ?? (Array.isArray(current.items) ? current.items : []);
+          let itemSchema = Array.isArray(current.items) ? current.additionalItems : current.items;
+          if (Array.isArray(tuple) && Number(key) < tuple.length) {
+            itemSchema = tuple[Number(key)];
+          }
+          add(itemSchema, stack);
+          add(current.contains, stack);
+        } else {
+          const properties = current.properties as Record<string, XSchema> | undefined;
+          let declared = false;
+          if (properties !== undefined && Object.hasOwn(properties, key)) {
+            declared = true;
+            add(properties[key], stack);
+          }
+          for (const [pattern, definition] of Object.entries(current.patternProperties ?? {})) {
+            if (new RegExp(pattern, "u").test(key)) {
+              declared = true;
+              add(definition, stack);
+            }
+          }
+          if (!declared) {
+            add(current.additionalProperties, stack);
+          }
+        }
+      }
+      return [key, redact(child, next)] as const;
+    });
+    return Array.isArray(value) ? entries.map(([, child]) => child) : Object.fromEntries(entries);
+  }
+  const result = redact(input, [{ schema, stack: Stack({}, schema) }]);
+  return typeof result === "object" && result !== null
+    ? immutableCopy(result as Record<string, unknown>)
+    : undefined;
 }
 
 function safePath(schema: JSONSchema, pointer: string, input: unknown): string {

@@ -59,16 +59,25 @@ async function verifyPreparation(env) {
   assert.equal(run.status, "completed");
   assert.ok(["failure", "cancelled", "success"].includes(run.conclusion));
   const jobs = await githubPages(`${runPath}/attempts/${env.PREPARATION_ATTEMPT}/jobs`, "jobs");
-  for (const name of ["validate", ...images.map((image) => `Prepare ${image} OCI image`)]) {
+  const legacyJobs = images.map((image) => `Prepare ${image} OCI image`);
+  const nativeJobs = images.flatMap((image) => [
+    `prepare / Prepare ${image} (amd64)`,
+    `prepare / Prepare ${image} (arm64)`,
+    `Assemble ${image} OCI image`,
+  ]);
+  const hasLegacyJobs = jobs.some((job) => legacyJobs.includes(job.name));
+  if (hasLegacyJobs) {
+    assert.ok(
+      !jobs.some((job) => nativeJobs.includes(job.name)),
+      "Preparation attempt mixes legacy and native jobs.",
+    );
+  }
+  for (const name of ["validate", ...(hasLegacyJobs ? legacyJobs : nativeJobs)]) {
     const selected = jobs.filter((job) => job.name === name);
     assert.equal(selected.length, 1, `Exactly one successful ${name} job is required.`);
     assert.equal(selected[0].head_sha, env.SOURCE_SHA);
     assert.equal(selected[0].status, "completed");
-    assert.equal(
-      selected[0].conclusion,
-      "success",
-      "Both original smoke jobs must have succeeded.",
-    );
+    assert.equal(selected[0].conclusion, "success", `${name} job must have succeeded.`);
   }
   const artifacts = await githubPages(`${runPath}/artifacts`, "artifacts");
   const selected = images.map((image) => {

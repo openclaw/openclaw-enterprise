@@ -8,9 +8,11 @@ import {
   ResourceConflictError,
   ServiceAccountDriverNotConfiguredError,
 } from "../../packages/occ/src/index.ts";
-import { PostgresWorkQueue } from "../../packages/occ/src/state/postgres-work-queue.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
-import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
+import {
+  createDevelopmentComputeDriver,
+  registerAndSelectDrivers,
+} from "../helpers/development.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   createAccessTokenServiceAccount,
@@ -23,6 +25,7 @@ import {
   workspaceId,
 } from "../helpers/postgres-backend-state.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
+import { claimIsolatedWork } from "../helpers/postgres-work-claim.mjs";
 
 test(
   "ServiceAccount deletion protects draft, queued, claimed, and active references before Driver effects",
@@ -35,7 +38,7 @@ test(
       backends: [backendDefinition()],
     });
     const deletedAccounts = [];
-    for (const driver of [
+    registerAndSelectDrivers(controller, [
       new NativeIAMDriver(state, { id: "service-account-deletion-iam" }),
       createDevelopmentComputeDriver(),
       createTestConfigurationDriver(),
@@ -54,10 +57,7 @@ test(
           deletedAccounts.push(account.id);
         },
       },
-    ]) {
-      controller.registerDriver(driver);
-      controller.selectDriver(driver.capability, driver.id);
-    }
+    ]);
     const namespace = fixture.track(
       await state.transact((unit) =>
         unit.namespaces.createNamespace({
@@ -111,27 +111,8 @@ test(
         { code },
       );
     }
-    async function claimRevision() {
-      const client = await pool.connect();
-      try {
-        await client.query("BEGIN");
-        // Other suites retain work in this database. Temporarily lock those rows so the
-        // real queue's SKIP LOCKED claim selects only this fixture without mutating peers.
-        await client.query(
-          "SELECT idempotency_key FROM occ.controller_work WHERE namespace_id <> $1 FOR UPDATE SKIP LOCKED",
-          [namespace.id],
-        );
-        // Claim on another connection: PostgreSQL does not skip a transaction's own locks.
-        const claim = await new PostgresWorkQueue(pool).claim();
-        await client.query("COMMIT");
-        return claim;
-      } catch (error) {
-        await client.query("ROLLBACK");
-        throw error;
-      } finally {
-        client.release();
-      }
-    }
+    // Other suites retain work in this database; claim only this fixture's.
+    const claimRevision = () => claimIsolatedWork(pool, { namespaceId: namespace.id });
     // A draft binding alone protects the source before any deployment exists.
     await assertProtected();
     const revision = await controller.deployAgent(actor.id, target, resolveApprovedHarness);
@@ -268,7 +249,7 @@ test(
     // This API process selects no ServiceAccount Driver: the ChatGPT Backend is gone.
     const controller = new OpenClawController(fixture.installation, { state });
     const deletedSecrets = [];
-    for (const driver of [
+    registerAndSelectDrivers(controller, [
       new NativeIAMDriver(state, { id: "service-account-force-iam" }),
       {
         ...createDevelopmentComputeDriver(),
@@ -277,10 +258,7 @@ test(
         },
       },
       createTestConfigurationDriver(),
-    ]) {
-      controller.registerDriver(driver);
-      controller.selectDriver(driver.capability, driver.id);
-    }
+    ]);
     const namespace = fixture.track(
       await state.transact((unit) =>
         unit.namespaces.createNamespace({

@@ -37,7 +37,7 @@ async function writeJson(path, value) {
 
 test("codex seccomp profile derivation preserves RuntimeDefault and adds only reviewed bwrap rules", () => {
   const profile = deriveCodexBwrapProfile(runtimeDefaultBaseline, {
-    codexVersion: "0.163.0-alpha.2",
+    codexVersion: "0.164.0",
   });
   const added = profile.syscalls.slice(runtimeDefaultBaseline.syscalls.length);
 
@@ -160,7 +160,7 @@ test("offline codex seccomp generator writes immutable profile and nonsecret pro
       "--baseline",
       baselinePath,
       "--codex-version",
-      "0.163.0-alpha.2",
+      "0.164.0",
       "--out",
       profilePath,
       "--provenance-out",
@@ -178,7 +178,7 @@ test("offline codex seccomp generator writes immutable profile and nonsecret pro
   assert.deepEqual(profile.syscalls.slice(0, runtimeDefaultBaseline.syscalls.length), [
     ...runtimeDefaultBaseline.syscalls,
   ]);
-  assert.equal(provenance.codexVersion, "0.163.0-alpha.2");
+  assert.equal(provenance.codexVersion, "0.164.0");
   assert.equal(provenance.runtimeDefaultSha256, summary.runtimeDefaultSha256);
   assert.equal(provenance.profileSha256, summary.profileSha256);
   assert.equal(provenance.addedRules, 78);
@@ -191,7 +191,7 @@ test("offline codex seccomp generator writes immutable profile and nonsecret pro
       "--baseline",
       baselinePath,
       "--codex-version",
-      "0.163.0-alpha.2",
+      "0.164.0",
       "--out",
       profilePath,
       "--provenance-out",
@@ -434,6 +434,7 @@ async function missingProfileFixture(t, observations, options = {}) {
       ),
     reads: () => missingReads,
     installations: () => installations,
+    applied: () => [...applied.values()],
     async assertCleanup() {
       assert.equal(cleanupCalls, 1);
       assert.equal(
@@ -480,6 +481,21 @@ for (const [label, first] of [
     await control.assertCleanup();
   });
 }
+
+// Each probe's Node process is PID 1 and ignores SIGTERM. Local Setup's cleanup
+// (prepareDevelopmentCodexSeccompProfile) waits for the probe Namespace, so the
+// default 30 s grace was idle time. Both paths share this Pod spec; the CI path
+// is the one with an offline fixture.
+test("codex seccomp probe Pods stop within a one-second grace period", async (t) => {
+  const control = await missingProfileFixture(t, [missingProfileWaiting]);
+  await control.run();
+  const pods = control.applied();
+  assert.equal(pods.length, 3, "RuntimeDefault, installed-profile and missing-profile probes");
+  for (const pod of pods) {
+    assert.equal(pod.spec.terminationGracePeriodSeconds, 1, pod.metadata.name);
+  }
+  await control.assertCleanup();
+});
 
 test("missing-profile preparation preserves pending timeout and cleanup", async (t) => {
   const control = await missingProfileFixture(t, [{ name: "probe" }], { timeoutMs: 5 });
@@ -636,7 +652,7 @@ async function runGeneratedProbe(args, root, mode) {
   const shellArgs = args.slice(args.indexOf("--") + 2);
   assert.equal(shellArgs[0], "-c");
   assert.equal(shellArgs[2], "codex-sandbox-probe");
-  assert.equal(shellArgs[3], "0.163.0-alpha.2");
+  assert.equal(shellArgs[3], "0.164.0");
   assert.match(shellArgs[4], /^[a-f0-9]{32}$/);
   assert.equal(shellArgs.length, 5);
   assert.equal(
@@ -655,7 +671,7 @@ async function runGeneratedProbe(args, root, mode) {
     tools,
     "codex",
     `if [ "$1" = --version ]; then
-  if [ "$PROBE_MODE" = version ]; then echo 'codex 0.0.0'; else echo 'codex 0.163.0-alpha.2'; fi
+  if [ "$PROBE_MODE" = version ]; then echo 'codex 0.0.0'; else echo 'codex 0.164.0'; fi
   exit 0
 fi
 # Validate the real command's sandbox arguments, independently of its shell layout.
@@ -768,7 +784,9 @@ test("relocated preparation entrypoints require and deliver the local shell asse
   for (const path of [
     "ci/codex-seccomp.mjs",
     "lib/codex-seccomp-k3d.mjs",
+    "lib/private-owned-path.mjs",
     "lib/codex-seccomp-profile.mjs",
+    "lib/codex-seccomp-profile.ts",
     "prepare-development-codex-seccomp.mjs",
   ]) {
     await writeFile(join(scripts, path), await readFile(join(repositoryRoot, "scripts", path)));

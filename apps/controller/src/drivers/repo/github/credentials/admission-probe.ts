@@ -45,9 +45,13 @@ async function main() {
     ],
   } as const;
   const client = new UnixRepositoryCredentialControlClient({ controlSocket: socket });
-  const backend = { id: backendId, drivers: { repo: "compatibility-probe" }, client };
-  const driver = new GitHubNativeRepositorySender(backend, {});
-  const policy = new GitHubRepositoryPolicy(backend, registry, { sessionDurationSeconds: 60 });
+  const backend = { id: backendId, drivers: { repo: "compatibility-probe" } };
+  const driver = new GitHubNativeRepositorySender({ ...backend, client }, {});
+  const policy = new GitHubRepositoryPolicy(
+    { driverId: backend.drivers.repo, backendId: backend.id },
+    registry,
+    { sessionDurationSeconds: 60 },
+  );
   const binding = policy.resolve({
     namespaceId,
     bindings: [{ repositoryRef: "compatibility-probe", profile: "git-write" }],

@@ -19,12 +19,24 @@ export interface TokenIssue {
  */
 const storeClockToleranceMs = 120_000;
 
+export interface TokenPreparationObservation {
+  readonly attemptId: string;
+  readonly stage: "intent" | "fence" | "issue" | "publication";
+  readonly error?: "store-error" | "issuer-error" | "admission-fenced" | "invalid-material";
+  readonly admissionCurrent?: boolean;
+  readonly inBounds?: boolean;
+  readonly stale?: boolean;
+  readonly clockTolerance?: boolean;
+  readonly publication?: "committed" | "quarantined" | "unknown";
+}
+
 interface PreparationOptions<A extends TokenAdmission> {
   readonly admission: A;
   readonly store: TokenPreparationStore<A>;
   readonly clock: { monotonicNow(): number; wallNow(): number };
   readonly renewBeforeMs: number;
   readonly minimumValidityMs: number;
+  readonly observe?: (observation: TokenPreparationObservation) => void;
   readonly issue: (
     attempt: TokenIssue,
   ) => Promise<{ providerExpiresAt: number; usableUntil: number } | undefined>;
@@ -50,11 +62,21 @@ export function createTokenPreparation<A extends TokenAdmission>(options: Prepar
       attemptId: string,
       bounds: TokenIssue["bounds"],
     ): Promise<"ready" | "committed" | "blocked" | "fenced" | "quarantined"> {
+      let stage: TokenPreparationObservation["stage"] = "intent";
+      const observe = (observation: Omit<TokenPreparationObservation, "attemptId">) => {
+        stage = observation.stage;
+        try {
+          options.observe?.({ attemptId, ...observation });
+        } catch {
+          // Reporting must not change issuance, publication or cleanup custody.
+        }
+      };
       const inBounds = () => !bounds.signal.aborted && clock.monotonicNow() < bounds.deadlineMonoMs;
       if (!attemptId || !inBounds()) {
         return "blocked";
       }
       try {
+        observe({ stage: "intent" });
         const begun = await store.transact(admission.familyId, (row) => {
           if (!preparationAdmitted(row, admission)) {
             return "fenced" as const;
@@ -85,6 +107,7 @@ export function createTokenPreparation<A extends TokenAdmission>(options: Prepar
           return begun;
         }
       } catch {
+        observe({ stage: "intent", error: "store-error", publication: "unknown" });
         // The durable uncertainty marker may have committed. Do not issue or retry.
         return "quarantined";
       }
@@ -93,32 +116,47 @@ export function createTokenPreparation<A extends TokenAdmission>(options: Prepar
       let verified: { providerExpiresAt: number; usableUntil: number } | undefined;
       let refused = false;
       try {
+        observe({ stage: "issue" });
         verified = await options.issue({
           attemptId,
           bounds,
           // The issuer might await its signing input before this check. Recovery could have
           // fenced this attempt in the meantime. Publication must independently recheck it.
           async assertIssuing() {
-            const issuing = await store.readCurrent(admission.familyId, (row) =>
-              preparationAdmitted(row, admission) &&
-              row.attempts.some(
-                (entry) =>
-                  entry.id === attemptId &&
-                  entry.state === "issuing" &&
-                  !entry.stale &&
-                  sameTokenAdmission(entry.admission, admission),
-              )
-                ? { observedAt: row.observedAt }
-                : undefined,
-            );
+            observe({ stage: "fence" });
+            const issuing = await store.readCurrent(admission.familyId, (row) => {
+              const admissionCurrent = preparationAdmitted(row, admission);
+              observe({ stage: "fence", admissionCurrent });
+              const issuing =
+                admissionCurrent &&
+                row.attempts.some((entry) => {
+                  const matches = entry.id === attemptId;
+                  if (matches) {
+                    observe({ stage: "fence", stale: entry.stale === true });
+                  }
+                  return (
+                    matches &&
+                    entry.state === "issuing" &&
+                    !entry.stale &&
+                    sameTokenAdmission(entry.admission, admission)
+                  );
+                });
+              return issuing ? { observedAt: row.observedAt } : undefined;
+            });
             // Settlement measures the attempt in the store's clock, but our clock sets the JWT
             // expiry that bounds when the provider can still mint: ours must not run ahead.
-            if (
-              !issuing ||
-              !inBounds() ||
-              (issuing.observedAt !== undefined &&
-                !(clock.wallNow() - issuing.observedAt <= storeClockToleranceMs))
-            ) {
+            const currentBounds = issuing ? inBounds() : undefined;
+            const clockTolerance =
+              issuing && currentBounds && issuing.observedAt !== undefined
+                ? clock.wallNow() - issuing.observedAt <= storeClockToleranceMs
+                : undefined;
+            observe({
+              stage: "fence",
+              ...(currentBounds !== undefined ? { inBounds: currentBounds } : {}),
+              ...(clockTolerance !== undefined ? { clockTolerance } : {}),
+            });
+            if (!issuing || !currentBounds || clockTolerance === false) {
+              observe({ stage: "fence", error: "admission-fenced" });
               throw new Error("preparation-fenced");
             }
           },
@@ -131,11 +169,13 @@ export function createTokenPreparation<A extends TokenAdmission>(options: Prepar
           },
         });
       } catch {
+        observe({ stage, error: "issuer-error" });
         verified = undefined;
       }
 
       try {
-        return await store.transact(admission.familyId, (row, allocateMaterialVersion) => {
+        observe({ stage: "publication" });
+        const outcome = await store.transact(admission.familyId, (row, allocateMaterialVersion) => {
           const attempt = row?.attempts.find(
             (entry) => entry.id === attemptId && sameTokenAdmission(entry.admission, admission),
           );
@@ -143,16 +183,27 @@ export function createTokenPreparation<A extends TokenAdmission>(options: Prepar
             // A missing durable intent is a repository contract violation, never publication.
             throw new Error("preparation-intent-lost");
           }
+          // Keep the original short-circuit order and clock reads; reporting adds no checks.
+          const admissionCurrent =
+            attempt.state !== "quarantined" ? preparationAdmitted(row, admission) : undefined;
+          const currentBounds = admissionCurrent ? inBounds() : undefined;
+          observe({
+            stage: "publication",
+            stale: attempt.stale === true,
+            ...(admissionCurrent !== undefined ? { admissionCurrent } : {}),
+            ...(currentBounds !== undefined ? { inBounds: currentBounds } : {}),
+          });
           if (
             attempt.state === "quarantined" ||
-            !preparationAdmitted(row, admission) ||
-            !inBounds() ||
+            !admissionCurrent ||
+            !currentBounds ||
             !verified ||
             !candidate?.byteLength ||
             !Number.isFinite(verified.providerExpiresAt) ||
             !(verified.usableUntil <= verified.providerExpiresAt) ||
             !(verified.usableUntil > clock.wallNow() + minimumValidityMs)
           ) {
+            observe({ stage: "publication", error: "invalid-material" });
             attempt.state = "quarantined";
             if (candidate) {
               attempt.candidate = Uint8Array.from(candidate);
@@ -163,7 +214,7 @@ export function createTokenPreparation<A extends TokenAdmission>(options: Prepar
             return "quarantined" as const;
           }
           const materialVersion = allocateMaterialVersion();
-          row.committed = {
+          row!.committed = {
             admission: structuredClone(admission),
             attemptId,
             materialVersion,
@@ -175,7 +226,10 @@ export function createTokenPreparation<A extends TokenAdmission>(options: Prepar
           attempt.materialVersion = materialVersion;
           return "committed" as const;
         });
+        observe({ stage: "publication", publication: outcome });
+        return outcome;
       } catch {
+        observe({ stage: "publication", error: "store-error", publication: "unknown" });
         // Commit may have succeeded. Only a fresh read can establish warm readiness.
         // The original intent remains non-replayable even if publication did not commit.
         return "quarantined";

@@ -11,8 +11,7 @@ Continue from an activated gateway to Pod discovery, native TUI attachment, and 
 Gateway Pods keep stable labels for the Agent, including
 `app.kubernetes.io/managed-by=openclaw-enterprise`,
 `openclaw.dev/workload-role=gateway`, `openclaw.dev/namespace`, and
-`openclaw.dev/agent`. Those labels are not enough to prove the selected immutable
-Agent revision after a cutover. The attach procedure calculates the expected
+`openclaw.dev/agent`. Those labels cannot identify which Agent revision the Pod serves after a cutover. The attach procedure calculates the expected
 ConfigMap name from `AGENT_ID` and `REVISION_ID`, then selects exactly one
 Running, Ready gateway Pod whose volumes mount that ConfigMap.
 
@@ -58,7 +57,7 @@ operator can type a second prompt into the same session.
 Ctrl+D exits the TUI process launched by `kubectl exec`; the production TUI test
 drives that exit through `tests/helpers/tui-pty.py`, then checks the gateway
 `/readyz` endpoint from inside the same Pod. After a new
-immutable AgentRevision becomes active, the operator uses the service key to
+AgentRevision becomes active, the operator uses the service key to
 read the Agent again and repeats discovery because
 the matching ConfigMap and possibly the gateway Pod UID have changed. Removing
 a temporary local service-key copy does not revoke the credential, and exiting
@@ -69,7 +68,7 @@ Automated coverage for this exact lifecycle is
 `tests/integration/production-tui-k3d-real.test.mjs`. It uses
 `tests/helpers/tui-pty.py` to keep the native TUI process open across two
 prompts, verify nonce-only assistant responses, prove fresh invalid-password
-denial, repeat the attach path after immutable Agent revision cutover, and confirm
+denial, repeat the attach path after the gateway switches to the new Agent revision, and confirm
 Ctrl+D exits only the client. Its native Configuration sets
 `agents.defaults.skipBootstrap` to `true` for the disposable demo Agent so
 first-run bootstrap guidance does not consume the nonce prompt.

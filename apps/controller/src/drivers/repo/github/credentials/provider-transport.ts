@@ -1,5 +1,6 @@
 import type { AttemptContext, Clock } from "../../credentials/backend-contracts.ts";
 import { sendProviderRequest } from "./provider-transport/request.ts";
+import type { ProviderObservation } from "./provider-diagnostics.ts";
 import {
   prepareProviderScope,
   type ProviderIssuanceScope,
@@ -19,15 +20,11 @@ export interface ProviderTransport {
   issue(
     authorization: string,
     attempt: ProviderAttempt,
-    onDispatch: () => void,
     assertMaterialCurrent: () => void,
     observeResponse: (response: ProviderResponse) => void,
+    observe?: (observation: ProviderObservation) => void,
   ): Promise<ProviderResponse>;
-  revoke(
-    authorization: string,
-    attempt: ProviderAttempt,
-    onDispatch: () => void,
-  ): Promise<ProviderResponse>;
+  revoke(authorization: string, attempt: ProviderAttempt): Promise<ProviderResponse>;
 }
 
 /** This capability can only mint its original scope or revoke the presented token. */
@@ -40,7 +37,7 @@ export function createProviderTransport(
   const prepared = prepareProviderScope(origin, scope);
   const trustedCa = ca === undefined ? undefined : Buffer.from(ca);
   return Object.freeze<ProviderTransport>({
-    issue(authorization, attempt, onDispatch, assertMaterialCurrent, observeResponse) {
+    issue(authorization, attempt, assertMaterialCurrent, observeResponse, observe) {
       return sendProviderRequest({
         endpoint: prepared,
         ca: trustedCa,
@@ -48,12 +45,12 @@ export function createProviderTransport(
         operation: "issue",
         authorization,
         attempt,
-        onDispatch,
         assertMaterialCurrent,
         observeResponse,
+        ...(observe ? { observe } : {}),
       });
     },
-    revoke(authorization, attempt, onDispatch) {
+    revoke(authorization, attempt) {
       return sendProviderRequest({
         endpoint: prepared,
         ca: trustedCa,
@@ -61,7 +58,6 @@ export function createProviderTransport(
         operation: "revoke",
         authorization,
         attempt,
-        onDispatch,
         assertMaterialCurrent: () => {},
         observeResponse: () => {},
       });

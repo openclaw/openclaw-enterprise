@@ -33,8 +33,8 @@
     {
       "path": "tests/integration/harness-topology-k3d-real.test.mjs",
       "expectedTests": [
+        "production dedicated Skill source uploads honor default and denied node-write policy",
         "production dedicated Codex preserves gateway conversations and retained images across Pod replacement",
-        "production dedicated OpenClaw runs worker-local inference and tools in an enrolled Harness pod",
         "production Secret binding powers embedded OpenClaw and preserves conversations across Pod replacement",
         "production Secret API powers embedded OpenClaw through exact Namespace-owned native bindings",
         "production dedicated Codex startup failure status survives Pod deletion and controller restart with plugins disabled",

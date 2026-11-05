@@ -563,6 +563,8 @@ message SupervisorMiddlewareService {
   bytes tls_ca_cert_pem = 5;
   string audience = 6;
   bool allow_insecure_transport = 7;
+  int32 binding_policy = 8;
+  repeated int32 bindings = 9;
 }
 message ListSandboxesRequest {
   int32 page_size = 1;

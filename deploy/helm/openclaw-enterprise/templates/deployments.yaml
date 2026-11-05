@@ -468,6 +468,8 @@ spec:
             - name: OCC_CHANNEL_DIRECTORY_PROXY_URL
               value: {{ $.Values.api.channelDirectoryProxyUrl | quote }}
             {{- end }}
+            - name: OCC_API_HTTPS_EGRESS_OPEN
+              value: {{ include "openclaw.api.httpsEgressOpen" $ | quote }}
             - name: OCC_AGENT_NATIVE_ADMIN_ENABLED
               value: {{ ternary "true" "false" $.Values.agentNativeAdmin.enabled | quote }}
             - name: OCC_AGENT_RUNTIME_LOGS_ENABLED
@@ -484,9 +486,9 @@ spec:
             - name: OCC_WORKER_LIVENESS_PATH
               value: /run/openclaw-worker/alive
             - name: OCC_WORKER_POLL_INTERVAL_MS
-              value: {{ include "openclaw.positiveSafeInteger" (dict "name" "worker.pollIntervalMs" "value" $.Values.worker.pollIntervalMs) | quote }}
+              value: {{ include "openclaw.positiveSafeInteger" (dict "name" "worker.pollIntervalMs" "value" $.Values.worker.pollIntervalMs "timer" true) | quote }}
             - name: OCC_WORKER_LEASE_DURATION_MS
-              value: {{ include "openclaw.positiveSafeInteger" (dict "name" "worker.leaseDurationMs" "value" $.Values.worker.leaseDurationMs) | quote }}
+              value: {{ include "openclaw.positiveSafeInteger" (dict "name" "worker.leaseDurationMs" "value" $.Values.worker.leaseDurationMs "timer" true) | quote }}
             - name: OCC_WORKER_MAX_ATTEMPTS
               value: {{ include "openclaw.positiveSafeInteger" (dict "name" "worker.maxAttempts" "value" $.Values.worker.maxAttempts) | quote }}
             - name: OCC_WORKER_CONVERGENCE_TIMEOUT_MS
@@ -632,12 +634,26 @@ spec:
             periodSeconds: 1
             failureThreshold: 120
           {{- else }}
+          # Each worker probe starts a Node process inside the worker's CPU limit. It takes
+          # about 0.6 s when the worker uses its whole quota and several seconds when the
+          # node is overloaded, so the default 1 s timeout restarted healthy workers.
+          # Liveness detects a stuck run loop from the marker age, not from probe latency.
           readinessProbe:
             exec:
               command: [node, scripts/production-healthcheck.mjs, worker, ready]
+            timeoutSeconds: 5
           livenessProbe:
             exec:
               command: [node, scripts/production-healthcheck.mjs, worker]
+            timeoutSeconds: 5
+          # Like the API, a slow boot gets 2 min before liveness starts. A 5 s period keeps
+          # the Node probe from taking CPU from the booting worker.
+          startupProbe:
+            exec:
+              command: [node, scripts/production-healthcheck.mjs, worker]
+            timeoutSeconds: 5
+            periodSeconds: 5
+            failureThreshold: 24
           {{- end }}
         {{- if and (eq $component "worker") $repositoryBroker }}
       containers:

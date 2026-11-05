@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { appModule } from "../fixtures/repository-credentials/runtime.mjs";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import { createAlternateDriverFactory } from "../fixtures/repository-credentials/alternate.mjs";
 import {
@@ -14,7 +13,7 @@ import {
   eventually,
 } from "../fixtures/repository-credentials/service.mjs";
 
-const { createCredentialService } = await appModule("drivers/repo/credentials/service");
+const { createCredentialService } = await import("../fixtures/repository-credentials/service.ts");
 const completed = { kind: "completed", status: 200 };
 const unavailable = { kind: "not-dispatched", code: "exchange-unavailable" };
 const tick = () => new Promise((resolve) => setImmediate(resolve));
@@ -149,24 +148,13 @@ test(
               () => target.service.execute(foreignExchange, target.send),
               /FOREIGN_EXCHANGE/,
             );
-            await assert.rejects(
-              target.observed.custody.withAccess(
-                source.observed.credential,
-                "authenticate",
-                async () => {
-                  assert.fail("foreign custody must not expose access bytes");
-                },
-              ),
-              /FOREIGN_CREDENTIAL/,
-            );
-            await assert.rejects(
-              target.observed.driver.withAuthentication(
-                source.observed.credential,
-                target.service.plan(ownExchange),
-                async () => {
-                  assert.fail("a foreign credential must not reach the sender");
-                },
-              ),
+            assert.equal("withAccess" in target.observed.custody, false);
+            assert.throws(
+              () =>
+                target.observed.driver.prepareAuthentication(
+                  source.observed.credential,
+                  target.service.plan(ownExchange),
+                ),
               /invalid-credential/,
             );
             assert.deepEqual(await target.service.execute(ownExchange, target.send), completed);

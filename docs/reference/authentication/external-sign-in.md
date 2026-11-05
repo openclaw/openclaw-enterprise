@@ -80,10 +80,9 @@ transfer, and self-service linking are rejected. For unknown identities, follow 
 [enrollment procedure](../../guides/deploy/production-installation.md#enable-github-browser-sign-in).
 
 Without an [allowlist](#organization-and-team-allowlist), OCE does not check GitHub
-organization or team membership: any attached GitHub user ID signs in. Either way, OCE
-does not learn when someone leaves the organization or GitHub suspends them: without
-an allowlist someone who left can still sign in, and live sessions continue until they
-expire (at most 8 hours). Offboarding also means acting in OCE
+organization or team membership: any attached GitHub user ID signs in, including someone
+who left. Either way, OCE does not learn when someone leaves or GitHub suspends them, and
+live sessions continue until they expire (at most 8 hours). Offboarding also means acting in OCE
 ([account controls](#session-and-recovery-controls)): disable the account to end all
 access and its sessions, or detach its GitHub method to end GitHub sign-in and all its
 sessions; revoke ends sessions but allows a fresh sign-in. None of these ends a
@@ -182,12 +181,11 @@ GitHub may answer `404`, not `403`, for an organization where the App is not ins
 misspelled organization or team slug, or (unverified) an unauthorized SAML session. That
 refuses every member as `MEMBERSHIP_REQUIRED` with no warning log. If known members are
 refused, check the slugs, that the App is installed on each listed organization, and that its
-owner accepted Members: read.
+owner accepted Members: read. [Issue #3300](https://github.com/openclaw/openclaw-enterprise/issues/3300) tracks verification of GitHub’s responses when App or SAML access is missing.
 
 Membership is checked only at sign-in. Turning the list on applies from the next sign-in
 after the API restarts; existing sessions run until they expire (at most 8 hours), so revoke
-them to apply it at once. Removing someone from the organization or team stops their next
-GitHub sign-in but not a live session; disable or detach in OCE to end it.
+them to apply it at once.
 
 ## Recovery-only password sign-in
 
@@ -196,8 +194,7 @@ provider is enabled, so strangers who know an email can spend that account's
 password sign-in budget. `OCC_AUTH_PASSWORD_SIGN_IN=recovery-only` (Helm
 `auth.passwordSignIn: recovery-only`; default `all`) removes that surface:
 only the recovery account signs in with a password, and every other account uses
-its attached GitHub, Google or OIDC identity. It is the target posture once every
-ordinary account has an external identity. It requires a configured provider;
+its attached GitHub, Google or OIDC identity. It requires a configured provider;
 startup and Helm refuse it otherwise, and any other value.
 
 Every other email, existing or not, receives the ordinary `401` bad-credential

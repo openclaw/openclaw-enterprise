@@ -1,7 +1,7 @@
 import {
   openShellGitDeliveryTransport,
   protectedRepositoryGitInstallationSql,
-} from "../repo/credentials/protected-repository-git-installation.ts";
+} from "./openshell-repository-git-evidence.ts";
 import type { AgentRevision } from "@openclaw-enterprise/contracts";
 import {
   repositoryWithdrawalStateSql,

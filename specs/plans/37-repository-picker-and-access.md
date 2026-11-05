@@ -13,7 +13,7 @@ Source checked at `a67f8ea0`:
 
 - [Console repository fields](https://github.com/openclaw/openclaw-enterprise/blob/a67f8ea0833bd9d219ba914683c9c4da1d5c9f7d/apps/controller/src/console/agents/repositories.mjs)
   render the complete catalog and apply one profile common to all selections.
-- [Repository options](../../packages/contracts/src/repo.ts) expose a stable
+- [Repository options](../../packages/contracts/src/drivers/repo/index.ts) expose a stable
   `repositoryRef`, display name, and allowed profiles. They contain no usage,
   popularity, or last-activity ranking.
 - [GitHub RepoDriver](../../apps/controller/src/drivers/repo/github/driver.ts)

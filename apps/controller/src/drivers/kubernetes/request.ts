@@ -1,9 +1,19 @@
 import { numericErrorStatus } from "@openclaw-enterprise/utils";
 import { unreachableSocketFailure } from "../compute/kubernetes/index.ts";
 import { currentComputeAbortSignal, withComputeAbortSignal } from "../compute/operation-context.ts";
+import { currentMutationDeadline } from "../../admission/mutation-deadline.ts";
 
 /** How long one Kubernetes API request may take before its outcome counts as unknown. */
 const KUBERNETES_REQUEST_TIMEOUT_MS = 10_000;
+
+// The least time an API write's deadline must leave for a write to be sent, or for a read
+// retry after its pause. The Kubernetes scalability SLO for API-call latency puts
+// single-object mutating calls at 1 s (p99), so 2 s lets a healthy but busy API server
+// answer. A write sent with less is likely to be cut off and reported as "outcome unknown"
+// while the API server still applies it, which races the compensation that checks for it;
+// refusing it first gives a clean "was not sent". It is a fifth of
+// KUBERNETES_REQUEST_TIMEOUT_MS and matters only near the end of a budget.
+const MINIMUM_SEND_BUDGET_MS = 2_000;
 
 // Pauses before each retry of a read whose connection never got an answer, or
 // that the API server answered with 429 or 5xx. A load balancer in front of the
@@ -15,17 +25,25 @@ const READ_RETRY_DELAYS_MS: readonly number[] = [100, 250, 500, 1_000, 2_000];
 export interface KubernetesRequestFailures {
   /** The owner cancelled the operation; `reason` is its abort reason. */
   readonly cancelled: (reason: unknown) => unknown;
-  /** The request ran past KUBERNETES_REQUEST_TIMEOUT_MS. */
+  /** The request ran past KUBERNETES_REQUEST_TIMEOUT_MS or the API write's deadline. */
   readonly timedOut: () => unknown;
+  /**
+   * The API write's deadline (withMutationDeadline) passed, or left a write less than
+   * MINIMUM_SEND_BUDGET_MS, so nothing was sent.
+   */
+  readonly deadlineElapsed: () => unknown;
   /** Any other failure, once no retry is left or allowed. */
   readonly failed: (error: unknown) => unknown;
 }
 
 /**
- * Runs one Kubernetes API call under KUBERNETES_REQUEST_TIMEOUT_MS and the
- * owner's cancellation (the current compute abort signal). A read is retried on
- * the READ_RETRY_DELAYS_MS schedule. A write (`mutating`) is sent once: a write
- * that failed may still have been applied (finding 909).
+ * Runs one Kubernetes API call under KUBERNETES_REQUEST_TIMEOUT_MS, the enclosing
+ * API write's deadline (withMutationDeadline), and the owner's cancellation (the current compute abort
+ * signal). A read is retried on the READ_RETRY_DELAYS_MS schedule while the
+ * deadline leaves room for the pause and MINIMUM_SEND_BUDGET_MS. A write (`mutating`)
+ * is sent once, and only with MINIMUM_SEND_BUDGET_MS left: a write that failed may
+ * still have been applied (finding 909). Past the write's deadline nothing more is
+ * sent; a read that already failed then reports that failure.
  */
 export async function kubernetesRequest<T>(
   operation: () => Promise<T>,
@@ -33,9 +51,16 @@ export async function kubernetesRequest<T>(
   options: { readonly mutating?: boolean } = {},
 ): Promise<T> {
   const ownerSignal = currentComputeAbortSignal();
+  const mutationDeadline = currentMutationDeadline() ?? Infinity;
+  let lastError: unknown;
   for (let attempt = 1; ; attempt += 1) {
     ownerSignal?.throwIfAborted();
-    const deadline = AbortSignal.timeout(KUBERNETES_REQUEST_TIMEOUT_MS);
+    const remainingMs = mutationDeadline - Date.now();
+    if (remainingMs <= 0 || (options.mutating === true && remainingMs < MINIMUM_SEND_BUDGET_MS)) {
+      // A retry pause can end late: the read's real failure is then the answer, not "not sent".
+      throw attempt === 1 ? failures.deadlineElapsed() : failures.failed(lastError);
+    }
+    const deadline = AbortSignal.timeout(Math.min(KUBERNETES_REQUEST_TIMEOUT_MS, remainingMs));
     const signal = ownerSignal === undefined ? deadline : AbortSignal.any([ownerSignal, deadline]);
     try {
       return await withComputeAbortSignal(signal, operation);
@@ -52,9 +77,15 @@ export async function kubernetesRequest<T>(
         (status !== undefined && status >= 500) ||
         (status === undefined && unreachableSocketFailure(error));
       const pauseMs = READ_RETRY_DELAYS_MS[attempt - 1];
-      if (!retryable || options.mutating === true || pauseMs === undefined) {
+      if (
+        !retryable ||
+        options.mutating === true ||
+        pauseMs === undefined ||
+        Date.now() + pauseMs + MINIMUM_SEND_BUDGET_MS > mutationDeadline
+      ) {
         throw failures.failed(error);
       }
+      lastError = error;
       if (!(await retryPause(pauseMs, ownerSignal))) {
         throw failures.cancelled(ownerSignal?.reason);
       }

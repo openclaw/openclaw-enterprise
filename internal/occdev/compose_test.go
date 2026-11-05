@@ -2,9 +2,54 @@ package occdev
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
+
+func TestPodmanComposeArgsPreservesFileSelection(t *testing.T) {
+	// Podman can interpret the h in an attached path as help, even for down.
+	// A split file value starting with -f must not be normalized a second time.
+	args := []string{
+		"-fpath with spaces.yaml", "-f=next.yaml", "-f-dash.yaml", "-f==equals.yaml",
+		"--file", "-first.yaml", "--file=last.yaml",
+	}
+	want := []string{
+		"--file=path with spaces.yaml", "--file=next.yaml", "--file=-dash.yaml", "--file==equals.yaml",
+		"--file", "-first.yaml", "--file=last.yaml", "-f", "compose.podman.yaml",
+	}
+	if got, err := podmanComposeArgs(args, "must-not-select.yaml", ""); err != nil || !slices.Equal(got, want) {
+		t.Fatalf("Podman Compose arguments = %q, error %v; want %q", got, err, want)
+	}
+}
+
+func TestPodmanComposeFileValues(t *testing.T) {
+	for _, args := range [][]string{{"-f="}, {"-f", ""}, {"--file"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			got, err := podmanComposeArgs(args, "fallback.yaml", "")
+			if err == nil || !strings.Contains(err.Error(), "--file requires a Compose file path") || got != nil {
+				t.Fatalf("arguments = %q, error %v; want no arguments and a missing file error", got, err)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name             string
+		args             []string
+		files, separator string
+		want             []string
+	}{
+		{"split values", []string{"-f", "-first.yaml", "--file", "=literal.yaml", "--project-name", "with spaces"}, "ignored.yaml", "", []string{"-f", "-first.yaml", "--file", "=literal.yaml", "--project-name", "with spaces", "-f", "compose.podman.yaml"}},
+		{"environment", []string{"--project-name", "example"}, "first.yaml|path with spaces.yaml", "|", []string{"--project-name", "example", "-f", "first.yaml", "-f", "path with spaces.yaml", "-f", "compose.podman.yaml"}},
+		{"selected socket override", []string{"-f=compose.yaml", "-f=compose.podman.yaml"}, "ignored.yaml", "", []string{"--file=compose.yaml", "--file=compose.podman.yaml"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := podmanComposeArgs(tc.args, tc.files, tc.separator)
+			if err != nil || !slices.Equal(got, tc.want) {
+				t.Fatalf("arguments = %q, error %v; want %q", got, err, tc.want)
+			}
+		})
+	}
+}
 
 func TestAddComposeGatewayRoutingProjectsTrustIntoControlPlane(t *testing.T) {
 	state := &developmentState{directory: "/private/development-state"}

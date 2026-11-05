@@ -38,6 +38,7 @@ export function createCustody(options: {
 }) {
   const reservations = new Set<CaptureReservation>();
   const admittedAttempts = new WeakSet<AttemptContext>();
+  const retirements = new WeakMap<AttemptContext, CapturedCredential>();
   const attempts = new WeakMap<AttemptContext, CaptureReservation>();
   const access = new WeakMap<CredentialRef, { record: CapturedCredential; bytes: Uint8Array }>();
   const renewals = new Map<
@@ -61,6 +62,27 @@ export function createCustody(options: {
       reservation.captured.every((record) => !records.has(record))
     ) {
       reservations.delete(reservation);
+    }
+  }
+  async function withBytes<T>(
+    record: CapturedCredential,
+    consume: (bytes: Uint8Array) => Promise<T>,
+  ): Promise<T> {
+    const stored = get(record.ref);
+    if (stored.record !== record) {
+      throw new Error("FOREIGN_CREDENTIAL");
+    }
+    if (record.callbacks >= options.maximumCallbacks) {
+      throw new Error("CALLBACK_CAPACITY");
+    }
+    const scoped = Uint8Array.from(stored.bytes);
+    record.callbacks++;
+    try {
+      return await consume(scoped);
+    } finally {
+      scoped.fill(0);
+      record.callbacks--;
+      options.changed();
     }
   }
   const driver: DriverCustody = Object.freeze({
@@ -121,37 +143,18 @@ export function createCustody(options: {
       options.changed();
       return ref;
     },
-    async withAccess<T>(
+    async withRetirement<T>(
+      attempt: AttemptContext,
       ref: CredentialRef,
-      purpose: "authenticate" | "retire",
       consume: (bytes: Uint8Array) => Promise<T>,
     ): Promise<T> {
-      const { record, bytes } = get(ref);
-      if (record.callbacks >= options.maximumCallbacks) {
-        throw new Error("CALLBACK_CAPACITY");
+      const { record } = get(ref);
+      driver.assertAttempt(attempt, "retire");
+      attempt.assertAdmitted();
+      if (retirements.get(attempt) !== record || !record.retiring) {
+        throw new Error("FOREIGN_RETIREMENT");
       }
-      if (purpose !== "authenticate" && purpose !== "retire") {
-        throw new Error("INVALID_PURPOSE");
-      }
-      if (
-        purpose === "authenticate" &&
-        (!options.admitted() ||
-          !record.accepted ||
-          record.uses === 0 ||
-          record.useDeadlineMonoMs === undefined ||
-          options.clock.monotonicNow() >= record.useDeadlineMonoMs)
-      ) {
-        throw new Error("CREDENTIAL_CLOSED");
-      }
-      const scoped = Uint8Array.from(bytes);
-      record.callbacks++;
-      try {
-        return await consume(scoped);
-      } finally {
-        scoped.fill(0);
-        record.callbacks--;
-        options.changed();
-      }
+      return withBytes(record, consume);
     },
     retainRenewal(bytes: Uint8Array): RenewalRef {
       if (
@@ -205,12 +208,32 @@ export function createCustody(options: {
   });
   return Object.freeze({
     driver,
+    withUseBytes<T>(record: CapturedCredential, consume: (bytes: Uint8Array) => Promise<T>) {
+      if (
+        !options.admitted() ||
+        record.disposition !== "pending" ||
+        record.uses === 0 ||
+        record.useDeadlineMonoMs === undefined ||
+        options.clock.monotonicNow() >= record.useDeadlineMonoMs
+      ) {
+        return Promise.reject(new Error("CREDENTIAL_CLOSED"));
+      }
+      return withBytes(record, consume);
+    },
+    bindRetirement(attempt: AttemptContext, record: CapturedCredential) {
+      driver.assertAttempt(attempt, "retire");
+      if (!records.has(record) || retirements.has(attempt) || !record.retiring) {
+        throw new Error("FOREIGN_RETIREMENT");
+      }
+      retirements.set(attempt, record);
+    },
     records,
     reservations,
     register(attempt: AttemptContext) {
       admittedAttempts.add(attempt);
     },
     endAttempt(attempt: AttemptContext) {
+      retirements.delete(attempt);
       admittedAttempts.delete(attempt);
     },
     get renewalCount() {

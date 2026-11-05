@@ -127,7 +127,7 @@ rollout that re-adds it can force-delete; avoid forcing until the rollout ends.
 ## Version snapshots and credential delivery
 
 Deploying an Agent freezes the account ID, credential kind, Secret reference,
-and nullable `backendId` in its immutable AgentRevision. It does not copy
+and nullable `backendId` in its AgentRevision. It does not copy
 credential bytes into the version. Later account edits do not rewrite that snapshot. A Secret reference
 is not a snapshot of the Secret's value. Before dispatch, the worker reauthorizes
 exact-account `read` for the actor who requested the deployment.

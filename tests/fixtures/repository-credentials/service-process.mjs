@@ -10,20 +10,7 @@ import { createResourceScope } from "./resources.mjs";
 import { createServiceConfiguration } from "./service.mjs";
 import { startGitHubFixture, fixtureRepository, fixtureRepositoryId } from "./github.mjs";
 import { createRegistryMaterial } from "./registry/material.mjs";
-
-async function within(promise, message, timeoutMs = 5000) {
-  let timer;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
+import { within } from "../../helpers/wait-for.mjs";
 
 function launchService(resources) {
   const child = fork(new URL("./service-process-child.mjs", import.meta.url), [], {
@@ -35,6 +22,7 @@ function launchService(resources) {
   const pending = new Map();
   let sequence = 0;
   let outputBytes = 0;
+  let stderr = "";
   let failure;
   let receipt;
   const closed = new Promise((resolve) => {
@@ -54,7 +42,7 @@ function launchService(resources) {
     if (!receipt) {
       assert.equal(child.kill("SIGKILL"), true, "owned service termination must be sent");
     }
-    const result = await within(closed, "service fixture death was not joined");
+    const result = await within(closed, "service fixture death was not joined", 5_000);
     if (failure) {
       throw failure;
     }
@@ -75,7 +63,10 @@ function launchService(resources) {
     }
   };
   child.stdout.on("data", collect);
-  child.stderr.on("data", collect);
+  child.stderr.on("data", (chunk) => {
+    collect(chunk);
+    stderr += chunk;
+  });
   child.on("message", ({ id, result, error }) => {
     const request = pending.get(id);
     if (request) {
@@ -89,11 +80,12 @@ function launchService(resources) {
   });
   return {
     stop,
+    stderr: () => stderr,
     async stopGracefully() {
       if (!receipt) {
         assert.equal(child.kill("SIGTERM"), true, "owned service termination must be sent");
       }
-      return within(closed, "service fixture graceful shutdown was not joined", 15000);
+      return within(closed, "service fixture graceful shutdown was not joined", 15_000);
     },
     async call(command, input) {
       const id = ++sequence;
@@ -107,7 +99,7 @@ function launchService(resources) {
         });
       });
       try {
-        return await within(response, "service fixture command timed out");
+        return await within(response, "service fixture command got no answer", 5_000);
       } finally {
         pending.delete(id);
       }
@@ -234,6 +226,9 @@ export async function startServiceProcessFixture(
     kill,
     shutdown,
     generation: () => generation,
+    tls,
+    // The running process's log lines (each JSON line is one event), for log assertions.
+    stderr: () => processOwner.stderr(),
     admissionId,
     open: (id, recoverOnly = false, durableAdmission = false) =>
       control(

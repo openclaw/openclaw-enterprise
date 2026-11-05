@@ -277,6 +277,8 @@ function configuration(env) {
         : { channelDirectoryManagedProxyHost }),
       ...(nativeAdmin === undefined ? {} : { nativeAdmin }),
       agentRuntimeLogsEnabled,
+      // The chart sets it when a sign-in egress rule opens HTTPS to any address (finding 2533).
+      apiHttpsEgressOpen: optionalBooleanEnvironment(env, "OCC_API_HTTPS_EGRESS_OPEN"),
     });
   }
 
@@ -474,7 +476,9 @@ export async function startApi(env) {
     await app.listen({ host: settings.host, port: settings.port });
     phaseCompleted("listen");
   } catch (error) {
-    await app.close();
+    await app.close().catch(() => {
+      // Cleanup must finish without replacing the startup failure.
+    });
     throw error;
   }
   // One line tells an operator how long the boot took and which phase dominated.

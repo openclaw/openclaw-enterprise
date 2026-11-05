@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { appRoot } from "../fixtures/repository-credentials/runtime.mjs";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
 import { createLoopbackServiceConfiguration } from "../fixtures/repository-credentials/service.mjs";
+import { stopProcess } from "../helpers/stop-process.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
 
 // The child uses the real process composition and common settlement owner. An
@@ -49,11 +50,7 @@ test(
       env: { PATH: process.env.PATH, REPOSITORY_CREDENTIALS_APP_ROOT: appRoot },
       stdio: ["pipe", "pipe", "pipe"],
     });
-    t.after(() => {
-      if (child.exitCode === null && child.signalCode === null) {
-        child.kill("SIGKILL");
-      }
-    });
+    t.after(() => stopProcess(child, { signal: "SIGKILL" }));
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => (stdout += chunk));
