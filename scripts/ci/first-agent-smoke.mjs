@@ -1736,6 +1736,7 @@ async function observeReaderPeer(stack, selected, action) {
   };
   const script = `
 import assert from "node:assert/strict";
+import { normalizeSecretBindings } from "/app/packages/contracts/src/index.ts";
 import { createPostgresPool, PostgresPlatformState } from "/app/packages/occ/src/index.ts";
 import { loadStartupConfigurationSnapshot, loadInstallationConfiguration } from "/app/apps/controller/src/composition/installation-config.ts";
 const input = ${JSON.stringify(input)};
@@ -1751,7 +1752,27 @@ try {
     const configuration = structuredClone(startup.configuration);
     delete configuration.drivers.compute.configuration.network.publicGithubRead;
     const withdrawn = await loadInstallationConfiguration({ mode: "production", startupConfiguration: { ...startup, configuration } });
-    await assert.rejects(withdrawn.computeDriver.prepareRevision(revision), (error) => {
+    // Resolve the API-created Secret metadata just as the worker does, without reading its value.
+    const auth = revision.harnessAuth;
+    assert.equal(auth.method, "api_key", "withdrawal fixture requires API-key authentication");
+    assert.equal(auth.source.namespaceId, revision.namespaceId);
+    assert.equal(auth.secretDriverId, selected.secretDriver.id);
+    assert.equal(auth.secretDriverId, withdrawn.secretDriver.id);
+    assert.equal(Object.keys(normalizeSecretBindings(revision.secretBindings)).length, 0);
+    assert.ok(revision.egressPlan === undefined, "withdrawal fixture must be unprotected");
+    assert.equal((revision.repositoryCredentials ?? []).length, 0);
+    assert.equal((revision.credentialSources ?? []).length, 0);
+    const secret = await state.read((view) => view.secrets.findSecret(auth.source.namespaceId, auth.source.id));
+    assert.ok(secret, "withdrawal fixture authentication Secret is unavailable");
+    assert.equal(secret.id, auth.source.id);
+    assert.equal(secret.namespaceId, auth.source.namespaceId);
+    assert.equal(secret.namespaceId, revision.namespaceId);
+    assert.equal(secret.driverId, selected.secretDriver.id);
+    for (const field of ["namespaceName", "name", "key", "uid"]) {
+      assert.ok(typeof secret.backendRef[field] === "string" && secret.backendRef[field].trim().length > 0, "withdrawal fixture Secret backend reference is incomplete");
+    }
+    const context = { harnessAuth: { ...auth, backendRef: secret.backendRef }, secretEnvironment: [] };
+    await assert.rejects(withdrawn.computeDriver.prepareRevision(revision, context), (error) => {
       assert.equal(error.message, "Public GitHub reader peer was withdrawn; deploy a new AgentRevision.");
       assert.equal(withdrawn.computeDriver.describePrepareRevisionFailure(error).code, "KUBERNETES_CONFIGURATION_INVALID");
       return true;
