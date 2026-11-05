@@ -15,6 +15,19 @@ without an Agent name. Use Tab to reach **Retry** and press Enter. The next read
 uses the normal fixture response: confirm the H1 becomes **Research assistant**
 and receives keyboard focus. This story simulates one failed GET with status 503.
 
+At desktop and 390-pixel widths, open **Pages / Agent detail / Revision history
+rejects with null** (`revisionRejected`, Storybook ID
+`pages-agent-detail--revision-rejected`). The fixture rejects only the Agent's
+revision-history GET with raw JavaScript `null`, with no HTTP status. The draft
+Configuration GET uses its normal fixture response. Confirm **Version history
+unavailable.** is visible, with no **No readable versions** message or **Load
+older versions** control. Read the draft, open **Edit Configuration**, then
+**Cancel**. Confirm **Deploy new version** stays unavailable and says version
+history is required before deploying. The separate **Revision history
+unavailable** (`revisionError`) preview still simulates HTTP 403. This null
+rejection is simulated UI proof, not a normal browser network failure or proof of
+backend persistence or deployment.
+
 1. Separately, open **Pages / Agent detail / New version activated**
    (`deploymentSucceeded`, Storybook ID `pages-agent-detail--deployment-succeeded`).
    At both widths, confirm its H1 shows a readable Agent name as an independent

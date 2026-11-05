@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-10-31
-last_updated_session: fix-3023
+updated: 2026-11-05
+last_updated_session: authoring-run/68de7101-f5b0-459f-8861-9ec3e614dcb2
 ---
 
 # Console Agent editing and runtime requests
@@ -58,18 +58,18 @@ graph TD
 
 `apps/controller/src/console/agents/detail.mts:renderAgentDetail`
 
-The page reads Agent, readable versions, and current Configuration
-(`revision=draft`) or Agent revision (`revision=<id>`).
-`packages/occ/src/index.ts` uses `listAgents`, `listRevisions`,
-`getAgentForBrowsing`, and `getRevisionForBrowsing` for browsing.
-`packages/occ/src/state/postgres-state.ts:browseSavedConfiguration` turns
-payload-decode failures into metadata plus `configurationReadError`; queries
-and operational reads remain strict. Unreadable drafts refuse editing and deployment without defaults.
-**Selected for service** uses `activeRevisionId`; **Viewing version** selects a draft
-or read-only version without activation. **Load older versions** appends pages,
-retains selection, and focuses the picker after the last page. The picker marks
-failures from `deploymentStatus` and `deploymentErrorCode` across reloads, excluding
-superseded/stopped outcomes.
+`loadDetails` settles history and snapshot independently. Rejected history
+(including `null`/`undefined`) warns without hiding readable drafts; Deploy waits.
+`snapshotErrorPanel` explains Configuration refusal without showing draft data.
+Numeric `401` triggers sign-in.
+
+Browsing uses `packages/occ/src/index.ts:listAgents`, `listRevisions`,
+`getAgentForBrowsing`, and `getRevisionForBrowsing`.
+`packages/occ/src/state/postgres-state.ts:browseSavedConfiguration` returns decode-failure `configurationReadError` metadata; operational reads stay strict.
+Unreadable drafts block editing/deployment without defaults. **Selected for service** follows `activeRevisionId`.
+**Viewing version** switches draft/read-only (`revision=draft`/`revision=<id>`) without activation.
+**Load older versions** appends pages, preserves selection, and focuses the picker after pagination.
+`deploymentStatus`/`deploymentErrorCode` mark failures after reload, excluding superseded/stopped.
 
 **Deployment** mounts activity, the selected record, and diagnostics
 (`agents/deployment-evidence.mts`); polling continues across tabs.
@@ -344,6 +344,7 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
+- 2026-11-05 01:03: Document independent read failures. (authoring-run/68de7101-f5b0-459f-8861-9ec3e614dcb2 - 8ee2e630)
 - 2026-10-31 21:30: Hide the password button when save would refuse it. (fix-3064)
 
 [Console Agent editing documentation history](agent-editing/history.md) preserves the older dated entries.
