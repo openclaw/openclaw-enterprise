@@ -35,7 +35,7 @@ import {
 import {
   createRepositoryLaunchFixture,
   routeInstallationWithoutProvisioning,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 
 // The console's control patterns. Button hierarchy (UX plan C2): each view shows at most one

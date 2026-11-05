@@ -44,7 +44,7 @@ import {
   routeInstallationProvisioning,
   raceAgentName,
   routeInstallationWithoutProvisioning,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
 import { provisioningJob, routeProvisioningJob } from "./console-provisioning-job-fixture.ts";
 import {
   AGENT_CREATE_RESTRICTED,

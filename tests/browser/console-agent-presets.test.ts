@@ -78,7 +78,7 @@ import {
   routeInstallationWithoutProvisioning,
   agentPostRequests,
   raceAgentName,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
 import {
   AGENT_NAME_CONFLICT,
   callerDenied,

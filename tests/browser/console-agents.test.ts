@@ -80,7 +80,7 @@ import {
   nativeSandboxDriver,
   agentPostRequests,
   createRepositoryLaunchFixture,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
 import {
   expectDeploymentOutcome,
   openFailureDetails,
