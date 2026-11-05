@@ -205,36 +205,37 @@ async function readProfile(name, profileFile) {
   closed(installation, "profile.installation", ["drivers"], diagnostics);
   const drivers = record(installation.drivers, "profile.installation.drivers", diagnostics);
   closed(drivers, "profile.installation.drivers", ["plugin"], diagnostics);
-  const plugin = record(drivers.plugin, "profile.installation.drivers.plugin", diagnostics);
-  closed(plugin, "profile.installation.drivers.plugin", ["id", "configuration"], diagnostics);
-  if (plugin.id !== "occ-plugin" && plugin.id !== "codex-plugin") {
-    diagnostics.errors.push(
-      "profile.installation.drivers.plugin.id must select occ-plugin or codex-plugin.",
-    );
-  }
   if (diagnostics.errors.length > 0) {
     fail(diagnostics.errors.join("\n"));
   }
-  if (plugin.configuration === undefined) {
-    plugin.configuration = {};
-  } else {
-    record(plugin.configuration, "profile.installation.drivers.plugin.configuration", diagnostics);
+  if (!Array.isArray(drivers.plugin) || drivers.plugin.length === 0) {
+    fail("profile.installation.drivers.plugin must be a nonempty array.");
   }
-  if (diagnostics.errors.length > 0) {
-    fail(diagnostics.errors.join("\n"));
-  }
-
-  if (
-    plugin.id === "codex-plugin" &&
-    !isCodexCatalogSource(
-      plugin.configuration.catalogSource === undefined
-        ? "hosted"
-        : plugin.configuration.catalogSource,
-    )
-  ) {
-    fail(
-      "profile.installation.drivers.plugin.configuration.catalogSource must be hosted or openai-curated.",
-    );
+  for (const [index, selected] of drivers.plugin.entries()) {
+    const path = `profile.installation.drivers.plugin[${index}]`;
+    const plugin = record(selected, path, diagnostics);
+    closed(plugin, path, ["id", "configuration"], diagnostics);
+    if (plugin.id !== "occ-plugin" && plugin.id !== "codex-plugin") {
+      diagnostics.errors.push(`${path}.id must select occ-plugin or codex-plugin.`);
+    }
+    if (plugin.configuration === undefined) {
+      plugin.configuration = {};
+    } else {
+      record(plugin.configuration, `${path}.configuration`, diagnostics);
+    }
+    if (diagnostics.errors.length > 0) {
+      fail(diagnostics.errors.join("\n"));
+    }
+    if (
+      plugin.id === "codex-plugin" &&
+      !isCodexCatalogSource(
+        plugin.configuration.catalogSource === undefined
+          ? "hosted"
+          : plugin.configuration.catalogSource,
+      )
+    ) {
+      fail(`${path}.configuration.catalogSource must be hosted or openai-curated.`);
+    }
   }
 
   return profile;
@@ -2259,8 +2260,11 @@ function buildRendered(profile, parsed, diagnostics) {
     }
   }
   if (
-    profile.installation.drivers.plugin.id === "codex-plugin" &&
-    (profile.installation.drivers.plugin.configuration?.catalogSource ?? "hosted") === "hosted"
+    profile.installation.drivers.plugin.some(
+      (entry) =>
+        entry.id === "codex-plugin" &&
+        (entry.configuration?.catalogSource ?? "hosted") === "hosted",
+    )
   ) {
     diagnostics.prerequisites.push(
       "Hosted plugin discovery requires a PAT supplied later through a Namespace Secret or the Console; the renderer does not create or verify that credential.",
@@ -2329,11 +2333,11 @@ function buildRendered(profile, parsed, diagnostics) {
 }
 
 async function resolveHostedDiscoveryCidrs(profile, parsed, values, diagnostics) {
-  const plugin = profile.installation.drivers.plugin;
-  if (
-    plugin.id !== "codex-plugin" ||
-    (plugin.configuration?.catalogSource ?? "hosted") !== "hosted"
-  ) {
+  const hostedDiscovery = profile.installation.drivers.plugin.some(
+    (entry) =>
+      entry.id === "codex-plugin" && (entry.configuration?.catalogSource ?? "hosted") === "hosted",
+  );
+  if (!hostedDiscovery) {
     return;
   }
   const hosts = ["auth.openai.com", "chatgpt.com"];

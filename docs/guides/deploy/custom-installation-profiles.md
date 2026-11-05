@@ -31,8 +31,8 @@ A failed rerender removes prior generated outputs; success writes `values.yaml`,
 `installation.yaml` and `preflight.json`. Continue with
 [Use rendered files](installation-profiles.md#use-rendered-files).
 
-Only the selection under `installation.drivers.plugin` is copied. Its `id` must
-be `occ-plugin` or `codex-plugin`. Omitted `configuration` becomes `{}`; supplied
+Only the nonempty array under `installation.drivers.plugin` is copied. Each
+entry’s `id` must be `occ-plugin` or `codex-plugin`. Omitted `configuration` becomes `{}`; supplied
 configuration must be an object. The renderer refuses an invalid Codex
 `catalogSource` before it writes deployment files. The Driver validates all options
 at startup; rendering does not prove startup or deployment.

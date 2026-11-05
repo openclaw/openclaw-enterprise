@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
 updated: 2026-11-05
-last_updated_session: agent:main:dashboard:34871ae5-240f-4f44-b364-50bd21ecedec
+last_updated_session: authoring-run/7b9b79ce-b682-44c2-881a-2fe4aadc6441
 ---
 
 # Installation Profile Rendering Flow
@@ -77,7 +77,10 @@ files remain untouched.
 `scripts/render-installation-profile.mjs:readProfile`
 
 `readProfile` loads the selected or bundled file and validates its closed schema,
-matching family and bundled PluginDriver. The shared Codex catalog-source guard
+matching family and a nonempty array of bundled Plugin Drivers. Each entry uses
+an exact bundled ID and object configuration; invalid entries fail with their array
+index. Hosted discovery prerequisites apply when any selected Codex Driver uses
+the hosted catalog. The shared Codex catalog-source guard
 rejects invalid discovery modes before files are written; other options are startup-validated;
 [custom profile rules](../guides/deploy/custom-installation-profiles.md) define the inputs.
 Site JSON supplies infrastructure. Hosted `codex-plugin` needs a PAT; curated
@@ -304,6 +307,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 12:40: Adopt upstream Plugin Driver arrays in custom-profile validation and hosted discovery diagnostics. (authoring-run/7b9b79ce-b682-44c2-881a-2fe4aadc6441 - cf6f0ca6389e9fc1e4c85463ce08001ea1464066)
 
 - 2026-11-05 01:10: Preserve input/profile output-file identity checks and validate Codex catalogSource before rendering in the accompanying refresh. (agent:main:dashboard:34871ae5-240f-4f44-b364-50bd21ecedec - 5acf92b89f9053fec747a802e3790822a5b4340d)
 

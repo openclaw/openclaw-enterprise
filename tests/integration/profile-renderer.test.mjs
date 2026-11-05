@@ -372,8 +372,9 @@ test("renderer supports exactly the openclaw and codex profiles", () => {
   const openclaw = renderCli("openclaw", baseInput());
   assert.equal(openclaw.summary.ok, true);
   assert.equal(openclaw.preflight.profile, "openclaw");
-  assert.match(openclaw.installation, /id: occ-plugin/);
-  assert.doesNotMatch(openclaw.installation, /id: codex-plugin/);
+  assert.deepEqual(loadYaml(openclaw.installation).drivers.plugin, [
+    { id: "occ-plugin", configuration: {} },
+  ]);
   assert.match(openclaw.values, /agentNativeAdmin:\n {2}enabled: true/);
   assert.match(openclaw.values, /repositoryCredentials:\n {2}enabled: false/);
   assert.match(openclaw.values, /slackProxy:\n {2}enabled: true/);
@@ -390,8 +391,9 @@ test("renderer supports exactly the openclaw and codex profiles", () => {
   const codex = renderCli("codex", codexInput());
   assert.equal(codex.summary.ok, true);
   assert.equal(codex.preflight.profile, "codex");
-  assert.match(codex.installation, /id: codex-plugin/);
-  assert.match(codex.installation, /catalogSource: hosted/);
+  assert.deepEqual(loadYaml(codex.installation).drivers.plugin, [
+    { id: "codex-plugin", configuration: { catalogSource: "hosted" } },
+  ]);
   assert.doesNotMatch(codex.installation, /service_account: chatgpt-service-accounts/);
   assert.match(codex.values, /slackProxy:\n {2}enabled: true/);
   assert.match(
@@ -411,21 +413,30 @@ test("an explicit profile selects the startup PluginDriver and its credential di
     "auth.openai.com": ["192.0.2.40"],
     "chatgpt.com": ["198.51.100.20"],
   });
-  for (const [name, pluginId, configuration] of [
+  for (const [name, pluginId, configuration, additionalPlugin] of [
     ["openclaw", "occ-plugin", undefined],
     ["codex", "codex-plugin", undefined],
     ["codex", "codex-plugin", { catalogSource: "openai-curated" }],
     ["openclaw", "codex-plugin", { catalogSource: "hosted" }],
     ["openclaw", "codex-plugin", { catalogSource: "openai-curated" }],
+    [
+      "openclaw",
+      "occ-plugin",
+      undefined,
+      { id: "codex-plugin", configuration: { catalogSource: "openai-curated" } },
+    ],
   ]) {
     const profile = JSON.parse(
       readFileSync(join(repository, `deploy/profiles/${name}.json`), "utf8"),
     );
-    profile.installation.drivers.plugin.id = pluginId;
+    profile.installation.drivers.plugin[0].id = pluginId;
     if (configuration === undefined) {
-      delete profile.installation.drivers.plugin.configuration;
+      delete profile.installation.drivers.plugin[0].configuration;
     } else {
-      profile.installation.drivers.plugin.configuration = configuration;
+      profile.installation.drivers.plugin[0].configuration = configuration;
+    }
+    if (additionalPlugin !== undefined) {
+      profile.installation.drivers.plugin.push(additionalPlugin);
     }
     writeFileSync(profileFile, JSON.stringify(profile));
 
@@ -451,8 +462,14 @@ test("an explicit profile selects the startup PluginDriver and its credential di
       mode: "production",
       environment: { OCC_CONFIG_PATH: join(directory, "installation.yaml") },
     });
-    assert.equal(runtime.installation.drivers.plugin.id, pluginId);
-    assert.deepEqual(runtime.installation.drivers.plugin.configuration, configuration ?? {});
+    assert.equal(runtime.installation.drivers.plugin[0].id, pluginId);
+    assert.deepEqual(
+      runtime.installation.drivers.plugin.map(({ id, configuration }) => ({ id, configuration })),
+      [
+        { id: pluginId, configuration: configuration ?? {} },
+        ...(additionalPlugin === undefined ? [] : [additionalPlugin]),
+      ],
+    );
     const diagnostics = [...output.preflight.prerequisites, ...output.preflight.warnings].join(
       "\n",
     );
@@ -480,26 +497,40 @@ test("an invalid explicit profile revokes prior outputs without falling back to 
     [JSON.stringify({ name: "openclaw" }), /must declare matching name/],
     [JSON.stringify({ name: "codex" }), /profile.installation must be an object/],
     [JSON.stringify([]), /must declare matching name/],
+    ...[{}, [], { id: "codex-plugin" }].map((plugin) => [
+      JSON.stringify({
+        ...JSON.parse(readFileSync(join(repository, "deploy/profiles/codex.json"), "utf8")),
+        installation: { drivers: { plugin } },
+      }),
+      /plugin must be a nonempty array/,
+    ]),
+    [
+      JSON.stringify({
+        ...JSON.parse(readFileSync(join(repository, "deploy/profiles/codex.json"), "utf8")),
+        installation: { drivers: { plugin: [{ id: "occ-plugin" }, { id: "uninstalled-plugin" }] } },
+      }),
+      /plugin\[1\].id must select occ-plugin or codex-plugin/,
+    ],
     ...[{ catalogSource: "hostd" }, { catalogSource: null }].map((configuration) => [
       JSON.stringify({
         ...JSON.parse(readFileSync(join(repository, "deploy/profiles/codex.json"), "utf8")),
-        installation: { drivers: { plugin: { id: "codex-plugin", configuration } } },
+        installation: { drivers: { plugin: [{ id: "codex-plugin", configuration }] } },
       }),
-      /profile.installation.drivers.plugin.configuration/,
+      /profile.installation.drivers.plugin\[0\].configuration/,
     ]),
     [
       JSON.stringify({
         ...JSON.parse(readFileSync(join(repository, "deploy/profiles/codex.json"), "utf8")),
         installation: {
-          drivers: { plugin: { id: "codex-plugin", configuration: [] } },
+          drivers: { plugin: [{ id: "codex-plugin", configuration: [] }] },
         },
       }),
-      /profile.installation.drivers.plugin.configuration must be an object/,
+      /profile.installation.drivers.plugin\[0\].configuration must be an object/,
     ],
     [
       JSON.stringify({
         ...JSON.parse(readFileSync(join(repository, "deploy/profiles/codex.json"), "utf8")),
-        installation: { drivers: { plugin: { id: "uninstalled-plugin" } } },
+        installation: { drivers: { plugin: [{ id: "uninstalled-plugin" }] } },
       }),
       /must select occ-plugin or codex-plugin/,
     ],
@@ -507,7 +538,7 @@ test("an invalid explicit profile revokes prior outputs without falling back to 
       JSON.stringify({
         ...JSON.parse(readFileSync(join(repository, "deploy/profiles/codex.json"), "utf8")),
         installation: {
-          drivers: { plugin: { id: "codex-plugin" } },
+          drivers: { plugin: [{ id: "codex-plugin" }] },
           presets: { includeDefaults: false },
         },
       }),

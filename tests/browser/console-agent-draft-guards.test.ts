@@ -1,3 +1,4 @@
+import { focusedDescription, focusedText, LIVE_BUTTON } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
@@ -14,13 +15,14 @@ import type {
   Permission,
 } from "../../packages/contracts/src/index.ts";
 import { NAMESPACE_NOT_READY_MESSAGE } from "../../apps/controller/src/console/agents/list.mts";
-import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { createConsoleRepositoryLaunchFixture } from "../helpers/console-repository-launch.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
+  routeFailedDeployment,
   accessBindingPostRequests,
   AGENT_READ,
   apiRequests,
@@ -38,7 +40,6 @@ import {
   pathRequests,
   recordFocusTrail,
   repositoryCheckbox,
-  routeFailedDeployment,
   secretOptionLabel,
   selectSecret,
   setSlackSelection,
@@ -48,16 +49,14 @@ import {
   waitForEnabled,
   waitForInputValue,
   writeRequests,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+
 import {
-  LIVE_BUTTON,
   createRepositoryLaunchFixture,
-  focusedDescription,
-  focusedText,
   withholdPermissionSummary,
 } from "./console-agents-test-support.mjs";
 import { responseTo } from "./console-action-helpers.ts";
-import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
+import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import { createPolicyConsole } from "./console-sandbox-policy-fixture.ts";
 import {
   AGENT_SAVE_DENIED,
@@ -1717,7 +1716,7 @@ for (const [field, change] of [
     "plugin policy",
     {
       plugins: {
-        "codex-plugin:linear@openai-curated-remote": {
+        "occ-plugin:diffs": {
           enabled: true,
           toolDefaults: { approval: "none" },
         },
@@ -1742,7 +1741,7 @@ for (const [field, change] of [
         })()
       : await createRuntimeAuthFixture(t, `Deployment ${field}`);
     const namespace = resource(rawNamespace);
-    const pluginDriver = new CodexPluginDriver();
+    const pluginDriver = new OCCPluginDriver();
     checkedController(fixture.controller).registerDriver(pluginDriver);
     checkedController(fixture.controller).selectDriver("plugin", pluginDriver.id);
     const agent = agentFields(
