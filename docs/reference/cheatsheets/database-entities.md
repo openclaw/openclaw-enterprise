@@ -156,7 +156,7 @@ Pins the approved OAuth configuration and access to its API recipient. A discove
 - `template_id`, `version`, `oauth_client_id`, `mode`
 - `issuer`, `authorization_url`, `token_url`, `revocation_url`
 - `scopes`, `authorization_parameters`, `observed_metadata`
-- `recipient_host`, `recipient_port`, `recipient_path`, `recipient_access`
+- `recipient_host`, `recipient_port`, `recipient_path`
 - `created_at`
 
 ### `oauth_clients`

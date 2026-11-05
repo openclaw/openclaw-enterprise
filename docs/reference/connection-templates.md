@@ -14,9 +14,13 @@ When starting consent for an MCP template, send the nonempty `selectedScopes` th
 
 ## Create a template
 
+In **Credentials → Connection templates → Create connection template**, **Template availability** starts with the current readable Namespace. If there is none, choose availability before registering a client or saving the template. Choose **Installation-wide** to share the template across Namespaces. Availability is fixed after creation.
+
+A new template starts with **Limit to approved scopes**. Enter the scopes callers may request, or select **No template limit**. In the API, `scopes: []` selects the latter. There is no scope-count limit. Required MCP scopes still apply at consent.
+
 Use `POST /connection-templates` with one of these setup methods.
 
-- With `mode: manual`, supply the issuer, OAuth URLs, approved scopes, and the permitted API recipient's host, port, path and access. For example, an authorization server at `accounts.example.test` may issue credentials for `mail.example.test`.
+- With `mode: manual`, supply the issuer, OAuth URLs, approved scopes, and the permitted API recipient’s host, port and path. The plugin and deployed request policy control operations at that destination. For example, an authorization server at `accounts.example.test` may issue credentials for `mail.example.test`.
 - With `mode: mcp_discovery`, preview metadata with `POST /connection-templates/discover`. Send the MCP server URL. When the resource advertises several issuers, select one and repeat discovery. The response includes the protected resource, advertised capabilities and scopes. Choose the scopes allowed for this template. OCC repeats discovery when saving and pins the approved issuer, resource and exact MCP server URL. Discovery can report a registration endpoint. Register the client separately.
 
 A template may be saved before a client exists. Associate a compatible `oauthClientId` before using it for consent. Use `PATCH /connection-templates/{connectionTemplateId}` with the full configuration to change its approved values. This creates an immutable version. Changing only `displayName` renames the template. Deleting a template leaves its independently managed client available.
@@ -29,8 +33,8 @@ See the [API reference](api.md#connections) for request and response fields.
    `GET /namespaces/{namespaceId}/connection-templates`. OCC requires
    `credential_source:create` for that Namespace.
 2. Send the chosen `connectionTemplateId` to
-   `POST /namespaces/{namespaceId}/connections`. Open the returned
-   `authorizationUrl` in the same browser and approve the requested scopes.
+   `POST /namespaces/{namespaceId}/connections`. For a template with no configured scope list, supply optional `selectedScopes` or omit them to use provider defaults. A manual template with configured scopes uses the full list. For MCP, include every scope required by the resource and stay within any configured list. Open the returned
+   `authorizationUrl` in the same browser and approve the request.
    Register the public OCC callback URL ending in `/oauth/callback` with the provider.
 3. After the redirect, look up the saved account with
    `GET /namespaces/{namespaceId}/connections`. Other users see it only if

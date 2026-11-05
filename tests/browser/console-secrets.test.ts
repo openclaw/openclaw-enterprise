@@ -30,6 +30,9 @@ import {
   SECRET_UPDATE_DENIED,
   tooManyRequestsIn,
 } from "../helpers/refusal-text.mjs";
+import { restrict } from "../helpers/iam-grants.mjs";
+import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { selectTemplateDrivers } from "../helpers/connection-template-drivers.mjs";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
 import { consoleStorage } from "../helpers/console-storage.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -83,8 +86,7 @@ test("Credentials opens Secrets and lets an Installation administrator manage sh
   await page.getByRole("button", { name: "Create connection template" }).click();
   const editor = dialog(page, "Create connection template");
   const availability = editor.getByLabel("Template availability");
-  assert.equal(await availability.inputValue(), "");
-  await availability.selectOption(namespace.id);
+  assert.equal(await availability.inputValue(), namespace.id);
   await editor.getByLabel("OAuth client", { exact: true }).waitFor();
   await editor.getByText("Register a new OAuth client", { exact: true }).click();
   await editor.getByLabel("Provider client ID").waitFor();
@@ -94,6 +96,99 @@ test("Credentials opens Secrets and lets an Installation administrator manage sh
     .getByRole("link", { name: "Secrets", exact: true })
     .and(page.locator('[aria-current="page"]'))
     .waitFor();
+  // A bookmark naming an unavailable Namespace must not silently select the readable one.
+  await page.goto(
+    fixture.origin +
+      "/console/credentials/connection-templates?namespace=ns_00000000-0000-4000-8000-000000000999",
+  );
+  await page.getByRole("button", { name: "Create connection template" }).click();
+  assert.equal(await editor.getByLabel("Template availability").inputValue(), "");
+});
+
+test("a template needs an explicit availability when the administrator has no Namespace", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  restrict(fixture.policy, "read", "namespace");
+  selectTemplateDrivers(fixture.controller);
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, "/console/secrets");
+  await page
+    .getByRole("navigation", { name: "Credential sections" })
+    .getByRole("link", { name: "Connection templates" })
+    .click();
+  await page.getByRole("button", { name: "Create connection template" }).click();
+  const editor = dialog(page, "Create connection template");
+  const availability = editor.getByLabel("Template availability");
+  assert.equal(await availability.inputValue(), "");
+  assert.equal(
+    await availability.getByRole("option", { name: "Choose availability" }).isDisabled(),
+    true,
+  );
+  await editor.getByLabel("Template name").fill("Company tools");
+  await editor.getByLabel("Issuer URL", { exact: true }).fill("https://identity.example.test");
+  await editor.getByLabel("Authorization URL").fill("https://identity.example.test/authorize");
+  await editor.getByLabel("Token URL").fill("https://identity.example.test/token");
+  await editor.getByLabel("Destination host").fill("tools.example.test");
+  await editor.getByLabel("Approved OAuth scopes").fill("tools.read");
+  await editor.getByText("Register a new OAuth client", { exact: true }).click();
+  await editor.getByLabel("OAuth client name").fill("Tools client");
+  await editor.getByLabel("Provider client ID").fill("tools-client");
+  await editor.getByLabel("Client authentication").selectOption("none");
+  const register = editor.getByRole("button", { name: "Register OAuth client" });
+  const save = editor.getByRole("button", { name: "Create template" });
+  const requests = apiRequests(page, fixture.origin);
+  for (const action of [register, save]) {
+    await action.click();
+    assert.equal(await availability.evaluate((el) => el === document.activeElement), true);
+    assert.deepEqual(
+      requests.filter((req) => req.method === "POST"),
+      [],
+    );
+  }
+  // Only the administrator's explicit selection permits saving an Installation-wide client.
+  await availability.selectOption({ label: "Installation-wide" });
+  const createdClient = responseTo(page, "POST", fixture.origin + "/oauth-clients");
+  await register.click();
+  assert.equal((await createdClient).status(), 201);
+  const submittedClient = pathRequests(requests, "POST", "/oauth-clients")[0]?.body;
+  assert.ok(submittedClient && typeof submittedClient === "object");
+  assert.equal(Object.hasOwn(submittedClient, "namespaceId"), false);
+  const policy = editor.getByLabel("OAuth scope limit");
+  assert.equal(await policy.locator("option:checked").textContent(), "Limit to approved scopes");
+  // Whitespace in a restricted allowlist can never turn into an unrestricted template.
+  const scopes = editor.getByLabel("Approved OAuth scopes");
+  await scopes.fill("   ");
+  await save.click();
+  assert.equal(await scopes.evaluate((el) => el === document.activeElement), true);
+  assert.deepEqual(pathRequests(requests, "POST", "/connection-templates"), []);
+  await policy.selectOption({ label: "No template limit" });
+  const created = responseTo(page, "POST", fixture.origin + "/connection-templates");
+  await save.click();
+  const response = await created;
+  assert.equal(response.status(), 201, await response.text());
+  const template = (await response.json()).data;
+  assert.deepEqual(template.current.scopes, []);
+  assert.equal(template.namespaceId, undefined);
+  await page.getByRole("button", { name: "Edit Company tools" }).click();
+  const editing = dialog(page, "Edit connection template");
+  assert.equal(await editing.getByLabel("Template availability").isDisabled(), true);
+  assert.equal(
+    await editing.getByLabel("Template availability").locator("option:checked").textContent(),
+    "Installation-wide",
+  );
+  const savedPolicy = editing.getByLabel("OAuth scope limit");
+  assert.equal(await savedPolicy.locator("option:checked").textContent(), "No template limit");
+  await savedPolicy.selectOption({ label: "Limit to approved scopes" });
+  await editing.getByLabel("Approved OAuth scopes").fill("tools.read");
+  const updated = responseTo(
+    page,
+    "PATCH",
+    fixture.origin + "/connection-templates/" + template.id,
+  );
+  await editing.getByRole("button", { name: "Save new version" }).click();
+  const patch = await updated;
+  assert.equal(patch.status(), 200, await patch.text());
+  assert.deepEqual((await patch.json()).data.current.scopes, ["tools.read"]);
 });
 
 test("console Secret creation, replacement, Agent consumers and cleanup use real API and IAM", async (t) => {

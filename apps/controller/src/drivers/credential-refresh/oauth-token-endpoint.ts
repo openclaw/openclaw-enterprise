@@ -1,4 +1,4 @@
-import type { OAuthConnectionGrant } from "@openclaw-enterprise/contracts";
+import { isOAuthScopeToken, type OAuthConnectionGrant } from "@openclaw-enterprise/contracts";
 import { BrowserAuthorizationError } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString, isPositiveSafeInteger } from "@openclaw-enterprise/utils";
 
@@ -38,7 +38,7 @@ async function readResponse(response: Response): Promise<Record<string, unknown>
 export async function requestOAuthTokens(
   tokenUrl: string,
   parameters: URLSearchParams,
-  requestedScope: string,
+  scopeLimit: readonly string[] | undefined,
   client: Pick<OAuthConnectionGrant, "clientId" | "tokenEndpointAuthMethod" | "resource">,
   clientSecret: string | undefined,
   signal: AbortSignal,
@@ -111,19 +111,24 @@ export async function requestOAuthTokens(
   if (refreshToken !== undefined && !isNonEmptyString(refreshToken)) {
     throw new BrowserAuthorizationError("invalid_refresh_token", "fix_configuration");
   }
-  // RFC 6749 sections 5.1 and 6: omission means the requested scope; a refresh may narrow it.
-  const scope = body.scope === undefined ? requestedScope : body.scope;
-  const requested = new Set(requestedScope.split(" "));
-  if (
-    !isNonEmptyString(scope) ||
-    scope.split(" ").some((token) => !token || !requested.has(token))
-  ) {
-    throw new BrowserAuthorizationError("grant_scope_mismatch", "fix_configuration");
+  // Only the first exchange with no explicit scopes can accept issuer-chosen defaults.
+  // On refresh, even an empty list is a ceiling: no reported scopes can gain authority.
+  let grantedScopes = scopeLimit ?? [];
+  if (body.scope !== undefined) {
+    const reported = typeof body.scope === "string" ? body.scope.split(" ") : [];
+    const allowed = scopeLimit && new Set(scopeLimit);
+    if (
+      !reported.length ||
+      reported.some((scope) => !isOAuthScopeToken(scope) || (allowed && !allowed.has(scope)))
+    ) {
+      throw new BrowserAuthorizationError("grant_scope_mismatch", "fix_configuration");
+    }
+    grantedScopes = [...new Set(reported)];
   }
   return {
     accessToken: body.access_token,
     ...(refreshToken === undefined ? {} : { refreshToken }),
-    scope,
+    grantedScopes,
     expiresAt: expiresAt.toISOString(),
   };
 }
@@ -132,7 +137,12 @@ export async function requestOAuthTokens(
 export function refreshPinnedOAuthGrant(
   grant: Pick<
     OAuthConnectionGrant,
-    "tokenUrl" | "refreshToken" | "clientId" | "tokenEndpointAuthMethod" | "resource" | "scope"
+    | "tokenUrl"
+    | "refreshToken"
+    | "clientId"
+    | "tokenEndpointAuthMethod"
+    | "resource"
+    | "grantedScopes"
   >,
   signal: AbortSignal,
   clientSecret: string | undefined,
@@ -142,10 +152,9 @@ export function refreshPinnedOAuthGrant(
     new URLSearchParams({
       grant_type: "refresh_token",
       refresh_token: grant.refreshToken,
-
-      scope: grant.scope,
+      ...(grant.grantedScopes.length ? { scope: grant.grantedScopes.join(" ") } : {}),
     }),
-    grant.scope,
+    grant.grantedScopes,
     grant,
     clientSecret,
     signal,

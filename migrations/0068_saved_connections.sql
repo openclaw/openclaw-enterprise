@@ -13,13 +13,18 @@ CREATE TABLE occ.saved_connections (
   oauth_client_id text NOT NULL REFERENCES occ.oauth_clients(id) ON DELETE RESTRICT,
   client_id text NOT NULL,
   issuer text NOT NULL,
-  recipient jsonb NOT NULL CONSTRAINT saved_connections_recipient_object CHECK (jsonb_typeof(recipient) = 'object'),
+  recipient jsonb NOT NULL CONSTRAINT saved_connections_recipient_object CHECK (
+    jsonb_typeof(recipient) = 'object' AND recipient ?& ARRAY['host','port','path']
+    AND recipient - ARRAY['host','port','path'] = '{}'::jsonb
+  ),
   token_url text NOT NULL,
   mcp_server_url text,
   resource text,
   CONSTRAINT saved_connections_mcp_resource CHECK ((mcp_server_url IS NULL) = (resource IS NULL)),
-  requested_scopes text[] NOT NULL CONSTRAINT saved_connections_requested_scopes CHECK (cardinality(requested_scopes) > 0),
-  granted_scopes text[] NOT NULL CONSTRAINT saved_connections_granted_scopes CHECK (cardinality(granted_scopes) > 0 AND granted_scopes <@ requested_scopes),
+  requested_scopes text[] NOT NULL CONSTRAINT saved_connections_requested_scopes CHECK (array_position(requested_scopes,NULL) IS NULL),
+  granted_scopes text[] NOT NULL CONSTRAINT saved_connections_granted_scopes CHECK (
+    array_position(granted_scopes,NULL) IS NULL AND (cardinality(requested_scopes) = 0 OR granted_scopes <@ requested_scopes)
+  ),
   owner_principal_id text NOT NULL REFERENCES occ.iam_identities(id)
     ON UPDATE RESTRICT ON DELETE RESTRICT,
   connection_template_id text NOT NULL,
@@ -50,7 +55,7 @@ CREATE TABLE occ.connection_sessions (
   credential_source_id text NOT NULL,
   private_state text NOT NULL,
   selected_scopes text[] NOT NULL,
-  CONSTRAINT connection_sessions_selected_scopes_valid CHECK (cardinality(selected_scopes) BETWEEN 1 AND 32 AND array_position(selected_scopes,NULL) IS NULL),
+  CONSTRAINT connection_sessions_selected_scopes_valid CHECK (array_position(selected_scopes,NULL) IS NULL),
   issuer_required boolean NOT NULL,
   session_id text NOT NULL,
   redirect_uri text NOT NULL,

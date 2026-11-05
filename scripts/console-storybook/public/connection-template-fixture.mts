@@ -71,7 +71,7 @@ export function createConnectionTemplateFixture(
                 authorizationUrl: observed.authorizationUrl,
                 tokenUrl: observed.tokenUrl,
                 mcp: { serverUrl: observed.serverUrl, resource: observed.resource },
-                recipient: { host: "mcp.example.com", port: 443, path: "/mcp", access: "full" },
+                recipient: { host: "mcp.example.com", port: 443, path: "/mcp" },
                 observed,
               }
             : {}),

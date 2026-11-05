@@ -30,7 +30,7 @@ const manual = {
   authorizationUrl: issuer + "/authorize",
   tokenUrl,
   scopes: ["mail.read"],
-  recipient: { host: "mail.example.test", path: "/v1/**", access: "read-only" },
+  recipient: { host: "mail.example.test", path: "/v1/**" },
 };
 
 test(
@@ -105,12 +105,15 @@ test(
     });
     assert.equal(renamed.json().data.current.version, 2);
     assert.equal((await inject("DELETE", `/oauth-clients/${globalId}`, undefined)).statusCode, 409);
+    const manyScopes = Array.from({ length: 40 }, (_, i) => `mail.permission.${i}`);
     const local = await inject("POST", "/connection-templates", {
       ...manual,
+      scopes: manyScopes,
       namespaceId,
       oauthClientId: globalId,
     });
     assert.equal(local.statusCode, 201, local.body);
+    assert.deepEqual(local.json().data.current.scopes, manyScopes);
     await inject("DELETE", `/connection-templates/${template.id}`, undefined);
     await inject("DELETE", `/connection-templates/${local.json().data.id}`, undefined);
     const clients = (await inject("GET", "/oauth-clients", undefined)).json().data;
@@ -347,6 +350,13 @@ test(
       scopes: ["messages.read"],
     });
     assert.equal(result.statusCode, 201, result.body);
+    const unrestricted = await inject("PATCH", `/connection-templates/${result.json().data.id}`, {
+      ...config,
+      scopes: [],
+    });
+    assert.equal(unrestricted.statusCode, 200, unrestricted.body);
+    assert.deepEqual(unrestricted.json().data.current.scopes, []);
+    assert.deepEqual(unrestricted.json().data.current.observed.requestedScopes, ["messages.read"]);
     const { current } = result.json().data;
     assert.deepEqual(current.scopes, ["messages.read"]);
     assert.deepEqual(current.observed.resourceScopes, ["messages.read", "messages.write"]);
@@ -354,7 +364,6 @@ test(
       host: "mcp.example.test",
       port: 443,
       path: "/mcp",
-      access: "full",
     });
     assert.deepEqual(current.mcp, { serverUrl, resource });
     assert.equal(current.tokenUrl, issuer + "/token?tenant=acme");

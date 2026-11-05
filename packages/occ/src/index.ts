@@ -30,6 +30,7 @@ export type { PreparedGitHubMetadataAdmission } from "./state/prepared-github-st
 import {
   PENDING_OAUTH_CONNECTION,
   connectionValuesChanged,
+  isOAuthScopeToken,
   validateConnectionTemplateAuthorization,
   ConnectionTemplateValidationError,
   assertExecutionAdmission,
@@ -1044,7 +1045,6 @@ type TemplateInput = ApprovedTemplateSettings &
           readonly host: string;
           readonly port?: number;
           readonly path?: string;
-          readonly access?: "read-only" | "full";
         };
       }
     | {
@@ -1309,7 +1309,7 @@ function connectionConsentScopes(
   version: Readonly<OAuthConnectionTemplateVersion>,
   selection?: readonly string[],
 ): readonly string[] {
-  if (version.mode === "manual") {
+  if (version.mode === "manual" && version.scopes.length) {
     if (selection !== undefined) {
       throw new ConnectionTemplateValidationError(
         "selectedScopes",
@@ -1318,19 +1318,24 @@ function connectionConsentScopes(
     }
     return version.scopes;
   }
+  const selected = selection ?? [];
+  const approved = new Set(version.scopes);
+  const requested = new Set(selected);
   const required = version.observed?.requestedScopes ?? [];
   if (
-    !selection?.length ||
-    new Set(selection).size !== selection.length ||
-    selection.some((scope) => !version.scopes.includes(scope)) ||
-    required.some((scope) => !selection.includes(scope))
+    (approved.size > 0 && requested.size === 0) ||
+    requested.size !== selected.length ||
+    selected.some(
+      (scope) => !isOAuthScopeToken(scope) || (approved.size > 0 && !approved.has(scope)),
+    ) ||
+    required.some((scope) => !requested.has(scope))
   ) {
     throw new ConnectionTemplateValidationError(
       "selectedScopes",
-      "Choose approved scopes for this MCP account and include the scopes required by the resource.",
+      "Include each scope required by the resource and choose valid scopes within any configured limit.",
     );
   }
-  return selection;
+  return selected;
 }
 
 function browserAuthorizationRequest(
@@ -5126,7 +5131,7 @@ export class OpenClawController {
                   }
                 : {}),
               requestedScopes: session.selectedScopes,
-              grantedScopes: grant.scope.split(" "),
+              grantedScopes: grant.grantedScopes,
             };
 
             await this.acceptConnectionTokens(
@@ -5758,7 +5763,7 @@ export class OpenClawController {
     };
     let values: ConnectionTemplateValues;
     if (input.mode === "manual") {
-      const { host, port = 443, path = "/**", access = "full" } = input.recipient;
+      const { host, port = 443, path = "/**" } = input.recipient;
       if (
         !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(
           host,
@@ -5778,7 +5783,7 @@ export class OpenClawController {
         authorizationUrl: input.authorizationUrl,
         tokenUrl: input.tokenUrl,
         ...(input.revocationUrl && { revocationUrl: input.revocationUrl }),
-        recipient: { host, port, path, access },
+        recipient: { host, port, path },
       };
     } else {
       const observed = await discover(input.serverUrl, input.issuer);
@@ -5789,13 +5794,17 @@ export class OpenClawController {
         );
       }
       const offered = [...observed.requestedScopes, ...(observed.resourceScopes ?? [])];
-      const allowed = offered.length ? offered : (observed.supportedScopes ?? []);
+      const allowed = new Set(offered.length ? offered : observed.supportedScopes);
+      const supported = observed.supportedScopes && new Set(observed.supportedScopes);
+      const approved = new Set(settings.scopes);
+      if (approved.size && observed.requestedScopes.some((scope) => !approved.has(scope))) {
+        throw new ConnectionTemplateValidationError(
+          "scopes",
+          "Include the scopes required by the MCP server or choose no template limit.",
+        );
+      }
       if (
-        settings.scopes.some(
-          (scope) =>
-            !allowed.includes(scope) ||
-            (observed.supportedScopes && !observed.supportedScopes.includes(scope)),
-        )
+        settings.scopes.some((scope) => !allowed.has(scope) || (supported && !supported.has(scope)))
       ) {
         throw new ConnectionTemplateValidationError(
           "scopes",
@@ -5816,7 +5825,6 @@ export class OpenClawController {
           host: server.hostname,
           port: Number(server.port || 443),
           path: server.pathname,
-          access: "full",
         },
         mcp: { serverUrl: observed.serverUrl, resource: observed.resource },
         observed,

@@ -1,3 +1,4 @@
+import { isOAuthScopeToken } from "@openclaw-enterprise/contracts";
 import { randomUUID } from "node:crypto";
 import { PENDING_OAUTH_CONNECTION } from "@openclaw-enterprise/contracts";
 import type {
@@ -66,7 +67,6 @@ function material(value: string, custody: OAuthConnectionCustody): StoredConnect
     ].includes(String(data.phase)) ||
     ![
       "version",
-      "scope",
       "issuer",
       "oauthClientId",
       "clientId",
@@ -77,8 +77,10 @@ function material(value: string, custody: OAuthConnectionCustody): StoredConnect
       "expiresAt",
       "renewAt",
     ].every((key) => isNonEmptyString(data[key])) ||
+    !Array.isArray(data.grantedScopes) ||
+    !data.grantedScopes.every(isOAuthScopeToken) ||
     !Array.isArray(data.requestedScopes) ||
-    !data.requestedScopes.every(isNonEmptyString) ||
+    !data.requestedScopes.every(isOAuthScopeToken) ||
     !["none", "client_secret_post", "client_secret_basic"].includes(
       String(data.tokenEndpointAuthMethod),
     ) ||
@@ -113,7 +115,7 @@ function ready(
     tokenEndpointAuthMethod: grant.tokenEndpointAuthMethod,
     ...(grant.resource === undefined ? {} : { resource: grant.resource }),
     requestedScopes: grant.requestedScopes,
-    scope: grant.scope,
+    grantedScopes: grant.grantedScopes,
     accessToken: grant.accessToken,
     refreshToken: grant.refreshToken,
     expiresAt: grant.expiresAt,
@@ -145,7 +147,7 @@ function status(current: StoredConnection): OAuthConnectionStatus {
     schedule: {
       version: current.version,
       nextRefreshAt: current.renewAt,
-      grantedScopes: current.scope.split(" "),
+      grantedScopes: current.grantedScopes,
     },
     expiresAt: current.expiresAt,
   };
@@ -238,7 +240,7 @@ export class OAuthConnectionTokens implements OAuthConnectionTokenService {
       }
       return {
         accessToken: stored.accessToken,
-        grantedScopes: stored.scope.split(" "),
+        grantedScopes: stored.grantedScopes,
         expiresAt: stored.expiresAt,
         version: stored.version,
         nextRefreshAt: stored.renewAt,

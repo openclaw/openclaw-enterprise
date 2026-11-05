@@ -164,6 +164,7 @@ export {
   ConnectionTemplateValidationError,
   connectionValuesChanged,
   isFlowOwnedOAuthParameter,
+  isOAuthScopeToken,
   validateConnectionTemplateAuthorization,
 } from "./connection-templates.ts";
 export type { ComputePreparationFailureEvidence } from "./compute-preparation.ts";

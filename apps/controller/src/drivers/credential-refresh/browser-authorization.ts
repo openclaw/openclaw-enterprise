@@ -29,7 +29,6 @@ export function startBrowserAuthorization(
 ): CredentialSourceBrowserAuthorization {
   const state = randomToken();
   const verifier = randomToken();
-  const scope = request.scopes.join(" ");
   const url = new URL(request.authorizationUrl);
   for (const [key, value] of Object.entries(request.authorizationParameters)) {
     if (isFlowOwnedOAuthParameter(key)) {
@@ -40,7 +39,9 @@ export function startBrowserAuthorization(
   url.searchParams.set("response_type", "code");
   url.searchParams.set("client_id", request.clientId);
   url.searchParams.set("redirect_uri", request.redirectUri);
-  url.searchParams.set("scope", scope);
+  if (request.scopes.length) {
+    url.searchParams.set("scope", request.scopes.join(" "));
+  }
   if (request.resource !== undefined) {
     url.searchParams.set("resource", request.resource);
   }
@@ -110,7 +111,7 @@ export async function exchangeAuthorizationCode(
 
       code_verifier: verifier,
     }),
-    request.scopes.join(" "),
+    request.scopes.length ? request.scopes : undefined,
     request,
     clientSecret,
     signal,
@@ -126,7 +127,7 @@ export async function exchangeAuthorizationCode(
     tokenEndpointAuthMethod: request.tokenEndpointAuthMethod,
     ...(request.resource === undefined ? {} : { resource: request.resource }),
     clientId: request.clientId,
-    scope: tokens.scope,
+    grantedScopes: tokens.grantedScopes,
     accessToken: tokens.accessToken,
     refreshToken: tokens.refreshToken,
     expiresAt: tokens.expiresAt,

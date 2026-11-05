@@ -1789,12 +1789,11 @@ List all Installation-wide and Namespace-scoped connection templates
 | `data[].current.observed.tokenEndpointAuthMethods` | `array<string>` | No | — |
 | `data[].current.observed.tokenUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
 | `data[].current.recipient` | `object` | Yes | — |
-| `data[].current.recipient.access` | `"read-only" or "full"` | Yes | — |
 | `data[].current.recipient.host` | `string` | Yes | — |
 | `data[].current.recipient.path` | `string` | Yes | — |
 | `data[].current.recipient.port` | `integer` | Yes | — |
 | `data[].current.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data[].current.scopes` | `array<string>` | Yes | min items: 1; max items: 32 |
+| `data[].current.scopes` | `array<string>` | Yes | Scopes approved by the administrator. An empty list leaves scope selection to the account owner and provider. |
 | `data[].current.templateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].current.tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data[].current.version` | `integer` | Yes | minimum: 1 |
@@ -1941,12 +1940,11 @@ Example request
 | `data.current.observed.tokenEndpointAuthMethods` | `array<string>` | No | — |
 | `data.current.observed.tokenUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.recipient` | `object` | Yes | — |
-| `data.current.recipient.access` | `"read-only" or "full"` | Yes | — |
 | `data.current.recipient.host` | `string` | Yes | — |
 | `data.current.recipient.path` | `string` | Yes | — |
 | `data.current.recipient.port` | `integer` | Yes | — |
 | `data.current.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.scopes` | `array<string>` | Yes | min items: 1; max items: 32 |
+| `data.current.scopes` | `array<string>` | Yes | Scopes approved by the administrator. An empty list leaves scope selection to the account owner and provider. |
 | `data.current.templateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.current.tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.version` | `integer` | Yes | minimum: 1 |
@@ -2183,12 +2181,11 @@ Get one connection template
 | `data.current.observed.tokenEndpointAuthMethods` | `array<string>` | No | — |
 | `data.current.observed.tokenUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.recipient` | `object` | Yes | — |
-| `data.current.recipient.access` | `"read-only" or "full"` | Yes | — |
 | `data.current.recipient.host` | `string` | Yes | — |
 | `data.current.recipient.path` | `string` | Yes | — |
 | `data.current.recipient.port` | `integer` | Yes | — |
 | `data.current.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.scopes` | `array<string>` | Yes | min items: 1; max items: 32 |
+| `data.current.scopes` | `array<string>` | Yes | Scopes approved by the administrator. An empty list leaves scope selection to the account owner and provider. |
 | `data.current.templateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.current.tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.version` | `integer` | Yes | minimum: 1 |
@@ -2314,12 +2311,11 @@ Example request
 | `data.current.observed.tokenEndpointAuthMethods` | `array<string>` | No | — |
 | `data.current.observed.tokenUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.recipient` | `object` | Yes | — |
-| `data.current.recipient.access` | `"read-only" or "full"` | Yes | — |
 | `data.current.recipient.host` | `string` | Yes | — |
 | `data.current.recipient.path` | `string` | Yes | — |
 | `data.current.recipient.port` | `integer` | Yes | — |
 | `data.current.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data.current.scopes` | `array<string>` | Yes | min items: 1; max items: 32 |
+| `data.current.scopes` | `array<string>` | Yes | Scopes approved by the administrator. An empty list leaves scope selection to the account owner and provider. |
 | `data.current.templateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.current.tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data.current.version` | `integer` | Yes | minimum: 1 |
@@ -2691,12 +2687,11 @@ List connection templates the caller may connect in this Namespace
 | `data[].current.observed.tokenEndpointAuthMethods` | `array<string>` | No | — |
 | `data[].current.observed.tokenUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
 | `data[].current.recipient` | `object` | Yes | — |
-| `data[].current.recipient.access` | `"read-only" or "full"` | Yes | — |
 | `data[].current.recipient.host` | `string` | Yes | — |
 | `data[].current.recipient.path` | `string` | Yes | — |
 | `data[].current.recipient.port` | `integer` | Yes | — |
 | `data[].current.revocationUrl` | `string` | No | max length: 2048; pattern: `^https://[^\s/]` |
-| `data[].current.scopes` | `array<string>` | Yes | min items: 1; max items: 32 |
+| `data[].current.scopes` | `array<string>` | Yes | Scopes approved by the administrator. An empty list leaves scope selection to the account owner and provider. |
 | `data[].current.templateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data[].current.tokenUrl` | `string` | Yes | max length: 2048; pattern: `^https://[^\s/]` |
 | `data[].current.version` | `integer` | Yes | minimum: 1 |
@@ -2804,7 +2799,6 @@ List completed connections the caller can read in this Namespace
 | `data[].oauthClientId` | `string` | Yes | — |
 | `data[].ownerPrincipalId` | `string` | Yes | — |
 | `data[].recipient` | `object` | Yes | — |
-| `data[].recipient.access` | `"read-only" or "full"` | Yes | — |
 | `data[].recipient.host` | `string` | Yes | — |
 | `data[].recipient.path` | `string` | Yes | — |
 | `data[].recipient.port` | `integer` | Yes | minimum: 1; maximum: 65535 |
@@ -2888,7 +2882,7 @@ Start consent for a reusable account in this Namespace
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `connectionTemplateId` | `string` | Yes | pattern: `^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `selectedScopes` | `array<string>` | No | min items: 1; max items: 32 |
+| `selectedScopes` | `array<string>` | No | — |
 
 Example request
 ```json

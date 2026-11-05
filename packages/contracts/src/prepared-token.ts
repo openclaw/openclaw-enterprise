@@ -116,8 +116,8 @@ export interface OAuthConnectionClient {
 /** Trusted handoff from code exchange. The Token Service retains the reusable grant. */
 export interface OAuthConnectionGrant extends OAuthConnectionRegistration {
   readonly requestedScopes: readonly string[];
-  /** Effective scope, initially verified against the approved template, then narrowed on renewal. */
-  readonly scope: string;
+  /** Scopes the provider granted. An empty list means no scopes were reported or requested. */
+  readonly grantedScopes: readonly string[];
   readonly accessToken: string;
   readonly refreshToken: string;
   readonly expiresAt: string;

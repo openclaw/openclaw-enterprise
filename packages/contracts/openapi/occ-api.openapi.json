@@ -880,7 +880,7 @@
                 "items": {
                   "maxLength": 512,
                   "minLength": 1,
-                  "pattern": "^[!#-\\[\\]-~]+$",
+                  "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
                   "type": "string"
                 },
                 "type": "array"
@@ -890,7 +890,7 @@
                 "items": {
                   "maxLength": 512,
                   "minLength": 1,
-                  "pattern": "^[!#-\\[\\]-~]+$",
+                  "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
                   "type": "string"
                 },
                 "type": "array"
@@ -905,7 +905,7 @@
                 "items": {
                   "maxLength": 512,
                   "minLength": 1,
-                  "pattern": "^[!#-\\[\\]-~]+$",
+                  "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
                   "type": "string"
                 },
                 "type": "array"
@@ -919,29 +919,22 @@
           "recipient": {
             "additionalProperties": false,
             "properties": {
-              "access": {
-                "anyOf": [
-                  { "const": "read-only", "type": "string" },
-                  { "const": "full", "type": "string" }
-                ]
-              },
               "host": { "type": "string" },
               "path": { "type": "string" },
               "port": { "type": "integer" }
             },
-            "required": ["host", "port", "path", "access"],
+            "required": ["host", "port", "path"],
             "type": "object"
           },
           "revocationUrl": { "maxLength": 2048, "pattern": "^https://[^\\s/]", "type": "string" },
           "scopes": {
+            "description": "Scopes approved by the administrator. An empty list leaves scope selection to the account owner and provider.",
             "items": {
               "maxLength": 512,
               "minLength": 1,
-              "pattern": "^[!#-\\[\\]-~]+$",
+              "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
               "type": "string"
             },
-            "maxItems": 32,
-            "minItems": 1,
             "type": "array",
             "uniqueItems": true
           },
@@ -12536,12 +12529,6 @@
                       "recipient": {
                         "additionalProperties": false,
                         "properties": {
-                          "access": {
-                            "anyOf": [
-                              { "const": "read-only", "type": "string" },
-                              { "const": "full", "type": "string" }
-                            ]
-                          },
                           "host": { "maxLength": 253, "minLength": 1, "type": "string" },
                           "path": {
                             "maxLength": 512,
@@ -12560,14 +12547,13 @@
                         "type": "string"
                       },
                       "scopes": {
+                        "description": "Scopes approved by the administrator. An empty list leaves scope selection to the account owner and provider.",
                         "items": {
                           "maxLength": 512,
                           "minLength": 1,
-                          "pattern": "^[!#-\\[\\]-~]+$",
+                          "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
                           "type": "string"
                         },
-                        "maxItems": 32,
-                        "minItems": 1,
                         "type": "array",
                         "uniqueItems": true
                       },
@@ -12612,14 +12598,13 @@
                         "type": "string"
                       },
                       "scopes": {
+                        "description": "Scopes approved by the administrator. An empty list leaves scope selection to the account owner and provider.",
                         "items": {
                           "maxLength": 512,
                           "minLength": 1,
-                          "pattern": "^[!#-\\[\\]-~]+$",
+                          "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
                           "type": "string"
                         },
-                        "maxItems": 32,
-                        "minItems": 1,
                         "type": "array",
                         "uniqueItems": true
                       },
@@ -12877,7 +12862,7 @@
                           "items": {
                             "maxLength": 512,
                             "minLength": 1,
-                            "pattern": "^[!#-\\[\\]-~]+$",
+                            "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
                             "type": "string"
                           },
                           "type": "array"
@@ -12891,7 +12876,7 @@
                           "items": {
                             "maxLength": 512,
                             "minLength": 1,
-                            "pattern": "^[!#-\\[\\]-~]+$",
+                            "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
                             "type": "string"
                           },
                           "type": "array"
@@ -12910,7 +12895,7 @@
                           "items": {
                             "maxLength": 512,
                             "minLength": 1,
-                            "pattern": "^[!#-\\[\\]-~]+$",
+                            "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
                             "type": "string"
                           },
                           "type": "array"
@@ -13345,12 +13330,6 @@
                       "recipient": {
                         "additionalProperties": false,
                         "properties": {
-                          "access": {
-                            "anyOf": [
-                              { "const": "read-only", "type": "string" },
-                              { "const": "full", "type": "string" }
-                            ]
-                          },
                           "host": { "maxLength": 253, "minLength": 1, "type": "string" },
                           "path": {
                             "maxLength": 512,
@@ -13369,14 +13348,13 @@
                         "type": "string"
                       },
                       "scopes": {
+                        "description": "Scopes approved by the administrator. An empty list leaves scope selection to the account owner and provider.",
                         "items": {
                           "maxLength": 512,
                           "minLength": 1,
-                          "pattern": "^[!#-\\[\\]-~]+$",
+                          "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
                           "type": "string"
                         },
-                        "maxItems": 32,
-                        "minItems": 1,
                         "type": "array",
                         "uniqueItems": true
                       },
@@ -13416,14 +13394,13 @@
                         "type": "string"
                       },
                       "scopes": {
+                        "description": "Scopes approved by the administrator. An empty list leaves scope selection to the account owner and provider.",
                         "items": {
                           "maxLength": 512,
                           "minLength": 1,
-                          "pattern": "^[!#-\\[\\]-~]+$",
+                          "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
                           "type": "string"
                         },
-                        "maxItems": 32,
-                        "minItems": 1,
                         "type": "array",
                         "uniqueItems": true
                       },
@@ -35887,17 +35864,11 @@
                           "recipient": {
                             "additionalProperties": false,
                             "properties": {
-                              "access": {
-                                "anyOf": [
-                                  { "const": "read-only", "type": "string" },
-                                  { "const": "full", "type": "string" }
-                                ]
-                              },
                               "host": { "type": "string" },
                               "path": { "type": "string" },
                               "port": { "maximum": 65535, "minimum": 1, "type": "integer" }
                             },
-                            "required": ["host", "port", "path", "access"],
+                            "required": ["host", "port", "path"],
                             "type": "object"
                           },
                           "requestedScopes": { "items": { "type": "string" }, "type": "array" },
@@ -36043,9 +36014,12 @@
                     "type": "string"
                   },
                   "selectedScopes": {
-                    "items": { "maxLength": 256, "minLength": 1, "type": "string" },
-                    "maxItems": 32,
-                    "minItems": 1,
+                    "items": {
+                      "maxLength": 512,
+                      "minLength": 1,
+                      "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$",
+                      "type": "string"
+                    },
                     "type": "array",
                     "uniqueItems": true
                   }

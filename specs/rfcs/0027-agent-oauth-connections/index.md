@@ -98,7 +98,10 @@ supplies the provider and approved recipient. For MCP discovery the administrato
 enters the server URL. The protected resource identifies its resource and accepted
 authorization servers. The administrator selects one issuer. OCC validates its
 metadata and shows the observed endpoints, capabilities and scopes separately
-from the administrator's choices. Saving pins the effective values. A later
+from the administrator's choices. The administrator can set a scope allowlist
+or leave the choice to the connecting user and provider. The approved recipient
+identifies where the token may be sent. Plugin policy determines which
+operations are allowed there. Saving pins the effective values. A later
 discovery can propose a new version.
 
 An OAuth client is a separate scoped resource. It records the issuer, client ID,
@@ -227,7 +230,7 @@ sequenceDiagram
   API->>OAuth: startBrowserAuthorization
   OAuth-->>API: authorizationUrl, privateState
   API-->>User: Consent warning, then popup to authorizationUrl
-  User->>Issuer: Approve the fixed scopes
+  User->>Issuer: Approve the requested access
   Issuer->>API: GET /oauth/callback with code, state, and optional iss
   API->>OAuth: completeBrowserAuthorization
   OAuth->>Issuer: Exchange code with PKCE verifier
@@ -249,9 +252,10 @@ _The diagram shows a template with configured OAuth endpoints. MCP adds scope
 selection before the redirect and uses the
 [MCP authorization contract](contracts.md#mcp-authorization)._
 
-1. For MCP, the owner selects scopes in Console before starting OAuth.
+1. For MCP or a template without a scope limit, the owner reviews requested
+   scopes in Console before starting OAuth.
    `POST /namespaces/:namespaceId/connections` takes the template
-   ID and, for MCP, the displayed template version and `selectedScopes`. OCC
+   ID, the version shown for consent, and any selected scopes. OCC
    checks template availability and `credential_source:create` in the Namespace, and validates the
    selection. It then registers an empty source as `registering` and calls
    `startBrowserAuthorization`. OCC saves `privateState` in a private attempt row bound to the initiating
