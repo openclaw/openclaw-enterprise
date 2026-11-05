@@ -195,7 +195,7 @@ const connectionTemplateInput = {
   tokenUrl: oauthClient.tokenUrl,
   oauthClientId,
   scopes: ["profile.read"],
-  recipient: { host: "api.example.com", port: 443, path: "/profile", access: "read-only" },
+  recipient: { host: "api.example.com", port: 443, path: "/profile" },
 };
 const connectionTemplate = {
   id: connectionTemplateId,

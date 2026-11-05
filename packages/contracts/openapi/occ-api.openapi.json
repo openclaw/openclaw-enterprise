@@ -12362,7 +12362,6 @@
                             "mode": "manual",
                             "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
                             "recipient": {
-                              "access": "read-only",
                               "host": "api.example.com",
                               "path": "/profile",
                               "port": 443
@@ -12484,12 +12483,7 @@
                     "mode": "manual",
                     "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000",
                     "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
-                    "recipient": {
-                      "access": "read-only",
-                      "host": "api.example.com",
-                      "path": "/profile",
-                      "port": 443
-                    },
+                    "recipient": { "host": "api.example.com", "path": "/profile", "port": 443 },
                     "scopes": ["profile.read"],
                     "tokenUrl": "https://accounts.example.com/token"
                   }
@@ -12640,7 +12634,6 @@
                           "mode": "manual",
                           "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
                           "recipient": {
-                            "access": "read-only",
                             "host": "api.example.com",
                             "path": "/profile",
                             "port": 443
@@ -13158,7 +13151,6 @@
                           "mode": "manual",
                           "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
                           "recipient": {
-                            "access": "read-only",
                             "host": "api.example.com",
                             "path": "/profile",
                             "port": 443
@@ -13436,7 +13428,6 @@
                           "mode": "manual",
                           "oauthClientId": "ccr_123e4567-e89b-42d3-a456-426614174000",
                           "recipient": {
-                            "access": "read-only",
                             "host": "api.example.com",
                             "path": "/profile",
                             "port": 443
