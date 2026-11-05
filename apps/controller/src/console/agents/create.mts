@@ -1027,6 +1027,7 @@ function renderAgentForm(
     "aria-describedby": "configuration-json-hint",
   });
   const configurationError = fieldError(configuration);
+  let catalogErrorMessage: string | undefined;
   const primary = configuredModelSelection(rendered.configuration?.values);
   const initialModel = modelPrimary(primary);
   const nativeProvider = element(
@@ -1411,9 +1412,8 @@ function renderAgentForm(
     ) {
       return true;
     }
-    configurationError.show(
-      `Set models.providers.${providerId}.models to an array of model objects with an id, or remove the field.`,
-    );
+    catalogErrorMessage = `Set models.providers.${providerId}.models to an array of model objects with an id, or remove the field.`;
+    configurationError.show(catalogErrorMessage);
     focusConfiguration();
     return false;
   }
@@ -1612,9 +1612,15 @@ function renderAgentForm(
       !selectedModel && sharedPrimary
         ? modelSelections(JSON.parse(configuration.value) as LaunchValues)
         : undefined;
+    // Clear only our catalog remedy; other validation shares this field-error node.
     // Clearing the model alone retains its catalog, including any reported invalid list.
-    if (resetTransport || selectedModel) {
+    if (
+      (resetTransport || selectedModel) &&
+      catalogErrorMessage !== undefined &&
+      configurationError.node.textContent === catalogErrorMessage
+    ) {
       configurationError.clear();
+      catalogErrorMessage = undefined;
     }
     configuration.setCustomValidity("");
     feedback.textContent = "";
