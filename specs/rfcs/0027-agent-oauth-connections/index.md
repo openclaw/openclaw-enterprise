@@ -129,10 +129,10 @@ The callback URI is derived from the console origin as
 `https://<console-host>/oauth/callback`. The template response shows the exact URI
 for manual registration. OCE includes the same URI in its DCR request.
 
-With `accountIdentity: oidc`, the Refresh Driver verifies the provider before it
+With `accountIdentity: oidc`, the Token Service’s OAuth adapter verifies the provider before OCC
 accepts the connection template version, and verifies each ID token against it
 ([OIDC verification](contracts.md#oidc-account-identity)). The consent screen
-lists the two extra scopes. When the Driver returns a verified address, OCC stores
+lists the two extra scopes. When the adapter returns a verified address, OCC stores
 it on the credential source and shows "Connected as alice@example.com" so the
 person can spot a wrong account. Agent access follows the same attachment rules
 whether or not the source has an address.
@@ -208,9 +208,7 @@ Preset stays valid. Deployment requires a ready, authorized binding for each ent
 These changes require review of this RFC before implementation. The
 [companion](contracts.md) defines their inputs, results, and failure behavior.
 
-1. **`CredentialRefreshDriver`** exposes browser authorization
-   and OIDC provider verification to OCC. OCC manages client registrations through its Secret Driver. After exchange, the Driver hands the
-   source's grant and first access token to the OCE Token Service for refresh.
+1. **Token Service** provides browser authorization and OIDC verification through its OAuth adapter. OCC owns the browser session and client registration. Token Service exchanges the code through the adapter, commits the grant and first access token, and renews the account in the background.
 2. **Protected egress** uses the [RFC-0023 contract](../0023-egress-proxy-credential-lifecycle/contracts.md).
    The sender checks the authorized execution, destination and request policy
    before it presents the credential. The same request gets the same decision
@@ -219,9 +217,7 @@ These changes require review of this RFC before implementation. The
    kind, and an optional Namespace context on authorization requests.
 
 Browser connections use the existing `oauth2-refresh-token` source type. For a
-template-created source, the Backend must select the Token Service as its only
-refresh owner and support delivery of prepared access tokens. Manual registration
-keeps its existing Secret-backed path.
+template-created source, Token Service is the sole refresh owner. Credential Proxy uses its prepared access tokens for authorized requests. Manually registered sources retain their Secret-backed inputs. [Credential lifecycle and issuer ownership](../0023-egress-proxy-credential-lifecycle/contracts.md#credential-access-and-lifecycle)
 
 ### Console and API flow
 
@@ -229,27 +225,25 @@ keeps its existing Secret-backed path.
 sequenceDiagram
   participant User as Owner browser
   participant API as OCC API and console
-  participant OAuth as OCE browser authorization (Driver)
-  participant Issuer as OAuth issuer
   participant Tokens as OCE Token Service
+  participant Issuer as OAuth issuer
   User->>API: Connect an account in the Namespace
-  API->>OAuth: startBrowserAuthorization
-  OAuth-->>API: authorizationUrl, privateState
+  API->>Tokens: startBrowserAuthorization
+  Tokens-->>API: authorizationUrl, privateState
   API-->>User: Consent warning, then popup to authorizationUrl
   User->>Issuer: Approve the requested access
   Issuer->>API: GET /oauth/callback with code, state, and optional iss
-  API->>OAuth: completeBrowserAuthorization
-  OAuth->>Issuer: Exchange code with PKCE verifier
+  API->>Tokens: completeBrowserAuthorization
+  Tokens->>Issuer: Exchange code with PKCE verifier
   alt Exchange succeeds
-    Issuer-->>OAuth: Access token and refresh grant
-    OAuth->>Tokens: Hand off validated grant and first access token for this source
-    Tokens-->>OAuth: Committed
-    OAuth-->>API: ready
+    Issuer-->>Tokens: Access token and refresh grant
+    Tokens->>Tokens: Commit validated grant and first access token for this source
+    Tokens-->>API: ready
     API-->>User: Saved account ready to attach
     User->>API: Attach saved account to the selected Agent
     API-->>User: Agent binding and exact grant recorded
   else Consent denied, state invalid, or exchange refused
-    OAuth-->>API: failure code
+    Tokens-->>API: failure code
     API-->>User: Show failure after removing the pending source
   end
 ```
@@ -305,9 +299,7 @@ integration, real-cluster, and live-provider outcomes.
 - **Connection settings inside Presets.** A Preset copy is editable by the Agent
   creator, which would let a creator change scopes, endpoints, or the OAuth client.
   It would also copy client secrets into every Namespace that holds the Preset.
-- **OCC exchanges the code and stores the refresh token as a Secret.** This needs no
-  new Refresh Driver methods, but it puts a rotating refresh token in OCC storage
-  and inherits the `issuerRotated` update hazards.
+- **Store the refresh token as an ordinary OCC Secret.** Each provider rotation would require OCC to replace that Secret and coordinate the update with the saved account. Token Service already owns that operation.
 - **Store OAuth client secrets in a Credential Gateway.** This would require a Gateway before an administrator could configure a template. OCC can hold a private reference in the Installation's existing Secret Driver. The Token Service takes custody when a user connects an account.
 - **A Google-specific Gateway type.** Each new provider would need an OCE release.
 - **Executable-specific consent.** RFC-0023 authenticates the execution. A
@@ -320,7 +312,7 @@ integration, real-cluster, and live-provider outcomes.
 ## References
 
 - [Credential sources](../../../docs/reference/credential-sources.md)
-- [CredentialRefreshDriver contract](../../../docs/reference/drivers/credential-refresh.md)
+- [Current Credential Refresh Driver contract](../../../docs/reference/drivers/credential-refresh.md)
 - [OpenShell Credential Gateway](../../../docs/reference/drivers/openshell-credential-gateway.md)
 - [Console Agent creation](../../../docs/reference/console/create-and-deploy.md)
 - [Per-Agent sandbox policies](../../../docs/reference/sandbox-policies.md)
