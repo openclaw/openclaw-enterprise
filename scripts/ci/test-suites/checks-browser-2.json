@@ -14,7 +14,7 @@
     "tests/browser/console-form-fields.test.ts",
     "tests/browser/console-form-fields-2.test.ts",
     "tests/browser/console-agents-2.test.ts",
-    "tests/browser/console-agent-state.test.mjs",
+    "tests/browser/console-agent-state.test.ts",
     "tests/browser/console-agent-saves.test.ts",
     "tests/browser/console-runtime-credentials.test.ts",
     "tests/browser/console-codex-oauth.test.ts",
@@ -23,13 +23,13 @@
     "tests/browser/console-repository-picker-network.test.ts",
     "tests/browser/console-create-agent-provisioning-400.test.ts",
     "tests/browser/console-agent-deploy-focus.test.ts",
-    "tests/browser/console-agents-list-return.test.mjs",
+    "tests/browser/console-agents-list-return.test.ts",
     "tests/browser/console-refocus-focus.test.ts",
     "tests/browser/console-focus-ring.test.ts",
     "tests/browser/console-drafts-kept.test.ts",
     "tests/browser/console-button-hierarchy.test.ts",
     "tests/browser/console-status-block.test.ts",
-    "tests/browser/console-next-steps.test.mjs",
+    "tests/browser/console-next-steps.test.ts",
     "tests/browser/console-disabled-reasons.test.ts",
     "tests/browser/console-page-header.test.ts",
     "tests/browser/console-secret-picker-refresh.test.ts"
@@ -57,7 +57,7 @@
       "path": "tests/browser/console-policy-denials.test.ts"
     },
     {
-      "path": "tests/browser/console-agent-state.test.mjs"
+      "path": "tests/browser/console-agent-state.test.ts"
     },
     {
       "path": "tests/browser/console-agent-presets.test.ts"
@@ -93,7 +93,7 @@
       "path": "tests/browser/console-agent-deploy-focus.test.ts"
     },
     {
-      "path": "tests/browser/console-agents-list-return.test.mjs"
+      "path": "tests/browser/console-agents-list-return.test.ts"
     },
     {
       "path": "tests/browser/console-refocus-focus.test.ts"
@@ -114,7 +114,7 @@
       "path": "tests/browser/console-page-header.test.ts"
     },
     {
-      "path": "tests/browser/console-next-steps.test.mjs"
+      "path": "tests/browser/console-next-steps.test.ts"
     },
     {
       "path": "tests/browser/console-disabled-reasons.test.ts"

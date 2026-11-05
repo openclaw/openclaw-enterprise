@@ -4,6 +4,16 @@ Start with the symptom you can observe. When asking an operator for help, give
 them the Namespace, Agent ID, version ID, approximate time, and any request ID
 the console shows. Never include API keys, tokens, or Secret values.
 
+## Codex refuses the required permission profile
+
+If a dedicated Codex Agent on OpenShell reports `Codex did not grant the requested :danger-full-access profile`, ask the account administrator to check its managed permission requirements. A policy limited to `ReadOnly` or `WorkspaceWrite` cannot meet the [OpenShell permission-profile requirement](../../reference/drivers/openshell-sandbox.md#codex-permission-profile).
+
+Successful login, a ready credential source, or a model reply under another permission profile does not prove compatibility. Use an approved compatible credential or an administrator-approved policy change. For copied API-key or PAT credentials, [update the source](../../reference/credential-sources.md#update-a-source) and redeploy the Agent. Device-login sources reject updates: sign in again, replace the Agent binding and redeploy, following the same reference. Then [verify a model response from the actual Agent](../operate/model-verification.md). Keep managed policy, the Gateway permission check and OpenShell isolation intact.
+
+## Deploy requires a Sandbox Driver that supports protected Codex artifact admission
+
+OCE stops before creating an Agent version when the selected Sandbox Driver cannot validate artifact access for protected Codex repository execution. Ask your Installation administrator to check the `drivers.sandbox` selection and whether the installed Driver version provides [protected Codex artifact admission](../../reference/drivers/sandbox.md#methods). For OpenShell, see [how to configure the artifact rules](../../reference/drivers/openshell-sandbox.md#protected-codex-artifact-rules).
+
 ## The configured model is unavailable
 
 Open the failed version in the Agent’s **Deployment** tab. If the startup model check reports an unavailable model, [choose a model ID for the same credential](../operate/model-verification.md#choose-a-model-for-dedicated-codex).
@@ -60,6 +70,22 @@ the code but not the step or reason. `KUBERNETES_OWNERSHIP_CONFLICT` means the
 driver refused an object it does not own, such as a Deployment with the Agent's
 workload name but no OCE ownership labels. The driver never adopts such an
 object. Delete it, then deploy again.
+
+For a dedicated Agent, a connected workspace node alone does not establish
+enrollment: OCC must record its device through the setup handoff. If deployment
+stays pending, give the operator the version ID and worker's reason code. Keep
+the node's retained identity and workspace intact; repeated restarts do not prove
+that handoff completed. Unconfirmed credential possession after setup expiry requires the
+[scoped node-Secret recovery](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage);
+do not delete the node identity or workspace. See [workspace-node enrollment](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage).
+
+A second node runner using the same local profile fails immediately. Keep one
+runner per profile. Its lock remains held until clients, runtime shutdown and
+pending endpoint writes finish. Recovery requires a definitely dead owner or a
+process-start identity mismatch; age alone never permits reclaiming a live or
+ambiguous owner. Different profiles remain independent. This local runner lock
+does not coordinate other hosts or arbitrary credential writers; workload
+exclusion remains the execution provider's responsibility.
 
 For an OpenShell `workspace-baseline` failure with `created directory admission
 failed` and `insecure-permissions`, ask the operator to check the node-state
@@ -181,6 +207,15 @@ a successful deployment does not confirm that a third-party connector is usable.
 
 ## An OpenShell Agent stops answering
 
+For a dedicated Codex Agent on OpenShell, if the Sandbox is running but replies
+time out, ask the operator to check the Agent Gateway's route to OpenShell:
+Gateway egress, matching OpenShell ingress
+and, for secure WebSocket (WSS) connections, the served certificate's coverage
+of the advertised service hostname. A successful control-endpoint check does
+not establish that the certificate covers the advertised hostname. Keep
+hostname verification enabled; correct the owning network or certificate
+configuration, then [verify a model response](../operate/model-verification.md).
+
 On OpenShell, OCE asks the gateway to restart the Harness whenever its process
 exits. `occ agent runtime AGENT_ID` shows
 `Harness Sandbox: starting (HARNESS_RESTARTING, last exit code N, restart N)` for
@@ -202,6 +237,10 @@ version whose Harness exited), the Console's **Live serving** shows
 failed `agent` `sandbox` check carrying the same code. Deploy the Agent again
 (`occ agent deploy AGENT_ID`): the new version gets a new Sandbox and the old one
 is removed. `unknown (UNAVAILABLE)` means OCC could not read the Sandbox record.
+
+An older development Sandbox can also fail exact-content adoption after a
+controller upgrade changes its immutable command. Deploy a new Agent revision
+with `occ agent deploy AGENT_ID`; OCE does not rewrite the existing Sandbox command.
 
 ## Read OpenShell sandbox and supervisor logs
 

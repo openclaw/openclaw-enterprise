@@ -1,5 +1,8 @@
 ---
 doc-schema-version: 1
+tags: [human_verified]
+# Backfilled from the verification tag recorded in 17ff921c5.
+last_verified: "2026-11-04"
 ---
 
 # Repository credential tests
@@ -259,7 +262,7 @@ The dedicated installed qualification is **disabled**. Its old automatic cleanup
 could race with changes to a branch or pull request. Preparation and selected
 tests fail before creating resources. Do not use that lane for qualification.
 
-Use the [QA matrix](ci.md#qa-matrix) for an installed Agent's real Git journey. It
+Use the [QA matrix](ci/qa-advisory.md) for an installed Agent's real Git journey. It
 requires an authorized disposable repository and independent provider readback;
 check the commit, the refused push outside the granted branch, credential disposal,
 and cleanup results. Its `git-only` grant opens no pull request. A direct

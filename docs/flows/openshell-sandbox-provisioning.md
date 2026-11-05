@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-11-04
-last_updated_session: authoring-run/5728cb52-6c01-4613-a558-c793a649f415
+updated: 2026-11-05
+last_updated_session: authoring-run/root-deployment_docs
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -18,9 +18,8 @@ OpenShell. [Credential sources](credential-source-lifecycle.md) supply model acc
 - Source: `apps/controller/src/drivers/sandbox/openshell.ts:ensureNamespace`
 - Source: `apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness`
 - Source: `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`
-- Assumptions: Kubernetes Compute, OpenShell Sandbox and Credential Gateway share
-  one `openshell` Backend; Namespace isolation exists; the operator-mode Gateway
-  is ready.
+- Assumptions: shared `openshell` Backend, Namespace isolation and ready
+  operator-mode Gateway.
 
 ## Flow
 
@@ -157,11 +156,12 @@ managed-by labels and active phase; conflicts fail preparation.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`
 
-Compute derives `provisionHarness` from its ordinary Deployment. First deployment
+`provisionHarness` derives from Compute's Deployment. Initially, it
 keeps the Agent Service inactive and Gateway transport fail-closed. Attachments
 and provider/Sandbox creation await Gateway readiness and its Agent-owned setup
-Secret reference. Projected identity is disabled locally; enabling it fails before Gateway
-mutation because the pinned API cannot preserve the exact Agent ServiceAccount/token.
+Secret reference. At deployment, `validateHarnessAuth` rejects dedicated OpenShell
+projected identity, naming `servicePrincipalCredentials.mode`: OpenShell cannot
+preserve the Agent ServiceAccount/token.
 
 For `credential_source`, Compute renders the catalog login mode without a model
 Secret and passes version and `attachForRevision` provider names through `requirements.credentialAttachments`.
@@ -193,6 +193,9 @@ selects a named provider and HTTPS Responses transport.
 
 `apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness`
 
+`sandboxDataMount` validates mounts; `OpenShellGitRuntime.prepare` supplies process-scoped,
+mount-specific `safe.directory` and `push.negotiate=true`.
+
 Dedicated Codex/OpenClaw requires Landlock. Kubernetes, filesystem, process and
 [binary-scoped network policy](agent-sandbox-policy.md) use pinned `v0.1.6`.
 Relocation preserves opaque `OCE_CODEX_CHATGPT_ACCOUNT` JSON.
@@ -203,34 +206,36 @@ Template Pod labels outside `allowed_pod_labels` fail deployment immediately
 with `SANDBOX_POD_LABELS_NOT_PERMITTED`.
 
 `provisionHarness` creates or adopts the provider. Renewal checks its version
-and updates only `node_setup_json` through `UpdateProvider`. Codex route exposure
-follows the configured delay, at most 120 seconds. Compute rolls the Gateway
-before checking enrollment.
+and updates only `node_setup_json` through `UpdateProvider`.
+`internal/occdev/kubernetes.go:openShellInstallationConfiguration` omits the
+optional startup delay in development. `harnessStatus` treats a service that
+does not listen yet as starting and requires an authenticated WebSocket
+handshake before it reports serving. Compute rolls the Gateway before checking
+enrollment; a reported Harness failure still blocks readiness.
 
 Dedicated Codex requires one lowercase `APP_TOKEN_SHA` and two runtime files,
 each at most 65,536 bytes. `APP_SERVER_TOKEN` is forbidden. A second model proxy,
 malformed files and other Secret-backed environment fail before Gateway mutation.
 
-After login/enrollment, `agentRuntimeEntrypoint` calls
+After login, `agentRuntimeEntrypoint` calls
 `apps/controller/src/drivers/compute/kubernetes/codex-plugin-stdio.ts:withCodexPluginStdio`.
-Clean stdio exit precedes verifier-only WebSocket startup in the same
-home; failure triggers process-group TERM/KILL. Provider Gateway readiness
-observes transport, skipping HMAC plugin status.
+Clean exit permits verifier WebSocket startup; failure triggers group TERM/KILL.
+Provider Gateway readiness checks transport, not HMAC plugin status.
 
 `oce-codex-runtime`/`oce-openclaw-runtime` provide read-only setup and Gateway CA.
 Only Codex accepts `runtime.json`/`config.toml`. Validated setup, including
-`bootstrapToken`, becomes `node-setup.json`. WebSocket rewriting is unsupported:
+`bootstrapToken`, becomes `node-setup.json`. TLS-pinned setup requires `wss://`
+at admission and supervisor replacement. WebSocket rewriting is unsupported:
 device proofs sign the literal token.
 Renewal requires expired stored setup, later live expiry and unchanged endpoint,
 TLS fingerprint, runtime and CA. Policy permits that Gateway and `/usr/local/bin/node` only;
 foreign ownership/drift prevents creation.
 
-The Driver mounts version state at `/sandbox/.openclaw-runtime` and persistent
-subpaths below `/sandbox/.openclaw-mounts`. Admitted `/home/node` paths move under
-runtime `harnessHome` for native hook credentials. Codex
-hooks trust the provider-file Gateway CA and require node-reachable routing.
-`OPENCLAW_NODE_STATE_DIR` uses a process-created `state` child to avoid root-owned
-mounts and symlinks.
+Version state mounts at `/sandbox/.openclaw-runtime`; persistent subpaths mount
+below `/sandbox/.openclaw-mounts`. Admitted `/home/node` paths move under
+`harnessHome` for native hook credentials. Codex hooks use the provider-file
+Gateway CA and node-reachable routing. `OPENCLAW_NODE_STATE_DIR` uses a created
+`state` child to avoid root-owned mounts and symlinks.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:agentWithNodeEntrypoint`
 and `NATIVE_WORKER_ENTRYPOINT` apply `0700` before OpenClaw setup or migration,
 clearing inherited setgid. OpenClaw prepares its children on retry; retained state
@@ -238,13 +243,13 @@ and workspace permissions stay unchanged. Permission failures stop startup.
 Workspace, node identity, sessions and images stay separate. The supervisor probes
 `/tmp`; native `TMPDIR` is a private `tmp` child under the runtime home.
 
-`prepareNativeWorkspace` uses a restricted Deployment for the Agent revision to privatize
-writable PVC subpaths, preserving retained entries. Mode and process ownership checks precede
-UID-fenced foreground deletion and writer Pod termination.
+`prepareNativeWorkspace` privatizes retained PVC subpaths through a restricted
+revision Deployment. Mode/ownership checks precede UID-fenced foreground deletion;
+completed preparation exits successfully on SIGTERM with normal termination grace.
+Sandbox creation waits for every writer Pod.
 Preparation requires `userNamespaces: false`, at most one operator-mode ServiceAccount
 and the pinned Gateway's default identity, without model credentials, ServiceAccount
-tokens, capabilities, or direct Pod creation. Mode support and admission report
-these setting requirements before deployment.
+tokens, capabilities, or direct Pod creation. Admission reports these requirements before deployment.
 
 After Sandbox readiness, `initializeWorkspace` validates the setup Secret's
 Namespace, Agent and setup identity, then sends initializer/JSON stdin through
@@ -311,7 +316,7 @@ and `OPENCLAW_CODEX_PROVIDER_PERMISSION_PROFILE`; owned k3d pins the provider ho
 without Harness storage mounts. `gatewayNativeHookRelayConfiguration` uses
 `harnessHome` and Compute-owned relay URL/auth. Egress permits only the provider
 peer/port; the direct Agent Service stays inactive without a Harness route.
-Preparation preserves a serving predecessor; activation rechecks the candidate.
+Preparation preserves the serving predecessor; activation rechecks candidates.
 Without `harnessEndpoint`, Codex uses Kubernetes transport and `/home/node/workspace`.
 Native OpenClaw enrolls outbound into its admitted workspace.
 
@@ -393,6 +398,18 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 12:54: Reject projected identity at admission. (authoring-run/root-deployment_docs - 894a5b6698049c41fba27f5c2c0764e86b4c0632)
+
+- 2026-11-05 02:27: Enable `push.negotiate`. (authoring-run/bbe8db1d-f7e2-4322-80db-fbdf882659e2 - b4c30b3593105309904715c7dfff29c987dbb885)
+
+- 2026-11-05 00:43: Trace exact workspace Git trust in the Sandbox environment. (authoring-run/5112cc08-58d9-46f9-9e8d-eb23191832e6 - 392d3f1d70fbf2d401afe0c1bdb2ddcf8f6341d9)
+
+- 2026-11-04 23:20: Reject plaintext setup with TLS pins. (authoring-run/63c54d1f-8f48-4ab3-a707-9b0d72978728 - 24c8c7f7c2b012bd1b802be333a3420645808533)
+
+- 2026-11-04 12:10: Use observed Harness readiness without the development startup delay. (authoring-run/858f56ce-7f7b-44cb-9d2f-845adc6299f4 - 0268defcf69d3d368d983f7dd2b4b973671fdaf1)
+
+- 2026-11-04 11:18: Exit native workspace preparation cleanly on SIGTERM after its synchronous writes. (authoring-run/858f56ce-7f7b-44cb-9d2f-845adc6299f4 - bb0314249dfee342458615a0d624d3342e8233f6)
 
 - 2026-11-04 09:00: Remove the retired local middleware chart-verification claim. (authoring-run/5728cb52-6c01-4613-a558-c793a649f415 - 384b030ae118b130013f9863873bbeee0a9f4961)
 

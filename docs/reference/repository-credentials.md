@@ -1,7 +1,9 @@
 # Repository credentials
 
 Configure approved HTTPS repository access with the [operator guide](../guides/repository-credentials.md).
-OpenClaw Control Plane (OCC) saves each grant with the Agent revision.
+OCC saves each grant with the Agent revision.
+
+See the [OpenShell Git setup and request diagrams](../design/credential-proxy-architecture.md#how-does-openshell-authorize-a-git-request).
 
 ## Native Git from the Agent to GitHub
 
@@ -99,7 +101,7 @@ GitLab.com uses registry-backed Repo policy, the credential service, and an
 operator-supplied PAT; registry entries bind projects to Namespaces and profiles.
 Native Agent sessions can read, push approved refs, and create drafts.
 OpenShell delivery and durable receipts are excluded. See the
-[proposal](../../specs/rfcs/0029-gitlab-repository-credentials.md) and
+[proposal](../../specs/rfcs/0030-gitlab-repository-credentials.md) and
 [checks](../testing/repository-credentials.md#gitlab-client-checks).
 
 ## Configuration
@@ -302,11 +304,11 @@ metadata pass through.
 
 ### Git and GitHub CLI
 
-The client runs `/usr/bin/git` with user arguments, HOME, identity, hooks,
+The client runs `/usr/bin/git` with arguments, HOME, identity, hooks,
 aliases, remotes and worktrees. Git and gh preserve exit codes or return
-`128 + signal number`.
+`128 + signal`.
 
-At startup, Kubernetes copies the client material and prepares its private
+At startup, Kubernetes copies the client material and prepares its
 subPath. Preparation checks generation, manifest, session metadata, paths and
 ownership before writing `gitconfig`. It never reads a bearer or opens sessions.
 
@@ -321,7 +323,7 @@ origin. The helper checks the effective protocol, host, port, username and
 repository path after Git decodes percent-escapes. An escaped spelling can
 match the admitted host and path. The gateway rejects any `%` in a request
 path. Dot segments, extra components, unmatched names or ambiguous `.git`
-spellings yield no bearer. The broker constructs the canonical upstream path
+spellings yield no bearer. The broker constructs the upstream path
 for discovery, upload-pack and receive-pack. Endpoint, method, media-type,
 service-query and profile checks still apply.
 
@@ -353,7 +355,7 @@ egress restrictions.
 | API data                 | 1 MiB input, 8 MiB response                                                                                         |
 | Exchange timing          | Five minutes total, 30 seconds for response headers, five seconds without progress, 60 seconds of credential margin |
 
-For a larger upload-pack response, set the fetch-specific bounds in protected
+For a larger upload-pack response, set fetch-specific bounds in protected
 service configuration. For example, `gitFetchResponseBytes: 17179869184` allows
 16 GiB. Set `gitFetchFirstHeaderMs` and `gitFetchStallMs` to `60000` and
 `gitFetchExchangeMs` and `maxExchangeMs` to `1800000` for a 30-minute ceiling.

@@ -1,5 +1,7 @@
 ---
 tags: [human_verified, nolimit]
+# Backfilled from the verification tag recorded in a66a9cdfd.
+last_verified: "2026-11-02"
 ---
 
 # Set up OCE on Amazon EKS
@@ -146,6 +148,22 @@ kubectl --context "$CONTEXT" get gatewayclass eg -o json |
   jq -e '.spec.controllerName=="gateway.envoyproxy.io/gatewayclass-controller"'
 kubectl --context "$CONTEXT" wait gatewayclass/eg --for=condition=Accepted --timeout=3m
 ```
+
+### Check the prepared resources
+
+Run [prerequisite diagnosis](prerequisite-diagnosis.md) after preparing the target
+namespace and controllers. Save its plan as `$RUN_DIR/prerequisites.json`, using
+`$KUBECONFIG`, `$CONTEXT`, `$PLATFORM_NS`, the installed controller names, and the
+reviewed API/webhook CIDRs above. Set `peakAdditional` from the candidate chart
+and put the intended cluster ARN in `eks.clusterArn`.
+
+```bash
+node scripts/diagnose-kubernetes-prerequisites.mjs --config "$RUN_DIR/prerequisites.json"
+```
+
+Resolve failed and unknown checks before installing. Matching address inventory
+does not prove that deployed NetworkPolicies or admission webhooks work; retain
+the network and certificate checks above.
 
 <a id="configure-the-protected-copies-and-install"></a>
 

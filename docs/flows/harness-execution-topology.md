@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-11-03
-last_updated_session: authoring-run/01a1a454-f48a-7ef3-81a3-bf8ac904b03f
+updated: 2026-11-05
+last_updated_session: authoring-run/5c90599f-4f7f-4ec9-bf5d-2724c7156128
 ---
 
 # Harness Execution Topology Flow
@@ -83,7 +83,7 @@ API-key provider fingerprint in `AgentRevision.compute.admission`.
 The worker claims version work, rechecks actor/ownership and the frozen Harness,
 then calls `ComputeDriver.prepareRevision`. `apps/controller/src/drivers/compute/runtime-startup.ts:gatewayManagedModeEnvironment`
 supplies native administration controls to the Gateway child after OCE setup.
-Dedicated Gateway launchers apply the model tool policy in both administration modes.
+Dedicated Gateways enforce tool policy, including [MCP routing](agent-plugins.md#2-admit-an-immutable-plugin-deployment), in both administration modes.
 
 `apps/controller/src/drivers/compute/docker/index.ts:DockerComputeDriver.prepareRevision`
 
@@ -139,10 +139,13 @@ include version and network profile; Gateway selectors omit version for stabilit
 `deploy/helm/openclaw-execution/templates/routing.yaml` validates DNS and Envoy peer maps
 before rendering NetworkPolicies. Values must be strings or native null; type
 errors identify the setting.
-`runtime.gatewayNodeSelector`
-independently places the Gateway Pod and private-state initializer on trusted nodes.
-After Harness readiness, preparation starts a candidate Gateway if its predecessor is stopped or unready. Activation waits for workspace node enrollment. Dedicated Codex keeps `agent-<agent digest>-workspace` across versions.
-`KubernetesComputeDriver.gatewayNativeHookRelayConfiguration` binds its callbacks to the Agent route; `AGENT_WITH_NODE_ENTRYPOINT` prepares private capability storage and TLS trust, and OpenClaw authorizes callbacks. See [native hook routing](../reference/gateway-routing.md#native-node-endpoint).
+`runtime.gatewayNodeSelector` places Gateways and private-state initializers.
+`runtime-entrypoints.ts:agentRuntimeReady` and the Docker healthcheck require
+Codex initialization for Compute-owned launches; provider commands remain
+unchanged. See the [readiness contract](../reference/drivers/kubernetes-compute.md#troubleshooting).
+
+After Harness readiness, preparation replaces stopped or unready Gateways. Activation waits for workspace node enrollment; dedicated Codex retains `agent-<agent digest>-workspace`.
+`KubernetesComputeDriver.gatewayNativeHookRelayConfiguration` binds callbacks; `AGENT_WITH_NODE_ENTRYPOINT` prepares capability storage and TLS for OpenClaw-authorized [native hooks](../reference/gateway-routing.md#native-node-endpoint).
 
 Compute owns the Gateway; SandboxDriver owns the native Harness, with separate
 ServiceAccounts. The Harness retains identity, workspace and model credentials.
@@ -172,8 +175,8 @@ Embedded OpenClaw combines identity and model credentials. Scoped worker permiss
 
 Sandbox receives projections and login mode through `HarnessWorkloadRequirements`; unsupported delivery fails.
 
-Every Compute Pod template, ordinary allow policy and Gateway/Harness peer requires
-the [network profile](../reference/drivers/kubernetes-compute/networking-and-isolation.md#explicit-network-profiles); readiness rejects its absence.
+Compute templates, allow policies and peers require the
+[network profile](../reference/drivers/kubernetes-compute/networking-and-isolation.md#explicit-network-profiles); readiness rejects its absence.
 
 For provider-owned Harnesses, `providerHarnessReady` requires exactly one nonterminating `Ready=True` Pod matching the active Service's Agent, Agent revision ID, and role labels. Malformed observations enter cleanup; activation rechecks before routing changes. The [readiness contract](../reference/drivers/kubernetes-compute.md#requirements) owns candidate rules and observation limits.
 
@@ -257,11 +260,10 @@ to report its assigned workspace node: a 20-second budget per version and node a
 activation retries, then one status read per retry. That wait and the pairing wait end
 early when other Work is claimable.
 
-On version stop, the Driver gives the Gateway up to 330 seconds to drain. It
-waits for the Gateway Pod to disappear before stopping the Harness, which can
-finish active work. Idle Gateways and wrappers that have yet to start OpenClaw
-exit promptly. After forced termination, the next Gateway needs proof that the
-previous owner stopped before it can take over retained state.
+On stop, the Driver allows 330 seconds for Gateway drain and waits for Pod
+removal before stopping the Harness, allowing active work to finish. Idle
+Gateways and pre-start wrappers exit promptly. Forced termination requires proof
+the previous owner stopped before retained state can be reused.
 [Embedded recovery](../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner)
 describes when an operator must confirm termination.
 
@@ -271,15 +273,17 @@ retain their default workspace; dedicated Harness claims retain node identity. C
 precede Pods for `WaitForFirstConsumer`; [Gateway storage](../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
 defines initialization and mounts.
 
-Workspace-file access uses the enrolled Harness node. The Gateway and Harness
-share no workspace, session, skill or image mounts. Codex gets its Harness path
-before startup. Pairing enables file transfer.
+The enrolled Harness node serves workspace files after pairing. Gateway and
+Harness share no workspace, session, skill or image mounts. Codex receives its
+Harness path before startup.
 The [storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
-covers per-image assets and generated-image return. The node host stores bundles
-in its state and workspaces below `/home/node/workspace`, separate from gateway state,
-`CODEX_HOME` and credentials. Restart republishes image-owned assets and reconnects;
-readiness checks the paired identity. Compile cache and model-probe
-state remain in node state and `TMPDIR`, which a Sandbox Driver can grant.
+covers image assets and return. Node bundles and `/home/node/workspace` stay
+separate from Gateway state, `CODEX_HOME` and credentials. Restart republishes
+assets and reconnects; readiness checks paired identity. Compile cache and model
+probe state use node state and Sandbox-grantable `TMPDIR`.
+`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts` sets
+`XDG_CACHE_HOME=/tmp` for node and Doctor private SQLite staging, avoiding
+group-writable persistent ancestors without weakening permission checks.
 
 On stop or retirement, the selected Sandbox Driver cleans up after Compute stops an
 ordinary Harness, or removes a provider-owned Harness. Missing Deployments do not
@@ -350,6 +354,10 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 13:08: Trace safe temporary SQLite staging before node startup. (authoring-run/5c90599f-4f7f-4ec9-bf5d-2724c7156128 - 894a5b6698049c41fba27f5c2c0764e86b4c0632)
+
+- 2026-11-04 23:04: Require Compute-owned Codex RPC readiness. (authoring-run/5cb8a94e-e57d-47d0-b87e-890ea5b3f40e - 381845c12d3694fc19f836786831bb98cbe2c3e1)
 
 - 2026-11-03 18:15: Trace provider guards. (authoring-run/01a1a454-f48a-7ef3-81a3-bf8ac904b03f - 39c0ad271114a3340f9eba00d47a195607180c85)
 

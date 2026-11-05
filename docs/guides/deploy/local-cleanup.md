@@ -1,5 +1,7 @@
 ---
 tags: [human_verified]
+# Backfilled from the verification tag recorded in e22f558c0.
+last_verified: "2026-11-02"
 ---
 
 # Clean up the local Installation

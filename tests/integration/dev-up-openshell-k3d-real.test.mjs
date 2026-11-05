@@ -16,6 +16,7 @@ import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sa
 import { verifyOpenShellOwnerSession } from "../helpers/openshell-owner-session.mjs";
 import { localOpenShellGatewayOptions } from "../helpers/local-openshell-gateway.mjs";
 import { availablePort } from "../helpers/available-port.mjs";
+import { attachDevUpStartupDisposition } from "../helpers/dev-up-startup-disposition.ts";
 import { stopProcess } from "../helpers/stop-process.mjs";
 
 const { loadYaml } = createRequire(new URL("../../apps/controller/package.json", import.meta.url))(
@@ -47,8 +48,9 @@ async function startDevelopment(environment) {
       .map((line) => redactLogLine(line, secrets, 800))
       .join("\n");
     // Node's direct test reporter would print the raw subprocess output from a cause.
-    // eslint-disable-next-line preserve-caught-error
-    throw new Error(`OpenShell development startup failed:\n${tail}`);
+    const failure = new Error(`OpenShell development startup failed:\n${tail}`);
+    attachDevUpStartupDisposition(failure, error);
+    throw failure;
   }
 }
 

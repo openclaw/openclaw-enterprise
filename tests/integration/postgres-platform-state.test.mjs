@@ -1504,6 +1504,7 @@ test(
           harnessAuth: null,
           executionMode: "embedded",
           servicePrincipalId: `service-agent-${malformedCreateAgentId}`,
+          pluginDriver: { id: pluginDriver.id, implementation: pluginDriver.implementation },
           plugins: {
             "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "sometimes" } },
           },
@@ -1539,6 +1540,12 @@ test(
     );
     assert.equal(persistedAgent.configurationId, configuration.id);
     assert.deepEqual(persistedAgent.pluginApprovers, []);
+    const driverIdentity = { id: pluginDriver.id, implementation: pluginDriver.implementation };
+    assert.deepEqual(persistedAgent.pluginDriver, driverIdentity);
+    await assert.rejects(
+      pool.query("UPDATE occ.agents SET plugin_driver = NULL WHERE id = $1", [agent.id]),
+      { code: "23514", constraint: "agents_plugin_driver_selection" },
+    );
 
     const storedSelection = await pool.query(
       "SELECT plugins, plugin_approvers FROM occ.agents WHERE id = $1",
@@ -1646,6 +1653,7 @@ test(
       configurationId: replacementConfiguration.id,
     });
     assert.deepEqual(omittedPlugins.plugins, initialPlugins);
+    assert.deepEqual(omittedPlugins.pluginDriver, driverIdentity);
     assert.deepEqual(omittedPlugins.pluginApprovers, []);
     const replacementPlugins = {
       "occ-plugin:diffs": {
@@ -1666,6 +1674,7 @@ test(
       pluginApprovers: rawSlackApprovers,
     });
     assert.deepEqual(replacedPlugins.plugins, replacementPlugins);
+    assert.deepEqual(replacedPlugins.pluginDriver, driverIdentity);
     assert.deepEqual(replacedPlugins.pluginApprovers, rawSlackApprovers);
     const clearedPlugins = await controller.updateAgent(principalId, {
       namespaceId: namespace.id,
@@ -1681,6 +1690,8 @@ test(
       await view.revisions.findRevision(namespace.id, agent.id, revision.id),
     ]);
     assert.deepEqual(reloadedAgent.plugins, {});
+    assert.equal(reloadedAgent.pluginDriver, undefined);
+    assert.deepEqual(reloadedRevision.plugins.driver, driverIdentity);
     assert.deepEqual(reloadedAgent.pluginApprovers, rawSlackApprovers);
     assert.deepEqual(reloadedRevision.plugins.plugins, initialPlugins);
     assert.deepEqual(reloadedRevision.pluginApprovers, []);
@@ -1933,10 +1944,10 @@ test(
     const malformedPlugins = {
       "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "prompt" } },
     };
-    await pool.query("UPDATE occ.agents SET plugins = $2::jsonb WHERE id = $1", [
-      agent.id,
-      JSON.stringify(malformedPlugins),
-    ]);
+    await pool.query(
+      "UPDATE occ.agents SET plugins = $2::jsonb, plugin_driver = $3::jsonb WHERE id = $1",
+      [agent.id, JSON.stringify(malformedPlugins), JSON.stringify(revision.plugins.driver)],
+    );
     const malformedRevisionId = `rev_${randomUUID()}`;
     await pool.query(
       `INSERT INTO occ.agent_revisions
@@ -2069,7 +2080,7 @@ test(
       // decodes it, so the CLI lists it beside its healthy sibling without a strict read.
       await pool.query("UPDATE occ.agents SET plugins = $2::jsonb WHERE id = $1", [
         agent.id,
-        JSON.stringify(agent.plugins ?? {}),
+        JSON.stringify(plugins),
       ]);
       const history = await execute(cli, [...cliArguments, "agent", "revisions", agent.id]);
       assert.equal(history.stderr, "");
