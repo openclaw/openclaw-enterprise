@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import { createRequire } from "node:module";
 import type { Locator, Page, Response } from "playwright";
+import { Check } from "typebox/value";
 
 import {
   NamespaceListResponse,
@@ -25,7 +25,6 @@ import {
   apiRequests,
   expectReachableReason,
   fileBrowser,
-  fulfillPatchedJson,
   hasFocus,
   login,
   nativeValues,
@@ -35,6 +34,7 @@ import {
   statusTone,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
+import { fulfillPatchedJson } from "./console-patched-response.ts";
 import { routeInstallationProvisioning } from "./console-agents-test-support.mjs";
 import { refocus } from "./console-refocus-helpers.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
@@ -62,15 +62,6 @@ const WARNING = { className: "status", tone: "warning", role: "status" };
 
 // One Chromium for the file; each test still gets its own context.
 const browser = fileBrowser();
-const require = createRequire(new URL("../../packages/contracts/package.json", import.meta.url));
-const {
-  Check,
-}: {
-  Check: {
-    (schema: typeof NamespaceListResponse, value: unknown): value is NamespaceListResponse;
-    (schema: typeof PresetListResponse, value: unknown): value is PresetListResponse;
-  };
-} = require("typebox/value");
 
 type NamespacePatch = Partial<Pick<NamespaceWire, "status" | "existingNamespace">> | null;
 
@@ -118,11 +109,7 @@ async function reportNamespaces(page: Page, patches: ReadonlyMap<string, Namespa
   await page.route(
     (url) => url.pathname === "/namespaces",
     (route) =>
-      fulfillPatchedJson(route, (body: unknown) => {
-        assert.ok(
-          Check(NamespaceListResponse, body),
-          "expected a Namespace list from the controller",
-        );
+      fulfillPatchedJson(route, NamespaceListResponse, (body) => {
         body.data = body.data
           .filter((item) => patches.get(item.id) !== null)
           .map((item) => (patches.has(item.id) ? { ...item, ...patches.get(item.id) } : item));
