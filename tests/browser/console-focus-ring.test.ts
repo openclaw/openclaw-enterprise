@@ -19,7 +19,7 @@ import {
   settledView,
 } from "./console-agents-browser-helpers.mjs";
 import { createRepositoryLaunchFixture } from "./console-agents-test-support.mjs";
-import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
