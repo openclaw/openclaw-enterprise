@@ -594,8 +594,6 @@ Read a mapped membership override and its version
 | `403` | Forbidden |
 | `404` | Not Found |
 | `409` | Conflict |
-| `413` | Payload Too Large |
-| `415` | Unsupported Media Type |
 | `503` | Service Unavailable |
 
 **`200` response body:** `application/json`

@@ -1,4 +1,4 @@
-import { constants } from "node:fs";
+import { constants, type Stats } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import { dirname, isAbsolute, parse, resolve } from "node:path";
 
@@ -21,7 +21,7 @@ export async function readProtectedFile(
 async function readProtectedBytes(
   path: string,
   maximum: number,
-  privateFile = true,
+  privateFile: boolean,
 ): Promise<Buffer> {
   if (!isAbsolute(path) || resolve(path) !== path) {
     throw new Error("invalid-protected-file");
@@ -53,6 +53,21 @@ async function readProtectedBytes(
       throw new Error("invalid-protected-file");
     }
   }
+  return readBoundedFile(
+    path,
+    maximum,
+    (stat) =>
+      (uid === undefined || stat.uid === uid || stat.uid === 0) &&
+      (stat.mode & (privateFile ? 0o077 : 0o022)) === 0,
+  );
+}
+
+// The caller must validate the path and its ancestors before supplying the file's owner and mode check.
+export async function readBoundedFile(
+  path: string,
+  maximum: number,
+  acceptsMetadata: (stat: Stats) => boolean,
+): Promise<Buffer> {
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   let data: Buffer | undefined;
   let candidate: Buffer | undefined;
@@ -64,8 +79,7 @@ async function readProtectedBytes(
         before.nlink !== 1 ||
         before.size < 1 ||
         before.size > maximum ||
-        (uid !== undefined && before.uid !== uid && before.uid !== 0) ||
-        (before.mode & (privateFile ? 0o077 : 0o022)) !== 0
+        !acceptsMetadata(before)
       ) {
         throw new Error("invalid-protected-file");
       }

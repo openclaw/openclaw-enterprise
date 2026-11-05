@@ -156,7 +156,7 @@ import {
 } from "./http/route-compilers.ts";
 import { secretHandlers } from "./http/secrets.ts";
 import { serviceAccountHandlers } from "./http/service-accounts.ts";
-import type { RequestContext, ResourceHandlers } from "./http/types.ts";
+import type { RequestContext, RequestOperation, ResourceHandlers } from "./http/types.ts";
 
 export { cachedRequestValidators, cachedResponseSerializers } from "./http/route-compilers.ts";
 
@@ -454,7 +454,7 @@ function authorizesBeforeBody(operation: OccApiRoute): boolean {
 }
 
 function operationTarget(
-  operation: OccApiRoute,
+  operation: RequestOperation,
   installationId: string,
   params: Readonly<Record<string, unknown>>,
 ): ResourceRef {
@@ -1419,7 +1419,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       ? createRuntimeLogCursorCodec(options.agentRuntimeLogs.cursorSecret)
       : undefined;
   function event(
-    operation: OccApiRoute,
+    operation: RequestOperation,
     request: FastifyRequest,
     resource: ResourceRef,
     kind: AuditEventKind,
@@ -1517,7 +1517,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   }
 
   /** Log views and downloads share a route and permissions but not an audit action. */
-  function auditAction(operation: OccApiRoute, request: FastifyRequest): string {
+  function auditAction(operation: RequestOperation, request: FastifyRequest): string {
     return operation.operationId === "getAgentDeploymentRuntimeLogs" &&
       isRuntimeLogDownload(request.query as AgentRuntimeLogsQuery)
       ? RUNTIME_LOG_DOWNLOAD_ACTION
@@ -1677,7 +1677,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
   async function requireInstallationAdmin(
     request: FastifyRequest,
-    operation: OccApiRoute,
+    operation: RequestOperation,
     context: RequestContext,
   ) {
     const target: ResourceRef = { kind: "installation", id: installationId };
@@ -1743,7 +1743,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   }
 
   async function denial(
-    operation: OccApiRoute,
+    operation: RequestOperation,
     request: FastifyRequest,
     kind: "authorization_denial",
     context?: RequestContext,
@@ -1778,7 +1778,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   }
 
   async function rejectedMutation(
-    operation: OccApiRoute,
+    operation: RequestOperation,
     request: FastifyRequest,
     context: RequestContext,
     reasonCode: string,
@@ -1890,7 +1890,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     });
   }
 
-  async function admit(request: FastifyRequest, operation: OccApiRoute): Promise<void> {
+  async function admit(request: FastifyRequest, operation: RequestOperation): Promise<void> {
     if (
       request.headers[OCC_SERVICE_KEY_HEADER] !== undefined &&
       (operation === createAuthAccountOperation ||
@@ -2029,7 +2029,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     admissions.set(request, admitted);
   }
 
-  async function resolveIdentity(request: FastifyRequest, operation: OccApiRoute): Promise<void> {
+  async function resolveIdentity(
+    request: FastifyRequest,
+    operation: RequestOperation,
+  ): Promise<void> {
     const admitted = admissions.get(request);
     if (!admitted) {
       throw failure(
@@ -3619,7 +3622,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }
     async function humanAccountActor(
       request: FastifyRequest,
-      operation: OccApiRoute,
+      operation: RequestOperation,
       context: RequestContext,
       targetUserId?: string,
     ) {
@@ -3719,8 +3722,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                     required: ["mappingId", "lastAttemptAt", "lastSuccessfulAt", "status"],
                     properties: {
                       mappingId: { type: "string" },
-                      lastAttemptAt: { type: ["string", "null"] },
-                      lastSuccessfulAt: { type: ["string", "null"] },
+                      // fast-json-stringify moves null to the front of a union in place.
+                      lastAttemptAt: { type: ["null", "string"] },
+                      lastSuccessfulAt: { type: ["null", "string"] },
                       status: {
                         type: "string",
                         enum: ["pending", "running", "complete", "unavailable"],
@@ -3936,128 +3940,162 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       );
     }
 
-    for (const method of ["GET", "POST"] as const) {
-      const mutation = method === "POST";
-      const operation = {
-        ...accountReadOperation,
-        method,
-        path: "/api/auth/accounts/:userId/methods/:methodId/github-team-mappings/:mappingId/override",
-        operationId: mutation
-          ? "setGitHubTeamMembershipOverride"
-          : "getGitHubTeamMembershipOverride",
-        action: mutation
-          ? "openclaw.auth.accounts.github-team-override"
-          : "openclaw.auth.accounts.github-team-override.read",
-        summary: mutation
-          ? "Withdraw a mapped membership or permit a future verified sign-in"
-          : "Read a mapped membership override and its version",
-      } as unknown as OccApiRoute;
-      routes.route({
-        method,
-        url: operation.path,
+    type RosterOverrideParams = { userId: string; methodId: string; mappingId: string };
+    type RosterOverrideBody = {
+      withdrawn: boolean;
+      expectedVersion: number;
+      expectedOverrideVersion: string;
+    };
+    const rosterOverridePath =
+      "/api/auth/accounts/:userId/methods/:methodId/github-team-mappings/:mappingId/override";
+    const rosterOverrideAuthorization = {
+      iamAction: "administer",
+      resourceKind: "installation",
+      authorizationTarget: "installation",
+    } as const;
+    const readRosterOverrideOperation = {
+      ...rosterOverrideAuthorization,
+      operationId: "getGitHubTeamMembershipOverride",
+      action: "openclaw.auth.accounts.github-team-override.read",
+    } satisfies RequestOperation;
+    const setRosterOverrideOperation = {
+      ...rosterOverrideAuthorization,
+      operationId: "setGitHubTeamMembershipOverride",
+      action: "openclaw.auth.accounts.github-team-override",
+    } satisfies RequestOperation;
+    const rosterOverrideSchema = {
+      tags: ["Authentication"],
+      description:
+        "Requires a current human Installation administrator, trusted Origin and coverage of the target account's grants. Clearing an override requires a new verified sign-in before this mapping can restore access.",
+      security: [{ sessionCookie: [] }],
+      "x-openclaw-permissions": [
+        { action: "administer", resourceKind: "installation", scope: "requested" },
+      ],
+      params: {
+        ...methodParams,
+        required: [...methodParams.required, "mappingId"],
+        properties: {
+          ...methodParams.properties,
+          mappingId: { type: "string", minLength: 1, maxLength: 63 },
+        },
+      },
+    };
+    const rosterOverrideErrors = {
+      400: { description: "Bad Request", ...error },
+      403: { description: "Forbidden", ...error },
+      404: { description: "Not Found", ...error },
+      409: { description: "Conflict", ...error },
+    };
+    async function rosterOverrideAccess(
+      request: FastifyRequest<{ Params: RosterOverrideParams }>,
+      operation: RequestOperation,
+    ) {
+      const context = contexts.get(request);
+      if (!context) {
+        throw dependencyUnavailable();
+      }
+      const { userId, mappingId } = request.params;
+      const actor = await humanAccountActor(request, operation, context, userId);
+      const mapping = options.auth.githubRosterMappings?.find((rule) => rule.id === mappingId);
+      const { readRosterOverride, setRosterOverride } = options.auth;
+      if (!mapping || !readRosterOverride || !setRosterOverride) {
+        throw failure(404, "NOT_FOUND", "The requested GitHub team mapping is unavailable.");
+      }
+      return { actor, mapping, readRosterOverride, setRosterOverride };
+    }
+    routes.get<{ Params: RosterOverrideParams }>(
+      rosterOverridePath,
+      {
         schema: {
-          operationId: operation.operationId,
-          summary: operation.summary,
-          tags: ["Authentication"],
-          description:
-            "Requires a current human Installation administrator, trusted Origin and coverage of the target account's grants. Clearing an override requires a new verified sign-in before this mapping can restore access.",
-          security: [{ sessionCookie: [] }],
-          "x-openclaw-permissions": [
-            { action: "administer", resourceKind: "installation", scope: "requested" },
-          ],
-          params: {
-            ...methodParams,
-            required: [...methodParams.required, "mappingId"],
-            properties: {
-              ...methodParams.properties,
-              mappingId: { type: "string", minLength: 1, maxLength: 63 },
-            },
-          },
-          ...(mutation
-            ? {
-                body: {
-                  type: "object",
-                  additionalProperties: false,
-                  required: ["withdrawn", "expectedVersion", "expectedOverrideVersion"],
-                  properties: {
-                    withdrawn: { type: "boolean" },
-                    expectedVersion: { type: "integer", minimum: 1, maximum: 2147483647 },
-                    expectedOverrideVersion: { type: "string", minLength: 1, maxLength: 200 },
-                  },
-                },
-              }
-            : {}),
+          ...rosterOverrideSchema,
+          operationId: readRosterOverrideOperation.operationId,
+          summary: "Read a mapped membership override and its version",
           response: {
-            ...responses(
-              mutation
-                ? {
-                    type: "object",
-                    additionalProperties: false,
-                    required: ["userId"],
-                    properties: { userId: { type: "string" } },
-                  }
-                : {
-                    type: "object",
-                    additionalProperties: false,
-                    required: ["denied", "version", "accountVersion"],
-                    properties: {
-                      denied: { type: "boolean" },
-                      version: { type: "string" },
-                      accountVersion: { type: "integer", minimum: 1 },
-                    },
-                  },
-            ),
-            ...bodyErrors,
-            400: { description: "Bad Request", ...error },
-            403: { description: "Forbidden", ...error },
-            404: { description: "Not Found", ...error },
-            409: { description: "Conflict", ...error },
+            ...responses({
+              type: "object",
+              additionalProperties: false,
+              required: ["denied", "version", "accountVersion"],
+              properties: {
+                denied: { type: "boolean" },
+                version: { type: "string" },
+                accountVersion: { type: "integer", minimum: 1 },
+              },
+            }),
+            ...rosterOverrideErrors,
           },
         },
-        onRequest: async (request) => admit(request, operation),
+        onRequest: async (request) => admit(request, readRosterOverrideOperation),
         preValidation: async (request) => {
           refuseUnstorableText(request);
-          await resolveIdentity(request, operation);
+          await resolveIdentity(request, readRosterOverrideOperation);
         },
-        handler: async (request, reply) => {
-          const context = contexts.get(request);
-          if (!context) {
-            throw dependencyUnavailable();
-          }
-          const { userId, methodId, mappingId } = request.params as {
-            userId: string;
-            methodId: string;
-            mappingId: string;
-          };
-          const actor = await humanAccountActor(request, operation, context, userId);
-          const mapping = options.auth.githubRosterMappings?.find((rule) => rule.id === mappingId);
-          if (!mapping || !options.auth.readRosterOverride || !options.auth.setRosterOverride) {
-            throw failure(404, "NOT_FOUND", "The requested GitHub team mapping is unavailable.");
-          }
-          if (!mutation) {
-            const data = await options.auth.readRosterOverride(userId, methodId, mapping, actor);
-            return reply
-              .header("cache-control", "no-store")
-              .send({ data, meta: { requestId: request.id } });
-          }
-          const { withdrawn, expectedVersion, expectedOverrideVersion } = request.body as {
-            withdrawn: boolean;
-            expectedVersion: number;
-            expectedOverrideVersion: string;
-          };
-          await options.auth.setRosterOverride(
-            userId,
-            methodId,
-            mapping,
-            withdrawn,
-            actor,
-            expectedVersion,
-            expectedOverrideVersion,
-          );
-          return reply.send({ data: { userId }, meta: { requestId: request.id } });
+      },
+      async (request, reply) => {
+        const { userId, methodId } = request.params;
+        const { actor, mapping, readRosterOverride } = await rosterOverrideAccess(
+          request,
+          readRosterOverrideOperation,
+        );
+        const data = await readRosterOverride.call(options.auth, userId, methodId, mapping, actor);
+        return reply
+          .header("cache-control", "no-store")
+          .send({ data, meta: { requestId: request.id } });
+      },
+    );
+    routes.post<{ Params: RosterOverrideParams; Body: RosterOverrideBody }>(
+      rosterOverridePath,
+      {
+        schema: {
+          ...rosterOverrideSchema,
+          operationId: setRosterOverrideOperation.operationId,
+          summary: "Withdraw a mapped membership or permit a future verified sign-in",
+          body: {
+            type: "object",
+            additionalProperties: false,
+            required: ["withdrawn", "expectedVersion", "expectedOverrideVersion"],
+            properties: {
+              withdrawn: { type: "boolean" },
+              expectedVersion: { type: "integer", minimum: 1, maximum: 2147483647 },
+              expectedOverrideVersion: { type: "string", minLength: 1, maxLength: 200 },
+            },
+          },
+          response: {
+            ...responses({
+              type: "object",
+              additionalProperties: false,
+              required: ["userId"],
+              properties: { userId: { type: "string" } },
+            }),
+            ...rosterOverrideErrors,
+            ...bodyErrors,
+          },
         },
-      });
-    }
+        onRequest: async (request) => admit(request, setRosterOverrideOperation),
+        preValidation: async (request) => {
+          refuseUnstorableText(request);
+          await resolveIdentity(request, setRosterOverrideOperation);
+        },
+      },
+      async (request, reply) => {
+        const { userId, methodId } = request.params;
+        const { actor, mapping, setRosterOverride } = await rosterOverrideAccess(
+          request,
+          setRosterOverrideOperation,
+        );
+        const { withdrawn, expectedVersion, expectedOverrideVersion } = request.body;
+        await setRosterOverride.call(
+          options.auth,
+          userId,
+          methodId,
+          mapping,
+          withdrawn,
+          actor,
+          expectedVersion,
+          expectedOverrideVersion,
+        );
+        return reply.send({ data: { userId }, meta: { requestId: request.id } });
+      },
+    );
 
     const recoveryResponse = {
       type: "object",

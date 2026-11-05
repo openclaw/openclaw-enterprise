@@ -13,12 +13,20 @@ import type {
 } from "@openclaw-enterprise/occ";
 import type { FastifyReply, FastifyRequest } from "fastify";
 
+export interface RequestOperation {
+  readonly operationId: string;
+  readonly action: string;
+  readonly iamAction: PermissionAction;
+  readonly resourceKind: OccApiRoute["resourceKind"];
+  readonly authorizationTarget: OccApiRoute["authorizationTarget"];
+}
+
 export interface RequestContext {
   readonly actorId: string;
   readonly issuer: string;
   readonly subject: string;
   readonly admissionDecisionId: string;
-  readonly operation: OccApiRoute;
+  readonly operation: RequestOperation;
 }
 
 export type ResourceHandler = (input: {

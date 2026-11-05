@@ -1,8 +1,11 @@
 import { constants } from "node:fs";
-import { access, lstat, open, readlink } from "node:fs/promises";
+import { access, lstat, readlink } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, parse, resolve } from "node:path";
 
-import { readProtectedFile } from "../composition/repository-credentials/protected-file.ts";
+import {
+  readBoundedFile,
+  readProtectedFile,
+} from "../composition/repository-credentials/protected-file.ts";
 
 /** Accept a private regular file or the single key exposed by a rotating Kubernetes Secret. */
 export async function readGitHubRosterTokenFile(path: string, maximum: number): Promise<Buffer> {
@@ -89,54 +92,12 @@ async function readGenerationKey(
       throw new Error("invalid-protected-file");
     }
   }
-  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  let data: Buffer | undefined;
-  let candidate: Buffer | undefined;
-  try {
-    try {
-      const before = await handle.stat();
-      if (
-        !before.isFile() ||
-        before.nlink !== 1 ||
-        before.size < 1 ||
-        before.size > maximum ||
-        (uid !== undefined && before.uid !== uid && before.uid !== 0) ||
-        (before.mode & 0o037) !== 0 ||
-        ((before.mode & 0o040) !== 0 && !process.getgroups?.().includes(before.gid))
-      ) {
-        throw new Error("invalid-protected-file");
-      }
-      data = Buffer.alloc(before.size + 1);
-      let position = 0;
-      while (position < data.length) {
-        const result = await handle.read(data, position, data.length - position, position);
-        if (!result.bytesRead) {
-          break;
-        }
-        position += result.bytesRead;
-      }
-      const after = await handle.stat();
-      const named = await lstat(path);
-      if (
-        position !== before.size ||
-        after.size !== before.size ||
-        after.mtimeMs !== before.mtimeMs ||
-        after.ctimeMs !== before.ctimeMs ||
-        named.isSymbolicLink() ||
-        named.dev !== before.dev ||
-        named.ino !== before.ino
-      ) {
-        throw new Error("invalid-protected-file");
-      }
-      candidate = Buffer.from(data.subarray(0, position));
-    } finally {
-      data?.fill(0);
-      await handle.close();
-    }
-    // The caller owns this copy only after descriptor cleanup succeeds.
-    return candidate;
-  } catch (error) {
-    candidate?.fill(0);
-    throw error;
-  }
+  return readBoundedFile(
+    path,
+    maximum,
+    (stat) =>
+      (uid === undefined || stat.uid === uid || stat.uid === 0) &&
+      (stat.mode & 0o037) === 0 &&
+      ((stat.mode & 0o040) === 0 || process.getgroups?.().includes(stat.gid) === true),
+  );
 }

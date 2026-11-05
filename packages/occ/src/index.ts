@@ -8385,36 +8385,42 @@ export class OpenClawController {
     });
   }
 
-  /** The login handle and its Agent scope jointly authorize a device action. Starting
-   * creates a handle, while polling and cancellation use the existing exact Secret. */
   private async admitDeviceAction(
     principalId: string,
     namespaceId: string,
     agentId: string | undefined,
-    secretId: string | undefined,
-    sourceId?: string,
+    action:
+      | { kind: "start"; sourceId: string }
+      | { kind: "poll"; secretId: string; sourceId: string }
+      | { kind: "discard"; secretId: string },
   ): Promise<void> {
     if (!this.mappedSessionFence) {
       return;
     }
     await this.admitSessionEffect(async () => {
       await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, agentId);
-      await this.authorize(principalId, secretId === undefined ? "create" : "operate", {
-        kind: "secret",
-        id: secretId ?? namespaceId,
-        namespaceId,
-      });
-      if (secretId === undefined) {
+      if (action.kind === "start") {
+        await this.authorize(principalId, "create", {
+          kind: "secret",
+          id: namespaceId,
+          namespaceId,
+        });
         await this.authorize(principalId, "create", {
           kind: "credential_source",
           id: namespaceId,
           namespaceId,
         });
+      } else {
+        await this.authorize(principalId, "operate", {
+          kind: "secret",
+          id: action.secretId,
+          namespaceId,
+        });
       }
-      if (sourceId !== undefined) {
+      if (action.kind !== "discard") {
         await this.authorize(principalId, "operate", {
           kind: "credential_source",
-          id: sourceId,
+          id: action.sourceId,
           namespaceId,
         });
       }
@@ -8516,7 +8522,10 @@ export class OpenClawController {
       audit === undefined ? undefined : (source) => audit(source, "source_registering"),
     );
     const { context } = await this.authorizedCredentialSource(principalId, namespaceId, source.id);
-    await this.admitDeviceAction(principalId, namespaceId, agentId, undefined, source.id);
+    await this.admitDeviceAction(principalId, namespaceId, agentId, {
+      kind: "start",
+      sourceId: source.id,
+    });
     let started: CredentialSourceDeviceAuthorization;
     try {
       started = await refresh.startDeviceAuthorization(context);
@@ -8599,7 +8608,10 @@ export class OpenClawController {
         phase: "cancelled",
         privateState: undefined,
       });
-      await this.admitDeviceAction(principalId, namespaceId, agentId, secretId);
+      await this.admitDeviceAction(principalId, namespaceId, agentId, {
+        kind: "discard",
+        secretId,
+      });
       if (await this.secretOperation(() => driver.compareAndSwap!(secret, value, expired))) {
         return { secret, driver, value: expired, session: deviceAuthorizationSession(expired) };
       }
@@ -8657,7 +8669,11 @@ export class OpenClawController {
       return response("pending");
     }
     const claimed = JSON.stringify({ ...session, phase: "polling" });
-    await this.admitDeviceAction(principalId, namespaceId, agentId, secretId, session.sourceId);
+    await this.admitDeviceAction(principalId, namespaceId, agentId, {
+      kind: "poll",
+      secretId,
+      sourceId: session.sourceId,
+    });
     if (!(await this.secretOperation(() => driver.compareAndSwap!(secret, value, claimed)))) {
       return response("pending");
     }
@@ -8692,7 +8708,11 @@ export class OpenClawController {
       ) {
         throw new ResourceStateConflictError("The login Driver changed. Connect again.");
       }
-      await this.admitDeviceAction(principalId, namespaceId, agentId, secretId, session.sourceId);
+      await this.admitDeviceAction(principalId, namespaceId, agentId, {
+        kind: "poll",
+        secretId,
+        sourceId: session.sourceId,
+      });
     } catch (error) {
       if (
         this.mappedSessionFence &&
@@ -8746,7 +8766,10 @@ export class OpenClawController {
       phase: "cancelled",
       privateState: undefined,
     });
-    await this.admitDeviceAction(principalId, namespaceId, agentId, secretId);
+    await this.admitDeviceAction(principalId, namespaceId, agentId, {
+      kind: "discard",
+      secretId,
+    });
     if (!(await this.secretOperation(() => driver.compareAndSwap!(secret, value, discarded)))) {
       throw new ResourceStateConflictError("The login session changed. Refresh and retry.");
     }
