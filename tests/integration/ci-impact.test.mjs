@@ -1298,8 +1298,8 @@ test("Suite Audit and Static Checks runs the audit and every check the lanes ski
   );
   assert.equal(lane.with["static-checks"], "false");
   assert.equal(action.inputs["static-checks"].default, "true");
-  const skipped = action.runs.steps.filter((step) =>
-    String(step.if ?? "").includes("inputs.static-checks != 'false'"),
+  const skipped = action.runs.steps.filter(
+    (step) => step.run && String(step.if ?? "").includes("inputs.static-checks != 'false'"),
   );
   assert.deepEqual(
     skipped.map((step) => step.run),
@@ -1329,54 +1329,116 @@ test("Suite Audit and Static Checks runs the audit and every check the lanes ski
     "require the suite audit before static checks",
   );
   for (const step of checks) {
-    // Only pushes to main swap the plain formatting check for the cached one (next test).
-    const condition =
-      step.run === "pnpm format:check" ? "steps.prettier-cache.outcome != 'success'" : undefined;
-    assert.equal(step.if, condition, step.name);
+    assert.equal(step.if, undefined, step.name);
     assert.equal(step["continue-on-error"], undefined, step.name);
   }
   assert.ok(workflow.jobs["ci-required"].needs.includes("static-checks"));
 });
 
-test("only pushes to main restore, use, or save Prettier's content cache", () => {
-  // A pull request can have a cache at the same key in its own ref scope.
-  // Skip restore there and require the ordinary, uncached formatting check.
-  const { steps } = loadYaml(".github/workflows/ci.yml").jobs["static-checks"];
-  const restore = steps.find((step) => step.id === "prettier-cache");
-  const outcome = "steps.prettier-cache.outcome";
-  assert.equal(restore.if, "github.event_name == 'push' && github.ref == 'refs/heads/main'");
-  const plain = steps.find((step) => step.run === "pnpm format:check");
-  assert.equal(plain.if, `${outcome} != 'success'`);
-
-  // Restore succeeds on a miss too: check every file, then seed after the job's checks.
-  const cached = steps.find(
-    (step) =>
-      step.run ===
-      'pnpm format:check --cache --cache-strategy content --cache-location "$RUNNER_TEMP/prettier-cache"',
+test("every formatting check provisions pinned Bun and scans without a formatter cache", () => {
+  const scripts = JSON.parse(read("package.json")).scripts;
+  assert.equal(
+    scripts["format:check"],
+    scripts["format:fix"].replace("bun fmt --no-script", "bun fmt --no-script --check"),
   );
-  assert.equal(cached.if, `${outcome} == 'success'`);
-  const save = steps.find((step) => step.uses?.startsWith("actions/cache/save@"));
-  assert.equal(save.if, `${cached.if} && steps.prettier-cache.outputs.cache-hit != 'true'`);
+  assert.match(read(".bun-version").trim(), /^\d+\.\d+\.\d+$/);
+  const staticSteps = loadYaml(".github/workflows/ci.yml").jobs["static-checks"].steps;
+  const laneSteps = loadYaml(".github/actions/run-ci-lane/action.yml").runs.steps;
+  for (const steps of [staticSteps, laneSteps]) {
+    const setup = steps.find((step) => step.name === "Set up formatter");
+    assert.match(setup.uses, /^oven-sh\/setup-bun@[a-f0-9]{40}$/);
+    assert.deepEqual(setup.with, { "bun-version-file": ".bun-version" });
+    const check = steps.find((step) => step.run === "pnpm format:check");
+    assert.ok(steps.indexOf(setup) < steps.indexOf(check));
+    assert.equal(setup.if, check.if);
+    assert.equal(setup["continue-on-error"], undefined);
+    assert.equal(check["continue-on-error"], undefined);
+    assert.equal(
+      steps.some((step) => JSON.stringify(step).includes("prettier-cache")),
+      false,
+    );
+    assert.equal(
+      steps.some((step) => step.run?.includes("pnpm format:check --cache")),
+      false,
+    );
+  }
+  const setup = laneSteps.find((step) => step.name === "Set up formatter");
+  for (const { lane } of laneTable()) {
+    for (const staticChecks of ["true", "false"]) {
+      assert.equal(
+        runInNewContext(setup.if.replace("inputs.static-checks", "inputs.staticChecks"), {
+          inputs: { lane, staticChecks },
+        }),
+        lane === "checks-baseline-1" && staticChecks !== "false",
+      );
+    }
+  }
 });
 
-test("lane lists outside the lane table name every lane they must", async () => {
+test("lane lists outside the lane table name every lane they must", async (t) => {
   const suiteIndex = JSON.parse(read("scripts/ci/test-suites.json"));
   // The lane action exposes the cache credentials and sets OCC_CI_IMAGE_CACHE for
   // exactly the lanes prepare.mjs restores the BuildKit cache for. A lane missing
   // from either condition builds its images cold, and nothing fails.
   const action = loadYaml(".github/actions/run-ci-lane/action.yml");
-  const lanesIn = (expression) =>
-    [...String(expression).matchAll(/inputs\.lane == '([a-z0-9-]+)'/g)]
-      .map((match) => match[1])
-      .sort();
   const { imageCacheLanes } = await import(
     pathToFileURL(join(repositoryRoot, "scripts/ci/prepare.mjs")).href
   );
   const cached = [...imageCacheLanes.keys()].sort();
   const exposeStep = action.runs.steps.find((step) => step.id === "image-cache");
   const prepareStep = action.runs.steps.find((step) => step.name === "Prepare lane");
-  assert.deepEqual(lanesIn(exposeStep.if), cached);
-  assert.deepEqual(lanesIn(prepareStep.env.OCC_CI_IMAGE_CACHE), cached);
+  const mode = action.runs.steps.find(({ id }) => id === "image-mode");
+  const root = temporaryDirectorySync(t, "cache-lane-selection-");
+  const output = join(root, "outputs");
+  const openshell = JSON.parse(read("scripts/ci/test-suites/openshell.json"));
+  const firstAgentFiles = new Set([
+    "tests/integration/local-first-agent-openshell-real.test.mjs",
+    "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
+  ]);
+  const observed = new Set();
+  for (const lane of Object.keys(suiteIndex.lanes)) {
+    const files = lane === "openshell" ? ["", ...openshell.files.map(({ path }) => path)] : [""];
+    for (const file of files) {
+      writeFileSync(output, "");
+      const selection = spawnSync("bash", ["-c", mode.run], {
+        cwd: repositoryRoot,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          CI_SELECTED_LANE: lane,
+          CI_SELECTED_TEST_FILE: file,
+          GITHUB_OUTPUT: output,
+        },
+      });
+      assert.equal(selection.status, 0, selection.stderr);
+      const firstAgent = /^first-agent=(true|false)$/m.exec(readFileSync(output, "utf8"))?.[1];
+      assert.ok(firstAgent);
+      const evaluate = (expression) =>
+        runInNewContext(
+          expression
+            .replace(/^\$\{\{\s*|\s*\}\}$/g, "")
+            .replaceAll(
+              "steps.image-mode.outputs.first-agent",
+              'steps["image-mode"].outputs["first-agent"]',
+            ),
+          {
+            inputs: { lane },
+            steps: { "image-mode": { outputs: { "first-agent": firstAgent } } },
+          },
+        );
+      const expected = lane === "openshell" ? firstAgentFiles.has(file) : cached.includes(lane);
+      assert.equal(evaluate(exposeStep.if), expected, `${lane}: ${file}: cache credentials`);
+      assert.equal(
+        evaluate(prepareStep.env.OCC_CI_IMAGE_CACHE),
+        expected ? "1" : "",
+        `${lane}: ${file}: cache flag`,
+      );
+      if (expected) {
+        observed.add(lane);
+      }
+    }
+  }
+  assert.deepEqual([...observed].sort(), cached);
   for (const lane of Object.keys(suiteIndex.lanes).filter((name) => name.startsWith("images-"))) {
     assert.ok(cached.includes(lane), `${lane} restores the image cache`);
   }
@@ -2558,4 +2620,13 @@ test("the checked-in suite index and manifests support test-only selection", asy
   const f = await fixture(t, ({ put }) => put(manifest.files[0].path, "// edited\n"), initial);
   const shallow = await shallowBootstrap(f);
   await settled([f.expectTests([lane]), shallow.expectTests([lane])]);
+  // The handoff proof must keep its real fixture lane and TypeScript check.
+  const handoff = await fixture(
+    t,
+    editTest("tests/integration/installation-handoff-k3d-real.test.ts"),
+    initial,
+  );
+  const handoffShallow = await shallowBootstrap(handoff);
+  const handoffLanes = ["checks-baseline-2", "k3d-fixture-configuration"];
+  await settled([handoff.expectTests(handoffLanes), handoffShallow.expectTests(handoffLanes)]);
 });

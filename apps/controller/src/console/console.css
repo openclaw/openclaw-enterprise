@@ -360,6 +360,18 @@ p {
      400 ms (finding 1519). Visibility, not opacity: it appears whole, never half-faded. */
   animation: loading-delay 400ms;
 }
+#app > p.startup[role="status"]:has(+ .startup-recovery > button:not([hidden])) {
+  padding-block-end: var(--space-4);
+}
+#app > .startup-recovery {
+  padding: 0 var(--space-8) var(--space-8);
+  color: var(--muted);
+  text-align: center;
+  animation: loading-delay 400ms;
+}
+#app > .startup-recovery > button {
+  margin-bottom: var(--space-4);
+}
 /* A page held on screen, inert, while a navigation's reads run. Past 300 ms it dims and shows
    a progress cursor, so a slow return does not look stuck; opacity and cursor only, so nothing
    moves (finding 1447). A refocus recheck does not set .holding and keeps its look. */
@@ -1683,6 +1695,10 @@ p {
   :root {
     scrollbar-gutter: auto;
   }
+  /* Inert content still scrolls with keyboard or wheel. Keep the page in place under the drawer. */
+  :root:has(.shell.drawer-open) {
+    overflow: hidden;
+  }
   .shell {
     /* A flow root keeps the menu button's margin inside the shell; collapsing through body,
        it moved the whole page when the shell replaced the startup status (finding 1413). */
@@ -2462,10 +2478,11 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 @media (max-width: 760px) {
   .agent-version-control {
     width: 100%;
+    flex-wrap: wrap;
   }
   .agent-version-control select {
     min-width: 0;
-    flex: 1;
+    flex: 1 1 min(12rem, 100%);
   }
   .agent-deployment-attention {
     align-items: flex-start;
@@ -2590,13 +2607,16 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   border: 0;
   background: none;
 }
+.agent-card:not(.agent-form) > .repository-selection > .hint {
+  margin-bottom: 0;
+}
 /* An empty status line in a tab card or the picker adds no band; it stays a live region. */
 .agent-card > .hint:empty,
 .repository-selection > .hint:empty {
   margin: 0;
 }
 /* With no repository choices to list (repository access not set up), the empty list adds no
-   band above the access limits (finding 2402). */
+   band below the setup guidance (finding 2402). */
 .repository-options:has(> .repository-discovery > #repository-results:only-child:empty) {
   margin-top: 0;
 }
@@ -3064,7 +3084,7 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   color: color-mix(in srgb, var(--danger) 60%, var(--color-surface));
   border-color: color-mix(in srgb, var(--danger) 60%, var(--color-surface));
 }
-/* Danger zone (UX spec 3.9): one card at the end of the Agent page with a row each for Stop and
+/* Danger zone (UX spec 3.9): one card at the end of Configuration with a row each for Stop and
    Delete: title and one sentence, the outlined danger button at the right, and any status the
    row reports full width below. The confirmations carry the detail. */
 .danger-zone > h2 {
@@ -3921,7 +3941,8 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   display: grid;
   align-content: start;
   flex: 1;
-  min-height: 0;
+  /* Keep a catalog choice readable while short windows scroll the surrounding browser. */
+  min-height: 8rem;
   overflow: auto;
   gap: var(--space-2);
   padding: var(--space-1);
@@ -4569,6 +4590,10 @@ html:has(#create-agent-form) {
   }
 }
 
+/* Leave enough scroll range to align the tabs on a direct Logs link, even with short output. */
+.agent-version-detail:has(.agent-logs) {
+  min-height: 100dvh;
+}
 /* Held back until the Logs view's first reads settle (finding 1413). */
 .agent-logs-pending > .runtime-strip,
 .agent-logs-pending > .log-running-version,
@@ -4576,10 +4601,6 @@ html:has(#create-agent-form) {
 .agent-logs-pending > .log-serving-change,
 .agent-logs-pending > .log-viewer {
   display: none;
-}
-/* The cards below a pending Logs view appear where the shown view puts them (finding 1479). */
-.agent-logs-opening > .danger-zone {
-  visibility: hidden;
 }
 /* Pod cards share the panel's width: auto-fit collapses the empty columns that left one or two
    cards near the 260 px minimum with the rest of the row blank (finding 2100). */
@@ -5300,14 +5321,6 @@ html:has(#create-agent-form) {
 }
 .sandbox-page-actions {
   white-space: nowrap;
-}
-.sandbox-window-details {
-  font-size: var(--text-xs);
-  line-height: var(--text-xs--line-height);
-  color: var(--color-text-muted);
-}
-.sandbox-window-details summary {
-  cursor: pointer;
 }
 .sandbox-log-notices:empty {
   display: none;

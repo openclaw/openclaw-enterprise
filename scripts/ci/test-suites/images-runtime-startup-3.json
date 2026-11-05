@@ -24,9 +24,12 @@
       "path": "tests/integration/runtime-image-native-worker.test.mjs",
       "expectedTests": [
         "the dedicated worker launches the pinned gog on PATH only for the selected release",
-        "the native Gateway discovers the selected Google installation instructions",
+        "the dedicated worker loads a different CLI package with its declared credential slot",
+        "the native Gateway discovers the Google instructions with Slack selected alongside it",
+        "the dedicated worker configures Slack's hosted MCP server only for the selected release",
+        "the dedicated worker configures two MCP servers with their own credentials and tool selections",
         "the node skill policy admits only the selected Google instructions",
-        "runtime image enrolls the restricted workspace node and reconnects with saved credentials",
+        "runtime image recovers a lost workspace node hello and reconnects with saved credentials",
         "runtime image reaps descendants during workspace node and Codex restarts",
         "runtime image omits inactive Slack approvers and checks native compatibility before gateway launch"
       ]

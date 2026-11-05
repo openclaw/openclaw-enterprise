@@ -1,5 +1,8 @@
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
-import { assertExecutionAdmission } from "@openclaw-enterprise/contracts";
+import {
+  assertExecutionAdmission,
+  MAX_AGENT_CREDENTIAL_SOURCES,
+} from "@openclaw-enterprise/contracts";
 import { memoryEgressSendReceipts } from "./egress-send-receipts.ts";
 import type { EgressSendReceiptRepository, StoredSendReceipt } from "../egress-send-receipts.ts";
 import { isDeepStrictEqual } from "node:util";
@@ -38,6 +41,7 @@ import type {
   AgentDesiredRuntimeState,
   AgentStatus,
   AgentRevision,
+  FirstDeploymentReceipt,
   AuditEvent,
   CredentialSource,
   CredentialSourceSnapshot,
@@ -52,6 +56,7 @@ import type {
   Namespace,
   NamespaceStatus,
   PluginDesiredState,
+  PluginDriverIdentity,
   PluginApprovers,
   Preset,
   PresetSummary,
@@ -77,6 +82,7 @@ import {
   harnessAuthBindingFromSnapshot,
   normalizeSecretBindings,
   validPluginRevisionState,
+  validPluginDriverIdentity,
   validPluginApprovers,
   isBackendId,
 } from "@openclaw-enterprise/contracts";
@@ -228,6 +234,7 @@ export interface AgentRepository extends AgentReadRepository {
     repositoryAccess?: RepositoryAccess | null,
     credentialSources?: readonly AgentCredentialSourceBinding[],
     gatewayManagedMode?: boolean,
+    pluginDriver?: PluginDriverIdentity | null,
   ): Promise<Readonly<Agent> | undefined>;
   compareAndSetActiveRevision(
     namespaceId: string,
@@ -263,6 +270,11 @@ export interface AgentRepository extends AgentReadRepository {
 }
 
 export interface AgentRevisionReadRepository {
+  findFirstDeploymentReceipt(
+    namespaceId: string,
+    agentId: string,
+    digest: string,
+  ): Promise<Readonly<FirstDeploymentReceipt> | undefined>;
   findRevisionForBrowsing(
     namespaceId: string,
     agentId: string,
@@ -304,7 +316,10 @@ export interface AgentRevisionRepository extends AgentRevisionReadRepository {
    * clock, the one that stamps controller work, so the worker can order a revision against a
    * stop or deletion without controller clock skew (finding 1195); use the returned value.
    */
-  createRevision(revision: AgentRevision): Promise<Readonly<AgentRevision>>;
+  createRevision(
+    revision: AgentRevision,
+    firstDeploymentDigest?: string,
+  ): Promise<Readonly<AgentRevision>>;
 }
 
 export interface ConfigurationOwnership {
@@ -609,6 +624,16 @@ function normalizedPlugins(plugins?: PluginDesiredState): PluginDesiredState | u
   return normalizePluginDesiredState(plugins, invalidPluginState);
 }
 
+function assertPluginDriverSelection(
+  driver: PluginDriverIdentity | undefined,
+  plugins: PluginDesiredState | undefined,
+): void {
+  const hasPlugins = Object.keys(plugins ?? {}).length > 0;
+  if (hasPlugins ? !validPluginDriverIdentity(driver) : driver !== undefined) {
+    throw new ScopeViolationError("Only a nonempty plugin selection has a Plugin Driver owner.");
+  }
+}
+
 function normalizedPluginApprovers(approvers?: PluginApprovers): PluginApprovers | undefined {
   return normalizePluginApprovers(approvers, invalidPluginState);
 }
@@ -863,7 +888,7 @@ export function validCredentialSourceSnapshots(value: unknown): boolean {
   if (value === undefined) {
     return true;
   }
-  if (!Array.isArray(value) || value.length === 0 || value.length > 8) {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_AGENT_CREDENTIAL_SOURCES) {
     return false;
   }
   const seen = new Set<string>();
@@ -1113,6 +1138,7 @@ interface PlatformSnapshot {
   readonly sandboxPolicies: Map<string, Readonly<SandboxPolicy>>;
   readonly workspaceSetups: Map<string, Readonly<WorkspaceSetup>>;
   readonly revisions: Map<string, readonly Readonly<AgentRevision>[]>;
+  readonly firstDeploymentDigests: Map<string, string>;
   readonly roles: Map<string, Readonly<Role>>;
   readonly bindings: Map<string, Readonly<AccessBinding>>;
   readonly servicePrincipals: Map<string, Readonly<ServicePrincipal>>;
@@ -1251,6 +1277,7 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     // Revisions are copied on ingress/egress; appends replace frozen history arrays.
     // A separate Map isolates this snapshot's future appends without copying history.
     revisions: new Map(snapshot.revisions),
+    firstDeploymentDigests: new Map(snapshot.firstDeploymentDigests),
     roles: new Map(Array.from(snapshot.roles, ([key, role]) => [key, storedCopy(role)])),
     bindings: new Map(
       Array.from(snapshot.bindings, ([key, binding]) => [key, storedCopy(binding)]),
@@ -2841,6 +2868,7 @@ function repositories(
         throw new ScopeViolationError("The Agent Backend identity is invalid.");
       }
       const plugins = normalizedPlugins(agent.plugins);
+      assertPluginDriverSelection(agent.pluginDriver, plugins);
       const pluginApprovers = normalizedPluginApprovers(agent.pluginApprovers);
       const repositoryBindings = normalizedRepositoryBindings(agent.repositoryBindings);
       const repositoryAccess = normalizedRepositoryAccess(
@@ -2983,6 +3011,7 @@ function repositories(
       nextRepositoryAccess,
       nextCredentialSources,
       gatewayManagedMode,
+      nextPluginDriver,
     ) => {
       const current = await agents.findAgent(namespaceId, agentId);
       if (!current) {
@@ -3021,6 +3050,9 @@ function repositories(
       assertHarnessCredentialSourceListed(association, agentCredentialSources);
       const nextBackendId = backendId === undefined ? current.backendId : backendId;
       const plugins = nextPlugins === undefined ? current.plugins : normalizedPlugins(nextPlugins);
+      const pluginDriver =
+        nextPluginDriver === undefined ? current.pluginDriver : (nextPluginDriver ?? undefined);
+      assertPluginDriverSelection(pluginDriver, plugins);
       const pluginApprovers =
         nextPluginApprovers === undefined
           ? current.pluginApprovers
@@ -3042,6 +3074,7 @@ function repositories(
       const {
         repositoryAccess: _currentRepositoryAccess,
         plugins: _currentPlugins,
+        pluginDriver: _currentPluginDriver,
         pluginApprovers: _currentPluginApprovers,
         repositoryBindings: _currentRepositoryBindings,
         credentialSources: _currentCredentialSources,
@@ -3053,6 +3086,7 @@ function repositories(
         backendId: nextBackendId,
         executionMode: executionMode ?? current.executionMode,
         gatewayManagedMode: gatewayManagedMode ?? current.gatewayManagedMode,
+        ...(pluginDriver === undefined ? {} : { pluginDriver }),
         harnessAuth: association,
         ...(agentCredentialSources === undefined || agentCredentialSources.length === 0
           ? {}
@@ -3112,6 +3146,24 @@ function repositories(
   };
 
   const revisions: AgentRevisionRepository = {
+    findFirstDeploymentReceipt: async (namespaceId, agentId, digest) => {
+      if (snapshot.namespaces.get(namespaceId)?.deletedAt !== undefined) {
+        return undefined;
+      }
+      const first = snapshot.revisions
+        .get(agentKey(namespaceId, agentId))
+        ?.find((revision) => revision.revision === 1);
+      return first !== undefined && snapshot.firstDeploymentDigests.get(first.id) === digest
+        ? immutableCopy({
+            revisionId: first.id,
+            namespaceId,
+            agentId,
+            configurationId: first.configurationId,
+            configurationGeneration: first.configurationGeneration,
+            createdAt: first.createdAt,
+          })
+        : undefined;
+    },
     findRevisionForBrowsing: async (namespaceId, agentId, revisionId) =>
       revisions.findRevision(namespaceId, agentId, revisionId),
     listRevisionsForBrowsing: async (namespaceId, agentId) =>
@@ -3192,7 +3244,7 @@ function repositories(
         ...(older.length > limit ? { nextBefore: page.at(-1)!.revision } : {}),
       });
     },
-    createRevision: async (input) => {
+    createRevision: async (input, firstDeploymentDigest) => {
       const revision = immutableCopy(input);
       assertInitialized(snapshot);
       assertAdmittedAgentRevision(revision);
@@ -3235,6 +3287,16 @@ function repositories(
         ...(secretBindings === undefined ? {} : { secretBindings }),
         ...(plugins === undefined ? {} : { plugins }),
       });
+      if (firstDeploymentDigest !== undefined) {
+        if (
+          previous.length !== 0 ||
+          revision.revision !== 1 ||
+          !/^[a-f0-9]{64}$/.test(firstDeploymentDigest)
+        ) {
+          throw new ResourceConflictError("Invalid first-deployment admission.");
+        }
+        snapshot.firstDeploymentDigests.set(saved.id, firstDeploymentDigest);
+      }
       snapshot.revisions.set(key, Object.freeze([...previous, saved]));
       return saved;
     },
@@ -3780,6 +3842,9 @@ function finalizeAgentDeletion(
   // The setup cascades with its Agent. Credential withdrawals already end with their revision
   // here (liveWithdrawal), as the database cascade does.
   snapshot.workspaceSetups.delete(key);
+  for (const id of revisionIds) {
+    snapshot.firstDeploymentDigests.delete(id);
+  }
   snapshot.revisions.delete(key);
   snapshot.sandboxPolicies.delete(key);
   snapshot.agents.delete(key);
@@ -3833,6 +3898,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     sandboxPolicies: new Map(),
     workspaceSetups: new Map(),
     revisions: new Map(),
+    firstDeploymentDigests: new Map(),
     roles: new Map(),
     bindings: new Map(),
     servicePrincipals: new Map(),

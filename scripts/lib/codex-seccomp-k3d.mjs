@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { basename, isAbsolute, join, posix, relative, resolve } from "node:path";
+import { privateOwned } from "./private-owned-path.mjs";
 import {
   assertReviewedCodexVersion,
   codexBwrapAdditionalSyscalls,
@@ -752,17 +753,6 @@ async function prepareCodexSeccompProfile({
       };
     },
   );
-}
-
-async function privateOwned(path, directory = false) {
-  const info = await lstat(path);
-  if (
-    info.uid !== process.geteuid?.() ||
-    (info.mode & 0o077) !== 0 ||
-    (directory ? !info.isDirectory() : !info.isFile())
-  ) {
-    throw new Error(`${path} must be private and owned by the current user.`);
-  }
 }
 
 // Development and CI have different ownership records; neither may bypass the other's checks.

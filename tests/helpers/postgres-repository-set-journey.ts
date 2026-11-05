@@ -66,11 +66,14 @@ type NarrowJourney = {
   withdraw: () => Promise<unknown>;
 };
 
+type NarrowPolicy = { draftPull?: boolean; pushRef?: string };
+
 export async function narrowOnlineGitJourney(
   t: TestContext,
   exercise: (journey: NarrowJourney) => Promise<void>,
+  policy: NarrowPolicy = {},
 ) {
-  return repositoryGitJourney(t, exercise);
+  return repositoryGitJourney(t, exercise, policy);
 }
 
 export async function repositorySetJourney(t: TestContext) {
@@ -80,6 +83,7 @@ export async function repositorySetJourney(t: TestContext) {
 async function repositoryGitJourney(
   t: TestContext,
   narrow?: (journey: NarrowJourney) => Promise<void>,
+  policy: NarrowPolicy = {},
 ) {
   const workspace = "selected-journey";
   const tls = await harnessTlsFixture(t);
@@ -231,7 +235,7 @@ async function repositoryGitJourney(
     driver: owner.ref,
     tokenLifetimeMs: 600_000,
     ...(narrow
-      ? { draftPull: true }
+      ? { ...policy, draftPull: policy.draftPull ?? true }
       : {
           selection: {
             entries: repositorySet,
@@ -265,7 +269,7 @@ async function repositoryGitJourney(
   const driver = new GitHubRepositoryPolicy(
     { driverId: peer.registry.backendId, backendId: peer.registry.backendId },
     peer.registry,
-    { sessionDurationSeconds: 600 },
+    { sessionDurationSeconds: narrow && policy.draftPull === false ? 180 : 600 },
   );
   f.controller.registerDriver(driver);
   f.controller.selectDriver("repo", driver.id);
@@ -401,7 +405,15 @@ async function repositoryGitJourney(
     async prepareRevision(r: AgentRevision, custody: ComputeRevisionContext) {
       let stage = "provider-bootstrap";
       try {
-        const p = await runtime.prepare(r, client, workspace, state.sandbox, t.signal, ["openai"]);
+        const p = await runtime.prepare(
+          r,
+          client,
+          workspace,
+          state.sandbox,
+          t.signal,
+          "/sandbox/enterprise",
+          ["openai"],
+        );
         // This is the synthetic process launch, after its preview registration.
         // Both scopes must report this event, not the earlier fixture construction.
         if (!wire.world.id) {
@@ -578,7 +590,7 @@ async function repositoryGitJourney(
       assert.deepEqual(peer.gh.issuesOfTokens[0].permissions, {
         metadata: "read",
         contents: "write",
-        pull_requests: "write",
+        ...((policy.draftPull ?? true) && { pull_requests: "write" }),
       });
       const binding = revision.repositoryCredentials!.bindings[0]!;
       const delivery = createGitHubRepositoryDeliveryResolver(peer.registry)(revision);

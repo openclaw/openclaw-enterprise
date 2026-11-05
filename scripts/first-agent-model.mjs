@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
-import { defaultAgentModel } from "../apps/controller/src/console/agents/starter-model.mjs";
+import { defaultAgentModel } from "../apps/controller/src/console/agents/starter-model.mts";
 import { admitGatewaySecurityDefaults } from "../packages/occ/src/gateway-security-defaults.ts";
 
 export function selectFirstAgentModel(configuredModel, existing) {

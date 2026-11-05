@@ -18,13 +18,14 @@ The configuration excludes `legacy/`; do not import archived implementations.
 The Go CLI uses the root [Go module](../go.mod). The documentation renderer in
 `scripts/docs-site/` has its own package manifest, pnpm workspace, and lockfile;
 keep its dependency installation separate from the root workspace.
-API example metadata and export enrichment live in `scripts/api-examples.mjs`
-and `scripts/document-api-examples.mjs`; `scripts/docs-site/` owns the explorer
+API example metadata and export enrichment live in `scripts/api-examples.ts`
+and `scripts/document-api-examples.ts`; `scripts/docs-site/` owns the explorer
 and OpenAPI lint configuration. The controller route schemas remain the source
 of truth for HTTP behavior.
 
 The console Storybook in `scripts/console-storybook/` is also an isolated tool
 with its own manifest and lockfile. See [Console Storybook](contributing/console-storybook.md).
+Use the standalone [interface sketch renderer](../scripts/interface-sketches/README.md) to describe architecture in TypeScript and generate shareable diagrams.
 
 Within `internal/occcli/`, `cli.go` assembles the command tree and resource
 commands. `iam.go` owns IAM policy, ServicePrincipal, and service-key commands.
@@ -107,6 +108,8 @@ The worker Token Service owns GitHub App signing and provider-token custody.
 The native sender consumes prepared material without an App key.
 See the [Agent repository flow](flows/agent-repository-credentials.md).
 
+The quickstart’s shared operator-session helpers, Agent onboarding, cluster installation fragments and executable examples live under `docs/snippets/openshell-quickstart/`. Platform setup and cleanup pages remain under `docs/guides/deploy/`; Add Git and Add Plugin each have one guide for all supported quickstart platforms.
+
 ## Deployment, tooling, and checks
 
 | Path                                                     | Responsibility                                                                                   |
@@ -181,6 +184,7 @@ use formatting, builds, and link checks; do not add or run tests solely for pros
 | `specs/README.md`                     | RFC index with linked numbers, names, and implementation statuses.                                 |
 | `specs/rfcs/`                         | Architectural proposals and decisions.                                                             |
 | `specs/plans/`                        | All implementation plans and historical delivery records; relevant RFCs are linked in frontmatter. |
+| `docs/snippets/`                      | Reusable Markdown and code examples embedded with `Snippet`; Markdown uses `published: false`.     |
 | `docs/assets/`                        | Documentation images and other shared assets.                                                      |
 
 Use stable feature names for living references. Follow
@@ -199,10 +203,15 @@ architecture pages for every feature.
 Put contributor workflows for documentation in `docs/contributing/`, starting
 with the [writing guide](contributing/documentation.md). Existing site-tooling
 guides and inventories may remain directly under `docs/`; `docs/testing/` owns
-code verification and test setup. The [documentation taxonomy](taxonomy.md) maps page kinds to their templates.
+code verification and test setup. Per-check coverage pages live in
+`docs/testing/ci/` and use the [CI check template](contributing/ci-check-template.md).
+The CI index links to those pages; shared configuration and lane procedures have
+their own pages in that directory.
+The [documentation taxonomy](taxonomy.md) maps page kinds to their templates.
 
-The [documentation map](README.md) has six menus. **Getting Started**, **Topics**,
+The [documentation map](README.md) has seven menus. **Getting Started**, **Topics**,
 **Integrations**, **Deploy & Operate**, and **Reference** serve product users and operators;
+**Testing & CI** serves contributors running and interpreting checks;
 **Contribute** serves people changing the platform. A menu opens its sidebar.
 Register every Markdown page once in [docs/docs.json](docs.json) and link it from
 its owning overview. Deep implementation and testing pages can use the owning

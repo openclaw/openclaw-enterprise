@@ -1,5 +1,12 @@
 /// <reference lib="es2024.promise" />
 
+import {
+  focusedDescription,
+  focusedText,
+  openAdvancedSettings,
+  LIVE_BUTTON,
+  watchForReload,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
@@ -40,23 +47,15 @@ import {
   setSlackSelection,
   stopFocusTrail,
   takeLayoutShifts,
-  trackSettledFetches,
   waitForEnabled,
-  waitForIdleFetches,
   waitForInputValue,
   waitForShownInputValue,
   secretOptionLabel,
-} from "./console-agents-browser-helpers.mjs";
-import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
-import {
-  LIVE_BUTTON,
-  createRepositoryLaunchFixture,
-  focusedDescription,
-  focusedText,
-  openAdvancedSettings,
-  watchForReload,
-} from "./console-agents-test-support.mjs";
-import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+} from "./console-agents-browser-helpers.ts";
+import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
+import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
+import { createRepositoryLaunchFixture } from "./console-agents-test-support.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   CHANNEL_BINDING_CONSOLE_REMEDY,
   CHANNEL_SECRETS_CONFIGURATION_CHANGED,
@@ -806,7 +805,7 @@ test("the Credentials and Repositories tabs are one card each with a heading gap
     await card.evaluate((node) => {
       const picker = node.querySelector<HTMLElement>(":scope > .repository-selection")!;
       const style = getComputedStyle(picker);
-      const last = picker.querySelector(".repository-access-details")!.getBoundingClientRect();
+      const last = picker.querySelector('[role="status"]')!.getBoundingClientRect();
       const box = node.getBoundingClientRect();
       return {
         border: style.borderTopWidth,
@@ -1002,6 +1001,7 @@ test("repository saves, Cancel and Reload draft update the Agent page in place",
   );
   const page = await openTab(t, fixture, namespace, agent, "repositories");
   await page.getByText("Contributor · Agent default", { exact: true }).waitFor();
+  assert.equal(await page.locator(".repository-access-details").count(), 0);
   const save = page.getByRole("button", { name: "Save repository access" });
   const cancel = page.getByRole("button", { name: "Cancel", exact: true });
   const place = await watchPlace(page, fixture, save);
@@ -1968,7 +1968,9 @@ test("a Configuration conflict merges the JSON edits over the reread document", 
     })
     .waitFor();
   assert.equal(await focusedText(page), "Save Configuration");
-  assert.match(await focusedDescription(page), /^Draft reloaded\. Your edits are applied/);
+  const description = await focusedDescription(page);
+  assert.ok(typeof description === "string", "Expected the focused control's description");
+  assert.match(description, /^Draft reloaded\. Your edits are applied/);
   await page.getByRole("button", { name: "Save Configuration" }).click();
   await page.getByRole("status").filter({ hasText: "Configuration saved." }).waitFor();
   const saved = (await fixture.request("GET", configurationPath(context))).data;

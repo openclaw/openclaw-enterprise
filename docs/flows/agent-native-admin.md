@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: 2026-10-28
-last_updated_session: codex/01a1558e-c27f-7bc0-a403-af59e9364ddf
+updated: 2026-11-03
+last_updated_session: fix/native-admin-signed-out-html-fallback
 ---
 
 # Agent Native Admin UI Flow
@@ -12,7 +12,7 @@ The console checks exact-Agent `administer` access and returns a stable native a
 
 ## Entry Points
 
-- Trigger: Console opens an Agent native admin URL, or `scripts/first-agent.mjs --control-ui` creates a compatible local Compose/OpenShell Agent.
+- Trigger: Console opts into native admin during Agent creation, opens an Agent native admin URL, or `scripts/first-agent.mjs --control-ui` creates a compatible local Compose/OpenShell Agent.
 - Source: `scripts/first-agent.mjs:nativeConfiguration`
 - Source: `apps/controller/src/console/agents/native-admin.mjs:renderNativeAdminAccess`
 - Source: `apps/controller/src/http/native-admin.ts:resolveNativeAdminAvailability`
@@ -22,6 +22,11 @@ The console checks exact-Agent `administer` access and returns a stable native a
 
 ```mermaid
 graph TD
+  C0["Create Agent opts into Native admin UI"] --> C1["Authorize provisioning and reserve Agent identity"]
+  C1 --> C2["Prepare exact origin and trusted-proxy policy"]
+  C2 -->|conflicting policy or feature disabled| C3["Refuse before queueing work"]
+  C2 -->|valid| C4["Save prepared plan, Configuration and first version"]
+  C4 --> A
   L["Local first-Agent selects Control UI"] --> L2["Create Agent, derive exact origin,<br/>and save Configuration generation 2"]
   L2 --> A
   A["Console opens Agent detail tab"] --> P{"administer answer false?"}
@@ -66,7 +71,23 @@ graph TD
 
 ## Execution Trace
 
-### 0. Local first-Agent opts into native admin
+### 0. Console opts in before the first deployment
+
+`apps/controller/src/console/agents/create.mts:renderCreateAgent`
+`apps/controller/src/http/agents.ts:createAgentHandlers`
+`apps/controller/src/gateway/native-admin.ts:prepareNativeAdminConfiguration`
+`packages/occ/src/index.ts:provisionAgent`
+
+The unchecked checkbox requires Installation native admin support and runtime
+provisioning support. It sends `nativeAdmin: true`. After authorization,
+provisioning reserves an Agent ID. The HTTP adapter prepares Configuration from
+the configured public origin and Agent domain, never a browser-supplied origin.
+It merges the policy or refuses conflicts before queueing. The request fingerprint
+includes the preparation choice; retries reuse the saved plan and identity.
+The worker creates that Agent and deploys its initial Configuration through
+the normal provisioning lifecycle, without a later patch or second deployment.
+
+### 0a. Local first-Agent opts into native admin
 
 `scripts/first-agent.mjs:loadLocalInstallation`
 `scripts/first-agent.mjs:nativeConfiguration`
@@ -160,14 +181,13 @@ five-second admission wait, a client disconnect or the shutdown wait. A timely H
 denial waits for its append before returning `403`; a failed append or admission
 timeout returns `503`.
 
-Without a valid session, a user-activated, top-level HTML GET to `/`,
-`/chat/main`, or `/chat/main/<32 hex digits>` gets a `302` to the configured
-console. Its fragment carries only the opaque host key, which the console resolves
-after sign-in and exact-Agent authorization. OCC drops queries and session suffixes.
-API requests, writes, WebSockets and permission denials never redirect. Reload an
-open native tab after expiry.
+Without a session, a user-activated top-level HTML GET to `/`, `/chat/main` or
+`/chat/main/<32 hex>`, optionally with a trailing slash, gets a `302` to the
+console; its fragment carries only the opaque host key. Without
+`Sec-Fetch-User: ?1` (never sent by Safari) it gets a 403 **Sign in** link there.
+Link previews, APIs, writes and WebSockets keep their refusal.
 
-A signed-in `administer` denial on that navigation stays HTTP 403. The page does
+A signed-in `administer` denial on a top-level page load stays HTTP 403. The page does
 not name the Agent and links **Go to your Agents** to `/console/agents` on the
 configured public origin. A JSON refusal names the `administer` grant but not
 the Agent, the same for an unknown host; WebSocket refusals stay unchanged.
@@ -230,10 +250,7 @@ admin Configuration remains Pod-local.
 ## Debugging and Verification
 
 - `AGENT_NATIVE_ADMIN_INVALID` at startup points to native admin enablement, the Agent domain, or a missing shared cookie domain. A bad shared cookie domain or public origin reports `AUTH_BASE_URL_INVALID`, short auth secret material `AUTH_SECRET_INVALID`, and a missing gateway API key path `GATEWAY_API_KEY_UNAVAILABLE`.
-- `disabled` means the Installation has not enabled the feature.
-- `stopped` means the exact Agent is not desired running. Its response has no origin or version after stop reconciliation clears the selected version, or before the first deployment.
-- `unavailable` means a desired-running Agent has no selected version, or a newer version on a Compute Driver with `requiresStoppedPredecessors` has stopped the active workload. If replacement fails, the old version remains selected without a workload.
-- `unsupported` means the selected Compute Driver, gateway endpoint, or native trusted-proxy/control UI configuration cannot support the selected version.
+- For `disabled`, `stopped`, `unavailable`, and `unsupported`, use the [availability status definitions](../reference/agent-native-admin.md#authorization-and-availability). A failed replacement can leave the previous version selected without a workload.
 - Wrong or unknown Agent hosts fail before gateway proxying. Check the derived host calculation, Agent lifecycle state, and `agentNativeAdmin.domain`.
 - Browser requests contain no native-admin exchange, callback, verifier, or Agent-specific session-cookie traffic.
 - IAM denial audits should appear for attributable denied status checks, proxy admission, and WebSocket lease renewal, with the human principal and exact Agent target preserved.
@@ -256,8 +273,14 @@ admin Configuration remains Pod-local.
 
 ## Changelog
 
+- 2026-11-03 12:55: Sign-in link for unactivated page loads. (fix/native-admin-signed-out-html-fallback)
+
+- 2026-11-02 09:55: Shorten provisioning prose and link shared status definitions after rebasing. (authoring-run/275c0d0a-d040-47d3-9e52-47ff86b87ab9 - 393b1585e4b10a3232abf10c60b766d8e55d85ce)
+
 - 2026-10-28 19:58: Document how managed deployments supply read-only configuration guidance. (codex/01a1558e-c27f-7bc0-a403-af59e9364ddf - aa352e92bcdc7cab58364c692a01042c5e459db0)
 - 2026-10-28 12:08: Preserve current native UI navigation and human identity grants during the main refresh. (authoring-run/bafb2708-241b-4261-ab93-1df07dbe94fc - 19c62e378cce0658dff99f5a2d264669a48fc5c6)
+
+- 2026-10-27 11:18: Added creation-time native admin preparation before the first deployment. (authoring-run/5809f10b-3a85-4a0a-8cce-2d3ba6714791 - b91dc40eaaa6e5d29759f5cf4e9dada5a36be86e)
 - 2026-10-27 09:30: Document direct Open Agent UI navigation and availability recovery. Accompanying uncommitted changes. (authoring-run/f3434faa-8624-4f34-83a2-521047f80329 - 24a35dff22e1efb2a9b7058f5c90d6d9e2f9caf7)
 - 2026-10-27 01:52: Preserve current socket-admission behavior while integrating human Gateway grants. (authoring-run/7761d6fc-94f3-45f2-96c0-171d284aa937 - d56aaf212)
 

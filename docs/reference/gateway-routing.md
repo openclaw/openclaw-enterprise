@@ -201,7 +201,7 @@ Helm's `gatewayRouting` settings configure shared infrastructure:
 
 | Setting                        | Default or requirement                                                                                                                                    |
 | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `enabled`                      | `false`; enable to render routing resources and API mounts.                                                                                               |
+| `enabled`                      | `true`; renders routing resources and API mounts. Explicit `false` omits them.                                                                            |
 | `gatewayClassName`             | Required existing Envoy GatewayClass.                                                                                                                     |
 | `gatewayName`                  | `<release>-agent-gateways`. An explicit name must be a DNS-safe Kubernetes resource name of at most 63 characters, the same rule Compute uses at startup. |
 | `envoyNamespace`               | `envoy-gateway-system`. Must be a Kubernetes namespace name: a DNS label of at most 63 characters.                                                        |

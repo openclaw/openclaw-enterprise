@@ -21,7 +21,15 @@ import {
 } from "../dom.mjs";
 
 export type CatalogDirection = "search" | "refresh" | "next" | "previous";
+export type ManagedToolConnection = { slot: string; sourceId: string };
+export type ManagedToolDiscovery = {
+  connection: ManagedToolConnection;
+  status: "loading" | "loaded" | "error";
+  tools?: readonly PluginToolCatalogEntry[];
+  message?: string;
+};
 export type CatalogEntry = PluginCatalogEntry & {
+  managedTools?: ManagedToolDiscovery | undefined;
   toolStatus?: "loading" | "loaded" | undefined;
   toolError?: string | undefined;
 };
@@ -53,13 +61,13 @@ export interface PluginFieldsOptions {
   input: HTMLTextAreaElement;
   catalog?: PluginFieldCatalog | null;
   capabilities?:
-    | (NonNullable<InstallationCapabilities["pluginPolicies"]> & {
+    | (NonNullable<InstallationCapabilities["pluginCatalogs"]>[number]["pluginPolicies"] & {
         credentialSlots?: readonly AgentPluginCredentialSlot[];
       })
     | null;
   onLoadPlugins?: ((direction: CatalogDirection, query: string) => void) | null;
   onCancelDiscovery?: (() => void) | null;
-  onLoadTools?: ((id: string) => void) | null;
+  onLoadTools?: ((id: string, managedConnection?: ManagedToolConnection) => void) | null;
   saveHint?: string;
   createApproverField?: (options: ApproverFieldOptions) => HTMLElement & {
     refreshNames?(): void;
@@ -431,6 +439,84 @@ export function createPluginFields({
         change(selection);
       }
     });
+  }
+
+  function managedToolPicker(
+    entry: CatalogEntry,
+    slot: AgentPluginCredentialSlot,
+    sourceId: string,
+    selected: EditableSelection,
+  ) {
+    const connection = { slot: slot.id, sourceId };
+    const result =
+      entry.managedTools?.connection.slot === slot.id &&
+      entry.managedTools.connection.sourceId === sourceId
+        ? entry.managedTools
+        : undefined;
+    const load = button("Load tools", () => onLoadTools?.(entry.id, connection), {
+      "aria-label": `Load tools for ${entry.name}`,
+    });
+    load.dataset.discovery = "true";
+    load.dataset.policyUnsupported = String(
+      !catalog?.canLoad || catalog.status === "loading" || result?.status === "loading",
+    );
+    const picker = element(
+      "fieldset",
+      { className: "plugin-tool" },
+      element("legend", {}, "Tools"),
+      element(
+        "p",
+        { className: "hint" },
+        "Tools are loaded from the server using this account. Select which tools this Agent can use on its next deployment.",
+      ),
+      load,
+    );
+    if (result?.status === "loading") {
+      picker.append(element("p", { className: "hint", role: "status" }, "Loading tools…"));
+    } else if (result?.status === "error") {
+      picker.append(
+        element(
+          "p",
+          { className: "status", "data-tone": "danger", role: "status" },
+          result.message ?? "Tools could not be loaded.",
+        ),
+      );
+    } else if (result?.status === "loaded") {
+      const tools = result.tools ?? [];
+      if (!tools.length) {
+        picker.append(element("p", { className: "hint" }, "This account returned no tools."));
+      }
+      for (const tool of tools) {
+        const toolNames = selected.driverPolicy?.toolNames;
+        const checkbox = element("input", {
+          type: "checkbox",
+          checked: Array.isArray(toolNames) && toolNames.includes(tool.id),
+          "aria-label": tool.name,
+        });
+        checkbox.addEventListener("change", () =>
+          updateSelection(entry.id, (selection) => {
+            const policy = selection.driverPolicy;
+            const credentials = policy?.credentials;
+            if (
+              policy?.releaseSha256 !== slot.releaseSha256 ||
+              !isObject(credentials) ||
+              credentials[slot.id] !== sourceId
+            ) {
+              return;
+            }
+            const allowed = new Set(Array.isArray(policy.toolNames) ? policy.toolNames : []);
+            if (checkbox.checked) {
+              allowed.add(tool.id);
+            } else {
+              allowed.delete(tool.id);
+            }
+            selection.driverPolicy = { ...policy, toolNames: [...allowed] };
+          }),
+        );
+        picker.append(element("label", { className: "plugin-toggle" }, checkbox, tool.name));
+      }
+    }
+    return picker;
   }
 
   function writeToolPolicy<Key extends keyof PluginToolPolicy>(
@@ -880,11 +966,11 @@ export function createPluginFields({
           ),
         );
       }
+      const credentialSlots =
+        capabilities?.credentialSlots?.filter((slot) => slot.pluginId === entry.id) ?? [];
+      const hasManagedTools = credentialSlots.some((slot) => slot.toolDiscovery);
       if (selected?.enabled) {
-        for (const slot of capabilities?.credentialSlots ?? []) {
-          if (slot.pluginId !== entry.id) {
-            continue;
-          }
+        for (const slot of credentialSlots) {
           const bindings = selected.driverPolicy?.credentials;
           const current = isObject(bindings) ? bindings[slot.id] : undefined;
           const stale =
@@ -924,10 +1010,21 @@ export function createPluginFields({
               ),
             );
           }
+          if (slot.toolDiscovery && !current && slot.sources.length > 0) {
+            details.append(element("p", { className: "hint" }, "Select an account to load tools."));
+          }
+          if (
+            slot.toolDiscovery &&
+            !stale &&
+            typeof current === "string" &&
+            slot.sources.some(({ id }) => id === current)
+          ) {
+            details.append(managedToolPicker(entry, slot, current, selected));
+          }
         }
       }
       const enablementOnly = capabilities?.policyScopeByPlugin?.[entry.id] === "enablement_only";
-      if (selected) {
+      if (selected && !hasManagedTools) {
         const defaults = enablementOnly ? {} : (selected.toolDefaults ?? {});
         const writeDefault: WritePolicy = (key, value) => writeToolPolicy(entry.id, key, value);
         const fields = toolPolicyFields(
@@ -971,50 +1068,68 @@ export function createPluginFields({
             }),
           );
         }
-        const driverFields = [];
+        const driverFields: HTMLElement[] = [];
+        const properties = capabilities?.driverPolicySchema.properties;
         for (const [key, schema] of Object.entries(
-          enablementOnly ? {} : (capabilities?.driverPolicySchema.properties ?? {}),
+          !enablementOnly && isObject(properties) ? properties : {},
         )) {
           if (!isObject(schema)) {
             continue;
           }
-          let options: Choice[];
+          let values: readonly (boolean | string)[];
           if (schema.type === "boolean") {
-            options = [
-              ["true", "Enabled"],
-              ["false", "Disabled"],
-            ];
+            values = [true, false];
           } else if (
             schema.type === "string" &&
             Array.isArray(schema.enum) &&
-            schema.enum.every((value) => typeof value === "string")
+            schema.enum.every((value: unknown): value is string => typeof value === "string")
           ) {
-            options = schema.enum.map((value) => [value, value.replaceAll("_", " ")]);
+            values = schema.enum;
           } else {
             continue;
           }
+          // JSON tokens preserve value types and keep an empty string distinct from inheritance.
+          const options: Choice[] = values.map((value) => {
+            let label: string;
+            if (typeof value === "boolean") {
+              label = value ? "Enabled" : "Disabled";
+            } else {
+              label = value === "" ? "Empty string" : value.replaceAll("_", " ");
+            }
+            return [JSON.stringify(value), label];
+          });
           const current = selected.driverPolicy?.[key];
-          driverFields.push(
-            select(
-              `${entry.name} ${schema.title ?? key}`,
-              current === undefined ? "" : String(current),
-              [["", "Inherit default policy"], ...options],
-              (value) =>
-                updateSelection(entry.id, (selection) => {
-                  const driverPolicy = { ...selection.driverPolicy };
-                  if (value === "") {
-                    delete driverPolicy[key];
-                  } else {
-                    driverPolicy[key] = schema.type === "boolean" ? value === "true" : value;
+          const field = select(
+            `${entry.name} ${typeof schema.title === "string" ? schema.title : key}`,
+            current === undefined ? "" : JSON.stringify(current),
+            [["", "Inherit default policy"], ...options],
+            (token) => {
+              updateSelection(entry.id, (selection) => {
+                const driverPolicy = { ...selection.driverPolicy };
+                if (token === "") {
+                  delete driverPolicy[key];
+                } else {
+                  const value = values.find((value) => JSON.stringify(value) === token);
+                  if (value === undefined) {
+                    return;
                   }
-                  if (Object.keys(driverPolicy).length) {
-                    selection.driverPolicy = driverPolicy;
-                  } else {
-                    delete selection.driverPolicy;
-                  }
-                }),
-            ),
+                  driverPolicy[key] = value;
+                }
+                if (Object.keys(driverPolicy).length) {
+                  selection.driverPolicy = driverPolicy;
+                } else {
+                  delete selection.driverPolicy;
+                }
+              });
+            },
           );
+          if (typeof schema.description === "string" && schema.description) {
+            const description = element("span", { className: "hint" }, schema.description);
+            description.id = `${input.id}-driver-policy-${driverFields.length}`;
+            field.querySelector("select")?.setAttribute("aria-describedby", description.id);
+            field.append(description);
+          }
+          driverFields.push(field);
         }
         if (enablementOnly || driverFields.length) {
           details.append(
@@ -1032,7 +1147,7 @@ export function createPluginFields({
             ),
           );
         }
-      } else {
+      } else if (!selected) {
         const add = button(`Add ${entry.name}`, () =>
           update((all) => {
             all[entry.id] = { enabled: true };
@@ -1060,7 +1175,7 @@ export function createPluginFields({
           }
         }
       }
-      if (enablementOnly) {
+      if (enablementOnly && !hasManagedTools) {
         details.append(
           element("h4", {}, "Tools"),
           element(

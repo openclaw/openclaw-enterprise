@@ -63,7 +63,7 @@ type Material = {
 type Owner = {
   material: Material;
   readOpenShellMaterial: () => Promise<Material>;
-  authorizeOpenShellRequest: () => Promise<boolean>;
+  authorizeOnlineRequest: Parameters<OpenShellGitRuntime["start"]>[0]["authorizeOnlineRequest"];
 };
 interface World {
   sandbox: {
@@ -339,7 +339,7 @@ export function openShellGitRuntimeFixture({
       return owner.material;
     },
     material,
-    authorizeOpenShellRequest: async () => true,
+    authorizeOnlineRequest: async () => ({ kind: "denied", reason: "unavailable" }),
   };
   const entry: Entry = {
     revision,
@@ -426,13 +426,14 @@ export function openShellGitRuntimeFixture({
     await runtime["reconcile"](f.entry);
   };
   const lookup = () => runtime["lookup"](identity, AbortSignal.timeout(2_000));
-  const prepare = () =>
+  const prepare = (workspaceRoot = "/sandbox/enterprise") =>
     runtime.prepare(
       revision,
       client as unknown as Entry["client"],
       sandbox.workspace,
       sandbox.name,
       AbortSignal.timeout(2_000),
+      workspaceRoot,
       ["openai"],
     );
   const errors = () => events.filter((event) => event.event === "worker.error");

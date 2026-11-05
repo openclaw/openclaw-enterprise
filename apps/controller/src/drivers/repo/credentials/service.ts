@@ -1,7 +1,5 @@
 import { sameBinding } from "./grant-identity.ts";
 import type {
-  RepositoryBackend,
-  PreparedRepositoryBackend,
   RepositoryServiceFactory,
   ResolvedGrant,
   Clock,
@@ -22,14 +20,10 @@ import type {
   ExchangeSender,
   SessionLogIdentity,
 } from "./internal-contracts.ts";
-import { createCustody } from "./custody.ts";
-import type { CustodyOwner } from "./custody.ts";
-import { createLifecycle } from "./lifecycle.ts";
-import type { LifecycleOwner } from "./lifecycle.ts";
 import { executeExchange } from "./lifecycle/exchange.ts";
 import type { ExecutingExchange } from "./lifecycle/exchange.ts";
-import { createProviderQueue, waitWithin } from "./provider-queue.ts";
-import type { ProviderQueue } from "./provider-queue.ts";
+import { waitWithin } from "./provider-queue.ts";
+import type { SessionConstructor, ConstructedSession } from "./session-construction.ts";
 import {
   admitSession,
   bearerDigest,
@@ -40,18 +34,11 @@ import {
 import type { SessionAdmission } from "./sessions.ts";
 
 type Admission = Omit<SessionAdmission, "bearer">;
-interface Session {
+interface Session extends ConstructedSession {
   readonly admission: Admission;
   readonly logIdentity: SessionLogIdentity;
   state: SessionStatus["state"];
   expiryObserved: boolean;
-  readonly owned?: Readonly<{
-    custody: CustodyOwner;
-    lifecycle: LifecycleOwner;
-    driver: RepositoryBackend;
-    authorizeStanding?: () => Promise<void>;
-  }>;
-  readonly prepared?: PreparedRepositoryBackend;
   readonly exchanges: Set<Exchange>;
   cancelDeadline(): void;
 }
@@ -68,8 +55,8 @@ export function createCredentialService(
     config: ServiceConfig;
     factory: RepositoryServiceFactory;
     clock: Clock;
-    providerQueue?: ProviderQueue;
   }>,
+  constructSession: SessionConstructor,
 ): CredentialServiceOwner {
   const { factory, clock } = options;
   // Caller mutation cannot change limits or broaden an already admitted policy.
@@ -78,9 +65,8 @@ export function createCredentialService(
     ...options.config.sessionPolicy,
     allowedProfiles: Object.freeze([...options.config.sessionPolicy.allowedProfiles]),
   });
-  const queue = options.providerQueue ?? createProviderQueue(limits.providerQueue);
   const sessions = new Map<string, Session>();
-  const failedConstructions = new Set<CustodyOwner>();
+  const failedConstructions = new Set<Promise<void>>();
   const bearers = new Map<string, Session>();
   const exchanges = new WeakMap<ExchangeRef, Exchange>();
   const shutdownWaiters = new Set<() => void>();
@@ -308,11 +294,9 @@ export function createCredentialService(
     const closeSelection = () => cancelSelection("SERVICE_CLOSED");
     unclaimedOpens.add(closeSelection);
 
-    type Construct = (
-      authorizeStanding?: (sessionId: string) => Promise<void>,
-    ) => ReturnType<CredentialServiceOwner["open"]>;
+    type Construct = () => ReturnType<CredentialServiceOwner["open"]>;
     function withReservation(construct: Construct): Construct {
-      return (authorizeStanding) => {
+      return () => {
         if (refusal !== undefined) {
           const reason = refusal;
           refusal = "INVALID_ADMISSION";
@@ -321,7 +305,7 @@ export function createCredentialService(
         refusal = "INVALID_ADMISSION";
         unclaimedOpens.delete(closeSelection);
         try {
-          return construct(authorizeStanding);
+          return construct();
         } finally {
           release();
         }
@@ -329,7 +313,7 @@ export function createCredentialService(
     }
     return {
       cancel: () => cancelSelection("INVALID_ADMISSION"),
-      open: withReservation((authorizeStanding) => {
+      open: withReservation(() => {
         if (clock.monotonicNow() >= deadlineMonoMs) {
           throw new Error("INVALID_DEADLINE");
         }
@@ -339,78 +323,22 @@ export function createCredentialService(
           deadlineMonoMs: Math.min(created.deadlineMonoMs, deadlineMonoMs),
         };
         let session: Session | undefined = undefined;
-        let owned: Session["owned"];
-        let prepared: Session["prepared"];
-        if ("createPrepared" in factory) {
-          prepared = factory.createPrepared(admission.authority, resolved);
-          if (!sameBinding(prepared.binding, admission.binding)) {
-            throw new Error("DRIVER_BINDING_MISMATCH");
-          }
-        } else {
-          let constructing = true;
-          const custody = createCustody({
-            clock,
-            maximumSlots: limits.credentialSlotsPerSession,
-            maximumAccessBytes: limits.accessTokenBytes,
-            maximumRenewalBytes: limits.renewalBytesPerSession,
-            maximumCallbacks: limits.exchangesPerSession + 1,
-            admitted: () => !shuttingDown && (constructing || (!!session && isOpen(session))),
-            changed: () => {
-              if (session) {
-                session.owned?.lifecycle.maintain();
-                changed(session);
-              }
-            },
-          });
-          let driver: RepositoryBackend;
-          try {
-            driver = factory.create({
-              authority: admission.authority,
-              custody: custody.driver,
-              clock,
-            });
-            const binding = snapshotBinding(driver.binding);
-            if (
-              binding.providerInstanceId !== admission.binding.providerInstanceId ||
-              binding.repositoryId !== admission.binding.repositoryId ||
-              binding.grantId !== admission.binding.grantId
-            ) {
-              throw new Error("DRIVER_BINDING_MISMATCH");
+        const constructed = constructSession(admission, resolved, {
+          admitted: () => !!session && isOpen(session),
+          accepting: () => !shuttingDown,
+          changed: () => {
+            if (session) {
+              changed(session);
             }
-          } catch (error) {
-            constructing = false;
-            // No valid driver exists to finalize this custody. Retain its capacity
-            // and shutdown obligation until every admitted renewal callback drains.
-            failedConstructions.add(custody);
-            void custody.disposeAllRenewal().then(() => {
-              failedConstructions.delete(custody);
+          },
+          retainFailure: (drained) => {
+            failedConstructions.add(drained);
+            void drained.then(() => {
+              failedConstructions.delete(drained);
               notifyShutdown();
             });
-            throw error;
-          }
-          constructing = false;
-          const authority = authorizeStanding
-            ? { authorizeStanding: () => authorizeStanding(admission.authority.sessionId) }
-            : {};
-          const lifecycle = createLifecycle({
-            ...authority,
-            clock,
-            authority: admission.authority,
-            deadlineMonoMs: admission.deadlineMonoMs,
-            custody,
-            driver,
-            queue,
-            providerActionMs: limits.providerActionMs,
-            safetyMarginMs: limits.credentialMarginMs,
-            admitted: () => !!session && isOpen(session),
-            changed: () => {
-              if (session) {
-                changed(session);
-              }
-            },
-          });
-          owned = { custody, driver, lifecycle, ...authority };
-        }
+          },
+        });
         const openedSession: Session = {
           admission,
           logIdentity: Object.freeze({
@@ -422,8 +350,7 @@ export function createCredentialService(
                 }
               : {}),
           }),
-          ...(prepared === undefined ? {} : { prepared }),
-          ...(owned === undefined ? {} : { owned }),
+          ...constructed,
           state: "OPEN",
           expiryObserved: false,
           exchanges: new Set(),
@@ -454,11 +381,8 @@ export function createCredentialService(
 
   return Object.freeze({
     prepareOpen,
-    open(
-      input: RepositoryCredentialSessionInput | RepositoryCredentialBoundSessionInput,
-      authorizeStanding?: (sessionId: string) => Promise<void>,
-    ) {
-      return prepareOpen(input).open(authorizeStanding);
+    open(input: RepositoryCredentialSessionInput | RepositoryCredentialBoundSessionInput) {
+      return prepareOpen(input).open();
     },
     observeDisposal(observer: (status: SessionStatus) => void) {
       disposalObservers.add(observer);

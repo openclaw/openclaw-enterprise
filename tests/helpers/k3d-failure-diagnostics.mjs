@@ -6,7 +6,7 @@ import {
   newestMatchingLogLines,
   redactLogLine,
 } from "../../scripts/ci/failure-redaction.mjs";
-import { compareEvents, eventObservedTime } from "../../scripts/ci/kubernetes-event-time.mjs";
+import { compareEvents, eventObservedTime } from "../../scripts/ci/kubernetes-event-time.ts";
 import { diagnosticDeadlinePassed, diagnosticRequestTimeout } from "./kubernetes-real.mjs";
 
 // Failure evidence for k3d tests whose own error says too little. Everything here is

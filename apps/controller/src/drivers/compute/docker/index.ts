@@ -43,7 +43,7 @@ import { failureAfterCleanup } from "../cleanup-failure.ts";
 import { currentComputeAbortSignal, withComputeAbortSignal } from "../operation-context.ts";
 import {
   AGENT_READINESS_ENTRYPOINT,
-  AGENT_RUNTIME_ENTRYPOINT,
+  COMPUTE_AGENT_RUNTIME_ENTRYPOINT as AGENT_RUNTIME_ENTRYPOINT,
   PLUGIN_RUNTIME_HELPERS,
 } from "../kubernetes/runtime-entrypoints.ts";
 import { OPENCLAW_CONFIG_ISSUE_HELPER } from "../openclaw-config-issues.ts";
@@ -323,7 +323,7 @@ if (gatewayToolPolicyInput !== undefined) configureManagedGatewayTools(gatewayTo
 // before readiness and nothing restarts it.
 const gatewayStateDirectory = process.env.OPENCLAW_STATE_DIR || "/home/node/.openclaw";
 const outdatedDatabases = outdatedOpenClawDatabases(gatewayStateDirectory);
-if (outdatedDatabases.length === 0) {
+if (outdatedDatabases.length === 0 && !openClawMaintenancePending(gatewayStateDirectory)) {
   startGateway();
 } else {
   migrateOpenClawState(gatewayStateDirectory, outdatedDatabases, process.env).then(

@@ -1,6 +1,8 @@
 ---
 kind: reference/driver
-human_verified: true
+tags: [human_verified]
+# Backfilled from the verification tag recorded in 62a00c3c5.
+last_verified: "2026-10-27"
 ---
 
 # SandboxDriver contract

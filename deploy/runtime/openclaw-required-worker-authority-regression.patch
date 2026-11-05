@@ -58,7 +58,7 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
        : {}),
    });
    if (required) {
-@@ -118,147 +139,257 @@
+@@ -118,148 +139,259 @@
    },
  );
 
@@ -262,7 +262,8 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
 +        let phase = "waiting for requested placement";
 +        try {
 +          if (afterAck) {
-+            expect(await created).toMatchObject({ ok: true });
++            const response = await created;
++            expect(response, JSON.stringify(response.error)).toMatchObject({ ok: true });
 +            // Release dispatch in finally even if the expected pause never arrives.
 +            await withinTest(
 +              withTestTimeout(
@@ -356,7 +357,8 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
 -      void created.catch(() => {});
 -      try {
 -        if (afterAck) {
--          expect(await created).toMatchObject({ ok: true });
+-          const response = await created;
+-          expect(response, JSON.stringify(response.error)).toMatchObject({ ok: true });
 -          await committed.promise;
 -        } else {
 -          await Promise.race([
@@ -421,7 +423,8 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
 +            expect(changed.ok, JSON.stringify(changed.error)).toBe(true);
 +          }
 +        },
-+        /operator role changed/i,
++        // Role revocation also invalidates the client; either retained authority check may refuse first.
++        /^(?:Your operator role changed; reconnect before continuing\.|Gateway requester authority changed)$/,
 +      );
 +      if (!afterAcknowledgment) {
 +        await expect(reassigned.created).rejects.toThrow(/closed|policy changed|role changed/);

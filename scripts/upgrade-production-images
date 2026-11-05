@@ -20,6 +20,9 @@ image fields are selected only by the image flags. A controller-only upgrade
 does not deploy Agent revisions. A runtime upgrade restarts OCC on its current image,
 then redeploys every Agent that was running when the command began. Resume with
 the same arguments and evidence directory after inspecting any unknown outcomes.
+Completed upgrades cannot be resumed; retain their completed evidence marker.
+Keep the runtime upgrade's sibling <evidence-directory>.dispatch-state journal
+with the operator. Preserve it separately from backups of the evidence directory.
 Use --preflight-only to check the candidate before the maintenance window. It
 creates temporary resources with best-effort cleanup and stops before quiescence;
 its evidence cannot be resumed. To deploy, omit the flag and use a fresh evidence directory.
@@ -234,20 +237,19 @@ project_yaml() {
 }
 
 # yaml_object FILE OUTPUT writes FILE's YAML object documents to OUTPUT as sorted
-# JSON and sets yaml_object_text to the same bytes; it fails without one or if
+# JSON and sets yaml_object_text to that JSON; it fails without one or if
 # any document is not an object.
 yaml_object() {
   local file=$1 output=$2 status=0
   yaml_json "$file" || status=$?
   if ((status == 0 && yaml_index >= 0)) && [[ -n "${yaml_objects[yaml_index]}" ]]; then
     yaml_object_text=${yaml_objects[yaml_index]}
-    printf '%s' "$yaml_object_text" >"$output" || return 1
-    return 0
+  else
+    yaml_object_text=$(jq -eS -n 'inputs | if type == "object" then . else error("expected a YAML object") end' <<<"$yaml_text") || return 1
+    ((status == 0)) || return 1
   fi
-  jq -eS -n 'inputs | if type == "object" then . else error("expected a YAML object") end' <<<"$yaml_text" >"$output" || return 1
-  ((status == 0)) || return 1
-  yaml_object_text=
-  IFS= read -r -d '' yaml_object_text <"$output" || true
+  # Compare the checked conversion, not a best-effort read of its evidence copy.
+  printf '%s\n' "$yaml_object_text" >"$output" || return 1
   if ((yaml_index >= 0)) && [[ -n "$yaml_object_text" ]]; then
     yaml_objects[yaml_index]=$yaml_object_text
   fi
@@ -257,10 +259,13 @@ matches_yaml() {
   local actual=$1
   local expected=$2
   local actual_text
-  yaml_object "$actual" "$evidence_dir/compare-actual.json" || return 1
+  # Callers include negated conditions and recovery alternatives: unusable input
+  # must terminate here, never enter a branch reserved for valid inequality.
+  local unusable='Cannot compare upgrade YAML: both inputs must be readable and contain only YAML mappings (no empty documents). Check that the evidence directory is writable.'
+  yaml_object "$actual" "$evidence_dir/compare-actual.json" 2>/dev/null || die "$unusable"
   actual_text=$yaml_object_text
-  yaml_object "$expected" "$evidence_dir/compare-expected.json" || return 1
-  [[ -s "$evidence_dir/compare-actual.json" && -s "$evidence_dir/compare-expected.json" ]] || return 1
+  yaml_object "$expected" "$evidence_dir/compare-expected.json" 2>/dev/null || die "$unusable"
+  [[ -s "$evidence_dir/compare-actual.json" && -s "$evidence_dir/compare-expected.json" ]] || die "$unusable"
   [[ "$actual_text" == "$yaml_object_text" ]]
 }
 
@@ -395,17 +400,123 @@ if ((${#timeout_seconds} > 5 || timeout_seconds > 86400)); then
 fi
 full_commit_sha "$source_revision" ||
   die "--source-revision must be a full lowercase Git commit SHA."
-checkout_revision=$(
+checkout_git=(git --no-optional-locks --no-replace-objects --git-dir=.git)
+read_checkout() (
   unset GIT_DIR GIT_COMMON_DIR
+  export GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL=
+  "$@" 2>/dev/null
+)
+checkout_revision=$(
   # Matching HEAD is insufficient when Git assigns this metadata another worktree.
   # Compare directory identity so symlinked paths still name the physical root.
-  checkout_root=$(git --git-dir=.git rev-parse --show-toplevel 2>/dev/null) || exit 1
+  checkout_root=$(read_checkout "${checkout_git[@]}" rev-parse --show-toplevel) || exit 1
   [[ "$checkout_root" -ef . ]] || exit 1
-  git --git-dir=.git rev-parse --verify 'HEAD^{commit}' 2>/dev/null
+  read_checkout "${checkout_git[@]}" rev-parse --verify 'HEAD^{commit}'
 ) ||
   die "could not verify the checkout commit; run this command from the release repository root with Git available."
 [[ "$checkout_revision" == "$source_revision" ]] ||
   die "checkout commit does not match --source-revision; use the reviewed release checkout."
+require_command python3
+chart=deploy/helm/openclaw-enterprise
+# Helm reads this physical directory. Check it before reading protected inputs.
+# The operator must keep this checkout unchanged while the helper uses it.
+chart_sha256=$(read_checkout python3 - "$chart" "$checkout_revision" "$evidence_dir" "$values" "$installation" "${checkout_git[@]}" <<'PYTHON'
+import hashlib, os, stat, subprocess, sys
+from pathlib import Path
+
+chart_path, revision, evidence, values, installation, *git = sys.argv[1:]
+chart = os.fsencode(chart_path)
+
+def git_output(*args):
+    return subprocess.check_output([*git, *args])
+
+# NUL-delimited paths preserve literal names, including hidden files and case.
+expected = {}
+tree = git_output("ls-tree", "-rtz", f"{revision}:{chart_path}")
+for record in tree.split(b"\0")[:-1]:
+    metadata, path = record.split(b"\t", 1)
+    mode, kind, oid = metadata.split()
+    if mode == b"040000" and kind == b"tree":
+        expected[path] = None
+    elif mode in (b"100644", b"100755") and kind == b"blob":
+        expected[path] = oid
+    else:
+        sys.exit(1)
+if expected.get(b"Chart.yaml") is None:
+    sys.exit(1)
+
+directory = b"."
+for component in chart.split(b"/"):
+    directory = os.path.join(directory, component)
+    directory_info = os.lstat(directory)
+    if not stat.S_ISDIR(directory_info.st_mode):
+        sys.exit(1)
+chart_directories = {(directory_info.st_dev, directory_info.st_ino)}
+
+digest = hashlib.sha256()
+
+def verify_directory(directory, prefix):
+    directories = []
+    with os.scandir(directory) as entries:
+        for entry in sorted(entries, key=lambda entry: entry.name):
+            relative = os.path.join(prefix, entry.name)
+            oid = expected.pop(relative)
+            info = entry.stat(follow_symlinks=False)
+            if oid is None and stat.S_ISDIR(info.st_mode):
+                chart_directories.add((info.st_dev, info.st_ino))
+                directories.append((entry.path, relative))
+            elif oid is not None and stat.S_ISREG(info.st_mode):
+                contents = git_output("cat-file", "blob", oid)
+                with open(entry.path, "rb") as source:
+                    if source.read(len(contents) + 1) != contents:
+                        sys.exit(1)
+                digest.update(entry.path + b"\0" + contents + b"\0")
+            else:
+                sys.exit(1)
+    # Keep the evidence digest's order: sorted files first, then sorted directories.
+    for path, relative in directories:
+        verify_directory(path, relative)
+
+verify_directory(chart, b"")
+if expected:
+    sys.exit(1)
+
+def existing_output(path):
+    # A new evidence directory has no identity yet. Resolve its nearest
+    # existing ancestor, and do not treat other lookup errors as missing.
+    while True:
+        try:
+            os.stat(path)
+        except FileNotFoundError:
+            parent = os.path.dirname(path) or "."
+            if parent == path:
+                raise
+            path = parent
+        else:
+            return Path(path).resolve(strict=True)
+
+# A mount can expose a verified directory under a different physical path.
+chart_root = os.path.abspath(chart_path)
+for path in (evidence, values, installation):
+    try:
+        if os.path.commonpath((chart_root, os.path.realpath(path))) == chart_root:
+            sys.exit(2)
+        physical = existing_output(path)
+        for ancestor in (physical, *physical.parents):
+            info = ancestor.stat()
+            if (info.st_dev, info.st_ino) in chart_directories:
+                sys.exit(2)
+    except OSError:
+        sys.exit(3)
+print(digest.hexdigest())
+PYTHON
+) || {
+  case $? in
+    2) die "keep the evidence directory and baseline files outside the stock Helm chart." ;;
+    3) die "could not verify the evidence directory and baseline file paths." ;;
+  esac
+  die "the stock Helm chart must match the selected commit. Use a complete release checkout with the original chart files."
+}
 positive_integer "$doctor_heap_mib" || die "--doctor-heap-mib must be positive."
 # Leave room for both margins in signed 64-bit shell arithmetic; compare decimal
 # strings before evaluating the untrusted value as an arithmetic expression.
@@ -447,7 +558,7 @@ require_private_file "$OCC_SERVICE_KEY_FILE"
 if [[ -n "${OCC_CA_BUNDLE:-}" ]]; then
   require_regular_file "$OCC_CA_BUNDLE"
 fi
-for command in cmp helm jq kubectl mktemp node python3 yq; do
+for command in cmp helm jq kubectl mktemp node yq; do
   require_command "$command"
 done
 [[ -x "$occ" ]] || command -v "$occ" >/dev/null 2>&1 || die "the OCC CLI is unavailable."
@@ -470,21 +581,16 @@ trap 'interrupted_upgrade 129' HUP
 trap 'interrupted_upgrade 130' INT
 trap 'interrupted_upgrade 143' TERM
 
-# Bind resume to the same inputs and chart. Kubeconfig bytes bind the selected
-# context to the same cluster even if the file is later replaced.
-parameters=$(python3 - "$kubeconfig" "$context" "$namespace" "$release" "$values" "$installation" "$controller_image" "$runtime_image" "$source_revision" "$OCC_URL" "$occ" "${OCC_CA_BUNDLE:-}" "$requested_values" "$requested_installation" "$broker_image" <<'PYTHON'
+# Bind resume to the original physical directory, inputs and chart. The
+# separate dispatch journal protects against restoring stale evidence in place.
+# Kubeconfig bytes bind the context to the same cluster if the file is replaced.
+parameters=$(python3 - "$kubeconfig" "$context" "$namespace" "$release" "$values" "$installation" "$controller_image" "$runtime_image" "$source_revision" "$OCC_URL" "$occ" "${OCC_CA_BUNDLE:-}" "$requested_values" "$requested_installation" "$broker_image" "$evidence_dir" "$chart_sha256" <<'PYTHON'
 import hashlib, json, os, sys
-chart = "deploy/helm/openclaw-enterprise"
-h = hashlib.sha256()
-for root, dirs, files in os.walk(chart):
-    dirs.sort()
-    for name in sorted(files):
-        path = os.path.join(root, name)
-        h.update(path.encode() + b"\0" + open(path, "rb").read() + b"\0")
 def digest(path):
     with open(path, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()
-print(json.dumps({"arguments": sys.argv[1:], "kubeconfigSha256": digest(sys.argv[1]), "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": h.hexdigest(), "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.mjs"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "startupPreflightSha256": digest("scripts/upgrade-startup-preflight.mjs"), "imageReferenceSha256": digest("packages/occ/src/image-reference.ts"), "imageReferenceHelperSha256": digest("scripts/lib/image-reference-problem.mjs"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}, sort_keys=True))
+evidence = os.stat(sys.argv[16])
+print(json.dumps({"evidenceDirectory": {"path": os.path.realpath(sys.argv[16]), "st_dev": evidence.st_dev, "st_ino": evidence.st_ino}, "arguments": sys.argv[1:16], "kubeconfigSha256": digest(sys.argv[1]), "caSha256": digest(sys.argv[12]) if sys.argv[12] else None, "chartSha256": sys.argv[17], "scriptSha256": digest("scripts/upgrade-production-images"), "pairProbeSha256": digest("scripts/upgrade-repository-image-probe.mjs"), "imageIdentitySha256": digest("scripts/upgrade-image-identity.py"), "nodePlatformSha256": digest("scripts/upgrade-node-platform.py"), "deploymentIdentitySha256": digest("scripts/upgrade-deployment-identity.py"), "startupPreflightSha256": digest("scripts/upgrade-startup-preflight.mjs"), "imageReferenceSha256": digest("packages/occ/src/image-reference.ts"), "imageReferenceHelperSha256": digest("scripts/lib/image-reference-problem.mjs"), "preparedEvidenceSha256": digest("scripts/upgrade-evidence.py"), "dispatchStateSha256": digest("scripts/upgrade-dispatch-state.py"), "upgradeFlowSha256": digest("docs/flows/coordinated-production-upgrade.md")}, sort_keys=True))
 PYTHON
 )
 if ((resume)); then
@@ -495,12 +601,42 @@ with open(sys.argv[1], encoding="utf-8") as source:
     values = json.load(source)
 values.pop("pairEvidence", None)
 values.pop("preparedEvidence", None)
+values.pop("dispatchJournal", None)
 print(json.dumps(values, sort_keys=True))
 PYTHON
   )
-  [[ "$parameters" == "$original_parameters" ]] || die "resume inputs, kubeconfig, CA, scripts, image rule, chart, or flow changed; investigate before continuing."
+  [[ "$parameters" == "$original_parameters" ]] || die "resume evidence directory, inputs, kubeconfig, CA, scripts, image rule, chart, or flow changed; use the original evidence directory and investigate before continuing."
+  [[ ! -e "$evidence_dir/completed" && ! -L "$evidence_dir/completed" ]] ||
+    die "a completion marker exists; this upgrade cannot be resumed. Preserve its evidence and investigate if completion was unexpected."
   [[ -f "$evidence_dir/prepared" ]] || die "evidence is not a prepared deployment. Inspect it and any remaining temporary preflight resources, then start with a new evidence directory."
-else
+fi
+
+dispatch_journal=
+dispatch_state() {
+  local action=$1
+  shift
+  python3 scripts/upgrade-dispatch-state.py "$action" "$dispatch_journal" \
+    9 "$dispatch_binding" "$dispatch_operation" "$@" ||
+    die "cannot use the original dispatch journal at $dispatch_journal. Preserve it and reconcile Agent revision history and audit records before proceeding."
+}
+if [[ -n "$runtime_image" ]] && ((preflight_only == 0)); then
+  dispatch_journal=$(jq -er '.evidenceDirectory.path + ".dispatch-state"' <<<"$parameters")
+  dispatch_operation=$(printf '%s' "$parameters" |
+    python3 -c 'import hashlib, sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())')
+  if ((resume)); then
+    dispatch_binding=$(jq -ce '.dispatchJournal' "$evidence_dir/parameters.json") ||
+      die "missing dispatch journal binding. Preserve the evidence and reconcile Agent revision history and audit records."
+  else
+    dispatch_binding=$(python3 scripts/upgrade-dispatch-state.py create "$dispatch_journal" "$dispatch_operation") ||
+      die "cannot create the dispatch journal at $dispatch_journal. Preserve any existing journal and reconcile before starting a new run."
+    parameters=$(jq --argjson binding "$dispatch_binding" '.dispatchJournal = $binding' <<<"$parameters")
+  fi
+  python3 scripts/upgrade-dispatch-state.py check-path "$dispatch_journal" ||
+    die "the original dispatch journal at $dispatch_journal is missing or invalid. Reconcile Agent revision history and audit records before proceeding."
+  exec 9<"$dispatch_journal"
+  dispatch_state lock
+fi
+if ((resume == 0)); then
   printf '%s\n' "$parameters" >"$evidence_dir/parameters.json"
 fi
 
@@ -954,31 +1090,42 @@ if [[ -n "$requested_installation" ]]; then
 else
   cp "$evidence_dir/before-installation.yaml" "${candidate_installation}.requested"
 fi
+matches_yaml "${candidate_values}.requested" "${candidate_values}.requested" || die "candidate values must be a YAML object."
+matches_yaml "${candidate_installation}.requested" "${candidate_installation}.requested" || die "candidate Installation must be a YAML object."
 # Keep all settings protected except the supported proxy and curated catalog
 # selections. New configuration fields remain protected until explicitly reviewed.
 values_guard='del(.api.channelDirectoryProxyUrl) | if .api == {} then del(.api) else . end'
-installation_guard='del(.drivers.plugin.id, .drivers.plugin.configuration.catalogSource) |
-  if .drivers.plugin.configuration == {} then del(.drivers.plugin.configuration) else . end |
-  if .drivers.plugin == {} then del(.drivers.plugin) else . end'
 project_yaml "$evidence_dir/before-values.yaml" "$values_guard" "$evidence_dir/values-guard.json"
 project_yaml "${candidate_values}.requested" "$values_guard" "$evidence_dir/candidate-values-guard.json"
 cmp -s "$evidence_dir/values-guard.json" "$evidence_dir/candidate-values-guard.json" ||
   die "candidate values change a protected setting; only api.channelDirectoryProxyUrl may change."
-project_yaml "$evidence_dir/before-installation.yaml" "$installation_guard" "$evidence_dir/installation-guard.json"
-project_yaml "${candidate_installation}.requested" "$installation_guard" "$evidence_dir/candidate-installation-guard.json"
-cmp -s "$evidence_dir/installation-guard.json" "$evidence_dir/candidate-installation-guard.json" ||
-  die "candidate Installation changes a protected setting; only the curated Plugin Driver selection may change."
-plugin_guard='if (.drivers | type) == "object" and (.drivers | has("plugin"))
-  then {plugin: .drivers.plugin} else {} end'
-project_yaml "$evidence_dir/before-installation.yaml" "$plugin_guard" "$evidence_dir/plugin-guard.json"
-project_yaml "${candidate_installation}.requested" "$plugin_guard" "$evidence_dir/candidate-plugin-guard.json"
-if ! cmp -s "$evidence_dir/plugin-guard.json" "$evidence_dir/candidate-plugin-guard.json"; then
-  jq -e '.plugin.id == "codex-plugin" and .plugin.configuration.catalogSource == "openai-curated"' \
-    "$evidence_dir/candidate-plugin-guard.json" >/dev/null ||
-    die "candidate Installation changes the Plugin Driver to an unsupported selection; select codex-plugin with openai-curated."
+project_yaml "$evidence_dir/before-installation.yaml" '.' "$evidence_dir/installation-guard.json"
+project_yaml "${candidate_installation}.requested" '.' "$evidence_dir/candidate-installation-guard.json"
+if ! cmp -s "$evidence_dir/installation-guard.json" "$evidence_dir/candidate-installation-guard.json"; then
+  # Compare the explicit candidate with the existing registration in canonical
+  # form. Do not rewrite the baseline or silently convert an installed object.
+  jq -e --slurpfile candidate "$evidence_dir/candidate-installation-guard.json" '
+    (.drivers.plugin | type == "object") as $single |
+    if $single then
+      .drivers.plugin |= (
+        if keys == ["configuration", "id"] and
+          (.id == "occ-plugin" or .id == "codex-plugin") and
+          (.configuration | type == "object")
+        then [.] else error("invalid installed Plugin Driver registration") end
+      )
+    else .drivers.plugin //= [] end |
+    if $single and . == $candidate[0] then true
+    else
+      if any(.drivers.plugin[]; .id == "codex-plugin") then
+        (.drivers.plugin[] | select(.id == "codex-plugin") | .configuration.catalogSource) = "openai-curated"
+      else
+        .drivers.plugin += [{id: "codex-plugin", configuration: {catalogSource: "openai-curated"}}]
+      end |
+      (.drivers.plugin |= sort_by(.id)) == ($candidate[0] | .drivers.plugin |= sort_by(.id))
+    end
+  ' "$evidence_dir/installation-guard.json" >/dev/null ||
+    die "candidate Installation changes a protected setting; only an unchanged Plugin Driver registration wrapped in an array or the curated Plugin Driver selection may change."
 fi
-matches_yaml "${candidate_values}.requested" "${candidate_values}.requested" || die "candidate values must be a YAML object."
-matches_yaml "${candidate_installation}.requested" "${candidate_installation}.requested" || die "candidate Installation must be a YAML object."
 mv "${candidate_values}.requested" "$candidate_values"
 mv "${candidate_installation}.requested" "$candidate_installation"
 
@@ -1075,9 +1222,9 @@ if ! matches_yaml "$candidate_installation" "$evidence_dir/before-live-installat
 fi
 
 rendered="$evidence_dir/rendered.yaml"
-helm template "$release" deploy/helm/openclaw-enterprise "${helm_args[@]}" \
+helm template "$release" "$chart" "${helm_args[@]}" --is-upgrade \
   --values "$candidate_values" >"$rendered"
-helm upgrade --install "$release" deploy/helm/openclaw-enterprise "${helm_args[@]}" \
+helm upgrade --install "$release" "$chart" "${helm_args[@]}" \
   --values "$candidate_values" --dry-run=server --hide-secret \
   >"$evidence_dir/server-dry-run.txt"
 preflight_startup
@@ -1091,6 +1238,9 @@ printf '%s\n' "$installation_key" >"$evidence_dir/installation-secret-key"
 printf '%s\n' "$selected_controller" >"$evidence_dir/selected-controller"
 python3 scripts/upgrade-evidence.py capture "$evidence_dir" ||
   die "cannot bind prepared upgrade evidence."
+if [[ -n "$dispatch_journal" ]]; then
+  dispatch_state prepare "$targets"
+fi
 touch "$evidence_dir/prepared"
 }
 
@@ -1102,6 +1252,24 @@ candidate_values="$evidence_dir/candidate-values.yaml"
 candidate_installation="$evidence_dir/candidate-installation.yaml"
 python3 scripts/upgrade-evidence.py verify "$evidence_dir" ||
   die "prepared upgrade evidence changed; investigate before continuing."
+targets="$evidence_dir/targets.jsonl"
+dispatch_prefix() {
+  printf '%s/dispatch/%s' "$evidence_dir" "$(json_file_name "$1--$2")"
+}
+read_dispatch_response() {
+  jq -cser 'select(length == 1) | .[0] | select(.id | type == "string" and length > 0) | '"$2" "$1"
+}
+if [[ -n "$dispatch_journal" ]]; then
+  dispatch_snapshot=$(dispatch_state snapshot "$targets")
+  while IFS= read -r target; do
+    [[ -n "$target" ]] || continue
+    json_fields "$target" namespace_id=namespaceId agent_id=agentId dispatch_status=state
+    prefix=$(dispatch_prefix "$namespace_id" "$agent_id")
+    if [[ "$dispatch_status" == pending && ! -f "$prefix.json" ]]; then
+      die "Agent $agent_id in Namespace $namespace_id has an unknown deployment outcome. Inspect its revision history and audit records before recording a confirmed response."
+    fi
+  done <<<"$dispatch_snapshot"
+fi
 current_controller=$(yq -er '.images.controller' "$evidence_dir/before-values.yaml")
 repository_enabled=$(yq -r '.repositoryCredentials.enabled // false' "$candidate_values")
 verify_pair_nodes() {
@@ -1134,7 +1302,6 @@ PYTHON
     verify_pair_nodes
   fi
 fi
-targets="$evidence_dir/targets.jsonl"
 target_count=$(wc -l <"$targets" | tr -d ' ')
 installation_id=$(cat "$evidence_dir/installation-id")
 installation_secret=$(cat "$evidence_dir/installation-secret-name")
@@ -1285,7 +1452,7 @@ PYTHON
   touch "$evidence_dir/helm-started"
   # Open stdout before entering the native failure handler.
   {
-    helm upgrade --install "$release" deploy/helm/openclaw-enterprise "${helm_args[@]}" \
+    helm upgrade --install "$release" "$chart" "${helm_args[@]}" \
       --values "$values" --wait --timeout 5m ||
       native_command_failed "$?" helm-upgrade release
   } >"$evidence_dir/helm-upgrade.txt"
@@ -1392,71 +1559,118 @@ if [[ "$repository_enabled" == true ]]; then
   done
 fi
 
-dispatch_failed=0
 if [[ -n "$runtime_image" ]] && ((target_count > 0)); then
-  # Check every prior intent before launching any additional requests.
+  confirmed_deployment_status() {
+    local namespace_id=$1 agent_id=$2 revision=$3
+    "${occ_json[@]}" --namespace "$namespace_id" agent deployment-status "$agent_id" "$revision" </dev/null |
+      jq -ser --arg namespace "$namespace_id" --arg agent "$agent_id" --arg revision "$revision" '
+        select(length == 1) | .[0] |
+        select(.namespaceId == $namespace and .agentId == $agent and .deploymentId == $revision) |
+        .status | select(. == "queued" or . == "running" or . == "succeeded" or . == "failed")'
+  }
+
+  # Reconcile every existing attempt before starting any additional sends.
+  ready=()
   while IFS= read -r target; do
-    json_fields "$target" namespace_id=namespaceId agent_id=agentId
-    prefix="$evidence_dir/dispatch/$(json_file_name "$namespace_id--$agent_id")"
-    if [[ -f "$prefix.json" ]]; then
-      jq -e '.id | type == "string" and length > 0' "$prefix.json" >/dev/null ||
+    json_fields "$target" namespace_id=namespaceId agent_id=agentId dispatch_status=state recorded_revision=deploymentId baseline_revision=baselineRevisionId
+    prefix=$(dispatch_prefix "$namespace_id" "$agent_id")
+    if [[ -e "$prefix.json" || -L "$prefix.json" ]]; then
+      require_private_file "$prefix.json"
+      receipt=$(read_dispatch_response "$prefix.json" '.') ||
         die "invalid recorded deployment response for Agent $agent_id; inspect it before resuming."
-    elif [[ -f "$prefix.intent" ]]; then
-      # Active revision alone cannot prove that a timed-out request was rejected.
-      "${occ_json[@]}" --namespace "$namespace_id" agent get "$agent_id" \
-        >"$prefix.readback.json" || true
-      die "Agent $agent_id has an unknown deployment outcome; inspect revision history and audit evidence before recording a resolved response."
+      revision=$(jq -er '.id' <<<"$receipt")
+      if [[ "$dispatch_status" == pending ]]; then
+        [[ "$revision" != "$baseline_revision" ]] &&
+          jq -e 'has("replacesDeploymentId") | not' <<<"$receipt" >/dev/null &&
+          confirmed_deployment_status "$namespace_id" "$agent_id" "$revision" >/dev/null ||
+          die "Agent $agent_id has an unknown deployment outcome. Confirm the exact recorded deployment before resuming."
+        dispatch_state accept "$targets" "$namespace_id" "$agent_id" "$revision"
+      elif [[ "$dispatch_status" == accepted && "$recorded_revision" != "$revision" ]]; then
+        if jq -e --arg revision "$revision" '.acceptedDeploymentIds | index($revision) != null' <<<"$target" >/dev/null; then
+          # Restored evidence can contain a superseded receipt. Keep its bytes
+          # for diagnosis and continue with the current journaled deployment.
+          warn "recorded response for Agent $agent_id is superseded; using journaled deployment $recorded_revision."
+          continue
+        fi
+        jq -e --arg current "$recorded_revision" '.replacesDeploymentId == $current' <<<"$receipt" >/dev/null ||
+          die "replacement for Agent $agent_id must name the current journaled revision $recorded_revision. Preserve the response and inspect revision history and audit records before recording a replacement."
+        [[ "$revision" != "$baseline_revision" ]] ||
+          die "the baseline revision cannot replace journaled deployment $recorded_revision for Agent $agent_id."
+        recorded_status=$(confirmed_deployment_status "$namespace_id" "$agent_id" "$recorded_revision") &&
+          [[ "$recorded_status" == failed ]] &&
+          confirmed_deployment_status "$namespace_id" "$agent_id" "$revision" >/dev/null ||
+          die "cannot confirm the failed deployment and its recorded replacement for Agent $agent_id. Preserve the response and inspect both deployment statuses before resuming."
+        dispatch_state replace "$targets" "$namespace_id" "$agent_id" "$recorded_revision" "$revision"
+      elif [[ "$dispatch_status" != accepted ]]; then
+        die "recorded deployment response for Agent $agent_id conflicts with the dispatch journal."
+      fi
+    elif [[ "$dispatch_status" == accepted ]]; then
+      # The durable acknowledgement can outlive a backup of the evidence.
+      response=$(mktemp "$prefix.XXXXXXXX.tmp")
+      jq -n --arg id "$recorded_revision" '{id: $id}' >"$response"
+      mv "$response" "$prefix.json"
+    elif [[ "$dispatch_status" == pending ]]; then
+      die "Agent $agent_id has an unknown deployment outcome. Inspect its revision history and audit records."
+    else
+      ready+=("$target")
     fi
-  done <"$targets"
+  done <<<"$dispatch_snapshot"
 
   pids=()
-  while IFS= read -r target; do
+  attempts=()
+  for target in "${ready[@]}"; do
     json_fields "$target" namespace_id=namespaceId agent_id=agentId
-    output="$evidence_dir/dispatch/$(json_file_name "$namespace_id--$agent_id").json"
-    error="$evidence_dir/dispatch/$(json_file_name "$namespace_id--$agent_id").error"
-    intent="$evidence_dir/dispatch/$(json_file_name "$namespace_id--$agent_id").intent"
-    if [[ -f "$output" ]]; then
-      continue
-    fi
-    touch "$intent"
-    (
-      temporary="$output.tmp"
-      "${occ_json[@]}" --namespace "$namespace_id" agent deploy "$agent_id" >"$temporary" 2>"$error" &&
-        jq -e '.id | type == "string" and length > 0' "$temporary" >/dev/null &&
-        mv "$temporary" "$output"
-    ) &
+    prefix=$(dispatch_prefix "$namespace_id" "$agent_id")
+    attempt=$(mktemp -d "$evidence_dir/dispatch/.attempt.XXXXXXXX")
+    attempts+=("$attempt")
+    touch "$prefix.intent"
+    # Once this record is durable, interruption at any point is an unknown
+    # outcome until we have an acknowledgement or a definite refusal.
+    dispatch_state send "$targets" "$namespace_id" "$agent_id"
+    "${occ_json[@]}" --namespace "$namespace_id" agent deploy "$agent_id" </dev/null \
+      >"$attempt/response" 2>"$attempt/error" &
     pids+=("$!")
-  done <"$targets"
-
-  for pid in "${pids[@]}"; do
-    wait "$pid" || dispatch_failed=1
   done
-fi
-if ((dispatch_failed)); then
+
   refused=()
   key_refused=()
   unknown=()
-  while IFS= read -r target; do
-    json_fields "$target" namespace_id=namespaceId agent_id=agentId
-    prefix="$evidence_dir/dispatch/$(json_file_name "$namespace_id--$agent_id")"
-    [[ ! -f "$prefix.json" ]] || continue
+  for index in "${!pids[@]}"; do
+    json_fields "${ready[index]}" namespace_id=namespaceId agent_id=agentId
+    prefix=$(dispatch_prefix "$namespace_id" "$agent_id")
+    attempt=${attempts[index]}
+    status=0
+    wait "${pids[index]}" || status=$?
+    if ((status == 0)) && revision=$(read_dispatch_response "$attempt/response" '.id'); then
+      dispatch_state accept "$targets" "$namespace_id" "$agent_id" "$revision"
+      mv "$attempt/error" "$prefix.error"
+      mv "$attempt/response" "$prefix.json"
+      rmdir "$attempt"
+      continue
+    fi
+
+    refusal=
+    if ((status != 0)) && refusal=$(deploy_refusal "$attempt/error"); then
+      # Classify only the stderr from this native call. A stale refusal in the
+      # evidence directory cannot change a pending journal entry.
+      dispatch_state refuse "$targets" "$namespace_id" "$agent_id"
+      printf '%s\n' "$refusal" >>"$prefix.rejected"
+      rm -f "$prefix.intent" "$prefix.json.tmp" "$attempt/response"
+    else
+      mv "$attempt/response" "$prefix.json.tmp"
+    fi
+    mv "$attempt/error" "$prefix.error"
+    rmdir "$attempt"
     agent_name=$(occ_name --namespace "$namespace_id" agent get "$agent_id") || agent_name=
     agent="Agent $agent_id ${agent_name:-(name unavailable)} in Namespace $namespace_id"
-    if refusal=$(deploy_refusal "$prefix.error"); then
-      # OCC refused the request in the deploy transaction, so it saved no revision.
-      # Keep the refusal, then drop the intent so --resume sends this deploy again.
-      printf '%s\n' "$refusal" >>"$prefix.rejected"
-      rm -f "$prefix.intent" "$prefix.json.tmp"
-      if [[ "$refusal" == "OCC rejected the service key "* ]]; then
-        # The helper's own credential failed, not the Agent's deploy.
-        key_refused+=("  - $agent")
-      else
-        refused+=("  - $agent: $refusal")
-      fi
-    else
+    if [[ -z "$refusal" ]]; then
       unknown+=("  - $agent")
+    elif [[ "$refusal" == "OCC rejected the service key "* ]]; then
+      key_refused+=("  - $agent")
+    else
+      refused+=("  - $agent: $refusal")
     fi
-  done <"$targets"
+  done
   if ((${#key_refused[@]})); then
     warn "OCC rejected the service key in $OCC_SERVICE_KEY_FILE, so it did not deploy ${#key_refused[@]} recorded Agent(s) and saved no revision for them:
 $(printf '%s\n' "${key_refused[@]}")
@@ -1469,21 +1683,17 @@ Correct what each refusal names, such as a Configuration setting the new release
   fi
   ((${#unknown[@]} == 0)) || die "at least one Agent deployment outcome is unknown; inspect $evidence_dir/dispatch and reconcile it before resuming:
 $(printf '%s\n' "${unknown[@]}")"
-  exit 1
+  if ((${#key_refused[@]} || ${#refused[@]})); then
+    exit 1
+  fi
 fi
 
 deployments="$evidence_dir/deployments.jsonl"
-: >"$deployments"
-while IFS= read -r target; do
-  json_fields "$target" namespace_id=namespaceId agent_id=agentId execution_mode=executionMode
-  output="$evidence_dir/dispatch/$(json_file_name "$namespace_id--$agent_id").json"
-  deployment_id=$(jq -er '.id' "$output")
-  # shellcheck disable=SC2154 # json_fields assigns execution_mode.
-  jq -cn --arg namespaceId "$namespace_id" --arg agentId "$agent_id" \
-    --arg executionMode "$execution_mode" --arg deploymentId "$deployment_id" \
-    '{namespaceId: $namespaceId, agentId: $agentId, executionMode: $executionMode, deploymentId: $deploymentId}' \
-    >>"$deployments"
-done <"$targets"
+if [[ -n "$dispatch_journal" ]]; then
+  dispatch_state deployments "$targets" >"$deployments"
+else
+  : >"$deployments"
+fi
 
 pending=$target_count
 while ((pending > 0)); do
@@ -1886,6 +2096,13 @@ fi
 helm status "$release" "${helm_args[@]}" >"$evidence_dir/after-helm-status.txt"
 "${kube[@]}" get deployments,statefulsets,pods,persistentvolumeclaims --all-namespaces \
   --output json >"$evidence_dir/after-workloads.json"
+# Record the terminal state only after every required check and evidence read.
+# A lost final console message must not permit another run after the window closes.
+(
+  set -o noclobber
+  : >"$evidence_dir/completed"
+) ||
+  die "could not record upgrade completion; preserve the evidence and investigate before recovery."
 if [[ -n "$runtime_image" && -n "$controller_image" && "$controller_image" != "$current_controller" ]]; then
   printf 'Upgraded controller and runtime images; %s running Agents selected new revisions.\n' "$target_count"
 elif [[ -n "$runtime_image" ]]; then

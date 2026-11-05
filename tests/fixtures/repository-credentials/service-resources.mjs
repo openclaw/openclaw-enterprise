@@ -73,15 +73,14 @@ export async function startServiceListeners(
     tls,
     upstreamOrigins,
     trustedUpstreamOrigins = new Set(upstreamOrigins),
-    providerQueue,
     log,
   },
 ) {
   const [{ createCredentialService }, { startListeners }] = await Promise.all([
-    appModule("drivers/repo/credentials/service"),
+    import("./service.ts"),
     appModule("drivers/repo/credentials/server"),
   ]);
-  const service = createCredentialService({ config, factory, clock, providerQueue });
+  const service = createCredentialService({ config, factory, clock });
   let listeners;
   let closing = false;
   // Registered first, so it runs last: teardown must have closed the listeners it started.

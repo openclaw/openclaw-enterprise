@@ -53,7 +53,7 @@ const FAILURE_CODE = /^[A-Z0-9_]{1,64}$/u;
 
 /** Public pending explanations never include arbitrary Driver or provider text. */
 export function deploymentProgressForWork(
-  work: Readonly<ControllerWork>,
+  work: Readonly<Pick<ControllerWork, "state" | "availableAt">>,
   attempt: ControllerWorkAttempt | undefined,
 ): DeploymentStatusResult["progress"] {
   if (work.state === "succeeded" || work.state === "failed_permanent") {
@@ -585,7 +585,7 @@ export function validateSuccessResultData(data: unknown): SuccessResultData | un
 }
 
 export function deploymentErrorForWork(
-  work: Readonly<ControllerWork>,
+  work: Readonly<Pick<ControllerWork, "state" | "reasonCode" | "resultData">>,
 ): DeploymentStatusError | null {
   if (work.state !== "failed_permanent" && !completedWithoutActivation(work)) {
     return null;
@@ -689,7 +689,9 @@ export function controllerWorkLeaseActive(
   );
 }
 
-function completedWithoutActivation(work: Readonly<ControllerWork>): boolean {
+function completedWithoutActivation(
+  work: Readonly<Pick<ControllerWork, "state" | "reasonCode">>,
+): boolean {
   return (
     work.state === "succeeded" &&
     work.reasonCode !== "REVISION_ACTIVATED" &&
@@ -755,7 +757,7 @@ function deploymentErrorMessage(code: string): string {
     case "REPOSITORY_GIT_SENDER_UNQUALIFIED":
       return "This version's repository Git delivery needs the git-write profile, and no OpenShell release is qualified for it, so it cannot start. Remove the binding, select a qualified installed sender, or use native prepared Git without a Sandbox, then deploy again.";
     case "REPOSITORY_GIT_PROFILE_UNSUPPORTED":
-      return "This version's repository Git delivery has no profile and cannot start: a Credential Proxy delivers only one binding with the git-write or github-installation profile. Keep one such binding, remove them all, or use native prepared Git, then deploy again.";
+      return "This version's Git delivery has no supported profile, so it cannot start. A Credential Proxy delivers github-repository bindings, or one git-write or github-installation binding. Change the bindings or use native prepared Git, then deploy again.";
     case "REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED":
       return "This revision's repository access deadline, fixed when the revision was admitted, has passed. Deploy again to admit a revision with a new deadline.";
     // Refusals the worker decides again on every pass (finding 1039). The status never names
@@ -798,6 +800,8 @@ function deploymentErrorMessage(code: string): string {
       return "The Sandbox Driver does not support this revision's Harness settings, such as plugins, network policy additions or ServiceAccount credentials. Change them, or ask an Installation administrator for a Driver that supports them, then deploy again.";
     case "SANDBOX_GATEWAY_UNAUTHORIZED":
       return "The Sandbox gateway refused the controller's identity, or the Workspace is gone, so cleanup is unconfirmed. Check the identity's token file and Workspace role and the gateway's signing-key refresh, then deploy, stop, delete or withdraw again.";
+    case "SANDBOX_POD_LABELS_NOT_PERMITTED":
+      return "The Sandbox gateway refuses this revision's Harness Pod labels. Ask an admin to allow them in the gateway configuration, then deploy again.";
     case "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT":
       return "Two credential sources the Agent binds use the same environment variable. Bind only one source per variable, for example one openai source and bearer-token sources with distinct env_var values, then deploy again.";
     case "CREDENTIAL_WITHDRAWN":
@@ -810,6 +814,8 @@ function deploymentErrorMessage(code: string): string {
       return "The protected egress provider this revision's Harness source was admitted with is no longer selected or available. Ask an Installation administrator to reselect it, or bind a source admitted under the selected provider, then deploy again.";
     case "CREDENTIAL_SOURCE_UNAVAILABLE":
       return "A credential source this revision lists is missing, being deleted, or changed since admission. Bind available sources, then deploy again.";
+    case "PLUGIN_DRIVER_MISMATCH":
+      return "This revision's Plugin Driver is unavailable for its Harness. Enable the matching Driver or update the Agent's selections, then deploy again.";
     case "SECRET_DRIVER_MISMATCH":
       return "The Installation no longer selects the Secret Driver this revision was admitted with. Bind Secrets created through the selected Secret Driver, or remove the old Secret bindings, then deploy again.";
     case "COMPUTE_DRIVER_MISMATCH":

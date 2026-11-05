@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import test from "node:test";
 
+import { documentApiExamples } from "../../scripts/document-api-examples.mjs";
 import {
   generateApiReferenceOutputs,
   httpMethods,
@@ -30,6 +31,17 @@ function contractOperations(document) {
       .map(([, operation]) => operation),
   );
 }
+
+test("example enrichment preserves the generated contract and rejects duplicate operations", async () => {
+  const document = JSON.parse(await readFile(contractPath, "utf8"));
+  const original = structuredClone(document);
+  assert.equal(documentApiExamples(document), document);
+  assert.deepEqual(document, original);
+
+  const operations = contractOperations(document);
+  operations[1].operationId = operations[0].operationId;
+  assert.throws(() => documentApiExamples(document), /Missing or duplicate operationId/);
+});
 
 test("generated API reference stays on the approved single page", async () => {
   const document = JSON.parse(await readFile(contractPath, "utf8"));
@@ -241,7 +253,9 @@ test("OpenAPI check rejects unexpected generated API child pages in an isolated 
     "generate-occ-openapi.mjs",
     "generate-occ-api-reference.mjs",
     "document-api-examples.mjs",
+    "document-api-examples.ts",
     "api-examples.mjs",
+    "api-examples.ts",
   ]) {
     await copyFile(join(repositoryRoot, "scripts", file), join(fixture, "scripts", file));
   }

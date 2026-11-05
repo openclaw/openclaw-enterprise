@@ -44,3 +44,18 @@ Model ID, then inspect Advanced settings → Configuration JSON. Defaults and
 explicit roster selections share the new primary; inherited selections remain
 omitted. Clear the field and select another model: local policies and ordered
 fallbacks remain. This story simulates the API and does not deploy a runtime.
+
+## Correct a model configuration draft
+
+Open **Pages → Create Agent → Enter another model ID** (`createModelManual`).
+Select a listed Codex model, then open **Advanced settings → Configuration JSON**.
+Change only `plugins.allow` to each of `"codex"`, `7`, `null`, and `["keep-plugin", 7]`.
+For each value, select **Choose a model from the list**. Check that the editor
+receives focus and describes how to correct `plugins.allow`. The raw JSON and
+manual model choice must remain unchanged. Change **Model ID** and leave the
+field: the editor must show the same error and retain both drafts.
+
+Correct the field to `[]` or `["keep-plugin"]`, or remove it. Retry the switch
+and select `gpt-6-sol`, then `gpt-6-luna`. Check the JSON primary model and confirm
+that whole plugin entries remain. Repeat at 1440 px and 390 px. Do not create an
+Agent. Capture the error and successful retry; this is simulated UI evidence only.

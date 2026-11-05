@@ -115,6 +115,7 @@ test("first-Agent starts without installed workspace dependencies", async (t) =>
     "scripts/first-agent.mjs",
     "scripts/first-agent-database.mjs",
     "scripts/first-agent-model.mjs",
+    "scripts/lib/private-owned-path.mjs",
     "packages/contracts/src/api/plain-text.ts",
     "packages/occ/src/gateway-security-defaults.ts",
     "apps/controller/src",
@@ -556,6 +557,44 @@ test("first-Agent refuses an unrecognized saved record without calling it old", 
     await run({ ...current, harness: "codex" }),
     /recorded Namespace, model, Harness, Sandbox Driver, or Control UI selection differs/,
   );
+});
+
+test("first-Agent counts a prompt's characters as code points", () => {
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  env.OCC_DEVELOPMENT_STATE_DIRECTORY = "/tmp/oce-first-agent-prompt-characters";
+  const run = (prompt) =>
+    spawnSync(process.execPath, [firstAgent, "MyAgent", "--prompt", prompt], {
+      cwd: repository,
+      encoding: "utf8",
+      env,
+      timeout: 10_000,
+    });
+  // 4,000 emoji are 4,000 characters and 8,000 UTF-16 units. The length check
+  // must accept them and stop later, at the missing Local Setup state.
+  const fourThousandEmoji = run("😀".repeat(4_000));
+  assert.equal(fourThousandEmoji.status, 1);
+  assert.match(
+    fourThousandEmoji.stderr,
+    /Local Kubernetes state or its recorded key was not found/,
+  );
+  assert.doesNotMatch(fourThousandEmoji.stderr, /1–4,000 characters/);
+  const tooManyEmoji = run("😀".repeat(4_001));
+  assert.equal(tooManyEmoji.status, 1);
+  assert.match(tooManyEmoji.stderr, /1–4,000 characters/);
+  assert.doesNotMatch(tooManyEmoji.stderr, /Local Kubernetes state/);
+  const fourThousandAscii = run("a".repeat(4_000));
+  assert.equal(fourThousandAscii.status, 1);
+  assert.match(
+    fourThousandAscii.stderr,
+    /Local Kubernetes state or its recorded key was not found/,
+  );
+  const tooManyAscii = run("a".repeat(4_001));
+  assert.equal(tooManyAscii.status, 1);
+  assert.match(tooManyAscii.stderr, /1–4,000 characters/);
+  const blank = run("   ");
+  assert.equal(blank.status, 1);
+  assert.match(blank.stderr, /1–4,000 characters/);
 });
 
 test("first-Agent does not take the next flag as the prompt or harness", () => {

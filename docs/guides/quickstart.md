@@ -11,13 +11,13 @@ cannot deploy Agents. A separate [Compose OCC with Kubernetes compute profile](d
 has fewer configured capabilities. To install OCC itself in a cluster you already operate,
 use [Kubernetes Setup](kubernetes-setup.md).
 
-For local OpenShell with native Git or Codex plugins, start with [Setup OCE on local k3d](deploy/local-openshell-setup.md). The instructions below use the profile without OpenShell.
+For local OpenShell with native Git or Codex plugins, start with [Setup OCE on local k3d](deploy/local-setup.md). The instructions below use the profile without OpenShell.
 
 ## Before you start
 
 Run the commands below from the repository root on Linux or macOS. You need:
 
-- Docker Engine, k3d, kubectl, and Helm. Podman users should first
+- Docker Engine, k3d, kubectl, Helm, and jq. Podman users should first
   check the [local Kubernetes requirements](deploy/local-kubernetes-development.md#start-the-profile).
 - The Go version in `go.mod`, Node.js 24.22.1 or later, and the pnpm version pinned
   in `package.json`.
@@ -32,7 +32,7 @@ Run the commands below from the repository root on Linux or macOS. You need:
   see [development settings](../reference/settings/development.md#required-development-controller-environment).
 
 You do not need a model credential to install the platform. Have an OpenAI API
-key available when you continue to [deploy your first Agent](first-agent.md).
+key available when you continue to [deploy an Agent](#deploy-an-agent).
 
 ## Start the local stack
 
@@ -110,8 +110,36 @@ key from the file; do not pass the credential value as an argument or share it.
 
 Expect one Namespace named `default`. Wait for `STATUS` to become `ready` and
 note its server-assigned ID. This platform Namespace is separate from Kubernetes'
-built-in `default` namespace. Continue to [Deploy your first Agent](first-agent.md)
-to create an Agent and verify its model response.
+built-in `default` namespace.
+
+## Deploy an Agent
+
+Prepare the shared deployment guide's operator variables in Bash from this
+checkout. Keep `OCC_URL` and `OCC_SERVICE_KEY_FILE` from the authenticated check
+above. The launcher already configured this installation's private routing and
+tenant RoleBindings; keep those grants instead of applying the production
+examples with different release and ServiceAccount names.
+
+```bash
+set -euo pipefail
+export PATH="$(pwd)/bin:$PATH"
+LOCAL_STATE=${OCC_DEVELOPMENT_STATE_DIRECTORY:-$(node -p 'require("node:path").join(require("node:os").tmpdir(), "openclaw-development")')}
+export KUBECONFIG_FILE="$LOCAL_STATE/kubeconfig"
+export CONTEXT="k3d-$(jq -er .cluster "$LOCAL_STATE/state.json")"
+test "$(kubectl --kubeconfig "$KUBECONFIG_FILE" config current-context)" = "$CONTEXT"
+NAMESPACE_ID=$(occ namespace list --output json |
+  jq -er '[.[]|select(.name=="default" and .status=="ready")]|select(length==1)|first.id')
+export NAMESPACE_ID OCC_NAMESPACE="$NAMESPACE_ID"
+TENANT_NAMESPACE=$(kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
+  get namespaces -l "openclaw.dev/namespace=$NAMESPACE_ID" -o json |
+  jq -er '.items|select(length==1)|first.metadata.name')
+export TENANT_NAMESPACE
+```
+
+Continue at [Prepare each Agent](deploy/production-agents.md#prepare-each-agent),
+select the **embedded OpenClaw** example, supply its model credential, and
+complete the deployment and model-response checks. Start at that section;
+do not repeat the production installation or Namespace RoleBinding steps.
 
 ## Clean up and stop
 

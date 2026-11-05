@@ -391,7 +391,7 @@ export class RepositoryBindingSelectionError extends ScopeViolationError {
     "Send repositoryAccess or repositoryBindings, not both. In repositoryAccess, list each repository once, at most 16, with a defaultProfile other than github-installation.";
   // The Driver refuses a whole selection without saying which entry; this text lists its rules.
   static readonly notApproved =
-    "These repository selections are not approved for this Namespace: each repository must be approved here for its profile and listed once, at most 16. Choose from the repository options, or ask an Installation administrator to approve it.";
+    "Choose up to 16 distinct repositories approved for this Namespace and profile. For github-repository, all selections must have the same configured permissions. Ask an Installation administrator to check the available options.";
 
   constructor(message: string = RepositoryBindingSelectionError.installationAccessAlone) {
     super(message);
@@ -683,24 +683,30 @@ export class CredentialSourceUnprotectedError extends ResourceStateConflictError
   }
 }
 
+const REPOSITORY_GIT_PROFILE_UNSUPPORTED_MESSAGES = Object.freeze({
+  several:
+    "To use more than one repository, set each one to use its approved GitHub App permissions. API callers: set `profile` to `github-repository` for each entry in `repositoryBindings`.",
+  single:
+    "A Credential Proxy cannot deliver this repository's Git access level. Use `github-repository` or `git-write` for it, or ask an administrator to use native prepared Git without a Sandbox or Proxy, then deploy again.",
+});
+
 /**
- * Finding 2204: a Credential Proxy delivers repository Git only for one binding with a mapped
- * delivery profile (`git-write` or `github-installation`; `repositoryGitDeliveryProfile`).
- * Protected admission v4-v7 requires that profile, so a `git-read` or `git-full` binding, or
- * several bindings, could never start. Deploy refuses it with 409
- * REPOSITORY_GIT_PROFILE_UNSUPPORTED before reading the counterpart, instead of a generic 503 or
- * 500. The bundled OpenShell `configureRevision` repeats it and the worker fails it at once; that
- * is defence in depth, as PostgreSQL cannot read a stored revision of this shape. HTTP keeps
- * messages under 256 characters.
+ * Finding 2204: a Credential Proxy delivers repository Git for any number of `github-repository`
+ * bindings, or for one `git-write` or `github-installation` binding
+ * (`repositoryGitDeliveryProfile`). Protected admission v4-v7 requires a mapped profile, so a
+ * `git-read` or `git-full` binding, or several bindings that are not all `github-repository`,
+ * could never start. Deploy refuses it with 409 REPOSITORY_GIT_PROFILE_UNSUPPORTED before
+ * reading the counterpart, instead of a generic 503 or 500. The message depends on whether the
+ * selection holds several bindings. The bundled OpenShell `configureRevision` repeats it and the
+ * worker fails it at once; that is defence in depth, as PostgreSQL cannot read a stored revision
+ * of this shape. HTTP keeps messages under 256 characters.
  */
 export class RepositoryGitProfileUnsupportedError extends ResourceStateConflictError {
   static readonly code = "REPOSITORY_GIT_PROFILE_UNSUPPORTED";
-  static readonly description =
-    "A Credential Proxy delivers repository Git only for one git-write or github-installation binding, so this Agent's repository access cannot start. Keep one such binding, remove them, or use native prepared Git without a Sandbox or Proxy, then deploy again.";
   readonly code = RepositoryGitProfileUnsupportedError.code;
 
-  constructor() {
-    super(RepositoryGitProfileUnsupportedError.description);
+  constructor(bindingCount: number) {
+    super(REPOSITORY_GIT_PROFILE_UNSUPPORTED_MESSAGES[bindingCount > 1 ? "several" : "single"]);
     this.name = "RepositoryGitProfileUnsupportedError";
   }
 }
@@ -1111,6 +1117,7 @@ export class SandboxRevisionUnsupportedError extends Error {
   readonly code:
     | "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED"
     | "SANDBOX_HARNESS_UNSUPPORTED"
+    | "SANDBOX_POD_LABELS_NOT_PERMITTED"
     | "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED";
 
   constructor(code: SandboxRevisionUnsupportedError["code"], message: string) {
@@ -1377,6 +1384,9 @@ export class CredentialSourceRegistrationConfigError extends ScopeViolationError
  */
 export class StoredCredentialSourceConfigError extends ResourceStateConflictError {
   static message(field: string): string {
+    if (field === "base_url") {
+      return "Saved config.base_url was removed. If supported, register a replacement for the same URL. Its config.authorized_base_url must match the Installation's runtime.modelProvider.baseUrl. Rebind and redeploy Agents, then delete the old source once unused.";
+    }
     return `This credential source's saved ${field} no longer meets the OpenShell Credential Gateway's rules, so it cannot be used. Create a new source with a valid ${field}, bind it in place of this one, then delete this one.`;
   }
 
@@ -1709,6 +1719,8 @@ export class RuntimeLogsError extends Error {
 export class PluginPolicyValidationError extends Error {
   /** The rejected plugin selection key, so HTTP can point at `/plugins/<id>`. */
   readonly pluginId?: string;
+  /** For `unknownPlugin`, the offered ID the rejected one leaves the version out of. */
+  readonly offeredId?: string;
 
   constructor(
     field?:
@@ -1716,9 +1728,11 @@ export class PluginPolicyValidationError extends Error {
       | "tools[id].reviewer"
       | "approvers"
       | "aliasedPlugin"
+      | "conflictingEnablementDefaults"
       | "unknownPlugin",
     driverId?: string,
     pluginId?: string,
+    offeredId?: string,
   ) {
     let message = "The supplied plugin policies are invalid.";
     if (field === "unknownPlugin") {
@@ -1728,9 +1742,14 @@ export class PluginPolicyValidationError extends Error {
       // the advice first.
       message = `A plugin selection names a plugin that the selected Plugin Driver${
         driverId === undefined ? "" : ` (${driverId})`
-      } does not offer${
-        pluginId === undefined ? "" : `: ${pluginId}`
-      }. Check each plugin ID and its Driver prefix against that Driver's catalog; an Installation selects one Plugin Driver.`;
+      } does not offer${pluginId === undefined ? "" : `: ${pluginId}`}. ${
+        offeredId === undefined
+          ? "Check each plugin ID and its Driver prefix against the catalog for the Agent's Harness."
+          : `Use ${offeredId}.`
+      }`;
+    } else if (field === "conflictingEnablementDefaults") {
+      message =
+        'These defaults conflict. Choose "Inherit default policy" for either "tools enabled by default" (toolDefaults.enabled) or "Destructive tools" (driverPolicy.destructiveEnabled), keeping the other. API clients: omit either field.';
     } else if (field === "aliasedPlugin") {
       message =
         'Two plugin selections name the same plugin (a native ID and its driver-prefixed ID, such as "diffs" and "occ-plugin:diffs"). Keep one selection per plugin.';
@@ -1748,6 +1767,9 @@ export class PluginPolicyValidationError extends Error {
     this.name = "PluginPolicyValidationError";
     if (field === "unknownPlugin" && pluginId !== undefined) {
       this.pluginId = pluginId;
+      if (offeredId !== undefined) {
+        this.offeredId = offeredId;
+      }
     }
   }
 
