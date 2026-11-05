@@ -23,6 +23,7 @@ import {
   type HumanAuthenticationActivationHooks,
   type HumanAuthenticationActor,
   type HumanAuthenticationRecovery,
+  type GithubRosterMapping,
   type HumanAuthenticationAccount,
   createPostgresAuthBinding,
   type SchemaAuthPoolV1,
@@ -262,6 +263,7 @@ export interface PostgresControllerAuthOptions extends Omit<
   "database" | "memoryDatabase"
 > {
   readonly pool: SchemaAuthPoolV1;
+  readonly githubRosterMappings?: readonly GithubRosterMapping[];
   readonly state?: PostgresPlatformState;
   readonly iamDriver?: IAMDriver;
   readonly github?: GitHubLoginConfiguration;
@@ -356,6 +358,10 @@ export interface ControllerAuth {
     actor: HumanAuthenticationActor,
     expectedVersion: number,
   ): Promise<unknown>;
+  readonly githubRosterMappings?: readonly GithubRosterMapping[];
+  readRosterOverride?: PostgresHumanAuthentication["readRosterOverride"];
+  setRosterOverride?: PostgresHumanAuthentication["setRosterOverride"];
+  readRosterStatuses?: PostgresHumanAuthentication["readRosterStatuses"];
   changeAccount?(
     userId: string,
     operation: "disable" | "enable" | "revoke",
@@ -398,7 +404,7 @@ export interface ControllerAuth {
   holdSession(
     unit: PlatformUnitOfWork,
     session: AuthenticatedSession,
-    request: FastifyRequest,
+    request: Pick<FastifyRequest, "headers">,
   ): Promise<void>;
   createServiceKey(input: {
     readonly principal: ServicePrincipal;
@@ -1689,7 +1695,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
   }
 
   async function resolveSession(
-    request: FastifyRequest,
+    request: Pick<FastifyRequest, "headers">,
   ): Promise<AuthenticatedSession | undefined> {
     const headers = sessionHeaders(request.headers, sessionCookieName);
     requireSessionKey(headers, options.secret, undefined);
@@ -1913,6 +1919,7 @@ export async function createPostgresControllerAuth(
     state,
     iamDriver,
     github,
+    githubRosterMappings = [],
     google,
     oidc,
     passwordSignIn,
@@ -1984,6 +1991,7 @@ export async function createPostgresControllerAuth(
         options.baseURL,
         {
           trustedClientAddress: controllerOptions.clientAddress !== undefined,
+          githubRosterMappings,
           ...(controllerOptions.onOperationalEvent === undefined
             ? {}
             : { onOperationalEvent: controllerOptions.onOperationalEvent }),
@@ -2060,6 +2068,14 @@ export async function createPostgresControllerAuth(
         throw new CallerStateDeniedError("The assigning session is no longer current.");
       }
     },
+    ...(persistence && githubRosterMappings.length
+      ? {
+          githubRosterMappings,
+          readRosterOverride: persistence.readRosterOverride.bind(persistence),
+          setRosterOverride: persistence.setRosterOverride.bind(persistence),
+          readRosterStatuses: persistence.readRosterStatuses.bind(persistence),
+        }
+      : {}),
     ...(activationSkipped.length === 0 ? {} : { activationSkipped }),
     ...(withoutExternalIdentity.length === 0 ? {} : { withoutExternalIdentity }),
     ...(humanLogin === undefined

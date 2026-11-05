@@ -79,15 +79,14 @@ assigned."), as account creation does. Email association, signup, identity
 transfer, and self-service linking are rejected. For unknown identities, follow the
 [enrollment procedure](../../guides/deploy/production-installation.md#enable-github-browser-sign-in).
 
-Without an [allowlist](#organization-and-team-allowlist), OCE does not check GitHub
-organization or team membership: any attached GitHub user ID signs in, including someone
-who left. Either way, OCE does not learn when someone leaves or GitHub suspends them, and
-live sessions continue until they expire (at most 8 hours). Offboarding also means acting in OCE
-([account controls](#session-and-recovery-controls)): disable the account to end all
-access and its sessions, or detach its GitHub method to end GitHub sign-in and all its
-sessions; revoke ends sessions but allows a fresh sign-in. None of these ends a
-[service key](service-api-keys.md#revoke-or-rotate-a-service-key) the person uses
-from the CLI: revoke it, or delete its service principal's AccessBindings.
+An [allowlist](#organization-and-team-allowlist) limits which attached GitHub identities
+may sign in. Separately, [mapped Groups](../authorization/default-users.md#map-a-github-team-to-a-group)
+verify membership at sign-in and withdraw access between sign-ins. Without either feature,
+GitHub team membership has no effect on OCE access. To offboard someone fully, use
+[account controls](#session-and-recovery-controls). Disabling the account ends its
+sessions. Detaching GitHub ends that sign-in method and its sessions. Revoking sessions
+allows a fresh sign-in. Revoke [service keys](service-api-keys.md#revoke-or-rotate-a-service-key)
+separately or remove their service principal’s AccessBindings.
 
 `GET /api/auth/providers` returns `github`, `google`, `oidc`, and `sessionBinding` as `true` when enabled,
 with `oidcSignIn` (`label`, `authorizationUrl`) while OIDC is configured,
@@ -183,9 +182,8 @@ refuses every member as `MEMBERSHIP_REQUIRED` with no warning log. If known memb
 refused, check the slugs, that the App is installed on each listed organization, and that its
 owner accepted Members: read. [Issue #3300](https://github.com/openclaw/openclaw-enterprise/issues/3300) tracks verification of GitHub’s responses when App or SAML access is missing.
 
-Membership is checked only at sign-in. Turning the list on applies from the next sign-in
-after the API restarts; existing sessions run until they expire (at most 8 hours), so revoke
-them to apply it at once.
+This sign-in allowlist applies at the next login. Revoke open sessions to end them immediately.
+[Mapped Group membership](../authorization/default-users.md#map-a-github-team-to-a-group) also refreshes between logins.
 
 ## Recovery-only password sign-in
 

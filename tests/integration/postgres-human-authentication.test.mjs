@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import test from "node:test";
+import { assertGithubRosterMemberships } from "../helpers/github-roster-memberships.ts";
 import {
   PostgresHumanAuthentication,
   PostgresPlatformState,
@@ -262,6 +263,62 @@ test(
         assert.equal((await peer.currentSession(session.token)).user.id, recoveryUser.id);
         await peer.revokeSession(session.token);
         assert.equal(await persistence.currentSession(session.token), undefined);
+      },
+    );
+
+    await context.test(
+      "GitHub roster withdrawals preserve independent Group membership sources and fence delayed observations",
+      async () => {
+        const prepared = await preparedAccount("roster");
+        const rosterSeed = auth.principalSeed(prepared, { roleId });
+        await persistence.provisionPasswordAccount(prepared, rosterSeed);
+        const rejecting = new PostgresPlatformState(
+          transportPool(pool, (client, sql, parameters) => {
+            if (
+              sql.includes("INSERT INTO occ.audit_events") &&
+              parameters[4] === "iam.github_roster.refresh"
+            ) {
+              return client.query(sql, ["invalid-audit-id", ...parameters.slice(1)]);
+            }
+            return client.query(sql, parameters);
+          }),
+        );
+        // Observe PostgreSQL on the transaction being tested immediately before its real COMMIT.
+        const observedPool = testPool(context, {
+          connectionString: databaseUrl,
+          options: "-c default_transaction_isolation=repeatable\\ read",
+          max: 1,
+        });
+        const observedIsolation = [];
+        const observedState = new PostgresPlatformState(
+          transportPool(observedPool, async (client, sql, parameters) => {
+            if (sql === "COMMIT") {
+              const { rows } = await client.query(
+                `SELECT current_setting('default_transaction_isolation') AS configured,
+                        current_setting('transaction_isolation') AS effective`,
+              );
+              observedIsolation.push(...rows);
+            }
+            return client.query(sql, parameters);
+          }),
+        );
+        await assertGithubRosterMemberships(
+          state,
+          rejecting,
+          observedState,
+          pool,
+          installation.id,
+          issuer,
+          admin,
+          prepared.id,
+          rosterSeed.principal.id,
+        );
+        // The fixture commits an ordinary session, a mapped session, then a roster override.
+        assert.deepEqual(observedIsolation, [
+          { configured: "repeatable read", effective: "repeatable read" },
+          { configured: "repeatable read", effective: "read committed" },
+          { configured: "repeatable read", effective: "read committed" },
+        ]);
       },
     );
 

@@ -201,7 +201,7 @@ function resolveSettings(settings, secrets) {
  */
 export async function productionSignInConfiguration(
   context,
-  { databaseUrl, settings, secrets, logger, metrics, passwordSlowLaneFloors },
+  { databaseUrl, settings, secrets, logger, metrics, passwordSlowLaneFloors, iam, secretDriver },
 ) {
   const environment = resolveSettings(settings, secrets);
   // The chart mounts the gateway service key Secret at this path; use a private file.
@@ -212,6 +212,9 @@ export async function productionSignInConfiguration(
   }
   const configuration = createInstallationDriverConfiguration();
   configuration.drivers.compute.id = "compute-sign-in-proof";
+  if (iam !== undefined) {
+    configuration.iam = iam;
+  }
   const runtime = await loadInstallationConfiguration({
     mode: "production",
     environment: {},
@@ -250,7 +253,7 @@ export async function productionSignInConfiguration(
       configurationDriver: createTestConfigurationDriver({
         id: installation.drivers.configuration.id,
       }),
-      secretDriver: createTestSecretDriver({ id: installation.drivers.secret.id }),
+      secretDriver: secretDriver ?? createTestSecretDriver({ id: installation.drivers.secret.id }),
       createIAMDriver: (state) =>
         new NativeIAMDriver(state, {
           id: installation.drivers.iam.id,
@@ -430,7 +433,9 @@ export async function serveAsGitHub(t, server) {
  * `fixture.membership(path, subject)` to answer the allowlist's membership lookups with
  * "active", "pending" or an HTTP status; `fixture.paths` records each request path.
  */
-export async function startFakeGitHub(t) {
+/** @param {import("node:test").TestContext} t
+ * @param {(request: import("node:http").IncomingMessage, response: import("node:http").ServerResponse, body: string) => void} [roster] */
+export async function startFakeGitHub(t, roster) {
   const server = createServer();
   const fixture = { mode: "up", requests: 0, paths: [], membership: undefined };
   server.on("request", async (request, response) => {
@@ -469,6 +474,8 @@ export async function startFakeGitHub(t) {
         return;
       }
       response.end(JSON.stringify({ id: Number(subject[1]), login: `fixture-${subject[1]}` }));
+    } else if (roster) {
+      roster(request, response, body);
     } else if (fixture.membership !== undefined) {
       const subject = /^Bearer ghu_fixture_([0-9]+)$/.exec(request.headers.authorization ?? "");
       const answer = subject === null ? 401 : fixture.membership(request.url, Number(subject[1]));
@@ -867,7 +874,7 @@ export async function onboardPasswordAccounts(
   });
   try {
     const headers = await signedInHeaders(app, consoleOrigin, admin, remoteAddress);
-    admin.id = (await currentSession(app, headers.cookie)).user.id;
+    const id = (await currentSession(app, headers.cookie)).user.id;
     const created = {};
     for (const [name, account] of Object.entries(accounts)) {
       const roleName = account.role ?? "reader";
@@ -881,7 +888,7 @@ export async function onboardPasswordAccounts(
         roleId: role.id,
       });
     }
-    return { admin, roles, accounts: created };
+    return { admin: { ...admin, id }, roles, accounts: created };
   } finally {
     await app.close();
   }

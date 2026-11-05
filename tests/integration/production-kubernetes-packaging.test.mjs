@@ -4185,6 +4185,48 @@ test(
     assert.deepEqual(apiEnv.OCC_AUTH_TRUSTED_PROXY_CIDRS, { value: "10.42.0.0/16" });
     assert.deepEqual(apiEnv.OCC_AUTH_TRUSTED_PROXY_PRESET, { value: "ingress-nginx" });
     assert.equal(apiEnv.OCC_AUTH_CLIENT_IP_HEADER, undefined);
+    const rosterSettings = {
+      ...githubLoginValues,
+      "auth.github.teamRosterTokenSecretName": "team-roster-reader",
+    };
+    await assert.rejects(() => signInObjects(rosterSettings), /explicit auth.github.egressCidrs/);
+    const roster = await signInObjects({ ...rosterSettings, ...githubEgressValues });
+    const workerPod = roster.selected("Deployment", "worker").spec.template.spec;
+    const apiPod = roster.selected("Deployment", "api").spec.template.spec;
+    assert.ok(!apiPod.volumes.some((volume) => volume.name === "github-team-reader"));
+    assert.ok(!roster.apiEnv.OCC_GITHUB_TEAM_TOKEN_FILE);
+    assert.deepEqual(
+      workerPod.volumes.find((volume) => volume.name === "github-team-reader").secret,
+      {
+        secretName: "team-roster-reader",
+        defaultMode: 288,
+        items: [{ key: "token", path: "token" }],
+      },
+    );
+    assert.ok(
+      workerPod.containers[0].volumeMounts.some(
+        (mount) =>
+          mount.name === "github-team-reader" &&
+          mount.mountPath === "/etc/openclaw/github-team-reader" &&
+          mount.readOnly,
+      ),
+    );
+    assert.ok(
+      workerPod.containers[0].env.some(
+        (variable) =>
+          variable.name === "OCC_GITHUB_TEAM_TOKEN_FILE" &&
+          variable.value === "/etc/openclaw/github-team-reader/token",
+      ),
+    );
+    assert.ok(
+      !workerPod.containers[0].env.some(
+        (variable) => variable.name === "OCC_AUTH_GITHUB_CLIENT_SECRET",
+      ),
+    );
+    assert.deepEqual(roster.egress.spec.podSelector.matchExpressions, [
+      { key: "app.kubernetes.io/component", operator: "In", values: ["api", "worker"] },
+    ]);
+    assert.deepEqual(roster.egress.spec.egress, egress.spec.egress);
     // Bootstrap never activates the profile and the worker never signs anyone in.
     const jobs = objects.filter(({ kind }) => kind === "Job");
     assert.ok(jobs.length > 0);

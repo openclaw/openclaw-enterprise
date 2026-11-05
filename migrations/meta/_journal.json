@@ -470,6 +470,13 @@
       "when": 1787000000067,
       "tag": "0067_default_users",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1787000000068,
+      "tag": "0068_github_roster_memberships",
+      "breakpoints": true
     }
   ]
 }

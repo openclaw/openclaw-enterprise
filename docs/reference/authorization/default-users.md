@@ -15,20 +15,20 @@ grants that OCC writes at deployment. To set it up, follow
 
 The optional `iam` block of the
 [Installation startup configuration](../configuration.md#installation-startup-configuration)
-has four fields:
+has the following fields:
 
-| Field               | Value                                                                                                                                   |
-| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `roles`             | Roles, each an `id` and a nonempty `permissions` list of `resourceKind:action` strings, such as `agent:create`.                         |
-| `defaultUserGroups` | Group names. Each account created through `POST /api/auth/accounts` joins each of these Groups.                                         |
-| `ownerRole`         | The ID of a configured Role. OCC binds each creator to it on what it creates.                                                           |
-| `roleBindings`      | Entries of `group`, `role`, and `scope`. The scope is `installation`, or `{ namespace: <name> }` for each Namespace that has that name. |
+| Field                | Value                                                                                                                                           |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `roles`              | Roles, each an `id` and a nonempty `permissions` list of `resourceKind:action` strings, such as `agent:create`.                                 |
+| `defaultUserGroups`  | Group names. Each account created through `POST /api/auth/accounts` joins each of these Groups.                                                 |
+| `githubTeamMappings` | Optional rules for attached GitHub accounts. Each entry names an `id`, numeric `organizationId` and `teamId` strings, and a configured `group`. |
+| `ownerRole`          | The ID of a configured Role. OCC binds each creator to it on what it creates.                                                                   |
+| `roleBindings`       | Entries of `group`, `role`, and `scope`. The scope is `installation`, or `{ namespace: <name> }` for each Namespace that has that name.         |
 
 Role IDs and Group names are 1–63 lowercase letters, digits, `_`, or `-`. A
 permission must be one that some operation checks, as the
 [permissions cheat sheet](../cheatsheets/permissions.md) lists, and cannot be an
-`installation` permission. A binding names a configured Role. A Group named in a
-binding but not in `defaultUserGroups` gets no members. Startup refuses a
+`installation` permission. A binding names a configured Role. A Group can receive members from a default Group assignment or a configured GitHub team. Startup refuses a
 configuration that breaks these rules. This example lets Default users create
 Agents in `default` and Namespaces of their own, and own what they create:
 
@@ -142,10 +142,10 @@ configured Role as `roleId`.
 
 Each account that `POST /api/auth/accounts` creates joins every
 `defaultUserGroups` Group in the transaction that creates it. Its
-`openclaw.auth.accounts.create` audit event lists them in `groupIds`. Signing in
-does not change membership.
+`openclaw.auth.accounts.create` audit event lists them in `groupIds`. GitHub team rules can independently contribute
+membership in the same Group.
 
-There is no API to add or remove a member. An account created before a Group was
+Administrators can withdraw a GitHub rule’s contribution as described below. An account created before a Group was
 listed does not join it. To end a person's access, remove the binding from the
 configuration or disable the account.
 
@@ -154,6 +154,68 @@ Everything the person created stays: their Owner bindings, Namespaces, Agents,
 and deploy-time grants remain until an administrator deletes them or moves the
 Owner binding. Without Namespace read on `default`, the person cannot reach
 their Agents there through the API, but those Agents keep running.
+
+### Map a GitHub team to a Group
+
+Add a rule for a configured Group, for example:
+
+```yaml
+iam:
+  githubTeamMappings:
+    - { id: support, organizationId: "123", teamId: "456", group: support }
+```
+
+Configure up to ten rules, all in one GitHub organization. Organization and team IDs must be positive decimal
+strings no greater than `9007199254740991`. The Group must appear in `roleBindings` or `defaultUserGroups`. Use its ordinary
+Role binding to choose what members may do. Enable GitHub sign-in and attach the
+person’s numeric GitHub subject to their OCE account. On GitHub sign-in, after
+any allowlist checks, the API verifies each mapping with the person’s GitHub
+token. Every mapped team must be visible to all users who sign in through this
+provider. Only organization-visible teams (GitHub API `privacy: closed`) are supported.
+A hidden team, even an unrelated one, makes the check unavailable and refuses
+fresh GitHub sign-in. A user outside the organization may also lack visibility. Membership includes child teams. A failed check refuses that sign-in and
+retains prior access. A verified sign-in and its mapping decisions commit together.
+
+Supply a dedicated, externally rotated GitHub App installation token for the
+organization with **Members: read** to the worker. For Helm, set
+`auth.github.teamRosterTokenSecretName` to the existing Secret, optionally
+set `teamRosterTokenKey` (default `token`), and set `auth.github.egressCidrs`
+to the permitted GitHub HTTPS destinations. The worker mounts the Secret
+read-only and reads the token on each attempt. Outside Helm, supply
+`OCC_AUTH_GITHUB_CLIENT_ID` and an absolute `OCC_GITHUB_TEAM_TOKEN_FILE` on
+the worker. The operator owns the token’s installation, permissions and rotation. Before relying
+on withdrawal to stop writes, run the same supported release and mapping configuration
+on every API and worker replica.
+
+A new or replaced rule must complete its first background read before a GitHub
+sign-in can use it. If the worker cannot verify the roster, GitHub sign-in is
+refused and the rule grants nothing. After this first success, every six hours
+the worker reads all team roster pages, independently verifies
+candidate departures and withdraws only the matching rule’s contribution. A
+partial read, lost visibility or outage retains the last decisions across
+restarts. A roster can contain up to 10,000 members. To confirm a departure,
+the reader must also verify the person’s organization-team list within 100 teams. A member on the roster gains access only after a verified sign-in.
+A person can keep access through another team or an independent Group grant.
+Webhook-driven refresh is proposed future work.
+
+An Installation administrator can inspect `githubTeamRefresh` in
+`GET /api/auth/accounts/:userId`. If a rule stays unavailable, check the organization,
+team visibility and the worker credential’s installation, expiry and Members permission.
+The recovery administrator can use password sign-in during a GitHub outage. To withdraw a person locally, use their
+GitHub method ID from that read. GET the override URL below to read its opaque
+`version` and the target’s `accountVersion`, then POST both versions:
+
+```http
+POST /api/auth/accounts/:userId/methods/:methodId/github-team-mappings/:mappingId/override
+Content-Type: application/json
+
+{"withdrawn":true,"expectedVersion":3,"expectedOverrideVersion":"<version from GET>"}
+```
+
+Use the same endpoint with `withdrawn: false` and both current versions to clear
+the override. A fresh verified GitHub sign-in must follow before that mapping
+can grant access again. Existing sessions use the updated Group permissions on
+their next protected request. See [RFC-0030](https://github.com/openclaw/openclaw-enterprise/pull/4526).
 
 ## The default Namespace
 
@@ -234,8 +296,8 @@ the Agent or the source removes them, as
 
 These parts of the Default users design are not implemented:
 
-- Identity provider group mappings, membership changes at sign-in, and an API
-  to add or remove Group members.
+- First-sign-in account creation, Google and OIDC group mappings, and an API
+  to add arbitrary Group members.
 - Namespace-wide and Group bindings through the Namespace policy API.
 - Shared team Namespaces.
 - Removal of deploy-time grants when an Agent stops using a source.

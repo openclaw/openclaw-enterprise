@@ -8,6 +8,7 @@ import type {
   OccApiRoute,
 } from "@openclaw-enterprise/contracts";
 import {
+  CallerStateDeniedError,
   NoActiveAgentRevisionError,
   QualifiedAuthorizationDeniedError,
   ResourceConflictError,
@@ -613,7 +614,38 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     kind: "http" | "websocket",
     expectedRevisionId?: string,
   ) {
-    const result = nativeAdminProxyContext(request, hostname, expectedRevisionId);
+    let transport: NativeAdminProxyContext | undefined;
+    const result = (async () => {
+      const first = await nativeAdminProxyContext(request, hostname, expectedRevisionId);
+      if (
+        expectedRevisionId !== undefined ||
+        !isNativeAdminProxyResolution(first) ||
+        !getController()?.hasGithubRosterMappings
+      ) {
+        return first;
+      }
+      // A fresh transport loads its private Gateway key only for an authorized destination.
+      // The load can wait. Reconfirm the original caller and revision before forwarding.
+      const prepared = await nativeAdminProxyTransportContext(first);
+      if (prepared === undefined) {
+        return undefined;
+      }
+      const current = await nativeAdminProxyContext(request, hostname, first.revisionId);
+      if (isNativeAdminProxyResolution(current)) {
+        if (
+          current.parentSessionId !== first.parentSessionId ||
+          current.actorId !== first.actorId
+        ) {
+          return nativeAdminProxyDenial("session_invalid");
+        }
+        transport = {
+          ...prepared,
+          gatewayBase: current.gatewayBase,
+          agentOrigin: current.target.origin,
+        };
+      }
+      return current;
+    })();
     // Own the result through its audit attempt, even after the caller stops waiting.
     // Tracking one chain prevents shutdown from missing admission becoming an append.
     const audit = result.then(
@@ -634,7 +666,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
     );
     nativeAdminPendingWork.add(audit);
     void audit.then(() => nativeAdminPendingWork.delete(audit));
-    return { result, audit };
+    return { result, audit, transport: () => transport };
   }
 
   async function drainNativeAdminWork(): Promise<void> {
@@ -1056,13 +1088,25 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       return nativeAdminProxyDenial("authorization_denied");
     }
     try {
-      const resolved = await requireAvailableNativeAdminTarget({
+      const target = {
         actorId: currentActor,
         namespaceId: agent.namespaceId,
         agentId: agent.id,
         expectedHost: hostname,
         ...(expectedRevisionId === undefined ? {} : { expectedRevisionId }),
-      });
+      };
+      const controller = getController();
+      if (!controller) {
+        throw dependencyUnavailable();
+      }
+      const resolved =
+        expectedRevisionId === undefined || !controller.hasGithubRosterMappings
+          ? await requireAvailableNativeAdminTarget(target)
+          : await controller.transact(async (unit) => {
+              await options.auth.holdSession(unit, session, request);
+              await unit.installations.holdIAMConfiguration("shared");
+              return requireAvailableNativeAdminTarget(target);
+            }, "read committed");
       const requestAuthority = nativeAdminAuthority(request.headers.host);
       if (requestAuthority !== new URL(resolved.target.origin).host.toLowerCase()) {
         return nativeAdminProxyDenial("session_invalid");
@@ -1083,6 +1127,9 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       // AuthorizationDeniedError: close or refuse it as a dependency failure.
       if (isDependencyUnavailable(error)) {
         return nativeAdminProxyDenial("dependency_failure");
+      }
+      if (error instanceof CallerStateDeniedError) {
+        return nativeAdminProxyDenial("session_invalid");
       }
       if (isAuthorizationDenied(error)) {
         return nativeAdminProxyDenial("authorization_denied", {
@@ -1195,7 +1242,9 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       canonicalFailure(reply, dependencyUnavailable());
       return true;
     }
-    const context = await boundedNativeAdminAdmission(nativeAdminProxyTransportContext(admission));
+    const context =
+      operation.transport() ??
+      (await boundedNativeAdminAdmission(nativeAdminProxyTransportContext(admission)));
     if (context === undefined || nativeAdminShuttingDown || request.raw.socket.destroyed) {
       canonicalFailure(reply, dependencyUnavailable());
       return true;
@@ -1235,12 +1284,10 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
       socket.destroy();
       return;
     }
-    const context = await boundedNativeAdminAdmission(nativeAdminProxyTransportContext(admission));
-    if (socket.destroyed || nativeAdminShuttingDown) {
-      socket.destroy();
-      return;
-    }
-    if (context === undefined) {
+    const context =
+      operation.transport() ??
+      (await boundedNativeAdminAdmission(nativeAdminProxyTransportContext(admission)));
+    if (context === undefined || socket.destroyed || nativeAdminShuttingDown) {
       socket.destroy();
       return;
     }

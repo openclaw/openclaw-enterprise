@@ -38,7 +38,7 @@ const plugin = {
 
 async function createFixture(
   t,
-  { logger, auditSink = new InMemoryAuditSink(), ...gatewayOptions } = {},
+  { logger, githubRosterMappings, auditSink = new InMemoryAuditSink(), ...gatewayOptions } = {},
 ) {
   const clock = createControlledClock();
   const secretDriver = createTestSecretDriver();
@@ -48,6 +48,7 @@ async function createFixture(
   });
   const fixture = await createConsoleAppFixture(t, {
     auditSink,
+    githubRosterMappings,
     secretDriver,
     credentialGatewayDriver: gateway,
     logger,
@@ -620,6 +621,56 @@ test("a Refresh Driver change during polling fences completion without replaying
     1,
   );
   assertNoCredentials(fixture);
+});
+
+test("a mapped Installation discards only the claimed login when authority is withdrawn during its poll", async (t) => {
+  const entered = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  t.after(() => release.resolve());
+  const fixture = await createFixture(t, {
+    githubRosterMappings: [
+      {
+        id: "members",
+        providerId: "github:fixture",
+        organizationId: "1",
+        teamId: "2",
+        groupId: "group_config_members",
+      },
+    ],
+    beforePoll: async () => {
+      entered.resolve();
+      await release.promise;
+    },
+  });
+  const login = await fixture.start();
+  const initial = await fixture.stored(login);
+  await fixture.clock.advance(5000);
+  const polling = fixture.poll(login);
+  await Promise.race([
+    entered.promise,
+    polling.then(() => assert.fail("the original poll must reach its Driver")),
+  ]);
+  fixture.policy.restrictions.push({
+    id: "withdraw-device-action",
+    namespaceId: fixture.namespace.id,
+    resourceKind: "secret",
+    resourceId: login.session.id,
+    action: "operate",
+    effect: "deny",
+  });
+  release.resolve();
+  const refused = await polling;
+  assert.equal(refused.status, 403, JSON.stringify(refused.body));
+  const stored = await fixture.stored(login);
+  assert.equal(stored.phase, "cancelled");
+  assert.equal(stored.privateState, undefined);
+  assert.equal(fixture.gateway.sources.get(initial.sourceId), "ready");
+  fixture.policy.restrictions.pop();
+  assert.equal((await fixture.poll(login)).status, 409);
+  assert.equal(
+    fixture.gateway.calls.filter(({ operation }) => operation === "pollDeviceAuthorization").length,
+    1,
+  );
 });
 
 test("expiry closes the login handle without removing the ready source or its discovery", async (t) => {

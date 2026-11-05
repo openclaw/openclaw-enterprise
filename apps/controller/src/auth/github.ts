@@ -1,3 +1,4 @@
+import { verifyGitHubTeamSignIn } from "./github-team-roster.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { APIError, type BetterAuthPlugin } from "better-auth";
@@ -19,6 +20,8 @@ import {
   knownDeviceAccountState,
   type PostgresHumanAuthentication,
   type HumanAuthenticationProof,
+  type GithubRosterMapping,
+  type GithubRosterSignInClaim,
 } from "@openclaw-enterprise/occ";
 import {
   exchangeGoogleSubject,
@@ -362,7 +365,12 @@ async function exchangeGithubSubject(
           : { denial: "MEMBERSHIP_UNAVAILABLE", subject, login, failure: membership.failure };
       }
     }
-    return { subject, login };
+    const token = tokens.accessToken;
+    return {
+      subject,
+      login,
+      verifyTeam: (target, signal) => verifyGitHubTeamSignIn(target, subject, token, signal),
+    };
   } catch (error) {
     // Never expose provider response bodies, token values or request credentials.
     return providerExchangeFailure(error, controller.signal);
@@ -497,6 +505,7 @@ export interface HumanLoginAdmissionOptions {
    * server leaves it unset; tests shorten it so stalled-provider cases do not wait 10 s.
    */
   readonly providerDeadlineMs?: number;
+  readonly githubRosterMappings?: readonly GithubRosterMapping[];
   /**
    * Counts one callback refused before it matched a pending attempt. Such a callback is
    * unauthenticated, so it writes no audit event.
@@ -522,6 +531,7 @@ export function createHumanLogin(
   }
   const proofScope = new AsyncLocalStorage<{
     proof?: HumanAuthenticationProof;
+    roster?: readonly { claim: GithubRosterSignInClaim; result: "present" | "absent" }[];
     audit?: { provider: "github"; subject: string; login?: string | undefined; attemptId: string };
   }>();
   const githubLogin =
@@ -685,7 +695,7 @@ export function createHumanLogin(
             userAgent: typeof data.userAgent === "string" ? data.userAgent : null,
           };
           // The original State unit owns this commit, including the login audit.
-          return (await state.issueSession(proof, session, scope.audit)) as R;
+          return (await state.issueSession(proof, session, scope.audit, scope.roster)) as R;
         },
         async findOne<T>(input: Parameters<DBAdapter["findOne"]>[0]): Promise<T | null> {
           if (input.model !== "session") {
@@ -923,10 +933,38 @@ export function createHumanLogin(
                     : undefined,
                 );
               }
+              const roster: { claim: GithubRosterSignInClaim; result: "present" | "absent" }[] = [];
+              if (name === "github" && admission.githubRosterMappings?.length) {
+                // Take every fence before starting any membership read, including ones for the
+                // same Group. No partial set of observations can reach the session transaction.
+                const claims = await Promise.all(
+                  admission.githubRosterMappings.map((mapping) =>
+                    state.beginRosterSignIn(snapshot.proof, mapping),
+                  ),
+                );
+                const signal = AbortSignal.timeout(providerDeadlineMs ?? 10_000);
+                for (const claim of claims) {
+                  const result =
+                    claim && exchange.verifyTeam
+                      ? await exchange.verifyTeam(claim.mapping, signal)
+                      : "unavailable";
+                  if (!claim || result === "unavailable") {
+                    return refuseMembership(
+                      name,
+                      "MEMBERSHIP_UNAVAILABLE",
+                      exchange.subject,
+                      exchange.login,
+                      attemptId,
+                    );
+                  }
+                  roster.push({ claim, result });
+                }
+              }
               const startedAt = performance.now();
               const session = await proofScope.run(
                 {
                   proof: snapshot.proof,
+                  ...(roster.length ? { roster } : {}),
                   ...(name === "github"
                     ? {
                         audit: {

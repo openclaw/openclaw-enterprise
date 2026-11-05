@@ -1,3 +1,4 @@
+import { syncGithubRosterMappings } from "./github-roster-state.ts";
 import { CredentialDeliveryReductions } from "./credential-delivery-reductions.ts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import {
@@ -1326,7 +1327,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           (SELECT id, namespace_id, name FROM occ.iam_groups) v),
           '[]'::jsonb) AS groups,
         COALESCE((SELECT jsonb_agg(v ORDER BY group_id, principal_id) FROM
-          (SELECT namespace_id, group_id, principal_id FROM occ.iam_group_memberships) v),
+          (SELECT DISTINCT namespace_id, group_id, principal_id FROM occ.iam_group_memberships) v),
           '[]'::jsonb) AS memberships,
         COALESCE((SELECT jsonb_agg(v ORDER BY id) FROM
           (SELECT id, namespace_id, identity_subject_id, group_subject_id, role_id,
@@ -1564,8 +1565,11 @@ export class PostgresPlatformState implements PlatformStateStore {
     );
   }
 
-  async transact<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
-    return this.execute(false, async (state) => work(state));
+  async transact<T>(
+    work: (state: PlatformUnitOfWork) => Promise<T>,
+    isolation?: "read committed",
+  ): Promise<T> {
+    return this.execute(false, async (state) => work(state), isolation === "read committed");
   }
 
   /**
@@ -2048,6 +2052,10 @@ export class PostgresPlatformState implements PlatformStateStore {
           [sessionId, userId],
         );
         return session.rowCount === 1;
+      },
+      syncGithubRosterMappings: async (mappings) => {
+        await installations.holdIAMConfiguration("exclusive");
+        await syncGithubRosterMappings(client, mappings);
       },
       holdIAMConfiguration: async (mode) => {
         // A transaction-scoped advisory lock: no row stands for the whole configuration.

@@ -1110,9 +1110,70 @@ export const iamGroups = occSchema.table(
   ],
 );
 
+export const githubRosterMappings = occSchema.table(
+  "github_roster_mappings",
+  {
+    key: uuid("key").primaryKey().defaultRandom(),
+    mappingId: text("mapping_id").notNull(),
+    providerId: text("provider_id").notNull(),
+    organizationId: text("organization_id").notNull(),
+    teamId: text("team_id").notNull(),
+    groupId: text("group_id").notNull(),
+    generation: uuid("generation"),
+    refreshId: uuid("refresh_id"),
+    nextRefreshAt: timestamp("next_refresh_at", { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp()`),
+    lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
+    lastSuccessfulAt: timestamp("last_successful_at", { withTimezone: true }),
+    status: text("status").notNull().default("pending"),
+  },
+  (table) => [
+    unique().on(
+      table.mappingId,
+      table.providerId,
+      table.organizationId,
+      table.teamId,
+      table.groupId,
+    ),
+    uniqueIndex("github_roster_mapping_active_id")
+      .on(table.mappingId)
+      .where(sql`${table.generation} IS NOT NULL`),
+  ],
+);
+
+export const githubRosterSources = occSchema.table(
+  "github_roster_sources",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    overrideVersion: uuid("override_version"),
+    mappingKey: uuid("mapping_key")
+      .notNull()
+      .references(() => githubRosterMappings.key),
+    methodId: text("method_id").notNull(),
+    methodVersion: integer("method_version").notNull(),
+    denied: boolean("denied").notNull().default(false),
+    signInId: uuid("sign_in_id"),
+    refreshId: uuid("refresh_id"),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.methodId, table.methodVersion],
+      foreignColumns: [account.id, account.authenticationVersion],
+    })
+      .onUpdate("restrict")
+      .onDelete("cascade"),
+    unique().on(table.mappingKey, table.methodId),
+    index("github_roster_sources_method").on(table.methodId),
+  ],
+);
+
 export const iamGroupMemberships = occSchema.table(
   "iam_group_memberships",
   {
+    rosterSourceId: uuid("roster_source_id").references(() => githubRosterSources.id, {
+      onDelete: "cascade",
+    }),
     namespaceId: text("namespace_id").references(() => namespaces.id, {
       onDelete: "restrict",
       onUpdate: "restrict",
@@ -1125,7 +1186,12 @@ export const iamGroupMemberships = occSchema.table(
       .references(() => iamIdentities.id, { onDelete: "restrict", onUpdate: "restrict" }),
   },
   (table) => [
-    unique("iam_group_memberships_group_principal_unique").on(table.groupId, table.principalId),
+    uniqueIndex("iam_group_memberships_roster_source")
+      .on(table.rosterSourceId)
+      .where(sql`${table.rosterSourceId} IS NOT NULL`),
+    unique("iam_group_memberships_group_principal_source_unique")
+      .on(table.groupId, table.principalId, table.rosterSourceId)
+      .nullsNotDistinct(),
   ],
 );
 
@@ -1582,6 +1648,7 @@ export const account = occSchema.table(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
   },
   (table) => [
+    unique("account_id_authentication_version_unique").on(table.id, table.authenticationVersion),
     check("account_authentication_version_positive", sql`${table.authenticationVersion} > 0`),
     check(
       "account_identity_only",

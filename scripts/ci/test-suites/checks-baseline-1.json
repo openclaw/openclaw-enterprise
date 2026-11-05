@@ -21,6 +21,7 @@
     "tests/conformance/kubernetes-secret-driver.test.mjs",
     "tests/docs/docs-site.test.mjs",
     "tests/integration/github-login-transport.test.mjs",
+    "tests/integration/github-team-roster.test.ts",
     "tests/conformance/kubernetes-compute.test.mjs",
     "tests/conformance/kubernetes-provider-harness.test.mjs",
     "tests/conformance/kubernetes-harness-workspace-volume.test.mjs",
@@ -472,6 +473,9 @@
     },
     {
       "path": "tests/integration/github-login-transport.test.mjs"
+    },
+    {
+      "path": "tests/integration/github-team-roster.test.ts"
     },
     {
       "path": "tests/conformance/plugin-compute.test.mjs"

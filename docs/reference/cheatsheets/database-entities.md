@@ -358,6 +358,17 @@ memberships of a configured Group can be deleted.
 - `namespace_id`
 - `group_id`
 - `principal_id`
+- `roster_source_id` — references the GitHub roster source that granted membership. A null value marks membership independent of GitHub mappings.
+
+### `github_roster_mappings`
+
+Tracks the GitHub team, OCE Group, active generation and last refresh for each
+[team mapping](../authorization/default-users.md#map-a-github-team-to-a-group).
+
+### `github_roster_sources`
+
+Links a mapping to an account's GitHub sign-in method and records any
+administrator override. One Group can have several independent sources of membership.
 
 ### `iam_roles`
 

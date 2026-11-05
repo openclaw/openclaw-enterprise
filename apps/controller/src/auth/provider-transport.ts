@@ -58,7 +58,14 @@ export type ProviderDenial = "EXTERNAL_IDENTITY_REJECTED" | "PROVIDER_UNAVAILABL
 // unavailable provider also says why, for the operator log. The membership denials come only
 // from GitHub's sign-in allowlist, after the provider authenticated `subject`.
 export type ProviderExchange =
-  | { readonly subject: string; readonly login?: string | undefined }
+  | {
+      readonly subject: string;
+      readonly login?: string | undefined;
+      readonly verifyTeam?: (
+        target: { readonly organizationId: string; readonly teamId: string },
+        signal: AbortSignal,
+      ) => Promise<"present" | "absent" | "unavailable">;
+    }
   | { readonly denial: "EXTERNAL_IDENTITY_REJECTED" }
   | { readonly denial: "PROVIDER_UNAVAILABLE"; readonly failure?: ProviderFailure }
   | {
@@ -299,11 +306,12 @@ async function readProviderJSON(
     : rejected();
 }
 
-async function readBoundedJSON(
+export async function readBoundedJSON(
   response: Response,
   body: ReadableStream<Uint8Array>,
   signal: AbortSignal,
   step: ProviderStep,
+  decode: (bytes: Buffer) => unknown = (bytes) => JSON.parse(bytes.toString("utf8")),
 ): Promise<Record<string, unknown>> {
   const reader = body.getReader();
   try {
@@ -326,7 +334,7 @@ async function readBoundedJSON(
       }
       chunks.push(value);
     }
-    const data: unknown = JSON.parse(Buffer.concat(chunks, length).toString("utf8"));
+    const data = decode(Buffer.concat(chunks, length));
     if (typeof data !== "object" || data === null || Array.isArray(data)) {
       throw new ProviderUnavailableError({ step, cause: "malformed_response" });
     }

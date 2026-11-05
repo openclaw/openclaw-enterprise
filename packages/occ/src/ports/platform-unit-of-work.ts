@@ -23,6 +23,9 @@ export function bindPlatformUnitOfWork(
       "holdPrincipalAccount",
       "holdAuthenticationSession",
       "holdIAMConfiguration",
+      ...(repositories.installations.syncGithubRosterMappings === undefined
+        ? []
+        : ["syncGithubRosterMappings" as const]),
     ]),
     namespaces: bindRepository(repositories.namespaces, lifetime, [
       "findNamespace",
