@@ -196,6 +196,34 @@ of a different published image set, even at the same OCE commit.
 Run `node --test tests/integration/skipper-release.test.ts` for positive and adverse
 offline checks through the actual aggregate CLI. They do not execute an installed journey.
 
+## Verify OpenShell Git withdrawal and restart
+
+The [installed retention case](../../tests/integration/openshell-git-retention-real.test.ts)
+uses the ordinary authenticated OpenShell installation, a dedicated Codex Agent,
+and an `openai` CredentialSource. Its native startup probe uses the authorized
+`OPENAI_API_KEY` and `OCC_TEST_OPENAI_MODEL`; model responses are not simulated.
+Git and App issuance use a private HTTPS fixture with real `git-http-backend`.
+No live GitHub repository or ambient GitHub credential is used.
+
+The case first requires successful authenticated Git and a real model response.
+It then withdraws the Agent's standing approval and requires the same revision,
+Sandbox and runtime containers to complete a file operation and another model
+response while a fresh Git request fails without reaching the origin. It restarts
+the installed worker with persisted PostgreSQL state and custody material, then
+repeats those observations.
+
+The fixture owns its loopback Kubernetes installation and cleanup. Its supervisor
+trust image adds only the private origin's public CA; the executable must match
+the pinned stock image. Record the tested source, image digests and each
+observation. This proves the selected installation and controlled Git boundary,
+not live GitHub access or a different published image set.
+
+The case is registered in the `openshell` lane. For a reviewed same-repository PR,
+a maintainer selects [QA Matrix Advisory](ci/qa-advisory.md#trigger) with `full-qa`.
+The existing environment supplies credentials inside the job. The narrower
+`qa-openshell-compose` label does not run this case. A complete, non-skipped pass
+and successful cleanup are required; registration alone is not qualification.
+
 ## Controller and broker image compatibility probe
 
 Run the `image-pair-qualification` lane using the

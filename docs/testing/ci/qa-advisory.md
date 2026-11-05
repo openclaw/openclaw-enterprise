@@ -13,7 +13,7 @@ QA Matrix Advisory is one workflow with three groups of test jobs:
 
 - **QA matrix:** Codex model responses, Calendar access, and Console Secrets on
   Compose and Kubernetes installations.
-- **OpenShell:** five parallel jobs for sandbox policy, credentials, plugins,
+- **OpenShell:** six parallel jobs for sandbox policy, credentials, Git withdrawal, plugins,
   installation, and Agent redeployment.
 - **Local installation:** the hosted local setup tests.
 
@@ -99,7 +99,7 @@ on its own Ubuntu 24.04 VM, with a Landlock check, Docker daemon, cluster, and
 private state. These are parallel jobs within the same advisory run, named
 `QA advisory (OpenShell / <test-file-basename>)`.
 
-The selection job reads the five files in the
+The selection job reads the six files in the
 [OpenShell manifest](../../../scripts/ci/test-suites/openshell.json). Each resulting
 job calls `run-ci-lane` with `lane: openshell` and its selected `test-file`. The
 `qa-openshell-compose` label selects only the first row below.
@@ -111,6 +111,7 @@ job calls `run-ci-lane` with `lane: openshell` and its selected `test-file`. The
 | [Sandbox enforcement](../../../tests/integration/sandbox-driver-openshell-k3d-real.test.mjs)       | Provider credential delivery, authenticated Codex access, and Gateway tool policy during normal Agent work.                                                                      |
 | [Kubernetes first Agent](../../../tests/integration/local-first-agent-openshell-k3d-real.test.mjs) | The first-Agent and native redeployment workflow with the control plane in Kubernetes.                                                                                           |
 | [Codex plugin installation](../../../tests/integration/openshell-plugin-install-real.test.ts)      | Selected Codex plugin installation and retention through the OpenShell Agent workflow.                                                                                           |
+| [Git withdrawal and restart](../../../tests/integration/openshell-git-retention-real.test.ts)      | Authenticated Git, standing-approval withdrawal, continued model and file operations, denied origin access, and recovery after an installed worker restart.                      |
 
 The runner requires the selected files' credentials, expected tests, and cleanup.
 A failed job does not cancel its peers. Hosted preparation builds first-Agent
@@ -135,7 +136,7 @@ To run the same coverage as the schedule, configure the
 gh workflow run qa-advisory.yml --repo openclaw/openclaw-enterprise --ref main
 ```
 
-This starts the QA matrix, all five OpenShell jobs, and local installation tests.
+This starts the QA matrix, all six OpenShell jobs, and local installation tests.
 For only OpenShell, use [Full Integration](full-integration.md#run-a-protected-integration-lane)
 with `lane=openshell`.
 
@@ -225,7 +226,7 @@ Missing, filtered, or interrupted tests are not passes.
 | Local installation tests                            | `qa-advisory-local-installation-dev-up-k3d`                                   |
 
 Artifacts expire after seven days. Each OpenShell job reports `scope: focused`
-because it runs one file; complete advisory OpenShell coverage requires all five
+because it runs one file; complete advisory OpenShell coverage requires all six
 to pass.
 
 In `matrix.json`, `scope: full` means both installations and presets with the
