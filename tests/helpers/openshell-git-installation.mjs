@@ -810,7 +810,7 @@ async function installOpenShellGit(t) {
       custodyVersion: custody.resourceVersion,
     };
   };
-  const completedWork = async (pod, { agentId, revisionId }, accepts) => {
+  const workerEvents = async (pod) => {
     const logs = await kube([
       "logs",
       pod.metadata.name,
@@ -820,13 +820,22 @@ async function installOpenShellGit(t) {
       "worker",
       "--tail=2000",
     ]);
+    const events = [];
     for (const line of logs.split("\n")) {
-      let event;
       try {
-        event = JSON.parse(line);
+        const event = JSON.parse(line);
+        if (event !== null && typeof event === "object") {
+          events.push(event);
+        }
       } catch {
-        continue;
+        // Container startup can write non-JSON lines; only structured events qualify.
       }
+    }
+    return events;
+  };
+  const completedWork = async (pod, { agentId, revisionId }, accepts, observed) => {
+    const events = observed ?? (await workerEvents(pod));
+    for (const event of events) {
       if (
         event.event === "worker.completed" &&
         event.agentId === agentId &&
@@ -846,8 +855,45 @@ async function installOpenShellGit(t) {
   const waitForExpiry = async (identity) =>
     eventually("observed repository expiry", async () => {
       const pod = await worker();
+      if (!pod) {
+        return undefined;
+      }
+      const events = await workerEvents(pod);
+      // This bundled Driver event follows the retained-provider profile read and
+      // recording of the reduced generation. A generic cleanup acknowledgement
+      // alone cannot establish that expiry exercised this path rather than v2.
+      const expiry = events.find(
+        (event) =>
+          event.event === "worker.openshell-git-expiry" &&
+          event.namespaceId === namespace.id &&
+          event.agentId === identity.agentId &&
+          event.revisionId === identity.revisionId &&
+          event.repositoryRef === origin.repositoryRef &&
+          event.outcome === "withdrawn" &&
+          event.check === "record-reduced-generation",
+      );
+      if (!expiry) {
+        return undefined;
+      }
+      const completion = await completedWork(
+        pod,
+        identity,
+        (event) => event.code === "REPOSITORY_ACCESS_WITHDRAWN",
+        events,
+      );
       return (
-        pod && completedWork(pod, identity, (event) => event.code === "REPOSITORY_ACCESS_WITHDRAWN")
+        completion && {
+          ...completion,
+          expiry: {
+            event: expiry.event,
+            namespaceId: expiry.namespaceId,
+            agentId: expiry.agentId,
+            revisionId: expiry.revisionId,
+            repositoryRef: expiry.repositoryRef,
+            outcome: expiry.outcome,
+            check: expiry.check,
+          },
+        }
       );
     });
   const restartWorker = async (identity) => {
