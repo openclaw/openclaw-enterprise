@@ -55,17 +55,19 @@ import {
   secretOptionLabel,
   secretPostRequests,
   selectSecret,
-  settledFetches,
   settlePageRequests,
   statusTone,
   takeLayoutShifts,
-  trackSettledFetches,
   versionChooser,
   waitForChosenVersion,
   waitForEnabled,
   waitForInputValue,
-  waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
+import {
+  settledFetches,
+  trackSettledFetches,
+  waitForSettledFetches,
+} from "./console-fetch-accounting.ts";
 import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import {

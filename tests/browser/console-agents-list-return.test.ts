@@ -18,10 +18,9 @@ import {
   newPage,
   persistedDeploymentError,
   settledView,
-  trackSettledFetches,
   waitForCondition,
-  waitForIdleFetches,
 } from "./console-agents-browser-helpers.mjs";
+import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
 import { fulfillPatchedJson } from "./console-patched-response.ts";
 import { refocus, tagView, viewTag } from "./console-refocus-helpers.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";

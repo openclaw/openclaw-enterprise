@@ -53,14 +53,16 @@ import {
   secretOptionLabel,
   secretPostRequests,
   selectSecret,
-  settledFetches,
   takeLayoutShifts,
-  trackSettledFetches,
   waitForCondition,
   waitForEnabled,
+} from "./console-agents-browser-helpers.mjs";
+import {
+  settledFetches,
+  trackSettledFetches,
   waitForIdleFetches,
   waitForSettledFetches,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-fetch-accounting.ts";
 import {
   configurationPostRequests,
   routeInstallationProvisioning,

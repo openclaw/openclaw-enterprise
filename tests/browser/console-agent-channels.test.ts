@@ -38,12 +38,11 @@ import {
   setSlackSelection,
   slackSelectionValue,
   statusTone,
-  trackSettledFetches,
   waitForEnabled,
-  waitForIdleFetches,
   waitForInputValue,
   writeRequests,
 } from "./console-agents-browser-helpers.mjs";
+import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
 import {
   ACCESS_TAB_UNAVAILABLE,
   BOUND_SECRET_UNLISTED,

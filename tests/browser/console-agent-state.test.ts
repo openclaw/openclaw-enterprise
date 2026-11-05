@@ -35,16 +35,18 @@ import {
   persistedDeploymentError,
   recordLayoutShifts,
   selectSecret,
-  settledFetches,
   shortId,
   stopAgentButton,
   takeLayoutShifts,
-  trackSettledFetches,
   waitForChosenVersion,
   waitForEnabled,
+} from "./console-agents-browser-helpers.mjs";
+import {
+  settledFetches,
+  trackSettledFetches,
   waitForIdleFetches,
   waitForSettledFetches,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-fetch-accounting.ts";
 import {
   deploymentRecordUrl,
   expectDeploymentOutcome,
