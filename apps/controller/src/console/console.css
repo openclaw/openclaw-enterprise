@@ -2919,7 +2919,8 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   display: flex;
   gap: var(--space-2);
 }
-.resource-row-actions .icon-button {
+.resource-row-actions .icon-button,
+.connection-destination-table .icon-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2928,7 +2929,8 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   padding: 0;
   color: var(--muted);
 }
-.resource-row-actions .icon-button:not(:disabled, [aria-disabled="true"]):hover {
+.resource-row-actions .icon-button:not(:disabled, [aria-disabled="true"]):hover,
+.connection-destination-table .icon-button:not(:disabled):hover {
   border-color: var(--danger);
   background: var(--danger-subtle);
   color: var(--danger);
@@ -3234,36 +3236,81 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   font-weight: var(--weight-semibold);
   margin-block-start: var(--space-4);
 }
+.connection-destinations {
+  margin-block: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+.connection-destinations > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  cursor: pointer;
+  list-style: none;
+  border-radius: var(--radius-sm);
+  padding: var(--space-1);
+  font-weight: var(--weight-semibold);
+}
+.connection-destinations > summary::-webkit-details-marker {
+  display: none;
+}
+.connection-destinations > summary::after {
+  content: "";
+  width: 0.45rem;
+  height: 0.45rem;
+  margin-inline-end: var(--space-1);
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+}
+.connection-destinations[open] > summary::after {
+  transform: rotate(225deg);
+}
+.connection-destinations > .hint {
+  margin-block: var(--space-2);
+}
 .connection-destination-scroll {
   max-height: 18rem;
   overflow: auto;
-  margin-block: var(--space-2);
+  margin-bottom: var(--space-2);
 }
 .connection-destination-table {
   width: 100%;
-  border-collapse: separate;
-  border-spacing: 0 var(--space-1);
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+.connection-destination-table :is(th, td) {
+  padding: var(--space-1) var(--space-2) var(--space-1) 0;
+  vertical-align: middle;
 }
 .connection-destination-table th {
   position: sticky;
   top: 0;
   z-index: 1;
-  text-align: start;
   background: var(--color-surface);
+  text-align: start;
 }
-.connection-destination-table :is(th, td) {
-  padding-inline-end: var(--space-2);
+.connection-destination-table :is(th, td):nth-child(2) {
+  width: 5.5rem;
 }
-.connection-destination-table td:nth-child(2) {
-  width: 5rem;
-}
-.connection-destination-table td:last-child {
-  width: 1%;
+.connection-destination-table :is(th, td):last-child {
+  width: 2.5rem;
   padding-inline-end: 0;
+  text-align: end;
 }
 .connection-destination-table input {
+  box-sizing: border-box;
   width: 100%;
   min-width: 0;
+  min-height: var(--control-h-sm);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  padding: var(--space-1) var(--space-2);
+  background: var(--color-surface);
+  color: inherit;
+  font: inherit;
 }
 @media (max-width: 38rem) {
   .connection-destination-table thead {
@@ -3272,7 +3319,7 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   .connection-destination-table tr {
     display: grid;
     grid-template-columns: minmax(0, 1fr) 5rem;
-    gap: var(--space-2);
+    gap: var(--space-1) var(--space-2);
     padding-block: var(--space-2);
     border-bottom: 1px solid var(--color-border);
   }
@@ -3284,11 +3331,14 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
   }
   .connection-destination-table td[data-label]::before {
     display: block;
+    color: var(--muted);
+    font-size: var(--text-sm);
     content: attr(data-label);
     text-transform: capitalize;
   }
   .connection-destination-table td:last-child {
     align-self: end;
+    text-align: start;
   }
 }
 .connection-template-row {

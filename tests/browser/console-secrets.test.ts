@@ -133,7 +133,6 @@ test("a template needs an explicit availability when the administrator has no Na
   await archive.getByLabel("Host", { exact: true }).fill("archive.example.test");
   await archive.getByLabel("Port", { exact: true }).fill("8443");
   await archive.getByLabel("Path", { exact: true }).fill("/reports/**");
-  await editor.getByLabel("Approved OAuth scopes").fill("tools.read");
   const register = editor.getByRole("button", {
     name: "Create template and register OAuth client",
   });
@@ -150,7 +149,8 @@ test("a template needs an explicit availability when the administrator has no Na
   // Only the administrator's explicit selection permits saving an Installation-wide client.
   await availability.selectOption({ label: "Installation-wide" });
   const policy = editor.getByLabel("OAuth scope limit");
-  assert.equal(await policy.locator("option:checked").textContent(), "Limit to approved scopes");
+  assert.equal(await policy.locator("option:checked").textContent(), "No template limit");
+  await policy.selectOption({ label: "Limit to approved scopes" });
   // Whitespace in a restricted allowlist can never turn into an unrestricted template.
   const scopes = editor.getByLabel("Approved OAuth scopes");
   await scopes.fill("   ");
@@ -212,6 +212,10 @@ test("a template needs an explicit availability when the administrator has no Na
   const patch = await updated;
   assert.equal(patch.status(), 200, await patch.text());
   assert.deepEqual((await patch.json()).data.current.scopes, ["tools.read"]);
+  await page.getByRole("button", { name: "Edit Company tools" }).click();
+  const reopened = dialog(page, "Edit connection template");
+  assert.equal(await reopened.getByLabel("OAuth scope limit").inputValue(), "restricted");
+  assert.equal(await reopened.getByLabel("Approved OAuth scopes").inputValue(), "tools.read");
 });
 
 test("registering a provider-issued client uses a saved or newly created template without changing an existing default", async (t) => {
@@ -234,12 +238,16 @@ test("registering a provider-issued client uses a saved or newly created templat
   assert.equal(await editor.getByLabel("Template availability").inputValue(), namespace.id);
   // The Google starter proposes concrete reviewed routes. Remove Gmail before saving so a
   // later use of the starter or a catalog update cannot reintroduce it in this version.
+  const summary = editor.locator("summary").filter({ hasText: /^API destinations \(26\)$/ });
   const table = editor.getByRole("table", { name: "HTTPS destinations" });
+  assert.equal(await table.isVisible(), false);
+  await summary.press("Enter");
   const gmail = table
     .getByRole("row")
     .filter({ has: page.locator('input[value="gmail.googleapis.com"]') });
   await gmail.getByRole("button", { name: "Remove destination" }).click();
-  await editor.getByLabel("OAuth scope limit").selectOption({ label: "No template limit" });
+  await editor.getByText("API destinations (25)", { exact: true }).waitFor();
+  assert.equal(await editor.getByLabel("OAuth scope limit").inputValue(), "unrestricted");
   const posted = responseTo(page, "POST", fixture.origin + "/connection-templates");
   await editor.getByRole("button", { name: "Create template", exact: true }).click();
   const result = await posted;
@@ -320,7 +328,7 @@ test("registering a provider-issued client uses a saved or newly created templat
   await editor.getByRole("button", { name: "Use Google OAuth settings" }).click();
   await editor.getByLabel("Template name").fill("Installation Google");
   await editor.getByLabel("Template availability").selectOption({ label: "Installation-wide" });
-  await editor.getByLabel("OAuth scope limit").selectOption({ label: "No template limit" });
+  assert.equal(await editor.getByLabel("OAuth scope limit").inputValue(), "unrestricted");
   await editor.getByRole("button", { name: "Create template", exact: true }).click();
   await editor.waitFor({ state: "hidden" });
   assert.equal(await form.getByLabel("Client availability").inputValue(), "Installation-wide");
@@ -368,7 +376,7 @@ test("a lost template creation response closes registration and reloads the comm
     .click();
   const editor = dialog(page, "Create connection template");
   await editor.getByRole("button", { name: "Use Google OAuth settings" }).click();
-  await editor.getByLabel("OAuth scope limit").selectOption({ label: "No template limit" });
+  assert.equal(await editor.getByLabel("OAuth scope limit").inputValue(), "unrestricted");
   // The real API commits the template. Only the browser response is lost.
   await page.route(fixture.origin + "/connection-templates", async (route) => {
     if (route.request().method() !== "POST") {

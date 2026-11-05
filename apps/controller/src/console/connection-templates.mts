@@ -14,6 +14,7 @@ import {
   type PublicClient,
 } from "./oauth-client-registration.mjs";
 import { button, element, field, validateFields } from "./dom.mjs";
+import { resourceActionIcon } from "./resource-actions.mjs";
 import { googleOAuthProvider } from "./oauth-providers.mjs";
 import type { ConsolePageContext } from "./page-context.mjs";
 
@@ -34,7 +35,8 @@ export async function connectionTemplates(context: Context) {
 
 function destinationEditor(initial: readonly ConnectionEndpoint[], onEdit: () => void) {
   const body = element("tbody");
-  const legend = element("legend");
+  const panel = element("details", { className: "connection-destinations" });
+  const summary = element("summary");
   const rows = new Map<HTMLTableRowElement, ReturnType<typeof inputs>>();
   function inputs(value?: ConnectionEndpoint) {
     return {
@@ -62,7 +64,7 @@ function destinationEditor(initial: readonly ConnectionEndpoint[], onEdit: () =>
     };
   }
   function updateRows() {
-    legend.textContent = `API destinations (${rows.size})`;
+    summary.textContent = `API destinations (${rows.size})`;
     for (const remove of body.querySelectorAll("button")) {
       remove.disabled = rows.size === 1;
     }
@@ -71,7 +73,7 @@ function destinationEditor(initial: readonly ConnectionEndpoint[], onEdit: () =>
     const controls = inputs(value);
     const row = element("tr");
     const remove = button(
-      "Remove",
+      resourceActionIcon("delete"),
       () => {
         const focusRow = row.nextElementSibling ?? row.previousElementSibling;
         rows.delete(row);
@@ -80,7 +82,7 @@ function destinationEditor(initial: readonly ConnectionEndpoint[], onEdit: () =>
         focusRow?.querySelector("input")?.focus();
         onEdit();
       },
-      { size: "sm", "aria-label": "Remove destination" },
+      { className: "icon-button", title: "Remove destination", "aria-label": "Remove destination" },
     );
     row.append(
       ...Object.entries(controls).map(([name, input]) =>
@@ -93,6 +95,7 @@ function destinationEditor(initial: readonly ConnectionEndpoint[], onEdit: () =>
     return controls.host;
   }
   function replace(values: readonly ConnectionEndpoint[]) {
+    panel.open = values.length === 0;
     body.replaceChildren();
     rows.clear();
     for (const value of values) {
@@ -128,19 +131,18 @@ function destinationEditor(initial: readonly ConnectionEndpoint[], onEdit: () =>
     ),
     body,
   );
-  return {
-    element: element(
-      "fieldset",
-      { className: "connection-template-fields connection-destinations" },
-      legend,
-      element(
-        "p",
-        { className: "hint" },
-        "OCE sends credentials only to HTTPS destinations that match a row. Existing connections keep their approved destinations.",
-      ),
-      element("div", { className: "connection-destination-scroll" }, table),
-      add,
+  panel.append(
+    summary,
+    element(
+      "p",
+      { className: "hint" },
+      "OCE sends credentials only to HTTPS destinations that match a row. Existing connections keep their approved destinations.",
     ),
+    element("div", { className: "connection-destination-scroll" }, table),
+    add,
+  );
+  return {
+    element: panel,
     replace,
     controls: () => Array.from(rows.values()).flatMap(({ host, port, path }) => [host, port, path]),
     values: () =>
@@ -399,10 +401,10 @@ export function openConnectionTemplateEditor(
   const scopeLimit = element(
     "select",
     { id: "connection-template-scope-limit" },
-    option("restricted", "Limit to approved scopes"),
     option("unrestricted", "No template limit"),
+    option("restricted", "Limit to approved scopes"),
   );
-  scopeLimit.value = version?.scopes.length === 0 ? "unrestricted" : "restricted";
+  scopeLimit.value = version?.scopes.length ? "restricted" : "unrestricted";
   const scopes = element("textarea", { rows: 2, "data-trim": "" });
   scopes.value = version?.scopes.join("\n") ?? "";
   const approvedScopes = field({

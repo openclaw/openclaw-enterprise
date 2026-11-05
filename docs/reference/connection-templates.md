@@ -20,9 +20,9 @@ When starting consent for an MCP template, send the nonempty `selectedScopes` th
 
 In **Credentials → Connection templates → Create connection template**, **Template availability** starts with the current readable Namespace. If there is none, choose availability before registering a client or saving the template. Choose **Installation-wide** to share the template across Namespaces. Availability is fixed after creation.
 
-Choose **Set up Google OAuth** to fill in Google’s OAuth URLs and the API destinations from the Google Workspace plugin’s reviewed operations. Review each host, port and path. For example, Calendar and Drive both use `www.googleapis.com:443`, with paths `/calendar/**` and `/drive/**`. Add or remove rows before saving. Choose your scope limit and registered client. Saving freezes the list on this version. Existing connections keep the list they approved. Google connections request offline access for refresh after consent.
+Choose **Set up Google OAuth** to fill in Google’s OAuth URLs and the API destinations from the Google Workspace plugin’s reviewed operations. Expand **API destinations** to review each host, port and path. For example, Calendar and Drive both use `www.googleapis.com:443`, with paths `/calendar/**` and `/drive/**`. Add or remove rows before saving. Choose your scope limit and registered client. Saving freezes the list on this version. Existing connections keep the list they approved. Google connections request offline access for refresh after consent.
 
-A new template starts with **Limit to approved scopes**. Enter the scopes callers may request, or select **No template limit**. In the API, `scopes: []` selects the latter. There is no scope-count limit. Required MCP scopes still apply at consent.
+A new template starts with **No template limit** (`scopes: []`). Select **Limit to approved scopes** to restrict which scopes callers may request. There is no scope-count limit. Required MCP scopes still apply at consent.
 
 Use `POST /connection-templates` with one of these setup methods.
 

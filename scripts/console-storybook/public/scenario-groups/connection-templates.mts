@@ -77,7 +77,7 @@ export const connectionTemplateScenarios = {
     oauthCatalog: "ready",
     actions: [click("Set up Google OAuth")],
     description:
-      "Edit the proposed HTTPS destinations before saving. This preview includes sample Gmail, Calendar and Drive routes.",
+      "Expand API destinations to edit the proposed HTTPS routes before saving. This preview includes sample Gmail, Calendar and Drive routes.",
   },
   credentialsManualTemplate: {
     group: "Pages/Credentials",
@@ -98,17 +98,16 @@ export const connectionTemplateScenarios = {
     description:
       "An administrator without a current Namespace must choose availability before saving a template or registering its OAuth client.",
   },
-  credentialsWithoutScopeLimit: {
+  credentialsApprovedScopeLimit: {
     group: "Pages/Credentials",
-    name: "No template scope limit",
+    name: "Limit to approved scopes",
     path: "/console/credentials/connection-templates",
     oauthCatalog: "ready",
     actions: [
       ...openTemplate,
-      { selector: "#connection-template-scope-limit", value: "unrestricted" },
+      { selector: "#connection-template-scope-limit", value: "restricted" },
     ],
-    description:
-      "The administrator explicitly removes the template's scope limit. The provider and the consent request determine which scopes the account grants.",
+    description: "Select Limit to approved scopes to enter the OAuth scopes callers may request.",
   },
   credentialsMcpDiscovery: {
     group: "Pages/Credentials",

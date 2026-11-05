@@ -9,7 +9,7 @@ note under it says so.
 
 ## Set up a Google connection template
 
-Open **Credentials → OAuth clients → Register OAuth client** as an Installation administrator. Choose **Create connection template**, then **Use Google OAuth settings**. Choose availability and allowed scopes. Under **API destinations**, review each proposed host, port and path. Add or remove rows before saving. Choose **Create template** to return to registration. Register the displayed redirect URI with Google and enter the credentials Google issued. [Connection templates](../../reference/connection-templates.md)
+Open **Credentials → OAuth clients → Register OAuth client** as an Installation administrator. Choose **Create connection template**, then **Use Google OAuth settings**. Choose availability. Expand **API destinations** to review each proposed host, port and path. Add or remove rows before saving. Choose **Create template** to return to registration. Register the displayed redirect URI with Google and enter the credentials Google issued. [Connection templates](../../reference/connection-templates.md)
 
 ## Create and use a Secret
 
