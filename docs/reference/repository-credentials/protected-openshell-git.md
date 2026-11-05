@@ -278,32 +278,35 @@ A version that is still deploying has no credential yet, so its requests answer
 Each refused request logs one `worker.openshell-git-denied` line. Its `reasonCode`
 is the code above, and its `reason` is the worker's detailed cause, such as
 `ref_not_allowed`, `draft_rejected`, `session_closed`, `material_unavailable`,
-`installation_changed` or `route_blocked`. The line also carries the Sandbox ID and
-the request ID that the supervisor's own log shows. The
+`installation_changed` or `route_blocked`. It includes the Sandbox and supervisor request IDs. The
 `worker.openshell-git-route-warning` line for a lost credential carries the same
 `reasonCode`, so an alert can tell a removed binding (`access_withdrawn`) from a
 rejected App key (`credential_unavailable`).
 
 ## Route state, restarts and recovery
 
-`REPOSITORY_GIT_ROUTE_PENDING` means Sandbox, supervisor or provider-generation
-verification is incomplete, or material is unavailable. `REPOSITORY_GIT_ROUTE_BLOCKED`
-closes Git until a new revision. Continued chat requires independent model access
-and verified Git-only removal. Unsafe identity changes, retained GitHub access or
-failed observation can require retirement. Removal records one conditional detach
-request, repeated while Git stays attached; a changed Sandbox version or unknown
-gateway outcome retires the runtime.
-An empty profile workspace selects the platform profile. Files-only profiles can
-remain attached: omitted protobuf endpoint/credential lists mean empty lists.
-Exact profile identity and Git-overlap checks still apply.
+`REPOSITORY_GIT_ROUTE_PENDING` means unverified Sandbox/supervisor/provider generation
+or unavailable material. `REPOSITORY_GIT_ROUTE_BLOCKED` closes Git until a new revision.
+Continued chat requires independent model access and verified Git-only removal. Unsafe
+identity changes, retained GitHub access or failed observation can require retirement.
+One conditional detach request repeats while Git stays attached; a changed Sandbox version
+or unknown gateway outcome retires the runtime.
+An original `WITHHELD / CREDENTIAL_EXPIRED` installation requires matching identity/generation,
+the current ready Sandbox instance and an observation under 15 seconds old.
+Expired credentials remain unusable. A cold worker defers under global withholding from
+expired attached Git. Without a warm owner to renew, the saved route and waiting alone
+cannot restore model readiness or authorize cold adoption.
+After detach, Git must be revoked and the model ready.
+An empty profile workspace selects the platform profile. Files-only profiles may
+remain: omitted protobuf endpoint/credential lists are empty. Exact profile identity
+and Git-overlap checks apply.
 
-A transient observation failure closes access until the same installation verifies,
-with retry backoff from 1 s to 10 s. The held-launch paths (`github-repository`,
-protected `git-write`, and installation preview) cannot be adopted by a replacement
-worker: deploy a new revision after `worker_replaced` or terminal `bootstrap_failed`.
-Waiting for reconciliation cannot reopen that route. Other qualified paths may retry
-a pre-write read or re-observe durable delivery after restart. No path replays an
-uncertain provider write. Provider writes retain their own deadline. See
+Transient observation failure closes access until the same installation verifies,
+with 1–10 s retry backoff. Replacement workers cannot adopt held-launch paths
+(`github-repository`, protected `git-write`, installation preview): deploy a new revision
+after `worker_replaced` or terminal `bootstrap_failed`; reconciliation cannot reopen it.
+Other qualified paths may retry pre-write reads or re-observe durable delivery after restart.
+No path replays uncertain provider writes; writes retain their own deadline. See
 [Credential Proxy lifecycle](../drivers/credential-proxy.md#cancellation-retries-and-uncertainty).
 Prepared-material expiry, quarantine and retirement belong to
 [Token Service lifecycle](../repository-credentials.md#token-service-lifecycle) and
@@ -316,13 +319,11 @@ or `gateway_unauthorized`. `worker.openshell-git-route-warning` distinguishes
 `withdrawn` and `repository_expired` when another worker closed the route) and
 `retained` ones.
 `OPENSHELL_GIT_WITHDRAWAL_UNRECORDED` means the store did not record a withdrawal:
-this worker still refuses the route, but confirm its Sandbox was deleted, or another
-worker could adopt it. The worker drops a closed route once its Sandbox reads absent
-(twice if it never observed one); a failed read keeps it. A read the gateway refuses by
-the worker's identity logs one `retained` warning with `gateway_unauthorized`: the
-route stays in memory, read again with backoff, until a read finds its Sandbox gone.
-The worker still refuses to
-prepare, adopt or verify that revision, and later denials log `no_binding`.
+this worker still refuses the route, but confirm Sandbox deletion or another worker
+could adopt it. A closed route is dropped after an absent Sandbox read (two if never
+observed); failed reads retain it. Gateway refusal of the worker's identity logs one
+`retained` warning with `gateway_unauthorized`. The route remains, reread with backoff
+until absent; prepare, adopt and verify stay refused. Later denials log `no_binding`.
 `worker.openshell-git-route` reports adoption and restoration, with `durationMs`.
 Correlate the revision and request ID with `worker.openshell-git-denied`.
 

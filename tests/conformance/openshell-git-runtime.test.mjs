@@ -1874,6 +1874,7 @@ test("Git expiry observes the original model in the reduced stock installation, 
     box.spec.provider_attachment_epoch = sv.attachmentEpoch;
     box.annotations = { "openclaw.dev/revision-id": r.id };
     box.resourceVersion = "13";
+    box.mainProcessInstanceId = sv.networkInstanceId;
     let detach;
     let sends = 0;
     // The gateway's durable request-ID claims (OpenShell 0.1.5 mutation replay): a request ID
@@ -1951,7 +1952,7 @@ test("Git expiry observes the original model in the reduced stock installation, 
         box.resourceVersion = "14";
       }
       const result = {
-        state: "PROVIDER_READINESS_STATE_" + (oldExpired ? "FAILED" : status),
+        state: "PROVIDER_READINESS_STATE_" + (oldExpired ? "WITHHELD" : status),
         reason: oldExpired ? "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED" : undefined,
         receipt: {
           workspace,
@@ -1974,14 +1975,40 @@ test("Git expiry observes the original model in the reduced stock installation, 
           credentialsInstalled: !oldExpired,
           launchEnvironmentInstalled: !oldExpired,
           policyActive: true,
-          reason: "",
+          reason: oldExpired ? "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED" : "",
         },
         networkInstanceId: sv.networkInstanceId,
         observedTime: new Date().toISOString(),
         evaluatedTime: new Date().toISOString(),
       };
+      if (oldExpired) {
+        if (fault === "replaced live instance") {
+          // Replacement lands after the first Sandbox read; the report still names the old one.
+          box.mainProcessInstanceId = "replacement-instance";
+        }
+        if (fault === "stopped live instance") {
+          box.phase = "SANDBOX_PHASE_STOPPING";
+        }
+        if (fault === "generic withholding") {
+          result.reason = "PROVIDER_READINESS_REASON_CREDENTIALS_WITHHELD";
+        }
+        if (fault === "failed predecessor") {
+          result.state = "PROVIDER_READINESS_STATE_FAILED";
+        }
+        if (fault === "stale predecessor") {
+          result.observedTime = new Date(Date.parse(result.evaluatedTime) - 15_000).toISOString();
+        }
+        if (fault === "changed predecessor") {
+          result.receipt.desired.providerEnvRevision = "7";
+          result.observed.providerEnvRevision = "7";
+        }
+      }
       if (absent) {
         trace.push(receiptId ?? "OBSERVE");
+        if (fault === "expired after detach") {
+          result.state = "PROVIDER_READINESS_STATE_WITHHELD";
+          result.reason = "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED";
+        }
         if (fault === "different generation") {
           result.receipt.desired.policyHash = "substitute";
         }
@@ -2140,9 +2167,24 @@ test("Git expiry observes the original model in the reduced stock installation, 
       }[fault] ?? [];
     if (expectedFirst === "retire-runtime") {
       assert.deepEqual(failures(), expectedFailures);
-      if (["replacement Pod", "Git profile scope changed"].includes(fault)) {
+      if (
+        [
+          "replacement Pod",
+          "Git profile scope changed",
+          "generic withholding",
+          "failed predecessor",
+          "stale predecessor",
+          "changed predecessor",
+          "replaced live instance",
+          "stopped live instance",
+        ].includes(fault)
+      ) {
         assert.equal(sends, 0);
       }
+      assert.ok(
+        !expiries(f).some((event) => event.check === "record-reduced-generation"),
+        "refused evidence must not establish retained-runtime completion",
+      );
       assert.deepEqual(violations, []);
       return;
     }
@@ -2209,6 +2251,13 @@ test("Git expiry observes the original model in the reduced stock installation, 
     ["Sandbox moved after intent", "pending", "retire-runtime"],
     ["Sandbox moved before send", "retire-runtime"],
     ["replacement Pod", "retire-runtime"],
+    ["generic withholding", "retire-runtime"],
+    ["failed predecessor", "retire-runtime"],
+    ["stale predecessor", "retire-runtime"],
+    ["changed predecessor", "retire-runtime"],
+    ["replaced live instance", "retire-runtime"],
+    ["stopped live instance", "retire-runtime"],
+    ["expired after detach", "retire-runtime"],
     ["Git profile scope changed", "retire-runtime"],
     ["model profile belongs to another workspace", "retire-runtime"],
     ["no-op", "retire-runtime"],

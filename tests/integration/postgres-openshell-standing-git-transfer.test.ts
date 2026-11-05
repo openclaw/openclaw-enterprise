@@ -287,6 +287,7 @@ test(
       return r;
     };
     let runtime = newRuntime();
+    let retainedWarm: OpenShellGitRuntime | undefined;
     const readiness = async (r: AgentRevision) => {
       const entry = (await runtime["entries"].get(r.id))!;
       entry.nextRefreshAt = 0;
@@ -348,6 +349,8 @@ test(
     let preparationFailure: unknown;
     let modelEnvironment: Record<string, string> | undefined;
     let askModel: ((phase: "before" | "after") => Promise<void>) | undefined;
+    let preparations = 0;
+    let observations = 0;
     const compute = {
       ...f.compute,
       activationOrder: "afterCommit" as const,
@@ -363,6 +366,7 @@ test(
       validateRepositoryCredentials: kube.validateRepositoryCredentials.bind(kube),
       validateExecutionAdmission: kube.validateExecutionAdmission.bind(kube),
       async prepareRevision(r: AgentRevision, custody: ComputeRevisionContext) {
+        preparations++;
         try {
           kube["validateRevisionExecution"](r, custody);
           const resolved = custody.harnessAuth!;
@@ -547,6 +551,12 @@ test(
           throw error;
         }
       },
+      async observeRevision(r: AgentRevision) {
+        assert.equal(r.id, revision.id);
+        observations++;
+        // This controlled workload observation is independent of Git provider readiness.
+        return { state: world.id === sandboxId ? ("running" as const) : ("lost" as const) };
+      },
       verifyRepositoryExecution: kube.verifyRepositoryExecution.bind(kube),
       async retireExpiredRepositoryAccess(r: AgentRevision, signal: AbortSignal) {
         const result = await kube.retireExpiredRepositoryAccess(r, signal);
@@ -572,6 +582,8 @@ test(
       reason?: string;
       workId?: string;
       outcome?: string;
+      revisionId?: string;
+      harnessState?: string;
     };
     const events: Event[] = [];
     const selectDrivers = (d: InstallationRuntimeDrivers) => ({
@@ -816,8 +828,8 @@ test(
       t.diagnostic(
         "first private commit transferred, second does not exist locally; no broker or receipt",
       );
-      // A worker stops after recording custody. The next worker and the warm predecessor
-      // both inspect an actually expired installation; neither gets to extend its first deadline.
+      // Stop the worker while retaining its witnessed runtime. Stock globally withholds
+      // expired provider environments, so a cold worker cannot reconstruct that witness.
       await f.stop();
       // This provider would refuse DELETE for an expired credential. No such request is
       // needed after the authenticated expiry plus the owner's full clock-skew allowance.
@@ -836,19 +848,8 @@ test(
         undefined,
         "expired identity cannot authorize Git",
       );
-      await runtime.close();
+      retainedWarm = runtime;
       runtime = newRuntime();
-      const identity = await kube.verifyRepositoryExecution(warm, signal);
-      assert.deepEqual(identity, {
-        executionId: execution.executionId,
-        fingerprint: execution.fingerprint,
-      });
-      assert.deepEqual(
-        await routes.standing(revision),
-        oldFence,
-        "cold observation does not claim a new fence",
-      );
-      assert.equal(await runtime.lookup(id, signal), undefined);
       // Only this Agent's attempts: the database may hold an earlier run's.
       const custody = () =>
         f.observerPool
@@ -868,6 +869,62 @@ test(
       assert.deepEqual(await custody(), [{ state: "committed", custody: "retire", erased: false }]);
       assert.equal(gh.trace.filter((x) => x.method === "DELETE").length, 0);
       await delay(Math.max(0, issue1.expires + 60_100 - Date.now()));
+      const beforeCold = {
+        issued: gh.issuesOfTokens.length,
+        writes: world.writes,
+        preparations,
+        observations,
+        events: events.length,
+      };
+      await start();
+      const refused = await waitForRevisionPass(
+        "cold worker defers globally withheld execution while independently supervising it",
+        f,
+        revision,
+        async () =>
+          events
+            .slice(beforeCold.events)
+            .find(
+              (event) =>
+                event.event === "worker.completed" &&
+                event.revisionId === revision.id &&
+                event.code === "REPOSITORY_EXECUTION_UNVERIFIED",
+            ),
+        30_000,
+      );
+      await f.stop();
+      assert.ok(refused.workId?.startsWith(`agent_revision:${revision.id}:maintenance:`));
+      assert.equal(refused.outcome, "pending");
+      assert.equal(refused.harnessState, "running");
+      assert.ok(observations > beforeCold.observations);
+      const queue = new f.PostgresWorkQueue(f.observerPool, { maxAttempts: 1 });
+      const deferred = await queue.findWork(refused.workId!);
+      assert.equal(deferred?.state, "queued");
+      assert.equal(deferred?.attemptCount, 0, "missing evidence does not spend the retry budget");
+      assert.equal((await f.currentAgent(owner))?.activeRevisionId, revision.id);
+      assert.deepEqual(
+        { issued: gh.issuesOfTokens.length, writes: world.writes, preparations },
+        {
+          issued: beforeCold.issued,
+          writes: beforeCold.writes,
+          preparations: beforeCold.preparations,
+        },
+        "cold refusal does not prepare or deliver successor material",
+      );
+      assert.deepEqual(
+        await routes.standing(revision),
+        oldFence,
+        "cold refusal leaves the fence unchanged",
+      );
+      assert.equal(await runtime.lookup(id, AbortSignal.timeout(4000)), undefined);
+      assert.equal(stops, 0, "missing Git evidence does not stop independent workload supervision");
+      assert.equal(world.detaches.length, 0);
+      t.diagnostic(
+        "cold global-expiry observation deferred durably, with independent supervision and no issuance",
+      );
+      await runtime.close();
+      runtime = retainedWarm;
+      retainedWarm = undefined;
       const beforeRenewal = boundResolve.mock.callCount();
       await start();
       await waitForRevisionPass(
@@ -894,7 +951,7 @@ test(
       );
       assert.equal(prior!.phase, "disposed");
       assert.equal(second!.predecessorAdmissionId, prior!.admissionId);
-      assert.equal(second!.executionFingerprint, identity!.fingerprint);
+      assert.equal(second!.executionFingerprint, execution.fingerprint);
       assert.notEqual(second!.sessionId, prior!.sessionId);
       assert.equal(bindingId, initialBinding);
       assert.equal(creates, 1);
@@ -913,6 +970,49 @@ test(
         "no retirement send for the expired token",
       );
       assert.ok(world.gitExpiresAt <= Math.min(second!.deadlineWallMs, issue2.expires));
+      // Only the warm owner can restore the environment. A fresh worker may adopt the
+      // same execution once the renewed generation makes the model provider READY again.
+      const modelStatus = await client.getSandboxProviderStatus(
+        workspace,
+        sandbox,
+        model,
+        t.signal,
+      );
+      assert.equal(modelStatus?.state, "PROVIDER_READINESS_STATE_READY");
+      await runtime.close();
+      runtime = newRuntime();
+      assert.deepEqual(await kube.verifyRepositoryExecution(warm, t.signal), {
+        executionId: execution.executionId,
+        fingerprint: execution.fingerprint,
+      });
+      const beforeAdoption = events.length;
+      // Simulate the stopped worker's lease ending; provider and session deadlines above
+      // elapsed in real time. The new worker must still claim and perform adoption itself.
+      await expireStoppedClaims(f, revision);
+      await start();
+      await waitForRevisionPass(
+        "cold worker adopts the renewed ready execution",
+        f,
+        revision,
+        async () => {
+          const completed = events
+            .slice(beforeAdoption)
+            .some(
+              (event) =>
+                event.event === "worker.completed" &&
+                event.revisionId === revision.id &&
+                event.code === "REVISION_ALREADY_ACTIVE",
+            );
+          const mapping = await runtime.lookup(id, AbortSignal.timeout(4000));
+          return completed && mapping?.sessionId === second!.sessionId ? true : undefined;
+        },
+        30_000,
+      );
+      await f.stop();
+      assert.deepEqual([world.writes, gh.issuesOfTokens.length, creates, stops], [2, 2, 1, 0]);
+      t.diagnostic(
+        "warm owner renewed the same execution; cold worker adopted only after model readiness returned",
+      );
       // This second commit was created after the first transfer. Its absence and the actual
       // imported pack distinguish successful renewal from a cached checkout or a discovery.
       absent();
@@ -1060,7 +1160,7 @@ test(
         JSON.stringify({
           revision: revision.id,
           approval: approval.id,
-          execution: identity!.executionId,
+          execution: execution.executionId,
           firstCommit: firstOid,
           successorCommit: oid,
           brokerReceipts: 0,
@@ -1087,6 +1187,7 @@ test(
     } finally {
       await f.stop();
       await runtime.close();
+      await retainedWarm?.close();
     }
   },
 );
