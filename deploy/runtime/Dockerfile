@@ -111,6 +111,11 @@ RUN echo 'c57722da9a88ec4295577ab9a9ba6e2ca37fceda11ce8b51b08ee1425e00851f  /tmp
 COPY deploy/runtime/stock-codex-0.163.0-alpha.2-dependency-pin.patch /tmp/stock-codex-0.163.0-alpha.2-dependency-pin.patch
 RUN echo '7bb0ae29bf3259b245d7675b2c6a3abe521c8139095f75ce0c532188162de5e9  /tmp/stock-codex-0.163.0-alpha.2-dependency-pin.patch' | sha256sum --check --strict \
     && git apply --unidiff-zero /tmp/stock-codex-0.163.0-alpha.2-dependency-pin.patch
+# TODO(native-internal-transport-bypass): Remove this bridge when OC exposes an
+# exact-endpoint bypass for host-provisioned internal transports.
+COPY deploy/runtime/openclaw-internal-transport-proxy.patch /tmp/openclaw-internal-transport-proxy.patch
+RUN echo '1a37ccc2e6b3318247f8d36d633ed1b19e28d059e8de789550a38cb0ab4ba4c9  /tmp/openclaw-internal-transport-proxy.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-internal-transport-proxy.patch
 COPY scripts/build-runtime-assets.mjs /tmp/build-runtime-assets.mjs
 RUN node /tmp/build-runtime-assets.mjs inputs /source /inputs
 

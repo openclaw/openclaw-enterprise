@@ -14,10 +14,10 @@ export async function prepareQaSlack(f) {
   if (f.controlPlane === "compose") {
     const path = join(f.stateDirectory, "compose.yaml");
     const compose = loadYaml(await readFile(path, "utf8"));
-    compose.services["slack-proxy"] = {
+    compose.services["gateway-proxy"] = {
       image: f.controllerDockerImage,
-      entrypoint: ["node", "apps/controller/src/slack-proxy.mjs"],
-      environment: { NODE_ENV: "production", OCC_SLACK_PROXY_PORT: "3128" },
+      entrypoint: ["node", "apps/controller/src/gateway-proxy.mjs"],
+      environment: { NODE_ENV: "production", OCC_GATEWAY_PROXY_PORT: "3128" },
       networks: { development: {} },
       read_only: true,
       cap_drop: ["ALL"],
@@ -25,18 +25,18 @@ export async function prepareQaSlack(f) {
       mem_limit: "128m",
     };
     await writeFile(path, dumpYaml(compose), { mode: 0o600 });
-    await f.compose("up", "-d", "--no-deps", "slack-proxy");
-    const id = (await f.compose("ps", "-q", "slack-proxy")).trim();
+    await f.compose("up", "-d", "--no-deps", "gateway-proxy");
+    const id = (await f.compose("ps", "-q", "gateway-proxy")).trim();
     const ip = JSON.parse(await f.run("docker", ["inspect", id]))[0].NetworkSettings.Networks[
       `${f.cluster}_development`
     ].IPAddress;
     const proxyUrl = `http://${ip}:3128`;
-    configuration.runtime.channels = { proxyUrl };
+    configuration.runtime.proxy = { proxyUrl };
     compose.services.controller.environment.OCC_CHANNEL_DIRECTORY_PROXY_URL = proxyUrl;
     await writeFile(path, dumpYaml(compose), { mode: 0o600 });
   } else {
-    const hostname = `openclaw-enterprise-slack-proxy.${f.state.platformNamespace}.svc`;
-    configuration.runtime.channels = {
+    const hostname = `openclaw-enterprise-gateway-proxy.${f.state.platformNamespace}.svc`;
+    configuration.runtime.proxy = {
       proxyUrl: `http://${hostname}:3128`,
       managedProxy: {
         hostname,
@@ -44,14 +44,14 @@ export async function prepareQaSlack(f) {
         podLabels: {
           "app.kubernetes.io/name": "openclaw-enterprise",
           "app.kubernetes.io/instance": "openclaw-enterprise",
-          "app.kubernetes.io/component": "slack-proxy",
+          "app.kubernetes.io/component": "gateway-proxy",
         },
         port: 3128,
       },
     };
     const path = join(f.stateDirectory, "helm-values.json");
     const values = JSON.parse(await readFile(path, "utf8"));
-    values.slackProxy = { enabled: true };
+    values.gatewayProxy = { enabled: true };
     await writeFile(path, JSON.stringify(values), { mode: 0o600 });
     const manifests = await f.run("helm", [
       "template",
@@ -66,7 +66,7 @@ export async function prepareQaSlack(f) {
       .filter((doc) => {
         const object = loadYaml(doc);
         return (
-          object?.metadata?.name?.includes("slack-proxy") ||
+          object?.metadata?.name?.includes("gateway-proxy") ||
           (["Deployment", "NetworkPolicy"].includes(object?.kind) &&
             object?.metadata?.name === "openclaw-enterprise-api")
         );

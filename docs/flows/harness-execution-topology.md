@@ -1,16 +1,15 @@
 ---
 created: 2026-08-21
-updated: 2026-10-10 02:49
-last_updated_session: authoring-run/8446b4d7-87ac-43ab-9323-5fc7f6953628
+updated: 2026-11-05 17:34
+last_updated_session: authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62
 ---
 
 # Harness Execution Topology Flow
 
 ## Overview
 
-Deployment freezes native Harness policy, placement and authentication in an
-AgentRevision. Compute prepares its workloads, publishes guarded routes and
-retires predecessors before exactly-once activation audit.
+Deployment freezes Harness policy, placement and authentication. Compute prepares
+workloads, publishes guarded routes, retires predecessors and audits activation.
 
 ## Entry Points
 
@@ -143,6 +142,8 @@ workspace node is enrolled and observed.
 callbacks to the Agent's route. `AGENT_WITH_NODE_ENTRYPOINT` prepares private
 capability storage and TLS trust; OpenClaw authorizes callbacks. See
 [native hook routing](../reference/gateway-routing.md#native-node-endpoint).
+
+See [Gateway proxy routing](gateway-outbound-proxy.md).
 
 Dedicated Codex uses workspace-node name `agent-<agent digest>-workspace`, stable
 across restarts and revisions.
@@ -325,6 +326,8 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 17:34: Link proxy routing (authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62 - 80725162a946f80652b939a32a57ee4e922eeb5c)
 
 - 2026-10-10 02:49: Refuse native listener TLS before deployment work. (authoring-run/8446b4d7-87ac-43ab-9323-5fc7f6953628 - 5d303757fb488fe34c8cbb9e7b6b975921fc1061)
 

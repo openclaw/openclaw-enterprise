@@ -127,10 +127,9 @@ cp /secure/occ/installation.yaml /secure/occ/candidate-installation.yaml
 chmod 600 /secure/occ/candidate-values.yaml /secure/occ/candidate-installation.yaml
 ```
 
-These copies may change the
-[Slack directory proxy](../integrations/slack.md#configure-both-slack-proxies)
-and select the [curated Codex PluginDriver](../../reference/drivers/plugin-bundled.md#selection-and-catalogs).
-Other configuration changes are not supported by this upgrade command.
+These copies may select the [curated Codex PluginDriver](../../reference/drivers/plugin-bundled.md#selection-and-catalogs).
+Other configuration changes, including the [Gateway proxy](../integrations/gateway-proxy.md),
+use the protected configuration workflow, not this image-upgrade command.
 Review compatibility with the selected images, Agent drafts and credentials
 before the maintenance window; the startup preflight below does not prove
 external access.

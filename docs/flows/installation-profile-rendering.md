@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: 2026-10-10
-last_updated_session: authoring-run/c4350829-13f6-40e0-902f-9d96e622a27c
+updated: 2026-11-05 17:33
+last_updated_session: authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62
 ---
 
 # Installation Profile Rendering Flow
@@ -177,10 +177,13 @@ already checked in step 3 with the API's `parseCidr` rules
 IPv4-mapped address, and no range that covers every IPv4 peer. Like the chart,
 preflight also refuses a zone ID, which the API accepts.
 
-When `channels.managedSlackProxy` is true, the values also enable the
-chart-managed Slack proxy Service. The chart allows that proxy public IPv4 HTTPS
-egress, excluding private and reserved ranges, and the proxy authorizes Slack
-hostnames. Repository values render only when the input explicitly sets
+The profile's `proxy.bundled` selects the chart-managed Gateway proxy. Its optional
+`proxy.allowedHosts` replaces the Slack-only default. Alternatively `proxy.url`
+selects one external endpoint. Rendering produces Helm `gatewayProxy` and Compute
+`runtime.proxy` together; Helm wires the API directory client to that same endpoint.
+See [Gateway outbound access](../guides/integrations/gateway-proxy.md).
+
+Repository values render only when the input explicitly sets
 `repository.enabled: true`. Repository provider CIDRs pass through unchanged,
 so operators can keep their existing GitHub ranges without DNS snapshots. The
 renderer copies `repository.serviceName` only when the input sets it, and only
@@ -283,6 +286,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 17:33: Document one selected bundled or external Gateway proxy (authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62 - 80725162a946f80652b939a32a57ee4e922eeb5c)
 
 - 2026-10-10: One `dedicatedSecrets` rule replaces the sign-in, gateway API key and credential Secret checks and adds the database CA Secret.
 

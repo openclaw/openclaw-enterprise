@@ -215,16 +215,7 @@ type ManagedResourceKind =
   | "SecurityPolicy";
 type ReadableResourceKind = ManagedResourceKind | "Pod" | "Secret";
 
-const CHANNEL_REQUIREMENTS = {
-  slack: {
-    egress: "https-proxy",
-  },
-  msteams: {
-    egress: "https-proxy",
-  },
-} as const;
-
-type ChannelRequirements = (typeof CHANNEL_REQUIREMENTS)[keyof typeof CHANNEL_REQUIREMENTS];
+const SUPPORTED_CHANNEL_PROVIDERS = new Set(["slack", "msteams"]);
 
 export interface KubernetesWorkloadPeer {
   readonly namespace: string;
@@ -406,7 +397,7 @@ export interface KubernetesComputeDriverOptions {
     readonly nodeSelector?: Readonly<Record<string, string>>;
     readonly gatewayNodeSelector?: Readonly<Record<string, string>>;
     readonly codexSeccompProfile?: string;
-    readonly channels?: {
+    readonly proxy?: {
       readonly proxyUrl: string;
       readonly managedProxy?: KubernetesWorkloadPeer & {
         readonly hostname: string;
@@ -520,7 +511,7 @@ type KubernetesPreparationStage =
   | "gateway_private_state_claim"
   | "harness_auth"
   | "gateway_secret_environment"
-  | "gateway_channel_network_policy"
+  | "gateway_proxy_network_policy"
   | "gateway_workspace_node_binding"
   | "gateway_deployment"
   | "gateway_service"
@@ -1678,21 +1669,21 @@ function labelsToSelector(labels: Readonly<Record<string, string>>): string {
     .join(",");
 }
 
-type ChannelProxy =
+type GatewayProxy =
   | { readonly kind: "ip"; readonly address: string; readonly port: number }
   | { readonly kind: "managed"; readonly peer: KubernetesWorkloadPeer; readonly port: number };
 
-function channelProxy(
+function gatewayProxy(
   value: unknown,
   managedProxy?: KubernetesWorkloadPeer & { readonly hostname: string; readonly port: number },
-): ChannelProxy {
-  const raw = required(value, "Channel proxy URL");
+): GatewayProxy {
+  const raw = required(value, "Gateway proxy URL");
   let parsed: URL;
   try {
     parsed = new URL(raw);
   } catch {
     throw new ConfigurationFailure(
-      "Channel proxy URL must identify one exact HTTP(S) IP endpoint.",
+      "Gateway proxy URL must identify one exact HTTP(S) IP endpoint.",
     );
   }
   const address = parsed.hostname.replace(/^\[|\]$/g, "");
@@ -1700,15 +1691,15 @@ function channelProxy(
   const explicitPort = raw.match(/^https?:\/\/(?:\[[^\]]+\]|[^:/?#\\]+):([0-9]+)(?=[/?#]|$)/i)?.[1];
   const port = Number(parsed.port || explicitPort);
   if (managedProxy !== undefined) {
-    validatePeer(managedProxy, "Managed channel proxy");
-    required(managedProxy.hostname, "Managed channel proxy hostname");
+    validatePeer(managedProxy, "Managed Gateway proxy");
+    required(managedProxy.hostname, "Managed Gateway proxy hostname");
     if (
       !/^[a-z0-9]([-a-z0-9]*[a-z0-9])?\.[a-z0-9]([-a-z0-9]*[a-z0-9])?\.svc$/.test(
         managedProxy.hostname,
       )
     ) {
       throw new ConfigurationFailure(
-        "Managed channel proxy hostname must be the exact namespace-qualified Service DNS name.",
+        "Managed Gateway proxy hostname must be the exact namespace-qualified Service DNS name.",
       );
     }
     if (
@@ -1716,7 +1707,7 @@ function channelProxy(
       managedProxy.port < 1 ||
       managedProxy.port > 65535
     ) {
-      throw new ConfigurationFailure("Managed channel proxy port must be a valid TCP port.");
+      throw new ConfigurationFailure("Managed Gateway proxy port must be a valid TCP port.");
     }
     if (
       !["http:", "https:"].includes(parsed.protocol) ||
@@ -1729,7 +1720,7 @@ function channelProxy(
       parsed.hash
     ) {
       throw new ConfigurationFailure(
-        "Managed channel proxy URL must match the exact configured Service host and port.",
+        "Managed Gateway proxy URL must match the exact configured Service host and port.",
       );
     }
     return { kind: "managed", peer: managedProxy, port };
@@ -1745,10 +1736,10 @@ function channelProxy(
     parsed.hash
   ) {
     throw new ConfigurationFailure(
-      "Channel proxy URL must identify one credential-free HTTP(S) IP endpoint.",
+      "Gateway proxy URL must identify one credential-free HTTP(S) IP endpoint.",
     );
   }
-  validatePort(port, "Channel proxy port");
+  validatePort(port, "Gateway proxy port");
   return { kind: "ip", address, port };
 }
 
@@ -2487,7 +2478,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           nodeSelector: { type: "object", additionalProperties: { type: "string" } },
           gatewayNodeSelector: { type: "object", additionalProperties: { type: "string" } },
           codexSeccompProfile: { type: "string", minLength: 1 },
-          channels: {
+          proxy: {
             type: "object",
             required: ["proxyUrl"],
             additionalProperties: false,
@@ -2717,7 +2708,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
     }
     if (options.runtime !== undefined) {
-      const { transportSecretPrefix, channels } = options.runtime;
+      const { transportSecretPrefix, proxy } = options.runtime;
       const runtimeProperties = asRecord(
         KubernetesComputeDriver.configurationSchema.properties.runtime.properties,
       );
@@ -2763,11 +2754,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (options.runtime.codexSeccompProfile !== undefined) {
         validateCodexSeccompProfile(options.runtime.codexSeccompProfile);
       }
-      if (channels !== undefined) {
-        if (asRecord(channels) === undefined) {
-          throw new ConfigurationFailure("Channel runtime proxy must be explicitly configured.");
+      if (proxy !== undefined) {
+        if (asRecord(proxy) === undefined) {
+          throw new ConfigurationFailure("Gateway runtime proxy must be explicitly configured.");
         }
-        channelProxy(channels.proxyUrl, channels.managedProxy);
+        gatewayProxy(proxy.proxyUrl, proxy.managedProxy);
       }
     }
     if (options.executionCluster !== undefined) {
@@ -3203,6 +3194,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const dedicated = harness.mode === "dedicated";
     const codex = dedicated && harness.id === "codex";
     const native = dedicated && openclaw;
+    if (
+      embedded &&
+      this.options.executionCluster !== undefined &&
+      this.options.runtime?.proxy?.managedProxy !== undefined
+    ) {
+      throw new ConfigurationFailure(
+        "Embedded two-cluster Gateways require an external proxy reachable from the execution cluster, not a control-cluster proxy Service.",
+      );
+    }
     if (native && asRecord(configuration.cloudWorkers)?.requiredProfile !== undefined) {
       throw new ConfigurationFailure(
         `Dedicated OpenClaw required profile ${NATIVE_WORKER_PROFILE} is owned by the selected Compute Driver.`,
@@ -4648,7 +4648,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         await this.admittedCredentialSourceType(revision),
       ),
     );
-    const channels = this.enabledChannels(admittedRevision);
+    this.validateEnabledChannels(admittedRevision);
     await this.prepareRevisionStage("gateway_routing", () =>
       this.verifyGatewayRoutingConfiguration(admittedRevision),
     );
@@ -5076,8 +5076,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
         environment: Record<string, string>,
         providerEndpoint?: SandboxHarnessEndpoint,
       ) => {
-        await this.prepareRevisionStage("gateway_channel_network_policy", () =>
-          this.reconcileChannelNetworkPolicy(revision, channels, gatewayNamespace),
+        await this.prepareRevisionStage("gateway_proxy_network_policy", () =>
+          this.reconcileGatewayProxyNetworkPolicy(revision, gatewayNamespace),
         );
         await this.prepareRevisionStage("gateway_workspace_node_binding", () =>
           this.deliverWorkspaceNodeBinding(
@@ -5102,7 +5102,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
               embedded,
               embedded ? revision.servicePrincipalId : undefined,
               embedded ? deliveredHarnessAuth : undefined,
-              channels,
               gatewaySecretEnvironment,
               pluginRuntime,
               [],
@@ -5261,7 +5260,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
         false,
         undefined,
         deliveredHarnessAuth,
-        [],
         [],
         pluginRuntime,
         [],
@@ -5608,7 +5606,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       revision.secretBindings,
       await this.admittedCredentialSourceType(revision),
     );
-    const channels = this.enabledChannels(admittedRevision);
+    this.validateEnabledChannels(admittedRevision);
     const { name: namespace } = await this.resolveNamespace(revision.namespaceId);
     await this.deliverWorkspaceSetup(revision, workspaceSetup, namespace);
     const sourceNamespace =
@@ -5691,7 +5689,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
             gatewayOwnership,
             namespace,
           );
-          await this.reconcileChannelNetworkPolicy(revision, channels, namespace);
+          await this.reconcileGatewayProxyNetworkPolicy(revision, namespace);
           await this.reconcile(
             this.deployment(
               gatewayName,
@@ -5706,7 +5704,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
               true,
               revision.servicePrincipalId,
               deliveredHarnessAuth,
-              channels,
               gatewaySecretEnvironment,
               pluginRuntime,
               [],
@@ -5818,7 +5815,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
         undefined,
         activatedHarnessAuth,
         [],
-        [],
         pluginRuntime,
         [],
         workspaceSetup,
@@ -5924,7 +5920,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       gatewayNamespace,
       secretEnvironment,
     );
-    await this.reconcileChannelNetworkPolicy(revision, channels, gatewayNamespace);
+    await this.reconcileGatewayProxyNetworkPolicy(revision, gatewayNamespace);
     await this.reconcile(
       this.harnessWorkspaceClaim(revision.agentId, gatewayOwnership, namespace),
       gatewayOwnership,
@@ -5957,7 +5953,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
         false,
         undefined,
         undefined,
-        channels,
         gatewaySecretEnvironment,
         pluginRuntime,
         [],
@@ -6679,7 +6674,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     // and authentication policies (finding 860).
     for (const name of [
       "allow-gateway-agent",
-      "allow-gateway-channels",
+      "allow-gateway-proxy",
       "allow-gateway-workspace-node",
       "allow-plugin-status-gateway",
     ]) {
@@ -10361,6 +10356,31 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   private kubernetesGatewayConfigurationDocument(
     configuration: OpenClawConfigurationDocument,
   ): OpenClawConfigurationDocument {
+    const selectedProxy = this.options.runtime?.proxy;
+    if (selectedProxy !== undefined) {
+      const submitted = asRecord(configuration.proxy);
+      if (
+        configuration.proxy !== undefined &&
+        (submitted === undefined ||
+          Object.entries(submitted).some(
+            ([key, value]) =>
+              !["proxyUrl", "enabled", "loopbackMode"].includes(key) ||
+              (key === "proxyUrl" && value !== selectedProxy.proxyUrl) ||
+              (key === "enabled" && value !== true) ||
+              (key === "loopbackMode" && value !== "gateway-only"),
+          ))
+      ) {
+        throw new GatewaySettingFailure("proxy", "must match the Installation-owned Gateway proxy");
+      }
+      configuration = {
+        ...configuration,
+        proxy: {
+          enabled: true,
+          proxyUrl: selectedProxy.proxyUrl,
+          loopbackMode: "gateway-only",
+        },
+      };
+    }
     validatePlaintextNativeGateway(
       configuration,
       (setting, requirement) => new GatewaySettingFailure(setting, requirement),
@@ -11537,12 +11557,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     };
   }
 
-  private enabledChannels(revision: AgentRevision): readonly ChannelRequirements[] {
+  private validateEnabledChannels(revision: AgentRevision): void {
     const configured = asRecord(asRecord(revision.configuration)?.channels);
     if (configured === undefined) {
-      return [];
+      return;
     }
-    const enabled: ChannelRequirements[] = [];
+    let enabled = false;
     for (const [provider, configuration] of Object.entries(configured)) {
       if (["defaults", "modelByChannel"].includes(provider)) {
         continue;
@@ -11550,23 +11570,22 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       if (asRecord(configuration)?.enabled === false) {
         continue;
       }
-      if (!Object.hasOwn(CHANNEL_REQUIREMENTS, provider)) {
+      if (!SUPPORTED_CHANNEL_PROVIDERS.has(provider)) {
         throw new ConfigurationFailure(`Unsupported OpenClaw channel provider "${provider}".`);
       }
-      enabled.push(CHANNEL_REQUIREMENTS[provider as keyof typeof CHANNEL_REQUIREMENTS]);
+      enabled = true;
     }
-    if (enabled.length === 0) {
-      return enabled;
+    if (!enabled) {
+      return;
     }
     if (revision.harness.mode === "embedded") {
       throw new ConfigurationFailure("Configured channels require a dedicated Agent workload.");
     }
-    if (this.options.runtime?.channels === undefined) {
+    if (this.options.runtime?.proxy === undefined) {
       throw new ConfigurationFailure(
         "Enabled channel configuration requires isolated credentials and a reviewed proxy.",
       );
     }
-    return enabled;
   }
 
   private validateChannelSecretBindings(
@@ -11606,7 +11625,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       if (channel?.enabled === false) {
         continue;
       }
-      if (!Object.hasOwn(CHANNEL_REQUIREMENTS, provider)) {
+      if (!SUPPORTED_CHANNEL_PROVIDERS.has(provider)) {
         throw new ConfigurationFailure(`Unsupported OpenClaw channel provider "${provider}".`);
       }
       this.collectChannelSecretBindingIds(value, ids);
@@ -11640,23 +11659,23 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     }
   }
 
-  private channelNetworkPolicy(
+  private gatewayProxyNetworkPolicy(
     revision: AgentRevision,
-    enabled: readonly ChannelRequirements[],
     namespace: KubernetesNamespaceAddress,
   ): ManagedKubernetesObject {
     const ownership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
-    const proxy = enabled.some(({ egress }) => egress === "https-proxy")
-      ? channelProxy(
-          this.options.runtime?.channels?.proxyUrl,
-          this.options.runtime?.channels?.managedProxy,
-        )
-      : undefined;
+    const proxy =
+      this.options.runtime?.proxy !== undefined
+        ? gatewayProxy(
+            this.options.runtime?.proxy?.proxyUrl,
+            this.options.runtime?.proxy?.managedProxy,
+          )
+        : undefined;
     return {
       ...this.manifest(
         "networking.k8s.io/v1",
         "NetworkPolicy",
-        `allow-gateway-channels-${sha256Hex(revision.agentId, 12)}`,
+        `allow-gateway-proxy-${sha256Hex(revision.agentId, 12)}`,
         ownership,
         namespace,
       ),
@@ -11687,14 +11706,13 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     };
   }
 
-  private async reconcileChannelNetworkPolicy(
+  private async reconcileGatewayProxyNetworkPolicy(
     revision: AgentRevision,
-    enabled: readonly ChannelRequirements[],
     namespace: KubernetesNamespaceAddress,
   ): Promise<void> {
-    const policy = this.channelNetworkPolicy(revision, enabled, namespace);
+    const policy = this.gatewayProxyNetworkPolicy(revision, namespace);
     const ownership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
-    if (this.options.runtime?.channels === undefined) {
+    if (this.options.runtime?.proxy === undefined) {
       const existing = await this.getOwned(
         "NetworkPolicy",
         policy.metadata.name,
@@ -12878,7 +12896,6 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     embedded = false,
     workloadServicePrincipalId?: string,
     harnessAuth?: PreparedHarnessAuth,
-    enabledChannels: readonly ChannelRequirements[] = [],
     secretEnvironment: readonly SecretEnvironmentProjection[] = [],
     pluginRuntime?: PluginRuntimeSnapshot,
     pluginWarnings: readonly PluginDeploymentWarning[] = [],
@@ -13298,12 +13315,13 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           { name: "OPENCLAW_STATE_DIR", value: "/home/node/.openclaw" },
           { name: "OPENCLAW_GATEWAY_PORT", value: String(this.options.network.gatewayPort) },
         );
-        if (enabledChannels.length > 0) {
-          const channels = runtime.channels;
-          if (channels === undefined) {
-            throw new ConfigurationFailure("Gateway channel credentials are not configured.");
+        if (runtime.proxy !== undefined) {
+          variables.push({ name: "HTTPS_PROXY", value: runtime.proxy.proxyUrl });
+          // Native routing must bypass only the Driver-owned Harness transport.
+          const transport = variables.find(({ name }) => name === "APP_SERVER_URL")?.value;
+          if (transport !== undefined) {
+            variables.push({ name: "OPENCLAW_INTERNAL_TRANSPORT_URL", value: transport });
           }
-          variables.push({ name: "HTTPS_PROXY", value: channels.proxyUrl });
         }
       } else {
         variables.push(

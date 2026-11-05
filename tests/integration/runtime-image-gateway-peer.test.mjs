@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -12,7 +12,10 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
   imageTestOptions,
+  image,
+  execute,
   runDocker,
+  waitForDockerLog,
   commandOutput,
   createAdmittedRuntimeImageConfiguration,
   jsonLogEntries,
@@ -24,6 +27,103 @@ import {
 // in-place OpenClaw respawn for a changed peer, and an exit when OpenClaw crashes
 // during a peer status outage or a replacement peer changes. Split from
 // runtime-image-startup.test.mjs by measured case durations.
+
+test(
+  "runtime image proxy preserves only the provisioned Codex transport",
+  imageTestOptions,
+  async (t) => {
+    const directory = await mkdtemp(join(tmpdir(), "oce-runtime-proxy-"));
+    const prefix = `oce-runtime-proxy-${randomBytes(5).toString("hex")}`;
+    const containers = [];
+    t.after(async () => {
+      for (const name of containers.reverse()) {
+        await runDocker(["rm", "-f", name]).catch(() => {});
+      }
+      await runDocker(["network", "rm", prefix]).catch(() => {});
+      await rm(directory, { recursive: true, force: true });
+    });
+    await writeFile(join(directory, "token"), randomBytes(32).toString("hex"), { mode: 0o644 });
+    // Both origin aliases have a trusted certificate. A rejected alias therefore
+    // proves the real proxy's destination policy, not TLS verification failure.
+    await execute("openssl", [
+      "req",
+      "-x509",
+      "-newkey",
+      "rsa:2048",
+      "-nodes",
+      "-days",
+      "1",
+      "-keyout",
+      join(directory, "key.pem"),
+      "-out",
+      join(directory, "cert.pem"),
+      "-subj",
+      "/CN=allowed.proxy.test",
+      "-addext",
+      "subjectAltName=DNS:allowed.proxy.test,DNS:denied.proxy.test",
+    ]);
+    await chmod(join(directory, "key.pem"), 0o644);
+    for (const [file, source] of [
+      ["fixture.mjs", new URL("../fixtures/runtime-gateway-proxy.mjs", import.meta.url)],
+      [
+        "gateway-proxy.mjs",
+        new URL("../../apps/controller/src/gateway-proxy.mjs", import.meta.url),
+      ],
+    ]) {
+      await writeFile(join(directory, file), await readFile(source));
+    }
+    await runDocker(["network", "create", prefix]);
+    async function start(role, aliases) {
+      const name = `${prefix}-${role}`;
+      containers.push(name);
+      await runDocker([
+        "run",
+        "-d",
+        "--name",
+        name,
+        "--network",
+        prefix,
+        ...aliases.flatMap((alias) => ["--network-alias", alias]),
+        "--read-only",
+        "--user",
+        "1000:1000",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--tmpfs",
+        "/tmp:mode=1777",
+        "-e",
+        "HOME=/tmp",
+        "-e",
+        "CODEX_HOME=/tmp/codex",
+        "-e",
+        "NODE_EXTRA_CA_CERTS=/proof/cert.pem",
+        "-v",
+        `${directory}:/proof:ro`,
+        "--entrypoint",
+        "node",
+        image,
+        "/proof/fixture.mjs",
+        role,
+      ]);
+      return name;
+    }
+    const origin = await start("origin", ["allowed.proxy.test", "denied.proxy.test"]);
+    const proxy = await start("proxy", ["selected-proxy"]);
+    const harness = await start("harness", ["proxy-harness"]);
+    await waitForDockerLog(origin, /origin ready/);
+    await waitForDockerLog(proxy, /proxy ready/);
+    await waitForDockerLog(harness, /listening on:/);
+    const client = await start("client", []);
+    const result = await runDocker(["wait", client], {
+      timeout: 120_000 * imageSmokeTimeoutMultiplier,
+    });
+    const logs = commandOutput(await runDocker(["logs", client]));
+    assert.equal(result.stdout.trim(), "0", failureTail(logs));
+    assert.match(logs, /packaged proxy routing and transport lifecycle passed/);
+  },
+);
 
 for (const writableConfig of [false, true]) {
   test(

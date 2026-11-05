@@ -54,6 +54,9 @@ the proxy's source range; NetworkPolicy distinguishes the authenticated proxy
 from other Pods in that range. Remove direct API or tenant-workload access to
 the native gateway port in this mode.
 
+Gateway HTTPS routing uses [one bundled or external proxy](gateway-proxy.md),
+independently of channel enablement.
+
 ### Gateway authentication
 
 Kubernetes Compute supports only trusted-proxy authentication, in every
@@ -142,9 +145,9 @@ endpoint, Pod and Service CIDRs, and metadata endpoint fall inside them. A
 dedicated Agent has one authentication-only egress policy, pinned to its latest
 prepared revision. Stop leaves it and the Agent's runtime and plugin-status
 policies, selecting no Pod, until the next preparation or Agent deletion.
-Channels require an approved HTTP(S) proxy in `runtime.channels`: a literal IP
+Channels require an approved HTTP(S) proxy in `runtime.proxy`: a literal IP
 endpoint, or the exact
-Helm-managed proxy Service URL paired with `runtime.channels.managedProxy`.
+Helm-managed proxy Service URL paired with `runtime.proxy.managedProxy`.
 Direct public channel-provider access is denied.
 
 ## Explicit network profiles

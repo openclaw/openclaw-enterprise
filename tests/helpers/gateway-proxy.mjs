@@ -7,8 +7,8 @@ import { join } from "node:path";
 import { availablePort } from "./available-port.mjs";
 
 /**
- * Starts the bundled Slack proxy (apps/controller/src/slack-proxy.mjs) as a child process and
- * resolves once it logs the port it bound. By default OCC_SLACK_PROXY_PORT is 0; with
+ * Starts the bundled Slack proxy (apps/controller/src/gateway-proxy.mjs) as a child process and
+ * resolves once it logs the port it bound. By default OCC_GATEWAY_PROXY_PORT is 0; with
  * `fixedPort` the helper picks a free port, passes it, and requires the proxy to bind exactly
  * that port (another process can take a picked port first, so EADDRINUSE picks again). The
  * test's cleanup sends the proxy SIGTERM. With `upstreamPort`, the child resolves each of
@@ -17,9 +17,9 @@ import { availablePort } from "./available-port.mjs";
  * a test can never reach the network. Returns the child, the listening port and `stderr()`,
  * what the proxy has written so far.
  */
-export async function startSlackProxy(
+export async function startGatewayProxy(
   t,
-  { fixedPort = false, upstreamPort, upstreamHosts = ["slack.com"] } = {},
+  { fixedPort = false, upstreamPort, upstreamHosts = ["slack.com"], allowedHosts } = {},
 ) {
   const preload =
     upstreamPort === undefined
@@ -27,7 +27,7 @@ export async function startSlackProxy(
       : ["--import", await writeDnsFixture(t, upstreamPort, upstreamHosts)];
   for (let attempt = 1; ; attempt += 1) {
     const port = fixedPort ? await availablePort({ host: "0.0.0.0" }) : 0;
-    const proxy = await spawnSlackProxy(t, preload, port);
+    const proxy = await spawnGatewayProxy(t, preload, port, allowedHosts);
     if (proxy.port === undefined && fixedPort && attempt < 5 && /EADDRINUSE/.test(proxy.stderr())) {
       continue;
     }
@@ -35,16 +35,22 @@ export async function startSlackProxy(
       throw new Error(`Slack proxy exited before listening: ${proxy.stderr()}`);
     }
     if (fixedPort) {
-      assert.equal(proxy.port, port, "the proxy listens on OCC_SLACK_PROXY_PORT");
+      assert.equal(proxy.port, port, "the proxy listens on OCC_GATEWAY_PROXY_PORT");
     }
     return proxy;
   }
 }
 
-async function spawnSlackProxy(t, preload, port) {
-  const child = spawn(process.execPath, [...preload, "apps/controller/src/slack-proxy.mjs"], {
+async function spawnGatewayProxy(t, preload, port, allowedHosts) {
+  const child = spawn(process.execPath, [...preload, "apps/controller/src/gateway-proxy.mjs"], {
     cwd: new URL("../../", import.meta.url),
-    env: { ...process.env, OCC_SLACK_PROXY_PORT: String(port) },
+    env: {
+      ...process.env,
+      OCC_GATEWAY_PROXY_PORT: String(port),
+      ...(allowedHosts === undefined
+        ? {}
+        : { OCC_GATEWAY_PROXY_ALLOWED_HOSTS: JSON.stringify(allowedHosts) }),
+    },
     stdio: ["ignore", "ignore", "pipe"],
   });
   t.after(() => child.kill());
@@ -56,7 +62,7 @@ async function spawnSlackProxy(t, preload, port) {
     timer = setTimeout(() => reject(new Error(`Slack proxy did not start: ${stderr}`)), 30_000);
     child.stderr.on("data", (chunk) => {
       stderr += chunk;
-      const match = /Slack proxy listening on (\d+)/.exec(stderr);
+      const match = /Gateway proxy listening on (\d+)/.exec(stderr);
       if (match !== null) {
         resolve(Number(match[1]));
       }
@@ -69,7 +75,7 @@ async function spawnSlackProxy(t, preload, port) {
 }
 
 async function writeDnsFixture(t, upstreamPort, upstreamHosts) {
-  const directory = await mkdtemp(join(tmpdir(), "openclaw-slack-proxy-test-"));
+  const directory = await mkdtemp(join(tmpdir(), "openclaw-gateway-proxy-test-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const path = join(directory, "dns-fixture.mjs");
   await writeFile(

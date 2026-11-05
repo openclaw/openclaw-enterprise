@@ -282,6 +282,10 @@
                             "label": "Networking and Isolation"
                           },
                           {
+                            "page": "reference/drivers/kubernetes-compute/gateway-proxy",
+                            "label": "Gateway Proxy"
+                          },
+                          {
                             "page": "reference/drivers/kubernetes-compute/storage-and-credentials",
                             "label": "Storage and Credentials"
                           },
@@ -406,6 +410,10 @@
               {
                 "group": "Channels",
                 "pages": [
+                  {
+                    "page": "guides/integrations/gateway-proxy",
+                    "label": "Gateway Proxy"
+                  },
                   {
                     "page": "guides/integrations/slack",
                     "label": "Slack"
@@ -949,6 +957,7 @@
               "flows/driver-plugin-loading",
               "flows/agent-plugins",
               "flows/agent-channel-directory",
+              "flows/gateway-outbound-proxy",
               "flows/agent-plugin-approvals",
               "flows/agent-provisioning",
               "flows/agent-native-admin",

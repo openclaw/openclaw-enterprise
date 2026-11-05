@@ -120,7 +120,6 @@ test("secret-gateway-delivery renders exact bound Namespace Secret env only into
       },
       { name: namespace, plane: "execution" },
     ),
-    [],
     secretEnvironment,
   );
   const environment = Object.fromEntries(
@@ -152,7 +151,6 @@ test("secret-gateway-delivery renders exact bound Namespace Secret env only into
         false,
         undefined,
         undefined,
-        [],
         secretEnvironment,
       ),
     /only be delivered to Agent gateways/i,

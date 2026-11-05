@@ -1,0 +1,62 @@
+--- a/src/infra/net/proxy/proxy-lifecycle.ts
++++ b/src/infra/net/proxy/proxy-lifecycle.ts
+@@ -190,3 +190,12 @@
++/** A host-provisioned transport may bypass only its exact endpoint, never a host range. */
++export function registerInternalTransportProxyBypass(url: string): () => void {
++  const provisioned = process.env["OPENCLAW_INTERNAL_TRANSPORT_URL"];
++  if (!provisioned || new URL(url).href !== new URL(provisioned).href) {
++    return () => {};
++  }
++  return proxylineHandle?.registerBypass({ url }) ?? (() => {});
++}
++
+ /** Starts process-wide managed proxy routing and returns the owner stop handle. */
+ export async function startProxy(config: ProxyConfig | undefined): Promise<ProxyHandle | null> {
+   if (
+--- a/src/plugin-sdk/websocket-runtime.ts
++++ b/src/plugin-sdk/websocket-runtime.ts
+@@ -18,3 +18,5 @@
+ } from "../gateway/websocket-keepalive.js";
+ export { rejectWebSocketUpgrade } from "../shared/websocket-upgrade-reject.js";
+ export type { WebSocketUpgradeRejection } from "../shared/websocket-upgrade-reject.js";
++
++export { registerInternalTransportProxyBypass } from "../infra/net/proxy/proxy-lifecycle.js";
+--- a/extensions/codex/src/app-server/transport-websocket.ts
++++ b/extensions/codex/src/app-server/transport-websocket.ts
+@@ -7,7 +7,7 @@
+ import path from "node:path";
+ import { PassThrough, Writable } from "node:stream";
+ import { StringDecoder } from "node:string_decoder";
+-import { type ClientOptions, WebSocket } from "openclaw/plugin-sdk/websocket-runtime";
++import { registerInternalTransportProxyBypass, type ClientOptions, WebSocket } from "openclaw/plugin-sdk/websocket-runtime";
+ import { resolveCodexAppServerUserHomeDir, type CodexAppServerStartOptions } from "./config.js";
+ import type { CodexAppServerTransport } from "./transport.js";
+ import { codexWebSocketDataToBuffer } from "./websocket-data.js";
+@@ -56,12 +56,21 @@
+       : {}),
+   };
+   const unixSocketPath = resolveCodexAppServerUnixSocketPath(options);
+-  const socket = unixSocketPath
+-    ? new WebSocket("ws://localhost/", {
+-        ...websocketOptions,
+-        createConnection: () => connectCodexAppServerUnixSocket(unixSocketPath),
+-      })
+-    : new WebSocket(options.url, websocketOptions);
++  const releaseBypass = unixSocketPath ? () => {} : registerInternalTransportProxyBypass(options.url);
++  const socket = (() => {
++    try {
++      return unixSocketPath
++        ? new WebSocket("ws://localhost/", {
++            ...websocketOptions,
++            createConnection: () => connectCodexAppServerUnixSocket(unixSocketPath),
++          })
++        : new WebSocket(options.url, websocketOptions);
++    } catch (error) {
++      releaseBypass();
++      throw error;
++    }
++  })();
++  socket.once("close", releaseBypass);
+   const pendingFrames: string[] = [];
+   const stdinDecoder = new StringDecoder("utf8");
+   let pendingLine = "";

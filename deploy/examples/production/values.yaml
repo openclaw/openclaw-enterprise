@@ -36,10 +36,6 @@ database:
     - 10.45.0.13/32
 
 api:
-  # For Slack directory lookup, set the approved proxy independently of the
-  # gateway proxy in installation.yaml, or enable slackProxy below.
-  # See docs/guides/integrations/slack.md.
-  # channelDirectoryProxyUrl: http://198.51.100.25:3128
   # Optional; see model discovery in docs/reference/console/create-and-deploy.md.
   modelDiscoveryCidrs: []
   # Optional: trust client-address headers from ingress-nginx, an AWS ALB, or a
@@ -83,9 +79,9 @@ repositoryCredentials:
   # serviceName: git
   # upstreamCidrs: [198.51.100.0/24]
 
-# Optional chart-managed CONNECT proxy for Slack directory lookup and future
-# gateway channel traffic. Public HTTPS egress excludes private/reserved ranges.
-slackProxy:
+# Optional bundled CONNECT proxy for Gateway and directory clients.
+# Configure gatewayProxy.allowedHosts for the integrations you enable.
+gatewayProxy:
   enabled: false
 
 # Metrics listeners are enabled privately. Set both selectors to admit your scraper.

@@ -50,8 +50,11 @@ console uses the current origin and has no separate environment settings.
 - `OCC_AGENT_NATIVE_ADMIN_DOMAIN` — Agent hostname suffix; required when the pilot is enabled.
 - `OCC_AUTH_COOKIE_DOMAIN` — Shared parent domain for console and Agent cookies; required when the pilot is enabled.
 - `OCC_GATEWAY_API_KEY_PATH` — API/worker absolute path to the private gateway service-key file for operator RPCs and dedicated node enrollment.
-- `OCC_CHANNEL_DIRECTORY_PROXY_URL` — Optional API-only HTTP(S) proxy endpoint for production Slack directory lookup and credential validation; set by Helm `slackProxy.enabled` or `api.channelDirectoryProxyUrl`.
-- `OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST` — Exact Kubernetes Service host accepted as a managed Slack directory proxy; set only by Helm `slackProxy.enabled`.
+- `OCC_CHANNEL_DIRECTORY_PROXY_URL` — Optional API-only HTTP(S) proxy endpoint for production Slack directory lookup and credential validation; set by Helm `gatewayProxy.enabled` or `gatewayProxy.url`.
+- `OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST` — Exact Kubernetes Service host accepted as a managed Slack directory proxy; set only by Helm `gatewayProxy.enabled`.
+- `OCC_GATEWAY_PROXY_PORT` — Bundled Gateway CONNECT listener port, set by Helm; default: `3128`.
+- `OCC_GATEWAY_PROXY_ALLOWED_HOSTS` — JSON destination list for the bundled proxy; exact DNS names or `*.example.com`, TCP 443 only. See [Gateway proxy](../../guides/integrations/gateway-proxy.md).
+- `OPENCLAW_INTERNAL_TRANSPORT_URL` — Compute-owned exact dedicated Codex app-server endpoint used by the runtime proxy bridge; not an operator bypass list.
 - `NODE_EXTRA_CA_CERTS` — Additional Node.js PEM trust bundle for a private OCC, gateway or OIDC IdP CA; read at process startup.
 
 ## PostgreSQL and migrations

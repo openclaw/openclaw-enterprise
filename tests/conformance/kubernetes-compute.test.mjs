@@ -155,12 +155,12 @@ test("Kubernetes peer Pod selectors reject labels the API refuses before provisi
       },
     ],
     [
-      "Managed channel proxy",
+      "Managed Gateway proxy",
       (configured, podLabels) => {
         configured.runtime = {
           transportSecretPrefix: "transport",
           gatewayStorageClassName: "local-path",
-          channels: {
+          proxy: {
             proxyUrl: "http://proxy.controller.svc:3128",
             managedProxy: {
               namespace: "controller",
@@ -4779,16 +4779,16 @@ test("the canonical Kubernetes runtime validates channel proxy configuration", (
   for (const proxyUrl of ["http://10.42.0.15:3128", "https://[2001:db8::15]:8443"]) {
     const channels = { proxyUrl };
     assert.doesNotThrow(() =>
-      createKubernetesComputeDriver(options({ runtime: { ...runtime, channels } })),
+      createKubernetesComputeDriver(options({ runtime: { ...runtime, proxy: channels } })),
     );
   }
   const managedProxy = {
-    hostname: "openclaw-enterprise-slack-proxy.openclaw-system.svc",
+    hostname: "openclaw-enterprise-gateway-proxy.openclaw-system.svc",
     namespace: "openclaw-system",
     podLabels: {
       "app.kubernetes.io/name": "openclaw-enterprise",
       "app.kubernetes.io/instance": "oce",
-      "app.kubernetes.io/component": "slack-proxy",
+      "app.kubernetes.io/component": "gateway-proxy",
     },
     port: 3128,
   };
@@ -4797,8 +4797,8 @@ test("the canonical Kubernetes runtime validates channel proxy configuration", (
       options({
         runtime: {
           ...runtime,
-          channels: {
-            proxyUrl: "http://openclaw-enterprise-slack-proxy.openclaw-system.svc:3128",
+          proxy: {
+            proxyUrl: "http://openclaw-enterprise-gateway-proxy.openclaw-system.svc:3128",
             managedProxy,
           },
         },
@@ -4807,7 +4807,7 @@ test("the canonical Kubernetes runtime validates channel proxy configuration", (
   );
   for (const proxyUrl of [
     "http://proxy.internal:3128",
-    "http://openclaw-enterprise-slack-proxy.openclaw-system.svc:3128",
+    "http://openclaw-enterprise-gateway-proxy.openclaw-system.svc:3128",
     "https://192.0.2.15",
     syntheticCredentialUrl({
       username: "operator",
@@ -4821,27 +4821,27 @@ test("the canonical Kubernetes runtime validates channel proxy configuration", (
   ]) {
     const channels = { proxyUrl };
     assert.throws(
-      () => createKubernetesComputeDriver(options({ runtime: { ...runtime, channels } })),
+      () => createKubernetesComputeDriver(options({ runtime: { ...runtime, proxy: channels } })),
       /HTTP\(S\) IP endpoint/i,
     );
   }
   for (const channels of [
     {
-      proxyUrl: "http://openclaw-enterprise-slack-proxy.openclaw-system.svc:3128",
+      proxyUrl: "http://openclaw-enterprise-gateway-proxy.openclaw-system.svc:3128",
       managedProxy: { ...managedProxy, hostname: "other.openclaw-system.svc" },
     },
     {
-      proxyUrl: "http://openclaw-enterprise-slack-proxy.openclaw-system.svc:3129",
+      proxyUrl: "http://openclaw-enterprise-gateway-proxy.openclaw-system.svc:3129",
       managedProxy,
     },
     {
-      proxyUrl: "http://openclaw-enterprise-slack-proxy.openclaw-system.svc:3128",
+      proxyUrl: "http://openclaw-enterprise-gateway-proxy.openclaw-system.svc:3128",
       managedProxy: { ...managedProxy, podLabels: {} },
     },
   ]) {
     assert.throws(
-      () => createKubernetesComputeDriver(options({ runtime: { ...runtime, channels } })),
-      /Managed channel proxy/i,
+      () => createKubernetesComputeDriver(options({ runtime: { ...runtime, proxy: channels } })),
+      /Managed Gateway proxy/i,
     );
   }
 });
@@ -4849,7 +4849,7 @@ test("the canonical Kubernetes runtime validates channel proxy configuration", (
 test("every NetworkPolicy peer namespace must be a Kubernetes namespace name", () => {
   const runtime = { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" };
   const base = options({ runtime });
-  const proxyHost = "openclaw-enterprise-slack-proxy.openclaw-system.svc";
+  const proxyHost = "openclaw-enterprise-gateway-proxy.openclaw-system.svc";
   const peers = {
     "DNS peer": (namespace) => ({
       network: { ...base.network, dns: { ...base.network.dns, namespace } },
@@ -4877,15 +4877,15 @@ test("every NetworkPolicy peer namespace must be a Kubernetes namespace name", (
         },
       },
     }),
-    "Managed channel proxy": (namespace) => ({
+    "Managed Gateway proxy": (namespace) => ({
       runtime: {
         ...base.runtime,
-        channels: {
+        proxy: {
           proxyUrl: `http://${proxyHost}:3128`,
           managedProxy: {
             hostname: proxyHost,
             namespace,
-            podLabels: { "app.kubernetes.io/component": "slack-proxy" },
+            podLabels: { "app.kubernetes.io/component": "gateway-proxy" },
             port: 3128,
           },
         },
@@ -5087,7 +5087,7 @@ test("dedicated Codex projects the account-owned token through the common PAT lo
       runtime: {
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
-        channels: { proxyUrl: "http://10.42.0.15:3128" },
+        proxy: { proxyUrl: "http://10.42.0.15:3128" },
       },
     }),
   );
@@ -5140,7 +5140,7 @@ test("dedicated Codex projects the account-owned token through the common PAT lo
   assert.equal(agentEnvironment.SLACK_BOT_TOKEN, undefined);
   assert.equal(agentEnvironment.MSTEAMS_APP_PASSWORD, undefined);
 
-  const channels = driver.enabledChannels({
+  driver.validateEnabledChannels({
     configuration: { channels: { slack: {}, msteams: {} } },
     harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
     harnessAuth: apiKeyAuth,
@@ -5162,7 +5162,6 @@ test("dedicated Codex projects the account-owned token through the common PAT lo
     false,
     undefined,
     undefined,
-    channels,
   );
   const gatewayEnvironment = new Set(
     gateway.spec.template.spec.containers[0].env.map(({ name }) => name),
@@ -6270,7 +6269,6 @@ test("dedicated OpenClaw gateway receives Agent plugin approvers without plugin 
     undefined,
     undefined,
     [],
-    [],
     snapshot,
   );
   const pod = gateway.spec.template.spec;
@@ -6639,7 +6637,6 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     undefined,
     undefined,
     [],
-    [],
     undefined,
     [],
   );
@@ -6656,7 +6653,6 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     false,
     undefined,
     driver.harnessAuthForRevision(revision, authContext(revision, namespace), namespaceAddress),
-    [],
     [],
     undefined,
     [],
@@ -6879,7 +6875,7 @@ test("native channel providers require Secret bindings and project them only to 
       runtime: {
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
-        channels: { proxyUrl: "http://10.42.0.15:3128" },
+        proxy: { proxyUrl: "http://10.42.0.15:3128" },
       },
     }),
   );
@@ -6976,7 +6972,7 @@ test("native channel providers require Secret bindings and project them only to 
         configuredRevision.secretBindings,
       ),
     );
-    const enabled = driver.enabledChannels(configuredRevision);
+    driver.validateEnabledChannels(configuredRevision);
     const expectedSecretEnvironment = expectedSecrets.map((name) =>
       secretEnvironment.find((item) => item.name === name),
     );
@@ -6997,7 +6993,6 @@ test("native channel providers require Secret bindings and project them only to 
       false,
       undefined,
       undefined,
-      enabled,
       expectedSecretEnvironment,
     );
     const environment = gateway.spec.template.spec.containers[0].env;
@@ -7024,28 +7019,15 @@ test("native channel providers require Secret bindings and project them only to 
       }
     }
     const proxy = environment.filter(({ name }) => name === "HTTPS_PROXY");
-    assert.deepEqual(
-      proxy,
-      expectedSecrets.length === 0
-        ? []
-        : [{ name: "HTTPS_PROXY", value: "http://10.42.0.15:3128" }],
-    );
+    assert.deepEqual(proxy, [{ name: "HTTPS_PROXY", value: "http://10.42.0.15:3128" }]);
 
-    const policy = driver.channelNetworkPolicy(configuredRevision, enabled, {
+    const policy = driver.gatewayProxyNetworkPolicy(configuredRevision, {
       name: namespace,
       plane: "execution",
     });
-    assert.deepEqual(
-      policy.spec.egress,
-      expectedSecrets.length === 0
-        ? []
-        : [
-            {
-              to: [{ ipBlock: { cidr: "10.42.0.15/32" } }],
-              ports: [{ protocol: "TCP", port: 3128 }],
-            },
-          ],
-    );
+    assert.deepEqual(policy.spec.egress, [
+      { to: [{ ipBlock: { cidr: "10.42.0.15/32" } }], ports: [{ protocol: "TCP", port: 3128 }] },
+    ]);
 
     // Dedicated Agents never receive gateway-owned channel credentials or their network proxy.
     const agent = driver.deployment(
@@ -7067,7 +7049,6 @@ test("native channel providers require Secret bindings and project them only to 
       undefined,
       preparedAuth(driver, namespace, false),
       [],
-      [],
     );
     const agentEnvironment = agent.spec.template.spec.containers[0].env;
     for (const key of [...expectedSecrets, "HTTPS_PROXY"]) {
@@ -7079,12 +7060,12 @@ test("native channel providers require Secret bindings and project them only to 
   }
 
   const managedProxy = {
-    hostname: "openclaw-enterprise-slack-proxy.openclaw-system.svc",
+    hostname: "openclaw-enterprise-gateway-proxy.openclaw-system.svc",
     namespace: "openclaw-system",
     podLabels: {
       "app.kubernetes.io/name": "openclaw-enterprise",
       "app.kubernetes.io/instance": "oce",
-      "app.kubernetes.io/component": "slack-proxy",
+      "app.kubernetes.io/component": "gateway-proxy",
     },
     port: 3128,
   };
@@ -7093,8 +7074,8 @@ test("native channel providers require Secret bindings and project them only to 
       runtime: {
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
-        channels: {
-          proxyUrl: "http://openclaw-enterprise-slack-proxy.openclaw-system.svc:3128",
+        proxy: {
+          proxyUrl: "http://openclaw-enterprise-gateway-proxy.openclaw-system.svc:3128",
           managedProxy,
         },
       },
@@ -7106,7 +7087,7 @@ test("native channel providers require Secret bindings and project them only to 
     secretBindings,
     secretDriverId: "secret-kubernetes",
   };
-  const managedEnabled = managedDriver.enabledChannels(managedRevision);
+  managedDriver.validateEnabledChannels(managedRevision);
   const managedGateway = managedDriver.deployment(
     `gateway-${suffix}`,
     { namespaceId: tenant.id, agentId },
@@ -7124,7 +7105,6 @@ test("native channel providers require Secret bindings and project them only to 
     false,
     undefined,
     undefined,
-    managedEnabled,
     secretEnvironment.filter(({ name }) => name.startsWith("SLACK_")),
   );
   assert.deepEqual(
@@ -7134,11 +7114,11 @@ test("native channel providers require Secret bindings and project them only to 
     [
       {
         name: "HTTPS_PROXY",
-        value: "http://openclaw-enterprise-slack-proxy.openclaw-system.svc:3128",
+        value: "http://openclaw-enterprise-gateway-proxy.openclaw-system.svc:3128",
       },
     ],
   );
-  const managedPolicy = managedDriver.channelNetworkPolicy(managedRevision, managedEnabled, {
+  const managedPolicy = managedDriver.gatewayProxyNetworkPolicy(managedRevision, {
     name: namespace,
     plane: "execution",
   });
@@ -7168,11 +7148,10 @@ test("native channel providers require Secret bindings and project them only to 
       diagnostics: { otel: { logs: false } },
     },
   };
-  const previouslyGranted = driver.channelNetworkPolicy(
-    activeRevision,
-    driver.enabledChannels(activeRevision),
-    { name: namespace, plane: "execution" },
-  );
+  const previouslyGranted = driver.gatewayProxyNetworkPolicy(activeRevision, {
+    name: namespace,
+    plane: "execution",
+  });
   for (const runtime of [
     {
       transportSecretPrefix: "transport",
@@ -7195,11 +7174,10 @@ test("native channel providers require Secret bindings and project them only to 
         diagnostics: { otel: { logs: false } },
       },
     };
-    const revoked = removed.channelNetworkPolicy(
-      disabledRevision,
-      removed.enabledChannels(disabledRevision),
-      { name: namespace, plane: "execution" },
-    );
+    const revoked = removed.gatewayProxyNetworkPolicy(disabledRevision, {
+      name: namespace,
+      plane: "execution",
+    });
     assert.equal(revoked.metadata.name, previouslyGranted.metadata.name);
     assert.deepEqual(revoked.metadata.labels, previouslyGranted.metadata.labels);
     assert.deepEqual(revoked.metadata.annotations, previouslyGranted.metadata.annotations);
@@ -7248,7 +7226,7 @@ test("native channel providers require Secret bindings and project them only to 
       runtime: {
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
-        channels: { proxyUrl: "https://[2001:db8::15]:8443" },
+        proxy: { proxyUrl: "https://[2001:db8::15]:8443" },
       },
     }),
   );
@@ -7266,7 +7244,7 @@ test("native channel providers require Secret bindings and project them only to 
       diagnostics: { otel: { logs: false } },
     },
   };
-  const ipv6Policy = ipv6.channelNetworkPolicy(teamsRevision, ipv6.enabledChannels(teamsRevision), {
+  const ipv6Policy = ipv6.gatewayProxyNetworkPolicy(teamsRevision, {
     name: namespace,
     plane: "execution",
   });
@@ -9932,7 +9910,6 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
     undefined,
     undefined,
     [],
-    [],
     driver.pluginRuntimeSnapshot(revision),
     [],
     undefined,
@@ -10622,7 +10599,7 @@ test("revision lifecycle rejects another driver or missing identity before clust
       runtime: {
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
-        channels: { proxyUrl: "http://10.42.0.15:3128" },
+        proxy: { proxyUrl: "http://10.42.0.15:3128" },
       },
       servicePrincipalCredentials: {
         mode: "projectedServiceAccountToken",
@@ -12566,7 +12543,7 @@ test("retiring a running embedded revision waits for gateway Pods and removes ow
       runtime: {
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
-        channels: { secretPrefix: "channel", proxyUrl: "http://192.0.2.10:3128" },
+        proxy: { proxyUrl: "http://192.0.2.10:3128" },
       },
     }),
   );
@@ -12651,7 +12628,7 @@ test("retiring a running embedded revision waits for gateway Pods and removes ow
     ...driver
       .agentNetworkPolicies(revision, { name: namespace, plane: "execution" })
       .map(({ resource }) => resource),
-    driver.channelNetworkPolicy(revision, [], { name: namespace, plane: "execution" }),
+    driver.gatewayProxyNetworkPolicy(revision, { name: namespace, plane: "execution" }),
   ];
   for (const policy of policies) {
     save(policy);
@@ -12867,7 +12844,7 @@ for (const stopped of [false, true]) {
     }
     const policies = [
       ...driver.agentNetworkPolicies(revision, target).map(({ resource }) => resource),
-      driver.channelNetworkPolicy(revision, [], target),
+      driver.gatewayProxyNetworkPolicy(revision, target),
     ];
     const policyNames = policies.map(({ metadata }) => metadata.name);
     for (const name of ["allow-workspace-node-gateway", "allow-gateway-workspace-node"]) {
@@ -13039,7 +13016,7 @@ test("activating a revision that leaves OpenShell deletes the Agent policies it 
       (name) =>
         !written.has(name) &&
         name !== `allow-agent-auth-${suffix}` &&
-        name !== `allow-gateway-channels-${suffix}`,
+        name !== `allow-gateway-proxy-${suffix}`,
     ),
     [],
   );
@@ -13099,7 +13076,7 @@ test("activating an embedded revision deletes a dedicated predecessor's Gateway 
     .filter((name) => name.startsWith(`NetworkPolicy:${namespace}:`) && name.endsWith(suffix))
     .map((name) => name.slice(`NetworkPolicy:${namespace}:`.length));
   assert.deepEqual(
-    remaining.filter((name) => !written.has(name) && name !== `allow-gateway-channels-${suffix}`),
+    remaining.filter((name) => !written.has(name) && name !== `allow-gateway-proxy-${suffix}`),
     [],
   );
   // The embedded Gateway keeps the model egress it writes under the shared name.
@@ -15563,7 +15540,7 @@ for (const embedded of [true, false]) {
       }
       for (const name of [
         "allow-gateway-agent",
-        "allow-gateway-channels",
+        "allow-gateway-proxy",
         "allow-plugin-status-gateway",
       ]) {
         save("NetworkPolicy", `${name}-${suffix}`, oldTarget);
@@ -15594,7 +15571,7 @@ for (const embedded of [true, false]) {
       }
       for (const name of [
         "allow-gateway-agent",
-        "allow-gateway-channels",
+        "allow-gateway-proxy",
         "allow-plugin-status-gateway",
       ]) {
         assert.equal(
@@ -15800,7 +15777,7 @@ function profileNetworkDriver() {
       runtime: {
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
-        channels: { proxyUrl: "http://192.0.2.15:3128" },
+        proxy: { proxyUrl: "http://192.0.2.15:3128" },
       },
     }),
   );
@@ -15942,7 +15919,7 @@ test("every allow policy requires an explicit approved network profile", () => {
       .map(({ resource }) => [resource, dedicated]),
     ...driver.agentNetworkPolicies(embedded, execution).map(({ resource }) => [resource, embedded]),
     [driver.agentAuthenticationNetworkPolicy(dedicated, execution), dedicated],
-    [driver.channelNetworkPolicy(dedicated, [], control), dedicated],
+    [driver.gatewayProxyNetworkPolicy(dedicated, control), dedicated],
   ];
   const d = digest(dedicated.agentId);
   const e = digest(embedded.agentId);
@@ -15959,7 +15936,7 @@ test("every allow policy requires an explicit approved network profile", () => {
     `${execution.name}/allow-agent-runtime-${e}`,
     `${execution.name}/allow-plugin-status-proxy-${e}`,
     `${execution.name}/allow-agent-auth-${d}`,
-    `${control.name}/allow-gateway-channels-${d}`,
+    `${control.name}/allow-gateway-proxy-${d}`,
   ];
   const checked = [];
   let workloadPeers = 0;
@@ -17407,5 +17384,77 @@ test("embedded redeploy repairs a never-served unready Gateway while workspace s
   assert.equal(
     objects.get(gatewayKey).metadata.annotations["openclaw.dev/agent-revision-id"],
     successor.id,
+  );
+});
+
+test("Installation-selected native Gateway proxy rejects Agent overrides in admission", () => {
+  const driver = createKubernetesComputeDriver(
+    options({
+      runtime: {
+        transportSecretPrefix: "transport",
+        gatewayStorageClassName: "local-path",
+        proxy: { proxyUrl: "http://192.0.2.10:3128" },
+      },
+    }),
+  );
+  for (const proxy of [
+    { enabled: false },
+    { proxyUrl: "http://192.0.2.11:3128" },
+    { loopbackMode: "proxy" },
+    { tls: { caFile: "/unreviewed" } },
+  ]) {
+    assert.throws(
+      () => driver.validateGatewaySettings({ proxy }),
+      /Installation-owned Gateway proxy/,
+    );
+  }
+  assert.doesNotThrow(() =>
+    driver.validateGatewaySettings({
+      proxy: { enabled: true, proxyUrl: "http://192.0.2.10:3128" },
+    }),
+  );
+});
+
+test("embedded two-cluster Gateways require a reachable external proxy, not a control-cluster Service", () => {
+  const configured = twoClusterOptions();
+  const managed = {
+    proxyUrl: "http://proxy.system.svc:3128",
+    managedProxy: {
+      hostname: "proxy.system.svc",
+      namespace: "system",
+      podLabels: { "app.kubernetes.io/component": "gateway-proxy" },
+      port: 3128,
+    },
+  };
+  const embedded = { id: "openclaw", mode: "embedded", version: "1.0.0" };
+  const configuration = createHarnessConfiguration("openclaw", "gpt-5");
+  const driver = (proxy) =>
+    createKubernetesComputeDriver({
+      ...configured,
+      runtime: { ...configured.runtime, proxy },
+    });
+  // Embedded Gateways live in the execution cluster. A Service/Pod selector in
+  // the control cluster is not an endpoint they can reach across that boundary.
+  assert.throws(
+    () => driver(managed).validateHarnessAuth(embedded, apiKeyAuth, configuration),
+    /Embedded two-cluster Gateways require an external proxy/,
+  );
+  for (const proxy of [undefined, { proxyUrl: "http://192.0.2.10:3128" }]) {
+    assert.doesNotThrow(() =>
+      driver(proxy).validateHarnessAuth(embedded, apiKeyAuth, configuration),
+    );
+  }
+  const colocated = createKubernetesComputeDriver(
+    options({
+      runtime: { ...configured.runtime, proxy: managed },
+    }),
+  );
+  assert.doesNotThrow(() => colocated.validateHarnessAuth(embedded, apiKeyAuth, configuration));
+  assert.doesNotThrow(() =>
+    driver(managed).validateHarnessAuth(
+      { id: "codex", mode: "dedicated", version: "1.0.0" },
+      apiKeyAuth,
+      createHarnessConfiguration("codex", "gpt-5"),
+    ),
   );
 });

@@ -57,7 +57,7 @@ function input(controlPlane) {
       gatewayNodeSelector: { "oce-role": "control" },
       transportSecretPrefix: "openclaw-agent-transport",
     },
-    channels: { managedSlackProxy: true },
+    proxy: { bundled: true },
   };
 }
 

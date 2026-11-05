@@ -34,8 +34,8 @@ const chatgptValues = {
   "backend.chatgpt.enabled": "true",
   "backend.chatgpt.providerCidr": "198.51.100.25/32",
 };
-const slackProxyValues = {
-  "slackProxy.enabled": "true",
+const gatewayProxyValues = {
+  "gatewayProxy.enabled": "true",
 };
 const repositoryCredentialValues = {
   "repositoryCredentials.enabled": "true",
@@ -136,7 +136,7 @@ test(
             await render({
               ...dnsValues,
               ...productionCollectorValues,
-              ...slackProxyValues,
+              ...gatewayProxyValues,
               ...gatewayRoutingValues,
             })
           ).stdout,
@@ -145,7 +145,7 @@ test(
           "openclaw-enterprise-dependency-egress",
           "oce-bootstrap-isolation",
           "openclaw-enterprise-collector-egress",
-          "openclaw-enterprise-slack-proxy",
+          "openclaw-enterprise-gateway-proxy",
           `oce-${routeNamespaceLabel("openclaw-system", "oce-agent-gateways")}-envoy-dataplane`,
         ],
       },
@@ -1127,7 +1127,7 @@ test("production settings coexist in fresh and upgrade chart renders", tooling, 
     ...agentNativeAdminValues,
     ...repositoryCredentialValues,
     "repositoryCredentials.serviceName": "git",
-    "api.channelDirectoryProxyUrl": "http://198.51.100.25:3128",
+    "gatewayProxy.url": "http://198.51.100.25:3128",
   };
   // An image upgrade must still render the operator's broker, routing and proxy
   // settings together; testing each feature separately would miss conflicts.
@@ -2604,7 +2604,7 @@ test("Slack directory proxy grants only API egress to its exact endpoint", tooli
   const defaults = await resources((await render()).stdout);
   assert.ok(!defaults.some(({ metadata }) => metadata.name === name));
   const objects = await resources(
-    (await render({ "api.channelDirectoryProxyUrl": "http://198.51.100.25:3128" })).stdout,
+    (await render({ "gatewayProxy.url": "http://198.51.100.25:3128" })).stdout,
   );
   const policy = objects.find(
     ({ kind, metadata }) => kind === "NetworkPolicy" && metadata.name === name,
@@ -2655,10 +2655,7 @@ test("Slack directory proxy grants only API egress to its exact endpoint", tooli
     "http://198.51.100.25:3128/path",
     "http://198.51.100.999:3128",
   ]) {
-    await assert.rejects(
-      render({ "api.channelDirectoryProxyUrl": url }),
-      /api.channelDirectoryProxyUrl/,
-    );
+    await assert.rejects(render({ "gatewayProxy.url": url }), /gatewayProxy.url/);
   }
 });
 
@@ -2666,47 +2663,50 @@ test(
   "managed Slack proxy renders private Service DNS and restricted proxy policies",
   tooling,
   async () => {
-    const objects = await resources((await render(slackProxyValues)).stdout);
+    const objects = await resources((await render(gatewayProxyValues)).stdout);
     const named = (kind, name) =>
       objects.find((object) => object.kind === kind && object.metadata.name === name);
-    const deployment = named("Deployment", "openclaw-enterprise-slack-proxy");
-    const service = named("Service", "openclaw-enterprise-slack-proxy");
-    const proxyPolicy = named("NetworkPolicy", "openclaw-enterprise-slack-proxy");
-    const apiPolicy = named("NetworkPolicy", "openclaw-enterprise-api-managed-slack-proxy-egress");
+    const deployment = named("Deployment", "openclaw-enterprise-gateway-proxy");
+    const service = named("Service", "openclaw-enterprise-gateway-proxy");
+    const proxyPolicy = named("NetworkPolicy", "openclaw-enterprise-gateway-proxy");
+    const apiPolicy = named(
+      "NetworkPolicy",
+      "openclaw-enterprise-api-managed-gateway-proxy-egress",
+    );
     assert.ok(deployment);
     assert.ok(service);
     assert.ok(proxyPolicy);
     assert.ok(apiPolicy);
     assert.equal(
       deployment.spec.template.spec.serviceAccountName,
-      "openclaw-enterprise-slack-proxy",
+      "openclaw-enterprise-gateway-proxy",
     );
     assert.equal(deployment.spec.template.spec.automountServiceAccountToken, false);
     assert.equal(deployment.spec.template.spec.enableServiceLinks, false);
     assert.deepEqual(
       deployment.spec.template.spec.containers[0].env.find(
-        ({ name }) => name === "OCC_SLACK_PROXY_PORT",
+        ({ name }) => name === "OCC_GATEWAY_PROXY_PORT",
       ),
-      { name: "OCC_SLACK_PROXY_PORT", value: "3128" },
+      { name: "OCC_GATEWAY_PROXY_PORT", value: "3128" },
     );
     assert.deepEqual(service.spec.selector, {
       "app.kubernetes.io/name": "openclaw-enterprise",
       "app.kubernetes.io/instance": "oce",
-      "app.kubernetes.io/component": "slack-proxy",
+      "app.kubernetes.io/component": "gateway-proxy",
     });
     const api = named("Deployment", "openclaw-enterprise-api").spec.template.spec.containers[0];
     assert.deepEqual(
       api.env.find(({ name }) => name === "OCC_CHANNEL_DIRECTORY_PROXY_URL"),
       {
         name: "OCC_CHANNEL_DIRECTORY_PROXY_URL",
-        value: "http://openclaw-enterprise-slack-proxy.openclaw-system.svc:3128",
+        value: "http://openclaw-enterprise-gateway-proxy.openclaw-system.svc:3128",
       },
     );
     assert.deepEqual(
       api.env.find(({ name }) => name === "OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST"),
       {
         name: "OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST",
-        value: "openclaw-enterprise-slack-proxy.openclaw-system.svc",
+        value: "openclaw-enterprise-gateway-proxy.openclaw-system.svc",
       },
     );
     assert.deepEqual(apiPolicy.spec.egress, [
@@ -2720,7 +2720,7 @@ test(
               matchLabels: {
                 "app.kubernetes.io/name": "openclaw-enterprise",
                 "app.kubernetes.io/instance": "oce",
-                "app.kubernetes.io/component": "slack-proxy",
+                "app.kubernetes.io/component": "gateway-proxy",
               },
             },
           },
@@ -2747,12 +2747,12 @@ test(
       },
     ]);
     const gatewayObjects = await resources(
-      (await render({ ...slackProxyValues, ...gatewayRoutingValues })).stdout,
+      (await render({ ...gatewayProxyValues, ...gatewayRoutingValues })).stdout,
     );
     const gatewayProxyPolicy = gatewayObjects.find(
       (object) =>
         object.kind === "NetworkPolicy" &&
-        object.metadata.name === "openclaw-enterprise-slack-proxy",
+        object.metadata.name === "openclaw-enterprise-gateway-proxy",
     );
     assert.deepEqual(gatewayProxyPolicy.spec.ingress, [
       {
@@ -2808,26 +2808,26 @@ test(
       ports: [{ protocol: "TCP", port: 443 }],
     });
     assert.equal(
-      named("ServiceAccount", "openclaw-enterprise-slack-proxy").automountServiceAccountToken,
+      named("ServiceAccount", "openclaw-enterprise-gateway-proxy").automountServiceAccountToken,
       false,
     );
     await assert.rejects(
-      render({ ...slackProxyValues, "api.channelDirectoryProxyUrl": "http://198.51.100.25:3128" }),
-      /api.channelDirectoryProxyUrl/,
+      render({ ...gatewayProxyValues, "gatewayProxy.url": "http://198.51.100.25:3128" }),
+      /gatewayProxy.url/,
     );
     for (const override of [
-      { "slackProxy.serviceName": "1proxy" },
-      { "slackProxy.port": "65536" },
+      { "gatewayProxy.serviceName": "1proxy" },
+      { "gatewayProxy.port": "65536" },
     ]) {
-      await assert.rejects(render({ ...slackProxyValues, ...override }), /slackProxy/);
+      await assert.rejects(render({ ...gatewayProxyValues, ...override }), /gatewayProxy/);
     }
     await assert.rejects(
-      render(slackProxyValues, { strings: { "slackProxy.port": "010" } }),
-      /slackProxy\.port must be an integer TCP port/,
+      render(gatewayProxyValues, { strings: { "gatewayProxy.port": "010" } }),
+      /gatewayProxy\.port must be an integer TCP port/,
     );
     await assert.rejects(
-      render(slackProxyValues, { strings: { "slackProxy.port": "9223372036854775808" } }),
-      /slackProxy\.port must be an integer TCP port/,
+      render(gatewayProxyValues, { strings: { "gatewayProxy.port": "9223372036854775808" } }),
+      /gatewayProxy\.port must be an integer TCP port/,
     );
   },
 );
@@ -3823,7 +3823,7 @@ test(
     const label = routeNamespaceLabel(namespace, "oce-agent-gateways");
     assert.match(label, /^[0-9]+e[0-9]+$/);
     const objects = await resources(
-      (await render({ ...gatewayRoutingValues, ...slackProxyValues }, { namespace })).stdout,
+      (await render({ ...gatewayRoutingValues, ...gatewayProxyValues }, { namespace })).stdout,
     );
     const values = [];
     const collect = (value) => {
@@ -3880,7 +3880,7 @@ test(
   async () => {
     const features = {
       ...productionCollectorValues,
-      ...slackProxyValues,
+      ...gatewayProxyValues,
       ...chatgptValues,
       ...repositoryCredentialValues,
       ...gatewayRoutingValues,
@@ -3926,7 +3926,7 @@ test(
       "repositoryCredentials.publicCaKey": "6",
       "repositoryCredentials.registryConfigMapName": "15",
       "repositoryCredentials.registryKey": "7",
-      "slackProxy.serviceName": "y",
+      "gatewayProxy.serviceName": "y",
       "executionCluster.apiKubeconfigSecretName": "21",
       "executionCluster.workerKubeconfigSecretName": "22",
       "executionCluster.kubeconfigKey": "true",
@@ -4894,5 +4894,47 @@ test(
       policy?.spec.egress[0].to[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"],
       namespace,
     );
+  },
+);
+
+test(
+  "bundled Gateway proxy carries an operator host policy and rejects conflicting selection",
+  tooling,
+  async () => {
+    const hosts = ["slack.com", "*.slack.com", "api.example.com"];
+    const overrides = {
+      "gatewayProxy.enabled": "true",
+      "gatewayProxy.allowedHosts": `{${hosts.join(",")}}`,
+    };
+    const objects = await resources((await render(overrides)).stdout);
+    const proxy = objects.find(
+      ({ kind, metadata }) =>
+        kind === "Deployment" && metadata.name === "openclaw-enterprise-gateway-proxy",
+    );
+    assert.deepEqual(
+      JSON.parse(
+        proxy.spec.template.spec.containers[0].env.find(
+          ({ name }) => name === "OCC_GATEWAY_PROXY_ALLOWED_HOSTS",
+        ).value,
+      ),
+      hosts,
+    );
+    // An external route may not silently override the bundled destination policy.
+    await assert.rejects(
+      render({ ...overrides, "gatewayProxy.url": "http://192.0.2.10:3128" }),
+      /must be empty/,
+    );
+    for (const host of [
+      "*",
+      "*.com/escape",
+      "EXAMPLE.com",
+      "https://example.com",
+      "bad..example.com",
+    ]) {
+      await assert.rejects(
+        render({ "gatewayProxy.allowedHosts[0]": host }),
+        /gatewayProxy.allowedHosts/,
+      );
+    }
   },
 );

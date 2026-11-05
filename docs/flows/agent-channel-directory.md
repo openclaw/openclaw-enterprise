@@ -1,7 +1,7 @@
 ---
 created: 2026-09-27
-updated: 2026-10-05
-last_updated_session: authoring-run/eb95c719-31db-483c-9db3-c9573329209d
+updated: 2026-11-05 17:33
+last_updated_session: authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62
 ---
 
 # Agent Channel Directory Lookup Flow
@@ -66,11 +66,11 @@ API has an approved `OCC_CHANNEL_DIRECTORY_PROXY_URL`. Without it, an authorized
 lookup returns `501` before the Secret value is read. Development selects the
 Driver directly. In production the Driver tunnels requests to `slack.com:443`
 through the configured proxy. With the managed proxy enabled, Helm points the
-API at the `openclaw-enterprise-slack-proxy.<namespace>.svc` Service, sets that
+API at the `openclaw-enterprise-gateway-proxy.<namespace>.svc` Service, sets that
 exact host in `OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST`, and limits API egress
 to the proxy Pod selector. With an external literal IPv4 proxy, Helm limits API
-egress to that IP and port. The managed proxy accepts CONNECT only for Slack
-hostnames on port 443, while its NetworkPolicy allows upstream egress to public
+egress to that IP and port. The managed proxy accepts CONNECT for its configured
+hostnames on port 443 (Slack by default), while its NetworkPolicy allows upstream egress to public
 IPv4 addresses on TCP 443, excluding private and reserved ranges.
 The selected SecretDriver invokes `withValue` and verifies backend ownership.
 OCC rechecks grants and Secret backend identity after the read. It passes the
@@ -128,8 +128,8 @@ view.
   `operate` grant. A token, scope, rate limit, or provider error returns a
   safe code without the token or upstream payload.
 - A `501` lookup in production means the API has no directory proxy configured.
-  Enable Helm `slackProxy.enabled` or set the approved
-  external proxy IP and port in `api.channelDirectoryProxyUrl`, then verify that
+  Enable Helm `gatewayProxy.enabled` or set the approved
+  external proxy IP and port in `gatewayProxy.url`, then verify that
   the proxy permits CONNECT to `slack.com:443`.
 - Directory conformance tests cover provider pagination, safe errors, and native
   HTTP connection recovery after unfinished 429 and 503 response bodies. The
@@ -152,6 +152,8 @@ view.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 17:33: Document one selected bundled or external Gateway proxy (authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62 - 80725162a946f80652b939a32a57ee4e922eeb5c)
 
 - 2026-10-05 19:32: Describe failed HTTP response cleanup and native connection recovery. (authoring-run/eb95c719-31db-483c-9db3-c9573329209d - 5a2dd43d2e524637e7173457def040fa79d42a93)
 

@@ -204,7 +204,7 @@ maintain those addresses for the optional
 [model-discovery API](../reference/console/create-and-deploy.md#create-an-agent);
 Console model selection and Harness egress do not depend on this policy.
 
-When `api.channelDirectoryProxyUrl` names an approved HTTP(S) proxy at a
+When `gatewayProxy.url` names an approved HTTP(S) proxy at a
 literal IPv4 address and port, the chart passes it to the API and grants only
 that Pod egress to the proxy's exact `/32` and TCP port. The proxy must permit
 CONNECT to `slack.com:443`. The empty default renders no rule and leaves

@@ -37,8 +37,8 @@ session cookie before forwarding to the native gateway.
 | `OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST` | Optional exact Helm-managed proxy Service host.                                                                    | API only; the one DNS host the Slack directory Driver accepts in the proxy URL instead of an IPv4 address.              |
 | `NODE_EXTRA_CA_CERTS`                      | Optional PEM bundle for a private gateway CA.                                                                      | Node reads it at process startup. Normal leaf renewal under that CA does not require a restart; root-bundle changes do. |
 
-For Helm, prefer `slackProxy.enabled` over an external
-`api.channelDirectoryProxyUrl`; the
+For Helm, prefer `gatewayProxy.enabled` over an external
+`gatewayProxy.url`; the
 [Slack Channel Driver](../drivers/slack-channel.md#enable-lookup-in-production)
 owns both options' API-only proxy egress and the proxy's `slack.com:443`
 requirement. With neither, the chart renders no proxy egress rule, and Slack

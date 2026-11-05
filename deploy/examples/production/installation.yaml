@@ -132,17 +132,18 @@ drivers:
         audience: openclaw-enterprise
         expirationSeconds: 900
       runtime:
-        # For Slack, set the approved gateway proxy and configure the separate
-        # API directory proxy in Helm values. See docs/guides/integrations/slack.md.
-        # channels:
-        #   proxyUrl: http://openclaw-enterprise-slack-proxy.openclaw-system.svc:3128
+        # Set the selected Gateway proxy; use the same endpoint for
+        # Helm gatewayProxy.url, or enable the matching bundled Service.
+        # See docs/guides/integrations/gateway-proxy.md.
+        # proxy:
+        #   proxyUrl: http://openclaw-enterprise-gateway-proxy.openclaw-system.svc:3128
         #   managedProxy:
-        #     hostname: openclaw-enterprise-slack-proxy.openclaw-system.svc
+        #     hostname: openclaw-enterprise-gateway-proxy.openclaw-system.svc
         #     namespace: openclaw-system
         #     podLabels:
         #       app.kubernetes.io/name: openclaw-enterprise
         #       app.kubernetes.io/instance: oce
-        #       app.kubernetes.io/component: slack-proxy
+        #       app.kubernetes.io/component: gateway-proxy
         #     port: 3128
         # Choose a private RWO block-backed filesystem with reliable SQLite locking.
         # See [Gateway storage](../../../docs/reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage).

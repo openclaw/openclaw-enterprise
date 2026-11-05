@@ -126,7 +126,7 @@ test(
                 "kubernetes.io/hostname": JSON.parse(await kubectl("get", "nodes", "-o", "json"))
                   .items[0].metadata.name,
               },
-              channels: { secretPrefix: "channel", proxyUrl: "http://10.42.0.15:3128" },
+              proxy: { proxyUrl: "http://10.42.0.15:3128" },
             },
           },
     );
@@ -542,7 +542,7 @@ test(
           `${label} before channel Secret bindings: ${JSON.stringify(missingBindings.error)}`,
         );
         assert.equal(missingBindings.error.code, "CHANNEL_CREDENTIAL_BINDING_REQUIRED");
-        // This k3d fixture has no runtime.channels proxy and uses the fixture image,
+        // This k3d fixture has no runtime.proxy proxy and uses the fixture image,
         // so successful deployment proves generic API/IAM/admission/gateway Secret
         // projection. Real Slack channel runtime proof belongs to the real-runtime suite.
         const updated = await request(

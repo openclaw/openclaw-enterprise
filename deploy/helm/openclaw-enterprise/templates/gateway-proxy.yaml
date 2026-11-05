@@ -1,28 +1,28 @@
-{{- if .Values.slackProxy.enabled }}
+{{- if .Values.gatewayProxy.enabled }}
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: openclaw-enterprise-slack-proxy
+  name: openclaw-enterprise-gateway-proxy
   labels:
-    {{- include "openclaw.labels" (dict "root" . "component" "slack-proxy") | nindent 4 }}
+    {{- include "openclaw.labels" (dict "root" . "component" "gateway-proxy") | nindent 4 }}
 spec:
   replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: openclaw-enterprise
       app.kubernetes.io/instance: {{ .Release.Name | quote }}
-      app.kubernetes.io/component: slack-proxy
+      app.kubernetes.io/component: gateway-proxy
   template:
     metadata:
       labels:
-        {{- include "openclaw.labels" (dict "root" . "component" "slack-proxy") | nindent 8 }}
+        {{- include "openclaw.labels" (dict "root" . "component" "gateway-proxy") | nindent 8 }}
       {{- with .Values.controlPlane.installationChecksum }}
       annotations:
         openclaw.dev/installation-checksum: {{ . | quote }}
       {{- end }}
     spec:
-      serviceAccountName: openclaw-enterprise-slack-proxy
+      serviceAccountName: openclaw-enterprise-gateway-proxy
       automountServiceAccountToken: false
       enableServiceLinks: false
       securityContext:
@@ -32,22 +32,24 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       containers:
-        - name: slack-proxy
+        - name: gateway-proxy
           image: {{ .Values.images.controller | quote }}
           args:
-            - apps/controller/src/slack-proxy.mjs
+            - apps/controller/src/gateway-proxy.mjs
           securityContext:
             {{- include "openclaw.containerSecurity" . | nindent 12 }}
           resources:
-            {{- toYaml .Values.slackProxy.resources | nindent 12 }}
+            {{- toYaml .Values.gatewayProxy.resources | nindent 12 }}
           env:
             - name: NODE_ENV
               value: production
-            - name: OCC_SLACK_PROXY_PORT
-              value: {{ .Values.slackProxy.port | quote }}
+            - name: OCC_GATEWAY_PROXY_ALLOWED_HOSTS
+              value: {{ .Values.gatewayProxy.allowedHosts | toJson | quote }}
+            - name: OCC_GATEWAY_PROXY_PORT
+              value: {{ .Values.gatewayProxy.port | quote }}
           ports:
             - name: proxy
-              containerPort: {{ .Values.slackProxy.port }}
+              containerPort: {{ .Values.gatewayProxy.port }}
           readinessProbe:
             tcpSocket:
               port: proxy
@@ -56,30 +58,30 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "openclaw.slackProxy.serviceName" . | quote }}
+  name: {{ include "openclaw.gatewayProxy.serviceName" . | quote }}
   labels:
-    {{- include "openclaw.labels" (dict "root" . "component" "slack-proxy") | nindent 4 }}
+    {{- include "openclaw.labels" (dict "root" . "component" "gateway-proxy") | nindent 4 }}
 spec:
   type: ClusterIP
   selector:
     app.kubernetes.io/name: openclaw-enterprise
     app.kubernetes.io/instance: {{ .Release.Name | quote }}
-    app.kubernetes.io/component: slack-proxy
+    app.kubernetes.io/component: gateway-proxy
   ports:
     - name: proxy
-      port: {{ .Values.slackProxy.port }}
+      port: {{ .Values.gatewayProxy.port }}
       targetPort: proxy
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: openclaw-enterprise-slack-proxy
+  name: openclaw-enterprise-gateway-proxy
 spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: openclaw-enterprise
       app.kubernetes.io/instance: {{ .Release.Name | quote }}
-      app.kubernetes.io/component: slack-proxy
+      app.kubernetes.io/component: gateway-proxy
   policyTypes: [Ingress, Egress]
   ingress:
     - from:
@@ -108,11 +110,11 @@ spec:
         {{- end }}
       ports:
         - protocol: TCP
-          port: {{ .Values.slackProxy.port }}
+          port: {{ .Values.gatewayProxy.port }}
   egress:
     {{- include "openclaw.networkPolicy.dnsEgress" . | nindent 4 }}
     - to:
-        # Slack rotates public endpoints; hostname authorization stays in the proxy.
+        # Public endpoints may rotate; hostname authorization stays in the proxy.
         - ipBlock:
             cidr: 0.0.0.0/0
             except:

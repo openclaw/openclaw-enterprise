@@ -49,26 +49,27 @@ startup, which remains a separate connectivity check.
 
 The production API selects the Slack Driver. With default-deny egress, Slack
 lookup and credential validation need a proxy. With the recommended Helm setting
-`slackProxy.enabled: true`, the chart:
+`gatewayProxy.enabled: true`, the chart:
 
-- creates a private `openclaw-enterprise-slack-proxy` Service;
+- creates a private `openclaw-enterprise-gateway-proxy` Service;
 - points `OCC_CHANNEL_DIRECTORY_PROXY_URL` at that Service DNS name;
 - allows API Pod egress only to the proxy Pod selector; and
 - allows the proxy public IPv4 egress on TCP 443, excluding private and
   reserved ranges.
 
-The bundled proxy accepts HTTP `CONNECT` only for Slack hostnames on port 443.
+The bundled proxy accepts HTTP `CONNECT` for its configured hostnames on port 443;
+the default policy permits Slack. See [Gateway outbound access](../../guides/integrations/gateway-proxy.md).
 The API accepts a DNS proxy URL only when Helm also sets the matching
 `OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST`; it rejects any other DNS proxy URL.
 
-Operators can instead set Helm `api.channelDirectoryProxyUrl` to an approved
+Operators can instead set Helm `gatewayProxy.url` to an approved
 external HTTP or HTTPS proxy, such as `http://198.51.100.25:3128` with the
 example IP and port replaced. The value must contain one literal IPv4 address
 and an explicit port, without credentials or a path. The chart passes it to the
 API as `OCC_CHANNEL_DIRECTORY_PROXY_URL` and allows API Pod egress only to that
 IP and port. The proxy must permit `CONNECT slack.com:443`; restrict its other
-destinations at the proxy. The chart does not grant the worker or Agent Pods this
-egress.
+destinations at the proxy. The chart does not grant the worker this egress. Compute separately grants
+Gateways the matching `runtime.proxy` endpoint.
 
 The Driver sends Slack API requests through the selected tunnel and verifies
 Slack's TLS certificate. Keep the selected bot token in the same-Namespace

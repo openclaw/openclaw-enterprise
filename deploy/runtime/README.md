@@ -248,3 +248,14 @@ The `org.openclaw.image.revision` label records the same upstream commit for
 Docker inspection; the build checks that it matches packaged provenance. Local builds
 can pass `--build-arg OCC_BUILD_REVISION=<full-lowercase-git-sha>`; omitted metadata
 remains unknown. Rebuild the runtime image to include this metadata.
+
+
+## Internal transport proxy bridge
+
+`openclaw-internal-transport-proxy.patch` adds an exact-URL Proxyline exception
+for the Driver-provisioned dedicated Codex app-server transport. Registration
+belongs to the existing Codex WebSocket transport and ends on close or failed
+construction. Only `OPENCLAW_INTERNAL_TRANSPORT_URL` provisioned by Compute can
+match; Agent proxy configuration cannot supply a private-host bypass list.
+Remove this bridge when OC exposes the equivalent owning transport hook. See
+[Gateway proxy execution](../../docs/flows/gateway-outbound-proxy.md).

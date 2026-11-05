@@ -254,6 +254,13 @@ Driver gateway entrypoint, UID `1000:1000`, a read-only root filesystem, and
 tmpfs-backed `/home/node` and `/tmp`. Host Node.js 24+ is required to run the
 tests.
 
+The Gateway peer suite also runs the packaged native proxy lifecycle and real
+Codex WebSocket transport against the bundled CONNECT server. Task-owned
+containers provide a trusted TLS origin and an authenticated Codex app-server.
+The case checks the exact provisioned bypass, revocation, reconnect, destination
+denial, and proxy-outage failure without Internet access or model credentials.
+It requires host `openssl`; it is transport proof, not OCC deployment or model proof.
+
 | Variable                         | Requirement or default                                                                                                                       |
 | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | `OCC_TEST_RUNTIME_IMAGE`         | Local runtime image tag or digest reference; unset skips.                                                                                    |

@@ -8,19 +8,44 @@ const SHUTDOWN_DRAIN_MS = 2_000;
 // How long a client may take to read what is still queued for it, and close its side, after
 // the proxy has finished writing to it.
 const CLIENT_DRAIN_TIMEOUT_MS = 10_000;
-const ALLOWED_SUFFIXES = [".slack.com", ".slack-edge.com", ".slack-msgs.com"];
-const ALLOWED_HOSTS = new Set(["slack.com", "slack-edge.com", "slack-msgs.com"]);
+const DEFAULT_ALLOWED_HOSTS = [
+  "slack.com",
+  "*.slack.com",
+  "slack-edge.com",
+  "*.slack-edge.com",
+  "slack-msgs.com",
+  "*.slack-msgs.com",
+];
+
+function validateAllowedHosts(hosts) {
+  if (
+    !Array.isArray(hosts) ||
+    hosts.length > 256 ||
+    hosts.some(
+      (host) =>
+        typeof host !== "string" ||
+        host.length > 253 ||
+        !/^(?:\*\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(
+          host,
+        ),
+    )
+  ) {
+    throw new Error(
+      "Gateway proxy allowedHosts must be at most 256 lowercase DNS names, optionally prefixed with *.",
+    );
+  }
+}
 
 function parsePort(value) {
   if (value === undefined || value === "") {
     return DEFAULT_PORT;
   }
   if (!/^[0-9]+$/.test(value)) {
-    throw new Error("OCC_SLACK_PROXY_PORT must be an integer TCP port.");
+    throw new Error("OCC_GATEWAY_PROXY_PORT must be an integer TCP port.");
   }
   const port = Number(value);
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
-    throw new Error("OCC_SLACK_PROXY_PORT must be between 0 and 65535.");
+    throw new Error("OCC_GATEWAY_PROXY_PORT must be between 0 and 65535.");
   }
   return port;
 }
@@ -37,14 +62,14 @@ function parseConnectTarget(target) {
   return { host: match[1].toLowerCase(), port };
 }
 
-function isAllowedSlackConnectTarget(target) {
+function isAllowedConnectTarget(target, allowedHosts) {
   const parsed = parseConnectTarget(target);
-  if (parsed === undefined || parsed.port !== 443) {
-    return false;
-  }
   return (
-    ALLOWED_HOSTS.has(parsed.host) ||
-    ALLOWED_SUFFIXES.some((suffix) => parsed.host.endsWith(suffix))
+    parsed !== undefined &&
+    parsed.port === 443 &&
+    allowedHosts.some((host) =>
+      host.startsWith("*.") ? parsed.host.endsWith(host.slice(1)) : parsed.host === host,
+    )
   );
 }
 
@@ -98,7 +123,11 @@ function closeClientWhenDrained(clientSocket, drainTimeoutMs) {
   clientSocket.once("close", () => clearTimeout(timer));
 }
 
-export function createSlackProxyServer({ clientDrainTimeoutMs = CLIENT_DRAIN_TIMEOUT_MS } = {}) {
+export function createGatewayProxyServer({
+  clientDrainTimeoutMs = CLIENT_DRAIN_TIMEOUT_MS,
+  allowedHosts = DEFAULT_ALLOWED_HOSTS,
+} = {}) {
+  validateAllowedHosts(allowedHosts);
   const server = createServer((request, response) => {
     response.writeHead(405, { "content-type": "text/plain; charset=utf-8" });
     response.end("CONNECT required\n");
@@ -109,7 +138,7 @@ export function createSlackProxyServer({ clientDrainTimeoutMs = CLIENT_DRAIN_TIM
     // EPIPE or ECONNRESET while the 403 is written; without a listener
     // that error exits the process.
     closeOnSocketError(clientSocket);
-    if (!isAllowedSlackConnectTarget(request.url)) {
+    if (!isAllowedConnectTarget(request.url, allowedHosts)) {
       reject(clientSocket, 403, "Forbidden");
       closeClientWhenDrained(clientSocket, clientDrainTimeoutMs);
       return;
@@ -150,8 +179,12 @@ export function createSlackProxyServer({ clientDrainTimeoutMs = CLIENT_DRAIN_TIM
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const port = parsePort(process.env.OCC_SLACK_PROXY_PORT);
-  const server = createSlackProxyServer();
+  const port = parsePort(process.env.OCC_GATEWAY_PROXY_PORT);
+  const allowedHosts =
+    process.env.OCC_GATEWAY_PROXY_ALLOWED_HOSTS === undefined
+      ? DEFAULT_ALLOWED_HOSTS
+      : JSON.parse(process.env.OCC_GATEWAY_PROXY_ALLOWED_HOSTS);
+  const server = createGatewayProxyServer({ allowedHosts });
   const sockets = new Set();
   server.on("connection", (socket) => {
     sockets.add(socket);
@@ -176,6 +209,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   server.listen(port, "0.0.0.0", () => {
     const address = server.address();
     const selectedPort = typeof address === "object" && address !== null ? address.port : port;
-    process.stderr.write(`Slack proxy listening on ${selectedPort}\n`);
+    process.stderr.write(`Gateway proxy listening on ${selectedPort}\n`);
   });
 }

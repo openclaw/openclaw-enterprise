@@ -624,7 +624,6 @@ if (args[0] === 'scripts/upgrade-repository-image-probe.mjs') {
   }
   if (candidates) {
     const candidateValues = JSON.parse(values);
-    candidateValues.api = { channelDirectoryProxyUrl: "http://198.51.100.25:3128" };
     const candidateInstallation = JSON.parse(installation);
     candidateInstallation.drivers.plugin = {
       id: "codex-plugin",
@@ -844,7 +843,6 @@ test("reviewed settings survive an interrupted controller upgrade without losing
   const liveValues = JSON.parse(
     (await execute("yq", ["-o=json", ".", join(f.directory, "live-values")])).stdout,
   );
-  assert.equal(liveValues.api.channelDirectoryProxyUrl, "http://198.51.100.25:3128");
   assert.equal(liveValues.images.controller, newController);
   assert.equal(liveValues.repositoryCredentials.hostname, "git.system.svc.cluster.local");
   assert.equal(liveValues.controlPlane.installationChecksum, finalState.checksum);
@@ -882,7 +880,7 @@ test("resume refuses altered reviewed candidates before another mutation", async
   await assert.rejects(f.run(), injectedFault);
   const path = join(f.directory, "candidate-values.json");
   const candidate = JSON.parse(await readFile(path, "utf8"));
-  candidate.api.channelDirectoryProxyUrl = "http://198.51.100.26:3128";
+  candidate.gatewayProxy = { url: "http://198.51.100.26:3128" };
   await writeFile(path, JSON.stringify(candidate));
   await assert.rejects(f.run("--resume"), /reviewed candidate values changed after preparation/);
   assert.equal((await f.events()).filter((event) => event === "migration").length, 0);
@@ -1880,4 +1878,14 @@ test("an Installation the selected controller image loads passes the preflight a
   assert.ok(
     state.preflight.deleted.includes(`networkpolicy.networking.k8s.io/${policy.metadata.name}`),
   );
+});
+
+test("image-only candidates reject Gateway proxy changes before writes", async (t) => {
+  const f = await fixture(t, { candidates: true });
+  const path = join(f.directory, "candidate-values.json");
+  const candidate = JSON.parse(await readFile(path, "utf8"));
+  candidate.gatewayProxy = { url: "http://198.51.100.25:3128" };
+  await writeFile(path, JSON.stringify(candidate));
+  await assert.rejects(f.run(), /candidate values change a protected setting/);
+  assert.deepEqual(await f.events(), []);
 });

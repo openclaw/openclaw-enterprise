@@ -399,3 +399,20 @@ a substitute for model-backed acceptance.
 ## Production observability
 
 See [smoke tests and model-log validation](metrics.md#kubernetes-observability-acceptance).
+
+### Channel-free Gateway proxy qualification
+
+With the real API/worker topology prerequisites above, select
+`OCC_TEST_GATEWAY_PROXY_REAL=1` and `OCC_TEST_GATEWAY_PROXY_URL` (one approved
+literal IP HTTP(S) proxy endpoint with explicit port), then run:
+
+```sh
+node --test --test-name-pattern='channel-free Gateway' tests/integration/harness-topology-k3d-real.test.mjs
+```
+
+The embedded and dedicated Codex cases deploy through the authenticated API and
+worker without channels and require a genuine model turn with native routing
+active. Missing prerequisites fail when selected. They do not prove arbitrary
+plugin clients or a dedicated OpenClaw worker model turn. Separately verify
+permitted/denied proxy destinations, proxy-outage failure, and revision replacement;
+source/Helm checks alone do not establish those runtime outcomes.

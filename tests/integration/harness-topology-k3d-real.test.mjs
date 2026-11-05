@@ -290,3 +290,41 @@ test(
     await assertStartupFailureDeploymentStatusDurable(context, topology, { pluginsEnabled: true });
   },
 );
+
+for (const mode of ["embedded", "dedicated"]) {
+  test(
+    `production ${mode} channel-free Gateway preserves a real model turn with native proxy routing`,
+    {
+      skip: process.env.OCC_TEST_GATEWAY_PROXY_REAL !== "1",
+      timeout: 1_200_000,
+    },
+    async (context) => {
+      const proxyUrl = process.env.OCC_TEST_GATEWAY_PROXY_URL;
+      assert.ok(proxyUrl, "explicit proxy proof requires OCC_TEST_GATEWAY_PROXY_URL");
+      // This goes through the authenticated API, durable worker, real images, and
+      // selected IAM/Compute Drivers, without a channel creating proxy reachability.
+      const topology = await arrangeProductionTopology(context, mode, undefined, {
+        gatewayProxyUrl: proxyUrl,
+      });
+      const deployment = await resource(
+        "deployment",
+        `gateway-${hash(topology.agent.id)}`,
+        topology.gatewayPlacement,
+      );
+      const environment = deployment.spec.template.spec.containers[0].env;
+      assert.equal(environment.find(({ name }) => name === "HTTPS_PROXY")?.value, proxyUrl);
+      assert.equal(
+        environment.some(({ name }) => name.startsWith("SLACK_")),
+        false,
+      );
+      await resource(
+        "networkpolicy",
+        `allow-gateway-proxy-${hash(topology.agent.id)}`,
+        topology.gatewayPlacement,
+      );
+      // Dedicated Codex must retain its exact internal transport even though OC's
+      // native routing now captures ordinary outbound WebSocket connections.
+      await assertActualModelTurn(topology);
+    },
+  );
+}

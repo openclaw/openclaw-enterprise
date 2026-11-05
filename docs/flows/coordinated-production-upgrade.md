@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-10-10"
-last_updated_session: "authoring-run/35b00357-b0c6-459f-aec1-b4fb63620dff"
+updated: "2026-11-05 17:49"
+last_updated_session: "authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62"
 ---
 
 # Production image upgrade flow
@@ -62,9 +62,10 @@ graph TD
 The script verifies the protected files, cluster, deployed Helm release, and
 matching OCC and Secret Installation IDs. It compares protected and live
 configuration in full, including selected image fields. It captures separate
-reviewed candidate files and accepts changes only to the Slack directory proxy
-and the curated Codex PluginDriver selection. All other Helm and Installation
-settings remain protected, including new fields. The guard compares broker
+reviewed candidate files and accepts only the curated Codex PluginDriver
+selection. Proxy selection is now a general Gateway setting and uses the separate
+configuration workflow, not an image-only candidate change. All other Helm and
+Installation settings remain protected, including new fields. The guard compares broker
 resource references, not the contents of referenced ConfigMaps or Secrets.
 Image flags select images after this comparison.
 A runtime release also reads complete authorized inventory and records every running Agent's baseline
@@ -279,6 +280,8 @@ checks the exported inventory before following the recovery procedure. Empty
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 17:49: Keep general Gateway proxy selection outside image-only candidate changes (authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62 - 80725162a946f80652b939a32a57ee4e922eeb5c)
 
 - 2026-10-10 03:30: Say that the worker's next preparation of an existing revision applies the new controller's Pod templates and rolls changed Pods once. (fix-990-991)
 

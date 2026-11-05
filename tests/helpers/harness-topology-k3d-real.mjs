@@ -709,8 +709,7 @@ async function startInClusterControllers(
   workerIsolation.metadata.name = `${workerName}-isolation`;
   workerIsolation.spec.podSelector.matchLabels = workerLabels;
   manifests.items.push(workerIsolation);
-  const channelProxyUrl =
-    apiConfiguration.drivers.compute.configuration.runtime?.channels?.proxyUrl;
+  const channelProxyUrl = apiConfiguration.drivers.compute.configuration.runtime?.proxy?.proxyUrl;
   if (channelProxyUrl !== undefined) {
     const channelProxy = new URL(channelProxyUrl);
     assert.equal(
@@ -927,8 +926,13 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
     configuration.drivers.compute.configuration.gatewayRouting = options.gatewayRouting;
     delete configuration.drivers.compute.configuration.network.gatewayClients;
   }
+  if (options.gatewayProxyUrl !== undefined) {
+    configuration.drivers.compute.configuration.runtime.proxy = {
+      proxyUrl: options.gatewayProxyUrl,
+    };
+  }
   if (slack !== undefined) {
-    configuration.drivers.compute.configuration.runtime.channels = {
+    configuration.drivers.compute.configuration.runtime.proxy = {
       proxyUrl: slack.proxyUrl,
     };
   }
