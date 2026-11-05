@@ -1743,7 +1743,7 @@ export class PluginPolicyValidationError extends Error {
         driverId === undefined ? "" : ` (${driverId})`
       } does not offer${pluginId === undefined ? "" : `: ${pluginId}`}. ${
         offeredId === undefined
-          ? "Check each plugin ID and its Driver prefix against that Driver's catalog; an Installation selects one Plugin Driver."
+          ? "Check each plugin ID and its Driver prefix against the catalog for the Agent's Harness."
           : `Use ${offeredId}.`
       }`;
     } else if (field === "aliasedPlugin") {
