@@ -76,6 +76,14 @@ for authentication modes and TLS requirements.
 - `AZURE_FEDERATED_TOKEN_FILE` — Projected token file; required in Azure mode.
 - `OCC_POSTGRES_PORT` — Local Compose PostgreSQL host port; default: `55432`.
 
+## EKS Pod Identity
+
+For [AWS-backed protected Secret reads](../drivers/kubernetes-secret.md#read-a-rotating-aws-parameter-for-protected-use),
+EKS supplies these variables to the controller:
+
+- `AWS_CONTAINER_CREDENTIALS_FULL_URI` — Standard IPv4 Pod Identity credential endpoint.
+- `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE` — Standard projected Pod Identity token file.
+
 ## Installation bootstrap
 
 These belong to the initializer, not the running API or worker. See
