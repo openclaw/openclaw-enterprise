@@ -295,7 +295,12 @@ bare Sandboxes have no Git.
 External `reconcile` runs serially with a 25-second timeout and one-second interval.
 Close aborts and joins. Readback settles delivery without reinstalling or restoring withdrawn access.
 
-Activation and maintenance commit with the same actor. Maintenance uses 30 seconds,
+[The gRPC client](../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts)
+defaults omitted endpoint/credential lists to empty arrays after checking profile identity.
+[Withdrawal checks](../../apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts)
+accept files-only profiles; Git-overlapping, missing and mismatched profiles remain refused.
+
+Activation and maintenance use the same actor. Maintenance uses 30 seconds,
 the sender interval or a shorter Compute interval. Restart invalidates missing sessions without
 reminting; cleanup permits deployment.
 [Prepared custody](../../apps/controller/src/drivers/repo/github/credentials/prepared-postgres.ts)
@@ -307,14 +312,14 @@ or the registered Repo Driver when unbound; contradictory selection prevents sta
 [Eligibility](../../packages/occ/src/repository-approval.ts) is rechecked under Namespace then Agent locks.
 Withdrawal or scope changes raise `REPOSITORY_STANDING_POLICY_CHANGED` before successor release.
 The [GitHub registry](../../apps/controller/src/drivers/repo/github/credentials/registry.ts)
-includes canonical permissions and exact repository identity in `github-repository`
-approval scopes. Issuance and delivery recheck registry opt-ins and the exact
-grant before material selection; standing delivery requires one binding.
-After mandatory-hook launch acknowledgement, the [OpenShell observer](../../apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts)
-verifies expired predecessors for renewal, rechecking hook policy and recipient.
-This cannot authorize expired requests, unacknowledged launches or observed-only previews.
+fingerprints canonical permissions and exact repository identity for `github-repository`.
+Issuance and delivery recheck opt-ins and the exact grant before selecting material;
+standing delivery requires one binding.
+After mandatory-hook acknowledgement, the [OpenShell observer](../../apps/controller/src/drivers/egress-proxy/openshell-git-installation.ts)
+rechecks expired predecessor policy and recipient for renewal, never authorizing expired
+requests, unacknowledged launches or observed-only previews.
 
-Prepared native Git issues the first token after activation publishes the version. Deployment runs
+Prepared native Git issues its first token after activation. Deployment runs
 `apps/controller/src/worker.ts:ControllerWorker.assertRepositoryGitMaterial`
 (`PreparedRepositoryGitStore.revisionMaterial`) and waits at `REPOSITORY_GIT_MATERIAL_PENDING`
 until each open session has a committed token and fails with `REPOSITORY_GIT_TOKEN_QUARANTINED`
@@ -359,23 +364,21 @@ remains retryable after partial failure; service restart cannot prove remote tok
 
 ## Debugging and Verification
 
-Compare `occ agent get AGENT_ID --output json` with `activeRevisionId`. Inspect
+Check `activeRevisionId` with `occ agent get AGENT_ID --output json`. Inspect
 `REPOSITORY_BINDING_CHANGED`, `REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED`,
 `REPOSITORY_SESSION_RECOVERY_UNSAFE`, `REPOSITORY_GIT_TOKEN_QUARANTINED`, `REPOSITORY_GIT_TOKEN_PENDING`, `REPOSITORY_CLEANUP_PENDING` or
 `REPOSITORY_CLEANUP_COMPLETE`. Check registry identity and deadline before retry.
-A cleanup that stays pending logs `worker.repository-cleanup-warning` with its
-`cause` once.
+Pending cleanup logs `worker.repository-cleanup-warning` and `cause` once.
 
 `repository-not-admitted` means an unselected target; `name-one-repository-target`
 or `name-one-repository-ref` requires explicit selection. Inspect metadata
 and Pod generation without printing credentials.
 
-The [test guide](../testing/repository-credentials.md) distinguishes lifecycle, installed-runtime
-and live-provider proof. [Docker mount](../testing/docker.md#repository-runtime-volume-test-environment)
-and rendered Helm checks do not prove CNI enforcement; console fixtures do not prove model,
-Slack or GitHub execution. The Driver test checks local draft-PR pushes and Codex turns
-before and after withdrawal on one revision. On a team installation,
-verify Agent-authored PR updates, withdrawal denial before provider contact, and continued chat.
+The [test guide](../testing/repository-credentials.md) separates lifecycle, installed-runtime
+and live-provider proof. [Docker/Helm checks](../testing/docker.md#repository-runtime-volume-test-environment)
+exclude CNI; console fixtures exclude model, Slack and GitHub execution. Driver tests cover
+local PR pushes and same-revision Codex turns across withdrawal. Verify real Agent PR updates,
+denial before provider contact, and continued chat on the team installation.
 
 ## Related docs
 
@@ -391,6 +394,7 @@ verify Agent-authored PR updates, withdrawal denial before provider contact, and
 
 ## Changelog
 
+- 2026-11-05 15:33: Document profile wire defaults. (authoring-run/6cd890b4-603a-482b-85a1-f9f601ae5c3c - 821ce63ee1)
 - 2026-11-05 14:57: Bind selected-repository standing approval to exact permissions and recheck delivery. (authoring-run/97c319f2-8bb0-4db4-9cfb-50478db52fdb - a383313636fc348a2325c0b1f6e05ae80327fd30)
 
 - 2026-11-05 13:46: Admit CLI cache hints without caching authorization. (authoring-run/1247283d-6d2a-4d1f-9804-287f1ae13518 - a825988313)
