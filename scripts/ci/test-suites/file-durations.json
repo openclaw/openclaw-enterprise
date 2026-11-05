@@ -18,7 +18,7 @@
     "tests/browser/console-agent-saves.test.ts": 54400,
     "tests/browser/console-agent-state.test.ts": 68300,
     "tests/browser/console-agents-2.test.ts": 44000,
-    "tests/browser/console-agents-list-return.test.mjs": 29700,
+    "tests/browser/console-agents-list-return.test.ts": 29700,
     "tests/browser/console-agents.test.ts": 53800,
     "tests/browser/console-button-hierarchy.test.ts": 18300,
     "tests/browser/console-codex-oauth.test.ts": 30300,

@@ -22,20 +22,20 @@ import {
   waitForEnabled,
   settlePageRequests,
   expireSessionsWhenSettled,
-  trackSettledFetches,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+import { trackSettledFetches } from "./console-fetch-accounting.ts";
 import {
   deploymentRecordUrl,
   expectDeploymentOutcome,
-} from "./console-deployment-activity-helpers.mjs";
+} from "./console-deployment-activity-helpers.ts";
 
 import {
   expectNativeAdminHidden,
   assertRevisionUrl,
   nativeAdminComputeDriver,
   nativeAdminValues,
-  waitForLiveControls,
 } from "./console-agents-test-support.mjs";
+import { waitForLiveControls } from "./console-agents-ui-test-support.ts";
 import { STOP_REQUESTED, VERSION_READ_DENIED_HEADING } from "../helpers/refusal-text.mjs";
 import {
   registerDeletionAndNavigationCases,

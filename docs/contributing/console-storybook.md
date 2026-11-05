@@ -25,8 +25,9 @@ python3 -m http.server 6006 --bind 127.0.0.1 \
 ```
 
 Serve at the origin root for absolute `/console/` URLs. Build fingerprints keep
-cached fixture pages and module imports current. CI uploads a static artifact
-without publishing the documentation site.
+cached fixture pages and module imports current. The [Console Storybook workflow](../../.github/workflows/console-storybook.yml)
+uploads a static artifact without publishing the documentation site. It needs
+no provider secrets.
 
 ## Write Console modules in TypeScript
 

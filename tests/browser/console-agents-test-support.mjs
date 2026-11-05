@@ -8,13 +8,7 @@ import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/driv
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { nativeRolesGateway } from "../helpers/runtime-roles.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
-import { PROVISIONING_NOT_COMPLETED } from "../helpers/refusal-text.mjs";
-import {
-  nativeValues,
-  pathRequests,
-  settledFetches,
-  waitForIdleFetches,
-} from "./console-agents-browser-helpers.mjs";
+import { nativeValues, pathRequests } from "./console-agents-browser-helpers.ts";
 
 /** @import { GitHubRepositoryRegistration } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts" */
 
@@ -35,160 +29,6 @@ export async function replyWithDifferentAgentId(route, agentId, expectedStatus) 
   const { data, meta } = await response.json();
   assert.equal(data.id, agentId);
   await route.fulfill({ response, json: { data: { ...data, id: `agt_${randomUUID()}` }, meta } });
-}
-
-export async function openCreateSecretDialog(scope, label, options = {}) {
-  const field = scope.getByLabel(label, { exact: true });
-  await field.fill(options.query ?? "Create a new Secret");
-  await scope.getByRole("option", { name: "Create new Secret...", exact: true }).click();
-}
-
-export async function createModelCredentialSecret(page, secretValue) {
-  // Preset quick-start reads the installed template before rendering its credential fields.
-  await page.locator("#create-agent-form").waitFor();
-  const picker = page.locator("#provider-credential-secret");
-  if ((await picker.count()) === 0 || !(await picker.isVisible())) {
-    const legacyCredential = page.getByLabel("API key", { exact: true });
-    await legacyCredential.fill(secretValue);
-    await legacyCredential.press("Tab");
-    return null;
-  }
-  const created = page.waitForResponse((response) => {
-    if (response.request().method() !== "POST" || !response.url().includes("/secrets")) {
-      return false;
-    }
-    return response.request().postDataJSON()?.value === secretValue;
-  });
-  await picker.fill("Create a new Secret");
-  await page.getByRole("option", { name: "Create new Secret...", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Create model credential Secret" });
-  await dialog.getByLabel("Value", { exact: true }).fill(secretValue);
-  await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
-  await dialog.waitFor({ state: "hidden" });
-  return (await (await created).json()).data;
-}
-
-export async function enterManualModel(page, apiKey, modelId = "gpt-4.1") {
-  const secret = await createModelCredentialSecret(page, apiKey);
-  const model = page.getByLabel("Model ID", { exact: true });
-  if (!(await model.isVisible())) {
-    await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
-  }
-  await model.fill(modelId);
-  await model.press("Tab");
-  return secret;
-}
-
-// Selects Create Agent and returns the API's answer to the form's POST to `path` in the
-// Namespace: "agents" (an embedded Agent) by default, or "agents/provision" or
-// "agents/validate". With `status`, that answer must have it.
-/**
- * @param {import("playwright").Page} page
- * @param {{ origin: string }} fixture
- * @param {string} namespaceId
- * @param {{ path?: string, status?: number }} [options]
- */
-export async function submitCreateAgent(
-  page,
-  fixture,
-  namespaceId,
-  { path = "agents", status } = {},
-) {
-  const url = `${fixture.origin}/namespaces/${namespaceId}/${path}`;
-  const answer = page.waitForResponse(
-    (response) => response.url() === url && response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const response = await answer;
-  if (status !== undefined) {
-    assert.equal(response.status(), status, `POST ${path}: ${await response.text()}`);
-  }
-  return response;
-}
-
-// Selects Create Agent, which must create the Agent (201), and returns the created Agent.
-export async function createAgentThroughForm(page, fixture, namespaceId) {
-  const response = await submitCreateAgent(page, fixture, namespaceId, { status: 201 });
-  return (await response.json()).data;
-}
-
-export async function openAdvancedSettings(page) {
-  const summary = page.locator(".launch-advanced:not([open]) > summary");
-  if (await summary.count()) {
-    await summary.click();
-  }
-}
-
-// Create Agent's access slot above the form. A refused Installation read's answer is one status
-// block there, never the grey hint under the fields (finding 2092): its text appears once on the
-// page. `retry` says whether the block offers Retry permission check as its action.
-export async function expectCreateAccess(page, { tone, body, retry = false }) {
-  const access = page.locator("#create-agent-access");
-  await access.locator(".status-body").getByText(body, { exact: true }).waitFor();
-  assert.deepEqual(
-    await access.evaluate((node) => ({
-      role: node.getAttribute("role"),
-      tone: node.getAttribute("data-tone"),
-      label: node.querySelector(".status-label")?.textContent,
-      body: [...node.querySelectorAll(".status-body")].map((line) => line.textContent),
-      next: node.nextElementSibling?.id,
-    })),
-    {
-      role: tone === "info" ? "status" : "alert",
-      tone,
-      label: "Your access",
-      body: [body],
-      next: "create-agent-form",
-    },
-  );
-  assert.equal(await page.getByText(body, { exact: true }).count(), 1);
-  assert.equal(
-    await access.getByRole("button", { name: "Retry permission check", exact: true }).isVisible(),
-    retry,
-  );
-  // The capability retry under the fields never stands in for the permission retry.
-  assert.equal(
-    await page.getByRole("button", { name: "Retry capability check", exact: true }).count(),
-    0,
-  );
-  return access;
-}
-
-// Create Agent with a permission answer that refuses Agent create: the refusal takes the form's
-// place, with no start choices and no access block, whether the page loaded with that answer or a
-// permission retry brought it (findings 1521, 2908). Returns the refusal.
-export async function expectCreateRefused(page, body) {
-  const refusal = page.locator(".state-panel").filter({
-    has: page.getByRole("heading", { name: "Creating Agents is not available", exact: true }),
-  });
-  await refusal.waitFor();
-  assert.deepEqual(
-    await refusal.evaluate((node) => ({
-      status: [...node.querySelectorAll('[role="status"]')].map((line) => line.textContent),
-      form: node.ownerDocument.querySelectorAll("#create-agent-form").length,
-      access: node.ownerDocument.querySelectorAll("#create-agent-access").length,
-    })),
-    { status: [body], form: 0, access: 0 },
-  );
-  assert.equal(await page.getByRole("button", { name: /^Start (with|without) / }).count(), 0);
-  return refusal;
-}
-
-// Create Agent stays disabled while the form reads Installation capabilities and repository
-// choices. Waits until the live form has both; a retained preview of an earlier form is inert
-// and shows that form's settled reads. A capability retry keeps the failure text until it ends.
-export async function waitForCreateFormReads(page) {
-  await page.waitForFunction(() => {
-    const form = globalThis.document.querySelector("#create-agent-form");
-    return (
-      form !== null &&
-      form.closest("[inert]") === null &&
-      form.querySelector('.repository-options[aria-busy="false"]') !== null &&
-      ![...form.querySelectorAll('[role="status"]')].some(
-        (node) => node.textContent === "Checking installation capabilities…",
-      )
-    );
-  });
 }
 
 export async function expectNativeAdminHidden(page) {
@@ -230,132 +70,6 @@ export async function expectNativeAdminUnavailable(page, reason) {
 export function assertRevisionUrl(page, revisionId) {
   const url = new URL(page.url());
   assert.equal(url.searchParams.get("revision"), revisionId);
-}
-
-// A failed provisioning job's reason is the form's one error line; the status line under it
-// does not repeat that provisioning failed (finding 2423).
-export async function waitForProvisioningFailure(page) {
-  await page.locator("#create-agent-form ~ p[role=alert]").filter({ hasText: /\S/ }).waitFor();
-  assert.equal(await page.getByText("Provisioning failed.", { exact: true }).count(), 0);
-  // The error line is as wide as the form above it, not the page.
-  const [form, error] = await page.evaluate(() =>
-    ["#create-agent-form", "#create-agent-form ~ p[role=alert]"].map(
-      (selector) => globalThis.document.querySelector(selector).getBoundingClientRect().width,
-    ),
-  );
-  assert.ok(error <= form + 0.5, `error line ${error}px, form ${form}px`);
-}
-
-// Create Agent rereads an accepted provisioning job once a second (waitForProvisioning in
-// create.mts). This runs `submit` (the click that sends or retries the job) with the page clock
-// paused, then runs that clock one second at a time, each step only once no fetch is in flight,
-// until the page has read `jobPath` `reads` times in all. The clock then runs in real time again.
-// So the test skips each one-second wait, and the page still handles each answer, and the
-// optional deployment read between polls, before the next poll. Call trackSettledFetches before
-// the page loads.
-const pollClocks = new WeakSet();
-
-export async function runProvisioningPolls(page, submit, jobPath, reads) {
-  if (!pollClocks.has(page)) {
-    await page.clock.install();
-    pollClocks.add(page);
-  }
-  // The clock runs between calls, so pause it a little ahead of the page's time. On a loaded host
-  // it can pass that time before pauseAt arrives, which pauseAt refuses: read the time again.
-  for (let attempt = 1; ; attempt += 1) {
-    const now = await page.evaluate(() => Date.now());
-    try {
-      await page.clock.pauseAt(now + 100);
-      break;
-    } catch (error) {
-      if (attempt === 5 || !String(error).includes("Cannot fast-forward to the past")) {
-        throw error;
-      }
-    }
-  }
-  await submit();
-  for (let polls = 0; ; polls += 1) {
-    await waitForIdleFetches(page);
-    if ((await settledFetches(page, jobPath)) >= reads) {
-      break;
-    }
-    assert.ok(polls < 10, `the page read ${jobPath} ${reads} times`);
-    await page.clock.runFor(1_000);
-  }
-  await page.clock.resume();
-}
-
-const provisioningMeta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
-
-// One provisioning job, `workId`, in `namespaceId`. `job(status, extra)` is one status read of
-// it; `failed(extra)` is the read that ends it after its retries (a dependency outage).
-/**
- * @param {string} namespaceId
- * @param {string} workId
- */
-export function provisioningJob(namespaceId, workId) {
-  const updatedAt = new Date().toISOString();
-  const url = `/namespaces/${namespaceId}/agents/provision/${workId}`;
-  /** @type {(status: string, extra?: object) => Record<string, unknown>} */
-  const job = (status, extra = {}) => ({
-    workId,
-    status,
-    phase: "configuration",
-    attemptCount: 1,
-    updatedAt,
-    url,
-    ...extra,
-  });
-  /** @type {(extra?: object) => Record<string, unknown>} */
-  const failed = (extra = {}) =>
-    job("failed", {
-      ...extra,
-      error: { code: "PROVISIONING_DEPENDENCY_UNAVAILABLE", message: PROVISIONING_NOT_COMPLETED },
-    });
-  return { namespaceId, workId, url, updatedAt, job, failed };
-}
-
-// Accepts each Create Agent provisioning request in the job's Namespace as that one queued job,
-// as the API does, and answers each status read of the job with the next of `reads` (the last
-// one repeats), or with `reads(index)` when it is a function. With `reads` null the caller
-// routes the job's reads itself. Returns live counts of the requests and reads.
-/**
- * @param {import("playwright").Page} page
- * @param {ReturnType<typeof provisioningJob>} work
- * @param {readonly object[] | ((index: number) => object) | null} reads
- */
-export async function routeProvisioningJob(page, work, reads) {
-  /** @type {{ submitted: number, reads: number, requestId: string | undefined }} */
-  const state = { submitted: 0, reads: 0, requestId: undefined };
-  await page.route(`**/namespaces/${work.namespaceId}/agents/provision`, (route) => {
-    state.submitted += 1;
-    state.requestId = route.request().postDataJSON().requestId;
-    const accepted = work.job("queued", { phase: "accepted", attemptCount: 0 });
-    return route.fulfill({
-      status: 202,
-      contentType: "application/json",
-      body: JSON.stringify({
-        data: { provisioning: { ...accepted, requestId: state.requestId } },
-        meta: provisioningMeta,
-      }),
-    });
-  });
-  if (reads !== null) {
-    await page.route(`**${work.url}`, (route) => {
-      const index = state.reads++;
-      const read =
-        typeof reads === "function" ? reads(index) : reads[Math.min(index, reads.length - 1)];
-      return route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          data: { ...read, requestId: state.requestId },
-          meta: provisioningMeta,
-        }),
-      });
-    });
-  }
-  return state;
 }
 
 export function configurationPostRequests(requests, namespaceId) {
@@ -438,31 +152,6 @@ export async function raceAgentName(page, fixture, namespaceId, name) {
   await page.route(url, handler);
 }
 
-/**
- * Asserts that the Agent name field shows the API's duplicate-name refusal under it and holds
- * focus (finding 2420).
- */
-export async function assertAgentNameTaken(page) {
-  const name = page.getByLabel("Agent name", { exact: true });
-  await page.waitForFunction(() => {
-    const input = globalThis.document.querySelector("#agent-name");
-    return (
-      input?.getAttribute("aria-invalid") === "true" && globalThis.document.activeElement === input
-    );
-  });
-  const describedBy = (await name.getAttribute("aria-describedby")) ?? "";
-  const errors = await Promise.all(
-    describedBy
-      .split(/\s+/)
-      .filter(Boolean)
-      .map((id) => page.locator(`[id="${id}"]`).textContent()),
-  );
-  assert.ok(
-    errors.includes("Another Agent in this Namespace has this name."),
-    `expected the duplicate-name error under the field, got ${JSON.stringify(errors)}`,
-  );
-}
-
 export function agentPostRequests(requests, namespaceId) {
   return pathRequests(requests, "POST", `/namespaces/${namespaceId}/agents`);
 }
@@ -488,16 +177,6 @@ export function configurationPatchRequests(requests, namespaceId, configurationI
     requests,
     "PATCH",
     `/namespaces/${namespaceId}/configurations/${encodeURIComponent(configurationId)}`,
-  );
-}
-
-/** @param {import("playwright").Locator} locator */
-export async function optionValues(locator) {
-  return locator.evaluate((element) =>
-    Array.from(/** @type {HTMLSelectElement} */ (element).options).map((option) => ({
-      value: option.value,
-      text: option.textContent,
-    })),
   );
 }
 
@@ -616,29 +295,6 @@ function repositoryPolicyDriver(repositories, installationNamespaceId) {
   );
 }
 
-// A button the reader can press: an unavailable one is natively disabled, or aria-disabled
-// while a visible reason says why (finding 2878).
-export const LIVE_BUTTON = 'button:not([disabled], [aria-disabled="true"])';
-
-// Back, in-app navigation and reloads can first restore an inert copy of the old view with its
-// controls disabled, until revalidation re-enables it or replaces it with a rebuilt view. Only a
-// live control shows the current view, including any draft it restored.
-export async function waitForLiveControls(page, ids) {
-  await page.waitForFunction(
-    (controlIds) =>
-      controlIds.every((id) => {
-        const control = globalThis.document.getElementById(id);
-        return (
-          control &&
-          !control.disabled &&
-          control.getAttribute("aria-disabled") !== "true" &&
-          !control.closest("[inert]")
-        );
-      }),
-    ids,
-  );
-}
-
 export function nativeAdminValues(marker, origin) {
   return nativeRolesGateway(nativeValues(marker), origin);
 }
@@ -660,37 +316,3 @@ export async function withholdPermissionSummary(page, fixture, namespaceId, agen
     },
   );
 }
-
-// Marks the rendered Agent page and records any loading state it shows again, so a test can
-// tell an in-place update from a page reload.
-export async function watchForReload(page) {
-  await page.evaluate(() => {
-    const doc = globalThis.document;
-    doc.querySelector(".agent-current-summary").dataset.saveMarker = "kept";
-    globalThis.reloadedText = [];
-    new globalThis.MutationObserver((records) => {
-      for (const record of records) {
-        for (const node of record.addedNodes) {
-          if (/Loading (version details|configuration)/.test(node.textContent ?? "")) {
-            globalThis.reloadedText.push(node.textContent);
-          }
-        }
-      }
-    }).observe(doc.body, { childList: true, subtree: true });
-  });
-  return () =>
-    page.evaluate(() => ({
-      marker: globalThis.document.querySelector(".agent-current-summary")?.dataset.saveMarker,
-      reloadedText: globalThis.reloadedText,
-    }));
-}
-
-export const focusedText = (page) =>
-  page.evaluate(() => globalThis.document.activeElement?.textContent ?? null);
-
-// The saved status a focused control is described by, so a screen reader names it.
-export const focusedDescription = (page) =>
-  page.evaluate(() => {
-    const id = globalThis.document.activeElement?.getAttribute("aria-describedby");
-    return id ? globalThis.document.getElementById(id)?.textContent : null;
-  });

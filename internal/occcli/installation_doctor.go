@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"slices"
 	"strings"
@@ -18,7 +19,7 @@ import (
 // The Helm hook is replaced before the next install or upgrade. Its result
 // describes the retained Job, not current database contents or release health.
 func (app *application) installationHandoffCommand(action string) *cobra.Command {
-	var kubeconfig, kubeContext, namespace, release, expectedUID string
+	var kubeconfig, kubeContext, namespace, release, expectedUID, receipt string
 	cmd := &cobra.Command{
 		Use:         action,
 		Short:       "Read the chart initialization Job and show where to resume",
@@ -33,12 +34,43 @@ func (app *application) installationHandoffCommand(action string) *cobra.Command
 			}
 			// Match templates/jobs.yaml, including Helm release names whose
 			// hook name is truncated. Verify the full release label below.
-			name := release + "-initialization"
-			name = strings.TrimSuffix(name[:min(63, len(name))], "-")
+			name := initializationJobName(release)
 			ctx, cancel := context.WithTimeout(cmd.Context(), app.parsedTimeout)
 			defer cancel()
-			result := readInitialization(ctx, kubeconfig, kubeContext, namespace, name, release, expectedUID)
-			out := cmd.OutOrStdout()
+			out := &bytes.Buffer{}
+			var result initializationResult
+			if cmd.Flags().Changed("receipt") {
+				if receipt == "" {
+					return errors.New("--receipt requires the original installation receipt directory")
+				}
+				if expectedUID != "" {
+					return errors.New("use --receipt or --expect-job-uid, not both")
+				}
+				intent, uid, err := loadInstallationReceipt(receipt, namespace, release)
+				if err != nil {
+					return err
+				}
+				work, err := os.MkdirTemp("", "occ-handoff-")
+				if err != nil {
+					return err
+				}
+				defer os.RemoveAll(work)
+				frozen, cluster, err := snapshotInstallationConfig(ctx, kubeconfig, kubeContext, work)
+				if err != nil {
+					return err
+				}
+				if cluster != intent.ClusterSHA256 {
+					return errors.New("Kubernetes connection does not match the recorded installation target")
+				}
+				outcome, err := readInstallationOutcome(receipt)
+				if err != nil {
+					return err
+				}
+				result = readInstallationAttempt(ctx, frozen, kubeContext, intent, uid)
+				fmt.Fprintf(out, "Helm outcome: %s.\n", outcome)
+			} else {
+				result = readInitialization(ctx, kubeconfig, kubeContext, namespace, name, release, expectedUID)
+			}
 			fmt.Fprintln(out, result.message)
 			if action == "plan" {
 				fmt.Fprintf(out, "Resume in order:\n1. %s\n", result.next())
@@ -49,6 +81,9 @@ func (app *application) installationHandoffCommand(action string) *cobra.Command
 				fmt.Fprintln(out, "API attempt: if started, inspect the original attempt and its outcome. Do not replay an uncertain operation.")
 				fmt.Fprintln(out, "Temporary access: removal unknown. Verify separately with the access owner.")
 				fmt.Fprintln(out, "Runtime: not qualified by this check.")
+			}
+			if _, err := out.WriteTo(cmd.OutOrStdout()); err != nil {
+				return err
 			}
 			if result.state != initializationComplete {
 				return &ExitStatusError{Code: 1}
@@ -63,6 +98,7 @@ func (app *application) installationHandoffCommand(action string) *cobra.Command
 	f.StringVar(&namespace, "kube-namespace", "", "Kubernetes namespace of the release")
 	f.StringVar(&release, "release", "", "Helm release name")
 	f.StringVar(&expectedUID, "expect-job-uid", "", "Require the persisted Job UID recorded during the original installation")
+	f.StringVar(&receipt, "receipt", "", "Read the original installation receipt directory")
 	for _, name := range []string{"kubeconfig", "context", "kube-namespace", "release"} {
 		_ = cmd.MarkFlagRequired(name)
 	}
@@ -70,6 +106,11 @@ func (app *application) installationHandoffCommand(action string) *cobra.Command
 		cmd.Short = "Show the read-only handoff plan for this installation checkpoint"
 	}
 	return cmd
+}
+
+func initializationJobName(release string) string {
+	name := release + "-initialization"
+	return strings.TrimSuffix(name[:min(63, len(name))], "-")
 }
 
 func helmReleaseName(name string) bool {
@@ -89,6 +130,8 @@ type initializationResult struct {
 	state   initializationState
 	// Present only after the observed Job matches the recorded UID and supported chart.
 	original *initializationJobIdentity
+	// The live installer can capture this UID while it owns the first install.
+	captureUID string
 }
 
 type initializationJobIdentity struct {
@@ -151,12 +194,17 @@ func failedJobPodLookup(ns, uid string) string {
 }
 
 func readInitialization(ctx context.Context, config, kctx, ns, name, release, expectedUID string) initializationResult {
+	return readInitializationWithAttempt(ctx, config, kctx, ns, name, release, expectedUID, "")
+}
+
+func readInitializationWithAttempt(ctx context.Context, config, kctx, ns, name, release, expectedUID, expectedAttempt string) initializationResult {
 	// Let one kubectl invocation resolve the server, TLS settings and credentials
 	// together. Reading the server first and passing it back with --server can
 	// send credentials to the wrong cluster if kubeconfig changes between reads.
 	// kubectl may read API discovery and check the namespace after a missing Job.
 	cmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig="+config, "--context="+kctx,
 		"get", "jobs.v1.batch", name, "--namespace="+ns, "--output=json")
+	cmd.Env = append(os.Environ(), "KUBECTL_KUBERC=false")
 	cmd.WaitDelay = time.Second
 	var out, diagnostic doctorBuffer
 	cmd.Stdout, cmd.Stderr = &out, &diagnostic
@@ -165,6 +213,9 @@ func readInitialization(ctx context.Context, config, kctx, ns, name, release, ex
 		completeDiagnostic := errors.As(err, &exit) && exit.ExitCode() == 1 && ctx.Err() == nil && !out.overflow && !diagnostic.overflow
 		if completeDiagnostic && strings.TrimSpace(diagnostic.buf.String()) ==
 			fmt.Sprintf("Error from server (NotFound): jobs.batch %q not found", name) {
+			if expectedAttempt != "" && expectedUID == "" {
+				return initializationResult{state: initializationOriginalNotFound, message: "Initialization Job: not found. The original UID was not recorded and the outcome remains unknown."}
+			}
 			if expectedUID != "" {
 				return initializationResult{state: initializationOriginalNotFound, message: fmt.Sprintf("Initialization Job: not found at this target; expected UID %+q. The original outcome remains unknown.", expectedUID)}
 			}
@@ -180,7 +231,7 @@ func readInitialization(ctx context.Context, config, kctx, ns, name, release, ex
 		}
 		return initializationResult{state: initializationUnreadable, message: "Initialization: unknown. Could not read the named Job; check target, kubectl and connectivity. Do not assume it is absent."}
 	}
-	return initializationEvidence(out.buf.Bytes(), ns, name, release, expectedUID)
+	return initializationEvidence(out.buf.Bytes(), ns, name, release, expectedUID, expectedAttempt)
 }
 
 // These single-line kubectl prefixes only guide the operator. They do not
@@ -218,7 +269,7 @@ type initializationJobStatus struct {
 	Conditions                     []struct{ Type, Status string }
 }
 
-func initializationEvidence(data []byte, namespace, name, release, expectedUID string) initializationResult {
+func initializationEvidence(data []byte, namespace, name, release, expectedUID, expectedAttempt string) initializationResult {
 	type container struct {
 		Name, RestartPolicy string
 		Command, Args       []string
@@ -243,6 +294,9 @@ func initializationEvidence(data []byte, namespace, name, release, expectedUID s
 	unrecognized := initializationResult{state: initializationUnresolved, message: "Initialization: unknown. The response did not identify a retained initialization Job for this release."}
 	if err != nil || job.Kind != "Job" || job.APIVersion != "batch/v1" || m.Name != name || m.Namespace != namespace || m.UID == "" {
 		return unrecognized
+	}
+	if expectedAttempt != "" && m.Annotations[installationAttemptAnnotation] != expectedAttempt {
+		return initializationResult{state: initializationOriginalNotFound, message: "Initialization: unknown. The retained Job does not identify the recorded installation attempt. Do not substitute its UID or replay install."}
 	}
 	if expectedUID != "" && m.UID != expectedUID {
 		return initializationResult{state: initializationOriginalNotFound, message: fmt.Sprintf("Initialization Job %s/%s: expected UID %+q, observed UID %+q. This is a different Job; the original outcome remains unknown.", namespace, name, expectedUID, m.UID)}
@@ -280,7 +334,7 @@ func initializationEvidence(data []byte, namespace, name, release, expectedUID s
 	const migrate = "scripts/migrate-production.mjs"
 	migrationMatches := hook == "upgrade" && is(init, "migration", migrate) ||
 		hook == "install" && is(init, "migration", migrate, "--expect-empty")
-	if !migrationMatches || !is(p.Containers, "bootstrap", "scripts/bootstrap-installation.mjs") {
+	if (expectedAttempt != "" && hook != "install") || !migrationMatches || !is(p.Containers, "bootstrap", "scripts/bootstrap-installation.mjs") {
 		return initializationResult{state: initializationUnresolved, message: "Initialization: unknown. Job steps do not match the supported chart."}
 	}
 	state := job.Status.state()
@@ -293,6 +347,12 @@ func initializationEvidence(data []byte, namespace, name, release, expectedUID s
 	}
 	// Helm reuses the name; the UID identifies this Job, not an API attempt.
 	message += fmt.Sprintf("\nObserved Job %s/%s, UID %+q", namespace, name, m.UID)
+	if expectedAttempt != "" && expectedUID == "" {
+		return initializationResult{
+			state: initializationOriginalNotFound, captureUID: m.UID,
+			message: message + ". The attempt marker matches, but the original UID was not recorded. The original Job outcome remains unknown.",
+		}
+	}
 	var original *initializationJobIdentity
 	if expectedUID != "" {
 		message += " matches the recorded UID. This identifies only this Job; it does not establish an API attempt, its effects or permission to retry."

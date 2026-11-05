@@ -161,6 +161,10 @@ export const RuntimeLogsReaderDownload = story("runtimeLogsReaderDownload");
 export const RuntimeLogsReaderNoPodDownload = story("runtimeLogsReaderNoPodDownload");
 export const RuntimeLogsClusterRbac = story("runtimeLogsClusterRbac");
 export const AgentMissing = { ...story("agentMissing"), name: "Agent unavailable" };
+export const AgentReadInterrupted = {
+  ...story("agentReadInterrupted", { openInNewTab: true }),
+  name: "Retry a direct Agent link",
+};
 export const ConfigurationError = {
   ...story("configurationError"),
   name: "Configuration unavailable",
@@ -172,6 +176,7 @@ export const ConfigurationReadDeniedReloadRefocus = {
 export const UnreadableAgentConfiguration = story("unreadableAgentConfiguration");
 export const UnreadableRevisionConfiguration = story("unreadableRevisionConfiguration");
 export const RevisionError = { ...story("revisionError"), name: "Revision history unavailable" };
+export const RevisionRejected = story("revisionRejected");
 export const DeployDenied = { ...story("deployDenied"), name: "Deployment denied" };
 export const TabLinkUnavailable = {
   ...story("tabLinkUnavailable"),

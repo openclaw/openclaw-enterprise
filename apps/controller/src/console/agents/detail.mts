@@ -2170,7 +2170,7 @@ export async function renderAgentDetail(
   function renderVersions(
     revisions: Revision[],
     snapshot: Snapshot | null,
-    historyError: unknown = null,
+    revisionResult: RevisionResult,
   ) {
     let focus: "older" | "chooser" | null = null;
     if (selector.contains(document.activeElement)) {
@@ -2207,7 +2207,7 @@ export async function renderAgentDetail(
     });
     trackRevisionControl(chooser);
     const older =
-      olderCursor && !historyError
+      olderCursor && revisionResult.status === "fulfilled"
         ? button(
             olderLoading ? "Loading older versions…" : "Load older versions",
             () => void loadOlderRevisions(),
@@ -2242,10 +2242,16 @@ export async function renderAgentDetail(
       ...(olderError
         ? [statusBlock("danger", null, `Older versions unavailable. ${message(olderError)}`)]
         : []),
-      ...(historyError
-        ? [statusBlock("danger", null, `Version history unavailable. ${message(historyError)}`)]
+      ...(revisionResult.status === "rejected"
+        ? [
+            statusBlock(
+              "danger",
+              null,
+              `Version history unavailable. ${message(revisionResult.reason)}`,
+            ),
+          ]
         : []),
-      ...(!historyError && !revisions.length
+      ...(revisionResult.status === "fulfilled" && !revisions.length
         ? [
             element(
               "p",
@@ -2830,11 +2836,7 @@ export async function renderAgentDetail(
     );
     renderCurrentVersion();
     runtimeAccess.updateTarget();
-    renderVersions(
-      revisions,
-      snapshot,
-      revisionResult.status === "rejected" ? revisionResult.reason : null,
-    );
+    renderVersions(revisions, snapshot, revisionResult);
     const mostRecent = revisions[0];
     if (activityRevisionId !== (mostRecent?.id ?? null)) {
       activityRevisionId = mostRecent?.id ?? null;
@@ -2987,7 +2989,10 @@ export async function renderAgentDetail(
     if (!context.isCurrent() || deleting) {
       return;
     }
-    if (revisionResult.status === "rejected" && revisionResult.reason.status === 401) {
+    if (
+      revisionResult.status === "rejected" &&
+      requestFailure(revisionResult.reason).status === 401
+    ) {
       context.onExpired();
       return;
     }
@@ -3082,7 +3087,11 @@ export async function renderAgentDetail(
     if (!context.isCurrent() || deleting) {
       return;
     }
-    if (results.some((result) => result.status === "rejected" && result.reason.status === 401)) {
+    if (
+      results.some(
+        (result) => result.status === "rejected" && requestFailure(result.reason).status === 401,
+      )
+    ) {
       context.onExpired();
       return;
     }

@@ -11,6 +11,10 @@ runtime checks belong to the [deployment guide](../guides/deploy.md).
 
 ## Start and sign in
 
+If the Console says it could not load, click **Reload page** to try the same
+address again. If it stays on the loading screen without that button, use your
+browser's Reload command. The Console does not automatically reload the page.
+
 Enter your provisioned account email and password, then select **Sign in**. Public
 signup, single sign-on, and self-service password recovery are unavailable; ask
 your administrator for an account or password reset. A wrong email or password
@@ -64,6 +68,7 @@ scrolls independently and keeps the page behind it in place until it closes.
 Click an Agent name or an open area of its row to open its details. Version links
 and Stop or Delete buttons keep their separate actions. Keyboard users can Tab to
 the Agent name and press Enter.
+An individual Agent header uses **Agent details** until an authorized read supplies its name.
 
 While a Namespace provisions, the Agents list checks its status every ten seconds.
 If that check no longer lists the Namespace, the Console removes its Agent rows

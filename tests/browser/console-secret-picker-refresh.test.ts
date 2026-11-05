@@ -4,7 +4,7 @@ import type {
   SecretDetailResponse,
   SecretListResponse,
 } from "../../packages/contracts/src/api/resources.ts";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { liftRestriction, restrict } from "../helpers/iam-grants.mjs";
 import {
@@ -20,7 +20,7 @@ import {
   selectSecret,
   settlePageRequests,
   waitForInputValue,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import { responseTo } from "./console-action-helpers.ts";
 import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.ts";
 

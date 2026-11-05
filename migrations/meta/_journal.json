@@ -468,7 +468,21 @@
       "idx": 67,
       "version": "7",
       "when": 1787000000067,
-      "tag": "0067_agent_runtime_roles",
+      "tag": "0067_agent_credential_source_limit",
+      "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1787000000068,
+      "tag": "0068_agent_plugin_driver",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1787000000069,
+      "tag": "0069_agent_runtime_roles",
       "breakpoints": true
     }
   ]

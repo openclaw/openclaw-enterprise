@@ -1,26 +1,26 @@
 # Runtime image recipe
 
-Build a public local runtime image for the OpenClaw Enterprise quickstart and
-real-runtime integration tests. The image contains these runtime entrypoints:
+Build the OpenClaw Enterprise runtime image for the quickstart and integration tests.
+Entrypoints:
 
 - OpenClaw gateway: `node /app/openclaw.mjs`.
-- Dedicated OpenClaw node: `node /app/openclaw.mjs connect --target-file <private-file> --ephemeral`.
+- Dedicated OpenClaw node: `node /app/openclaw.mjs connect --target-file <private-file> --ephemeral --pair-or-reconnect`.
 - Dedicated Codex app-server: `codex app-server`.
 
-The image sets `NPM_CONFIG_UPDATE_NOTIFIER=false` so local npm commands do not
-start npm's background version check. This avoids unrelated network approval
-requests during commands such as `npm test`; package installation and explicit
-network requests still use the configured network policy.
+`NPM_CONFIG_UPDATE_NOTIFIER=false` disables npm's background version check.
+Package installation and explicit network requests still use the configured
+network policy.
 
 The Dockerfile builds OpenClaw from a verified public source archive, using its
 pinned package manager, frozen dependency lockfile, and upstream Docker assembly.
+For a package registry mirror, supply the separate Corepack and pnpm build
+secrets described in [the image build guide](../../docs/guides/deploy/production-installation.md#build-through-a-package-registry-mirror).
 The selected upstream source pins stock Codex `0.164.0`. Both Codex entrypoints
-use that same installation and frozen upstream lockfile; no dependency downgrade
-or Codex binary patch is applied. The seccomp profile retains its existing syscall
+use this installation and frozen lockfile without dependency downgrades or binary patches. The seccomp profile retains its existing syscall
 rules; version admission does not replace native startup and sandbox verification.
-Codex and Slack come from that same source. The selected commit contains
-the restricted workspace-node commands and saved-token-first pairing required by
-split storage; published `2026.9.5` packages do not contain that complete contract.
+Codex and Slack come from that same source. Its restricted workspace-node commands
+and persistent device identity support split storage; published `2026.9.5` packages
+do not contain that complete contract.
 
 OCE builds an unreleased OpenClaw commit that supports Gateway managed mode
 and the separate tool policy for dedicated Harnesses. Managed mode restricts
@@ -51,16 +51,14 @@ does the same.
 private Linux PID namespace stopped recover only Gateway records from that
 namespace. OC still compares its lock fingerprint before recovery. An
 unattributed owner requires operator confirmation.
-`openclaw-linux-private-store-setgid.patch` normalizes only an owner-only
-Linux directory newly created with inherited setgid before private-store
-admission. This lets native setup create its control, client and state stores
-under the Sandbox workspace without changing existing parent permissions or
-relaxing ownership and symlink checks. The build runs the owning private-store
-regressions with the patched source.
-`openclaw-plugin-config-startup-report.patch` (openclaw/openclaw#189392) makes
-startup name each invalid plugin setting and exit 78. Remove both bridges after
-selecting an OpenClaw commit that contains them.
-The source archive and patch hashes identify the resulting custom build.
+OpenClaw normalizes newly created owner-only Linux directories that inherit
+setgid and reports invalid plugin settings during startup. The build runs the
+upstream private-store regressions.
+`openclaw-node-setup-renewal.patch` adds `--pair-or-reconnect` for first enrollment
+or renewal under the same binding. Fresh setup comes first; a typed bootstrap rejection
+allows one validated saved-token retry. See [node enrollment](../../docs/reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
+for Gateway/TLS-pin checks, local credential retirement when switching targets,
+and pairing recovery. Remove this bridge when the selected source provides that contract.
 Provenance `patches` maps every patch the Dockerfile applies, in order, to its
 SHA-256; `scripts/build-runtime-assets.mjs` holds that list, and a test checks it
 against the Dockerfile.
@@ -86,7 +84,9 @@ OCE does not write the retired `nodeHost.workerRuns.nativeInferenceConfig` field
 The selected source includes required placement activation, node-local
 model/workspace projection, and the Codex native-child relay. OCE advertises
 `pinned-runtime` native-worker support, so the Console offers Dedicated OpenClaw
-without a custom-image declaration. Deployment still requires a provisioning
+without a custom-image declaration. When the same node hosts an admitted MCP
+tool, the worker can call its MCP client locally. Tools that require Gateway
+policy hooks continue through the Gateway. Deployment still requires a provisioning
 SandboxDriver with networking, filesystem, and process containment.
 
 The images-runtime-startup lane runs the production Gateway and Harness
@@ -102,7 +102,8 @@ enrollment, containment, workspace access, or model execution.
 | Dedicated Codex CLI (`OPENAI_CODEX_VERSION`)          | `0.164.0`                                                                                                         |
 | Matrix crypto native library                          | `@matrix-org/matrix-sdk-crypto-nodejs` `v0.6.6`, SHA-256 per architecture                                         |
 
-The `2026.10.8` package version does not identify this custom build. `/opt/oce/runtime/provenance.json` records the source commit, verified archive
+The source's package version is `2026.10.10`; it does not identify this custom
+build. `/opt/oce/runtime/provenance.json` records the source commit, verified archive
 hash, every applied patch hash, lockfile hash, pinned package manager, selected plugins, architecture, stock Codex
 package identity, and the SHA-256 of `contents.json`, which inventories
 packaged files, modes, hashes, and symlinks after final-stage permission
@@ -123,8 +124,7 @@ scripts enabled and runs upstream postinstall, plugin pruning, import-closure,
 and native filesystem-addon checks. Extension tests, QA source, and documentation
 media are excluded; help text, skills, and runtime templates remain. A dependency
 walk removes unreachable pnpm store entries while retaining importer-specific
-versions and installed optional dependencies. Building
-requires registry access.
+versions and installed optional dependencies. Registry access is required.
 
 ## Resolve OpenClaw build arguments
 
@@ -183,7 +183,7 @@ instead of GitHub. When an OpenClaw update changes the locked
 `@matrix-org/matrix-sdk-crypto-nodejs` version, update that stage's version, URL and
 both SHA-256 values. Until then the install fails with a "no pinned file" message.
 The [source manifest](openclaw-source.json) selects the commit OCE builds. Its
-[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/554f0b886bde6c089578c49967227f8b50d1cf16/Dockerfile)
+[upstream Dockerfile](https://github.com/openclaw/openclaw/blob/513c12703ad9a9161cc123e0b8ed4ecb811aa6b3/Dockerfile)
 keeps plugin dependencies separate when their versions differ from core.
 Plugin chunks emitted directly under `dist` also need package-root resolution.
 The assembly links missing plugin dependencies into that root without replacing
@@ -330,9 +330,10 @@ the installed Codex plugin successfully initializes the image's real Codex
 app-server, and the Kubernetes dedicated-gateway startup path publishes the
 bundled skills directory into `/home/node/openclaw-runtime-assets`. These checks
 run without external network access or provider credentials. The smoke also
-enrolls a real restricted workspace node, checks its exact seven-command inventory,
-and restarts it with the redeemed setup code and saved identity. It requires the
-original bootstrap completion to remain unchanged. These checks do not exercise
+enrolls a real restricted workspace node under the production supervisor with an
+inert Codex sibling. It requires exactly seven commands, retained identity across
+redeemed/expired-code restarts and file/envelope setup replacement, and one
+completion per setup. These checks do not exercise
 all workspace command payloads, make a model call, or establish a Slack connection.
 When running this suite from inside another container that talks to a host Docker
 daemon, mount the repository and any temporary fixture directory at the same
@@ -343,6 +344,10 @@ Before enabling Slack in an Installation, run the
 [live Slack test](../../docs/testing/slack.md#slack) with the verified image, projected
 credentials, and the required proxy configuration. It must prove a real mention,
 Codex turn, and gateway-authored reply; gateway readiness alone is insufficient.
+
+The runtime includes a Debian-compatible curl security backport for both curl
+and Git. See the [publication flow](../../docs/flows/container-publication.md)
+for its provenance, verification, and scanner limitations.
 
 ## Build provenance
 

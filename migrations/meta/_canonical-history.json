@@ -534,7 +534,23 @@
       "idx": 67,
       "version": "7",
       "when": 1787000000067,
-      "tag": "0067_agent_runtime_roles",
+      "tag": "0067_agent_credential_source_limit",
+      "breakpoints": true,
+      "sha256": "f4f49b8e2c1a7b5a499a0274eb9be49bcd80d8d8be7a7e49aaef2f6f67d209e1"
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1787000000068,
+      "tag": "0068_agent_plugin_driver",
+      "breakpoints": true,
+      "sha256": "4ae7aeabcbdccad1f4aafef523e992740e467c055f7f7a9ab9a1f5adb202341c"
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1787000000069,
+      "tag": "0069_agent_runtime_roles",
       "breakpoints": true,
       "sha256": "c0ed57c833cf749be65b1d8f673380b869fb36bc6327610c3079563011b240ee"
     }
@@ -587,9 +603,17 @@
       "e4f1ce2a27d8561664fd107679c962b7c67060c658869bf3faa3fc47ce384a0b",
       "048eb30e1c7db94dde5c3ab7731b940b9acbfbed0b41dd20cfc705aebf2850ae"
     ],
-    "cc6bf54a10b50c9bd91981f6cf0595da9032110ebc750abd3f09fd6271ec0312": [
-      "74783fd761aa4131754ea4ca95a7c0acc766e43f554be74308a7ff0d1f00ceb3",
-      "e75e1fea2f2997c5550928c08d0eb15442b5587ba7e397b41cf55b57ac128775"
+    "c74762d7f4d45b4215f42fcc8cf9e43d01fae03dbb80522d84c4e17370a2f7c3": [
+      "362e3a713a7754ca1cacff0de8393ccb98c4cb8409618993f489b2ee3407202a",
+      "62dca7efd114c9dc85c49785d90c746c9ba7efcfc5ffa3467a54eb11a14d228d"
+    ],
+    "8fc3e20bcb36ad9b2afe8ab96077139b12b50c825dd18ff323603d0e0540b250": [
+      "e667773ff50cc16fe4ca002923d2f4080f3a05ec9956c55fbe93468c9bd195a7",
+      "3770b2c4b812f3c57c23efb5dba782cf9dead7c2624b3466f0f22f27e141a15b"
+    ],
+    "b88ff5cca2d51acbc19b5136b296025e23bcccd8409524112afee4a123cbbb33": [
+      "c23ceb9e1743ab274321cb17a06e013f5a9c94fc2e40ec007a34edf5844f23f5",
+      "bfe43ec376c57f8c66e0a8018fafa03475793cc80ac4d0baa3b879f86090a9b7"
     ]
   },
   "catalogs": {
@@ -598,7 +622,7 @@
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
-    "completed": "cc6bf54a10b50c9bd91981f6cf0595da9032110ebc750abd3f09fd6271ec0312",
+    "completed": "b88ff5cca2d51acbc19b5136b296025e23bcccd8409524112afee4a123cbbb33",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
     "agentProvisioning": "baac9e369ace8610f96948c1a930e6387431b1d0a33cefa3893765e52f8f7a52",
     "backendCompleted": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",
@@ -635,7 +659,9 @@
     "preGatewayManagedMode": "ead0bf1743197edac2cd369f4822fec0d9686d4c215b8f6dcc16745c9addf155",
     "preSelectedRepositorySet": "15676f224ccd3cbd54e1d541db393b12297e3b2aa8e8eb70b192b5350c4c3c59",
     "preAgentDeployIntent": "fd7ca52d240d5431c76167a39aa5187cd3631d6dceee959b260f7c82cc1edf40",
-    "preRuntimeRoles": "8706a0299f3ff74eb7c2b5861a746ded4ce6484ca8df4e617a8fd2e5061bb998"
+    "preAgentCredentialSourceLimit": "8706a0299f3ff74eb7c2b5861a746ded4ce6484ca8df4e617a8fd2e5061bb998",
+    "preAgentPluginDriver": "c74762d7f4d45b4215f42fcc8cf9e43d01fae03dbb80522d84c4e17370a2f7c3",
+    "preRuntimeRoles": "8fc3e20bcb36ad9b2afe8ab96077139b12b50c825dd18ff323603d0e0540b250"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

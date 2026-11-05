@@ -1857,6 +1857,7 @@ async function canonicalData(db) {
       "repository_access",
       "harness_auth_credential_source_id",
       "plugin_approvers",
+      "plugin_driver",
       "credential_sources",
       "sandbox_policy_editing",
       "gateway_managed_mode",
@@ -2000,7 +2001,9 @@ test(
       [63, "preGatewayManagedMode"],
       [64, "preSelectedRepositorySet"],
       [65, "preAgentDeployIntent"],
-      [66, "preRuntimeRoles"],
+      [66, "preAgentCredentialSourceLimit"],
+      [67, "preAgentPluginDriver"],
+      [68, "preRuntimeRoles"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2446,7 +2449,7 @@ test(
       [63, "preGatewayManagedMode"],
       [64, "preSelectedRepositorySet"],
       [65, "preAgentDeployIntent"],
-      [66, "preRuntimeRoles"],
+      [68, "preRuntimeRoles"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2705,7 +2708,7 @@ test(
       [63, "preGatewayManagedMode"],
       [64, "preSelectedRepositorySet"],
       [65, "preAgentDeployIntent"],
-      [66, "preRuntimeRoles"],
+      [68, "preRuntimeRoles"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -3482,7 +3485,7 @@ test(
     let pool;
     context.after(async () => pool?.end());
     const db = await historyDatabase(context, await migrationHistoryFixture(), "runtime_admin", {
-      prefix: 66,
+      prefix: 68,
     });
     const namespaceId = await seedCanonicalData(db, {
       preset: true,
@@ -3622,7 +3625,7 @@ test(
       context,
       await migrationHistoryFixture(),
       "runtime_denied",
-      { prefix: 66 },
+      { prefix: 68 },
     );
     const deniedNamespace = await seedCanonicalData(denied, {
       preset: true,
