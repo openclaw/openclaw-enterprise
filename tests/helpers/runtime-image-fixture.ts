@@ -1,8 +1,8 @@
 import { readFile, rename, rm, writeFile } from "node:fs/promises";
 
 type CommandResult = { stdout: string };
-type CommandExecution = Promise<CommandResult> & { child?: { pid?: number | undefined } };
-type Execute = (command: string, args: string[], options: { env: NodeJS.ProcessEnv; detached: boolean; maxBuffer: number }) => CommandExecution;
+type CommandExecution<R> = Promise<R> & { child?: { pid?: number | undefined } };
+type Execute<R> = (command: string, args: (string | undefined)[], options: { env: NodeJS.ProcessEnv; detached: boolean; maxBuffer: number }) => CommandExecution<R>;
 type Disposition = { started: number; settled: number; unknown: number; escapedDescendants: string };
 type Docker = ((...args: (string | undefined)[]) => Promise<CommandResult>) & { disposition?: () => Disposition };
 type ReceiptEntry = { operation: string; status: string; reference?: string | undefined };
@@ -17,8 +17,12 @@ export function assertProcessGroupSettled(pid: number | undefined) {
   try {
     process.kill(-pid, 0);
   } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ESRCH") {
-      return;
+    const boxed: unknown = Object.prototype.valueOf.call(error);
+    if ((typeof boxed === "object" && boxed !== null) || typeof boxed === "function") {
+      const code: unknown = Reflect.get(boxed, "code", error);
+      if (code === "ESRCH") {
+        return;
+      }
     }
     throw error;
   }
@@ -27,8 +31,8 @@ export function assertProcessGroupSettled(pid: number | undefined) {
 
 // DockerComputeDriver uses this Unix socket directly. Remove inherited endpoint
 // and TLS overrides so the fixture CLI cannot silently target another engine.
-export function localDockerCli(
-  execute: Execute,
+export function localDockerCli<R>(
+  execute: Execute<R>,
   inheritedEnv: NodeJS.ProcessEnv = process.env,
   observeGroup: (pid: number | undefined) => void | Promise<void> = assertProcessGroupSettled,
 ) {
@@ -44,7 +48,7 @@ export function localDockerCli(
     delete env[name];
   }
   const disposition = { started: 0, settled: 0, unknown: 0 };
-  const docker = async (...args: string[]) => {
+  const docker = async (...args: (string | undefined)[]) => {
     if (disposition.unknown) {
       throw new Error("Refusing Docker commands after an unsettled process group");
     }
@@ -60,14 +64,11 @@ export function localDockerCli(
       disposition.unknown += 1;
       throw error;
     }
-    let result;
-    let commandError;
-    let failed = false;
+    let outcome: { failed: false; result: Awaited<R> } | { failed: true; error: unknown };
     try {
-      result = await execution;
+      outcome = { failed: false, result: await execution };
     } catch (error) {
-      commandError = error;
-      failed = true;
+      outcome = { failed: true, error };
     }
     try {
       await observeGroup(execution.child?.pid);
@@ -75,15 +76,15 @@ export function localDockerCli(
     } catch (error) {
       disposition.unknown += 1;
       throw new AggregateError(
-        failed ? [commandError, error] : [error],
+        outcome.failed ? [outcome.error, error] : [error],
         "Docker command process group did not settle",
         { cause: error },
       );
     }
-    if (failed) {
-      throw commandError;
+    if (outcome.failed) {
+      throw outcome.error;
     }
-    return result;
+    return outcome.result;
   };
   docker.disposition = () => ({
     ...disposition,
@@ -179,8 +180,8 @@ export async function withRuntimeImageFixture<T>(docker: Docker, directory: stri
     try {
       await docker("image", "inspect", tag);
     } catch (error) {
-      const stderr: unknown = error == null ? undefined : Reflect.get(Object(error), "stderr");
-      const message: unknown = stderr == null && error != null ? Reflect.get(Object(error), "message") : undefined;
+      const stderr: unknown = error == null ? undefined : Reflect.get(Object(error), "stderr", error);
+      const message: unknown = stderr == null && error != null ? Reflect.get(Object(error), "message", error) : undefined;
       const detail = stderr ?? message ?? "";
       if (Reflect.apply(RegExp.prototype.test, /No such image/i, [detail])) {
         return;
