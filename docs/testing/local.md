@@ -101,7 +101,7 @@ After changing API routes or schemas, run `pnpm openapi:generate`, then
 OpenAPI contract without controller dependencies, run:
 
 ```sh
-node scripts/generate-occ-api-reference.mjs --check
+node scripts/generate-occ-api-reference.ts --check
 ```
 
 Run `pnpm hooks:install` to reinstall the managed pre-push hook. It refuses to

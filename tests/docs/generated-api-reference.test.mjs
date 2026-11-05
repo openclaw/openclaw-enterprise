@@ -6,11 +6,11 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import test from "node:test";
 
-import { documentApiExamples } from "../../scripts/document-api-examples.mjs";
+import { documentApiExamples } from "../../scripts/document-api-examples.ts";
 import {
   generateApiReferenceOutputs,
   httpMethods,
-} from "../../scripts/generate-occ-api-reference.mjs";
+} from "../../scripts/generate-occ-api-reference.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
@@ -250,11 +250,9 @@ test("OpenAPI check rejects unexpected generated API child pages in an isolated 
 
   await mkdir(join(fixture, "scripts"), { recursive: true });
   for (const file of [
-    "generate-occ-openapi.mjs",
-    "generate-occ-api-reference.mjs",
-    "document-api-examples.mjs",
+    "generate-occ-openapi.ts",
+    "generate-occ-api-reference.ts",
     "document-api-examples.ts",
-    "api-examples.mjs",
     "api-examples.ts",
   ]) {
     await copyFile(join(repositoryRoot, "scripts", file), join(fixture, "scripts", file));
@@ -265,7 +263,7 @@ test("OpenAPI check rejects unexpected generated API child pages in an isolated 
   await mkdir(join(fixture, "packages/contracts/openapi"), { recursive: true });
   await copyFile(contractPath, join(fixture, "packages/contracts/openapi/occ-api.openapi.json"));
 
-  const generateResult = spawnSync(process.execPath, ["scripts/generate-occ-openapi.mjs"], {
+  const generateResult = spawnSync(process.execPath, ["scripts/generate-occ-openapi.ts"], {
     cwd: fixture,
     encoding: "utf8",
     timeout: 30_000,
@@ -278,7 +276,7 @@ test("OpenAPI check rejects unexpected generated API child pages in an isolated 
     "# Unexpected API page\n",
   );
 
-  const result = spawnSync(process.execPath, ["scripts/generate-occ-openapi.mjs", "--check"], {
+  const result = spawnSync(process.execPath, ["scripts/generate-occ-openapi.ts", "--check"], {
     cwd: fixture,
     encoding: "utf8",
     timeout: 30_000,

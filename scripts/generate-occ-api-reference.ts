@@ -3,6 +3,50 @@ import { STATUS_CODES } from "node:http";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+type Schema = {
+  $ref?: string;
+  title?: string;
+  const?: unknown;
+  enum?: unknown[];
+  anyOf?: Schema[];
+  type?: string;
+  items?: Schema;
+  additionalProperties?: boolean | Schema;
+  properties?: Record<string, Schema>;
+  required?: string[];
+  format?: string;
+  minLength?: number;
+  maxLength?: number;
+  minimum?: number;
+  maximum?: number;
+  minItems?: number;
+  maxItems?: number;
+  pattern?: string;
+  default?: unknown;
+  description?: string;
+};
+type Media = { schema: Schema; examples?: Record<string, { summary?: string; value: unknown }> };
+type Operation = {
+  operationId?: string;
+  summary?: string;
+  description?: string;
+  tags?: string[];
+  "x-openclaw-permissions"?: { action: string; resourceKind: string; scope: string; condition?: string }[];
+  parameters?: { name: string; in: string; schema: Schema; required?: boolean; examples?: Record<string, { value: unknown }> }[];
+  requestBody?: { required?: boolean; content?: Record<string, Media> };
+  responses: Record<string, { description?: string; content?: Record<string, Media> }>;
+};
+type Document = {
+  info: { title: string; version: string };
+  openapi: string;
+  paths: Record<string, Record<string, Operation>>;
+  components?: { schemas?: Record<string, Schema> };
+};
+type Entry = { anchor: string; method: string; operation: Operation; operationId?: string; path: string; tag: string };
+type ValidEntry = Entry & { operationId: string; summary: string };
+type Group = { title: string; anchor: string; operations: Entry[] };
+type Output = { label: string; path: string; content: string };
+
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const documentPath = new URL("../packages/contracts/openapi/occ-api.openapi.json", import.meta.url);
 const referenceDirectoryPath = new URL("../docs/reference/api/", import.meta.url);
@@ -18,7 +62,7 @@ export const httpMethods = new Set([
 ]);
 
 // Curated entity order and subdivisions; unmatched operations keep their OpenAPI tag.
-const cheatSheetEntities = [
+const cheatSheetEntities: { title: string; tag?: string; paths?: string[] }[] = [
   { title: "Authentication accounts", tag: "Authentication", paths: ["/api/auth/accounts"] },
   {
     title: "Authentication sessions",
@@ -47,7 +91,7 @@ const cheatSheetEntities = [
   { title: "Backends" },
 ];
 
-function slugifySegment(value) {
+function slugifySegment(value: string) {
   return (
     String(value)
       .trim()
@@ -57,11 +101,11 @@ function slugifySegment(value) {
   );
 }
 
-function tagAnchor(tag) {
+function tagAnchor(tag: string) {
   return slugifySegment(tag);
 }
 
-function operationAnchor(path, method) {
+function operationAnchor(path: string, method: string) {
   const pathId = path
     .toLowerCase()
     .replace(/[{}]/g, "")
@@ -69,10 +113,10 @@ function operationAnchor(path, method) {
   return `${method.toLowerCase()}-${pathId}`;
 }
 
-function schemaType(schema, document) {
+function schemaType(schema: Schema, document: Document): string | undefined {
   if (schema.$ref) {
     const name = schema.$ref.split("/").at(-1);
-    return document.components?.schemas?.[name]?.title ?? name;
+    return document.components?.schemas?.[name ?? ""]?.title ?? name;
   }
 
   if (Object.hasOwn(schema, "const")) {
@@ -98,7 +142,11 @@ function schemaType(schema, document) {
   return schema.format ? `${schema.type} (${schema.format})` : (schema.type ?? "any");
 }
 
-function resolveSchema(schema, document) {
+function isSchema(value: unknown): value is Schema {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function resolveSchema(schema: Schema, document: Document): Schema {
   if (!schema?.$ref) {
     return schema;
   }
@@ -107,18 +155,17 @@ function resolveSchema(schema, document) {
     return schema;
   }
 
-  return (
-    schema.$ref
-      .slice(2)
-      .split("/")
-      .reduce(
-        (value, segment) => value?.[segment.replaceAll("~1", "/").replaceAll("~0", "~")],
-        document,
-      ) ?? schema
-  );
+  let value: unknown = document;
+  for (const segment of schema.$ref.slice(2).split("/")) {
+    if (typeof value !== "object" || value === null) {
+      return schema;
+    }
+    value = Object.entries(value).find(([key]) => key === segment.replaceAll("~1", "/").replaceAll("~0", "~"))?.[1];
+  }
+  return isSchema(value) ? value : schema;
 }
 
-function schemaConstraints(schema) {
+function schemaConstraints(schema: Schema) {
   const constraints = [];
 
   if (schema.minLength !== undefined) {
@@ -152,7 +199,7 @@ function schemaConstraints(schema) {
   return constraints.join("; ") || "—";
 }
 
-function schemaRows(schema, document, parent = "") {
+function schemaRows(schema: Schema, document: Document, parent = ""): string[] {
   const resolvedSchema = resolveSchema(schema, document);
   const rows = [];
 
@@ -171,7 +218,7 @@ function schemaRows(schema, document, parent = "") {
     if (resolvedProperty.type === "object" && resolvedProperty.properties) {
       rows.push(...schemaRows(resolvedProperty, document, field));
     } else if (resolvedProperty.type === "array") {
-      const resolvedItems = resolveSchema(resolvedProperty.items, document);
+      const resolvedItems = resolveSchema(resolvedProperty.items ?? {}, document);
       if (resolvedItems.properties) {
         rows.push(...schemaRows(resolvedItems, document, `${field}[]`));
       }
@@ -181,7 +228,7 @@ function schemaRows(schema, document, parent = "") {
   return rows;
 }
 
-function schemaTable(schema, document) {
+function schemaTable(schema: Schema, document: Document) {
   const resolvedSchema = resolveSchema(schema, document);
   const rows = schemaRows(resolvedSchema, document);
   if (rows.length === 0) {
@@ -193,7 +240,7 @@ function schemaTable(schema, document) {
   );
 }
 
-const permissionScopeQualifiers = {
+const permissionScopeQualifiers: Record<string, string> = {
   associated_service_account: " (when associated)",
   existing_namespace: " (when selecting an existing namespace)",
   bound_secret: " (when bound)",
@@ -205,7 +252,7 @@ const permissionScopeQualifiers = {
   saved_sandbox_policy_additions: " (when saved network policy additions exist)",
 };
 
-function renderedExamples(content, contentType) {
+function renderedExamples(content: Media, contentType: string) {
   return Object.values(content.examples ?? {}).map(({ summary, value }) =>
     [
       summary ?? "Example",
@@ -216,7 +263,7 @@ function renderedExamples(content, contentType) {
   );
 }
 
-function operationReference(path, method, operation, document, { headingLevel = 2 } = {}) {
+function operationReference(path: string, method: string, operation: Operation, document: Document, { headingLevel = 2 }: { headingLevel?: number } = {}) {
   const childHeading = "#".repeat(Math.min(headingLevel + 1, 6));
   const sections = [
     `${"#".repeat(headingLevel)} \`${method.toUpperCase()} ${path}\``,
@@ -232,7 +279,7 @@ function operationReference(path, method, operation, document, { headingLevel = 
         "| Action | Resource | Scope |",
         "| --- | --- | --- |",
         ...operation["x-openclaw-permissions"].map(({ action, resourceKind, scope, condition }) => {
-          const qualifier = permissionScopeQualifiers[condition] ?? "";
+          const qualifier = permissionScopeQualifiers[condition ?? ""] ?? "";
           return `| \`${action}\` | \`${resourceKind}\` | \`${scope}\`${qualifier} |`;
         }),
       ].join("\n"),
@@ -308,7 +355,7 @@ function operationReference(path, method, operation, document, { headingLevel = 
   return sections.join("\n\n");
 }
 
-function operationRows(operations) {
+function operationRows(operations: Entry[]) {
   return [
     "| Operation | Summary |",
     "| --- | --- |",
@@ -318,13 +365,13 @@ function operationRows(operations) {
   ].join("\n");
 }
 
-function errorSchema(document, entries) {
+function errorSchema(document: Document, entries: Entry[]) {
   const schemas = entries
     .flatMap(({ operation }) => Object.entries(operation.responses))
     .filter(([status, response]) => {
       return !status.startsWith("2") && response.content?.["application/json"]?.schema;
     })
-    .map(([, response]) => response.content["application/json"].schema);
+    .flatMap(([, response]) => response.content?.["application/json"]?.schema ? [response.content["application/json"].schema] : []);
   const detailed = schemas.filter(
     (schema) => resolveSchema(schema, document)?.properties?.error?.properties?.details,
   );
@@ -336,12 +383,12 @@ function generatedComment() {
   return "<!-- Generated from packages/contracts/openapi/occ-api.openapi.json. Do not edit directly. -->";
 }
 
-function tableOfContents(titles) {
+function tableOfContents(titles: string[]) {
   const links = titles.map((title) => `- [${title}](#${tagAnchor(title)})`);
   return `## Table of contents\n\n${links.join("\n")}`;
 }
 
-function introduction(document) {
+function introduction(document: Document) {
   return [
     `Version \`${document.info.version}\`; OpenAPI \`${document.openapi}\`.`,
     [
@@ -366,7 +413,7 @@ function introduction(document) {
   ];
 }
 
-function operationEntries(document) {
+function operationEntries(document: Document): Entry[] {
   return Object.entries(document.paths).flatMap(([path, operations]) =>
     Object.entries(operations)
       .filter(([method]) => httpMethods.has(method))
@@ -381,9 +428,9 @@ function operationEntries(document) {
   );
 }
 
-function referenceGroups(entries) {
-  const groups = [];
-  const byTag = new Map();
+function referenceGroups(entries: Entry[]): Group[] {
+  const groups: Group[] = [];
+  const byTag = new Map<string, Group>();
   for (const entry of entries) {
     let group = byTag.get(entry.tag);
     if (!group) {
@@ -400,7 +447,7 @@ function referenceGroups(entries) {
   return groups;
 }
 
-function referencePage(document, groups, entries) {
+function referencePage(document: Document, groups: Group[], entries: Entry[]) {
   const sections = [];
   const schema = errorSchema(document, entries);
 
@@ -494,7 +541,7 @@ function referencePage(document, groups, entries) {
   return `${page.join("\n\n")}\n`;
 }
 
-function cheatSheetEntityOrder(title) {
+function cheatSheetEntityOrder(title: string) {
   const index = cheatSheetEntities.findIndex((entity) => entity.title === title);
   if (index !== -1) {
     return index;
@@ -504,7 +551,7 @@ function cheatSheetEntityOrder(title) {
   return lastSibling === -1 ? cheatSheetEntities.length : lastSibling + 0.5;
 }
 
-function cheatSheetOperationOrder({ method, operationId, path }) {
+function cheatSheetOperationOrder({ method, operationId, path }: ValidEntry) {
   // Keep native administration after Agent lifecycle operations in the compact index.
   if (method === "get" && path.endsWith("/native-admin")) {
     return 5;
@@ -524,10 +571,10 @@ function cheatSheetOperationOrder({ method, operationId, path }) {
   return 4;
 }
 
-function cheatSheetPage(entries) {
-  const groups = new Map();
-  const operationIds = new Set();
-  const operationAnchors = new Map();
+function cheatSheetPage(entries: Entry[]) {
+  const groups = new Map<string, ValidEntry[]>();
+  const operationIds = new Set<string>();
+  const operationAnchors = new Map<string, string>();
 
   for (const entry of entries) {
     if (typeof entry.operationId !== "string" || !entry.operationId.trim()) {
@@ -562,7 +609,7 @@ function cheatSheetPage(entries) {
     if (!groups.has(title)) {
       groups.set(title, []);
     }
-    groups.get(title).push({ ...entry, summary });
+    groups.get(title)?.push({ ...entry, operationId: entry.operationId, summary });
   }
 
   const entities = [...groups].sort(
@@ -594,7 +641,7 @@ function cheatSheetPage(entries) {
   return `${sections.join("\n\n")}\n`;
 }
 
-export function generateApiReferenceOutputs(document) {
+export function generateApiReferenceOutputs(document: Document): Output[] {
   const entries = operationEntries(document);
   const groups = referenceGroups(entries);
   const outputs = [
@@ -612,18 +659,16 @@ export function generateApiReferenceOutputs(document) {
   return outputs;
 }
 
-export function generateApiReference(document) {
-  return generateApiReferenceOutputs(document).find(
-    (output) => output.path === "docs/reference/api.md",
-  ).content;
+export function generateApiReference(document: Document) {
+  return generateApiReferenceOutputs(document)[0].content;
 }
 
-async function walkMarkdown(directoryUrl) {
+async function walkMarkdown(directoryUrl: URL): Promise<string[]> {
   let entries;
   try {
     entries = await readdir(directoryUrl, { withFileTypes: true });
   } catch (error) {
-    if (error?.code === "ENOENT") {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
       return [];
     }
     throw error;
@@ -641,7 +686,7 @@ async function walkMarkdown(directoryUrl) {
   return files;
 }
 
-export async function unexpectedApiReferenceFiles(outputs) {
+export async function unexpectedApiReferenceFiles(outputs: Output[]) {
   const expectedPaths = new Set(outputs.map((output) => output.path));
   return (await walkMarkdown(referenceDirectoryPath)).filter((path) => !expectedPaths.has(path));
 }
@@ -653,7 +698,7 @@ export async function removeGeneratedApiReferenceDirectory() {
 async function run() {
   const arguments_ = process.argv.slice(2);
   if (arguments_.length > 1 || (arguments_.length === 1 && arguments_[0] !== "--check")) {
-    throw new Error("Usage: node scripts/generate-occ-api-reference.mjs [--check]");
+    throw new Error("Usage: node scripts/generate-occ-api-reference.ts [--check]");
   }
 
   const document = JSON.parse(await readFile(documentPath, "utf8"));
@@ -666,8 +711,8 @@ async function run() {
       try {
         existing = await readFile(path, "utf8");
       } catch (error) {
-        if (error?.code === "ENOENT") {
-          throw new Error(`Missing ${output.path}; run pnpm openapi:generate.`);
+        if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+          throw new Error(`Missing ${output.path}; run pnpm openapi:generate.`, { cause: error });
         }
         throw error;
       }

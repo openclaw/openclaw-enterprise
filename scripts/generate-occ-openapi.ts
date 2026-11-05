@@ -4,13 +4,13 @@ import { fileURLToPath } from "node:url";
 
 import { format, resolveConfig } from "prettier";
 
-import { documentApiExamples } from "./document-api-examples.mjs";
+import { documentApiExamples } from "./document-api-examples.ts";
 import { createFastifyApp } from "../apps/controller/src/index.ts";
 import {
   generateApiReferenceOutputs,
   removeGeneratedApiReferenceDirectory,
   unexpectedApiReferenceFiles,
-} from "./generate-occ-api-reference.mjs";
+} from "./generate-occ-api-reference.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const outputPath = fileURLToPath(
