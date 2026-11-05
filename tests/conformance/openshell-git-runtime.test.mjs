@@ -584,6 +584,7 @@ test("the running OpenShell recipient refuses a changed Repo ref or foreign supp
 test("held-launch Git expiry requires a fresh original predecessor and a revoked reduced installation", async (t) => {
   for (const fault of [
     "valid expired predecessor",
+    "fractional predecessor",
     "generic withholding",
     "failed predecessor",
     "stale predecessor",
@@ -710,6 +711,13 @@ test("held-launch Git expiry requires a fresh original predecessor and a revoked
               evaluatedTime: new Date().toISOString(),
             };
             if (!removed) {
+              if (fault === "fractional predecessor") {
+                // A 14,999.2 ms witness stays live across a whole-second boundary.
+                const second = Math.floor(Date.now() / 1000) * 1000;
+                result.evaluatedTime = new Date(second).toISOString().slice(0, 19) + ".000100000Z";
+                result.observedTime =
+                  new Date(second - 15_000).toISOString().slice(0, 19) + ".000900000Z";
+              }
               if (fault === "generic withholding") {
                 result.reason = "PROVIDER_READINESS_REASON_CREDENTIALS_WITHHELD";
               }
@@ -787,7 +795,7 @@ test("held-launch Git expiry requires a fresh original predecessor and a revoked
             entry.continuity,
             AbortSignal.timeout(5_000),
           );
-          const valid = fault === "valid expired predecessor";
+          const valid = fault === "valid expired predecessor" || fault === "fractional predecessor";
           const sent = valid || fault === "expired after detach";
           assert.equal(outcome, valid ? "withdrawn" : "retire-runtime");
           assert.equal(requests.length, sent ? 1 : 0, "unsafe predecessors cannot trigger detach");

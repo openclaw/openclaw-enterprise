@@ -642,6 +642,14 @@ test("prepared Git bootstraps without privilege and distinguishes accepted rotat
     seconds: String(Number(predecessor.evaluated_time.seconds) - 14),
   };
   assert.equal(await binding.observePredecessor(standing, installed, signal()), true);
+  // Preserve the wire fraction: this witness is 14,999.2 ms old, not 15 seconds.
+  state.status = structuredClone(predecessor);
+  state.status.evaluated_time.nanos = 100_000;
+  state.status.observed_time = {
+    seconds: String(Number(predecessor.evaluated_time.seconds) - 15),
+    nanos: 900_000,
+  };
+  assert.equal(await binding.observePredecessor(standing, installed, signal()), true);
   for (const mutate of [
     (status) => {
       status.reason = "PROVIDER_READINESS_REASON_CREDENTIALS_WITHHELD";
@@ -651,6 +659,10 @@ test("prepared Git bootstraps without privilege and distinguishes accepted rotat
         ...status.evaluated_time,
         seconds: String(Number(status.evaluated_time.seconds) - 15),
       };
+    },
+    (status) => {
+      status.evaluated_time.nanos = 100_000;
+      status.observed_time = { ...status.evaluated_time, nanos: 900_000 };
     },
     (status) => {
       status.observed.process_instance_id = "replacement-process";
