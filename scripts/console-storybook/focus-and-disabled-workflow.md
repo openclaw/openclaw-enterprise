@@ -157,8 +157,10 @@ expiry. Use the late Stop response story to inspect its generic result.
 
 ## Configuration save conflict
 
-Open **Pages / Agent detail / Configuration edits merged over another browser's save**.
-Follow its three save paths: keep focus on **Checking Configuration…**, select all
+Open **Pages / Agent detail / Configuration conflict preserves moved focus**
+(`pages-agent-detail--configuration-conflict-focus`). The first save delays its
+simulated preflight read by 10 seconds so you can move focus. Reset between the
+three save paths: keep focus on **Checking Configuration…**, select all
 text in the pending read-only JSON editor, then focus the **Agents** link.
 Only the first path moves focus to **Reload draft**. The other paths keep focus,
 selection, and scroll position while the conflict alert appears. Reload still

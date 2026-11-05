@@ -6378,7 +6378,7 @@ export async function renderAgentDetail(
           pending = false;
           updateState();
           // A conflict keeps the same editor. Rebuilding it detaches a reader's focused
-          // textarea and loses their keyboard selection before recovery can check focus.
+          // textarea and deactivates its selection before recovery can check focus.
           if (reloadRequired && body.contains(editor)) {
             cancel.after(reload);
           } else {
