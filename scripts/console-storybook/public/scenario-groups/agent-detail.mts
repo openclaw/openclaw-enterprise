@@ -1285,6 +1285,13 @@ export function createAgentDetailScenarios({
             agents: { defaults: { model: "codex/gpt-5.1" } },
           },
         },
+        rules: [
+          {
+            method: "GET",
+            suffix: "/configurations/cfg_00000000-0000-4000-8000-000000000001",
+            delayMs: 1500,
+          },
+        ],
         actions: [
           click("Edit Configuration"),
           {
@@ -1304,12 +1311,14 @@ export function createAgentDetailScenarios({
               2,
             ),
           },
-          click("Save Configuration"),
-          click("Reload draft"),
         ],
         description:
           "Another browser changed the model and the gateway bind while this editor set the bind. Reload draft merges this reader's edit over the reread document and names the value both changed.",
         steps: [
+          "Focus Save Configuration and press Enter. Stay on Checking Configuration: the conflict moves focus to Reload draft and announces an alert.",
+          "Reset. Save, then click Configuration JSON and use Select All before the check finishes. The conflict keeps focus and selection in the read-only editor without scrolling to the alert.",
+          "Reset and repeat, moving focus to the Agents link during the check. Focus stays on that link. These previews simulate a preflight conflict; the browser regression checks a real PATCH race.",
+          "Choose Reload draft to merge the edits.",
           "Check the note names /gateway/bind with the saved value, and the editor keeps the other browser's model with this reader's bind.",
         ],
       },

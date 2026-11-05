@@ -72,7 +72,9 @@ Unsaved edits, pending saves, and stale or unknown outcomes block deployment,
 tab switching, and version navigation. Save checks Configuration association and
 generation, and the API refuses later races. Reload stale drafts; after an
 unknown outcome, successfully reload saved state before retrying. Invalid JSON
-and failed saves retain text for correction.
+and failed saves retain text for correction. A save conflict keeps focus and text
+selection if you moved to another control while saving. If you stayed on
+**Checking Configuration…**, focus moves to **Reload draft**.
 Backend, execution mode, and Harness authentication are Agent fields, not native
 Configuration JSON. See the [Configuration reference](../../reference/configuration.md).
 
