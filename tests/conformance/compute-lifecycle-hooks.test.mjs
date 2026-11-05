@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ComputeLifecycleDispatcher } from "../../apps/controller/src/drivers/compute/lifecycle-hooks.ts";
-import { withComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import {
+  currentComputeAbortSignal,
+  currentComputeOperationLifetime,
+  withComputeAbortSignal,
+  withComputeOperationDeadline,
+} from "../../apps/controller/src/drivers/compute/operation-context.ts";
 
 const namespace = Object.freeze({
   id: "namespace-support",
@@ -427,4 +432,42 @@ test("drivers without hooks remain valid selected owners", async () => {
   assert.deepEqual(await dispatcher.beforeWorkloadStart(revision), { environment: {} });
   assert.equal(await dispatcher.beforeWorkloadStop(revision), undefined);
   assert.equal(await dispatcher.beforeNamespaceDelete(namespace), undefined);
+});
+
+test("nested compute signals retain parent cancellation without a deadline", async () => {
+  const parent = new AbortController();
+  const reason = new Error("parent cancelled");
+  await withComputeAbortSignal(parent.signal, () =>
+    withComputeAbortSignal(new AbortController().signal, async () => {
+      const signal = currentComputeAbortSignal();
+      parent.abort(reason);
+      assert.equal(signal.aborted, true);
+      assert.equal(signal.reason, reason);
+    }),
+  );
+});
+
+test("nested compute signals reject an already aborted parent", async () => {
+  const parent = new AbortController();
+  const reason = new Error("parent cancelled");
+  await withComputeAbortSignal(parent.signal, async () => {
+    parent.abort(reason);
+    await assert.rejects(
+      withComputeAbortSignal(new AbortController().signal, async () =>
+        assert.fail("operation ran"),
+      ),
+      (error) => error === reason,
+    );
+  });
+});
+
+test("nested compute signals preserve the parent deadline", async () => {
+  const deadline = Date.now() + 60_000;
+  await withComputeOperationDeadline(
+    { signal: new AbortController().signal, deadlineAt: new Date(deadline).toISOString() },
+    () =>
+      withComputeAbortSignal(new AbortController().signal, async () => {
+        assert.equal(currentComputeOperationLifetime().deadline, deadline);
+      }),
+  );
 });

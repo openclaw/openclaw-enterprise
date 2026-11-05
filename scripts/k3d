@@ -676,6 +676,13 @@ if [ "$action" = "reset" ]; then
   load_environment
   rm -f "$ready_file"
   info "Removing test namespaces from the owned k3d cluster."
+  namespace_inventory="$(
+    "$kubectl_bin" \
+      --kubeconfig "$OCC_TEST_KUBERNETES_KUBECONFIG" \
+      --context "$OCC_TEST_KUBERNETES_CONTEXT" \
+      get namespaces \
+      -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'
+  )"
   while IFS= read -r namespace; do
     case "$namespace" in
       oce-production-* | oce-openshell-* | oce-ns-* | oce-??????????????? | oce-???????????????-gateway | openclaw-ci-seccomp-*)
@@ -688,13 +695,7 @@ if [ "$action" = "reset" ]; then
           --timeout=120s
         ;;
     esac
-  done < <(
-    "$kubectl_bin" \
-      --kubeconfig "$OCC_TEST_KUBERNETES_KUBECONFIG" \
-      --context "$OCC_TEST_KUBERNETES_CONTEXT" \
-      get namespaces \
-      -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'
-  )
+  done <<< "$namespace_inventory"
   info "Replacing the isolated Kubernetes test database."
   node scripts/ci/reset-k3d-model.mjs --state "$state_file"
   rm -f "$env_file" "$ready_file"

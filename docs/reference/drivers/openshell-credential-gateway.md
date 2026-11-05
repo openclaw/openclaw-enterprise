@@ -1,7 +1,8 @@
 # OpenShell Credential Gateway
 
 The [Credential Gateway](credential-gateway.md) stores OCC [credential sources](../credential-sources.md)
-as OpenShell providers. The supervisor substitutes credentials outside the Harness.
+as OpenShell providers. The Harness uses placeholders; the trusted supervisor
+adds credentials to matching upstream requests.
 Select it with the [OpenShell SandboxDriver](openshell-sandbox.md) on one `openshell`
 [Backend](../backends.md#openshell-gateway).
 
@@ -9,7 +10,7 @@ Select it with the [OpenShell SandboxDriver](openshell-sandbox.md) on one `opens
 authentication, admission, and provider-file proof follow the
 [OpenShell qualification contract](openshell-sandbox.md#qualification-contract).
 
-For an example of how a request gets its key, see [How sources map to OpenShell](#how-sources-map-to-openshell).
+[Follow a Codex request from placeholder to upstream header](#follow-a-codex-request-through-openshell).
 
 ## Configure the Driver
 
@@ -71,8 +72,8 @@ which must be the same Backend's `credential_refresh` member. With it and
 `toolBinaries`, the catalog adds the OAuth2 types.
 
 Binary-list changes apply on update, deployment or repair; until success,
-removed binaries retain access and deployment stays pending. Withdraw or delete
-the source for immediate revocation. Mixed-version replicas can overwrite lists.
+removed binaries retain access and deployment stays pending. To stop use in a
+running Sandbox, withdraw the attachment and check its status. Mixed-version replicas can overwrite lists.
 Removing `toolBinaries` returns `409 RESOURCE_CONFLICT` for tool-source
 registration, update, deployment and repair: OpenShell treats empty lists as any
 binary. Existing sources remain readable and deletable.
@@ -94,14 +95,14 @@ status. The Refresh Driver owns device exchange and refresh configuration.
 
 | Type                         | Secret fields                               | Config fields                                                                   | Rotation  | Harness authentication         |
 | ---------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------- | --------- | ------------------------------ |
-| `openai`                     | `api_key` (required)                        | `base_url` (optional)                                                           | `none`    | `openai` / `api_key`           |
+| `openai`                     | `api_key` (required)                        | `authorized_base_url` (optional)                                                | `none`    | `openai` / `api_key`           |
 | `codex-pat`                  | `access_token` (required)                   | None                                                                            | `none`    | `openai` / `codex_pat`         |
 | `codex-oauth` (Experimental) | None; device login                          | None                                                                            | `refresh` | `openai` / `chatgptAuthTokens` |
-| `bearer-token`               | `token` (required)                          | `host`, `env_var` (required); `port`, `path`                                    | `none`    | None (tool credential)         |
+| `bearer-token`               | `token` (required)                          | `host`, `env_var` (required); `port`, `path`, `protocol`                        | `none`    | None (tool credential)         |
 | `oauth2-client-credentials`  | `client_secret` (required)                  | `host`, `env_var`, `token_url`, `client_id` (required); `port`, `path`, `scope` | `refresh` | None (tool credential)         |
 | `oauth2-refresh-token`       | `refresh_token` (required); `client_secret` | `host`, `env_var`, `token_url`, `client_id` (required); `port`, `path`, `scope` | `refresh` | None (tool credential)         |
 
-Codex PATs (personal or service-account) use `CODEX_ACCESS_TOKEN` at these HTTPS routes:
+Personal and service-account Codex PATs use `CODEX_ACCESS_TOKEN` over HTTPS:
 
 - `auth.openai.com/api/accounts/v1/user-auth-credential/whoami`.
 - `chatgpt.com/backend-api/codex/**`.
@@ -109,14 +110,28 @@ Codex PATs (personal or service-account) use `CODEX_ACCESS_TOKEN` at these HTTPS
 - `chatgpt.com/backend-api/wham/accounts/check`.
 - `chatgpt.com/backend-api/wham/settings/user`.
 - `chatgpt.com/backend-api/wham/usage`.
+- `GET /backend-api/ps/plugins/*` and `POST /backend-api/ps/plugins/*/install`
+  on `chatgpt.com` for catalog/search, installed-state, detail, and installation requests.
+- `POST /backend-api/ps/apps/batch` on `chatgpt.com` for app metadata lookup.
+- `POST /backend-api/ps/mcp` on `chatgpt.com` for native hosted-app MCP transport.
 
-Other routes remain denied.
+`*` matches one path segment; GET includes HEAD. These source-wide routes apply
+to all Agents using the source. The MCP rule does not filter apps or tools or
+enforce read-only access; native managed policy enforces Agent selections and
+approvals. Direct Plugin Service sharing, suggestions and uninstall routes remain
+denied. Package downloads use separate credential-free egress. Other routes remain denied.
 
 The Harness stores only an opaque `personal_access_token`. Readiness requires
 native login and model execution
 ([bootstrap flow](../../flows/openshell-sandbox-provisioning.md#2-derive-the-provider-owned-harness-request)).
 
-`openai` defaults to `https://api.openai.com/v1`. Custom HTTPS endpoints must end in `/v1`, optionally after a prefix such as `/api`. Codex requires Responses; dedicated native OpenClaw uses the API selected in its explicit model catalog. Every native model endpoint must match the bound source endpoint, including its path. Before Secret reads or persistence, `400 INVALID_REQUEST` rejects wildcards, port `0`, an `@` or credentials, spaces, controls, a missing `//`, queries, fragments, and a host that is not an exact DNS name, as for `bearer-token`. OCC stores the normalized, immutable endpoint; register a new source to change it.
+`openai` sources authorize the default OpenAI endpoint unless `authorized_base_url`
+explicitly authorizes the Installation's [shared model provider](kubernetes-compute/model-provider.md).
+The source supplies `api_key` and cannot select a route. Authorization is immutable;
+replace the source when changing it. Unknown fields, malformed URLs, and destination
+mismatches fail before Secret reads. Existing `base_url` records fail for inference
+but remain readable and deletable under the existing permission and reference checks.
+Gateway destinations retain the exact-DNS, HTTPS, nonzero-port, and `/v1` path rules.
 
 Invalid `bearer-token` and OAuth2 values return field-specific `400` before Secret
 reads or persistence:
@@ -143,6 +158,8 @@ fail until that history is gone.
 
 Registration rejects provider types outside this catalog.
 
+See how to configure `protocol: mcp`. [Slack example](../../guides/topics/plugins-configure.md#configure-slack-search)
+
 ### Experimental Codex OAuth PoC
 
 The experimental `codex-oauth` type, its operator TLS, token custody and WIP boundaries
@@ -162,45 +179,46 @@ issuer. Preserve public roots when adding a private CA; see
 [issuer trust setup](../../testing/openshell-oauth.md#prepare-images-and-trust).
 The [Refresh Driver](credential-refresh.md) owns request IDs and recovery.
 
-## How sources map to OpenShell
+<a id="how-sources-map-to-openshell"></a>
 
-Consider a dedicated Codex Agent with an `openai` source. OCC registers the
-key with an OpenShell provider and attaches the provider to the revision's
-Sandbox. Codex reads an `openshell:resolve:env:` placeholder from
-`OPENAI_API_KEY` and sends it as a bearer. When the binary and HTTPS endpoint
-match the profile, the trusted supervisor replaces the placeholder with the key
-before forwarding the request. With the default endpoint, requests under
-`https://api.openai.com/v1/` can match. A child process of the configured binary
-can also use that route.
+## Follow a Codex request through OpenShell
 
-The selected Driver determines what else OpenShell checks.
+For a dedicated Codex Agent with an `openai` source at the default endpoint:
 
-- **Ordinary Gateway delivery** matches the caller and endpoint. A matching
-  request can use the key within the profile's route. The profile does not
-  check each inference body or decide which response bytes the caller may see.
-- **Observed request-hook preview** applies to the explicitly selected
-  `github-installation` profile. On stock OpenShell 0.1.5, a held launcher
-  must receive the expected denial from a one-use probe in the opted-in
-  workspace. This observes the hook at that start. It cannot establish that
-  every later request must pass through it.
-- **Exact dispatch** requires a separately qualified, authenticated sender that binds the captured
-  request and response recipient to the execution, obtains permission to send
-  that request, and enforces the response policy before release. See
-  [protected static inference](../credential-sources/protected-inference.md).
-  The bundled [OpenShell Driver](../../../apps/controller/src/drivers/egress-proxy/openshell.ts)
-  rejects repository-scoped `git-write` at deploy with
-  `409 REPOSITORY_GIT_SENDER_UNQUALIFIED`. See the [protected Git profiles](../repository-credentials/protected-openshell-git.md).
+1. **Inside the Sandbox.** `OPENAI_API_KEY` contains an opaque placeholder.
+   Codex uses that value for native login. Its request to
+   `POST https://api.openai.com/v1/responses` carries
+   `Authorization: Bearer openshell:resolve:env:…` (placeholder abbreviated).
+2. **At the supervisor.** OpenShell inspects TLS and matches the calling binary
+   or an ancestor, host, port and path against the source profile.
+3. **At the provider.** The same request arrives with
+   `Authorization: Bearer <source API key>`. The Harness never needs the substituted value.
+
+Ordinary delivery grants use of the key on the profile's route. A child process
+of the configured binary can use it too. The profile neither authorizes a
+specific inference body nor filters the response for that caller.
+
+**Online GitHub preview.** On OpenShell 0.1.5/0.1.6, the opt-in `github-installation`
+profile verifies a one-use denial in the selected workspace at startup. Later
+enforcement remains unverified. [Protected Git profiles](../repository-credentials/protected-openshell-git.md)
+
+**Protected delivery** binds the request and response recipient to the execution.
+OCC checks authority before releasing material and before authorizing the send.
+The qualified sender enforces the [response policy](../credential-sources/protected-inference.md#static-source-and-response-policy).
+For Git, the bundled Proxy verifies the mandatory pre-credentials binding and launcher
+denial for selected repository sets or a single ref-limited `git-write` grant.
+[Delivery profiles](credential-proxy.md#delivery-profiles)
+
+### Provider and Sandbox state
 
 Compute placement selects the operator-mode Workspace named for the Kubernetes
 namespace. Registration and Sandbox creation use that same Workspace.
 
 - **One provider profile per source.** Its ID equals the provider name; a content
-  digest drives registration/update/deployment reconciliation. `openai` binds
-  bearer `authorization` to its configured host/port/base path plus `/**`, for
-  `binaries` only. `bearer-token` exposes `env_var` at its host/port/path for
-  `toolBinaries`. `codex-pat` exposes `CODEX_ACCESS_TOKEN` at the catalog's fixed
-  PAT routes; `codex-oauth` exposes it for ChatGPT. The Refresh Driver owns issuer
-  exchange and refresh configuration.
+  digest drives registration/update/deployment reconciliation. The
+  [source catalog](#source-type-catalog) defines credentials and endpoints;
+  `binaries` restricts inference sources and `toolBinaries` restricts tool sources.
+  The Refresh Driver owns issuer exchange and refresh configuration.
 - **One provider per source.** Its name is `oce-cs-` plus 24 hexadecimal characters
   of the source ID's SHA-256. Labels identify OCC ownership, source and Namespace;
   `profile_workspace` names its workspace. Registration checks ownership/type
@@ -213,13 +231,10 @@ Refresh reports `pending` during `refresh_in_progress`/`refresh_committing`.
 A persistent uncertain marker requires inspection; OCC neither replays the
 exchange nor reseeds credentials.
 
-`updateSource` requires the existing provider to be OCC-owned for the exact
-source, rewrites the source's profile when the configured binaries changed,
-then calls `UpdateProvider` with the new credential values. `UpdateProvider`
-merges non-empty values, so the driver rejects an empty value rather than
-silently keep the old one. OpenShell gives the new value only to processes
-started after the update; a running Harness keeps the previous value until it
-restarts.
+`updateSource` verifies exact source ownership, reconciles changed binary lists,
+then calls `UpdateProvider`. That operation merges non-empty values, so the
+Driver rejects empty values. Only processes started after the update receive
+the new value; restart a running Harness to apply it.
 
 `removeSource` deletes the owned provider, confirms it gone, then deletes the
 source's profile; OpenShell cannot delete a Workspace still holding profiles.
@@ -247,11 +262,10 @@ without a mutation; a listed one is detached again. A missing Sandbox is
 it (OpenShell hides unauthorized Sandboxes as missing); a refusal fails with
 `SANDBOX_GATEWAY_UNAUTHORIZED`.
 
-For API-key Codex, Compute selects a named provider with the source endpoint and
-HTTPS Responses transport. Native OpenClaw retains its configured OpenAI-compatible
-endpoint and API selector, with every catalog model bound to that source endpoint.
-Codex stores the API-key or PAT placeholder through native login. OpenClaw reads its
-API-key placeholder through node-local model configuration.
+Compute selects a named HTTPS Responses provider for API-key Codex. For a
+source-backed PAT, startup writes the placeholder to the native auth file and
+runs `codex login status`. Native OpenClaw reads its API-key placeholder through
+node-local model configuration. Selected models use the shared provider endpoint and API selector.
 
 ## Trust requirements
 
@@ -282,10 +296,10 @@ The Harness, child processes and administrators have different access:
   OpenShell withholds a static key that has no credential binding. A Sandbox
   policy cannot add a `credential_binding` for a profile that defines endpoints,
   so changing a Sandbox policy cannot move `OPENAI_API_KEY` off
-  the endpoint selected by the source.
+  the authorized shared endpoint.
 - **Commands the Harness runs.** OpenShell matches `binaries` against the
   calling process and its ancestors. A command Codex starts can use an inherited
-  placeholder at the source endpoint. Other hosts return `403 credential_endpoint_mismatch`.
+  placeholder at its authorized shared endpoint. Other hosts return `403 credential_endpoint_mismatch`.
   A separate tool Sandbox would remove this inherited access.
 - **Not covered.** A Platform Admin can create, attach, and exec in Sandboxes in
   any Workspace. A Workspace admin, which includes OCC's gateway principal, can

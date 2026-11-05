@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -106,15 +107,15 @@ const hex64 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 // The lifecycle is real; all external commands are inert fixtures. HTTP is
 // refused separately because routing downloads do not use the command runner.
-type k3dOrderingTransport struct{ requests int }
+type k3dOrderingTransport struct{ requests atomic.Int32 }
 
 func (transport *k3dOrderingTransport) RoundTrip(*http.Request) (*http.Response, error) {
-	transport.requests++
+	transport.requests.Add(1)
 	return nil, errors.New("fixture routing download refused")
 }
 
 func TestK3dCodexPreflightOrdering(t *testing.T) {
-	for _, scenario := range []string{"refused", "invalid result", "cleanup failure", "cancelled", "accepted", "API failure", "OpenShell routing", "controller import failure", "network check failure"} {
+	for _, scenario := range []string{"refused", "invalid result", "cleanup failure", "cancelled", "accepted", "API failure", "OpenShell routing", "controller import failure", "network check failure", "keep on failure"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
 			state := filepath.Join(root, "state")
@@ -165,6 +166,11 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 				"OCC_DEVELOPMENT_BROWSER_PORT":                      "8443",
 			} {
 				t.Setenv(key, value)
+			}
+			if scenario == "keep on failure" {
+				// The inspection override must keep the failed stack instead of
+				// rolling it back, and must tell the operator how to clean up.
+				t.Setenv("OCC_DEVELOPMENT_KEEP_ON_FAILURE", "1")
 			}
 			transport := &k3dOrderingTransport{}
 			previousTransport := http.DefaultTransport
@@ -273,7 +279,7 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), wantError) {
 				t.Fatalf("want %q, got %v; commands: %v", wantError, err, calls)
 			}
-			if scenario == "refused" || scenario == "cleanup failure" {
+			if scenario == "refused" || scenario == "cleanup failure" || scenario == "keep on failure" {
 				var exitErr *exec.ExitError
 				if !errors.As(err, &exitErr) || exitErr.ExitCode() != 42 || !strings.Contains(diagnostic.String(), "sandbox fixture refused") {
 					t.Fatalf("lost original refusal: %v; %s", err, &diagnostic)
@@ -325,7 +331,9 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 					t.Fatal("runtime work preceded its prerequisite")
 				}
 			}
-			stages = append(stages, "k3d cluster delete occ-dev-order")
+			if scenario != "keep on failure" {
+				stages = append(stages, "k3d cluster delete occ-dev-order")
+			}
 			for _, stage := range stages {
 				i := index(stage)
 				if i <= previous {
@@ -333,12 +341,15 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 				}
 				previous = i
 			}
-			wantRequests := 0
+			requests := transport.requests.Load()
 			if scenario == "accepted" || scenario == "OpenShell routing" {
-				wantRequests = 1
-			}
-			if transport.requests != wantRequests {
-				t.Fatalf("routing downloads: got %d, want %d", transport.requests, wantRequests)
+				// A refusal cancels its sibling: either or both independent downloads
+				// can have started. Neither may run before a refused sandbox check.
+				if requests < 1 || requests > 2 {
+					t.Fatalf("routing downloads after acceptance: got %d, want 1 or 2", requests)
+				}
+			} else if requests != 0 {
+				t.Fatalf("routing downloads before acceptance: got %d, want 0", requests)
 			}
 			forbidden := []string{"kubectl apply ", "kubectl create secret ", "helm upgrade "}
 			if scenario == "API failure" {
@@ -350,7 +361,17 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 					t.Fatalf("unexpected downstream work: %s", command)
 				}
 			}
-			if scenario == "cleanup failure" {
+			if scenario == "keep on failure" {
+				if index("k3d cluster delete occ-dev-order") >= 0 {
+					t.Fatal("keep-on-failure rolled the cluster back")
+				}
+				if _, err := os.Stat(state); err != nil {
+					t.Fatalf("keep-on-failure discarded state: %v", err)
+				}
+				if !strings.Contains(output.String(), "OCC_DEVELOPMENT_KEEP_ON_FAILURE is set") {
+					t.Fatalf("keep-on-failure hid the cleanup hint: %s", &output)
+				}
+			} else if scenario == "cleanup failure" {
 				if !strings.Contains(err.Error(), "rollback incomplete") || !strings.Contains(err.Error(), "exit status 43") {
 					t.Fatalf("lost cleanup failure: %v", err)
 				}

@@ -11,6 +11,7 @@ import type {
   HarnessAuthBinding,
   AgentCredentialSourceBinding,
   PluginDesiredState,
+  PluginDriverIdentity,
   PluginApprovers,
   PresetTemplate,
   RepositoryBindingSelection,
@@ -269,6 +270,7 @@ export const agents = occSchema.table(
     gatewayManagedMode: boolean("gateway_managed_mode").notNull().default(true),
     sandboxPolicyEditing: boolean("sandbox_policy_editing").notNull().default(false),
     plugins: jsonb("plugins").$type<PluginDesiredState>(),
+    pluginDriver: jsonb("plugin_driver").$type<PluginDriverIdentity>(),
     pluginApprovers: jsonb("plugin_approvers").$type<PluginApprovers>(),
     repositoryBindings: jsonb("repository_bindings").$type<readonly RepositoryBindingSelection[]>(),
     repositoryAccess: jsonb("repository_access").$type<RepositoryAccess>(),
@@ -326,6 +328,19 @@ export const agents = occSchema.table(
     check(
       "agents_plugins_object",
       sql`${table.plugins} IS NULL OR jsonb_typeof(${table.plugins}) = 'object'`,
+    ),
+    check(
+      "agents_plugin_driver_selection",
+      sql`CASE WHEN coalesce(${table.plugins}, '{}'::jsonb) = '{}'::jsonb THEN ${table.pluginDriver} IS NULL
+    ELSE ${table.pluginDriver} IS NOT NULL
+      AND jsonb_typeof(${table.pluginDriver}) = 'object'
+      AND ${table.pluginDriver} ?& ARRAY['id', 'implementation']
+      AND (${table.pluginDriver} - 'id' - 'implementation') = '{}'::jsonb
+      AND jsonb_typeof(${table.pluginDriver}->'id') = 'string'
+      AND jsonb_typeof(${table.pluginDriver}->'implementation') = 'string'
+      AND (${table.pluginDriver}->>'id') ~ '[^[:space:]]'
+      AND (${table.pluginDriver}->>'implementation') ~ '[^[:space:]]'
+    END`,
     ),
     check(
       "agents_repository_access_valid",
@@ -648,10 +663,15 @@ export const agentRevisions = occSchema.table(
     revisionNumber: bigint("revision_number", { mode: "number" }).notNull(),
     backendId: text("backend_id"),
     gatewayManagedMode: boolean("gateway_managed_mode").notNull().default(true),
+    firstDeploymentDigest: text("first_deployment_digest"),
     admittedSpec: jsonb("admitted_spec").$type<Record<string, unknown>>().notNull(),
     admittedAt: timestamp("admitted_at", { withTimezone: true }).notNull(),
   },
   (table): PgTableExtraConfigValue[] => [
+    check(
+      "agent_revisions_first_deployment_digest",
+      sql`${table.firstDeploymentDigest} IS NULL OR (${table.revisionNumber} = 1 AND ${table.firstDeploymentDigest} ~ '^[a-f0-9]{64}$')`,
+    ),
     unique("agent_revisions_namespace_id_agent_id_id_unique").on(
       table.namespaceId,
       table.agentId,
@@ -1950,6 +1970,22 @@ export const preparedGitHubFamilies = occSchema.table(
        OR (source #>> '{grant,profile}' = 'git-ref-draft-pr' AND length(source #>> '{grant,pullRequestBase}') > 0))
    AND source #>> '{grant,pushRef}' LIKE 'refs/heads/%'
    AND source #>> '{grant,repositoryId}' = source #>> '{session,grant,repositoryId}')
+   OR (source->>'adoption' = 'credential_proxy_github_repository'
+       AND jsonb_typeof(source #> '{session,credentialProxyExecution,driver}') = 'object'
+       AND source #>> '{session,credentialProxyExecution,enforcement,repositoryGitRecipient,deliveryProfile}' = 'github_repository'
+       AND source #>> '{session,binding,profile}' = 'github-repository'
+       AND source #>> '{grant,profile}' = 'github-repository'
+       AND jsonb_typeof(source #> '{grant,repositories}') = 'array'
+       AND jsonb_array_length(source #> '{grant,repositories}') BETWEEN 1 AND 16
+       AND jsonb_typeof(source #> '{grant,permissions}') = 'object'
+       AND source #>> '{grant,permissions,metadata}' = 'read'
+       AND jsonb_typeof(source #> '{session,bindings}') = 'array'
+       AND jsonb_array_length(source #> '{session,bindings}') = jsonb_array_length(source #> '{grant,repositories}')
+       AND NOT jsonb_path_exists(source, '$.session.bindings[*] ? (@.profile != "github-repository")')
+       AND jsonb_path_query_array(source, '$.session.bindings[*].grant.repositoryId') @> jsonb_path_query_array(source, '$.grant.repositories[*].repositoryId')
+       AND jsonb_path_query_array(source, '$.grant.repositories[*].repositoryId') @> jsonb_path_query_array(source, '$.session.bindings[*].grant.repositoryId')
+       AND source #>> '{grant,appId}' ~ '^[1-9][0-9]*$'
+       AND source #>> '{grant,installationId}' ~ '^[1-9][0-9]*$')
    OR (source->>'adoption' = 'credential_proxy_github_installation'
        AND jsonb_typeof(source #> '{session,credentialProxyExecution,driver}') = 'object'
        AND source #>> '{session,credentialProxyExecution,enforcement,repositoryGitRecipient,deliveryProfile}' = 'github_installation'

@@ -10,6 +10,7 @@ import {
 } from "node:http";
 import { connect, createServer as tcpServer, type AddressInfo } from "node:net";
 import { dirname, join } from "node:path";
+import { buffer } from "node:stream/consumers";
 import test from "node:test";
 import type { TLSSocket } from "node:tls";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
@@ -31,14 +32,7 @@ import {
 } from "../fixtures/repository-credentials/service.mjs";
 import { startServiceListeners } from "../fixtures/repository-credentials/service-resources.mjs";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
-
-async function bytes(stream: IncomingMessage) {
-  const chunks: Buffer[] = [];
-  for await (const chunk of stream) {
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks);
-}
+import { relaySockets } from "../helpers/socket-relay.mjs";
 
 type Resources = ReturnType<typeof createTestResourceScope>;
 
@@ -61,7 +55,7 @@ async function loseCommittedDisposal(
   let droppedCount = 0;
   const relay = httpServer(async (incoming, response) => {
     try {
-      const data = await bytes(incoming);
+      const data = await buffer(incoming);
       const command = JSON.parse(data.toString()) as DisposalCommand;
       kinds.push(command.kind);
       const outbound = request({
@@ -74,7 +68,7 @@ async function loseCommittedDisposal(
       const waiting = once(outbound, "response");
       outbound.end(data);
       const [reply] = await waiting;
-      const result = await bytes(reply);
+      const result = await buffer(reply);
       if (command.kind === "dispose" && droppedCount === 0) {
         assert.equal(reply.statusCode, 200);
         assert.deepEqual(JSON.parse(result.toString()), { kind: "acknowledged" });
@@ -108,12 +102,7 @@ async function gateApiHandshake(resources: Resources, upstreamOrigin: string) {
       paused.resolve();
     }
     void (holding ? resume.promise : Promise.resolve()).then(() => {
-      const upstream = connect(Number(new URL(upstreamOrigin).port), "127.0.0.1");
-      upstream.on("error", () => socket.destroy());
-      socket.on("error", () => upstream.destroy());
-      socket.once("close", () => upstream.destroy());
-      upstream.once("close", () => socket.destroy());
-      socket.pipe(upstream).pipe(socket);
+      relaySockets(socket, connect(Number(new URL(upstreamOrigin).port), "127.0.0.1"));
     });
   });
   gate.listen(0, "127.0.0.1");
@@ -226,7 +215,6 @@ test(
       tls: gh.tls,
       trustedUpstreamOrigins: new Set(factory.trustedUpstreamOrigins),
       upstreamOrigins: undefined,
-      providerQueue: undefined,
       log: undefined,
     });
     const client = new UnixRepositoryCredentialControlClient({ controlSocket });
@@ -426,16 +414,19 @@ test(
           auxiliaryPending: false,
         },
       };
-      // The original service recovers the committed disposal without reopening or repeating cleanup.
+      // The original service sends its captured disposal once more without reopening or
+      // repeating cleanup. PostgreSQL accepts the identical repeat without recording again,
+      // and later reads answer from the acknowledged outcome.
       const readsBefore = read.mock.callCount();
       const recoveryStart = kinds.length;
       assert.deepEqual(await status(), expected);
       assert.deepEqual(await status(), expected);
-      assert.deepEqual(kinds.slice(recoveryStart), ["status", "status"]);
-      assert.equal(kinds.filter((k) => k === "dispose").length, 1);
-      assert.equal(dispose.mock.callCount(), 1);
-      assert.deepEqual(dispose.mock.calls[0]!.arguments.slice(2), [original.generation, expected]);
-      assert.equal(read.mock.callCount() - readsBefore, 2);
+      assert.deepEqual(kinds.slice(recoveryStart), ["dispose"]);
+      assert.equal(dispose.mock.callCount(), 2);
+      for (const call of dispose.mock.calls) {
+        assert.deepEqual(call.arguments.slice(2), [original.generation, expected]);
+      }
+      assert.equal(read.mock.callCount() - readsBefore, 0);
       assert.deepEqual(await row(), terminal);
       // Each fresh authority and database pool must recover the original receipt independently.
       // The session service remains running; this does not test restoration of its local map.
@@ -448,7 +439,7 @@ test(
           randomUUID(),
         );
         assert.deepEqual(await restartedReader.status(sessionId), expected);
-        assert.equal(dispose.mock.callCount(), 1);
+        assert.equal(dispose.mock.callCount(), 2);
         assert.deepEqual(
           await restartedState.read((v) => v.repositorySessions.findBrokerReceipt(admissionId)),
           terminal,

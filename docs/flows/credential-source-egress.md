@@ -1,72 +1,69 @@
 ---
 created: "2026-10-14"
-updated: "2026-10-27"
-last_updated_session: authoring-run/53dd6d74-5181-417f-934c-dd6c8ef6db2d
+updated: 2026-11-05
+last_updated_session: authoring-run/cdb62c1d-61db-4f65-985f-7b44e64f10d0
 ---
 
 # Protected credential request flow
 
 ## Overview
 
-A process in an Agent execution asks for repository metadata. Its authenticated
-supervisor captures the request and the connection that will receive the answer.
-OpenClaw Control Plane (OCC) decides whether the sender can obtain a credential, whether it can send
-this request and which response it can release. The bundled legacy supervisor
-cannot enforce this exchange. See the [release cutoff](../reference/credential-sources/protected-inference.md)
-and [Credential Proxy threat model](../reference/security/credential-proxy.md).
+The supervisor holds an Agent's GitHub identity reply until OpenClaw Control Plane
+(OCC) permits release. See the [legacy supervisor cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
+and [threat model](../reference/security/credential-proxy.md).
 
 ## Entry Points
 
-- Trigger: an installed supervisor sends `HttpCredentialAccess.Resolve`, followed
-  by `AuthorizeSend` and `HttpResponsePreReturn.Evaluate` over authenticated TLS
+- A [source binding](../reference/credential-sources.md#bind-a-source-to-an-agent)
+  and deployment establish the route. The installation must have current
+  evidence of loaded enforcement.
+- The authenticated supervisor opens one TLS stream,
+  `HttpInstallationExchange.Exchange`, for credential resolution, send
+  authorization and response release
   (`apps/controller/src/drivers/egress-proxy/openshell-authority.ts:createOpenShellEgressAuthority`).
-- Assumptions: source admission and Agent deployment produced an exact plan; a current
-  verified loaded-enforcement receipt permits installation; the running Agent's service
-  principal holds exact source `operate` permission.
 
 ## Flow
 
-Suppose a dedicated Agent has a prepared `github-app-metadata` source for
-repository ID `12345`, name `acme/widgets`. A process requests
-`GET /repos/acme/widgets` at the admitted origin with an empty body.
+### Follow the metadata GET
 
-1. **Classify the request.** The GitHub adapter checks the captured method, origin,
-   path, headers and body against the execution's route. A second repository
-   or `POST /repos/acme/widgets/pulls` fails before credential access.
-2. **Authorize access.** OCC checks the authenticated installation, execution,
-   binding, withdrawal state and the Agent's current `credential_source:operate`.
-   The resolver selects a committed, usable token for this grant. Only the
-   trusted sender receives the injection header.
-3. **Authorize send.** On the same exchange, OCC checks current authority and
-   the selected material version as it authorizes the attempt. If the binding
-   was withdrawn after resolution, the sender receives no permit. An acknowledged
-   permit lets it start this exact request within the recorded deadline.
-4. **Release repository identity.** The sender holds GitHub's complete response.
-   The adapter requires a `200` JSON response of at most 64 KiB with the admitted numeric ID
-   and matching repository name (ASCII letter case may differ). It returns `{"id":12345,"full_name":"acme/widgets"}`
-   in the admitted spelling, with `Content-Type: application/json` and
-   `Cache-Control: no-store`. A mismatch withholds the response. Other upstream
-   fields and headers stay outside the workload.
+Suppose the revision admits `github-app-metadata` for repository ID `12345`,
+`acme/widgets`, at `https://api.github.com`.
 
-The credential-free metadata profile uses the same request and response rules.
-It records `no_material_required` and adds no credential header.
-[GitHub metadata adapter](https://github.com/openclaw/openclaw-enterprise/blob/e573b7de03bafa2e84ea072d8c10cef7320575d4/apps/controller/src/drivers/egress-proxy/github-metadata.ts)
+1. **Match the request.** The supervisor binds the bodyless `GET /repos/acme/widgets`
+   reply to its exchange. The GitHub adapter checks method, URL, headers and body
+   against the installed route.
+2. **Resolve the token.** OCC checks installation, binding, withdrawal and current
+   `credential_source:operate`, selects a usable worker-prepared token, then returns
+   its `Authorization: Bearer …` header to the supervisor.
+3. **Permit one send.** On the same stream, OCC rechecks authority and the
+   token version. If the Agent lost its source grant after resolution, OCC
+   refuses the send. Otherwise, the supervisor can start the request by the
+   deadline in the permit. Issuing a permit does not confirm receipt by GitHub.
+4. **Release the identity.** The adapter checks GitHub's complete reply: `200` JSON,
+   at most 64 KiB, with the admitted ID and name (ASCII case may differ). The caller
+   receives `200`, `Content-Type: application/json`, `Cache-Control: no-store`
+   and only this body.
+
+```json
+{ "id": 12345, "full_name": "acme/widgets" }
+```
+
+For ID `67890` under the same name, the supervisor withholds the response
+although GitHub received the request. With the credential-free
+profile the same filters apply, but resolution records `no_material_required`
+and the supervisor sends no credential header.
+[GitHub metadata adapter](https://github.com/openclaw/openclaw-enterprise/blob/0418ef3a2c116b73f025281395d92477daf665d2/apps/controller/src/drivers/egress-proxy/github-metadata.ts)
 
 ```mermaid
 graph TD
-  A["Capture request and recipient"] --> B{"Exact route and current access?"}
-  B -- "denied" --> X["Refuse send"]
-  B -- "allowed" --> C["Resolve material or record none required"]
-  C --> D{"Commit fresh send authorization"}
-  D -- "withdrawn, duplicate or uncertain" --> X
-  D -- "acknowledged" --> E["Supervisor sends before deadline"]
-  E --> F{"Protect response on the same exchange"}
-  F -- "approved and live" --> G["Release approved bytes; delivery unconfirmed"]
-  F -- "unsafe, late or failed" --> H["Withhold response; provider effects may exist"]
+  A["<b>Resolve token</b><br/>Match route and access"] -->|Denied| X["Refuse before send"]
+  A -->|Header ready| B["<b>Authorize send</b><br/>Recheck grant and version"]
+  B -->|Denied| X
+  B -->|Permit| C["<b>Send GET</b><br/>Hold GitHub's reply"]
+  C --> D{"Valid identity<br/>and live caller?"}
+  D -->|Yes| G["Release ID and name"]
+  D -->|No| H["Withhold reply"]
 ```
-
-The diagram traces the source contract. Installed enforcement requires observing
-the actual transport, provider and workload.
 
 ## Execution Trace
 
@@ -133,14 +130,22 @@ repeat this sequence when work is queued. Default Kubernetes has no periodic mai
 interval, so Harness-only restart recovery is not automatic;
 see the [supported recovery boundary](../reference/credential-sources/protected-inference.md#installation-configuration).
 
+`openshell-git-installation.ts:observeOpenShellGitInstallation` completes a model
+OBSERVE per active environment for observed Git routes, including rotations.
+`ObservedHookPreview.completedModelReceipt` caches completion per environment revision.
+Stale or incomplete model receipts keep the route pending without changing the
+original launch witness or startup acknowledgment.
+
 ### 2. Capture identity, operation and first authority decision
 
 Each TLS stream carries one `HttpInstallationExchange.Exchange`. After bearer authentication,
-the adapter issues a random 32-byte challenge. Up to 1,024 openings await proof until signed
-acceptance, closure or a 30-second deadline. The owner rechecks the bearer and verifies both
-the gateway-signed `exchange_key` and the supervisor’s Ed25519 signature over
+the adapter issues a random 32-byte challenge. Up to 1,024 openings, 256 per Sandbox, await
+proof until signed acceptance, closure or a 30-second deadline. The owner rechecks the bearer
+and verifies both the gateway-signed `exchange_key` and the supervisor’s Ed25519 signature over
 `openshell-exchange-v1`, a zero byte, the challenge and the binary opening request.
-Request JSON cannot supply a key; bearer-only RPCs refuse.
+Request JSON cannot supply a key; bearer-only RPCs refuse. Online authorization
+(`apps/controller/src/drivers/egress-proxy/openshell-online-authority.ts:createAuthority`)
+likewise holds at most 1,024 decisions in flight, 256 per Sandbox.
 
 Before awaiting work, the adapter copies the request and binds a private capability to the stream.
 Credential Proxy bounds body size, reserves an authentication slot and snapshots headers and body.
@@ -243,12 +248,13 @@ stream. Recovery can renew before expiry. A shorter authenticated peer lifetime 
 and held responses despite later progress.
 Limits: five minutes idle, fifteen minutes total, 4 MiB and 16,384 events.
 
-For Responses, check client-assembled SDK output-part snapshots, assistant text across
-parts, items or deltas, and Codex's completed and streamed Plan views. Reject ambiguous
-order or indexes. Inspect function arguments as bounded JSON without recursively
-decoding strings. The
+`openai-responses.ts:isResponsesEvent` validates Responses envelopes, including
+response-only null local-tool metadata and the optional effective image policy.
+Invalid or unknown fields withhold all bytes. Protection scans SDK snapshots,
+joined assistant text and completed/streamed Codex Plans; ambiguous order or indexes
+refuse. Function arguments parse once as bounded JSON. The
 [supported profile](../reference/credential-sources/protected-inference.md#static-source-and-response-policy)
-preserves safe response bytes. The origin has already received the credential.
+preserves safe bytes. The origin already received the credential.
 
 Only this exchange can claim the response. `EgressSendReceipts.observe` atomically records
 the decision and any exact rejection fence without bodies, headers, credentials or handles.
@@ -265,11 +271,15 @@ exact attempt without retrying; returning bytes does not prove delivery.
 
 ### 5. Configure the regular Harness caller
 
-Before credential access, the provider normalizes the nonsecret endpoint and classifies
-the actual request. `apps/controller/src/drivers/compute/plugin-runtime.ts:codexToml` keeps local tools and ordinary Harness components,
-disables provider tools, and uses HTTP Responses without WebSockets or automatic retries.
-The runtime manifest preserves this profile. Its `--ignore-user-config` probe sets request
-and stream retries to zero and never repeats a timed-out protected probe.
+`apps/controller/src/drivers/compute/plugin-runtime.ts:codexToml` keeps local tools,
+disables provider tools, and selects HTTP Responses without WebSockets or retries.
+Its `--ignore-user-config` probe disables
+request/stream retries and never repeats a timed-out protected probe.
+
+`apps/controller/src/drivers/egress-proxy/openai-provider.ts:createOpenAiStaticProvider`
+checks [request forms](../reference/credential-sources/protected-inference.md#static-source-and-response-policy)
+through `openai-responses.ts:validResponsesRequest` before Secret resolution.
+Inline developer tools keep the local-tool restrictions.
 
 ### 6. Reduce the live credential policy
 
@@ -331,6 +341,18 @@ None.
 
 ## Changelog
 
+- 2026-11-05 02:35: Refresh model observation after Git credential rotation. (authoring-run/cdb62c1d-61db-4f65-985f-7b44e64f10d0 - 261e4b54cbd0366ff0cba0dc6a00b7890b8e39f2)
+
+- 2026-11-04 08:59: Validate effective image policy in streamed response envelopes. (authoring-run/62d369a1-b693-49c9-badd-c92eeda35a6b - 54ad9dad2610ed99ab8ce8134fb03d3b10ed6be4)
+
+- 2026-11-04 05:11: Separate response metadata validation. (authoring-run/aa69859c-0fd2-4688-97b0-b99dbbd65f95 - b9741c28dacdd6012790be431b97872de6611969)
+
+- 2026-11-04 01:56: Trace inline tool validation. (authoring-run/c172d58e-be9c-43c1-a44d-7853dfb585af - fdca6e74421067adc66dce4f141d153af0355f68)
+
+- 2026-10-30 10:12: Retain guarded OpenShell 0.1.6 preview. (authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008 - 319e24a88facddd38a883bdfd5b226652d2a6e26)
+
 - 2026-10-27 16:00: Document provider pinning. (authoring-run/53dd6d74-5181-417f-934c-dd6c8ef6db2d - e2dfabf042852adea8ed797b48aae122927d6226)
+
+- 2026-10-27 10:54: Trace send authorization and response release for a repository metadata read. (authoring-run/2c5a77ee-7b17-4553-b360-486daa794f9a - 0418ef3a2c116b73f025281395d92477daf665d2)
 
 [Protected credential request documentation history](credential-source-egress/history.md) preserves the older dated entries.

@@ -8,6 +8,10 @@ import {
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
 import {
+  managedMcpCredentialBindings,
+  managedMcpInstalls,
+} from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
+import {
   codexCatalogEntries,
   codexOpenClawConfiguration,
   codexRuntimeArtifact,
@@ -181,6 +185,168 @@ test("OpenClaw Plugin Driver lists the vetted Diffs catalog entry", async () => 
     name: "Diffs",
     tools: [{ id: "diffs", name: "diffs", ownerId: "diffs" }],
   });
+});
+
+test("dedicated OpenClaw admits Google and Slack together and validates Slack's reviewed account binding", async () => {
+  const driver = new OCCPluginDriver();
+  const dedicated = context("dedicated");
+  const [google, slack] = await driver.listCatalog({
+    ...dedicated,
+    harness: { ...dedicated.harness, id: "openclaw" },
+  });
+  assert.equal(google.id, "occ-plugin:google@1.0.0");
+  assert.equal(slack.id, "occ-plugin:slack@1.0.0");
+  assert.equal(driver.policyCapabilities.policyScopeByPlugin[slack.id], "enablement_only");
+  assert.deepEqual((await driver.discoverCatalog({ q: "SLACK" })).plugins, [slack]);
+  driver.validatePolicies({ [slack.id]: { enabled: false } });
+  const slackPolicy = {
+    releaseSha256: managedMcpInstalls.find(({ id }) => id === slack.id).releaseSha256,
+    credentials: { account: "cs_slack" },
+  };
+  const selections = {
+    [google.id]: { enabled: true },
+    [slack.id]: { enabled: true, driverPolicy: slackPolicy },
+  };
+  driver.validatePolicies(selections);
+  assert.throws(
+    () =>
+      driver.validatePolicies({
+        [slack.id]: { enabled: true, driverPolicy: { credentials: { account: "cs_slack" } } },
+      }),
+    /Slack release has changed/,
+  );
+  driver.validatePolicies({
+    [slack.id]: {
+      enabled: true,
+      driverPolicy: { ...slackPolicy, toolNames: ["slack_search_public", "slack_send_message"] },
+    },
+  });
+  // Selections are literal upstream names. Globs and colliding aliases would broaden access.
+  for (const toolNames of [["slack_*"], ["Search", "search"], ["x".repeat(64)], null]) {
+    assert.throws(
+      () =>
+        driver.validatePolicies({
+          [slack.id]: { enabled: true, driverPolicy: { ...slackPolicy, toolNames } },
+        }),
+      /Select distinct literal Slack tool names/,
+    );
+  }
+  const source = {
+    id: "cs_slack",
+    name: "Slack test account",
+    namespaceId: "ns_test",
+    type: "bearer-token",
+    ownerCapability: "credential_gateway",
+    state: "ready",
+    secrets: { token: { kind: "secret", id: "sec_slack", namespaceId: "ns_test" } },
+    config: {
+      protocol: "mcp",
+      host: "mcp.slack.com",
+      port: "443",
+      path: "/mcp",
+      env_var: "SLACK_MCP_TOKEN",
+    },
+  };
+  const broaderRestSource = {
+    ...source,
+    id: "cs_rest",
+    config: { ...source.config, protocol: "rest" },
+  };
+  const slots = driver.credentials.choices([source, broaderRestSource]);
+  assert.deepEqual(slots.find(({ pluginId }) => pluginId === slack.id).sources, [
+    { id: source.id, name: source.name },
+  ]);
+  driver.credentials.validate(selections, [source]);
+  assert.throws(
+    () => driver.credentials.validate(selections, [{ ...broaderRestSource, id: source.id }]),
+    /Select a ready Slack account/,
+  );
+  const mixedPlacement = { ...selections, ...occSelection() };
+  driver.validatePolicies(mixedPlacement);
+  assert.throws(
+    () =>
+      driver.validatePlacement(
+        mixedPlacement,
+        { id: "openclaw", mode: "dedicated" },
+        "occ/kubernetes",
+      ),
+    /Select occ-plugin:diffs on an embedded OpenClaw Agent. Use a dedicated OpenClaw Agent for Google Workspace, Slack/,
+  );
+  assert.throws(
+    () =>
+      driver.validatePolicies({
+        ...selections,
+        ...occSelection({ tools: { unknown: { enabled: true } } }),
+      }),
+    { name: "PluginPolicyValidationError" },
+  );
+  assert.throws(
+    () =>
+      driver.validatePolicies({
+        ...selections,
+        [slack.id]: { enabled: true, credentialSourceId: "src_personal" },
+      }),
+    /Slack package supports enablement and an optional credential slot/,
+  );
+});
+
+test("managed MCP bindings preserve both servers' credentials and require unambiguous runtime names", () => {
+  const [first] = managedMcpInstalls;
+  const second = {
+    ...first,
+    id: "occ-plugin:team@1.0.0",
+    runtimeName: "team",
+    server: first.server + "_team",
+    url: "https://team.example.test/mcp",
+    endpoint: { ...first.endpoint, host: "team.example.test" },
+    credentialEnvironment: "TEAM_MCP_TOKEN",
+  };
+  const installs = [first, second];
+  const select = (install, sourceId, tool) => ({
+    enabled: true,
+    driverPolicy: {
+      releaseSha256: install.releaseSha256,
+      credentials: { [install.slotId]: sourceId },
+      toolNames: [tool],
+    },
+  });
+  const selections = {
+    [first.id]: select(first, "cs_first", "team_read"),
+    [second.id]: select(second, "cs_second", "write"),
+  };
+  assert.deepEqual(
+    managedMcpCredentialBindings(selections, installs).map(({ install, sourceId, toolNames }) => [
+      install.id,
+      sourceId,
+      toolNames,
+    ]),
+    [
+      [first.id, "cs_first", ["team_read"]],
+      [second.id, "cs_second", ["write"]],
+    ],
+  );
+  assert.throws(
+    () =>
+      managedMcpCredentialBindings(
+        {
+          ...selections,
+          [second.id]: select(second, "cs_second", "READ"),
+        },
+        installs,
+      ),
+    /same Gateway name/,
+  );
+  assert.throws(
+    () =>
+      managedMcpCredentialBindings(
+        {
+          [first.id]: { enabled: true },
+          [second.id]: { enabled: true },
+        },
+        [first, { ...second, server: first.server }],
+      ),
+    /same worker server name/,
+  );
 });
 
 test("OpenClaw plugin startup translation renders native install and enablement", () => {
@@ -908,10 +1074,16 @@ test("Hardcoded OpenAI catalog returns curated details without provider requests
     }
   }
   assert.deepEqual(await driver.listCatalog(context("dedicated")), page.plugins);
-  // The curated catalog is a single page with fixed IDs; anything else is an invalid response.
-  const invalidResponse = { name: "PluginDiscoveryError", reason: "invalid_response" };
-  await assert.rejects(driver.discoverCatalog({ cursor: "invalid" }), invalidResponse);
-  await assert.rejects(driver.getCatalogPlugin({ pluginId: "invalid" }), invalidResponse);
+  // The curated catalog is a single page with fixed IDs: a cursor is an invalid response, and
+  // an unknown ID is the caller's error (finding 2790).
+  await assert.rejects(driver.discoverCatalog({ cursor: "invalid" }), {
+    name: "PluginDiscoveryError",
+    reason: "invalid_response",
+  });
+  await assert.rejects(driver.getCatalogPlugin({ pluginId: "invalid" }), {
+    name: "PluginPolicyValidationError",
+    pluginId: "invalid",
+  });
   assert.deepEqual(requests, []);
 });
 

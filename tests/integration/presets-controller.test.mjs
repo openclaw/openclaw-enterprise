@@ -4,7 +4,10 @@ import { fileURLToPath } from "node:url";
 import { after, describe, test } from "node:test";
 
 import { initializeInstallationPresets } from "../../apps/controller/src/composition/installation-config.ts";
-import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import {
+  OCCPluginDriver,
+  CodexPluginDriver,
+} from "../../apps/controller/src/drivers/plugin/index.ts";
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { emitOccLogEvent } from "../../apps/controller/src/logging.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
@@ -22,7 +25,7 @@ import {
 import { assertApiError } from "../helpers/api-error.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
+import { bindRole, grantRole, restrict } from "../helpers/iam-grants.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { loadInstallationFile } from "../helpers/installation-file.mjs";
 import {
@@ -30,7 +33,12 @@ import {
   partialWrite,
 } from "../helpers/partial-write-authorization.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
-import { callerDenied, createDenied } from "../helpers/refusal-text.mjs";
+import {
+  callerDenied,
+  createDenied,
+  PRESET_NAME_CONFLICT,
+  unsupportedChannelRefusal,
+} from "../helpers/refusal-text.mjs";
 
 async function createFixture(t, options = {}) {
   const root = await temporaryDirectory(t, "occ-presets-");
@@ -308,11 +316,7 @@ describe("Presets", { concurrency: 2 }, () => {
     ]) {
       const conflict = await fixture.request(method, path, { body });
       assertApiError(conflict, 409, "RESOURCE_CONFLICT", method);
-      assert.equal(
-        conflict.body.error.message,
-        "A Preset with this name already exists in this Namespace. Choose a different name.",
-        method,
-      );
+      assert.equal(conflict.body.error.message, PRESET_NAME_CONFLICT, method);
     }
 
     const limited = await fixture.createAccountWithPolicy("preset-reader", (principal) => {
@@ -827,7 +831,7 @@ describe("Presets", { concurrency: 2 }, () => {
             values: { ...openaiModel, channels: { discord: { enabled: true } } },
           },
         },
-        "Configuration setting channels.discord is not a supported channel: use slack or msteams, or set its enabled to false.",
+        unsupportedChannelRefusal("channels.discord"),
       ],
       [
         {
@@ -882,9 +886,7 @@ describe("Presets", { concurrency: 2 }, () => {
     });
     assert.deepEqual(unplugged.template.agent.pluginApprovers, [{ channel: "teams", id: "U123" }]);
     await deletePreset(fixture, namespace.id, unplugged.id);
-    const pluginDriver = new OCCPluginDriver();
-    fixture.controller.registerDriver(pluginDriver);
-    fixture.controller.selectDriver("plugin", pluginDriver.id);
+    fixture.controller.installPluginDrivers([new OCCPluginDriver(), new CodexPluginDriver()]);
     const cases = [
       [
         { agent: { executionMode: "turbo" } },
@@ -1752,12 +1754,9 @@ describe("Presets", { concurrency: 2 }, () => {
     const frozen = await staleCopy("Frozen presets");
     const open = await staleCopy("Open presets");
     // An administrator froze one Namespace's Presets before the upgrade.
-    fixture.policy.restrictions.push({
+    restrict(fixture.policy, "update", "preset", {
       id: "freeze-presets",
       namespaceId: frozen.namespace.id,
-      action: "update",
-      resourceKind: "preset",
-      effect: "deny",
     });
     const { lines, emit } = captureLog();
     const refreshes = () => auditFrom(fixture, "installation-defaults-refresh");
@@ -1837,12 +1836,9 @@ describe("Presets", { concurrency: 2 }, () => {
     };
     // An operator removed one default copy, then froze the Namespace's Presets.
     const frozen = await missingDefault("Frozen presets");
-    fixture.policy.restrictions.push({
+    restrict(fixture.policy, "create", "preset", {
       id: "freeze-preset-creation",
       namespaceId: frozen.id,
-      action: "create",
-      resourceKind: "preset",
-      effect: "deny",
     });
     // Another Namespace is missing the same default and may still receive it.
     const open = await missingDefault("Open presets");

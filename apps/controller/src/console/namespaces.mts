@@ -5,12 +5,14 @@ import {
   dismissOnBackdrop,
   element,
   field,
+  setUnavailable,
   statusBlock,
   validateFields,
   requestIdLine,
 } from "./dom.mjs";
 import type { createNavigation } from "./navigation.mjs";
-import { describeFailure, explainedConflict } from "./agents/list.mjs";
+import { describeFailure, displayDate, explainedConflict } from "./agents/list.mjs";
+import { createNamespaceDeletion } from "./namespace-deletion.mjs";
 import {
   ASK_INSTALLATION_ADMINISTRATOR,
   askAdministratorTo,
@@ -72,14 +74,18 @@ export function renderNamespaces(
     installationAdmin: boolean | null;
     fromRefresh: boolean;
     reload(): Promise<void>;
+    pageUrl: ReturnType<typeof createNavigation>["pageUrl"];
+    sorted(items: readonly Namespace[]): Namespace[];
+    onRemoved(namespace: Namespace): void;
+    onResume?(handler: () => void): void;
   },
   items: readonly Namespace[],
-  renderRows: (view: HTMLElement, feature: "namespaces", items: readonly Namespace[]) => void,
 ) {
   if (context.fromRefresh) {
     createRefusedFor = null;
   }
   const collection = element("div");
+  const outcome = element("div", { className: "namespace-deletion-outcome", tabindex: "-1" });
   const refused = createRefusedFor !== null && createRefusedFor === context.operatorId;
   // A person who does not administer the Installation may still hold a Namespace create grant,
   // so Create Namespace stays available to them, but not as the page's filled primary action or
@@ -96,12 +102,12 @@ export function renderNamespaces(
   );
   const emptyText = element("p");
   // The API refused this person's creation: the control says so instead of offering another
-  // attempt that it would refuse again.
+  // attempt that it would refuse again. It stays in the Tab order, described by the refusal (class
+  // of finding 2899).
   function showRefused() {
     create.classList.remove("button", "button--primary");
-    create.disabled = true;
-    create.setAttribute("aria-describedby", refusal.id);
     collection.before(refusal);
+    setUnavailable(create, true, refusal);
     emptyText.textContent = askAdministratorTo(
       "create a Namespace or to give you access to an existing one",
     );
@@ -125,10 +131,103 @@ export function renderNamespaces(
       ),
       create,
     ),
+    outcome,
     collection,
   );
   if (items.length) {
-    renderRows(collection, "namespaces", items);
+    const list = element("ul", { className: "collection", "aria-label": "Namespaces" });
+    for (const item of context.sorted(items)) {
+      const statuses = {
+        ready: { label: "Ready", tone: "success" },
+        provisioning: { label: "Provisioning", tone: "warning" },
+        deleting: { label: "Deleting…", tone: "warning" },
+        failed: { label: "Failed", tone: "danger" },
+      };
+      const badge = element("span", { className: "badge" });
+      const setStatus = (status: Namespace["status"]) => {
+        badge.textContent = statuses[status].label;
+        badge.dataset.tone = statuses[status].tone;
+      };
+      setStatus(item.status);
+      const name = element("a", { href: context.pageUrl("agents", item.id) }, item.name ?? item.id);
+      name.dataset.returnFocusHref = name.href;
+      name.addEventListener("click", (event) => {
+        if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+          return;
+        }
+        event.preventDefault();
+        context.navigate("agents", item.id);
+      });
+      const row = element("li", { className: "resource-linked namespace-row" });
+      const deletion = createNamespaceDeletion(
+        {
+          ...context,
+          statusChanged: setStatus,
+          onRemoved(namespace, refocus) {
+            // The check Refresh requested disabled it while it read, which dropped focus to the
+            // page; focus left there goes to the outcome too.
+            const active = document.activeElement;
+            const focused =
+              row.contains(active) || (refocus && (!active || active === document.body));
+            row.remove();
+            context.onRemoved(namespace);
+            outcome.replaceChildren(
+              statusBlock(
+                "success",
+                null,
+                `${namespace.name ?? namespace.id} was deleted. Its name remains reserved.`,
+              ),
+            );
+            if (!list.children.length) {
+              collection.replaceChildren(
+                element(
+                  "section",
+                  { className: "state-panel" },
+                  element("h2", {}, NO_READABLE_NAMESPACES),
+                  emptyText,
+                ),
+              );
+            }
+            if (focused) {
+              outcome.focus();
+            }
+          },
+        },
+        item,
+      );
+      row.append(
+        element(
+          "div",
+          { className: "namespace-cell-name" },
+          element("p", { className: "resource-name" }, name),
+          element("span", { className: "resource-id" }, item.id),
+        ),
+        element("span", { className: "namespace-cell-status" }, badge),
+        element(
+          "span",
+          { className: "namespace-cell-created" },
+          element("span", { className: "namespace-cell-label" }, "Created "),
+          item.createdAt ? displayDate(item.createdAt) : "Unknown",
+        ),
+        deletion.actions,
+        deletion.feedback,
+      );
+      list.append(row);
+    }
+    collection.append(
+      element(
+        "div",
+        { className: "resource-list namespace-table" },
+        element(
+          "div",
+          { className: "resource-list-header namespace-table-head", "aria-hidden": "true" },
+          ...["Namespace", "Status", "Created", "Actions"].map((label) =>
+            element("span", {}, label),
+          ),
+        ),
+        list,
+      ),
+    );
   } else {
     collection.append(
       element(
@@ -208,7 +307,7 @@ export function renderNamespaces(
         // Announced once, as the answer to this attempt; a later render shows it as page text.
         refusal.setAttribute("role", "status");
         showRefused();
-        // The opener the dialog returned focus to is disabled now; focus the reason instead.
+        // The opener the dialog returned focus to is unavailable now; focus the reason instead.
         refusal.tabIndex = -1;
         refusal.focus();
         return;
@@ -368,16 +467,21 @@ export function renderNamespaces(
         // 2102).
         const requestId =
           (unknown || forbidden) && error.requestId ? [requestIdLine(error.requestId)] : [];
+        let refusal: HTMLElement | null = null;
         if (error.status === 400) {
           // The name is the only field: mark it invalid with the refusal linked to it, until
           // it is edited (finding 2046).
           feedback.replaceChildren(...requestId);
           name.setCustomValidity(message);
         } else {
-          feedback.replaceChildren(statusBlock("danger", null, message), ...requestId);
+          refusal = statusBlock("danger", null, message, [], { id: "create-namespace-refusal" });
+          feedback.replaceChildren(refusal, ...requestId);
         }
-        name.disabled = unknown || forbidden;
-        submit.disabled = unknown || forbidden;
+        // A refused or unconfirmed creation leaves the name and Create Namespace in the Tab
+        // order, described by the alert that says why (finding 2935); focus moves to Cancel.
+        for (const control of [name, submit]) {
+          setUnavailable(control, unknown || forbidden, refusal);
+        }
         submit.textContent = "Create Namespace";
         cancel.disabled = false;
         cancel.textContent = unknown ? "Check Namespaces" : "Cancel";

@@ -99,14 +99,46 @@ Omit empty or irrelevant sections. Split independently useful topics when a page
 mixes too many reader tasks. Keep the root documentation map and affected links
 current, following repository page ownership and length limits.
 
-## Driver contracts
+## Frontmatter and tags
 
-When writing or rewriting a base Driver contract, read and follow the
-[Driver contract template](./references/driver-contracts.md). Use its eight
-sections: Overview, Interface, IAM, Lifecycle, Limits, Troubleshooting,
-Implementations, and Related. Keep concrete backend setup and behavior in
-implementation pages; the template takes precedence over the generic option to
-omit sections.
+Use YAML frontmatter for page metadata. Read [Frontmatter and tags](./references/frontmatter-and-tags.md)
+for supported fields, values, and their owners before adding or changing metadata.
+Write `tags` as a list of strings. The `nolimit` tag exempts its page from both
+word-count thresholds while retaining count reporting; apply it only with the
+human approval required by `AGENTS.md`. Add `human_verified` to the tags only
+when a human has verified the document, for example `tags: [human_verified]`.
+Keep verification status in the tag and record the human review date in
+`last_verified` (`YYYY-MM-DD`). Update that date only after another human review.
+Preserve existing tags and metadata.
+Change generated frontmatter through its generator. Snippet tags do not exempt
+pages that include the snippet.
+
+## Templates for specific document types
+
+Use the Markdown frontmatter field `kind` to select a template from the
+[documentation taxonomy](../../../docs/taxonomy.md). Copy the template for a new
+page. When updating an existing page, preserve its links and heading anchors.
+
+| Kind                    | Use it for                                                                    | Template                                                            |
+| ----------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `reference/ci`          | One test workflow's triggers, scenarios, execution, and result limits         | [CI check Markdown](./assets/reference-ci.md)                       |
+| `reference/driver`      | The shared contract for one Driver capability                                 | [Driver contract Markdown](./assets/reference-driver.md)            |
+| `reference/driver/impl` | One Driver implementation's provisioning, configuration, and operating limits | [Driver implementation Markdown](./assets/reference-driver-impl.md) |
+
+For a test workflow detail page, use `kind: reference/ci` and keep the template's six
+sections in order: Overview, Trigger, Scenarios, Execution, Results and limits,
+and Files. Follow the [CI authoring guidance](../../../docs/contributing/ci-check-template.md)
+for scenario descriptions, descriptive names, and exact GitHub job mappings.
+Keep shared setup in its owning guide and preserve existing heading anchors.
+Publication-only workflows, preview builds, cache maintenance, and security
+scanning belong in their owning contributor or release guides, not this template.
+
+For a Driver contract, keep the template's sections in order and use the
+[Driver authoring guidance](./references/driver-contracts.md) to check coverage.
+Keep the template's contents list below the title and update its links with the page.
+Put implementation-specific setup and settings in the linked implementation page.
+When adding a template, add its kind, selection criteria, and asset link to this
+table and the documentation taxonomy in the same change.
 
 ## Make examples usable
 

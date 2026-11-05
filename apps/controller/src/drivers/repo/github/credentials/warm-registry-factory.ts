@@ -2,10 +2,10 @@ import type { PreparedGitHubPullScope } from "@openclaw-enterprise/contracts";
 import type {
   RequestPlan,
   PreparedRepositoryBackend,
-  PreparedRepositoryBackendFactory,
+  BoundPreparedRepositoryBackendFactory,
   ResolvedGrant,
 } from "../../credentials/backend-contracts.ts";
-import { sameBinding } from "../../credentials/sessions.ts";
+import { sameBinding } from "../../credentials/grant-identity.ts";
 import { githubProviderOrigin } from "./origin.ts";
 import { createGatewayAuthentication } from "./gateway-authentication.ts";
 import { resolveGitHubRepositoryBinding, validateGitHubRepositoryRegistry } from "./registry.ts";
@@ -26,7 +26,7 @@ type Options = Pick<GitHubFactoryOptions, "clock" | "limits" | "gatewayOrigin"> 
 /** Each exchange requires prepared material. Only an explicit draft grant adds the bounded create operation. */
 export function createPreparedGitHubRegistryFactory(
   options: Options,
-): PreparedRepositoryBackendFactory & { trustedUpstreamOrigins: ReadonlySet<string> } {
+): BoundPreparedRepositoryBackendFactory & { trustedUpstreamOrigins: ReadonlySet<string> } {
   const registry = validateGitHubRepositoryRegistry(options.registry);
   const { socketPath, clock, limits } = options;
   const gitOrigin = githubProviderOrigin(options.gitOrigin ?? "https://github.com");
@@ -86,7 +86,7 @@ export function createPreparedGitHubRegistryFactory(
   );
   const selections = new WeakMap<ResolvedGrant, (typeof entries)[number]>();
   return Object.freeze<
-    PreparedRepositoryBackendFactory & { trustedUpstreamOrigins: ReadonlySet<string> }
+    BoundPreparedRepositoryBackendFactory & { trustedUpstreamOrigins: ReadonlySet<string> }
   >({
     trustedUpstreamOrigins: new Set([
       gitOrigin,
@@ -95,9 +95,6 @@ export function createPreparedGitHubRegistryFactory(
     ...createGatewayAuthentication({
       isGitRoute: (head) => entries.some(({ route }) => !!route.route(head)),
     }),
-    resolve() {
-      throw new Error("BOUND_SESSION_REQUIRED");
-    },
     resolveBound(input) {
       const matches = entries.filter(
         ({ grant, namespaceId, repositoryRef, profile }) =>

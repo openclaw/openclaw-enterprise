@@ -1,3 +1,7 @@
+import {
+  openCreateSecretDialog,
+  createAgentThroughForm,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -17,9 +21,8 @@ import {
   setSlackSelection,
   waitForEnabled,
   isMaskedSecretValue,
-} from "./console-agents-browser-helpers.mjs";
-import { openCreateSecretDialog, createAgentThroughForm } from "./console-agents-test-support.mjs";
-import { expectDeploymentOutcome } from "./console-deployment-activity-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+import { expectDeploymentOutcome } from "./console-deployment-activity-helpers.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
 function assertChannelOnlySlackAccess(configuration: unknown) {
@@ -216,9 +219,9 @@ for (const issuesEnabled of [true, false]) {
     assert.equal(status, "queued");
     await expectDeploymentOutcome(page, "Queued");
     await page.getByRole("tab", { name: "Configuration", exact: true }).click();
-    await page
-      .getByRole("heading", { name: `Version v${revision.revision}`, exact: true })
-      .waitFor();
+    const version = page.getByRole("combobox", { name: "Viewing version", exact: true });
+    await version.waitFor();
+    assert.equal(await version.inputValue(), revision.id);
     await page
       .getByText(`application · ${label}, documentation · ${label}`, { exact: true })
       .waitFor();

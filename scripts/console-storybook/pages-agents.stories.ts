@@ -44,6 +44,8 @@ export const NamespaceLeavesList = {
   ...story("agentsNamespaceMissing"),
   name: "Namespace leaves the list while provisioning",
 };
+export const PopulatedNamespaceLeavesList = story("agentsNamespaceMissingPopulated");
+
 export const AgentsDenied = { ...story("agentsDenied"), name: "Access denied" };
 export const AgentsError = { ...story("agentsError"), name: "Read failure" };
 export const AgentsInterruptedResponse = {
@@ -57,7 +59,13 @@ export const RowStopped = story("agentsRowStopped");
 export const RowDeleteConfirmation = story("agentsRowDeleteConfirm");
 export const RowStopDenied = story("agentsRowStopDenied");
 export const RowDeleteDenied = story("agentsRowDeleteDenied");
+export const RowDeleteRefusedOther = story("agentsRowDeleteRefusedOther");
+export const RowRefocusDeleting = story("agentsRowRefocusDeleting");
+export const RowRefocusStopped = story("agentsRowRefocusStopped");
 export const RowStopUnknown = story("agentsRowStopUnknown");
+export const RowStopPermissionDuringConfirmation = story(
+  "agentsRowStopPermissionDuringConfirmation",
+);
 export const RowRestricted = story("agentsRowRestricted");
 
 export const LatestDeploymentFailed = story("agentsDeploymentFailed");
@@ -65,8 +73,14 @@ export const LatestDeploymentDenied = story("agentsDeploymentDenied");
 export const LatestDeploymentLoading = story("agentsDeploymentLoading");
 export const CurrentVersionOlder = story("agentsCurrentVersionOlder");
 export const CurrentVersionDenied = story("agentsCurrentVersionDenied");
+export const CurrentVersionHidden = story("agentsCurrentVersionHidden");
 export const ReturnWhileDeploymentsLoad = {
   ...story("agentsReturnWhileDeploymentsLoad"),
   name: "Return while deployments load",
 };
 export const LatestDeploymentUnavailable = story("agentsDeploymentError");
+
+export const NamespaceLossWithStopDialog = story("agentsNamespaceMissingStopDialog");
+export const NamespaceLossWithDeleteDialog = story("agentsNamespaceMissingDeleteDialog");
+
+export const NamespaceLossBeforeStopResponse = story("agentsNamespaceMissingLateStop");

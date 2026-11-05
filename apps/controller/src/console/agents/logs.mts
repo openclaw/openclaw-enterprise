@@ -1,25 +1,34 @@
 import type {
   AgentRuntimeDescription,
-  AgentRuntimeLogPageWire,
   AgentRuntimeLogSource,
   RuntimeLogLevel,
-  RuntimeLogRecord,
   RuntimeLogSourceId,
   RuntimeLogStream,
 } from "@openclaw-enterprise/contracts";
-import { type RequestOptions, requestFailure } from "../api-client.mjs";
+import { type RequestOptions, requestFailure, responseFields } from "../api-client.mjs";
 import {
   button,
-  describeDisabled,
   element,
   replaceChildrenIfChanged,
   setText,
+  setUnavailable,
   statusBlock,
   withRequestId,
 } from "../dom.mjs";
-import { LOG_TEXT_DENIED, runtimeStatusDenied } from "./access-reasons.mjs";
+import {
+  LOG_TEXT_DENIED,
+  RUNTIME_STATUS_VERSION_UNREADABLE,
+  runtimeStatusDenied,
+} from "./access-reasons.mjs";
 import { displayDate, namespacePath, retryAfterText } from "./list.mjs";
-import { fitLogTimeColumn, SOURCE_LABELS, podCard, recordRow, visibleText } from "./logs-view.mjs";
+import {
+  type LogRecordView,
+  fitLogTimeColumn,
+  SOURCE_LABELS,
+  podCard,
+  recordRow,
+  visibleText,
+} from "./logs-view.mjs";
 
 interface AgentLogsContext {
   namespaceId: string;
@@ -49,6 +58,9 @@ interface AgentLogsOptions {
   onLogsDenied?(): void;
   // A read was refused after the same read succeeded: the caller's access changed.
   onAccessChanged?(): void;
+  // Rereads the Agent while this version has no running Pod. Answers another version selected
+  // for service while the Agent runs, with a link to its Logs, or null.
+  runningVersion?(): Promise<{ label: string; link: HTMLElement } | null>;
 }
 
 // A reader without operate can read logs without observing a Pod or status timestamp.
@@ -60,6 +72,11 @@ const STATUS_POLL_MS = 10_000;
 const FOLLOW_POLL_MS = 2_000;
 const MAX_ROWS = 5_000;
 const TAIL_LINES = 200;
+// The output status for a selection with no running Pod. It is also why the log controls that
+// read output are unavailable then (finding 2929).
+const NO_POD_STATUS = "This version has no running Pod for this source.";
+// Why Previous instance is unavailable for a container that has never restarted (finding 2944).
+const NO_PREVIOUS_INSTANCE = "This container has not restarted, so there is no previous instance.";
 // The longest the Logs view keeps its strip and output back for their first reads.
 const FIRST_VIEW_WAIT_MS = 2_000;
 // A 403 is audited; remember it for this sign-in instead of re-asking every poll or every
@@ -111,6 +128,104 @@ const STATUS_ACCESS_CHANGED =
   "Your access to this Agent changed, so its runtime status is no longer shown. Refresh to check your access, or ask an Installation administrator.";
 
 const LEVELS = ["error", "warn", "info", "debug", "unknown"] satisfies RuntimeLogLevel[];
+
+// Project only the stream fields this view consumes, not the complete wire identity.
+type LogStreamView = {
+  [Key in "source" | "pod" | "container" | "sandbox" | "restartCount"]: RuntimeLogStream[Key];
+};
+
+function logStream(value: unknown): LogStreamView | null {
+  if (value === null) {
+    return null;
+  }
+  const { source, pod, container, sandbox, restartCount } = responseFields(value);
+  if (
+    (source !== "gateway" && source !== "agent" && source !== "sandbox") ||
+    (pod !== undefined && typeof pod !== "string") ||
+    (container !== undefined && typeof container !== "string") ||
+    (sandbox !== undefined && typeof sandbox !== "string") ||
+    (restartCount !== undefined && !logCount(restartCount))
+  ) {
+    throw new Error("Invalid log stream.");
+  }
+  return { source, pod, container, sandbox, restartCount };
+}
+
+function logCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function logFields(value: unknown): value is Readonly<Record<string, string | number | boolean>> {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Object.values(value).every(
+      (field: unknown) =>
+        typeof field === "string" ||
+        typeof field === "boolean" ||
+        (typeof field === "number" && Number.isFinite(field)),
+    )
+  );
+}
+
+function logRecord(value: unknown): LogRecordView {
+  const record = responseFields(value);
+  if (record.type === "gap") {
+    const { reason, remedy } = record;
+    if (typeof reason !== "string" || typeof remedy !== "string") {
+      throw new Error("Invalid log gap.");
+    }
+    const { source } = responseFields(record.stream);
+    if (source !== undefined && typeof source !== "string") {
+      throw new Error("Invalid log gap source.");
+    }
+    return { type: "gap", reason, remedy, stream: source === undefined ? null : { source } };
+  }
+  if (record.type === "withheld") {
+    const { count, reason } = record;
+    if (!logCount(count) || typeof reason !== "string") {
+      throw new Error("Invalid withheld log count.");
+    }
+    return { type: "withheld", count, reason };
+  }
+  const { time, kind, level, message, subsystem, fields } = record;
+  if (
+    record.type !== "line" ||
+    (time !== null && typeof time !== "string") ||
+    typeof kind !== "string" ||
+    typeof level !== "string" ||
+    typeof message !== "string" ||
+    (subsystem !== undefined && typeof subsystem !== "string") ||
+    (fields !== undefined && !logFields(fields))
+  ) {
+    throw new Error("Invalid log line.");
+  }
+  return { type: "line", time, kind, level, message, subsystem, fields };
+}
+
+function logPage(value: unknown) {
+  const { records, cursor, stream, withheld } = responseFields(value);
+  if (
+    !Array.isArray(records) ||
+    (cursor !== null && typeof cursor !== "string") ||
+    !logCount(withheld)
+  ) {
+    throw new Error("Invalid log page.");
+  }
+  const shownStream = logStream(stream);
+  const entries: readonly unknown[] = records;
+  const projected = entries.map(logRecord);
+  // Finish rendering off-DOM before any state is committed. A later bad entry or render
+  // failure must not replace retained output, append a partial page, or advance its cursor.
+  return {
+    cursor,
+    stream: shownStream,
+    withheld,
+    hasLine: projected.some(({ type }) => type === "line"),
+    rows: projected.map(recordRow),
+  };
+}
 
 function runtimeErrorText(
   error: RequestFailure,
@@ -203,6 +318,7 @@ export function renderAgentLogs(
     versionRead = Promise.resolve(undefined),
     onLogsDenied = () => {},
     onAccessChanged = () => {},
+    runningVersion = () => Promise.resolve(null),
   }: AgentLogsOptions,
 ) {
   const base = `${namespacePath(context.namespaceId)}/agents/${encodeURIComponent(agent.id)}/deployments/${encodeURIComponent(revisionId)}/runtime`;
@@ -249,6 +365,81 @@ export function renderAgentLogs(
   const stripStatus = element("span", { role: "status" }, "Loading runtime status…");
   const stripObserved = element("span", { "aria-live": "off" });
   const stripLine = element("p", { className: "muted" }, stripStatus, stripObserved);
+  // Names the version selected for service when this one has no running Pod: after a stop and
+  // redeploy the view stayed on the stopped version with no hint (finding 2975). A version
+  // picked on purpose stays selected; the notice only links to the other version's Logs.
+  const runningVersionNotice = element("div", {
+    className: "log-running-version",
+    role: "status",
+  });
+  let runningVersionShown: string | null = null;
+  let runningVersionReads = 0;
+  async function showRunningVersion(noPod: boolean) {
+    const ticket = ++runningVersionReads;
+    const answer = noPod ? await runningVersion().catch(() => null) : null;
+    if (!current() || ticket !== runningVersionReads) {
+      return;
+    }
+    const label = answer?.label ?? null;
+    if (label === runningVersionShown) {
+      return;
+    }
+    runningVersionShown = label;
+    runningVersionNotice.replaceChildren(
+      ...(answer
+        ? [
+            statusBlock("info", null, `${answer.label} is selected for service.`, [answer.link], {
+              role: null,
+            }),
+          ]
+        : []),
+    );
+  }
+  // The latest deployment's failure, from the Agent page's recovery card. That card sits above
+  // the tabs, about 700 px above this view at phone width, so a redeploy from elsewhere that
+  // failed while Logs stayed open said nothing here (finding 2993). It is drawn in place, without
+  // moving focus or scrolling, and only when it changes, so a reader on its link keeps focus.
+  const deploymentFailureNotice = element("div", {
+    className: "log-deployment-failure",
+    role: "status",
+  });
+  let deploymentFailureShown: string | null = null;
+  function showDeploymentFailure(
+    failure: { revisionId: string; text: string; link: HTMLElement } | null,
+  ) {
+    const key = failure ? JSON.stringify([failure.revisionId, failure.text]) : null;
+    if (!current() || key === deploymentFailureShown) {
+      return;
+    }
+    deploymentFailureShown = key;
+    deploymentFailureNotice.replaceChildren(
+      ...(failure
+        ? [statusBlock("danger", null, failure.text, [failure.link], { role: null })]
+        : []),
+    );
+  }
+  // A stop, or another version selected for service, from the Agent page. A version the reader
+  // cannot read gets no runtime status, so a stop made elsewhere showed only in the page summary,
+  // off-screen above this view at phone width (finding 3012). The words come from the summary and
+  // say nothing more about the version. Drawn in place and only when they change, so the status
+  // is announced once, not on every poll.
+  const servingChangeNotice = element("div", {
+    className: "log-serving-change",
+    role: "status",
+  });
+  let servingChangeShown: string | null = null;
+  function showServingChange(text: string | null) {
+    void versionRead.then((readable) => {
+      const shown = readable === false ? text : null;
+      if (!current() || shown === servingChangeShown) {
+        return;
+      }
+      servingChangeShown = shown;
+      servingChangeNotice.replaceChildren(
+        ...(shown ? [statusBlock("info", null, shown, [], { role: null })] : []),
+      );
+    });
+  }
   function showStripStatus(text: string) {
     setText(stripObserved, "");
     stripStatus.textContent = text;
@@ -267,6 +458,8 @@ export function renderAgentLogs(
     id: "runtime-log-previous",
     disabled: true,
   });
+  // Says why Previous instance is unavailable while the selected container has not restarted.
+  const previousHint = element("p", { className: "hint", hidden: true });
   // Off by default: the server returns info and above (and lines of unknown level),
   // so debug span records do not crowd a page out.
   const includeDebug = element("input", {
@@ -292,6 +485,12 @@ export function renderAgentLogs(
   // Status refreshes rebuild the picker enabled-state. A download still in flight
   // must stay disabled across those refreshes (issue 3387).
   let downloadPending = false;
+  // Whether each log control is unavailable; describeDeniedControls applies it.
+  const unavailable = new Map<HTMLButtonElement | HTMLInputElement | HTMLSelectElement, boolean>(
+    [sourceSelect, previous, includeDebug, followButton, refreshButton, downloadButton].map(
+      (control) => [control, true],
+    ),
+  );
   const hiddenLevels = new Set<string>();
   const levelChips = LEVELS.map((level) =>
     button(
@@ -382,7 +581,7 @@ export function renderAgentLogs(
   // Set once this view compared a status denial with a fresh permission answer, or had no
   // reason to; Back's check revalidates the page's answer after that.
   let permissionsAsked = false;
-  let lastStream: RuntimeLogStream | null = null;
+  let lastStream: LogStreamView | null = null;
 
   const current = () => context.isCurrent();
   // Runtime reads are live and audited: a view restored by Back resumes them instead of
@@ -461,17 +660,23 @@ export function renderAgentLogs(
   }
 
   // A refused log read disables every log control; each is described by the refusal that says
-  // why (finding D749).
+  // why (finding D749) and stays in the Tab order while it shows (finding 2899). So do the
+  // controls a selection with no running Pod leaves unavailable, described by the output status
+  // that says so (finding 2929).
   function describeDeniedControls() {
-    for (const control of [
-      sourceSelect,
-      previous,
-      includeDebug,
-      followButton,
-      refreshButton,
-      downloadButton,
-    ]) {
-      describeDisabled(control, logsDenied ? logError : null);
+    const noPod = !logsDenied && logStatus.textContent === NO_POD_STATUS;
+    for (const [control, off] of unavailable) {
+      setUnavailable(
+        control,
+        off,
+        logsDenied
+          ? logError
+          : noPod
+            ? logStatus
+            : control === previous && !previousHint.hidden
+              ? previousHint
+              : null,
+      );
     }
   }
 
@@ -606,25 +811,31 @@ export function renderAgentLogs(
       !harnessDown
         ? ""
         : harnessPods.length === 0
-          ? "The Agent (Harness) has no Pod yet. Gateway errors that fail to reach it, such as ECONNREFUSED, are a symptom: see Deployment activity for why it has not started."
+          ? "No current Agent (Harness) Pod was reported. Check Deployment activity for the latest status."
           : "The Agent (Harness) Pod is not ready. Gateway errors that fail to reach it, such as ECONNREFUSED, are a symptom: read the Agent (Harness) source for the cause.",
     );
     const pod = selectedPod();
-    const restarts = pod
-      ? pod.restartCount
-      : statusDenied && lastStream !== null && lastStream.source === source?.id
+    const streamRestarts =
+      statusDenied && lastStream !== null && lastStream.source === source?.id
         ? lastStream.restartCount
-        : 0;
-    previous.disabled = logsDenied || restarts === 0;
-    if (previous.disabled) {
+        : undefined;
+    const restarts = pod ? pod.restartCount : (streamRestarts ?? 0);
+    unavailable.set(previous, logsDenied || restarts === 0);
+    // A container known not to have restarted has no previous instance: the hint says so, and
+    // Previous instance stays in the Tab order, described by it (finding 2944). A restart
+    // enables it and hides the hint.
+    const knownRestarts = pod !== undefined || streamRestarts !== undefined;
+    previousHint.hidden = logsDenied || !knownRestarts || restarts > 0;
+    setText(previousHint, previousHint.hidden ? "" : NO_PREVIOUS_INSTANCE);
+    if (unavailable.get(previous)) {
       previous.checked = false;
     }
     const readable = !logsDenied && readableSelection();
-    sourceSelect.disabled = logsDenied || description.sources.length === 0;
-    includeDebug.disabled = logsDenied || description.sources.length === 0;
-    refreshButton.disabled = !readable;
-    downloadButton.disabled = downloadPending || !readable;
-    followButton.disabled = !readable || previous.checked;
+    unavailable.set(sourceSelect, logsDenied || description.sources.length === 0);
+    unavailable.set(includeDebug, logsDenied || description.sources.length === 0);
+    unavailable.set(refreshButton, !readable);
+    unavailable.set(downloadButton, downloadPending || !readable);
+    unavailable.set(followButton, !readable || previous.checked);
     describeDeniedControls();
   }
 
@@ -637,6 +848,7 @@ export function renderAgentLogs(
     statusDenied = true;
     description = unobservedDescription();
     strip.replaceChildren();
+    void showRunningVersion(false);
     renderPickers();
     if (first && !logsDenied) {
       firstLogRead = readLogs({ restart: true });
@@ -646,6 +858,23 @@ export function renderAgentLogs(
   // A status refusal names only the grants the caller's answers show missing (finding D753).
   async function statusDenial(operate: boolean | undefined) {
     return runtimeStatusDenied({ operate, versionRead: await versionRead });
+  }
+
+  // A remembered status denial is never asked again on a timer: each ask is an audited denial.
+  // Its view still rereads the Agent, which needs neither operate nor a version read: with no
+  // poll, a stop or redeploy made elsewhere showed only after a refocus (finding 3005). Two loads
+  // that both took the denial schedule one poll.
+  function pollAgent() {
+    clearTimeout(statusTimer);
+    statusTimer = setTimeout(() => {
+      if (!current()) {
+        return;
+      }
+      if (!document.hidden) {
+        void showRunningVersion(true);
+      }
+      pollAgent();
+    }, STATUS_POLL_MS);
   }
 
   async function loadStatus() {
@@ -691,8 +920,29 @@ export function renderAgentLogs(
         deniedStatusViews.set(statusKey, operate);
         showStripStatus(revokedStatusViews.has(statusKey) ? STATUS_ACCESS_CHANGED : denial);
         offerLogsWithoutStatus();
+        pollAgent();
         return;
       }
+    }
+    // Runtime status also checks AgentRevision read on the version, so a version the page could
+    // not read would only be refused: an audited denial on each Logs visit, shown with a Request
+    // ID. The strip says why in words and sends no status read; log text, which needs no
+    // version read, still shows (finding D794).
+    if ((await versionRead) === false) {
+      if (!current() || superseded()) {
+        return;
+      }
+      if (!statusDenied) {
+        showStripStatus(RUNTIME_STATUS_VERSION_UNREADABLE);
+        offerLogsWithoutStatus();
+      } else if (!document.hidden) {
+        // The poll still rereads the Agent, which needs no version read: with no poll, a stop
+        // and redeploy made elsewhere left this version named as selected for service until a
+        // reload (finding 3000).
+        void showRunningVersion(true);
+      }
+      statusTimer = setTimeout(() => void loadStatus(), STATUS_POLL_MS);
+      return;
     }
     if (!document.hidden) {
       try {
@@ -707,6 +957,7 @@ export function renderAgentLogs(
         statusDenied = false;
         renderStrip();
         renderPickers();
+        void showRunningVersion(answer.pods.length === 0);
         if (first && !logsDenied) {
           firstLogRead = readLogs({ restart: true });
         } else if (!logsDenied && selection !== effectiveSelection()) {
@@ -780,6 +1031,9 @@ export function renderAgentLogs(
                   deniedStatusViews.set(statusKey, answer?.operate === true);
                 }
               });
+            // A fresh refusal is remembered like one taken from the answer: the view rereads
+            // the Agent alone and never asks for status on a timer (finding 3010).
+            pollAgent();
           }
           return;
         }
@@ -823,15 +1077,14 @@ export function renderAgentLogs(
     }
   }
 
-  function appendRecords(records: readonly RuntimeLogRecord[]) {
+  function appendRecords(records: readonly HTMLElement[]) {
     // An empty Follow poll writes nothing: the filter status is a live region that would be
     // announced again, and rows the reader selected text in stay as they are.
     if (records.length === 0) {
       return;
     }
     const atBottom = pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 24;
-    for (const record of records) {
-      const row = recordRow(record);
+    for (const row of records) {
       row.hidden = !rowVisible(row);
       pane.append(row);
       rows += 1;
@@ -884,7 +1137,8 @@ export function renderAgentLogs(
     const query = logQuery(source, pod);
     query.set("download", "true");
     downloadPending = true;
-    downloadButton.disabled = true;
+    unavailable.set(downloadButton, true);
+    describeDeniedControls();
     try {
       const text = await read(`${base}/logs?${query}`, { responseType: "text" });
       if (!current() || logsDenied) {
@@ -924,7 +1178,8 @@ export function renderAgentLogs(
       showLogReadError(error, source, { manualRead: true });
     } finally {
       downloadPending = false;
-      downloadButton.disabled = logsDenied || !readableSelection();
+      unavailable.set(downloadButton, logsDenied || !readableSelection());
+      describeDeniedControls();
     }
   }
 
@@ -972,7 +1227,8 @@ export function renderAgentLogs(
     }
     if (!current() || reading || logsDenied || !source || !readableSelection(source)) {
       if (source && !readableSelection(source)) {
-        logStatus.textContent = "This version has no running Pod for this source.";
+        logStatus.textContent = NO_POD_STATUS;
+        describeDeniedControls();
       }
       return;
     }
@@ -1008,11 +1264,12 @@ export function renderAgentLogs(
       if (!logsAllowed && (await permissions())?.readLogs === false) {
         throw Object.assign(new Error("Access denied."), { status: 403, code: "FORBIDDEN" });
       }
-      const page = (await read(`${base}/logs?${query}`)) as AgentRuntimeLogPageWire;
+      const response: unknown = await read(`${base}/logs?${query}`);
       if (!current() || restartPending || logsDenied) {
         restoreShownStatus();
         return;
       }
+      const page = logPage(response);
       showLogError(null);
       logsAllowed = true;
       if (restart) {
@@ -1022,18 +1279,18 @@ export function renderAgentLogs(
         updateFilterStatus();
       }
       cursor = page.cursor;
-      appendRecords(page.records);
+      appendRecords(page.rows);
       if (statusDenied) {
         // A page with no running Pod clears the last Pod, so nothing names it.
         lastStream = page.stream;
         renderPickers();
       }
-      const hasLine = page.records.some(({ type }) => type === "line");
+      const hasLine = page.hasLine;
       // A Follow poll's first line replaces an empty tail's "No output" status.
       if (restart || hasLine) {
         const text =
           page.stream === null
-            ? "This version has no running Pod for this source."
+            ? NO_POD_STATUS
             : !hasLine && page.withheld > 0
               ? `Only withheld output in the last ${TAIL_LINES} lines.`
               : !hasLine
@@ -1109,6 +1366,9 @@ export function renderAgentLogs(
     element("h3", {}, "Runtime"),
     stripLine,
     strip,
+    deploymentFailureNotice,
+    servingChangeNotice,
+    runningVersionNotice,
     element(
       "div",
       { className: "log-viewer" },
@@ -1143,6 +1403,7 @@ export function renderAgentLogs(
           ),
           element("div", { className: "log-actions" }, followButton, refreshButton, downloadButton),
         ),
+        previousHint,
         element(
           "div",
           { className: "log-filters", role: "group", "aria-label": "Log filters" },
@@ -1241,5 +1502,5 @@ export function renderAgentLogs(
     .then(() => firstLogRead)
     .catch(() => {})
     .finally(showFirstView);
-  return { section, firstView };
+  return { section, firstView, showDeploymentFailure, showServingChange };
 }
