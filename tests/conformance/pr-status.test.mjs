@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
-import { commandPath } from "../helpers/fake-commands.mjs";
+import { commandPath } from "../helpers/fake-commands.ts";
 import { readJsonLinesSync } from "../helpers/json-lines.mjs";
 import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 

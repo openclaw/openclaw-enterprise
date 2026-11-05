@@ -4,6 +4,7 @@ import {
   installObservabilityControlPlane,
   observabilitySelection,
 } from "../helpers/production-observability-k3d.mjs";
+import { verifyInstalledWorkerRestarts } from "../helpers/worker-termination-installed.mjs";
 
 const attributes = (entries = []) =>
   Object.fromEntries(entries.map(({ key, value }) => [key, value.stringValue]));
@@ -130,5 +131,17 @@ test(
       assert.match(metrics.text, /otelcol_exporter_sent_log_records/);
     }
     f.record("Shipped Collector exported real attributed OCC logs to a minimal OTLP receiver");
+    await verifyInstalledWorkerRestarts(f, readLogs, "container");
+  },
+);
+
+test(
+  "worker observer retains two real restartable-init worker exits",
+  observabilitySelection,
+  async (t) => {
+    const f = await installObservabilityControlPlane(t, { nativeRepository: true });
+    const readLogs = await f.installLogReceiver();
+    await verifyInstalledWorkerRestarts(f, readLogs, "restartable-init");
+    assert.ok((await f.api("GET", "/installation")).id);
   },
 );

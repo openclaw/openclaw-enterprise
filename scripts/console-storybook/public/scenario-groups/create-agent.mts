@@ -22,6 +22,7 @@ import type { StoryAction } from "../../story-action.mts";
 import type {
   AgentDeploymentStatusWire,
   CredentialSourceType,
+  InstallationCapabilities,
   NamespaceStatus,
   PresetVariable,
   RepositoryOption,
@@ -48,6 +49,7 @@ type CreateAgentScenario = {
   openclawSettingRefusal?: string;
   pluginDiscovery?: Parameters<typeof servePluginDiscovery>[0];
   pluginDiscoveryCredential?: "none";
+  pluginCatalogs?: InstallationCapabilities["pluginCatalogs"];
   pluginCapabilities?: PluginFieldsOptions["capabilities"];
   // Deliberately unsupported input for the Preset validation scenario.
   presetAgent?: { executionMode: "turbo" };
@@ -408,6 +410,12 @@ export const createAgentFormScenarios = {
     ],
     description:
       "Invalid JSON is reported once, under the field, with its line and column. Nothing is saved.",
+    steps: [
+      "Check the initial syntax error, then select Reset template and confirm discarding the edited launch settings. Expand Advanced settings and keep the restored Configuration JSON.",
+      'Set plugins.entries.knowledge to {"enabled":true,"config":{"thresholds":[1,1e400,3]}}, preserving the other entries and model settings. This is valid JSON syntax with an out-of-range number. Select Create Agent.',
+      "Read the error under the editor: A number is too large or too small to save. Use a number closer to zero. Check that Configuration JSON has focus, its exact text is unchanged, and neither an Agent nor a Configuration is written.",
+      "If the form shows a model list, select Enter model ID manually. Change Model ID and leave the field. Check that the range error focuses Configuration JSON and the rejected draft is not rewritten. Restore the original Model ID, change only 1e400 to 2, and select Create Agent. Inspect the created Agent's Configuration for [1,2,3]. All saves and deployment state in this story are simulated.",
+    ],
   },
   createPluginsUnavailable: {
     group: "Pages/Create Agent",
@@ -440,7 +448,7 @@ export const createAgentFormScenarios = {
       "Selecting the Secret starts catalog discovery before the picker opens, without entering a separate token.",
     steps: [
       "Choose Calendar to load its details, then click Done and select another Secret to clear the catalog.",
-      "Without a selected Secret, the optional token field remains available for a preview.",
+      "Set a default plugin approver, then change Harness to OpenClaw. This Installation serves only the Codex catalog. Switch back to Codex to verify the approver was cleared.",
     ],
     gap: "The Secret and OCC discovery responses are simulated. This preview does not verify live provider access or Secret storage.",
   },
@@ -465,8 +473,24 @@ export const createAgentFormScenarios = {
     group: "Pages/Create Agent",
     name: "Select Linear from the curated catalog",
     path: create,
-    pluginCapabilities,
-    pluginDiscoveryCredential: "none",
+    pluginCatalogs: [
+      {
+        harnessId: "codex",
+        pluginPolicies: pluginCapabilities,
+        pluginDiscovery: { credential: "none" },
+      },
+      {
+        harnessId: "openclaw",
+        pluginPolicies: {
+          driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+          approvers: { agent: true, plugin: true, tools: true },
+          toolDefaults: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
+          tools: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
+          driverPolicySchema: {},
+        },
+        pluginDiscovery: { credential: "none" },
+      },
+    ],
     pluginDiscovery: (() => {
       const linear = {
         id: "codex-plugin:linear@openai-curated-remote",
@@ -499,12 +523,16 @@ export const createAgentFormScenarios = {
         details: { [linear.remoteId]: linear },
       };
     })(),
-    actions: [...form, click("Configure plugins")],
+    actions: [
+      ...form,
+      { selector: "#agent-auth-method", value: "codex_pat" },
+      click("Configure plugins"),
+    ],
     description:
-      "The selected Driver exposes Linear without a discovery token. Its tool inventory remains unknown.",
+      "Both plugin catalogs are enabled. The Codex Harness offers Linear without a discovery token.",
     steps: [
       "Choose Linear, add it, and set a default policy. Close the modal and inspect Plugin selections JSON.",
-      "The catalog does not establish account access or runtime readiness; configure the Agent's actual credentials separately.",
+      "Change Harness to OpenClaw and reopen Configure plugins. The form clears the Codex selections and directs you to the saved Agent to install Google Workspace.",
     ],
     gap: "The catalog and provider responses are simulated. This preview does not invoke Linear or verify runtime authentication.",
   },
@@ -2460,6 +2488,9 @@ export const createAgentOutcomeScenarios = {
     description:
       "The fixed model list is available before entering a credential and starts with Choose a model. No model is selected by default.",
     steps: [
+      'Before choosing a model, open Advanced settings and add "models": {"providers": {"codex": {"models": {}}}} to Configuration JSON. Close Advanced settings and choose gpt-6-sol. Confirm the list returns to Choose a model and Advanced settings opens with JSON focused and guidance to use an array of model objects with an id or remove the field. The raw JSON stays unchanged.',
+      'Replace the inner models value with [{"id":"gpt-6-astra","cost":{"input":1}}], then choose gpt-6-astra. Set models.providers.codex.models to [null] and edit Model ID to gpt-6-sol, then press Tab. Confirm the same guidance appears and the raw JSON stays unchanged. Choose a model from the list must also keep manual entry visible.',
+      'Restore models.providers.codex.models to [{"id":"gpt-6-astra","cost":{"input":1}}] and retry Model ID gpt-6-sol, then press Tab. Confirm the guidance clears, the primary becomes codex/gpt-6-sol, and cost.input remains 1. Return to the list and choose gpt-6-luna. Do not create an Agent; reset the story before checking credentials.',
       "Choose a model before entering a dummy API key. Confirm the selection remains after entering or replacing the key.",
       "Change the provider to Anthropic and inspect its model list. The previous provider's model and credential are cleared.",
     ],

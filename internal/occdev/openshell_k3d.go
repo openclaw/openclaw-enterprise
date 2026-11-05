@@ -298,12 +298,13 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 
 	// Nothing below needs the controller, PostgreSQL or repository images until
 	// the network check, so import them while the Codex sandbox check and the
-	// routing controller rollouts wait on the cluster. The runtime image is
-	// imported outside this overlap, so no two image builds run at once. The
+	// routing controller rollouts wait on the cluster. OpenShell's runtime follows
+	// PostgreSQL/repository imports in the same sibling, so builds stay serial. The
 	// network check needs only the controller image and runs in this overlap
 	// too; the platform install below still waits for it.
 	var codexSeccompProfile, routingPodCIDR string
 	var controllerImage, postgresImage, repositoryImage string
+	var assets *openShellDevelopmentAssets
 	err = r.concurrently(ctx, func(ctx context.Context, r *runner) error {
 		var err error
 		if sandboxDriver == "none" {
@@ -346,30 +347,29 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 					return fmt.Errorf("import the development repository service image: %w", err)
 				}
 			}
+			if sandboxDriver == "openshell" {
+				runtimeImage, err = r.importRuntime(ctx, state)
+				if err != nil {
+					return err
+				}
+				// Large image imports finish before the smaller OpenShell assets, so
+				// image GC cannot evict them. Prepare the controller/CRDs and images
+				// while probes finish; platform trust and credentials still wait below
+				// for successful network verification and every preparation branch.
+				fmt.Fprintln(r.opts.Out, "Preparing pinned OpenShell development assets...")
+				assets, err = r.prepareOpenShell(ctx, state, timeout)
+				if err != nil {
+					return err
+				}
+			}
 			return nil
 		})
 	})
 	if err != nil {
 		return err
 	}
-	if sandboxDriver == "openshell" {
-		runtimeImage, err = r.importRuntime(ctx, state)
-		if err != nil {
-			return err
-		}
-	}
 	if err := r.detachDevelopmentImageRegistry(ctx); err != nil {
 		return err
-	}
-	var assets *openShellDevelopmentAssets
-	if sandboxDriver == "openshell" {
-		// Import the larger platform images first so image garbage collection cannot
-		// evict idle OpenShell images before their workloads are installed.
-		fmt.Fprintln(r.opts.Out, "Preparing pinned OpenShell development assets...")
-		assets, err = r.prepareOpenShell(ctx, state, timeout)
-		if err != nil {
-			return err
-		}
 	}
 	if err := r.installDevelopmentPlatform(ctx, state, developmentPlatformInputs{
 		openShell: assets, runtimeImage: runtimeImage, controllerImage: controllerImage,
@@ -543,6 +543,10 @@ func (r *runner) validateDevelopmentImageRevisions(ctx context.Context) error {
 	if controller == "" {
 		return nil
 	}
+	return r.validateSelectedDevelopmentImageRevisions(ctx, controller, r.env["OCC_KUBERNETES_RUNTIME_IMAGE"])
+}
+
+func (r *runner) validateSelectedDevelopmentImageRevisions(ctx context.Context, images ...string) error {
 	checkout, err := r.output(ctx, "git", "rev-parse", "--verify", "HEAD")
 	if err != nil {
 		return fmt.Errorf("resolve the checkout revision for selected images: %w", err)
@@ -551,7 +555,7 @@ func (r *runner) validateDevelopmentImageRevisions(ctx context.Context) error {
 	if len(revision) != 40 || strings.Trim(revision, "0123456789abcdef") != "" {
 		return fmt.Errorf("the checkout must have a full Git commit revision")
 	}
-	for _, image := range []string{controller, r.env["OCC_KUBERNETES_RUNTIME_IMAGE"]} {
+	for _, image := range images {
 		label, err := r.developmentImageRevision(ctx, image)
 		if err != nil {
 			return err

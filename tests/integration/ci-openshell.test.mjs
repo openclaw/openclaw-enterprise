@@ -12,8 +12,8 @@ import {
   prepareOpenShellClusterBootstrap,
   selectKubectlAsset,
 } from "../../scripts/ci/openshell.mjs";
-import { withEnvironment } from "../helpers/environment.mjs";
-import { prependPath } from "../helpers/fake-commands.mjs";
+import { withEnvironment } from "../helpers/environment.ts";
+import { prependPath } from "../helpers/fake-commands.ts";
 import {
   assertGatewayPolicyRunSucceeded,
   observeSandboxProbe,

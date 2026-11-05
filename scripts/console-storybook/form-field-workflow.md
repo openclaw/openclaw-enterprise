@@ -22,6 +22,14 @@ each story at 1440 and at 390.
 5. Open **Pages / Agent detail / Plugin selections JSON error**. The JSON
    shows "Enter a valid Plugin selections JSON object." under it and has
    focus; the status line below Save does not repeat it.
+   Replace the draft with
+   `{"sample":{"enabled":true,"driverPolicy":{"destructiveEnabled":1e400}}}`.
+   Collapse the raw editor and select **Save plugin selections**. The editor
+   opens, takes focus, and explains that the number is too large or too small
+   to save. No Agent GET preflight or PATCH starts. Open **Configure plugins**:
+   the existing invalid-JSON guidance appears, focus stays in the dialog, and
+   the raw text stays unchanged. These are simulated UI checks; the owning
+   browser test checks refusal and correction through the real Controller.
 6. Open **Authentication source required fields**. The API key Secret field
    shows "API key Secret is required." and has focus; its list stays closed,
    so nothing covers the error. Click the field or press ArrowDown to open

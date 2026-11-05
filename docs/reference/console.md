@@ -46,7 +46,7 @@ HTML.
 
 ## Browse and select a Namespace
 
-The sidebar opens **Agents**, **Secrets**, or **Namespaces**; **Refresh** repeats the read.
+The sidebar opens **Agents**, **Credentials**, or **Namespaces**. **Credentials** opens the Secrets tab for the selected Namespace. Installation administrators can also open [Connection templates](connection-templates.md). **Refresh** repeats the read.
 Configure models during creation. [Experimental Backends](backends.md) stay
 hidden. Namespace rows open their Agents.
 
@@ -68,6 +68,7 @@ scrolls independently and keeps the page behind it in place until it closes.
 Click an Agent name or an open area of its row to open its details. Version links
 and Stop or Delete buttons keep their separate actions. Keyboard users can Tab to
 the Agent name and press Enter.
+An individual Agent header uses **Agent details** until an authorized read supplies its name.
 
 While a Namespace provisions, the Agents list checks its status every ten seconds.
 If that check no longer lists the Namespace, the Console removes its Agent rows

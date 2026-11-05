@@ -38,6 +38,8 @@
     "../packages/contracts/prepack.ts",
     "../packages/utils/prepack.ts",
     "helpers/temporary-directory.ts",
+    "helpers/environment.ts",
+    "helpers/fake-commands.ts",
     "helpers/node-test-summary.ts",
     "helpers/image-smoke-timeout.ts",
     "helpers/credential-source-owner-upgrade.ts",
@@ -57,7 +59,8 @@
     "fixtures/repository-credentials/module-guard.ts",
     "fixtures/repository-credentials/installation-module-guard.ts",
     "fixtures/repository-credentials/planning.ts",
-    "helpers/protected-static-secret-read.ts"
+    "helpers/protected-static-secret-read.ts",
+    "../scripts/observe-worker-terminations.ts"
   ],
   "references": [
     {

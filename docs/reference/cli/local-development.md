@@ -25,3 +25,11 @@ profile; the Compute and Sandbox Driver settings select the implementation.
 When `scripts/dev-up` fails on the Docker profile, `occ dev up` exits with the
 script's status (`2` for a usage or configuration error) and prints nothing
 beyond the script's own message.
+
+The Go Local Setup commands write `[occ-dev-timing]` records to the progress output for
+image builds, pulls, exports/imports, cluster creation, Compose startup, Helm
+installation, and Kubernetes readiness waits. Each record contains a fixed stage,
+elapsed milliseconds, and whether the command failed. It excludes arguments,
+environment values, and subprocess output. Concurrent commands overlap, so their
+durations must not be added as total startup time. These records do not change
+command cancellation, readiness checks, or failure handling.

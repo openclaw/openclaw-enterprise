@@ -11,6 +11,7 @@ import type {
   HarnessAuthBinding,
   AgentCredentialSourceBinding,
   PluginDesiredState,
+  PluginDriverIdentity,
   PluginApprovers,
   PresetTemplate,
   RepositoryBindingSelection,
@@ -269,6 +270,7 @@ export const agents = occSchema.table(
     gatewayManagedMode: boolean("gateway_managed_mode").notNull().default(true),
     sandboxPolicyEditing: boolean("sandbox_policy_editing").notNull().default(false),
     plugins: jsonb("plugins").$type<PluginDesiredState>(),
+    pluginDriver: jsonb("plugin_driver").$type<PluginDriverIdentity>(),
     pluginApprovers: jsonb("plugin_approvers").$type<PluginApprovers>(),
     repositoryBindings: jsonb("repository_bindings").$type<readonly RepositoryBindingSelection[]>(),
     repositoryAccess: jsonb("repository_access").$type<RepositoryAccess>(),
@@ -326,6 +328,19 @@ export const agents = occSchema.table(
     check(
       "agents_plugins_object",
       sql`${table.plugins} IS NULL OR jsonb_typeof(${table.plugins}) = 'object'`,
+    ),
+    check(
+      "agents_plugin_driver_selection",
+      sql`CASE WHEN coalesce(${table.plugins}, '{}'::jsonb) = '{}'::jsonb THEN ${table.pluginDriver} IS NULL
+    ELSE ${table.pluginDriver} IS NOT NULL
+      AND jsonb_typeof(${table.pluginDriver}) = 'object'
+      AND ${table.pluginDriver} ?& ARRAY['id', 'implementation']
+      AND (${table.pluginDriver} - 'id' - 'implementation') = '{}'::jsonb
+      AND jsonb_typeof(${table.pluginDriver}->'id') = 'string'
+      AND jsonb_typeof(${table.pluginDriver}->'implementation') = 'string'
+      AND (${table.pluginDriver}->>'id') ~ '[^[:space:]]'
+      AND (${table.pluginDriver}->>'implementation') ~ '[^[:space:]]'
+    END`,
     ),
     check(
       "agents_repository_access_valid",
@@ -2300,6 +2315,179 @@ export const sandboxPolicies = occSchema.table(
     check(
       "sandbox_policies_document_valid",
       sql`occ.sandbox_policy_is_valid(${table.document}, ${table.id}, ${table.namespaceId}, ${table.agentId}, ${table.version})`,
+    ),
+  ],
+);
+
+export const oauthClients = occSchema.table(
+  "oauth_clients",
+  {
+    id: text("id").primaryKey(),
+    namespaceId: text("namespace_id").references(() => namespaces.id, {
+      onDelete: "restrict",
+      onUpdate: "restrict",
+    }),
+    issuer: collatedText("issuer").notNull(),
+    displayName: text("display_name").notNull(),
+    clientId: collatedText("client_id").notNull(),
+    cleanupAfter: timestamp("cleanup_after", { withTimezone: true }),
+    tokenEndpointAuthMethod: text("token_endpoint_auth_method")
+      .$type<import("@openclaw-enterprise/contracts").OAuthClientAuthMethod>()
+      .notNull(),
+    tokenUrl: text("token_url").notNull(),
+    revocationUrl: text("revocation_url"),
+    secretDriverId: collatedText("secret_driver_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    check(
+      "oauth_clients_secret_owner",
+      sql`(${table.tokenEndpointAuthMethod} = 'none') = (${table.secretDriverId} IS NULL) AND (${table.secretDriverId} IS NULL OR length(${table.secretDriverId}) > 0)`,
+    ),
+    unique("oauth_clients_pair_unique")
+      .on(table.namespaceId, table.issuer, table.clientId)
+      .nullsNotDistinct(),
+    unique("oauth_clients_identity").on(table.id, table.issuer, table.tokenUrl),
+    check(
+      "oauth_clients_display_name_check",
+      sql`length(${table.displayName}) BETWEEN 1 AND 200 AND ${table.displayName} = btrim(${table.displayName})`,
+    ),
+    check(
+      "oauth_clients_token_endpoint_auth_method_check",
+      sql`${table.tokenEndpointAuthMethod} IN ('none','client_secret_basic','client_secret_post')`,
+    ),
+    check(
+      "oauth_clients_token_url_check",
+      sql`${table.tokenUrl} ~ '^https://[^/?#@[:space:]]+([/?][^#[:space:]]*)?$'`,
+    ),
+    check(
+      "oauth_clients_revocation_url_check",
+      sql`${table.revocationUrl} ~ '^https://[^/?#@[:space:]]+([/?][^#[:space:]]*)?$'`,
+    ),
+    check(
+      "oauth_clients_id_format",
+      sql`${table.id} ~ '^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'`,
+    ),
+    check(
+      "oauth_clients_issuer_https",
+      sql`${table.issuer} ~ '^https://[^/?#@[:space:]]+(/[^?#[:space:]]*)?$' AND length(${table.issuer}) <= 2048`,
+    ),
+    check(
+      "oauth_clients_cleanup_confidential",
+      sql`${table.cleanupAfter} IS NULL OR ${table.tokenEndpointAuthMethod} <> 'none'`,
+    ),
+    check(
+      "oauth_clients_client_id_valid",
+      sql`${table.clientId} ~ '^[!-~]+$' AND length(${table.clientId}) <= 256`,
+    ),
+  ],
+);
+
+export const connectionTemplates = occSchema.table(
+  "connection_templates",
+  {
+    id: text("id").primaryKey(),
+    namespaceId: text("namespace_id").references(() => namespaces.id, {
+      onDelete: "restrict",
+      onUpdate: "restrict",
+    }),
+    displayName: collatedText("display_name").notNull(),
+    currentVersion: integer("current_version").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (table): PgTableExtraConfigValue[] => [
+    // Migration 0067 defers this ownership cycle until commit.
+    foreignKey({
+      name: "connection_templates_current_version_exists",
+      columns: [table.id, table.currentVersion],
+      foreignColumns: [
+        oauthConnectionTemplateVersions.templateId,
+        oauthConnectionTemplateVersions.version,
+      ],
+    }),
+    check(
+      "connection_templates_id_format",
+      sql`${table.id} ~ '^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'`,
+    ),
+    check(
+      "connection_templates_display_name_valid",
+      sql`length(${table.displayName}) BETWEEN 1 AND 200 AND ${table.displayName} = btrim(${table.displayName})
+    AND ${table.displayName} !~ '[[:cntrl:]]'`,
+    ),
+    check("connection_templates_current_version_positive", sql`${table.currentVersion} >= 1`),
+  ],
+);
+
+export const oauthConnectionTemplateVersions = occSchema.table(
+  "oauth_connection_template_versions",
+  {
+    templateId: text("template_id")
+      .notNull()
+      .references(() => connectionTemplates.id, { onDelete: "cascade", onUpdate: "restrict" }),
+    version: integer("version").notNull(),
+    oauthClientId: text("oauth_client_id").references(() => oauthClients.id, {
+      onDelete: "restrict",
+      onUpdate: "restrict",
+    }),
+    issuer: collatedText("issuer").notNull(),
+    mode: text("mode").$type<"manual" | "mcp_discovery">().notNull(),
+    revocationUrl: text("revocation_url"),
+    observedMetadata:
+      jsonb("observed_metadata").$type<
+        import("@openclaw-enterprise/contracts").McpAuthorizationMetadata
+      >(),
+    authorizationUrl: collatedText("authorization_url").notNull(),
+    tokenUrl: collatedText("token_url").notNull(),
+    scopes: text("scopes").array().notNull(),
+    authorizationParameters: jsonb("authorization_parameters")
+      .$type<Record<string, string>>()
+      .notNull(),
+    destinations: jsonb("destinations")
+      .$type<readonly import("@openclaw-enterprise/contracts").ConnectionEndpoint[]>()
+      .notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.templateId, table.version] }),
+    foreignKey({
+      name: "oauth_connection_template_versions_client_issuer",
+      columns: [table.oauthClientId, table.issuer, table.tokenUrl],
+      foreignColumns: [oauthClients.id, oauthClients.issuer, oauthClients.tokenUrl],
+    }),
+    check(
+      "oauth_connection_template_versions_mode_check",
+      sql`${table.mode} IN ('manual','mcp_discovery')`,
+    ),
+    check("oauth_connection_template_versions_version_positive", sql`${table.version} >= 1`),
+    check(
+      "oauth_connection_template_versions_urls_https",
+      sql`${table.authorizationUrl} ~ '^https://[^/?#@[:space:]]+(/[^#[:space:]]*)?$'
+    AND ${table.tokenUrl} ~ '^https://[^/?#@[:space:]]+([/?][^#[:space:]]*)?$'
+    AND length(${table.authorizationUrl}) <= 2048 AND length(${table.tokenUrl}) <= 2048`,
+    ),
+    check(
+      "oauth_connection_template_versions_scopes_valid",
+      sql`array_position(${table.scopes}, NULL) IS NULL
+
+    AND (cardinality(${table.scopes}) = 0 OR array_to_string(${table.scopes}, ' ') ~ '^[!#-[\\]-~]+( [!#-[\\]-~]+)*$')`,
+    ),
+    check(
+      "oauth_connection_template_versions_parameters_object",
+      sql`jsonb_typeof(${table.authorizationParameters}) = 'object'`,
+    ),
+    check(
+      "oauth_connection_template_versions_destinations_valid",
+      sql`occ.valid_connection_destinations(${table.destinations})`,
+    ),
+    check(
+      "oauth_connection_template_versions_discovery",
+      sql`(${table.mode} = 'manual' AND ${table.observedMetadata} IS NULL) OR
+    (${table.mode} = 'mcp_discovery' AND ${table.observedMetadata} IS NOT NULL
+      AND jsonb_typeof(${table.observedMetadata}) = 'object'
+      AND ${table.observedMetadata} ?& ARRAY['resource','serverUrl','issuer','authorizationUrl','tokenUrl']
+      AND ${table.observedMetadata}->>'issuer' = ${table.issuer}
+      AND ${table.observedMetadata}->>'authorizationUrl' = ${table.authorizationUrl}
+      AND ${table.observedMetadata}->>'tokenUrl' = ${table.tokenUrl} AND jsonb_array_length(${table.destinations}) = 1)`,
     ),
   ],
 );

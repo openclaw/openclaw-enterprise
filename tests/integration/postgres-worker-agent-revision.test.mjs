@@ -1,3 +1,7 @@
+import {
+  CodexPluginDriver,
+  OCCPluginDriver,
+} from "../../apps/controller/src/drivers/plugin/index.ts";
 import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -3432,6 +3436,52 @@ for (const { label, failure, code, message } of [
   );
 }
 
+function withBothPluginDrivers(drivers) {
+  return { ...drivers, pluginDrivers: [new OCCPluginDriver(), new CodexPluginDriver()] };
+}
+
+revisionTest(
+  "a worker with a missing pinned Plugin Driver keeps the previous revision active",
+  async (fixture) => {
+    const { owner, candidate: previous } = await fixture.admitInitialRevision("plugin-cutover", {
+      agent: { executionMode: "dedicated" },
+    });
+    await fixture.start(
+      {
+        ...fixture.compute,
+        requiresStoppedPredecessors: () => true,
+        maintenanceIntervalMs: 3_600_000,
+        async stopRevision(revision) {
+          assert.notEqual(
+            revision.id,
+            previous.id,
+            "a rejected plugin pin cannot stop the active revision",
+          );
+          return fixture.compute.stopRevision(revision);
+        },
+      },
+      { transformDrivers: (drivers) => ({ ...drivers, pluginDrivers: [new OCCPluginDriver()] }) },
+    );
+    await fixture.work(previous, "succeeded");
+    // The admitted revision pins Codex, but this worker no longer has that Driver.
+    const next = await fixture.revision(owner, 2, {
+      plugins: codexPluginRevisionState("codex-plugin:linear@openai-curated-remote"),
+    });
+    await fixture.work(next, "failed_permanent");
+    assert.equal((await fixture.workResult(next)).rows[0].reason_code, "PLUGIN_DRIVER_MISMATCH");
+    const {
+      rows: [nextMaintenance],
+    } = await fixture.advanceMaintenance(previous);
+    const maintenance = { ...previous, idempotencyKey: nextMaintenance.idempotency_key };
+    await fixture.work(maintenance, "succeeded");
+    assert.equal(
+      (await fixture.workResult(maintenance)).rows[0].reason_code,
+      "REVISION_ALREADY_ACTIVE",
+    );
+    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, previous.id);
+  },
+);
+
 revisionTest(
   "plugin startup warnings complete deployment and remain visible in status",
   async (fixture) => {
@@ -3452,22 +3502,25 @@ revisionTest(
     });
     const prepared = [];
 
-    await fixture.start({
-      ...fixture.compute,
-      async prepareRevision(revision) {
-        prepared.push(revision.id);
-        if (revision.id !== candidate.id) {
-          return fixture.compute.prepareRevision(revision);
-        }
-        return {
-          namespaceId: revision.namespaceId,
-          agentId: revision.agentId,
-          revisionId: revision.id,
-          ready: true,
-          warnings,
-        };
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision(revision) {
+          prepared.push(revision.id);
+          if (revision.id !== candidate.id) {
+            return fixture.compute.prepareRevision(revision);
+          }
+          return {
+            namespaceId: revision.namespaceId,
+            agentId: revision.agentId,
+            revisionId: revision.id,
+            ready: true,
+            warnings,
+          };
+        },
       },
-    });
+      { transformDrivers: withBothPluginDrivers },
+    );
 
     await fixture.work(candidate, "succeeded");
     const terminal = await fixture.observerPool.query(
@@ -3520,22 +3573,25 @@ revisionTest(
 
     let prepareCount = 0;
     const activations = [];
-    await fixture.start({
-      ...fixture.compute,
-      async prepareRevision(revision) {
-        prepareCount += 1;
-        return {
-          namespaceId: revision.namespaceId,
-          agentId: revision.agentId,
-          revisionId: revision.id,
-          ready: true,
-          warnings: [{ code: "PLUGIN_INSTALL_FAILED", pluginId }],
-        };
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision(revision) {
+          prepareCount += 1;
+          return {
+            namespaceId: revision.namespaceId,
+            agentId: revision.agentId,
+            revisionId: revision.id,
+            ready: true,
+            warnings: [{ code: "PLUGIN_INSTALL_FAILED", pluginId }],
+          };
+        },
+        async activateRevision(revision) {
+          activations.push(revision.id);
+        },
       },
-      async activateRevision(revision) {
-        activations.push(revision.id);
-      },
-    });
+      { transformDrivers: withBothPluginDrivers },
+    );
 
     await fixture.work(candidate, "succeeded");
     assert.equal(prepareCount, 1);
@@ -3563,23 +3619,26 @@ revisionTest(
       agent: { executionMode: "dedicated" },
       revision: { plugins: codexPluginRevisionState(pluginId) },
     });
-    await fixture.start({
-      ...fixture.compute,
-      async prepareRevision(revision) {
-        return {
-          namespaceId: revision.namespaceId,
-          agentId: revision.agentId,
-          revisionId: revision.id,
-          ready: true,
-          warnings: [
-            {
-              code: "PLUGIN_INSTALL_FAILED",
-              pluginId: "codex-plugin:foreign@openai-curated-remote",
-            },
-          ],
-        };
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision(revision) {
+          return {
+            namespaceId: revision.namespaceId,
+            agentId: revision.agentId,
+            revisionId: revision.id,
+            ready: true,
+            warnings: [
+              {
+                code: "PLUGIN_INSTALL_FAILED",
+                pluginId: "codex-plugin:foreign@openai-curated-remote",
+              },
+            ],
+          };
+        },
       },
-    });
+      { transformDrivers: withBothPluginDrivers },
+    );
 
     await fixture.work(candidate, "failed_permanent");
     const generic = await fixture.observerPool.query(

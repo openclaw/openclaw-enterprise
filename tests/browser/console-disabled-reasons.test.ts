@@ -1,3 +1,4 @@
+import { enterManualModel } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
@@ -7,7 +8,7 @@ import type { Locator } from "playwright";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
 
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   AGENT_CREATE_DENIED,
   AGENT_DEPLOY_NOT_INCLUDED,
@@ -28,13 +29,12 @@ import {
   newPage,
   shippedPreset,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.ts";
-import { enterManualModel } from "./console-agents-test-support.mjs";
 import { restrict } from "../helpers/iam-grants.mjs";
 
 // The shipped default Preset, so Create Agent offers "Start with default Preset".
-const DEFAULT_CODEX_PRESET: unknown = await shippedPreset("default-codex");
+const DEFAULT_CODEX_PRESET = await shippedPreset("default-codex");
 
 function assertId(value: unknown): asserts value is { id: string } {
   assert.ok(typeof value === "object" && value !== null && "id" in value);

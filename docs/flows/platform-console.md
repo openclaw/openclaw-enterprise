@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-11-03
-last_updated_session: authoring-run/4b6abf1f-bb48-4679-b2b0-4a62ba2834f6
+updated: 2026-11-05
+last_updated_session: namespace-cleanup-confirmation
 ---
 
 # Platform console request flow
@@ -225,12 +225,11 @@ relisted. Closing refocuses the opener; a 403 disables it per account, across
 navigation, until Refresh (`fromRefresh`). Pending writes block dismissal; 400s
 mark names; conflicts keep input; unconfirmed responses need inspection.
 
-`namespace-deletion.mts` blocks navigation and dismissal during writes; OCC rechecks
-IAM and contents. `http/errors.ts` limits blockers to 20
-IDs per kind. Poll every three seconds after `202`; `404` removes the row;
-`console.mjs` repairs selection and views. `403` reports lost access.
-Uncertain writes require **Refresh status** before retry.
-See [deletion](../guides/console/delete-namespace.md).
+`namespace-deletion.mts` blocks navigation and dismissal during writes. OCC rechecks
+IAM and contents (20 blocker IDs per kind). `202` starts three-second polling.
+`404` removes the row, repairing selection. `403` reports lost access. A failed read
+closes the confirmation. After uncertainty, retry requires
+[**Refresh status**](../guides/console/delete-namespace.md).
 
 Agents, Secrets and Create Agent read Namespace permissions. False `agents.create` or an Agent-refusing
 [Namespace status](../reference/namespaces.md#lifecycle) explains why, rechecking on return; failed reads keep creation open.
@@ -355,7 +354,7 @@ gateway startup and file availability.
   worker leases, or Compute effects.
 - `node --test tests/browser/console-secrets.test.ts` exercises Secret mutation,
   Agent references, denials, and lost replies with passive test Secret storage.
-  The `console-secrets` [QA scenario](../testing/ci.md#qa-matrix) selects real
+  The `console-secrets` [QA scenario](../testing/ci/qa-advisory.md) selects real
   shipped storage; it requires the documented runtime and credential setup.
 - API tests cover safe discovery, permission boundaries, empty versus missing
   wiring, static MIME/allowlisting, and unchanged API JSON errors. See
@@ -371,6 +370,8 @@ gateway startup and file availability.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 20:13: Close stale confirmations. (namespace-cleanup-confirmation)
 
 - 2026-11-03 15:16: Preserve page position during navigation. (authoring-run/4b6abf1f-bb48-4679-b2b0-4a62ba2834f6 - 44c2f77b611207eef71a69f82ab692c26dbea2bc)
 

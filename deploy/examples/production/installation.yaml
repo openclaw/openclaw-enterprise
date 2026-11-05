@@ -29,9 +29,9 @@ drivers:
   # Enable the token-free curated Codex catalog. See Plugin Driver setup:
   # https://github.com/openclaw/openclaw-enterprise/blob/main/docs/reference/drivers/plugin-bundled.md#selection-and-catalogs
   plugin:
-    id: codex-plugin
-    configuration:
-      catalogSource: openai-curated
+    - id: codex-plugin
+      configuration:
+        catalogSource: openai-curated
   # Stores each Namespace's native Agent Configuration in its Kubernetes ConfigMaps.
   # See [Kubernetes Configuration](../../../docs/reference/settings/programmatic.md#kubernetes-configuration-driver).
   configuration:

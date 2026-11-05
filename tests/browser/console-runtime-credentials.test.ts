@@ -7,7 +7,6 @@ import type { BrowserContextOptions } from "playwright";
 import type {
   HarnessAuthBinding,
   HarnessExecutionMode,
-  OpenClawConfigurationDocument,
   OpenClawConfigurationValue,
   Restriction,
   SecretBinding,
@@ -18,7 +17,7 @@ import type { PlatformUnitOfWork } from "../../packages/occ/src/state/platform-s
 
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   accessBindingPostRequests,
@@ -37,12 +36,11 @@ import {
   pathRequests,
   secretOptionLabel,
   selectSecret,
-  trackSettledFetches,
   waitForEnabled,
-  waitForIdleFetches,
   waitForInputValue,
-} from "./console-agents-browser-helpers.mjs";
-import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
+} from "./console-agents-browser-helpers.ts";
+import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
+import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import {
   agentPrincipalDenied,
   CHANNEL_BINDING_CREDENTIALS_REMEDY,
@@ -91,7 +89,7 @@ async function createAgent(
   fixture: Fixture,
   namespaceId: string,
   name: string,
-  values: OpenClawConfigurationDocument,
+  values: Readonly<Record<string, unknown>>,
   options: {
     executionMode?: HarnessExecutionMode;
     harnessAuth?: HarnessAuthBinding | null;
@@ -1557,7 +1555,8 @@ async function refusedStoredSlackSave(
     },
   );
   const reference = { namespaceId: namespace.id, id: agent.configurationId };
-  const stored = record(configurationDriver.stored(reference), "Stored Configuration");
+  const stored = configurationDriver.stored(reference);
+  assert.ok(stored, "Expected the stored Configuration");
   const values = record(stored.values, "Stored Configuration values");
   const channels = record(values.channels, "Stored channels");
   store(record(channels.slack, "Stored Slack configuration"));
