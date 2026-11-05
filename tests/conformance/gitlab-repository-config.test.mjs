@@ -7,11 +7,13 @@ import { OpenClawController, validateBackendDefinitions } from "../../packages/o
 
 const valid = {
   kind: "gitlab-token",
+  backendId: "gitlab-live",
   providerInstanceId: "rmcook84-test",
   configVersion: "1",
   projectId: "88516404",
   project: "rmcook84/test",
   namespaceId: "rmcook84",
+  registryFile: "/etc/openclaw/repository-registry/registry.json",
   tokenFile: "/run/secrets/gitlab-token",
   developmentOnly: true,
   pushRefAllowlist: ["refs/heads/*"],
@@ -33,6 +35,9 @@ test("the GitLab static token configuration mirrors the GitHub token configurati
 test("the GitLab static token configuration refuses every non-mirrored field or shape", () => {
   for (const refused of [
     { ...valid, host: "gitlab.example.test" },
+    { ...valid, backendId: " gitlab-live" },
+    { ...valid, registryFile: "registry.json" },
+    { ...valid, registryFile: "/etc/openclaw/repository-registry/../registry.json" },
     { ...valid, kind: "github-token" },
     { ...valid, project: "https://gitlab.com/rmcook84/test" },
     { ...valid, project: "rmcook84/test/" },

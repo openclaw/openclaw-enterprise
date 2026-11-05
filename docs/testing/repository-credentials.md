@@ -34,7 +34,8 @@ It requires these explicit inputs:
 | `GITLAB_TEST_WRITE_BRANCH` | Existing source branch with changes against `main`.           |
 
 With these variables set, run `node --test tests/integration/gitlab-repository-agent.test.mjs`.
-A selected live case fails on missing inputs. With live selection unset, both
+A selected live case fails on missing inputs. With live selection unset, the
+registry-withdrawal case runs with synthetic local material and the two live
 cases skip. The write case creates a draft merge request. The operator must
 remove that test artifact through GitLab after checking it; the client does not
 provide administrative cleanup. Never use a shared production project or print

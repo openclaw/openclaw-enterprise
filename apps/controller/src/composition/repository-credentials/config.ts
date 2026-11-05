@@ -11,6 +11,8 @@ import {
   GITHUB_REPOSITORY_REGISTRY_MAX_BYTES,
   validateGitHubRepositoryRegistry,
 } from "../../drivers/repo/github/credentials/registry.ts";
+import { resolveGitLabRepositoryBinding } from "../../drivers/repo/gitlab/credentials/registry.ts";
+import { readCurrentGitLabRegistry } from "../../drivers/repo/gitlab/credentials/current-registry.ts";
 import type {
   GitHubStaticTokenOwner,
   GitHubDriverFactory,
@@ -153,6 +155,34 @@ export async function loadConfiguration(
       const { validateGitLabConfiguration } =
         await import("../../drivers/repo/gitlab/credentials/config.ts");
       const configuration = validateGitLabConfiguration(backendInput);
+      const registry = readCurrentGitLabRegistry(
+        configuration.registryFile,
+        configuration.backendId,
+      );
+      const project = registry.projects.find(
+        (candidate) => candidate.projectId === configuration.projectId,
+      );
+      const namespace = project?.namespaces.find(
+        (candidate) => candidate.namespaceId === configuration.namespaceId,
+      );
+      if (
+        project?.path !== configuration.project ||
+        registry.providerInstanceId !== configuration.providerInstanceId ||
+        registry.configVersion !== configuration.configVersion ||
+        namespace?.pushRefAllowlist.join("\0") !== configuration.pushRefAllowlist.join("\0") ||
+        !configuration.pushRefAllowlist.every((ref) => namespace.pushRefAllowlist.includes(ref))
+      ) {
+        throw new Error("invalid-configuration");
+      }
+      try {
+        resolveGitLabRepositoryBinding(registry, {
+          namespaceId: configuration.namespaceId,
+          repositoryRef: configuration.projectId,
+          profile: config.sessionPolicy.defaultProfile,
+        });
+      } catch {
+        throw new Error("invalid-configuration");
+      }
       if (
         options.developmentAuthority !== true ||
         config.sessionPolicy.maximumDurationSeconds > developmentTokenMaximumSeconds ||
@@ -177,6 +207,8 @@ export async function loadConfiguration(
         await import("../../drivers/repo/gitlab/credentials/factory.ts");
       factory = createGitLabDriverFactory({
         authority: owner,
+        backendId: configuration.backendId,
+        registryFile: configuration.registryFile,
         namespaceId: configuration.namespaceId,
         gatewayOrigin: config.gateway.publicOrigin,
         limits: config.limits,

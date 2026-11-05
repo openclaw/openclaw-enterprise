@@ -3,6 +3,7 @@ import {
   normalizePushRefAllowlist,
 } from "../../credentials/client-contracts.ts";
 import { normalizeGitLabProjectPath } from "../client.ts";
+import { isAbsolute, resolve } from "node:path";
 
 /**
  * Development-only static GitLab token authority. It mirrors the GitHub static-token
@@ -10,11 +11,13 @@ import { normalizeGitLabProjectPath } from "../client.ts";
  */
 export interface GitLabTokenConfiguration {
   readonly kind: "gitlab-token";
+  readonly backendId: string;
   readonly providerInstanceId: string;
   readonly configVersion: string;
   readonly projectId: string;
   readonly project: string;
   readonly namespaceId: string;
+  readonly registryFile: string;
   readonly tokenFile: string;
   readonly developmentOnly: true;
   /** Enforced at the gateway on receive-pack commands; an empty list denies every push. */
@@ -26,11 +29,13 @@ export interface GitLabTokenConfiguration {
 
 const allowedFields = [
   "kind",
+  "backendId",
   "providerInstanceId",
   "configVersion",
   "projectId",
   "project",
   "namespaceId",
+  "registryFile",
   "tokenFile",
   "developmentOnly",
   "pushRefAllowlist",
@@ -39,10 +44,12 @@ const allowedFields = [
 ] as const;
 
 const stringFields = [
+  "backendId",
   "providerInstanceId",
   "configVersion",
   "projectId",
   "project",
+  "registryFile",
   "tokenFile",
 ] as const;
 
@@ -63,6 +70,26 @@ function validProjectId(value: unknown): value is string {
     typeof value === "string" &&
     /^[1-9][0-9]{0,15}$/u.test(value) &&
     Number.isSafeInteger(Number(value))
+  );
+}
+
+function validBackendId(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 200 &&
+    value === value.trim() &&
+    !hasControlCharacter(value) &&
+    !/[\u2028\u2029]/u.test(value)
+  );
+}
+
+function validRegistryFile(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 4096 &&
+    !hasControlCharacter(value)
   );
 }
 
@@ -100,8 +127,13 @@ export function validateGitLabConfiguration(value: unknown): GitLabTokenConfigur
     !validIdentifier(providerInstanceId) ||
     !validConfigVersion(configVersion) ||
     !validProjectId(projectId) ||
-    !validIdentifier(namespaceId)
+    !validIdentifier(namespaceId) ||
+    !validBackendId(input.backendId) ||
+    !validRegistryFile(input.registryFile)
   ) {
+    invalid();
+  }
+  if (!isAbsolute(input.registryFile) || resolve(input.registryFile) !== input.registryFile) {
     invalid();
   }
   let normalizedProject: string;
@@ -136,11 +168,13 @@ export function validateGitLabConfiguration(value: unknown): GitLabTokenConfigur
   }
   return Object.freeze({
     kind: "gitlab-token",
+    backendId: input.backendId as string,
     providerInstanceId: providerInstanceId!,
     configVersion: configVersion!,
     projectId: projectId!,
     project: normalizedProject,
     namespaceId: namespaceId!,
+    registryFile: input.registryFile as string,
     tokenFile: input.tokenFile as string,
     developmentOnly: true,
     pushRefAllowlist,

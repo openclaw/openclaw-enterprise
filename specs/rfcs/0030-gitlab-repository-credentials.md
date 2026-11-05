@@ -96,12 +96,16 @@ flowchart TB
     Proxy -.->|sends authorized request| GitLab[GitLab.com project]
 ```
 
+The development token service rereads the immutable registry before each upstream
+send. If registry reassignment or withdrawal removes the grant admitted for an
+open session, the service refuses that send before it writes to GitLab.
+
 ## Delivery and verification
 
 Use one running Agent, the selected Credential Proxy and paired Sandbox, and an authorized GitLab.com project. Record the installed versions, tier, project role, and token grants.
 
 1. Clone a commit absent locally. Push a known commit to the allowed branch and verify its SHA at GitLab. Open a draft MR and verify its draft status, project, branches, and head commit in GitLab. Drop the reply to a separate create. Verify recovery sends no second `POST`; if the original operation cannot be identified in GitLab, keep it unresolved for an authorized operator.
-2. Attempt a forbidden push. Verify no upload reaches GitLab and that the denial is attributable in OCE audit. Withdraw the OCE binding while the PAT is still valid. Try a fresh fetch from the same Agent. Verify denial while its conversation still works. Use an observer that saw the allowed Git traffic to confirm zero upstream fetch requests. Record any gap in that observation.
+2. Attempt a forbidden push. Verify no upload reaches GitLab and that the denial is attributable in OCE audit. Withdraw or reassign the OCE binding while the PAT is still valid. Try a fresh fetch and then a request from the already-open session. Verify both denials while the Agent conversation still works. Use an observer that saw the allowed Git traffic to confirm zero upstream fetch requests. Record any gap in that observation.
 3. Verify successful writes and uncertain creates have attributable audit evidence with the provider, project, actor, and OCE operation identity. Confirm audit records contain no PAT or request body. Submit a revision with both provider selections and verify admission refuses it while single-provider GitHub and GitLab revisions remain independently supported.
 
 The [implementation plan](../plans/0030-gitlab-repository-credentials.md) covers credential failures and token non-disclosure. This spike ran no live GitLab operations. Stock OpenShell’s refusal of unqualified Git access is a separate result.

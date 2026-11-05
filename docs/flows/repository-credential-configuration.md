@@ -1,6 +1,6 @@
 ---
 created: 2026-09-18
-updated: "2026-10-22"
+updated: "2026-11-05"
 last_updated_session: "authoring-run/1a8f6b59-50b6-4282-a383-5f45e22aa461"
 ---
 
@@ -138,10 +138,12 @@ buffers. The returned configuration owns its TLS and selected factory.
 
 Installed GitLab development startup instead uses
 `authority: "gitlab-token-development"`. The projection must contain a
-`gitlab-token` backend whose `tokenFile` points to the projected token. The
-loader copies that token into the same private runtime directory, rewrites only
-its token path, and constructs the GitLab owner. It does not read an App key,
-custody key, or prepared GitHub registry.
+`gitlab-token` backend whose `tokenFile` points to the projected token and whose
+`registryFile` points to the mounted immutable registry. The loader validates
+the Backend, provider instance, configuration version, project, Namespace, and
+push-ref policy against that registry. It copies the token into the same private
+runtime directory, rewrites only its token path, and constructs the GitLab
+owner. It does not read an App key, custody key, or prepared GitHub registry.
 
 ### 4. Close validation material or hand it to service startup
 

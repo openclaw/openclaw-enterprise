@@ -14,7 +14,7 @@ import {
   unlink,
   writeFile,
 } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { prepareProjectedInputs } from "../../apps/controller/src/composition/repository-credentials/projected-inputs.ts";
 import { loadConfiguration } from "../../apps/controller/src/composition/repository-credentials/config.ts";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
@@ -233,13 +233,38 @@ test("prepared projection loads without an App key and refuses an authority mism
 test("GitLab development projection keeps the token private and loads the real service", async (t) => {
   const f = await fixture(t);
   f.options.authority = "gitlab-token-development";
+  f.options.backendId = "gitlab-development";
+  await project(dirname(f.options.registryFile), "..gitlab-registry", {
+    "registry.json": JSON.stringify({
+      version: 1,
+      backendId: "gitlab-development",
+      providerInstanceId: "gitlab-development",
+      configVersion: "1",
+      maximumDurationSeconds: 900,
+      projects: [
+        {
+          projectId: "88516404",
+          path: "example/project",
+          namespaces: [
+            {
+              namespaceId: "example",
+              profiles: ["git-read"],
+              pushRefAllowlist: [],
+            },
+          ],
+        },
+      ],
+    }),
+  });
   const backend = {
     kind: "gitlab-token",
+    backendId: "gitlab-development",
     providerInstanceId: "gitlab-development",
     configVersion: "1",
     projectId: "88516404",
     project: "example/project",
     namespaceId: "example",
+    registryFile: f.options.registryFile,
     tokenFile: join(f.options.inputsDirectory, "token"),
     developmentOnly: true,
     pushRefAllowlist: [],

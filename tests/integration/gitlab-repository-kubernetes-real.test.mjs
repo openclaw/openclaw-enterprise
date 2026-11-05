@@ -170,11 +170,13 @@ test(
         limits: { gitPushInputBytes: 67108864 },
         backend: {
           kind: "gitlab-token",
+          backendId,
           providerInstanceId: "gitlab-development",
           configVersion: "1",
           projectId,
           project,
           namespaceId: f.namespace.id,
+          registryFile: "/etc/openclaw/repository-registry/registry.json",
           tokenFile: "/etc/openclaw/repository-inputs/token",
           developmentOnly: true,
           pushRefAllowlist: [],

@@ -37,19 +37,20 @@ Do not implement a separate broker or silently fall back to native GitHub sessio
 
 ## Verification
 
-| Required outcome                                                                                         | Real check and prerequisites                                                            | Result or remaining proof                                              |
-| -------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| Agent uses only the bound GitLab project for allowed clone, fetch, and push operations                   | Real Agent workflow with an authorized GitLab.com project and approved token            | Not run; this spike compared published docs and repository source only |
-| `git-read` and `git-write` match GitHub's read and branch/MR tasks, with issues read-only in `git-write` | Real Agent workflow; verify per-profile Git, API, and denied write effects              | Not run; API route set remains for RFC review                          |
-| `git-full` adds the same supported issue creation and comment tasks as GitHub                            | Same Agent workflow; verify project issue effects                                       | Not run; API route set remains for RFC review                          |
-| Draft creation succeeds while merge and approval remain denied                                           | Same Agent workflow; verify real GitLab API effects                                     | Not run; API route set remains for RFC review                          |
-| A possibly-sent draft create is never posted twice and is only resolved from exact GitLab evidence       | Drop the response after the write; reconcile or retain an unresolved result             | Not run                                                                |
-| Failed audit persistence after a possibly-sent write does not report success or repeat the write         | Fail audit persistence; retain an unresolved result until durable evidence is available | Not run                                                                |
-| Successful writes, denials, and unknown outcomes have attributable audit evidence                        | Inspect committed audit events for actor, project, provider, operation, and outcome     | Not run                                                                |
-| Mixed GitHub and GitLab bindings are refused for this release                                            | Submit a mixed-provider Agent revision; verify admission refuses it                     | Not run                                                                |
-| Wrong-project, unapproved API route, and missing, expired, or revoked credentials fail closed            | Verify OCE denials before send and distinguish a rejection returned by GitLab           | Not run                                                                |
-| Token remains outside Agent material, logs, and client configuration                                     | Inspect delivered files, service logs, and provider request path in the integration     | Not run                                                                |
-| GitHub behavior remains available and existing Agent bindings retain their behavior                      | Current Repo Driver integration coverage plus targeted regression evidence              | Not run                                                                |
+| Required outcome                                                                                         | Real check and prerequisites                                                            | Result or remaining proof                                                |
+| -------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| Agent uses only the bound GitLab project for allowed clone, fetch, and push operations                   | Real Agent workflow with an authorized GitLab.com project and approved token            | Not run; this spike compared published docs and repository source only   |
+| An open session refuses its next send after registry withdrawal or reassignment                          | `tests/integration/gitlab-repository-agent.test.mjs` with synthetic local material      | Passes without live-provider inputs; live-cluster proof remains required |
+| `git-read` and `git-write` match GitHub's read and branch/MR tasks, with issues read-only in `git-write` | Real Agent workflow; verify per-profile Git, API, and denied write effects              | Not run; API route set remains for RFC review                            |
+| `git-full` adds the same supported issue creation and comment tasks as GitHub                            | Same Agent workflow; verify project issue effects                                       | Not run; API route set remains for RFC review                            |
+| Draft creation succeeds while merge and approval remain denied                                           | Same Agent workflow; verify real GitLab API effects                                     | Not run; API route set remains for RFC review                            |
+| A possibly-sent draft create is never posted twice and is only resolved from exact GitLab evidence       | Drop the response after the write; reconcile or retain an unresolved result             | Not run                                                                  |
+| Failed audit persistence after a possibly-sent write does not report success or repeat the write         | Fail audit persistence; retain an unresolved result until durable evidence is available | Not run                                                                  |
+| Successful writes, denials, and unknown outcomes have attributable audit evidence                        | Inspect committed audit events for actor, project, provider, operation, and outcome     | Not run                                                                  |
+| Mixed GitHub and GitLab bindings are refused for this release                                            | Submit a mixed-provider Agent revision; verify admission refuses it                     | Not run                                                                  |
+| Wrong-project, unapproved API route, and missing, expired, or revoked credentials fail closed            | Verify OCE denials before send and distinguish a rejection returned by GitLab           | Not run                                                                  |
+| Token remains outside Agent material, logs, and client configuration                                     | Inspect delivered files, service logs, and provider request path in the integration     | Not run                                                                  |
+| GitHub behavior remains available and existing Agent bindings retain their behavior                      | Current Repo Driver integration coverage plus targeted regression evidence              | Not run                                                                  |
 
 ## Open decisions
 
@@ -75,6 +76,7 @@ No product implementation is composed yet. The provider core landed on `feat/git
 - [ ] `gitlab-token` kind in repository-credential composition and the `platform.ts` GitLab branch.
 - [ ] Protected sender session flow, Installation selection, Console options, and the mixed-provider refusal.
 - [ ] Composed proof: allowed effects, forbidden operation refused before GitLab receives it, withdrawal, and uncertain-write recovery.
+- [x] Registry authority is checked again at the first-write boundary; a removed or reassigned grant refuses the next send before upstream I/O.
 
 ## Manual Notes
 
@@ -87,3 +89,4 @@ No product implementation is composed yet. The provider core landed on `feat/git
 - 2026-10-26: Added explicit single-provider scope, audit evidence, and no-retry/operator reconciliation requirements for uncertain merge-request creation from PR head `b6c6aa510e138fee7d8a1a0367faea0b9b4a1a29`.
 - 2026-11-02: Renumbered from RFC-0024 to RFC-0029 after `main` assigned 0024-0026.
 - 2026-11-05: Renumbered from RFC-0029 to RFC-0030 after `main` assigned RFC-0029 to per-Agent plugin catalogs.
+- 2026-11-05: Added fail-closed current-registry checks for open GitLab sessions.

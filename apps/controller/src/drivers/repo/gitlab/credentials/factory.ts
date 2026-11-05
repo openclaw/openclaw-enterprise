@@ -3,10 +3,13 @@ import type {
   RequestPlan,
   ResolvedGrant,
 } from "../../credentials/backend-contracts.ts";
+import type { RepositoryCredentialBoundSessionInput } from "../../credentials/service-contracts.ts";
 import { sameBinding } from "../../credentials/grant-identity.ts";
 import { createGatewayAuthentication } from "../../credentials/gateway-authentication.ts";
 import { createGitLabGrantResolver } from "./grants.ts";
 import { createGitLabRoutePolicy } from "./routes.ts";
+import { readCurrentGitLabRegistry } from "./current-registry.ts";
+import { resolveGitLabRepositoryBinding } from "./registry.ts";
 import type { GitLabDriverFactory, GitLabFactoryOptions } from "./types.ts";
 import { validateGitLabConfiguration } from "./config.ts";
 
@@ -42,11 +45,24 @@ export function createGitLabDriverFactory(options: GitLabFactoryOptions): GitLab
     },
   });
   const selections = new WeakMap<ResolvedGrant, "git-read" | "git-write" | "git-full">();
+  const boundInputs = new WeakMap<ResolvedGrant, RepositoryCredentialBoundSessionInput>();
+  function assertCurrentGrant(input: RepositoryCredentialBoundSessionInput): void {
+    const registry = readCurrentGitLabRegistry(options.registryFile, options.backendId);
+    const current = resolveGitLabRepositoryBinding(registry, {
+      namespaceId: input.namespaceId,
+      repositoryRef: input.repositoryRef,
+      profile: input.profile,
+    });
+    if (!sameBinding(current.grant, input.expectedBinding)) {
+      throw new Error("authority-withdrawn");
+    }
+  }
   return Object.freeze<GitLabDriverFactory>({
     trustedUpstreamOrigins: new Set(["https://gitlab.com"]),
     resolveBound(input) {
       const selection = grants.resolveBound(input);
       selections.set(selection, input.profile as "git-read" | "git-write" | "git-full");
+      boundInputs.set(selection, input);
       return selection;
     },
     ...authentication,
@@ -60,6 +76,11 @@ export function createGitLabDriverFactory(options: GitLabFactoryOptions): GitLab
         throw new Error("invalid-binding");
       }
       selections.delete(selection);
+      const boundInput = boundInputs.get(selection);
+      if (boundInput === undefined) {
+        throw new Error("invalid-binding");
+      }
+      boundInputs.delete(selection);
       const routes = policy(profile);
       return Object.freeze<PreparedRepositoryBackend>({
         binding: selection.binding,
@@ -90,6 +111,7 @@ export function createGitLabDriverFactory(options: GitLabFactoryOptions): GitLab
                 ...(privateToken === undefined ? {} : { "private-token": privateToken }),
               }),
               assertSendStart() {
+                assertCurrentGrant(boundInput);
                 assertCurrent();
                 if (
                   startedSend ||

@@ -127,6 +127,19 @@ const reviewedImports = {
     "node:fs": ["constants"],
     "node:fs/promises": ["lstat", "open"],
   },
+  // The send boundary synchronously rereads the nonsecret, read-only ConfigMap
+  // projection and rejects symlink escape, replacement, and generation changes.
+  "drivers/repo/gitlab/credentials/current-registry.ts": {
+    "node:fs": [
+      "closeSync",
+      "constants",
+      "fstatSync",
+      "lstatSync",
+      "openSync",
+      "readSync",
+      "realpathSync",
+    ],
+  },
   // Bounded, descriptor-checked PEM from the Installation's read-only public CA projection.
   "composition/repository-credentials/public-ca.ts": {
     "node:fs": ["constants"],
@@ -389,6 +402,7 @@ const reviewedProcessMembers = {
   "drivers/repo/github/credentials/client/operator.ts": ["argv", "exitCode", "stderr", "stdout"],
   "drivers/repo/github/credentials/admission-probe.ts": ["argv", "exitCode", "stderr", "stdout"],
   "drivers/repo/github/credentials/client/private-files.ts": ["getuid"],
+  "drivers/repo/gitlab/credentials/current-registry.ts": ["getuid"],
   "composition/repository-credentials/protected-file.ts": ["getuid"],
   "composition/repository-credentials/service.ts": ["exit", "once", "stderr", "stdout"],
   "composition/repository-credentials/projected-inputs.ts": [

@@ -35,6 +35,8 @@ export interface GitLabRepositoryRegistry {
   readonly projects: readonly GitLabRepositoryRegistration[];
 }
 
+export const GITLAB_REPOSITORY_REGISTRY_MAX_BYTES = 262144;
+
 const identifierPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 const numericIdPattern = /^[1-9][0-9]{0,15}$/u;
 const allowedProfiles: readonly GitLabProfile[] = ["git-read", "git-write", "git-full"];

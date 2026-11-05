@@ -23,6 +23,8 @@ export interface GitLabStaticTokenOwner {
 export interface GitLabFactoryOptions {
   readonly configuration: GitLabTokenConfiguration;
   readonly authority: GitLabStaticTokenOwner;
+  readonly backendId: string;
+  readonly registryFile: string;
   readonly namespaceId: string;
   readonly gatewayOrigin: string;
   readonly limits: ServiceLimits;

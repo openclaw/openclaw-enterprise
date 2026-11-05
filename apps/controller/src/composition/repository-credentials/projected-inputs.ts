@@ -203,6 +203,8 @@ export async function prepareProjectedInputs(
     if (options.authority === "gitlab-token-development") {
       if (
         backend.kind !== "gitlab-token" ||
+        backend.backendId !== options.backendId ||
+        backend.registryFile !== options.registryFile ||
         backend.tokenFile !== join(options.inputsDirectory, "token")
       ) {
         throw new Error("invalid-projected-inputs");
@@ -220,7 +222,7 @@ export async function prepareProjectedInputs(
           ? "gitlab-token"
           : "github-prepared-git-registry") ||
       (options.authority === "gitlab-token-development"
-        ? backend.backendId !== undefined
+        ? backend.backendId !== options.backendId || backend.registryFile !== options.registryFile
         : backend.backendId !== options.backendId)
     ) {
       throw new Error("invalid-projected-inputs");
