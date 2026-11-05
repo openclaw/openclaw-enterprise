@@ -326,6 +326,7 @@ jobs:
     concurrency:
       group: full-integration-slack-live
       cancel-in-progress: false
+      queue: max
     needs: preflight
     if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'slack') }}
     timeout-minutes: 50
@@ -457,6 +458,7 @@ jobs:
     concurrency:
       group: full-integration-dev-up-k3d-${{ github.ref }}
       cancel-in-progress: false
+      queue: max
     needs: preflight
     if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'dev-up-k3d') }}
     timeout-minutes: 180
@@ -483,6 +485,7 @@ jobs:
     concurrency:
       group: full-integration-skipper-prepared-git-installed-${{ github.ref }}
       cancel-in-progress: false
+      queue: max
     needs: preflight
     if: ${{ !cancelled() && github.repository == 'openclaw/openclaw-enterprise' && github.ref == 'refs/heads/main' && github.ref_type == 'branch' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.run_attempt == '1')) && needs.preflight.result == 'success' && (needs.preflight.outputs.selected_lane == 'all' || needs.preflight.outputs.selected_lane == 'skipper-prepared-git-installed') }}
     # The First Agent Smoke runner supports the packaged Codex sandbox and k3d policy.

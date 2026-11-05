@@ -789,6 +789,7 @@ test("manual dev-up workflow prepares the complete lane and aggregates its exact
     const job = workflow.jobs[lane];
     assert.equal(job.needs, "preflight");
     assert.equal(job.concurrency["cancel-in-progress"], false);
+    assert.equal(job.concurrency.queue, "max");
     const group = job.concurrency.group;
     assert.ok(group.startsWith("full-integration-"));
     if (lane === "slack") {

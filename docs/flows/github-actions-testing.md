@@ -98,7 +98,8 @@ Main pushes share a workflow queue. Each manual dispatch has its own queue
 while it waits for approval. After preflight succeeds, Slack Live runs one job
 at a time for the shared channel and app. Local Kubernetes Installation and
 installed Skipper Git each use a separate per-branch queue for pushes and
-dispatches. Each test job checks the repository, main branch and event.
+dispatches. All three job queues keep multiple authorized jobs waiting.
+Each test job checks the repository, main branch and event.
 Main push jobs can retry at the original commit. Manual retries require a fresh
 approved dispatch. The [environment guide](../testing/ci/configuration.md#environments) owns approval setup.
 
