@@ -46,6 +46,9 @@ func developmentCommand() *cobra.Command {
 				if action.name == "down" {
 					return occdev.Down(cmd.Context(), options)
 				}
+				if err := occdev.CheckDevelopmentProfile(); err != nil {
+					return err
+				}
 				switch os.Getenv("OCC_DEVELOPMENT_COMPUTE_DRIVER") {
 				case "kubernetes":
 					return occdev.Up(cmd.Context(), options)
@@ -95,6 +98,14 @@ func developmentCommand() *cobra.Command {
 		}
 		command.AddCommand(child)
 	}
+	command.AddCommand(&cobra.Command{
+		Use:    "check-profile",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return occdev.CheckDevelopmentProfile()
+		},
+	})
 	var profile string
 	analyze := &cobra.Command{
 		Use:    "analyze-compose",

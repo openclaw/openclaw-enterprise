@@ -10,6 +10,7 @@ import {
   preparedAuth,
   routedOptions,
   routedRevision,
+  labelSelectorLabels,
 } from "../helpers/kubernetes-routed-scenarios.mjs";
 
 /** What an OpenShell-like Driver labels a revision's workspace-node relay Pod with. */
@@ -181,14 +182,11 @@ export function providerReadinessFixture({
       }
       requests.push(request);
       assert.equal(request.namespace, namespace);
-      assert.deepEqual(
-        Object.fromEntries(request.labelSelector.split(",").map((entry) => entry.split("="))),
-        {
-          "openclaw.dev/agent": revision.agentId,
-          "openclaw.dev/revision": revision.id,
-          "openclaw.dev/workload-role": "agent",
-        },
-      );
+      assert.deepEqual(labelSelectorLabels(request.labelSelector), {
+        "openclaw.dev/agent": revision.agentId,
+        "openclaw.dev/revision": revision.id,
+        "openclaw.dev/workload-role": "agent",
+      });
       assert.equal(request.timeoutSeconds, 10);
       return observe();
     },

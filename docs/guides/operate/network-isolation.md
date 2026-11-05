@@ -256,6 +256,9 @@ kc -n "$TENANT_NAMESPACE" delete pod netcheck-profile-missing netcheck-profile-u
 - An Agent cannot reach its model: check its
   [network profile](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#explicit-network-profiles)
   and the model egress exclusions.
+- The API or worker logs `KUBERNETES_MODEL_EGRESS_BLOCKED`: the Codex model
+  endpoint uses a port other than 443, an IPv6 address, or an excluded IPv4
+  range. Startup continues; Agents reach it only if your own policy admits it.
 - The status proxy fails for every Pod: set `network.pluginStatusProxySourceCidrs`
   to the API server's source addresses on each node. It never reaches an
   OpenShell Harness Pod, whose provider fence admits only its Gateway; Compute

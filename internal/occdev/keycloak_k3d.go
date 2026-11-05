@@ -829,7 +829,7 @@ func (r *runner) signInDevelopmentKeycloak(ctx context.Context, state *developme
 		return err
 	}
 	fmt.Fprintln(r.opts.Out, "Enabling Keycloak sign-in (second Helm pass)...")
-	if err := r.helmUpgrade(ctx, state, valuesPath, timeout); err != nil {
+	if err := r.helmUpgrade(ctx, state, valuesPath, timeout, "--install"); err != nil {
 		return err
 	}
 

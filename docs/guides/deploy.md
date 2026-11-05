@@ -1,16 +1,29 @@
 # Deploy OpenClaw Enterprise
 
-Install OpenClaw Enterprise on Kubernetes, verify access to the OpenClaw
-Control Plane (OCC), then deploy an Agent and check its model response. Use
-[Local Setup](quickstart.md) for a first installation on your machine. The
-production guides below are for operators using an existing cluster; [Kubernetes Setup](kubernetes-setup.md) gives a short introduction. Run
-repository commands from the repository root. Starting OCC needs no model
-credential; an Agent needs one to send a model request.
+Install OpenClaw Enterprise (OCE), verify access to the OpenClaw Control Plane
+(OCC), then deploy an Agent and check its model response. Choose one installation
+path below and keep its operator shell and protected files for the next step.
+Run repository commands from the matching release checkout's root. Starting OCC
+needs no model credential; an Agent needs one to send a model request.
+
+OCE's OpenShell integration is not production-qualified. Review its
+[remaining qualification work](../reference/drivers/openshell-sandbox.md#remaining-qualification-work)
+before choosing an OpenShell installation path.
+
+| Task                                                     | Start here                                                           | Continue with                                                                                                       |
+| -------------------------------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Try OCE on your machine                                  | [Local Setup](quickstart.md)                                         | [Deploy an Agent](quickstart.md#deploy-an-agent)                                                                    |
+| Try OpenShell locally                                    | [Local k3d setup](deploy/local-setup.md)                             | [Deploy your first Agent](deploy/deploy-first-agent.md)                                                             |
+| Install on an existing Kubernetes cluster with OpenShell | [Kubernetes setup](deploy/kubernetes-setup.md)                       | [Deploy your first Agent](deploy/deploy-first-agent.md)                                                             |
+| Install on Amazon EKS with OpenShell                     | [EKS setup](deploy/eks-openshell-setup.md)                           | [Deploy your first Agent](deploy/deploy-first-agent.md)                                                             |
+| Configure a custom Helm installation                     | [Standard Kubernetes](deploy/kubernetes.md)                          | [Production installation](deploy/production-installation.md), then [production Agents](deploy/production-agents.md) |
+| Upgrade an existing Helm installation                    | [Upgrade checklist](deploy/upgrade-checklist.md)                     | [Production image upgrades](deploy/production-upgrade.md)                                                           |
+| Recover an interrupted image upgrade                     | [Production upgrade recovery](deploy/production-upgrade-recovery.md) | Reconcile the original run before any retry                                                                         |
 
 ## Development
 
 Use [Local Setup](quickstart.md) to start the platform with Kubernetes and
-verify authenticated access. Then [deploy your first Agent](first-agent.md).
+verify authenticated access. Then [prepare the local Agent session](quickstart.md#deploy-an-agent).
 The [local Kubernetes development guide](deploy/local-kubernetes-development.md)
 explains the profile for contributors working on the platform.
 
@@ -18,7 +31,7 @@ explains the profile for contributors working on the platform.
 
 Follow [Local Setup](quickstart.md) to verify the control plane. That check
 proves authenticated access; it does not prove an Agent can answer a model
-request. Complete [Deploy your first Agent](first-agent.md) for that result.
+request. Follow [model verification](operate/model-verification.md) for that result.
 For local Kubernetes images and cleanup, see
 [local operations](deploy/local-operations.md).
 
@@ -31,60 +44,38 @@ The [console reference](../reference/console.md) covers browser behavior and lim
 
 ## Production
 
-Choose the guide for your cluster:
-
-- [Standard Kubernetes](deploy/kubernetes.md): prepare an existing Kubernetes
-  cluster, storage, networking, and PostgreSQL.
-- [Amazon EKS](deploy/eks.md): prepare AWS managed Kubernetes, node groups,
-  VPC networking, EBS storage, and optional RDS PostgreSQL.
-
-Both paths use the same Helm chart and shared installation procedure. Cluster
-hosting does not select the Agent model provider.
+The Kubernetes and EKS setup guides install OCE with OpenShell and prepare the
+shared operator session for **Deploy your first Agent**. Do not repeat the custom
+installation sequence below after either setup guide. Installation profiles and
+the custom Helm procedure use a separate configuration and Agent deployment path.
+Cluster hosting does not select the Agent model provider.
 
 ### Production prerequisites
 
-- Kubernetes 1.35 or later, an explicit context, enforcing NetworkPolicies,
-  Helm, a version-compatible `kubectl`, Python 3, `yq` v4, and the installed
-  [OCC CLI](cli.md). Use Bash for image selection and model verification, and
-  Node.js 24 or newer for profile generation or the API transport-credential
-  example. Manual YAML plus console transport provisioning avoids those Node
-  commands. Older Kubernetes servers produce a startup warning and remain
-  outside the supported boundary.
-- Controller and runtime image digests and a chart matched to their source; see
-  [private image delivery](deploy/private-registry-images.md).
-- External PostgreSQL with separate migrator and application roles.
-- A Kubernetes node pool labeled for OCC control-plane Pods. The production example
-  selects nodes with `oce-role: control`; the chart default is `{}`. Set
-  `controlPlane.nodeSelector` to the reviewed labels for your cluster.
-- A Kubernetes node pool labeled for Agent runtime Pods. The production
-  Installation example selects nodes with `oce-role: agents`; set
-  `drivers.compute.configuration.runtime.nodeSelector` to the reviewed labels
-  for gateway and Agent scheduling.
-- Operator-managed HTTPS access for approved clients; the chart does not create
-  TLS or Ingress.
-- Operator-created startup, database, authentication, optional Backend Secrets,
-  fresh bootstrap PVC, gateway storage, and exact `/32` egress destinations.
+<Snippet file="../snippets/kubernetes-prerequisites.md" />
 
 ### Production installation sequence
 
-Follow these pages in order in the same operator shell:
+For a custom Helm installation, follow these pages in order:
 
-1. [Build images and install the control plane](deploy/production-installation.md).
+1. [Select images and install the control plane](deploy/production-installation.md).
    Generate configuration from an
    [installation profile](deploy/installation-profiles.md) (recommended) or copy
    the manual YAML examples, then create system Secrets, prepare the fresh
-   bootstrap PVC, install the chart, and authenticate to the production API.
+   bootstrap PVC, and [install the chart once](deploy/production-installation.md#install-the-control-plane)
+   with `occ installation install`. Keep the bootstrap key in the installation shell.
+   Use it there to authenticate to the production API.
 2. [Prepare Namespaces and deploy Agents](deploy/production-agents.md).
    Grant tenant RoleBindings, choose embedded OpenClaw or dedicated Codex,
-   provision exact-Agent credentials, and deploy a saved version.
+   and grant access to the model Secret. Switch to the [Namespace service key in a separate shell](deploy/production-agents.md#prepare-transport-credentials-and-deploy)
+   before deploying the reviewed Configuration with `occ agent deploy-first`.
 3. [Verify the production workload](deploy/production-agents.md#verify-production-workloads).
    Confirm the selected version and require a real model response. The guide
    offers a TUI and an HTTP check using the optional loopback password on
    Kubernetes trusted-proxy gateways.
 
-Before upgrading a retained installation, read the
-[breaking-change notices](deploy/breaking-changes.md) and complete the
-[upgrade migration checklist](deploy/upgrade-checklist.md). Then use
+Before upgrading a retained installation, complete the
+[upgrade checklist](deploy/upgrade-checklist.md). Then use
 [production image upgrades](deploy/production-upgrade.md) to release the
 control plane without replacing Agent revisions, or to update Agent runtimes
 and redeploy the running fleet. Runtime releases require an interruption
@@ -122,6 +113,9 @@ For startup diagnosis, see the [production startup flow](../flows/production-sta
 For runtime proof, see the [production TUI flow](../flows/production-tui.md).
 
 ## Customization
+
+[Apply a console theme](deploy/console-theme.md) to customize the product name,
+logo, browser icons, and colors through mounted files with the upstream image.
 
 Use Helm values, Kubernetes manifests, Installation startup YAML, and Collector
 Secrets for production. Use

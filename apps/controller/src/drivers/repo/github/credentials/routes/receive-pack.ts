@@ -7,7 +7,7 @@ import { allowsPushRef, decodePushedBranchRef } from "../../../credentials/clien
 /** Most ref updates one inspected push may carry; more is refused with its own code. */
 export const maximumPushRefs = 256;
 const tooManyRefs: InputVerdict = Object.freeze({
-  status: 413,
+  status: 413 as const,
   code: "push-ref-limit-exceeded",
   message: `A push may update at most ${maximumPushRefs} refs. Push the refs in smaller batches.`,
 });

@@ -42,6 +42,28 @@ const templates = [
   },
 ];
 
+test("selected plugin search requires exact identity and the admitted marketplace", () => {
+  const pluginId = `codex-plugin:${nativeId}`;
+  assert.equal(translator.codexSearchPlan(selections)[0].params.searchTerm, "fixture");
+  // Search can return fuzzy matches and entries from other marketplaces. Neither
+  // may redirect installation away from the Agent's admitted selection.
+  for (const result of [
+    { marketplaceName: "workspace-directory", plugin: detail.plugin.summary },
+    {
+      marketplaceName: "openai-curated-remote",
+      plugin: { ...detail.plugin.summary, id: "fixture-tools@openai-curated-remote" },
+    },
+  ]) {
+    assert.equal(translator.codexReadParamsFromSearch(pluginId, { data: [result] }), undefined);
+  }
+  const params = translator.codexReadParamsFromSearch(pluginId, {
+    data: [{ marketplaceName: "openai-curated-remote", plugin: detail.plugin.summary }],
+    nextCursor: null,
+  });
+  assert.equal(params.pluginName, "fixture");
+  assert.equal(params.remoteMarketplaceName, "openai-curated-remote");
+});
+
 test("serialized Agent startup ignores template metadata and configures only concrete apps", () => {
   // Template-only IDs must not gain access, even when reported as materialized.
   for (const appTemplates of [templates, undefined, null, "uninterpreted metadata"]) {

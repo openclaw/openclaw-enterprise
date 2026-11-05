@@ -67,8 +67,11 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD !== "1") {
   for (const suffix of ["", ".git"]) {
     const spelling = `/FiXtUrE/RePoSiToRy${suffix}`;
     test(`native Git clones, fetches and pushes through ${spelling}`, async (t) => {
-      const fixture = await startCredentialServiceFixture(t, { profile: "git-write" });
-      // Both unauthenticated discovery shapes must challenge before any mint or dispatch.
+      const fixture = await startCredentialServiceFixture(t, {
+        profile: "git-write",
+        configuration: { pushRefAllowlist: ["refs/heads/native-path"] },
+      });
+      // Both unauthenticated discovery shapes must challenge before any upstream dispatch.
       for (const service of ["git-upload-pack", "git-receive-pack"]) {
         const response = await rawRequest(fixture, `${spelling}/info/refs?service=${service}`);
         assert.equal(response.status, 401);
@@ -160,15 +163,7 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD !== "1") {
           ].includes(path),
         ),
       );
-      assert.equal(fixture.github.issuesOfTokens.length, 1);
-      assert.deepEqual(fixture.github.issuesOfTokens[0].permissions, {
-        metadata: "read",
-        contents: "write",
-        issues: "read",
-        pull_requests: "write",
-        checks: "read",
-        statuses: "read",
-      });
+      assert.equal(fixture.github.issuesOfTokens.length, 0);
     });
 
     test(`cold git-read denies receive-pack through ${spelling}`, async (t) => {
@@ -230,7 +225,7 @@ if (process.env.REPOSITORY_CREDENTIALS_CONTAINER_CHILD !== "1") {
     assert.equal(metadata.status, 200);
     assert.equal(JSON.parse(metadata.body).full_name, "fixture/repository");
     assert.ok(fixture.github.trace.some(({ target }) => target === "/repos/fixture/repository"));
-    assert.equal(fixture.github.issuesOfTokens.length, 1);
+    assert.equal(fixture.github.issuesOfTokens.length, 0);
     assert.equal(fixture.git.trace.length, 0);
   });
 }

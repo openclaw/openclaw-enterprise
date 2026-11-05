@@ -1,5 +1,12 @@
+import { EgressSendReceipts } from "../../packages/occ/src/egress-send-receipts.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import {
+  NAMESPACE_NAME_CONFLICT,
+  PRESET_NAME_CONFLICT,
+  SECRET_NAME_CONFLICT,
+  SERVICE_ACCOUNT_NAME_CONFLICT,
+} from "../helpers/refusal-text.mjs";
 
 function identifier(kind) {
   return `${kind}_${randomUUID()}`;
@@ -86,6 +93,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     backendId: null,
     harnessAuth: apiKeyBinding,
     executionMode: "embedded",
+    gatewayManagedMode: true,
     sandboxPolicyEditing: false,
     servicePrincipalId: identifier("service-agent"),
     desiredRuntimeState: "stopped",
@@ -99,6 +107,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     namespaceId: namespace.id,
     agentId: agent.id,
     revision: 1,
+    gatewayManagedMode: true,
     backendId: null,
     configurationId: configuration.id,
     configurationKind: configuration.kind,
@@ -119,6 +128,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
       implementation: "deterministic-contract",
       admission: `driver-state:v1:${"a".repeat(64)}`,
     },
+    executionAdmission: { version: 2, mode: "unprotected" },
     servicePrincipalId: agent.servicePrincipalId,
     createdAt: new Date().toISOString(),
   };
@@ -919,6 +929,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     configurationId: accountConfiguration.id,
     backendId: null,
     executionMode: "dedicated",
+    gatewayManagedMode: true,
     sandboxPolicyEditing: false,
     servicePrincipalId: identifier("service-agent"),
     harnessAuth: {
@@ -1094,8 +1105,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     ),
     {
       name: "ResourceStateConflictError",
-      message:
-        "A ServiceAccount with this name already exists in this Namespace. Choose a different name.",
+      message: SERVICE_ACCOUNT_NAME_CONFLICT,
     },
     "ServiceAccount names must be unique within their Namespace.",
   );
@@ -1544,6 +1554,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     revision,
   });
 
+  await verifyEgressSendReceiptContract(store, installation, namespace, harnessSecret);
   await verifyDeletedResourceAccessBindingContract(store, revision);
   await verifyDuplicateNameContract(store);
   await verifyNameLengthContract(store);
@@ -1613,6 +1624,7 @@ async function verifyDuplicateNameContract(store) {
     type: "openai",
     config: { base_url: "https://api.openai.com/v1" },
     secrets: {},
+    ownerCapability: "credential_gateway",
     driverId: "credential-gateway-contract",
     state: "ready",
     createdAt,
@@ -1648,25 +1660,25 @@ async function verifyDuplicateNameContract(store) {
     [
       (transaction) =>
         transaction.namespaces.createNamespace({ ...namespace, id: identifier("ns") }),
-      "A Namespace with this name already exists. Choose a different name.",
+      NAMESPACE_NAME_CONFLICT,
     ],
     [
       (transaction) => transaction.secrets.createSecret({ ...secret, id: identifier("sec") }),
-      "A Secret with this name already exists in this Namespace. Choose a different name.",
+      SECRET_NAME_CONFLICT,
     ],
     [
       (transaction) => transaction.presets.createPreset({ ...preset, id: identifier("pre") }),
-      "A Preset with this name already exists in this Namespace. Choose a different name.",
+      PRESET_NAME_CONFLICT,
     ],
     [
       (transaction) =>
         transaction.presets.updatePreset(namespace.id, otherPreset.id, { name: preset.name }),
-      "A Preset with this name already exists in this Namespace. Choose a different name.",
+      PRESET_NAME_CONFLICT,
     ],
     [
       (transaction) =>
         transaction.serviceAccounts.createServiceAccount({ ...account, id: identifier("sa") }),
-      "A ServiceAccount with this name already exists in this Namespace. Choose a different name.",
+      SERVICE_ACCOUNT_NAME_CONFLICT,
     ],
     [
       (transaction) =>
@@ -1711,6 +1723,7 @@ async function verifyNameLengthContract(store) {
     type: "openai",
     config: { base_url: "https://api.openai.com/v1" },
     secrets: {},
+    ownerCapability: "credential_gateway",
     driverId: "credential-gateway-contract",
     state: "ready",
     createdAt,
@@ -1838,6 +1851,7 @@ async function verifyDeletedResourceAccessBindingContract(store, revision) {
     type: "openai",
     config: { base_url: "https://api.openai.com/v1" },
     secrets: { api_key: { kind: "secret", namespaceId: namespace.id, id: secret.id } },
+    ownerCapability: "credential_gateway",
     driverId: "credential-gateway-contract",
     state: "ready",
     createdAt,
@@ -2013,6 +2027,7 @@ async function verifyCredentialSourceContract(
     secrets: {
       api_key: { kind: "secret", namespaceId: sourceNamespace.id, id: sourceSecret.id },
     },
+    ownerCapability: "credential_gateway",
     driverId: "credential-gateway-contract",
     state: "ready",
     createdAt: new Date().toISOString(),
@@ -2043,12 +2058,12 @@ async function verifyCredentialSourceContract(
     servicePrincipalId: sourceAgent.servicePrincipalId,
     harnessAuth: {
       ...sourceBinding,
-      credentialGatewayId: "openshell-contract",
+      credentialGatewayId: source.driverId,
       sourceType: source.type,
       loginMode: "api_key",
     },
     credentialSources: [
-      { sourceId: source.id, credentialGatewayId: "openshell-contract", sourceType: source.type },
+      { sourceId: source.id, credentialGatewayId: source.driverId, sourceType: source.type },
     ],
   };
   const sourceReferences = (transaction) =>
@@ -2196,15 +2211,175 @@ async function verifyCredentialSourceContract(
     "A Secret used by a credential source cannot be deleted.",
   );
 
+  // Exercise listed-only readiness and Proxy ownership without adding retained references
+  // to the lifecycle fixture below. A successful insertion is rolled back deliberately.
+  const probeRollback = new Error("rollback listed source checks");
+  await assert.rejects(
+    store.transact(async (transaction) => {
+      const probeAgent = {
+        ...sourceAgent,
+        id: identifier("agt"),
+        name: "Listed source probe",
+        servicePrincipalId: identifier("service-agent"),
+        harnessAuth: { method: "runtime" },
+      };
+      await transaction.agents.createAgent(probeAgent);
+      const probeRevision = {
+        ...sourceRevision,
+        id: identifier("rev"),
+        agentId: probeAgent.id,
+        servicePrincipalId: probeAgent.servicePrincipalId,
+        harnessAuth: { method: "runtime" },
+      };
+      const second = { ...source, id: identifier("cs"), name: "Second listed source" };
+      await transaction.credentialSources.createCredentialSource(second);
+      const pairAgent = {
+        ...sourceAgent,
+        id: identifier("agt"),
+        name: "Two listed sources",
+        servicePrincipalId: identifier("service-agent"),
+        credentialSources: [{ sourceId: source.id }, { sourceId: second.id }],
+      };
+      await transaction.agents.createAgent(pairAgent);
+      await assert.rejects(
+        transaction.revisions.createRevision({
+          ...sourceRevision,
+          id: identifier("rev"),
+          agentId: pairAgent.id,
+          servicePrincipalId: pairAgent.servicePrincipalId,
+          credentialSources: [
+            sourceRevision.credentialSources[0],
+            { sourceId: second.id, sourceType: second.type, credentialProxyId: second.driverId },
+          ],
+        }),
+        {
+          name: "ScopeViolationError",
+          message:
+            "The AgentRevision credential source snapshot does not match its current owner or type.",
+        },
+      );
+      await transaction.credentialSources.markCredentialSourceDeleting(
+        sourceNamespace.id,
+        source.id,
+      );
+      await assert.rejects(transaction.revisions.createRevision(probeRevision), {
+        name: "ScopeViolationError",
+        message: "The AgentRevision references an unavailable credential source.",
+      });
+      const installation = await transaction.installations.getInstallation();
+      const proxyId = identifier("cs");
+      const proxy = {
+        ...source,
+        id: proxyId,
+        name: "Listed proxy",
+        ownerCapability: "credential_proxy",
+        egress: {
+          key: {
+            installationId: installation.id,
+            namespaceId: sourceNamespace.id,
+            source: { id: proxyId, generation: 1 },
+            backend: { id: "contract-backend", generation: 1 },
+            provider: { id: source.driverId, generation: 1 },
+          },
+          schemaVersion: 1,
+          adoption: "live",
+          retention: "none",
+          materialRefId: "contract-material",
+          secret: { kind: "secret", namespaceId: sourceNamespace.id, id: sourceSecret.id },
+          secretDriver: { id: sourceSecret.driverId, generation: 1 },
+          sender: { id: "contract-sender", generation: 1 },
+          resolver: { id: "contract-resolver", generation: 1 },
+        },
+      };
+      await transaction.credentialSources.createCredentialSource(proxy);
+      const proxyAgent = {
+        ...probeAgent,
+        id: identifier("agt"),
+        name: "Proxy listing",
+        servicePrincipalId: identifier("service-agent"),
+        credentialSources: [{ sourceId: proxyId }],
+      };
+      await transaction.agents.createAgent(proxyAgent);
+      const proxyRevision = {
+        ...probeRevision,
+        agentId: proxyAgent.id,
+        servicePrincipalId: proxyAgent.servicePrincipalId,
+        credentialSources: [
+          { sourceId: proxyId, sourceType: source.type, credentialProxyId: source.driverId },
+        ],
+      };
+      assertCreatedRevision(
+        await transaction.revisions.createRevision(proxyRevision),
+        proxyRevision,
+      );
+      const registering = {
+        ...source,
+        id: identifier("cs"),
+        name: "Listed registering",
+        state: "registering",
+      };
+      await transaction.credentialSources.createCredentialSource(registering);
+      const registeringAgent = {
+        ...probeAgent,
+        id: identifier("agt"),
+        name: "Registering listing",
+        servicePrincipalId: identifier("service-agent"),
+        credentialSources: [{ sourceId: registering.id }],
+      };
+      await transaction.agents.createAgent(registeringAgent);
+      await assert.rejects(
+        transaction.revisions.createRevision({
+          ...probeRevision,
+          id: identifier("rev"),
+          agentId: registeringAgent.id,
+          servicePrincipalId: registeringAgent.servicePrincipalId,
+          credentialSources: [{ ...sourceRevision.credentialSources[0], sourceId: registering.id }],
+        }),
+        {
+          name: "ScopeViolationError",
+          message: "The AgentRevision references an unavailable credential source.",
+        },
+      );
+      throw probeRollback;
+    }),
+    (error) => error === probeRollback,
+  );
+
   await store.transact(async (transaction) => {
     assert.equal(await sourceReferences(transaction), false);
     await transaction.agents.createAgent(sourceAgent);
     // The Agent draft binding alone retains the source.
     assert.equal(await sourceReferences(transaction), true);
-    assertCreatedRevision(
-      await transaction.revisions.createRevision(sourceRevision),
-      sourceRevision,
-    );
+    // Each mismatch has one cause; capability changes retain the real Driver ID.
+    const listed = sourceRevision.credentialSources[0];
+    for (const change of [
+      {
+        harnessAuth: { ...sourceRevision.harnessAuth, credentialGatewayId: "wrong-owner" },
+        credentialSources: [{ ...listed, credentialGatewayId: "wrong-owner" }],
+      },
+      { harnessAuth: { ...sourceRevision.harnessAuth, credentialGatewayId: "wrong-owner" } },
+      { credentialSources: [{ ...listed, credentialGatewayId: "wrong-owner" }] },
+      { credentialSources: [{ ...listed, sourceType: "other" }] },
+      {
+        credentialSources: [
+          { sourceId: source.id, sourceType: source.type, credentialProxyId: source.driverId },
+        ],
+      },
+    ]) {
+      await assert.rejects(transaction.revisions.createRevision({ ...sourceRevision, ...change }), {
+        name: "ScopeViolationError",
+        message:
+          "The AgentRevision credential source snapshot does not match its current owner or type.",
+      });
+    }
+    // The refusal consumes neither the revision ID nor its number; retry correctly below.
+    const mutableRevision = structuredClone(sourceRevision);
+    const insertion = transaction.revisions.createRevision(mutableRevision);
+    mutableRevision.credentialSources[0] = {
+      ...mutableRevision.credentialSources[0],
+      credentialGatewayId: "changed-after-entry",
+    };
+    assertCreatedRevision(await insertion, sourceRevision);
     await transaction.agents.updateConfiguration(
       sourceNamespace.id,
       sourceAgent.id,
@@ -2513,7 +2688,7 @@ async function verifyCredentialSourceContract(
     credentialSources: [
       {
         sourceId: tokenSource.id,
-        credentialGatewayId: "openshell-contract",
+        credentialGatewayId: tokenSource.driverId,
         sourceType: tokenSource.type,
       },
     ],
@@ -2659,7 +2834,7 @@ async function verifyCredentialSourceContract(
   // A revision freezes exactly the draft's list, in order, as well-formed snapshots.
   const snapshot = (sourceId) => ({
     sourceId,
-    credentialGatewayId: "openshell-contract",
+    credentialGatewayId: (sourceId === secondToken.id ? secondToken : tokenSource).driverId,
     sourceType: tokenSource.type,
   });
   const listedRevision = {
@@ -2915,4 +3090,133 @@ async function verifyCredentialSourceContract(
     ),
     externalRevision,
   );
+}
+
+async function verifyEgressSendReceiptContract(store, installation, namespace, secret) {
+  const receipts = new EgressSendReceipts(store);
+  const ref = () => ({ id: randomUUID(), generation: 1 });
+  const sender = ref();
+  const evidence = {
+    kind: "static",
+    source: {
+      installationId: installation.id,
+      namespaceId: namespace.id,
+      source: ref(),
+      backend: ref(),
+      provider: ref(),
+    },
+    binding: ref(),
+    grantHash: "receipt-contract",
+    isolationId: randomUUID(),
+    adoption: "live",
+    materialRefId: randomUUID(),
+    secret: { kind: "secret", namespaceId: namespace.id, id: secret.id },
+    secretDriver: ref(),
+    materialId: randomUUID(),
+    materialVersion: "N",
+    authoritativeObservedAt: new Date().toISOString(),
+    usableUntil: "2099-01-01T00:00:00.000Z",
+    retention: "none",
+  };
+  const input = {
+    sender,
+    instanceId: randomUUID(),
+    useId: randomUUID(),
+    attemptId: randomUUID(),
+    material: evidence,
+    deadlineAt: evidence.usableUntil,
+  };
+  const starts = await Promise.all([receipts.begin(sender, input), receipts.begin(sender, input)]);
+  assert.equal(starts.filter((value) => value.created).length, 1);
+  const rejected = { kind: "provider_rejected", dispatch: "confirmed", status: 401 };
+  const feedback = { classification: "credential_rejected", evidence };
+  // Observation commits the fence but cannot claim that a remote sender applied the decision.
+  const observed = await receipts.observe(sender, input, rejected, feedback);
+  assert.deepEqual(observed.outcome, { kind: "uncertain", dispatch: "possible" });
+  assert.deepEqual(observed.observation, rejected);
+  assert.equal(observed.feedback, "fenced");
+  assert.equal(observed.settled, false);
+  assert.deepEqual(await receipts.observe(sender, input, rejected, feedback), observed);
+  assert.equal((await receipts.begin(sender, input)).created, false);
+  assert.equal(await receipts.recover(sender, { ...input, instanceId: randomUUID() }), undefined);
+  for (const changed of [
+    { ...input, deadlineAt: "2099-01-02T00:00:00.000Z" },
+    { ...input, material: { ...evidence, materialVersion: "N+1" } },
+    { ...input, material: { ...evidence, secretDriver: ref() } },
+    { ...input, material: { ...evidence, value: "forbidden" } },
+    { ...input, operation_handle: "forbidden" },
+  ]) {
+    await assert.rejects(receipts.begin(sender, changed), { name: "ResourceStateConflictError" });
+  }
+  for (const invalid of [
+    { ...rejected, body: "forbidden" },
+    { ...rejected, headers: [] },
+    { ...rejected, key: "forbidden" },
+  ]) {
+    await assert.rejects(receipts.observe(sender, input, invalid, feedback), {
+      name: "ResourceStateConflictError",
+    });
+  }
+  await store.read(async (view) => {
+    assert.equal(await view.credentialSources.isEgressMaterialRejected(evidence), true);
+    assert.equal(
+      await view.credentialSources.isEgressMaterialRejected({
+        ...evidence,
+        materialVersion: "N+1",
+      }),
+      false,
+    );
+    assert.equal(
+      await view.credentialSources.isEgressMaterialRejected({ ...evidence, secretDriver: ref() }),
+      false,
+    );
+    assert.equal(
+      view.egressSendReceipts,
+      undefined,
+      "receipt mutation stays in the transaction owner",
+    );
+  });
+  // Once final uncertainty is recorded, neither a retry nor invented refusal is permitted.
+  await receipts.record(sender, input, { kind: "uncertain", dispatch: "possible" });
+  await assert.rejects(receipts.record(sender, input, rejected, feedback), {
+    name: "ResourceStateConflictError",
+  });
+  await assert.rejects(
+    receipts.record(sender, input, {
+      kind: "refused",
+      dispatched: false,
+      error: { kind: "cancelled" },
+    }),
+    { name: "ResourceStateConflictError" },
+  );
+  const rollback = {
+    ...input,
+    useId: randomUUID(),
+    material: { ...evidence, materialVersion: "rollback" },
+  };
+  await assert.rejects(
+    store.transact(async (unit) => {
+      await unit.egressSendReceipts.insert(rollback);
+      await unit.credentialSources.rejectEgressMaterial(rollback.material);
+      throw new Error("abort receipt and fence");
+    }),
+    /abort receipt and fence/,
+  );
+  assert.equal(await receipts.recover(sender, rollback), undefined);
+  assert.equal(
+    await store.read((view) => view.credentialSources.isEgressMaterialRejected(rollback.material)),
+    false,
+  );
+  const refused = { ...input, useId: randomUUID() };
+  await receipts.begin(sender, refused);
+  const final = await receipts.record(sender, refused, {
+    kind: "refused",
+    dispatched: false,
+    error: { kind: "cancelled" },
+  });
+  assert.equal(final.observation, null);
+  assert.equal(final.feedback, null);
+  await assert.rejects(receipts.reject(sender, refused, evidence), {
+    name: "ResourceStateConflictError",
+  });
 }

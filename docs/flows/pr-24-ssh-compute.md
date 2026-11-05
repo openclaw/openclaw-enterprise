@@ -1,7 +1,7 @@
 ---
 created: 2026-09-07
-updated: 2026-10-22
-last_updated_session: authoring-run/42f58451-fded-4bed-8b34-e0c7217c2665
+updated: 2026-11-05
+last_updated_session: 01a12074-7896-7f63-99fe-9f42e9041d02
 ---
 
 <a id="pr-24-ssh-compute-flow"></a>
@@ -98,7 +98,10 @@ already submitted can still complete. Once stdout exceeds 64 Ki UTF-16 code
 units, the executor stops retaining subsequent chunks and reports
 `SSH helper output exceeded its limit.` The crossing chunk can exceed the
 threshold. The local client still receives SIGTERM, then SIGKILL after one
-second if needed; the operation settles on its close event.
+second if needed; the operation settles on its close event. One second after
+the client exits, the executor closes its output pipes, so a descendant that
+inherited them, such as a `ProxyCommand`, cannot hold the operation open for
+more than about a second after the client exits.
 
 Host mutations take `<root>/.compute-lock` through a child holding kernel flock,
 with a 30-second acquisition timeout. The shared root defines the inventory and
@@ -114,6 +117,14 @@ Namespace still holds it while retrying cleanup of remaining owned accounts.
 Before host work, `sshGatewayConfigurationDocument` admits only the supported
 authentication fields and modes. Omitted auth mode renders explicit password mode with a
 managed environment SecretRef; explicit trusted proxy retains its configured trust.
+`sshGatewayAuthentication` reads an authored password with the shared reader
+(`gatewayPasswordRequirement`). An unset password, `${OPENCLAW_GATEWAY_PASSWORD}`
+and a `default`-provider SecretRef render as the managed reference, as before. Any
+other readable environment SecretRef to that variable renders as written. When the
+managed reference is unreadable under the Configuration's `secrets`, admission
+refuses it. The refusal offers the reference on the default env alias only if the
+reader accepts that reference. Verify, stop and retire check only the password's
+shape and render it the same way, so the snapshot hash still matches.
 
 The helper creates or verifies a deterministic per-Agent system user and
 private group, then creates the Agent directory and reserves the lowest free
@@ -245,6 +256,10 @@ retire, which frees its gateway port.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 23:35: Preserve pending-account recovery documentation in the reorganized Driver reference. (PR #2435 - b2a72414b9c071454d2b740b671fcf7a467af8c0)
+
+- 2026-10-31: Trace authored password rendering, the alias-aware refusal offer and shape-only teardown checks. (fix-3064, findings 3064, 3065)
 
 - 2026-10-22 00:01: Restart a retained pending claim through fresh group creation after both local entries are confirmed absent; lookup errors leave the claim unchanged. (authoring-run/42f58451-fded-4bed-8b34-e0c7217c2665 - 8aa91ba91fe62a26b4ee4cd9a6d20a216470b3ad)
 

@@ -124,7 +124,7 @@ export function createAlternateDriver({
       }
       try {
         attempt.assertAdmitted();
-        await custody.withAccess(credential, "retire", async (bytes) => {
+        await custody.withRetirement(attempt, credential, async (bytes) => {
           attempt.observeDispatch();
           // Retirement revokes this access token, never the replacement or
           // the session's independent renewal authority.
@@ -175,11 +175,11 @@ export function createAlternateDriver({
       controls.observe?.({ kind: "plan", method: plan.method });
       return plan;
     },
-    async withAuthentication(credential, plan, send) {
+    prepareAuthentication(credential, plan) {
       if (finalized || !plans.has(plan) || !handles.has(credential)) {
         throw new Error("foreign-or-closed-authority");
       }
-      return custody.withAccess(credential, "authenticate", async (bytes) => {
+      return async (bytes, send) => {
         events.push({ kind: "authentication", sessionId: authority.sessionId });
         await controls.beforeSend?.();
         return send(
@@ -191,7 +191,7 @@ export function createAlternateDriver({
             }),
           }),
         );
-      });
+      };
     },
   };
   return driver;

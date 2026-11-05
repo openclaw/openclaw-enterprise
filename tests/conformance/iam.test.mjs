@@ -1,3 +1,7 @@
+import {
+  requireConfiguration,
+  ConfigurationValidationError as SharedConfigurationValidationError,
+} from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { PERMISSION_ACTIONS, RESOURCE_KINDS } from "../../packages/contracts/src/index.ts";
@@ -597,12 +601,12 @@ test("the native IAM implementation exposes a closed pre-construction configurat
   });
   assert.equal(Object.isFrozen(NativeIAMDriver.configurationSchema), true);
   assert.equal(Object.isFrozen(NativeIAMDriver.configurationSchema.properties), true);
-  assert.doesNotThrow(() => NativeIAMDriver.validateConfiguration({}));
+  assert.doesNotThrow(() => requireConfiguration(NativeIAMDriver, {}));
 
   for (const configuration of [undefined, null, [], "native", { unsupported: true }, new Date()]) {
     assert.throws(
-      () => NativeIAMDriver.validateConfiguration(configuration),
-      /Native IAM Driver configuration must be an empty object/,
+      () => requireConfiguration(NativeIAMDriver, configuration),
+      SharedConfigurationValidationError,
     );
   }
 

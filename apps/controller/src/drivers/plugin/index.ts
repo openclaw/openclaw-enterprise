@@ -1,6 +1,21 @@
+import { requireManagedCredentialRuntime } from "./managed-runtime.ts";
+import { type ErrorDetail } from "@openclaw-enterprise/contracts";
+import {
+  CODEX_PLUGIN_DRIVER_IMPLEMENTATION,
+  OPENCLAW_PLUGIN_DRIVER_IMPLEMENTATION,
+  requireConfiguration,
+  ConfigurationValidationError,
+} from "@openclaw-enterprise/contracts";
+import {
+  managedCliCredentialBindings,
+  managedInstalls,
+  managedPluginCredentials,
+  managedMcpCredentialBindings,
+} from "./managed-catalog.ts";
 import { asRecord, deepFreeze, immutableCopy } from "@openclaw-enterprise/utils";
 import {
   type JSONSchema,
+  type RevisionHarnessDescriptor,
   type PluginCatalogEntry,
   type PluginCatalogPage,
   type PluginDiscoveryAuthentication,
@@ -17,17 +32,23 @@ import {
   NotImplementedError,
   PluginDiscoveryError,
   PluginPolicyValidationError,
+  resolveConfiguredHarnessId,
   ScopeViolationError,
 } from "@openclaw-enterprise/occ";
 import {
   hasAliasedSelections,
   openClawCatalogEntries,
+  openClawManagedPluginIds,
   validatePolicies,
   type CodexPluginCatalogReader,
 } from "./runtime-translator.ts";
 import { NativeCodexPluginCatalogReader } from "./stdio-catalog-reader.ts";
 import { discoverHostedPlugins, getHostedPlugin } from "./hosted-catalog.ts";
 import { deniedOpenClawSelection, openClawToolDenialMessage } from "./openclaw-tool-denial.ts";
+import {
+  openClawPluginSettingConflict,
+  openClawPluginSettingMessage,
+} from "./openclaw-plugin-settings.ts";
 import { validateCodexAutomaticReviewerPolicy } from "../../gateway/codex-approval-policy.ts";
 
 type ConfigurationRecord = Readonly<Record<string, unknown>>;
@@ -41,10 +62,25 @@ type BundledCatalogEntry = PluginCatalogEntry;
 
 export class PluginValidationError extends ScopeViolationError {}
 
+// Whether the Configuration's models select the OpenClaw Harness. A model policy no deployment
+// accepts is the Configuration's own refusal, named by the rules that check it.
+function openClawHarnessConfiguration(
+  configuration: Readonly<OpenClawConfigurationDocument>,
+): boolean {
+  try {
+    return resolveConfiguredHarnessId(configuration) === "openclaw";
+  } catch (error) {
+    if (error instanceof ConfigurationHarnessError) {
+      return false;
+    }
+    throw error;
+  }
+}
+
 const OCC_DRIVER_ID = "occ-plugin";
-const OCC_IMPLEMENTATION = "occ/openclaw-plugin";
+const OCC_IMPLEMENTATION = OPENCLAW_PLUGIN_DRIVER_IMPLEMENTATION;
 const CODEX_DRIVER_ID = "codex-plugin";
-const CODEX_IMPLEMENTATION = "occ/codex-plugin";
+const CODEX_IMPLEMENTATION = CODEX_PLUGIN_DRIVER_IMPLEMENTATION;
 
 const EMPTY_CONFIGURATION_SCHEMA: JSONSchema = deepFreeze({
   type: "object",
@@ -225,17 +261,6 @@ function requiredString(value: unknown, path: string): string {
   return value;
 }
 
-function validateEmptyConfiguration(configuration: unknown, name: string): void {
-  const value = asRecord(configuration);
-  if (value === undefined) {
-    throw new PluginValidationError(`${name} configuration must be one object.`);
-  }
-  const keys = Object.keys(value);
-  if (keys.length > 0) {
-    throw new PluginValidationError(`${name} configuration does not accept options.`);
-  }
-}
-
 function validateCodexConfiguration(configuration: unknown): {
   catalogSource: "hosted" | "openai-curated";
   reader: ConstructorParameters<typeof NativeCodexPluginCatalogReader>[0] | undefined;
@@ -260,6 +285,17 @@ function validateCodexConfiguration(configuration: unknown): {
     value.requestTimeoutMs === undefined
   ) {
     return { catalogSource, reader: undefined };
+  }
+  for (const field of ["codexExecutable", "codexHome"] as const) {
+    if (value[field] === undefined) {
+      throw new ConfigurationValidationError([
+        {
+          path: `/${field}`,
+          code: "REQUIRED",
+          message: "This field is required for a configured native catalog reader.",
+        },
+      ]);
+    }
   }
   const codexExecutable = requiredString(value.codexExecutable, "codexExecutable");
   const codexHome = requiredString(value.codexHome, "codexHome");
@@ -286,8 +322,12 @@ function sameDriver(left: PluginDriverIdentity, right: PluginDriverIdentity): bo
   return left.id === right.id && left.implementation === right.implementation;
 }
 
-function ensureHarness(context: PluginDriverContext, mode: "embedded" | "dedicated"): void {
-  if (context.harness.mode !== mode) {
+function ensureHarness(
+  context: PluginDriverContext,
+  harnessId: string,
+  mode: "embedded" | "dedicated",
+): void {
+  if (context.harness.id !== harnessId || context.harness.mode !== mode) {
     throw notImplemented(
       "plugin-harness-mismatch",
       "The selected Plugin Driver does not match the Harness.",
@@ -330,7 +370,11 @@ class BundledPluginDriverBase {
         throw new PluginPolicyValidationError("unknownPlugin", this.id, pluginId);
       }
       throw new PluginPolicyValidationError(
-        field === "toolDefaults.reviewer" || field === "tools[id].reviewer" ? field : undefined,
+        field === "toolDefaults.reviewer" ||
+          field === "tools[id].reviewer" ||
+          field === "conflictingEnablementDefaults"
+          ? field
+          : undefined,
       );
     }
     // Admission-only, like the Codex approvers check: revisions admitted before this
@@ -346,9 +390,24 @@ class BundledPluginDriverBase {
   }
 }
 
+function splitOpenClawSelections(selections: PluginDesiredState) {
+  const managed = managedInstalls.filter(({ id }) => Object.hasOwn(selections, id));
+  const native = { ...selections };
+  for (const { id } of managed) {
+    delete native[id];
+  }
+  return { managed, native };
+}
+
 export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDriver {
+  readonly harnessId = "openclaw" as const;
+  readonly discoveryCredential = "none" as const;
+  readonly credentials = managedPluginCredentials;
   static readonly configurationSchema = EMPTY_CONFIGURATION_SCHEMA;
   readonly policyCapabilities: PluginPolicyCapabilities = deepFreeze({
+    policyScopeByPlugin: Object.fromEntries(
+      managedInstalls.map((pkg) => [pkg.id, pkg.policyScope]),
+    ),
     approvers: { agent: true, plugin: true, tools: true },
     toolDefaults: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
     tools: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
@@ -356,27 +415,126 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
   });
 
   validatePolicies(selections: PluginDesiredState, defaultApprovers?: PluginApprovers): void {
-    this.validate("openclaw", selections, defaultApprovers);
+    const { managed, native } = splitOpenClawSelections(selections);
+    this.validate("openclaw", native, defaultApprovers);
+    for (const pkg of managed) {
+      const policy = selections[pkg.id]!;
+      if (
+        typeof policy.enabled !== "boolean" ||
+        Object.keys(policy).some((key) => key !== "enabled" && key !== "driverPolicy")
+      ) {
+        throw new ConfigurationHarnessError(
+          `The ${pkg.entry.name} package supports enablement and an optional credential slot.`,
+        );
+      }
+    }
+    managedCliCredentialBindings(selections);
+    managedMcpCredentialBindings(selections);
   }
 
-  static validateConfiguration(configuration: unknown): void {
-    validateEmptyConfiguration(configuration, "OpenClaw Plugin Driver");
+  static validateConfiguration(): readonly ErrorDetail[] {
+    return [];
   }
 
   constructor(configuration: ConfigurationRecord = {}, selection: PluginDriverSelection = {}) {
-    OCCPluginDriver.validateConfiguration(configuration);
+    requireConfiguration(OCCPluginDriver, configuration);
     super(selection, { id: OCC_DRIVER_ID, implementation: OCC_IMPLEMENTATION });
   }
 
   async listCatalog(context: PluginDriverContext): Promise<readonly PluginCatalogEntry[]> {
-    ensureHarness(context, "embedded");
+    const packages = managedInstalls.filter(
+      ({ placement }) =>
+        context.harness.id === placement.harnessId && context.harness.mode === placement.mode,
+    );
+    if (packages.length > 0) {
+      return this.catalog(packages.map((pkg) => pkg.entry));
+    }
+    ensureHarness(context, this.harnessId, "embedded");
     return this.catalog(OCC_CATALOG);
+  }
+
+  async discoverCatalog(input: {
+    readonly q?: string;
+    readonly cursor?: string;
+  }): Promise<PluginCatalogPage> {
+    const q = input.q?.toLowerCase() ?? "";
+    const plugins = input.cursor
+      ? []
+      : managedInstalls
+          .map((pkg) => pkg.entry)
+          .filter(({ id, name, description }) =>
+            [id, name, description].some((value) => value.toLowerCase().includes(q)),
+          );
+    return { plugins: this.catalog(plugins), nextCursor: null };
+  }
+
+  async getCatalogPlugin(input: { readonly pluginId: string }): Promise<PluginCatalogEntry> {
+    const pkg = managedInstalls.find(({ id }) => id === input.pluginId);
+    if (!pkg) {
+      // An unknown ID is the caller's error (finding 2790); name the versioned package ID
+      // when the caller left out the version and exactly one package matches.
+      const versioned = managedInstalls.filter(({ id }) => id.startsWith(`${input.pluginId}@`));
+      throw new PluginPolicyValidationError(
+        "unknownPlugin",
+        this.id,
+        input.pluginId,
+        versioned.length === 1 ? versioned[0]!.id : undefined,
+      );
+    }
+    return this.catalog([pkg.entry])[0]!;
+  }
+
+  validatePlacement(
+    selections: PluginDesiredState,
+    harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
+    computeImplementation: string,
+    credentialRuntime?: {
+      readonly sandbox: string | undefined;
+      readonly gateway: string | undefined;
+    },
+  ): void {
+    const { managed, native } = splitOpenClawSelections(selections);
+    const [nativeId] = Object.keys(native);
+    if (managed.length > 0 && nativeId !== undefined) {
+      const names = managed.map(({ entry }) => entry.name).join(", ");
+      throw new ConfigurationHarnessError(
+        `Select ${nativeId} on an embedded OpenClaw Agent. Use a dedicated OpenClaw Agent for ${names}.`,
+      );
+    }
+    for (const { placement, entry } of managed) {
+      if (harness.id !== placement.harnessId || harness.mode !== placement.mode) {
+        throw new ConfigurationHarnessError(`${entry.name} requires a dedicated OpenClaw Agent.`);
+      }
+      if (!placement.computeImplementations.includes(computeImplementation)) {
+        throw new ConfigurationHarnessError(`${entry.name} requires Kubernetes Compute.`);
+      }
+    }
+    requireManagedCredentialRuntime(
+      selections,
+      credentialRuntime?.sandbox,
+      credentialRuntime?.gateway,
+    );
   }
 
   validateAgentConfiguration(
     selections: PluginDesiredState,
     configuration: Readonly<OpenClawConfigurationDocument>,
   ): void {
+    // The Gateway refuses these settings at every start, before any turn (finding 3091). These
+    // plugins run only in an OpenClaw Harness: for another, placement refuses the selection
+    // (validatePluginPlacement) and is the refusal to name, since a Codex Configuration's
+    // plugins.allow, for example, always leaves them out.
+    const conflict = openClawHarnessConfiguration(configuration)
+      ? openClawPluginSettingConflict(
+          selections,
+          configuration,
+          openClawManagedPluginIds(),
+          `${OCC_DRIVER_ID}:`,
+        )
+      : undefined;
+    if (conflict !== undefined) {
+      throw new ConfigurationHarnessError(openClawPluginSettingMessage(conflict));
+    }
     const denied = deniedOpenClawSelection(OCC_CATALOG, selections, configuration);
     if (denied !== undefined) {
       throw new ConfigurationHarnessError(openClawToolDenialMessage(denied));
@@ -385,6 +543,7 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
 }
 
 export class CodexPluginDriver extends BundledPluginDriverBase implements PluginDriver {
+  readonly harnessId = "codex" as const;
   static readonly configurationSchema = CODEX_CONFIGURATION_SCHEMA;
   // TODO: gate all_actions/write_actions on enforceable session constraints before this draft ships.
   // A permissive native session can bypass app-level review despite translation.
@@ -432,8 +591,24 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
   private readonly catalogSource: "hosted" | "openai-curated";
   readonly discoveryCredential: "required" | "none";
 
-  static validateConfiguration(configuration: unknown): void {
-    validateCodexConfiguration(configuration);
+  static validateConfiguration(
+    configuration: Readonly<Record<string, unknown>>,
+  ): readonly ErrorDetail[] {
+    try {
+      validateCodexConfiguration(configuration);
+
+      return [];
+    } catch (error) {
+      return error instanceof ConfigurationValidationError
+        ? error.error.details
+        : [
+            {
+              path: "",
+              code: "INVALID_VALUE",
+              message: "Configuration violates the Driver's constraints.",
+            },
+          ];
+    }
   }
 
   async discoverCatalog(
@@ -463,9 +638,21 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
     signal?: AbortSignal,
   ): Promise<PluginCatalogEntry> {
     if (this.catalogSource === "openai-curated") {
-      const entry = OPENAI_CURATED_CATALOG.find((plugin) => plugin.remoteId === input.pluginId);
+      // Details take an entry's remoteId; its listed id names the same entry (finding 3137).
+      const entry = OPENAI_CURATED_CATALOG.find(
+        (plugin) => plugin.remoteId === input.pluginId || plugin.id === input.pluginId,
+      );
       if (!entry) {
-        throw new PluginDiscoveryError("invalid_response");
+        // Name the listed id when the caller left out the marketplace and one entry matches.
+        const versioned = OPENAI_CURATED_CATALOG.filter(({ id }) =>
+          id.startsWith(`${input.pluginId}@`),
+        );
+        throw new PluginPolicyValidationError(
+          "unknownPlugin",
+          this.id,
+          input.pluginId,
+          versioned.length === 1 ? versioned[0]!.id : undefined,
+        );
       }
       return this.catalog([entry])[0]!;
     }
@@ -477,7 +664,9 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
     selection: PluginDriverSelection = {},
     catalogReader?: CodexPluginCatalogReader,
   ) {
-    const discovery = validateCodexConfiguration(configuration);
+    const discovery = validateCodexConfiguration(
+      requireConfiguration(CodexPluginDriver, configuration),
+    );
     super(selection, { id: CODEX_DRIVER_ID, implementation: CODEX_IMPLEMENTATION });
     this.catalogSource = discovery.catalogSource;
     this.discoveryCredential = discovery.catalogSource === "openai-curated" ? "none" : "required";
@@ -489,7 +678,7 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
   }
 
   async listCatalog(context: PluginDriverContext): Promise<readonly PluginCatalogEntry[]> {
-    ensureHarness(context, "dedicated");
+    ensureHarness(context, this.harnessId, "dedicated");
     if (this.catalogSource === "openai-curated") {
       return this.catalog(OPENAI_CURATED_CATALOG);
     }

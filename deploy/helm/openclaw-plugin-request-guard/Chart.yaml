@@ -1,0 +1,5 @@
+apiVersion: v2
+name: openclaw-plugin-request-guard
+description: Authorize OpenShell plugin requests in the execution cluster
+version: 0.1.0
+type: application

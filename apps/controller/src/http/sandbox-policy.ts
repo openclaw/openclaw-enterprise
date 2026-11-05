@@ -37,6 +37,33 @@ function policyBody(policy: Readonly<SandboxPolicy>) {
 }
 
 export const sandboxPolicyHandlers = {
+  async discoverAgentConfigurations({ controller, context, namespaceId, params, reply, request }) {
+    const configurations = await controller.discoverConfigurations(context.actorId, {
+      scope: "agent",
+      namespaceId,
+      agentId: params.agentId!,
+    });
+    reply.send({ data: { configurations }, meta: { requestId: request.id } });
+  },
+  async validateAgentSandboxPolicy({
+    controller,
+    context,
+    namespaceId,
+    params,
+    body,
+    reply,
+    request,
+  }) {
+    const result = await controller.validateAgentSandboxPolicy(
+      context.actorId,
+      namespaceId,
+      params.agentId!,
+      params.facet as SandboxFacet,
+      body!.expectedVersion as number,
+      body!.additions,
+    );
+    reply.send({ data: result, meta: { requestId: request.id } });
+  },
   async getAgentSandboxPolicy({ controller, context, namespaceId, params, reply, request }) {
     const view = await controller.getAgentSandboxPolicy(
       context.actorId,

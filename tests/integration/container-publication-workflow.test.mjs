@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const workflow = JSON.parse(
@@ -69,8 +69,7 @@ test("publication keeps its lock across jobs and reports image success after cha
   assert.equal(step.env.IMAGE_RESULT, "${{ needs.publish.result }}");
   assert.equal(step.env.CHART_RESULT, "${{ needs.publish-chart.result }}");
   assert.equal(step.env.CHART_REQUESTED, "${{ inputs.publish && inputs.publish_chart }}");
-  const directory = await mkdtemp(join(tmpdir(), "oce-publication-summary-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-publication-summary-");
   // Execute the actual summary step for its meaningful terminal outcomes.
   // Supplied results represent GitHub context; this is not a hosted dispatch proof.
   for (const [imagesRequested, chartRequested, imageResult, chartResult] of [

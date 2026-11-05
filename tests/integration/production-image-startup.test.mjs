@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import test from "node:test";
 import { promisify } from "node:util";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
+import { jsonEvent } from "../helpers/json-lines.mjs";
 
 const execute = promisify(execFile);
 const docker = process.env.OCC_DOCKER_BIN ?? "docker";
@@ -134,7 +135,7 @@ function productionInstallation(adminKeyPath) {
             networkPolicies: [
               {
                 name: "dns",
-                endpoints: [{ host: "1.1.1.1", ports: [53], protocol: "udp" }],
+                endpoints: [{ host: "1.1.1.1", ports: [53], protocol: "tcp" }],
                 binaries: [{ path: "/app/bin/dns-client" }],
               },
             ],
@@ -181,38 +182,15 @@ function assertNoPackagingFailure(output) {
 }
 
 function assertPersistenceBoundary(output, event) {
-  const diagnostic = output
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return undefined;
-      }
-    })
-    .find((line) => line?.event === event);
-  assert.ok(diagnostic, output);
+  const diagnostic = jsonEvent(output, event, { lenient: true });
   assert.equal(diagnostic.code, "PERSISTENCE_UNAVAILABLE");
   assert.doesNotMatch(output, /The platform persistence repository is unavailable/);
 }
 
 function assertStartupFailureCode(output, event, code) {
-  const diagnostic = output
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return undefined;
-      }
-    })
-    .find((line) => line?.event === event);
-  assert.ok(diagnostic, output);
+  const diagnostic = jsonEvent(output, event, { lenient: true });
   assert.equal(diagnostic.code, code);
+  return diagnostic;
 }
 
 async function productionFixture(t) {
@@ -298,8 +276,20 @@ test(
       "OCC_DATABASE_URL=postgresql://127.0.0.1:1/openclaw_enterprise",
       image,
     ]);
-    assertStartupFailureCode(output, "startup-error", "GATEWAY_STORAGE_CLASS_INVALID");
-    assert.doesNotMatch(output, /SQLite-compatible gateway storage class/);
+    const diagnostic = assertStartupFailureCode(
+      output,
+      "startup-error",
+      "DRIVER_CONFIGURATION_INVALID",
+    );
+    assert.deepEqual(diagnostic.details, [
+      {
+        path: "/runtime/gatewayStorageClassName",
+        code: "INVALID_FORMAT",
+        message:
+          "SQLite-compatible gateway storage class must be a DNS-safe Kubernetes resource name.",
+      },
+    ]);
+    assert.doesNotMatch(output, /Bad_Class/);
     assert.doesNotMatch(output, /PERSISTENCE_UNAVAILABLE/);
     assertNoPackagingFailure(output);
   },
@@ -367,6 +357,27 @@ test(
 
     const path = join(fixture, "installation.json");
     const installation = JSON.parse(await readFile(path, "utf8"));
+    const invalidDriver = structuredClone(installation);
+    invalidDriver.drivers.compute.configuration.runtime.gatewayStorageClassName = "Bad_Class";
+    await writeFile(path, JSON.stringify(invalidDriver), { mode: 0o644 });
+    await assert.rejects(
+      runDocker(check, { timeout: 60_000 * imageSmokeTimeoutMultiplier }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /installation-check:.*DRIVER_CONFIGURATION_INVALID/);
+        const details = JSON.parse(error.stderr.trim().split("DRIVER_CONFIGURATION_INVALID: ")[1]);
+        assert.deepEqual(details, [
+          {
+            path: "/runtime/gatewayStorageClassName",
+            code: "INVALID_FORMAT",
+            message:
+              "SQLite-compatible gateway storage class must be a DNS-safe Kubernetes resource name.",
+          },
+        ]);
+        assert.doesNotMatch(error.stderr, /Bad_Class/);
+        return true;
+      },
+    );
     installation.presets = { files: ["presets/missing.json"] };
     await writeFile(path, `${JSON.stringify(installation, undefined, 2)}\n`, {
       encoding: "utf8",
@@ -432,6 +443,7 @@ test("production image includes console shell and public assets", imageTestOptio
   const revision = JSON.parse(labels)?.["org.opencontainers.image.revision"] ?? "";
   const probe = String.raw`
     import assert from "node:assert/strict";
+    import { execFileSync } from "node:child_process";
     import { readConsoleAsset } from "./apps/controller/src/console-assets.ts";
 
     const shell = await readConsoleAsset("/console/");
@@ -454,6 +466,15 @@ test("production image includes console shell and public assets", imageTestOptio
     assert.equal(script.statusCode, 200);
     assert.match(script.contentType, /javascript/);
     assert.match(script.body.toString("utf8"), /api\/auth\/session/);
+
+    // Parse the shipped bytes as JavaScript. Browser tests load the module and its imports.
+    const dom = await readConsoleAsset("/console/dom.mjs");
+    assert.equal(dom.statusCode, 200);
+    assert.match(dom.contentType, /javascript/);
+    assert.ok(dom.body.length > 0);
+    execFileSync(process.execPath, ["--no-strip-types", "--check", "--input-type=module"], {
+      input: dom.body,
+    });
 
     const unknown = await readConsoleAsset("/console/index.ts");
     assert.equal(unknown.statusCode, 404);

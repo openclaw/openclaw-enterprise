@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
@@ -14,6 +13,8 @@ import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/com
 import { RepositoryReceiptClient } from "../../apps/controller/src/drivers/repo/credentials/receipt-client.ts";
 import { callControl } from "../../apps/controller/src/drivers/repo/github/credentials/client/operator.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
+import { listen } from "../helpers/listen.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // Each upstream here sends more than its reader's limit and then holds the response
 // open. A reader that buffers to the end, or stops reading without settling, shows up
@@ -24,10 +25,8 @@ const controllerRequire = createRequire(
 const { fetch: undiciFetch } = controllerRequire("undici");
 const sdk = controllerRequire("@kubernetes/client-node");
 
-async function scratch(t) {
-  const dir = await mkdtemp(join(tmpdir(), "occ-bounded-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
-  return dir;
+function scratch(t) {
+  return temporaryDirectory(t, "occ-bounded-");
 }
 
 /** Sends `bytes` of body after `status` (200 by default) and never ends the response. */
@@ -222,9 +221,7 @@ for (const status of [200, 299]) {
       response.writeHead(status, { "content-type": "application/json" });
       response.end(JSON.stringify({ revisionId: "revision-1", container: "agent" }));
     });
-    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-    t.after(() => new Promise((resolve) => server.close(resolve)));
-    assert.deepEqual(await statusReadback(server.address().port), {
+    assert.deepEqual(await statusReadback(await listen(t, server)), {
       status: { revisionId: "revision-1", container: "agent" },
       podUid: "agent-uid",
       containerId: undefined,
@@ -241,9 +238,7 @@ test("runtime status readback refuses a redirect even on a client built elsewher
     response.writeHead(302, { location: "../../../../../../../api/v1/namespaces/x/secrets/y" });
     response.end();
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-  const outcome = await settled(statusReadback(server.address().port), 8_000);
+  const outcome = await settled(statusReadback(await listen(t, server)), 8_000);
   assert.equal(outcome.error?.message, "Runtime status answered with a redirect.");
   assert.equal(requests.length, 1);
 });
@@ -265,9 +260,7 @@ test("runtime status readback reports a 400 as the client's error, not a redirec
     response.writeHead(400, { "content-type": "application/json" });
     response.end("{}");
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-  const refused = await settled(statusReadback(server.address().port), 8_000);
+  const refused = await settled(statusReadback(await listen(t, server)), 8_000);
   assert.equal(refused.pending, undefined, "the readback settles");
   assert.equal(refused.error?.code, 400);
 });

@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { cp, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { cp, readdir, readFile, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 import {
@@ -13,6 +11,7 @@ import {
   renderPresetTemplate,
   validatePresetTemplate,
 } from "../../packages/contracts/src/index.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
 const otherNamespaceId = "ns_00000000-0000-4000-8000-000000000002";
@@ -661,8 +660,7 @@ test("every superseded bundled default Preset is archived as a valid template", 
 });
 
 test("the archive guard fails when a bundled default changes without archiving its version", async (t) => {
-  const copy = await mkdtemp(join(tmpdir(), "occ-preset-archive-"));
-  t.after(() => rm(copy, { recursive: true, force: true }));
+  const copy = await temporaryDirectory(t, "occ-preset-archive-");
   await cp(new URL("../../deploy/presets/", import.meta.url), copy, { recursive: true });
   const presetDirectory = pathToFileURL(`${copy}/`);
   const codex = new URL("default-codex.json", presetDirectory);

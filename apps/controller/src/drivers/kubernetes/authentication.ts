@@ -39,36 +39,54 @@ export function createKubernetesAuthenticationOptionsSchema(): JSONSchema {
 
 export function validateKubernetesAuthentication(
   value: unknown,
-  validationFailure: (message: string) => Error,
+  validationFailure: (message: string, path: string) => Error,
 ): void {
   const authentication = asRecord(value);
   if (authentication === undefined) {
-    throw validationFailure("Explicit Kubernetes authentication is required.");
+    throw validationFailure("Explicit Kubernetes authentication is required.", "/authentication");
   }
   if (authentication.mode === "inCluster") {
     if (Object.keys(authentication).some((key) => key !== "mode")) {
-      throw validationFailure("In-cluster authentication does not accept additional options.");
+      throw validationFailure(
+        "In-cluster authentication does not accept additional options.",
+        "/authentication",
+      );
     }
     return;
   }
   if (authentication.mode !== "kubeconfig") {
-    throw validationFailure("An explicit Kubernetes authentication mode is required.");
+    throw validationFailure(
+      "An explicit Kubernetes authentication mode is required.",
+      "/authentication/mode",
+    );
   }
   if (
     Object.keys(authentication).some(
       (key) => key !== "mode" && key !== "kubeconfigPath" && key !== "context",
     )
   ) {
-    throw validationFailure("Unknown kubeconfig authentication options are forbidden.");
+    throw validationFailure(
+      "Unknown kubeconfig authentication options are forbidden.",
+      "/authentication",
+    );
   }
   const path = authentication.kubeconfigPath;
   if (!isNonEmptyString(path)) {
-    throw validationFailure("Dedicated kubeconfig path must be a nonempty string.");
+    throw validationFailure(
+      "Dedicated kubeconfig path must be a nonempty string.",
+      "/authentication/kubeconfigPath",
+    );
   }
   if (!isAbsolute(path)) {
-    throw validationFailure("Dedicated kubeconfig path must be absolute.");
+    throw validationFailure(
+      "Dedicated kubeconfig path must be absolute.",
+      "/authentication/kubeconfigPath",
+    );
   }
   if (!isNonEmptyString(authentication.context)) {
-    throw validationFailure("Explicit Kubernetes context must be a nonempty string.");
+    throw validationFailure(
+      "Explicit Kubernetes context must be a nonempty string.",
+      "/authentication/context",
+    );
   }
 }

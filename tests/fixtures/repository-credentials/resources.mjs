@@ -1,3 +1,5 @@
+import { within } from "../../helpers/wait-for.mjs";
+
 // Local resource ownership only. Remote writes keep their existing reconciliation obligations.
 export function createResourceScope({ cleanupTimeoutMs = 10000 } = {}) {
   if (!Number.isFinite(cleanupTimeoutMs) || cleanupTimeoutMs <= 0) {
@@ -20,23 +22,16 @@ export function createResourceScope({ cleanupTimeoutMs = 10000 } = {}) {
           failures.push(primaryError);
         }
         for (const cleanup of cleanups.reverse()) {
-          let timer;
           try {
             // Owners still perform termination and joins; a deadline reports failure,
             // never successful disposal, and late rejection remains observed.
-            await Promise.race([
+            await within(
               Promise.resolve().then(cleanup),
-              new Promise((_, reject) => {
-                timer = setTimeout(
-                  () => reject(new Error("fixture resource cleanup timed out")),
-                  cleanupTimeoutMs,
-                );
-              }),
-            ]);
+              "fixture resource cleanup timed out",
+              cleanupTimeoutMs,
+            );
           } catch (error) {
             failures.push(error);
-          } finally {
-            clearTimeout(timer);
           }
         }
         if (failures.length === 1 && hasPrimaryError) {

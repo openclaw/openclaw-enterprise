@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
+	"time"
 )
 
 // RuntimeLogPage is one page of sanitized runtime log records. Records keep the
@@ -193,13 +195,7 @@ func (client *Client) DeleteServiceAccount(namespaceID, serviceAccountID string,
 		}
 		return nil, nil
 	case http.StatusOK:
-		var envelope responseEnvelope
-		var data any
-		if json.Unmarshal(responseBody, &envelope) != nil || len(envelope.Data) == 0 ||
-			len(envelope.Meta) == 0 || json.Unmarshal(envelope.Data, &data) != nil {
-			return nil, fmt.Errorf("OCC returned an invalid response (HTTP %d)", status)
-		}
-		return data, nil
+		return decodeResponseData(status, responseBody)
 	default:
 		if status >= http.StatusOK && status < http.StatusMultipleChoices {
 			return nil, fmt.Errorf("OCC returned an unexpected response (HTTP %d)", status)
@@ -333,9 +329,21 @@ func (client *Client) GetAgent(namespaceID, agentID string) (any, error) {
 	return client.get("namespaces", namespaceID, "agents", agentID)
 }
 
+// GetAgentCallerPermissions reads the caller's advisory permission summary for
+// one Agent (update, deploy, operate, delete). It does not authorize a later
+// request; the CLI uses it only to choose advice.
+func (client *Client) GetAgentCallerPermissions(namespaceID, agentID string) (any, error) {
+	return client.get("namespaces", namespaceID, "agents", agentID, "permissions")
+}
+
 // UpdateAgent updates an Agent from a JSON document.
 func (client *Client) UpdateAgent(namespaceID, agentID string, body jsontext.Value) (any, error) {
 	return client.send(http.MethodPatch, []string{"namespaces", namespaceID, "agents", agentID}, body)
+}
+
+// GetAgentHarnessStatus reads the Sandbox record of a running Agent's active dedicated Harness.
+func (client *Client) GetAgentHarnessStatus(namespaceID, agentID string) (any, error) {
+	return client.get("namespaces", namespaceID, "agents", agentID, "harness-status")
 }
 
 // GetAgentRuntimeCredentials fetches runtime credential metadata for an Agent.
@@ -359,6 +367,92 @@ func (client *Client) DeployAgent(namespaceID, agentID string) (any, error) {
 		[]string{"namespaces", namespaceID, "agents", agentID, "deploy"},
 		nil,
 	)
+}
+
+// FirstDeploymentIntent identifies the reviewed saved Configuration and one caller intent.
+// Key is nonsecret and must be reused unchanged for exact recovery.
+type FirstDeploymentIntent struct {
+	Key                     string `json:"key"`
+	ExpectedConfigurationID string `json:"expectedConfigurationId"`
+	ExpectedGeneration      int64  `json:"expectedGeneration"`
+}
+
+const firstDeploymentUUIDPattern = `[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}`
+
+var firstDeploymentKey = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._~-]{0,127}$`)
+var firstDeploymentConfiguration = regexp.MustCompile(`^cfg_` + firstDeploymentUUIDPattern + `$`)
+var firstDeploymentRevision = regexp.MustCompile(`^rev_` + firstDeploymentUUIDPattern + `$`)
+var firstDeploymentNamespace = regexp.MustCompile(`^ns_` + firstDeploymentUUIDPattern + `$`)
+var firstDeploymentAgent = regexp.MustCompile(`^agt_` + firstDeploymentUUIDPattern + `$`)
+
+// Validate checks each intent field before client construction or a request.
+func (intent FirstDeploymentIntent) Validate() error {
+	if !firstDeploymentConfiguration.MatchString(intent.ExpectedConfigurationID) {
+		return fmt.Errorf("--configuration must be an exact Configuration ID")
+	}
+	if intent.ExpectedGeneration < 1 || intent.ExpectedGeneration > 9007199254740991 {
+		return fmt.Errorf("--generation must be a positive safe integer")
+	}
+	if !firstDeploymentKey.MatchString(intent.Key) {
+		return fmt.Errorf("--key must start with an ASCII letter or digit and contain 1–128 ASCII letters, digits, or ._~-")
+	}
+	return nil
+}
+
+// DeployAgentFirst admits only the first deployment of the reviewed Configuration.
+// It uses a distinct route, so older servers fail closed.
+func (client *Client) DeployAgentFirst(namespaceID, agentID string, intent FirstDeploymentIntent) (any, error) {
+	if err := intent.Validate(); err != nil {
+		return nil, err
+	}
+	receipt, err := client.send(http.MethodPost, []string{"namespaces", namespaceID, "agents", agentID, "deploy-first"}, intent)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateFirstDeploymentReceipt(receipt, namespaceID, agentID, intent); err != nil {
+		return nil, err
+	}
+	return receipt, nil
+}
+
+// RecoverAgentFirstDeployment only reads the original admission. A nil result is
+// not evidence that an in-flight request failed. It must never trigger a redeploy.
+func (client *Client) RecoverAgentFirstDeployment(namespaceID, agentID string, intent FirstDeploymentIntent) (any, error) {
+	if err := intent.Validate(); err != nil {
+		return nil, err
+	}
+	receipt, err := client.get("namespaces", namespaceID, "agents", agentID, "deploy-first", intent.Key, intent.ExpectedConfigurationID, strconv.FormatInt(intent.ExpectedGeneration, 10))
+	if err != nil || receipt == nil {
+		return nil, err
+	}
+	if err := validateFirstDeploymentReceipt(receipt, namespaceID, agentID, intent); err != nil {
+		return nil, err
+	}
+	return receipt, nil
+}
+
+// Both admission and recovery must identify the exact requested intent before
+// callers can treat the response as its receipt. Never echo an invalid payload.
+func validateFirstDeploymentReceipt(value any, namespaceID, agentID string, intent FirstDeploymentIntent) error {
+	receipt, ok := value.(map[string]any)
+	if !ok || len(receipt) != 6 {
+		return fmt.Errorf("OCC returned an invalid first-deployment receipt")
+	}
+	revision, _ := receipt["revisionId"].(string)
+	namespace, _ := receipt["namespaceId"].(string)
+	agent, _ := receipt["agentId"].(string)
+	configuration, _ := receipt["configurationId"].(string)
+	createdAt, _ := receipt["createdAt"].(string)
+	const timestampLayout = "2006-01-02T15:04:05.000Z"
+	created, timeErr := time.Parse(timestampLayout, createdAt)
+	if !firstDeploymentRevision.MatchString(revision) || !firstDeploymentNamespace.MatchString(namespace) ||
+		!firstDeploymentAgent.MatchString(agent) || !firstDeploymentConfiguration.MatchString(configuration) ||
+		namespace != namespaceID || agent != agentID || configuration != intent.ExpectedConfigurationID ||
+		receipt["configurationGeneration"] != float64(intent.ExpectedGeneration) ||
+		timeErr != nil || created.Format(timestampLayout) != createdAt {
+		return fmt.Errorf("OCC returned an invalid first-deployment receipt")
+	}
+	return nil
 }
 
 // AgentRevisionPage is one page of readable revision summaries, newest first.
