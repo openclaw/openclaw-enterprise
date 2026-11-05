@@ -29,7 +29,7 @@ async function waitForBlocker(pool: Pool, pid: number): Promise<void> {
 export async function assertGithubRosterMemberships(
   state: PostgresPlatformState,
   failingAuditState: PostgresPlatformState,
-  overrideState: PostgresPlatformState,
+  observedState: PostgresPlatformState,
   pool: Pool,
   installationId: string,
   issuer: string,
@@ -40,6 +40,9 @@ export async function assertGithubRosterMemberships(
   const providerId = "github:qualified-test-instance";
   const subject = "451";
   const auth = new PostgresHumanAuthentication(state, installationId, issuer, {
+    externalProviderIds: [providerId],
+  });
+  const observedAuth = new PostgresHumanAuthentication(observedState, installationId, issuer, {
     externalProviderIds: [providerId],
   });
   const version = async () => (await auth.readAccount(userId, admin)).version;
@@ -73,10 +76,14 @@ export async function assertGithubRosterMemberships(
   const finish = async (
     { claim, proof }: Awaited<ReturnType<typeof begin>>,
     result: "present" | "absent",
+    authentication = auth,
   ) =>
-    auth.issueSession(proof, { id: randomUUID(), token: randomUUID(), userId }, undefined, [
-      { claim, result },
-    ]);
+    authentication.issueSession(
+      proof,
+      { id: randomUUID(), token: randomUUID(), userId },
+      undefined,
+      [{ claim, result }],
+    );
   const memberships = async () =>
     (await state.loadNativeIAMState(installationId)).memberships.filter(
       (row) => row.groupId === groupId && row.principalId === principalId,
@@ -134,7 +141,17 @@ export async function assertGithubRosterMemberships(
     await removeManual();
     assert.equal(await memberships(), 0);
   }
-  await finish(await begin(first), "present");
+  const mapped = await begin(first);
+  const ordinarySession = await observedAuth.issueSession(mapped.proof, {
+    id: randomUUID(),
+    token: randomUUID(),
+    userId,
+  });
+  assert.equal((await auth.currentSession(ordinarySession.token))?.id, ordinarySession.id);
+  assert.equal(await memberships(), 0);
+  const mappedSession = await finish(mapped, "present", observedAuth);
+  assert.equal((await auth.currentSession(mappedSession.token))?.id, mappedSession.id);
+  assert.equal(await memberships(), 1);
   await finish(await begin(second), "present");
   await finish(await begin(second), "absent");
   assert.equal(await memberships(), 1);
@@ -303,9 +320,6 @@ export async function assertGithubRosterMemberships(
   };
 
   const beforeWrite = await readOverride();
-  const otherAuth = new PostgresHumanAuthentication(overrideState, installationId, issuer, {
-    externalProviderIds: [providerId],
-  });
   const held = Promise.withResolvers<number>();
   const heldOperation = state.transact(async (unit) => {
     await auth.holdSession(unit, userId, liveSession.id);
@@ -318,7 +332,7 @@ export async function assertGithubRosterMemberships(
   });
   void heldOperation.catch(held.reject);
   const override = held.promise.then(() =>
-    otherAuth.setRosterOverride(
+    observedAuth.setRosterOverride(
       userId,
       methodId,
       first,
@@ -348,7 +362,17 @@ export async function assertGithubRosterMemberships(
 
   assert.equal(await memberships(), 0);
   await assert.rejects(finish(beforeDeny, "present"), /mapping has changed/);
+  const retired = await begin(second);
   await sync([]);
+  const rejectedSession = { id: randomUUID(), token: randomUUID(), userId };
+  await assert.rejects(
+    observedAuth.issueSession(retired.proof, rejectedSession, undefined, [
+      { claim: retired.claim, result: "present" },
+    ]),
+    /mapping has changed/,
+  );
+  assert.equal(await auth.currentSession(rejectedSession.token), undefined);
+  assert.equal(await memberships(), 0);
   await sync([first]);
   await activate(first);
   await finish(await begin(first), "present");

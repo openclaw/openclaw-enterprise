@@ -1152,8 +1152,11 @@ export class PostgresHumanAuthentication {
     ) {
       throw new ScopeViolationError("The authentication audit identity is invalid.");
     }
+    const hasRosterObservations = roster.length > 0;
+    // Mapped settlement reads the roster after holding IAM configuration, including
+    // changes that committed while the lock was pending.
     return this.state.transact(async (unit) => {
-      if (roster.length) {
+      if (hasRosterObservations) {
         if (roster.some(({ result }) => result !== "present" && result !== "absent")) {
           throw new ScopeViolationError("GitHub roster verification is incomplete.");
         }
@@ -1173,7 +1176,7 @@ export class PostgresHumanAuthentication {
       ) {
         throw new ScopeViolationError("The authentication proof is no longer current.");
       }
-      if (roster.length) {
+      if (hasRosterObservations) {
         await unit.installations.holdIAMConfiguration("exclusive");
       }
       for (const observation of roster) {
@@ -1207,7 +1210,7 @@ export class PostgresHumanAuthentication {
         ...audit,
       });
       return sessionFromRow(inserted);
-    });
+    }, hasRosterObservations ? "read committed" : undefined);
   }
 
   /**
