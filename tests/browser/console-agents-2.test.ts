@@ -2372,6 +2372,43 @@ test("Agent creation can return from manual model entry to the list and save the
       await assertBlocked(invalid);
       assert.equal(await model.isVisible(), true);
 
+      // Clearing a selection leaves the malformed catalog in place, so keep its warning.
+      await model.fill("");
+      await model.press("Tab");
+      const cleared = await readValues();
+      assert.equal(primary(cleared), undefined);
+      assert.deepEqual(record(record(record(cleared.models).providers).codex).models, {});
+      assert.equal(await configuration.getAttribute("aria-invalid"), "true");
+      assert.equal(await page.locator("#configuration-json-error").isVisible(), true);
+      await model.fill("gpt-6-sol");
+      await model.press("Tab");
+      await assertBlocked(JSON.stringify(cleared, null, 2));
+
+      // Provider replacement repairs the transport without an intervening raw JSON edit.
+      const providerChoice = page.getByLabel("Provider", { exact: true });
+      await providerChoice.selectOption("anthropic");
+      assert.equal(await providerChoice.inputValue(), "anthropic");
+      assert.equal(await page.getByLabel("Harness", { exact: true }).inputValue(), "openclaw");
+      assert.equal(await choice.inputValue(), "");
+      assert.ok((await optionValues(choice)).some(({ value }) => value === "claude-opus-5-5"));
+      const replaced = await readValues();
+      assert.deepEqual(record(replaced.models).providers, {});
+      assert.equal(await configuration.getAttribute("aria-invalid"), null);
+      assert.equal(await page.locator("#configuration-json-error").isVisible(), false);
+      assert.doesNotMatch(
+        (await configuration.getAttribute("aria-describedby")) ?? "",
+        /\bconfiguration-json-error\b/,
+      );
+      await choice.selectOption("claude-opus-5-5");
+      const anthropic = await readValues();
+      assert.equal(primary(anthropic), "anthropic/claude-opus-5-5");
+      assert.deepEqual(record(record(record(anthropic.models).providers).anthropic).models, [
+        { id: "claude-opus-5-5", name: "claude-opus-5-5" },
+      ]);
+      assert.deepEqual(errors, []);
+      assert.deepEqual(nonAuthWriteRequests(requests), []);
+      await providerChoice.selectOption("openai");
+
       // Correcting the list clears feedback and preserves extra catalog/provider fields.
       const retained = { id: "another-model", contextWindow: 8192, extra: { keep: true } };
       await editCatalog([{ id: "gpt-6-astra", cost: { input: 1 } }, retained], true);

@@ -1612,6 +1612,10 @@ function renderAgentForm(
       !selectedModel && sharedPrimary
         ? modelSelections(JSON.parse(configuration.value) as LaunchValues)
         : undefined;
+    // Clearing the model alone retains its catalog, including any reported invalid list.
+    if (resetTransport || selectedModel) {
+      configurationError.clear();
+    }
     configuration.setCustomValidity("");
     feedback.textContent = "";
     renderChannelEditor();
