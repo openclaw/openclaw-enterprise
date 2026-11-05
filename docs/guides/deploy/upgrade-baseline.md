@@ -244,30 +244,157 @@ if any required record differs or an operation remains uncertain. Verify Gateway
 and workspace volumes and compatibility with any older image before switching
 writers.
 
-## Record Agent data
+## Verify a restored saved Configuration
 
-For each Agent whose data you must keep, record the hash of a file the Agent or
-a user wrote and the number of files in its workspace. This example uses a
-dedicated Codex Agent's Harness Pod, with `TENANT_NAMESPACE` and `AGENT_ID` from
-the [production Agent guide](production-agents.md):
+With source writers paused, record the Namespace, Agent, and linked
+Configuration IDs, the Configuration `generation`, and one known nonsecret
+setting at the same recovery point. The check follows the Agent's
+`configurationId` to read the current draft. Agent revisions preserve settings
+from past deployments. Check the required revision separately using the
+[upgrade checklist](upgrade-checklist.md#record-the-starting-state).
+
+Use Bash, jq, and the release CLI (`OCC_BIN`). Point `RESTORED_OCC_URL` at the
+private restored application. Use a protected `SERVICE_KEY_FILE` with read
+access to the Agent and Configuration. Set the IDs and `EXPECTED_GENERATION`
+from the source record. This example uses the saved assistant name as
+`EXPECTED_NAME`. If it was unset, use another recorded nonsecret string and
+replace `.values.ui.assistant.name` in the check.
 
 ```bash
-HARNESS_POD=$("${kube[@]}" -n "$TENANT_NAMESPACE" get pods \
-  -l "openclaw.dev/agent=$AGENT_ID,openclaw.dev/workload-role=agent" \
-  -o jsonpath='{.items[0].metadata.name}')
-"${kube[@]}" -n "$TENANT_NAMESPACE" exec "$HARNESS_POD" -c agent -- \
-  sh -c 'sha256sum /home/node/workspace/<file>; find /home/node/workspace -type f | wc -l' \
-  >"$BASELINE/workspace-$AGENT_ID.txt"
+(
+  set +x
+  set -euo pipefail
+  restored_occ=("${OCC_BIN:?}" --url "${RESTORED_OCC_URL:?}" --service-key-file "${SERVICE_KEY_FILE:?}"
+    --namespace "${NAMESPACE_ID:?}" --output json)
+  configuration_id=$("${restored_occ[@]}" agent get "${AGENT_ID:?}" 2>/dev/null |
+    jq -ers --arg ns "$NAMESPACE_ID" --arg agent "$AGENT_ID" --arg config "${EXPECTED_CONFIGURATION_ID:?}" '
+      select(length == 1) | .[0] | select(.namespaceId == $ns and .id == $agent and
+        .configurationId == $config and .configurationReadError == null)
+      | .configurationId
+    ' 2>/dev/null) || exit 1
+  "${restored_occ[@]}" configuration get "$configuration_id" 2>/dev/null |
+    jq -es --arg ns "$NAMESPACE_ID" --arg config "$configuration_id" \
+      --arg generation "${EXPECTED_GENERATION:?}" --arg name "${EXPECTED_NAME:?}" '
+        select(length == 1) | .[0] | .namespaceId == $ns and .id == $config
+        and (.generation | type == "number" and . >= 1 and . == floor)
+        and (.generation | tostring) == $generation and .values.ui.assistant.name == $name
+      ' >/dev/null 2>&1
+)
 ```
 
-For an embedded Agent, use its gateway Pod (`openclaw.dev/workload-role=gateway`),
-container `gateway`, and `/home/node/.openclaw/workspace`. If the
-dedicated Codex seccomp profile is in use, also record its file hash on every
-eligible node, as the [Codex sandbox procedure](codex-sandbox.md) shows.
+The check prints no Configuration values. Require exit 0 to accept the
+rehearsal or return a restored copy to service. On failure, keep the restored
+copy isolated and verify that both stores came from the recorded recovery
+point. A matching Agent ID and migration history cannot verify the saved draft.
+
+## Record Agent data
+
+For each Agent whose data you must keep, choose a trusted regular file that an
+Agent or user wrote directly in the workspace root. Enter its basename below.
+The example accepts spaces in the name and rejects symlinks and paths to other
+directories. Pause workspace writers during each capture.
+
+For a dedicated Codex Harness, set `TENANT_NAMESPACE` and `AGENT_ID` from the
+[production Agent guide](production-agents.md) and enter the exact Harness Pod
+name. The command checks that the Pod belongs to the Agent and is Running,
+ready and not terminating. On the host, use Bash, `kubectl`, `jq`, `mktemp`,
+`mv` and `rm`. Keep the private baseline directory under a single writer’s
+control. The container needs Bash, `sha256sum`, `wc` and a `find` with `-printf`.
+
+```bash
+(
+  set +x
+  set -euo pipefail
+  umask 077
+  HARNESS_POD='<exact-pod-name>'
+  WORKSPACE=/home/node/workspace
+  REPRESENTATIVE_FILE='<existing-file>'
+  evidence="$BASELINE/workspace-$AGENT_ID.txt"
+  "${kube[@]}" -n "$TENANT_NAMESPACE" get pod "$HARNESS_POD" -o json 2>/dev/null |
+    jq -e --arg agent "$AGENT_ID" '
+      .metadata.labels["openclaw.dev/agent"] == $agent and
+      .metadata.labels["openclaw.dev/workload-role"] == "agent" and
+      .metadata.deletionTimestamp == null and .status.phase == "Running" and
+      any(.status.conditions[]?; .type == "Ready" and .status == "True")
+    ' >/dev/null || exit 1
+  capture=$(mktemp "$BASELINE/.workspace.XXXXXXXX") || exit 1
+  trap 'rm -f -- "$capture"' EXIT
+  "${kube[@]}" -n "$TENANT_NAMESPACE" exec "$HARNESS_POD" -c agent -- \
+    bash -e -o pipefail -c '
+      cd -- "$1"
+      case "$2" in ""|.|..|*/*) exit 1 ;; esac
+      [[ -f "$2" && ! -L "$2" ]]
+      hash=$(sha256sum < "$2")
+      count=$(find . -type f -printf . | wc -c)
+      printf "%s %s complete\n" "${hash%% *}" "$count"
+    ' bash "$WORKSPACE" "$REPRESENTATIVE_FILE" 2>/dev/null |
+    jq -eRrs 'capture("\\A(?<hash>[0-9a-f]{64}) (?<count>[0-9]+) complete\\n\\z") | .hash, .count' >"$capture" || exit 1
+  [[ ! -d "$evidence" ]] || exit 1
+  mv -- "$capture" "$evidence" || exit 1
+)
+```
+
+Require exit 0 before using the evidence. A failed read or incomplete response
+leaves the final evidence file untouched. Its two lines record the SHA-256 hash
+and the regular-file count. `find` emits one byte per file regardless of its
+name. Use the same workspace and representative file after the upgrade.
+
+For an embedded Agent, set the exact Gateway Pod, change the workload-role check
+and container to `gateway`, and set `WORKSPACE=/home/node/.openclaw/workspace`.
+If the dedicated Codex seccomp profile is in use, also record its file hash on
+every eligible node, as the [Codex sandbox procedure](codex-sandbox.md) shows.
+
+## Compare the candidate with the installed manifest
+
+Before the upgrade, compare the candidate chart render with the manifest Helm
+saved for the revision recorded by a successful
+[upgrade preflight](production-upgrade.md#rehearse-before-the-maintenance-window).
+Use its `UPGRADE_EVIDENCE` directory and the same release, namespace and context.
+Keep shell tracing off and keep the comparison files private because manifests
+can contain Secrets.
+
+```bash
+(
+  set +x
+  set -euo pipefail
+  umask 077
+  comparison=$(mktemp -d "$UPGRADE_EVIDENCE/manifest-comparison.XXXXXXXX")
+  revision=$(jq -er '.version | select(type == "number" and . >= 1)' \
+    "$UPGRADE_EVIDENCE/before-helm-status.json")
+  helm get manifest oce --revision "$revision" \
+    --kubeconfig /secure/occ/kubeconfig --kube-context '<reviewed-context>' \
+    --namespace openclaw-system >"$comparison/installed.yaml" 2>"$comparison/helm.err"
+  test -s "$comparison/installed.yaml"
+  test -s "$UPGRADE_EVIDENCE/rendered.yaml"
+  diff -u "$comparison/installed.yaml" "$UPGRADE_EVIDENCE/rendered.yaml" \
+    >"$comparison/manifest.diff" || test "$?" -eq 1
+  printf 'Review the private comparison in %s\n' "$comparison"
+)
+```
+
+Stop if the comparison cannot run. Use the diff to locate changes, then check
+the required objects and fields in both files. Account for intended changes
+such as the selected image digests. Review `server-dry-run.txt` for Helm's
+upgrade-mode output and hooks. Helm history omits later live patches. Check
+affected objects against the [live Kubernetes records](#record-images-and-kubernetes-state)
+as well. Read the live object for any required field that the baseline does
+not record.
+
+If a required setting is missing, put it in supported chart values or
+Installation settings. For example, retain a required placement label in
+`controlPlane.nodeSelector` in the protected Helm values and in the
+[profile input](installation-profiles.md#use-rendered-files) if you generate
+those values. Reconcile protected settings with the installed release in a
+separate reviewed configuration change. Use the candidate file flags only for
+the [settings they support](production-upgrade.md#include-reviewed-settings).
+Rerun the preflight and comparison after a change to the release or inputs.
+The helper uses the stock chart without a post-renderer. Stop if a required
+change still depends on a live patch or a post-renderer that the helper does
+not run.
 
 ## Compare after the upgrade
 
-Rerun the same commands into a new directory and compare. Expect new image
+Record the baseline again in a new directory and compare. Expect new image
 digests and Pod names, new Helm revisions, the new controller image and
 Installation checksum in the live values, receipts appended by the release's
 migrations and, after a runtime release, new selected Agent revision IDs. Several of an
@@ -281,7 +408,6 @@ any other change, in particular a changed PVC UID, a missing or altered earlier
 receipt, any other NetworkPolicy, Service or RoleBinding change, a different
 workspace hash, or a workspace that is empty or nearly so.
 
-The checklist's Configuration, Preset, Backend, service account, audit,
-session and gateway state items, and its authentication, credential, repository
-and CredentialSource items, have no command here; record them as that page
-describes.
+Use the checklist to record the remaining Configuration inventory and the
+Preset, Backend, service account, audit, session, gateway, authentication,
+credential, repository and CredentialSource items.

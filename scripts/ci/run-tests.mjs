@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { constants, readdirSync, readFileSync } from "node:fs";
+import { constants, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { availableParallelism, cpus, constants as osConstants } from "node:os";
 import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -118,6 +118,7 @@ function normalizeFile(file, laneName, index, issues) {
   return {
     path: file.path,
     expectedTests: stringArray(file.expectedTests, `${path}.expectedTests`, issues),
+    requiredEnv: stringArray(file.requiredEnv, `${path}.requiredEnv`, issues),
   };
 }
 
@@ -289,6 +290,43 @@ function repoRelativePath(root, path) {
   return relative(root, absoluteInputPath(root, path)).split(sep).join("/");
 }
 
+function suiteSource(root, data) {
+  if (typeof data.file !== "string" || data.file.length === 0) {
+    return undefined;
+  }
+  try {
+    // Normalizing '..' before resolving a symlink can identify a different file.
+    const rawPath = data.file.startsWith("file://") ? decodeURIComponent(data.file) : data.file;
+    if (rawPath.split(/[/\\]/).includes("..")) {
+      return undefined;
+    }
+    const path = absoluteInputPath(root, data.file);
+    const file = repoRelativePath(root, path);
+    const actual = relative(realpathSync(root), realpathSync(path));
+    if (
+      !file ||
+      file === ".." ||
+      file.startsWith("../") ||
+      isAbsolute(file) ||
+      actual === ".." ||
+      actual.startsWith(`..${sep}`) ||
+      isAbsolute(actual) ||
+      !statSync(path).isFile()
+    ) {
+      return undefined;
+    }
+    const source = { file };
+    for (const key of ["line", "column", "nesting"]) {
+      if (Number.isSafeInteger(data[key]) && data[key] >= (key === "nesting" ? 0 : 1)) {
+        source[key] = data[key];
+      }
+    }
+    return source;
+  } catch {
+    return undefined;
+  }
+}
+
 function resolveRepoPath(root, path, issues, context) {
   if (isAbsolute(path)) {
     issues.push(issue("invalid-path", `${context} must be repository-relative`, { path }));
@@ -449,6 +487,8 @@ function mergeEnv(...objects) {
 
 function shouldRemoveInheritedEnv(name) {
   return (
+    name === "ACTIONS_RUNTIME_TOKEN" ||
+    name === "ACTIONS_RESULTS_URL" ||
     name === "KEEP" ||
     name === "DEBUG" ||
     name === "NODE_TEST_CONTEXT" ||
@@ -1051,6 +1091,50 @@ function imageDigests(env) {
   );
 }
 
+function validateExpectedTests(path, expectedTests, tests, issues) {
+  if (expectedTests.length === 0) {
+    return;
+  }
+  const statusByName = new Map();
+  for (const testCase of tests) {
+    if (!isObject(testCase) || typeof testCase.name !== "string") {
+      issues.push(
+        issue("invalid-test-evidence", "test evidence contains an invalid case entry", {
+          file: path,
+        }),
+      );
+      return;
+    }
+    const previousStatus = statusByName.get(testCase.name);
+    // A pass cannot erase a non-passing occurrence of the same required name.
+    if (previousStatus === undefined || previousStatus === "passed") {
+      const status = ["passed", "failed", "skipped", "todo"].includes(testCase.status)
+        ? testCase.status
+        : "invalid";
+      statusByName.set(testCase.name, status);
+    }
+  }
+  for (const name of expectedTests) {
+    const status = statusByName.get(name);
+    if (status === undefined) {
+      issues.push(
+        issue("missing-expected-test", `expected test did not run: ${name}`, {
+          file: path,
+          name,
+        }),
+      );
+    } else if (status !== "passed") {
+      issues.push(
+        issue("expected-test-not-passed", `expected test did not pass: ${name}`, {
+          file: path,
+          name,
+          status,
+        }),
+      );
+    }
+  }
+}
+
 async function runFile(root, lane, file, statePath, prepareFile, setup = (step) => step()) {
   const issues = [];
   const relativePath = repoRelativePath(root, file.path);
@@ -1137,12 +1221,9 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
     issues.push(laneDeadlineIssue(relativePath));
   }
 
-  const env = mergeEnv(
-    baseChildEnv([...lane.requiredEnv, ...lane.optionalEnv]),
-    lane.env,
-    prepared.env,
-  );
-  for (const name of lane.requiredEnv) {
+  const requiredEnv = [...lane.requiredEnv, ...file.requiredEnv];
+  const env = mergeEnv(baseChildEnv([...requiredEnv, ...lane.optionalEnv]), lane.env, prepared.env);
+  for (const name of requiredEnv) {
     if (env[name] === undefined || env[name] === "") {
       issues.push(
         issue("missing-env", `lane ${lane.name} requires env ${name}`, {
@@ -1233,7 +1314,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
             event.data.skip !== undefined &&
             event.data.name !== absolutePath,
         )
-        .map((event) => event.data.name);
+        .map((event) => ({ name: event.data.name, source: suiteSource(root, event.data) }));
     }
   } catch (error) {
     issues.push(
@@ -1306,26 +1387,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   }
 
   if (nodeResult) {
-    const testsByName = new Map(tests.map((testCase) => [testCase.name, testCase]));
-    for (const name of file.expectedTests) {
-      const expected = testsByName.get(name);
-      if (!expected) {
-        issues.push(
-          issue("missing-expected-test", `expected test did not run: ${name}`, {
-            file: relativePath,
-            name,
-          }),
-        );
-      } else if (expected.status !== "passed") {
-        issues.push(
-          issue("expected-test-not-passed", `expected test did not pass: ${name}`, {
-            file: relativePath,
-            name,
-            status: expected.status,
-          }),
-        );
-      }
-    }
+    validateExpectedTests(relativePath, file.expectedTests, tests, issues);
 
     for (const skipped of tests.filter((testCase) =>
       ["skipped", "todo"].includes(testCase.status),
@@ -1338,11 +1400,12 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
         }),
       );
     }
-    for (const name of skippedSuites) {
+    for (const suite of skippedSuites) {
       issues.push(
-        issue("unexpected-skip", `selected suite did not run its tests: ${name}`, {
+        issue("unexpected-skip", `selected suite did not run its tests: ${suite.name}`, {
           file: relativePath,
-          name,
+          name: suite.name,
+          ...(suite.source ? { source: suite.source } : {}),
           status: "skipped",
         }),
       );
@@ -1641,6 +1704,8 @@ function validateLaneEvidence(summary, laneName, lane, issues) {
           file: expectedFile.path,
         }),
       );
+    } else {
+      validateExpectedTests(expectedFile.path, expectedFile.expectedTests, observed.tests, issues);
     }
     if (observed.cleanup != null && observed.cleanup.status !== "passed") {
       issues.push(

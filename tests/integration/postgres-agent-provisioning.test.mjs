@@ -426,8 +426,16 @@ function installationDrivers({
     secretDriver,
     ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
     ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
-    ...(repoDriver === undefined ? {} : { repositoryPolicy: repoDriver }),
-    ...(pluginDriver === undefined ? {} : { pluginDriver }),
+    ...(repoDriver === undefined
+      ? {}
+      : {
+          repositoryPolicy: repoDriver,
+          repositoryAdmission: {
+            policy: repoDriver,
+            backendId: "provisioning-repositories",
+          },
+        }),
+    pluginDrivers: pluginDriver === undefined ? [] : [pluginDriver],
     createIAMDriver: (state) =>
       new NativeIAMDriver(state, { id: "native-iam", implementation: "native" }),
   };
@@ -1083,7 +1091,7 @@ test(
   "provisioning worker creates Configuration and Agent from existing Secrets, then hands off one revision",
   { ...requiresPostgres, timeout: 60_000 },
   async (context) => {
-    const { namespace, fixture, secrets } = await repositoryProvisioningFixture(
+    const { namespace, repoDriver, fixture, secrets } = await repositoryProvisioningFixture(
       context,
       "provisioning-topology",
       { profiles: ["git-read", "git-write"], stopAfterProvisioning: true },
@@ -1094,11 +1102,18 @@ test(
     ).length;
     const body = repositoryProvisioningBody(namespace.id, secrets, { gatewayManagedMode: false });
     const { repositoryAccess } = body;
+    const bound = context.mock.method(repoDriver, "resolveBindings");
+    const legacy = context.mock.method(repoDriver, "resolve");
     const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
       body,
     });
     assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
 
+    assert.equal(bound.mock.callCount(), 1, "fresh planning uses the bound policy exactly once");
+    assert.equal(legacy.mock.callCount(), 0, "fresh planning bypasses the legacy resolver");
+    assert.deepEqual(bound.mock.calls[0]?.arguments, [
+      { namespaceId: namespace.id, bindings: repositoryBindings },
+    ]);
     const queued = await provisioningRow(fixture.pool, namespace.id, body.requestId);
     assert.deepEqual(queued.plan.repositoryBindings, repositoryBindings);
     assert.deepEqual(queued.plan.repositoryAccess, repositoryAccess);
@@ -1117,11 +1132,15 @@ test(
       (await provisioningRow(fixture.pool, namespace.id, body.requestId)).plan,
       queued.plan,
     );
+    assert.equal(bound.mock.callCount(), 1, "replay does not repeat repository planning");
+    assert.equal(legacy.mock.callCount(), 0, "replay does not use the legacy resolver");
     const changed = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
       body: { ...body, repositoryAccess: { ...repositoryAccess, defaultProfile: "git-write" } },
     });
     assert.equal(changed.status, 409, JSON.stringify(changed.body));
 
+    const boundCallsBeforeWorker = bound.mock.callCount();
+    const legacyCallsBeforeWorker = legacy.mock.callCount();
     await fixture.startWorker();
     const status = await waitFor(
       "Agent provisioning to queue its initial deployment wait",
@@ -1137,6 +1156,21 @@ test(
       },
     );
     await fixture.stopWorker();
+    const workerBoundCalls = bound.mock.calls.slice(boundCallsBeforeWorker);
+    assert.ok(workerBoundCalls.length > 0, "Worker directly resolves the bound repository policy");
+    for (const call of workerBoundCalls) {
+      assert.equal(call.this, repoDriver);
+      assert.deepEqual(call.arguments, [
+        { namespaceId: namespace.id, bindings: queued.plan.repositoryBindings },
+      ]);
+    }
+    assert.equal(
+      legacy.mock.callCount() - legacyCallsBeforeWorker,
+      0,
+      "Worker bypasses the legacy resolver even when it delegates to resolveBindings",
+    );
+    bound.mock.restore();
+    legacy.mock.restore();
     assert.equal(status.status, "queued");
     assert.match(status.agentId, identifier("agt"));
     assert.match(status.configurationId, identifier("cfg"));
@@ -1256,6 +1290,7 @@ test(
     const { namespace, repoDriver, computeDriver, fixture, secrets } =
       await repositoryProvisioningFixture(context, "provisioning-saved-access");
     const validateRepositoryCredentials = computeDriver.validateRepositoryCredentials;
+    let policyRefusal;
     for (const { change, refuse, message, retry } of [
       {
         change: "compute",
@@ -1268,9 +1303,9 @@ test(
         // An Installation administrator withdrew the approval after the request was accepted.
         // The policy refuses the selection as the Driver contract allows: without a reason.
         refuse: () => {
-          repoDriver.resolve = () => {
+          policyRefusal = context.mock.method(repoDriver, "resolveBindings", () => {
             throw new Error("synthetic withdrawn approval");
-          };
+          });
         },
         message: SAVED_REPOSITORY_SELECTION_NOT_APPROVED,
       },
@@ -1288,7 +1323,6 @@ test(
     ]) {
       // Each case starts from an Installation that delivers the access.
       computeDriver.validateRepositoryCredentials = validateRepositoryCredentials;
-      delete repoDriver.resolve;
       const body = repositoryProvisioningBody(namespace.id, secrets);
       const admitted = await fixture.request(
         "POST",
@@ -1296,18 +1330,29 @@ test(
         { body },
       );
       assert.equal(admitted.status, 202, `${change}: ${JSON.stringify(admitted.body)}`);
-      refuse();
-      const failed = await workerFailure(fixture, namespace.id, body.requestId, change);
-      assert.equal(failed.status, "failed", change);
-      assert.deepEqual(failed.progress.error, { code: "PROVISIONING_REJECTED", message }, change);
-      assert.equal(failed.agent_id, null, `${change}: refused before the work creates its Agent`);
-      const status = await fixture.request("GET", admitted.data.provisioning.url);
-      assert.equal(status.status, 200, `${change}: ${JSON.stringify(status.body)}`);
-      assert.deepEqual(status.data.error, { code: "PROVISIONING_REJECTED", message }, change);
-      if (retry !== undefined) {
-        const retried = await fixture.request("POST", `${admitted.data.provisioning.url}/retry`);
-        assertApiError(retried, 409, "RESOURCE_CONFLICT");
-        assert.equal(retried.body.error.message, retry);
+      try {
+        refuse();
+        const failed = await workerFailure(fixture, namespace.id, body.requestId, change);
+        assert.equal(failed.status, "failed", change);
+        assert.deepEqual(failed.progress.error, { code: "PROVISIONING_REJECTED", message }, change);
+        assert.equal(failed.agent_id, null, `${change}: refused before the work creates its Agent`);
+        assert.equal(
+          failed.revision_id,
+          null,
+          `${change}: refused before the work creates a revision`,
+        );
+        const status = await fixture.request("GET", admitted.data.provisioning.url);
+        assert.equal(status.status, 200, `${change}: ${JSON.stringify(status.body)}`);
+        assert.deepEqual(status.data.error, { code: "PROVISIONING_REJECTED", message }, change);
+        if (retry !== undefined) {
+          const retried = await fixture.request("POST", `${admitted.data.provisioning.url}/retry`);
+          assertApiError(retried, 409, "RESOURCE_CONFLICT");
+          assert.equal(retried.body.error.message, retry);
+        }
+      } finally {
+        policyRefusal?.mock.restore();
+        policyRefusal = undefined;
+        computeDriver.validateRepositoryCredentials = validateRepositoryCredentials;
       }
     }
   },
@@ -3317,6 +3362,9 @@ test(
   },
 );
 
+const missingCodexPluginCatalog =
+  "No Plugin Driver is enabled for the codex Harness. Remove the Agent's plugins or enable its catalog.";
+
 test(
   "a Plugin Driver switch leaves the provisioning status readable; retry still refuses the plan",
   { ...requiresPostgres, timeout: 60_000 },
@@ -3371,8 +3419,7 @@ test(
     // Rule out the Configuration outage as the cause of the retry refusal below.
     configurationOutage = false;
 
-    // The administrator restarts the API with a Plugin Driver that does not offer the stored
-    // plugin. Reading status reports the stored work: plugin admission belongs to writes.
+    // Restart with only the OpenClaw catalog. Status still returns the persisted failure.
     const switched = await createFixture(context, {
       computeDriver,
       configurationDriver,
@@ -3383,16 +3430,10 @@ test(
     assert.equal(status.status, 200, JSON.stringify(status.body));
     assert.deepEqual(status.data, failed);
 
-    // Retry would run the plan again, so it is still refused, naming the stored plugin
-    // without a request-body detail, and queues nothing.
+    // Retry must resolve the plan's Codex Harness catalog before validating any plugin ID.
     const retried = await switched.request("POST", `${admitted.data.provisioning.url}/retry`);
     assertApiError(retried, 400, "INVALID_REQUEST");
-    assert.match(
-      retried.body.error.message,
-      new RegExp(
-        `^A plugin selection names a plugin that the selected Plugin Driver \\(occ-plugin\\) does not offer: ${pluginId}\\.`,
-      ),
-    );
+    assert.equal(retried.body.error.message, missingCodexPluginCatalog);
     assert.equal(Object.hasOwn(retried.body.error, "details"), false);
     // A replay of the original request rechecks the stored plan, so it is refused the same way
     // and returns no progress.
@@ -3429,15 +3470,13 @@ test(
     });
     const namespace = await fixture.bootstrapNamespace();
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
-    // A hosted-app plugin ID makes the refusal outgrow the 256-character status message.
-    const pluginId = "codex-plugin:app-69312da8e4dc81919370cb86fd172b6c@openai-curated-remote";
+    const pluginId = "codex-plugin:linear@openai-curated-remote";
     const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
       body: provisioningBody(namespace.id, secrets, { plugins: { [pluginId]: { enabled: true } } }),
     });
     assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
 
-    // The Installation now selects a Plugin Driver that does not offer the stored plugin. Every
-    // attempt would refuse the plan the same way, so the worker fails it on the first one.
+    // The plan was admitted for Codex. A worker with only OpenClaw must refuse it on its first attempt.
     const switched = await createFixture(context, {
       computeDriver,
       configurationDriver,
@@ -3453,17 +3492,8 @@ test(
     await switched.stopWorker();
     const failed = await switched.request("GET", admitted.data.provisioning.url);
     assert.equal(failed.status, 200, JSON.stringify(failed.body));
-    // The refusal names the stored plugin, as HTTP retry would, so Console can say why.
     assert.equal(failed.data.error.code, "PROVISIONING_REJECTED");
-    assert.ok(
-      failed.data.error.message.startsWith(
-        `A plugin selection names a plugin that the selected Plugin Driver (occ-plugin) does not offer: ${pluginId}.`,
-      ),
-      failed.data.error.message,
-    );
-    // Cut to the 256-character cap with an ellipsis that says text is missing.
-    assert.equal(Array.from(failed.data.error.message).length, 256);
-    assert.ok(failed.data.error.message.endsWith("…"), failed.data.error.message);
+    assert.equal(failed.data.error.message, missingCodexPluginCatalog);
     const work = await switched.pool.query(
       "SELECT state, reason_code, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
       [admitted.data.provisioning.workId],

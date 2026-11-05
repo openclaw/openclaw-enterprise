@@ -17,28 +17,30 @@
     "typecheck": "tsc --build tsconfig.json --pretty false"
   },
   "dependencies": {
-    "@better-auth/api-key": "1.7.11",
+    "@better-auth/api-key": "1.7.13",
     "@fastify/ajv-compiler": "4.0.7",
     "@fastify/fast-json-stringify-compiler": "5.1.1",
     "@fastify/swagger": "9.9.2",
     "@fastify/type-provider-typebox": "6.3.0",
     "@grpc/grpc-js": "1.14.6",
     "@grpc/proto-loader": "0.8.1",
-    "@kubernetes/client-node": "2.0.0",
+    "@kubernetes/client-node": "2.0.1",
+    "@modelcontextprotocol/client": "2.3.1",
     "@openclaw-enterprise/audit": "workspace:*",
     "@openclaw-enterprise/contracts": "workspace:*",
     "@openclaw-enterprise/iam": "workspace:*",
     "@openclaw-enterprise/occ": "workspace:*",
     "@openclaw-enterprise/utils": "workspace:*",
-    "@openclaw/gateway-client": "2026.10.5",
+    "@openclaw/gateway-client": "2026.10.7",
     "@prometheus-io/client": "0.16.1",
     "ajv-formats": "3.0.1",
-    "better-auth": "1.7.11",
+    "better-auth": "1.7.13",
     "fastify": "5.12.7",
+    "ipaddr.js": "2.5.0",
     "pg": "8.23.1",
     "pino": "10.4.0",
-    "tldts": "7.4.18",
-    "typebox": "1.4.2",
-    "undici": "8.12.2"
+    "tldts": "7.4.19",
+    "typebox": "1.4.3",
+    "undici": "8.12.3"
   }
 }

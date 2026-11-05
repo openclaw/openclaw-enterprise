@@ -14,6 +14,7 @@ export async function prepareRepositoryCredentials({
   execFile,
   registerImage,
   markImageReady,
+  serviceOnly = false,
 }) {
   const docker = process.env.OCC_DOCKER_BIN ?? "docker";
   await execFile(docker, ["version", "--format", "{{.Server.Version}}"]);
@@ -58,6 +59,10 @@ export async function prepareRepositoryCredentials({
     join(imageDefinitions, "Dockerfile"),
     join(artifactRoot, "service"),
   );
+  if (serviceOnly) {
+    // k3d imports this run-owned tag, then verifies the immutable reference on each node.
+    return service.tag;
+  }
   const client = await buildImage(
     "client",
     join(imageDefinitions, "Dockerfile.client"),

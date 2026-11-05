@@ -3,10 +3,8 @@ import type {
   ProtectedRepositoryGitAuthority,
 } from "@openclaw-enterprise/contracts";
 import type { PostgresPool } from "@openclaw-enterprise/occ";
-import type { RepositoryGitRecipientEvidence } from "../../drivers/repo/credentials/protected-repository-git-installation.ts";
 import type { RepositoryServiceFactory } from "../../drivers/repo/credentials/backend-contracts.ts";
 import type { ServiceConfig } from "../../drivers/repo/credentials/service-contracts.ts";
-import type { ProviderQueue } from "../../drivers/repo/credentials/provider-queue.ts";
 import type { TlsMaterial } from "../../drivers/repo/credentials/internal-contracts.ts";
 import type { GitHubTokenClass } from "../../drivers/repo/github/credentials/types.ts";
 
@@ -14,7 +12,6 @@ export interface LoadedConfiguration {
   readonly config: ServiceConfig;
   readonly tls: TlsMaterial;
   readonly factory: RepositoryServiceFactory;
-  readonly providerQueue?: ProviderQueue;
   readonly trustedUpstreamOrigins: ReadonlySet<string>;
   readonly upstreamCa?: Uint8Array;
   /** Names the upstream authority; the token kind is development-only. */
@@ -27,7 +24,6 @@ export interface LoadedConfiguration {
 export type RepositoryTransportEmit = (event: Readonly<Record<string, unknown>>) => void;
 
 export interface RepositoryTransportBinding {
-  readonly evidence: RepositoryGitRecipientEvidence;
   bind(
     authority: ProtectedRepositoryGitAuthority,
     pool: PostgresPool,

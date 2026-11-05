@@ -1,5 +1,5 @@
+import { selectBundledRepositoryGitCustody } from "../../apps/controller/src/composition/repository-credentials/custody-selection.ts";
 import type { DriverRegistrationRef } from "../../packages/contracts/src/index.ts";
-import { openShellGitRecipientEvidence } from "../../apps/controller/src/drivers/repo/credentials/protected-repository-git-installation.ts";
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -45,6 +45,7 @@ export async function standingGitOrigin(
   installationAccess = false,
   selection?: SelectedRepositories,
   draftPull = false,
+  pushRef = "refs/heads/review",
 ) {
   const clock = createSystemClock();
   // Keep the prepared owner's real 60 s clock margin and 60 s minimum validity.
@@ -65,7 +66,6 @@ export async function standingGitOrigin(
     }),
   });
   const tls = gh.tls;
-  const pushRef = "refs/heads/review";
   const backendId = "prepared-standing";
   const registrationName = "oce-prepared-git";
   const registry = validateGitHubRepositoryRegistry({
@@ -149,6 +149,7 @@ export async function preparedStandingGitPeer(
     installationAccess?: boolean;
     selection?: SelectedRepositories;
     draftPull?: boolean;
+    pushRef?: string;
     /** GitHub's token lifetime by the system clock, or a function of the 1-based token index. */
     tokenLifetimeMs?: number | ((index: number) => number);
     /** Only the prepared owner's clock. GitHub, PostgreSQL and the runtime keep real time. */
@@ -174,6 +175,7 @@ export async function preparedStandingGitPeer(
     options.installationAccess,
     options.selection,
     options.draftPull,
+    options.pushRef,
   );
   // Public OpenShell requires the GitHub.com authority, not an arbitrary API origin.
   // Replace only the issuer's network destination, before DNS; keep fixture TLS verification,
@@ -216,8 +218,7 @@ export async function preparedStandingGitPeer(
       ca: tls.ca,
       startWorker: false,
       ...(options.driver && {
-        protectedGitDriver: options.driver,
-        protectedGitEvidence: openShellGitRecipientEvidence,
+        repositoryGitCustody: selectBundledRepositoryGitCustody(options.driver),
       }),
     },
     options.ownerClock,

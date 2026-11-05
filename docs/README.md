@@ -15,7 +15,7 @@ Choose where to install:
 - [Kubernetes](guides/deploy/kubernetes-setup.md)
 - [Amazon EKS](guides/deploy/eks-openshell-setup.md)
 
-Each path finishes with the same running OpenShell Codex Agent, browser onboarding, and saved operator session. Then use the shared [Add Git](guides/repository-credentials/openshell-git-push.md), [Add Plugin](guides/integrations/codex-plugins.md), and [Delete Agent](guides/deploy/quickstart-delete-agent.md) instructions. Installation cleanup is separate for each platform.
+After installation, [deploy your first Agent](guides/deploy/deploy-first-agent.md), complete browser onboarding, and save the operator session. Use the shared [Add Git](guides/repository-credentials/openshell-git-push.md), [Add Plugin](guides/integrations/codex-plugins.md), and [Delete Agent](guides/deploy/quickstart-delete-agent.md) instructions. Installation cleanup is separate for each platform.
 
 If you are still learning the product, start with [Concepts](guides/concepts.md).
 
@@ -29,6 +29,7 @@ If you are still learning the product, start with [Concepts](guides/concepts.md)
 | [Integrations](guides/integrations/README.md) | Choose and configure Drivers, experimental Backends, and channels.       |
 | [Deploy & Operate](guides/operate/README.md)  | Install and run the platform, manage credentials, and diagnose failures. |
 | [Reference](reference/README.md)              | Look up OCC CLI commands and HTTP API operations.                        |
+| [Testing & CI](testing/README.md)             | Run tests, inspect CI coverage, and interpret check results.             |
 | [Contribute](contributing/README.md)          | Set up a development environment and change the platform or its docs.    |
 
 <a id="platform-developer-guide"></a>

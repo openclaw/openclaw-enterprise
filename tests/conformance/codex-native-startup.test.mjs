@@ -71,6 +71,8 @@ test("Codex runtime gates startup and readiness on a successful native authentic
   const started = { type: "turn.started" };
   const assistant = { type: "item.completed", item: { type: "agent_message", text: "READY" } };
   const completed = { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } };
+  const missingModelMessage =
+    "unexpected status 404 Not Found: The model `gpt-4.1` does not exist or you do not have access to it.";
   const advisory = {
     type: "item.completed",
     item: errorEvent("Model catalog metadata unavailable"),
@@ -463,10 +465,52 @@ test("Codex runtime gates startup and readiness on a successful native authentic
       ],
       result: { status: 1 },
       expect: probeFailure(
-        { kind: "PROBE_STATUS", detail: "turn-failed" },
+        { kind: "PROBE_STATUS", detail: "model_not_found" },
         { status: 404, code: "model_not_found" },
       ),
     },
+    // Stock Codex renders the provider's 404 message without its structured code.
+    ...[
+      ["the pinned CLI error names the requested model", missingModelMessage, 404, true],
+      [
+        "a reconnect repeats that refusal",
+        `Reconnecting... 1/5 (${missingModelMessage}, request id: example)`,
+        404,
+        true,
+      ],
+      [
+        "a missing endpoint is not a missing model",
+        "unexpected status 404 Not Found: Unknown endpoint.",
+        404,
+        false,
+      ],
+      [
+        "the provider names a different model",
+        missingModelMessage.replace("gpt-4.1", "gpt-4.10"),
+        404,
+        false,
+      ],
+      [
+        "a different status keeps its own cause",
+        missingModelMessage.replace("404 Not Found", "400 Bad Request"),
+        400,
+        false,
+      ],
+      [
+        "quoted status text is not a provider response",
+        `example: ${missingModelMessage}`,
+        404,
+        false,
+      ],
+    ].map(([name, message, status, unavailable]) => ({
+      name,
+      events: [started, errorEvent(message)],
+      result: { status: 1 },
+      expect: probeFailure(
+        { kind: "PROBE_STATUS", detail: unavailable ? "model_not_found" : "error-event" },
+        unavailable ? { status, code: "model_not_found" } : { status },
+      ),
+    })),
     {
       name: "a server error naming the credential is not retried",
       events: [started, failedTurn("unexpected status 500: invalid api key for this server")],

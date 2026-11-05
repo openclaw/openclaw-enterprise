@@ -70,10 +70,11 @@ OCC returns `201` with a `cs_` source ID, binding `ref` and status. Use the
 - `name` is unique within the Namespace.
 - `type` must be offered by the installation. With a Credential Proxy selected,
   registration also requires a protected profile for that type.
-- `config` contains nonsecret catalog fields. OpenShell's `openai` type defaults
-  to `https://api.openai.com/v1`. A custom `base_url` must use HTTPS, a DNS
-  hostname and a path ending in `/v1`. Codex requires the Responses API.
-  OCC normalizes the endpoint before storage. Changing it requires a new source.
+- `config` contains nonsecret catalog fields. OpenShell's `openai` type accepts
+  `authorized_base_url` as immutable destination authorization. Omission authorizes
+  only `https://api.openai.com/v1`; a custom authorization must match the
+  [shared model provider](drivers/kubernetes-compute/model-provider.md).
+  `base_url` cannot select a route. Replace old sources before reuse.
 - `secrets` maps catalog fields to same-Namespace Secret references. OCC rejects
   cross-Namespace references with `400` and missing Secrets with `404`.
 
@@ -112,7 +113,7 @@ bound or deployed.
 
 ## Bind a source to an Agent
 
-Set `credentialSources` to a list of up to eight distinct
+Set `credentialSources` to a list of up to 64 distinct
 `{ "sourceId": "cs_…" }` entries. On update, the list replaces the draft's
 bindings. Omit it to keep them or send `[]` to remove them all.
 
