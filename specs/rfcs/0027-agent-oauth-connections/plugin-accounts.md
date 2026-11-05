@@ -21,8 +21,9 @@ model asks the user when several accounts fit.
 
 For MCP, Console lists names discovered per account, reports incomplete
 discovery and saves one enablement choice per upstream tool. The worker
-compares definitions across account sessions. Accounts share one tool when its
-name, description, input and output schemas, and behavior annotations match. If a name
+compares the complete tool definitions returned by `tools/list` across account
+sessions. Accounts share one tool only when every field matches, including
+provider metadata. JSON object key order is immaterial. If a name
 has conflicting definitions, each distinct definition gets an account-qualified
 name. The model can discover which accounts offer each definition.
 

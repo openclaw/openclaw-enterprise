@@ -12,7 +12,9 @@ for the Agent's Harness. OCC checks policy before saving and performs
 Dedicated OpenClaw on Kubernetes supports multiple accounts per plugin slot.
 [Google Workspace](../../apps/controller/plugins/oce-google-workspace/plugin.json) installs a Gateway skill and [worker CLI](connection-templates.md#use-a-saved-account-in-an-agent-plugin).
 [Slack](../guides/topics/plugins-configure.md#configure-slack-search) discovers tools through `tools/list`.
-Enable each upstream tool name once. Accounts share a tool when descriptions, input and output schemas, and behavior annotations match. Conflicting definitions get account-qualified names. With several accounts, choose an ID from `properties.account.enum` and nest the native arguments, e.g. `{"account":"cs_a_west","arguments":{"account":"native-account"}}`. The account skill lists the saved names. Single-account tools take native arguments. A worker advertises up to 128 MCP tools.
+Enable each upstream tool name once. Accounts share a tool only when their complete `tools/list` definitions match. This includes the title, description, input and output schemas, annotations, icons, execution settings and provider metadata. The worker ignores JSON object key order and preserves array order. Each distinct definition of the same name gets an account-qualified name.
+
+With several accounts, choose an ID from `properties.account.enum` and nest the native arguments, e.g. `{"account":"cs_a_west","arguments":{"account":"native-account"}}`. The account skill lists the saved names. Single-account tools take native arguments. A worker advertises up to 128 MCP tools.
 OpenShell v0.1.6 permits 32 providers per Sandbox. Each attached account uses
 one provider, and runtime providers count toward the same [OpenShell limit](https://github.com/NVIDIA/OpenShell/blob/ac7f615cd12d5cc49cb16eb1f5f10ffeb1e90f47/crates/openshell-server/src/grpc/mod.rs#L152).
 

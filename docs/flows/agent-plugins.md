@@ -98,7 +98,7 @@ Closing the picker cancels reads. Hosted reads limit time and size, reject redir
 OCC snapshots the Configuration, Driver, selections and account names. The worker verifies the Driver owns the Harness catalog. Once Compute verifies sender policy, OCC publishes each saved account’s prepared token and expiry to its Agent-specific OpenShell profile. The skill lists account names and IDs. [Token delivery](connection-templates.md#bind-a-saved-account-to-a-plugin)
 
 - **CLI** — The worker selects the named account’s placeholder. OpenShell checks approved Google operations and destinations. Google enforces the account’s grant.
-- **MCP** — The [dispatcher](../../deploy/runtime/openclaw-node-mcp-accounts.patch) groups identical definitions and publishes their eligible IDs. Given `{"account":"cs_b_east","arguments":{"account":"native-account"}}`, it checks eligibility before sending the upstream name and inner arguments through that account’s session. OpenShell enforces selected upstream names.
+- **MCP** — The [dispatcher](../../deploy/runtime/openclaw-node-mcp-accounts.patch) compares each complete tool definition from discovery, including provider metadata, and publishes the eligible account IDs for each definition. Given `{"account":"cs_b_east","arguments":{"account":"native-account"}}`, it checks eligibility before sending the upstream name and inner arguments through that account’s session. OpenShell enforces selected upstream names.
 - **Native plugins** — Startup installs packages and verifies tool policy.
 
 Withdrawal stops credential injection for that source.
