@@ -1,6 +1,9 @@
 import { readFile } from "node:fs/promises";
+import { stripTypeScriptTypes } from "node:module";
 import { promisify } from "node:util";
 import { brotliCompress, constants as zlib, gzip } from "node:zlib";
+
+import { renderConsoleThemeShell, type ConsoleTheme } from "./console-theme.ts";
 
 export interface ConsoleAsset {
   readonly body: Buffer;
@@ -22,58 +25,85 @@ const brotliAsync = promisify(brotliCompress);
 const gzipAsync = promisify(gzip);
 // Compressed once per asset content: the files are static per build.
 const encodedAssets = new Map<string, Promise<EncodedAsset>>();
+const encodedThemes = new WeakMap<ConsoleTheme, Map<string, Promise<EncodedAsset>>>();
 
 const CONSOLE_ROOT = new URL("./console/", import.meta.url);
 const CONSOLE_SHELL = new URL("index.html", CONSOLE_ROOT);
 const CONSOLE_ASSETS = new Map([
   ...Object.entries({
-    "image/png": ["oce-mascot.png", "favicon-16.png", "favicon-32.png", "apple-touch-icon.png"],
+    "image/png": [
+      "oce-mascot.png",
+      "oce-mascot-inverse.png",
+      "favicon-16.png",
+      "favicon-32.png",
+      "apple-touch-icon.png",
+    ],
     "image/vnd.microsoft.icon": ["favicon.ico"],
     "text/javascript; charset=utf-8": [
-      "api-client.mjs",
-      "view-lifetime.mjs",
-      "navigation.mjs",
-      "shell.mjs",
-      "runtime-images.mjs",
-      "agents/list.mjs",
-      "agents/logs.mjs",
-      "agents/logs-view.mjs",
-      "agents/presets.mjs",
-      "agents/create.mjs",
-      "agents/plugin-discovery.mjs",
-      "agents/slack-directory.mjs",
-      "agents/slack-approvers.mjs",
-      "agents/plugin-fields.mjs",
-      "agents/plugins.mjs",
-      "agents/repositories.mjs",
-      "agents/repository-profiles.mjs",
-      "agents/starter-model.mjs",
-      "agents/workspace.mjs",
-      "agents/access.mjs",
-      "agents/detail.mjs",
-      "agents/deletion.mjs",
-      "agents/stop.mjs",
-      "agents/native-admin.mjs",
-      "agents/harness-auth.mjs",
-      "agents/device-login.mjs",
-      "agents/credential-access.mjs",
-      "agents/secret-picker.mjs",
-      "agents/credentials.mjs",
-      "channels/slack.mjs",
-      "channels/shared-ui.mjs",
-      "channels.mjs",
-      "agents.mjs",
-      "carry.mjs",
-      "drafts.mjs",
-      "dom.mjs",
-      "console.mjs",
+      "startup-recovery.mts",
+      "api-client.mts",
+      "sign-in-presentation.mts",
+      "configuration-fields.mts",
+      "driver-configurations.mts",
+      "view-lifetime.mts",
+      "request-turns.mts",
+      "navigation.mts",
+      "shell.mts",
+      "namespaces.mts",
+      "namespace-deletion.mts",
+      "resource-actions.mts",
+      "secrets.mts",
+      "runtime-images.mts",
+      "agents/list.mts",
+      "agents/access-reasons.mts",
+      "agents/collection.mts",
+      "agents/lifecycle-confirmation.mts",
+      "agents/logs.mts",
+      "agents/sandbox-policy.mts",
+      "agents/gateway-safety.mts",
+      "agents/logs-view.mts",
+      "agents/presets.mts",
+      "agents/create.mts",
+      "agents/provisioning-job.mts",
+      "agents/plugin-discovery.mts",
+      "agents/slack-directory.mts",
+      "agents/slack-approvers.mts",
+      "agents/plugin-fields.mts",
+      "agents/plugins.mts",
+      "agents/repositories.mts",
+      "agents/repository-profiles.mts",
+      "agents/starter-model.mts",
+      "agents/workspace.mts",
+      "agents/access.mts",
+      "agents/detail.mts",
+      "agents/deployment-evidence.mts",
+      "agents/deployment-diagnostics.mts",
+      "agents/deployment-recovery.mts",
+      "agents/deletion.mts",
+      "agents/stop.mts",
+      "agents/native-admin.mts",
+      "agents/harness-auth.mts",
+      "agents/device-login.mts",
+      "agents/credential-access.mts",
+      "agents/secret-picker.mts",
+      "agents/credentials.mts",
+      "channels/slack.mts",
+      "channels/shared-ui.mts",
+      "channels.mts",
+      "agents.mts",
+      "carry.mts",
+      "drafts.mts",
+      "dom.mts",
+      "console.mts",
     ],
     "font/woff2": ["fonts/instrument-sans-latin.woff2"],
     "text/css; charset=utf-8": ["console.css", "channels.css"],
   }).flatMap(([contentType, paths]) =>
-    paths.map(
-      (path) => [`/console/${path}`, { path: new URL(path, CONSOLE_ROOT), contentType }] as const,
-    ),
+    paths.map((path) => {
+      // Browser imports use JavaScript extensions. Source paths never come from the request.
+      const url = `/console/${path.replace(/\.mts$/, ".mjs")}`;
+      return [url, { path: new URL(path, CONSOLE_ROOT), contentType }] as const;
+    }),
   ),
   [
     "/console/workspace-defaults.mjs",
@@ -89,6 +119,48 @@ const CONSOLE_ASSETS = new Map([
       contentType: "text/javascript; charset=utf-8",
     },
   ],
+  // The Console reads Slack tokens with OCC's environment reference grammar.
+  [
+    "/console/environment-references.mjs",
+    {
+      path: new URL("../../../packages/occ/src/environment-references.ts", import.meta.url),
+      contentType: "text/javascript; charset=utf-8",
+    },
+  ],
+  // The Console shows the Gateway security values deployment admission fills from OCC's own table.
+  [
+    "/console/gateway-security-defaults.mjs",
+    {
+      path: new URL("../../../packages/occ/src/gateway-security-defaults.ts", import.meta.url),
+      contentType: "text/javascript; charset=utf-8",
+    },
+  ],
+  // The Console holds a draft's Deploy with the refusal OCC's stored-row rules give first, in
+  // deploy's order (finding 3093). It imports OCC's environment reference and retired setting
+  // modules, which are served here too.
+  [
+    "/console/stored-configuration-rules.mjs",
+    {
+      path: new URL("../../../packages/occ/src/stored-configuration-rules.ts", import.meta.url),
+      contentType: "text/javascript; charset=utf-8",
+    },
+  ],
+  // OCC's retired OpenClaw settings, which the stored-row rules above read.
+  [
+    "/console/retired-openclaw-settings.mjs",
+    {
+      path: new URL("../../../packages/occ/src/retired-openclaw-settings.ts", import.meta.url),
+      contentType: "text/javascript; charset=utf-8",
+    },
+  ],
+  // The Console offers each failed deployment's next step from OCC's own table.
+  [
+    "/console/deployment-failure-steps.mjs",
+    {
+      path: new URL("../../../packages/occ/src/deployment-failure-steps.ts", import.meta.url),
+      contentType: "text/javascript; charset=utf-8",
+    },
+  ],
 ]);
 const CONSOLE_SHELL_ROUTES = new Set([
   "/console",
@@ -97,6 +169,7 @@ const CONSOLE_SHELL_ROUTES = new Set([
   "/console/agents",
   "/console/backends",
   "/console/namespaces",
+  "/console/secrets",
   "/console/settings",
 ]);
 
@@ -113,6 +186,47 @@ export const CONSOLE_CONTENT_SECURITY_POLICY = [
   "style-src 'self'",
 ].join("; ");
 
+/** The public files Storybook gets from the same reader as the controller. */
+export function consoleAssetPaths(): Iterable<string> {
+  return CONSOLE_ASSETS.keys();
+}
+
+const browserModules = new Map<string, { source: Buffer; javascript: Buffer }>();
+
+// The Console URL of each source file it serves, so an OCC module's import of another can name it.
+const consoleUrls = new Map([...CONSOLE_ASSETS].map(([url, { path }]) => [path.href, url]));
+
+// Node 24 erases types without moving source lines. Reuse that result until the file changes;
+// the Console TypeScript project checks types and rejects syntax that would require a transform.
+// An OCC module imports a sibling by its `.ts` source name, which the browser cannot load, so the
+// import is pointed at the Console URL that serves the same file, beside the importing module's.
+// A module that imports a file the Console does not serve there is refused, so it fails in tests,
+// not in a browser. `href` is the module's source file URL.
+function browserJavaScript(pathname: string, source: Buffer, href: string): Buffer {
+  const previous = browserModules.get(pathname);
+  if (previous?.source.equals(source)) {
+    return previous.javascript;
+  }
+  const directory = pathname.slice(0, pathname.lastIndexOf("/") + 1);
+  const javascript = Buffer.from(
+    stripTypeScriptTypes(source.toString("utf8")).replaceAll(
+      /(?<=\bfrom ")\.\.?\/[^"]+\.ts(?=";)/g,
+      (specifier) => {
+        const name = specifier.slice(2);
+        const url = name.includes("/")
+          ? undefined
+          : consoleUrls.get(`${href.slice(0, href.lastIndexOf("/") + 1)}${name}`);
+        if (url === undefined || url.slice(0, url.lastIndexOf("/") + 1) !== directory) {
+          throw new Error(`${pathname} imports ${specifier}, which the Console does not serve.`);
+        }
+        return `./${url.slice(directory.length)}`;
+      },
+    ),
+  );
+  browserModules.set(pathname, { source, javascript });
+  return javascript;
+}
+
 /**
  * Reads a console asset. Pass the request's Accept-Encoding to receive a brotli or gzip body for
  * static scripts and styles. Only these build-time files are compressed: they carry no secret or
@@ -122,7 +236,27 @@ export const CONSOLE_CONTENT_SECURITY_POLICY = [
 export async function readConsoleAsset(
   pathname: string,
   acceptEncoding?: string,
+  theme?: ConsoleTheme,
 ): Promise<ConsoleAsset> {
+  if (pathname.startsWith("/console/theme/")) {
+    const asset = theme?.assets.get(pathname);
+    if (theme === undefined || asset === undefined) {
+      return {
+        body: Buffer.from("Theme asset not found.\n"),
+        contentType: "text/plain; charset=utf-8",
+        statusCode: 404,
+      };
+    }
+    if (!asset.contentType.startsWith("text/")) {
+      return { ...asset, statusCode: 200 };
+    }
+    let cache = encodedThemes.get(theme);
+    if (cache === undefined) {
+      cache = new Map();
+      encodedThemes.set(theme, cache);
+    }
+    return encodedAsset(pathname, asset.body, asset.contentType, acceptEncoding, cache);
+  }
   if (pathname === "/console/default-codex-preset.mjs") {
     const preset = JSON.parse(
       await readFile(
@@ -139,21 +273,39 @@ export async function readConsoleAsset(
   }
   const asset = CONSOLE_ASSETS.get(pathname);
   if (asset !== undefined) {
-    const body = await readFile(asset.path);
+    const source = await readFile(asset.path);
     if (!asset.contentType.startsWith("text/")) {
-      return { body, contentType: asset.contentType, statusCode: 200 };
+      return { body: source, contentType: asset.contentType, statusCode: 200 };
     }
+    const body = /\.m?ts$/.test(asset.path.pathname)
+      ? browserJavaScript(pathname, source, asset.path.href)
+      : source;
     return encodedAsset(pathname, body, asset.contentType, acceptEncoding);
   }
+  const shell = await readFile(CONSOLE_SHELL);
   return {
-    body: await readFile(CONSOLE_SHELL),
+    body:
+      theme === undefined
+        ? shell
+        : Buffer.from(renderConsoleThemeShell(shell.toString("utf8"), theme)),
     contentType: "text/html; charset=utf-8",
-    statusCode:
-      CONSOLE_SHELL_ROUTES.has(pathname) ||
-      /^\/console\/agents\/(new|agt_[a-f0-9-]+)$/.test(pathname)
-        ? 200
-        : 404,
+    statusCode: isConsolePage(canonicalConsolePath(pathname)) ? 200 : 404,
   };
+}
+
+// A page path with trailing slashes names the same page, so it gets the same status; the
+// console then shows the address without them (navigation.mts). `/console/` itself stays.
+// Assets never match: an asset path with a slash is not an asset (finding 1906).
+function canonicalConsolePath(pathname: string) {
+  return pathname.startsWith("/console/")
+    ? `/console/${pathname.slice("/console/".length).replace(/\/+$/, "")}`
+    : pathname;
+}
+
+function isConsolePage(pathname: string) {
+  return (
+    CONSOLE_SHELL_ROUTES.has(pathname) || /^\/console\/agents\/(new|agt_[a-f0-9-]+)$/.test(pathname)
+  );
 }
 
 async function encodedAsset(
@@ -161,6 +313,7 @@ async function encodedAsset(
   body: Buffer,
   contentType: string,
   acceptEncoding: string | undefined,
+  cache = encodedAssets,
 ): Promise<ConsoleAsset> {
   const identity = { body, contentType, statusCode: 200, variesByEncoding: true } as const;
   const encoding = preferredEncoding(acceptEncoding);
@@ -168,7 +321,7 @@ async function encodedAsset(
     return identity;
   }
   // Look the entry up without awaiting first, so concurrent first requests share one compression.
-  const existing = encodedAssets.get(pathname);
+  const existing = cache.get(pathname);
   let encoded = existing === undefined ? undefined : await existing.catch(() => undefined);
   if (encoded === undefined || !encoded.identity.equals(body)) {
     const pending = Promise.all([
@@ -182,11 +335,11 @@ async function encodedAsset(
       }),
       gzipAsync(body, { level: zlib.Z_BEST_COMPRESSION }),
     ]).then(([br, gzipped]) => ({ identity: body, br, gzip: gzipped }));
-    encodedAssets.set(pathname, pending);
+    cache.set(pathname, pending);
     // Never cache a failure: the next request compresses again.
     pending.catch(() => {
-      if (encodedAssets.get(pathname) === pending) {
-        encodedAssets.delete(pathname);
+      if (cache.get(pathname) === pending) {
+        cache.delete(pathname);
       }
     });
     encoded = await pending;
@@ -212,6 +365,11 @@ function preferredEncoding(acceptEncoding: string | undefined): "br" | "gzip" | 
   const weight = (name: string) => weights.get(name) ?? weights.get("*") ?? 0;
   const br = weight("br");
   const gzipWeight = weight("gzip");
+  // Identity is an acceptable fallback by default; an explicit higher weight also makes it
+  // the preferred representation. Keep the existing compression preference on a tie.
+  if ((weights.get("identity") ?? 0) > Math.max(br, gzipWeight)) {
+    return undefined;
+  }
   if (br > 0 && br >= gzipWeight) {
     return "br";
   }

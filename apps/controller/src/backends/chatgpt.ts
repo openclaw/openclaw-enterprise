@@ -1,4 +1,5 @@
 import { DependencyUnavailableError } from "@openclaw-enterprise/occ";
+import { readCappedBody } from "@openclaw-enterprise/utils";
 
 const CHATGPT_API_BASE = "https://api.chatgpt.com/v1";
 const CODEX_LOCAL_ACCESS_SCOPE = "chatgpt.workspace.feature.allow-codex-local-access.access";
@@ -210,30 +211,11 @@ export class ChatGPTClient {
         await response.body?.cancel().catch(() => {});
         throw new Error("oversized");
       }
-      const reader = response.body?.getReader();
-      if (reader === undefined) {
-        throw new Error("invalid");
+      const contents = await readCappedBody(response.body, MAX_RESPONSE_BYTES);
+      if (contents === undefined) {
+        throw new Error("oversized");
       }
-      const chunks: Uint8Array[] = [];
-      let bytes = 0;
-      try {
-        while (true) {
-          const chunk = await reader.read();
-          if (chunk.done) {
-            break;
-          }
-          bytes += chunk.value.byteLength;
-          if (bytes > MAX_RESPONSE_BYTES) {
-            await reader.cancel();
-            throw new Error("oversized");
-          }
-          chunks.push(chunk.value);
-        }
-      } finally {
-        reader.releaseLock();
-      }
-      const contents = Buffer.concat(chunks, bytes).toString("utf8");
-      const parsed: unknown = JSON.parse(contents);
+      const parsed: unknown = JSON.parse(contents.toString("utf8"));
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
         throw new Error("invalid");
       }

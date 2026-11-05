@@ -3,7 +3,7 @@
 Use these guides to understand how Agents run, control what they can access,
 and decide which changes require a new deployment. If you are new to OpenClaw
 Enterprise, start with [Concepts](../concepts.md) or
-[deploy your first Agent](../first-agent.md).
+[set up an OpenShell Codex Agent](../deploy/local-setup.md).
 
 ## Agent
 
@@ -14,6 +14,8 @@ Enterprise, start with [Concepts](../concepts.md) or
   bundled Driver supports.
 - [Harness](../../reference/harness-execution.md): how OpenClaw or Codex runs
   the model and authenticates to it.
+- [Remote Harness](remote-harness.md): how dedicated execution separates Gateway
+  and Harness storage, and how documents, Memory, Skills, and attachments cross that boundary.
 - [Workspace files](workspace-files.md): edit an active Agent's instruction and
   identity files.
 - [Runtime logs](agent-logs.md): read Pod status, restarts, Events and redacted
@@ -43,9 +45,9 @@ Enterprise, start with [Concepts](../concepts.md) or
   change an Agent's selections.
 - [Configuration](../../reference/configuration.md): what belongs to an
   installation, a Namespace, or an Agent draft.
-- [Agent Revisions](agent-revisions.md): change a draft, deploy it, and inspect
+- [Agent revisions](agent-revisions.md): change a draft, deploy it, and inspect
   the snapshot the Agent runs.
 
 For setup instructions for a specific vendor or Driver, use
 [Integrations](../integrations/README.md). For installation-wide work, use
-[Operate](../operate/README.md).
+[Deploy & Operate](../operate/README.md).

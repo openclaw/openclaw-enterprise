@@ -10,7 +10,6 @@ const matrixLanes = [
   "postgres-auth",
   "postgres-platform",
   "images-packaging",
-  "images-model-probes",
   "images-runtime-startup",
   "images-runtime-startup-2",
   "images-runtime-startup-3",
@@ -20,7 +19,6 @@ const matrixLanes = [
   "k3d-observability",
   "logging-collector",
   "repository-credentials-container",
-  "repository-credentials-platform",
   "keycloak-oidc",
 ];
 
@@ -68,8 +66,7 @@ function main(args) {
   const issues = [];
   const expected = {
     impact: "success",
-    audit: "success",
-    // Lint, format, OpenAPI and docs checks run in every mode.
+    // The suite audit and static checks share a required job in every mode.
     "static-checks": "success",
     "pr-safe": mode === "docs" ? "skipped" : "success",
     "runtime-image-fixture":
@@ -96,7 +93,7 @@ function main(args) {
   const state = (job) => ({ result: needs[job]?.result ?? "missing" });
   const expanded = {
     impact: state("impact"),
-    audit: state("audit"),
+    "static-checks": state("static-checks"),
   };
   if (mode === "full") {
     expanded["runtime-image-fixture"] = state("runtime-image-fixture");

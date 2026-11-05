@@ -1,18 +1,18 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { copyFile, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { writeCommand } from "../helpers/fake-commands.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repository = fileURLToPath(new URL("../../", import.meta.url));
 
 test("development wrappers resolve relative paths without changing CDPATH", async (t) => {
   // Spaces and an alternate scripts directory exercise real shell path lookup;
   // help reaches the actual CLI without starting a container engine or stack.
-  const directory = await mkdtemp(join(tmpdir(), "openclaw dev entry-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "openclaw dev entry-");
   const checkout = join(directory, "checkout");
   const search = join(directory, "shell search");
   await mkdir(join(checkout, "scripts"), { recursive: true });
@@ -29,10 +29,10 @@ test("development wrappers resolve relative paths without changing CDPATH", asyn
   assert.equal(build.status, 0, build.stderr || build.error?.message);
   const observed = join(directory, "child-cdpath");
   // Observe the delegation environment, then execute the compiled CLI unchanged.
-  await writeFile(
-    join(checkout, "bin", "occ"),
-    '#!/bin/sh\nprintf "%s" "$CDPATH" > "$TEST_CDPATH_OUTPUT"\nexec "$TEST_CDPATH_CLI" "$@"\n',
-    { mode: 0o755 },
+  await writeCommand(
+    join(checkout, "bin"),
+    "occ",
+    'printf "%s" "$CDPATH" > "$TEST_CDPATH_OUTPUT"\nexec "$TEST_CDPATH_CLI" "$@"\n',
   );
   for (const cdpath of ["", ".:", search]) {
     const env = {
@@ -65,11 +65,37 @@ test("development wrappers resolve relative paths without changing CDPATH", asyn
   }
 });
 
+test("docker dev-up accepts --key-output=PATH", () => {
+  // Kubernetes Compute execs occ, whose flags accept either spelling. Docker
+  // Compute parses this script itself and used to report the equals form as an
+  // unknown option before any engine or Compose work.
+  const env = { ...process.env, OCC_DEVELOPMENT_COMPUTE_DRIVER: "docker" };
+  delete env.BASH_ENV;
+  delete env.ENV;
+  delete env.SHELLOPTS;
+  const empty = spawnSync("/bin/bash", ["scripts/dev-up", "--key-output="], {
+    cwd: repository,
+    encoding: "utf8",
+    env,
+  });
+  assert.equal(empty.status, 2, empty.stderr);
+  assert.match(empty.stderr, /--key-output requires a path/);
+  assert.doesNotMatch(empty.stderr, /unknown option/);
+
+  const equals = spawnSync("/bin/bash", ["scripts/dev-up", "--key-output=relative-key"], {
+    cwd: repository,
+    encoding: "utf8",
+    env,
+  });
+  assert.notEqual(equals.status, 0, equals.stderr);
+  assert.doesNotMatch(equals.stderr ?? "", /unknown option/);
+  assert.match(equals.stderr ?? "", /key output must be an absolute path|OCC CLI is required/);
+});
+
 test("k3d and CI tool setup resolve the checkout without CDPATH", async (t) => {
   // Each wrapper exits on a path that needs no cluster, container engine or download:
   // k3d prints help, and setup-tools rejects an unknown profile after entering the checkout.
-  const directory = await mkdtemp(join(tmpdir(), "openclaw tool entry-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "openclaw tool entry-");
   const checkout = join(directory, "checkout");
   const search = join(directory, "shell search");
   await mkdir(join(checkout, "scripts", "ci"), { recursive: true });
@@ -113,5 +139,38 @@ test("k3d and CI tool setup resolve the checkout without CDPATH", async (t) => {
     const setup = await run(["scripts/ci/setup-tools.sh", "unknown-profile"]);
     assert.equal(setup.status, 64, setup.context);
     assert.equal(setup.stderr, "Unknown setup profile: unknown-profile\n");
+  }
+});
+
+// Exact, major and minor cache requests must enforce the same security floor
+// as wildcard requests; otherwise an explicitly cached affected runtime wins.
+test("CI cached Node requests reject affected patch releases", () => {
+  const helper = join(repository, ".github/actions/setup-pnpm-store-cache/ensure-node.sh");
+  for (const [version, accepted] of [
+    ["24.22.0", false],
+    ["24.22.1", true],
+    ["26.12.0", false],
+    ["26.12.1", true],
+  ]) {
+    const [major, minor] = version.split(".");
+    for (const request of [version, `${major}.${minor}`, major, `${major}.x`, ""]) {
+      const result = spawnSync(
+        "/bin/bash",
+        [
+          "-c",
+          'source "$1"; openclaw_node_version_matches "$2" "$3"',
+          "node-floor",
+          helper,
+          version,
+          request,
+        ],
+        { encoding: "utf8" },
+      );
+      assert.equal(
+        result.status,
+        accepted ? 0 : 1,
+        `${version} requested as ${request}: ${result.stderr}`,
+      );
+    }
   }
 });

@@ -1,6 +1,6 @@
 # Kubernetes Configuration storage
 
-Use this reference to configure tenant placement and Kubernetes permissions for [Configuration resources](../configuration.md) and immutable revision snapshots.
+Use this reference to configure tenant placement and Kubernetes permissions for [Configuration resources](../configuration.md) and immutable version snapshots.
 
 ## Kubernetes placement and RBAC
 
@@ -25,7 +25,7 @@ The driver validates and parses that document when reading it; malformed JSON,
 extra data entries, excessive size, or incorrect ownership fail closed. It
 cannot select another tenant namespace, share tenant objects,
 read Kubernetes Secrets, create Pods, or store Installation settings. ConfigMap
-updates are not watched or automatically reloaded into admitted AgentRevisions.
+updates are not watched or automatically reloaded into saved AgentRevisions.
 The serialized values must be smaller than 1 MiB, or a write is refused with
 `400 INVALID_REQUEST` naming the limit; Kubernetes may also reject an object
 that exceeds its total object limit. Reads reject invalid kind or
@@ -40,10 +40,10 @@ owning Namespace, immutable kind, current generation, and creation time. The
 ConfigMap in the tenant namespace carries matching kind and generation
 annotations and stores only the live native configuration document in `openclaw.json`; values
 are not duplicated in Configuration metadata. Deployment separately persists
-its immutable revision snapshot.
+its immutable version snapshot.
 
-When Kubernetes Compute prepares an admitted AgentRevision, it creates a
-**separate, immutable, Agent-owned snapshot ConfigMap** containing the revision's
+When Kubernetes Compute prepares a saved AgentRevision, it creates a
+**separate, immutable, Agent-owned snapshot ConfigMap** containing the version's
 native configuration with [Driver-owned proxy trust](../drivers/kubernetes-compute/networking-and-isolation.md#gateway-authentication)
 rendered from the Installation. This rendering does not rewrite the stored
 Configuration or AgentRevision. The Agent gateway mounts this
@@ -53,7 +53,7 @@ Configuration Driver ConfigMap or copies raw configuration into Pod
 environment. When OpenClaw starts from this read-only file, the startup wrapper
 also sets `OPENCLAW_CONFIG_READONLY=1`, so OpenClaw treats the file as externally
 managed and does not try to write its last-known-good backup beside it. A new
-admitted generation receives a different immutable snapshot and rolls the same
+saved version receives a different immutable snapshot and rolls the same
 Agent gateway. Old snapshots remain until Namespace deletion;
 safe earlier garbage collection is not implemented.
 
@@ -100,7 +100,7 @@ the existing Namespace-only observer grant does not permit any of them.
 
 The separately selected Kubernetes Compute Driver also requires tenant-local
 ConfigMap `get`, `create`, and `patch` to prepare its immutable Agent-owned
-revision snapshots. Those Compute permissions and snapshots are independent of
+version snapshots. Those Compute permissions and snapshots are independent of
 the Configuration Driver's `cfg-*` object allowlist and CRUD identity. Keep
 Compute `create` in its own namespaced rule because Kubernetes cannot scope
 creation by `resourceNames`; restrict `get` and `patch` to known exact

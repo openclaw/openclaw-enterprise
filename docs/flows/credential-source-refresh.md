@@ -1,22 +1,23 @@
 ---
 created: "2026-10-08"
-updated: 2026-10-14
-last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
+updated: 2026-10-31
+last_updated_session: authoring-run/0e8d85fa-aa72-48b7-bc35-06b23a663182
 ---
 
 # Credential source refresh Flow
 
 ## Overview
 
-A `refresh`-type credential source, such as `oauth2-client-credentials`, holds
-issuer material instead of a static value. The API registers it with the
-selected Credential Gateway, then asks the paired Credential Refresh Driver to
-store the material and mint the first token. Afterwards the gateway re-mints
-tokens before expiry without OCC, and the Agent keeps one stable placeholder.
-OCC calls the refresh role again only to update material, force a rotation,
-read status, or delete the source. This flow covers those calls; the
-[credential source lifecycle flow](credential-source-lifecycle.md) owns
-binding, admission, dispatch, and withdrawal, which are the same for every type.
+OCC registers an empty OAuth2 provider. The Refresh Driver requests a token;
+the gateway renews it before expiry. See [source lifecycle](credential-source-lifecycle.md) for binding and withdrawal.
+
+In [Codex device flow](#device-authorization-and-configuration), OpenShell keeps
+the refresh grant; the Harness gets a placeholder and account metadata.
+Authorized discovery can retrieve an access token. These [OAuth checks](../testing/openshell-oauth.md) do not qualify protected egress.
+
+The worker owns [GitHub issuance](#6-issue-and-renew-a-github-installation-token).
+[Git and draft pull requests](../reference/repository-credentials/prepared-native-git.md)
+use committed tokens and cannot trigger issuance.
 
 ## Entry Points
 
@@ -26,10 +27,9 @@ binding, admission, dispatch, and withdrawal, which are the same for every type.
 - Source: `packages/occ/src/index.ts:createCredentialSource`
 - Source: `packages/occ/src/index.ts:rotateCredentialSource`
 - Source: `apps/controller/src/drivers/credential-refresh/openshell.ts:OpenShellCredentialRefreshDriver`
-- Assumptions: the OpenShell Backend declares both `credential_gateway` and
-  `credential_refresh`, and both Drivers are selected; the gateway's
-  `toolBinaries` are configured, so the catalog lists the OAuth2 types; the
-  OpenShell gateway trusts and reaches the issuer's `token_url`.
+- Assumptions: the OpenShell Backend declares `credential_gateway` and
+  `credential_refresh`; the Installation selects both Drivers. Gateway
+  `toolBinaries` expose OAuth2 types; the gateway trusts and reaches `token_url`.
 
 ## Flow
 
@@ -54,13 +54,11 @@ graph TD
 
 `packages/occ/src/index.ts:createCredentialSource`
 
-The API validates the request against the gateway catalog. Device-authorized
-types defer the first mint to the completion path below. A type whose
-`rotation` is `refresh` resolves the selected Credential Refresh Driver inside
-the first transaction, so a missing selection fails before any gateway call.
-The API reads the Secret values, commits the record as `registering`, and calls
-the gateway's `registerSource` with config only: a refresh type's Secret values
-are issuer material, so only the refresh Driver receives them.
+Requests must match the gateway catalog. Device-authorized types defer minting
+until completion. For `rotation: refresh`, the first
+transaction requires the selected Credential Refresh Driver before gateway calls.
+The API reads Secret values, commits `registering`, then sends gateway
+`registerSource` only config. Issuer values go only to the Refresh Driver.
 
 The gateway posts the issuer material to `token_url` from its own network
 position, so `validateOAuth2Config` refuses a `token_url` host that is an IP
@@ -87,8 +85,10 @@ NetworkPolicy does not police (finding 1356):
   (`grpc.tcp.<service>`), so the label count decides, not the port name (finding 1366). An `endpoint` host
   `<service>.<namespace>.svc[.<domain>]` or a dotted `serviceName` names one
   namespace at save. A bare `serviceName` runs in each tenant namespace, so only
-  registration and attach know it; registration's profile check refuses the
-  name before any gateway write. An IP address, node address, two-label
+  registration and attach know it. Registration refuses the name before any
+  gateway write with `400` naming `/config/token_url`. Attach runs only in the
+  worker: it refuses a stored one with a message that names the replacement, and
+  the worker retries the revision. An IP address, node address, two-label
   `<service>.<namespace>` or other `endpoint` host names no namespace, and only
   Pod names are refused.
 
@@ -122,45 +122,56 @@ marks the source `ready` with its audit event.
 `packages/occ/src/index.ts:startAgentDeviceAuthorization`,
 `pollAgentDeviceAuthorization`, `withPluginDiscoveryCredential`
 
-A type declaring `deviceAuthorization.harnessId` registers an empty provider and
-defers the first mint. OCC selects the paired Refresh Driver's start/poll hooks,
-storing only its opaque handle plus actor, source, Gateway ID, and Refresh ID in
-the login-session Secret. Compare-and-swap permits one poll; OCC rechecks scope
-and both Driver selections before accepting completion. An uncertain exchange
-closes the handle without removing the source or replaying its grant.
+`deviceAuthorization.harnessId` sources register before login.
+`source_registering` and `source_ready` audit events commit with state, identifying
+actor, request, and source. Audit failure blocks login; failed starts retain audited sources.
+
+OCC commits the session Secret's handle, actor, source, and Driver IDs with
+`session_pending`. Known commit failure deletes metadata and private Driver value;
+unknown outcomes skip compensation. Session events identify Agent or Namespace
+and source ID. Audit excludes handles, credentials, and user codes.
+
+`apps/controller/src/console/agents/device-login.mts:createDeviceLogin` records
+`start_unconfirmed` before a start; both authentication forms retain it across
+navigation. Agent detail keeps its Credentials tab during a start; its draft
+records a later reply unless a newer tab owns it. Before the page is left, a
+usable reply supplies the challenge; a `501`, or no Codex device-login type
+(`deviceLoginOffered`), disables Sign in; other refusals permit retry.
+Unconfirmed attempts cannot start again, poll, or cancel. See
+[interrupted sign-in recovery](../guides/deploy/credential-lifecycle.md#recover-an-interrupted-codex-sign-in).
+Compare-and-swap serializes known-session polls. OCC rechecks scope and both
+Driver selections before completion. Uncertain exchanges close the handle but
+keep the source.
 
 `apps/controller/src/drivers/credential-refresh/codex-device-authorization.ts:startCodexDeviceAuthorization`
-starts the issuer request from the API Pods. The start, poll, and token-exchange
-requests use fixed `auth.openai.com` endpoints and refuse redirects, so login
-material is never forwarded to a redirect target. It preserves the existing
-`DeviceAuthorizationStartError` distinction: connection failure or timeout is
-`unreachable`; HTTP rejection, malformed replies, and `AbortError` are
-`unavailable`. The HTTP handler returns `503 DEPENDENCY_UNAVAILABLE`, naming
-`auth.openai.com` and API Pod egress only for `unreachable`. The
-`device_authorization.start_failed` warning keeps the Refresh boundary and bounded
-failure class, never provider messages, response bodies, or nested causes.
+uses fixed `auth.openai.com` endpoints from API Pods for start, poll, and exchange.
+Redirects are refused. `DeviceAuthorizationStartError` reports connection failure
+or timeout as `unreachable`; HTTP rejection, malformed replies, and `AbortError`
+as `unavailable`. HTTP returns `503 DEPENDENCY_UNAVAILABLE`, naming the host and
+API Pod egress only for `unreachable`. The `device_authorization.start_failed`
+warning includes the Refresh boundary and failure class, never provider messages,
+response bodies, or nested causes.
 
 `apps/controller/src/drivers/credential-refresh/openshell.ts:pollDeviceAuthorization`
 performs the Codex exchange, configures OpenShell with refresh material, and
 stores trusted account metadata. Before acquiring a code, its issuer polling
-returns pending on HTTP `429`, `5xx`, or a fetch connection failure; OCC retains
-the handle and its polling interval. An aborted initial poll, including OCC's
-internal timeout, closes the session and requires a fresh login; it is not
-retried as pending. Failures from code acquisition onward likewise close the
-session without replay. OpenShell owns
-future refresh and successor persistence. Polling uses existing state after handoff; unfinished refresh stays
-pending, while a persistent uncertain marker needs operator inspection.
-Ready confirms a usable token. Later revisions attach the existing provider
+returns pending on HTTP `429`, `5xx`, or a fetch connection failure; OCC keeps
+the handle and interval. An aborted initial poll, including OCC's internal
+timeout, is not pending: it and any failure from code acquisition onward close
+the session without replay. OpenShell owns
+future refresh and successor persistence. After handoff, polls read existing state:
+unfinished refresh stays pending; a persistent uncertain marker needs operator inspection.
+Ready confirms a usable token. Later versions attach the existing provider
 without reseeding credentials; account metadata changes require a new login and
-revision.
+version.
 
-For plugin configuration, the Gateway reads ownership/account metadata using its
-ordinary Backend identity, then calls `GetProviderCredentials` through the
-separate operator-TLS channel. OpenShell may refresh to satisfy its five-minute
-remaining-lifetime requirement. Only access credentials enter the callback; it
+For plugin configuration, the Gateway reads ownership/account metadata with its
+Backend identity, then calls `GetProviderCredentials` through the
+operator-TLS channel. OpenShell may refresh to keep five minutes of lifetime.
+Only access credentials enter the callback; it
 rechecks the caller's authority and saved-Agent binding/grant before provider I/O.
-Closing or expiring the login session does not disable source-based discovery.
-Cancellation or a failed recheck cannot undo gateway refresh already started.
+Closing or expiring the login session leaves source-based discovery enabled.
+Cancellation or a failed recheck cannot undo a started gateway refresh.
 
 ### 3. Background refresh
 
@@ -170,8 +181,8 @@ OpenShell re-mints the token before it expires and writes it to the provider.
 The Sandbox proxy substitutes the current token for the stable placeholder on
 each request, so a running Harness needs no restart. OCC makes no call.
 `GET` on the source adds `refreshStatus` to the gateway status; OpenShell's
-`refreshed` state reports `ready`, its error states report `failed` with a
-recovery action, and missing established refresh state reports `failed`. OCC finds the
+`refreshed` state reports `ready`; its error states (with a recovery action) and
+missing established refresh state report `failed`. OCC finds the
 type through `refreshDriverForSource`, which tolerates a type the catalog no
 longer offers: that source keeps its gateway status without `refresh`.
 
@@ -187,10 +198,10 @@ its Secrets and checks the gateway status. For a `refresh` type it calls
 `configureRefresh` with a new request ID, then `rotate`, instead of the
 gateway's `updateSource`. A non-`ready` mint returns `503` before OCC replaces
 the Secret references, but OpenShell keeps the new material, the next `GET`
-reports the failed mint, and OCC records a `failure` audit event. OpenShell
-starts a new authorization epoch on each reconfiguration, even one whose mint
-fails, which revokes the stable placeholders of running Sandboxes, so Agents
-need a redeploy.
+reports the failed mint, and OCC records a `failure` audit event. Each
+reconfiguration, even one whose mint fails, starts a new OpenShell authorization
+epoch that revokes running Sandboxes' stable placeholders, so Agents need a
+redeploy.
 
 `packages/occ/src/index.ts:rotateCredentialSource`
 
@@ -210,11 +221,98 @@ then the gateway's `removeSource`. Before `DeleteProviderRefresh`,
 checks the exact source Namespace and paired Gateway ID, then the current
 provider's manager/source labels and profile identity. A missing provider is
 already clean; a foreign provider or failed lookup refuses cleanup. The deletion
-RPC retains `allow_missing`. Explicit rotation uses the same guard but refuses absence. The check protects against
+RPC retains `allow_missing`. Explicit rotation uses the same guard but refuses absence. It guards against
 out-of-band provider drift; lookup and mutation are not atomic. A failure leaves
 the record `deleting` for retry.
 
+<a id="6.-oce-prepared-github-core"></a>
+<a id="6-oce-prepared-github-core"></a>
+
+### 6. Issue and renew a GitHub installation token
+
+`apps/controller/src/drivers/repo/github/credentials/prepared-owner.ts:createGitHubPreparationOwner`
+
+The worker records `issuing`, signs a five-minute JWT with the App key and rechecks
+ownership before `POST /app/installations/{installation_id}/access_tokens`.
+The Installation selects the HTTPS issuer and trust roots.
+
+The worker logs `PREPARED_GITHUB_ISSUANCE_DIAGNOSTIC` with the first failure
+stage, fixed enums and status/booleans. `requestEndCalled` means possible send,
+not delivery. Reporting cannot change custody or retries.
+
+```mermaid
+graph TD
+  W["<b>Worker</b><br/>Holds App key"] -->|Signed JWT| G["<b>GitHub</b><br/>Issues token"]
+  G -->|Installation token| W
+  W -->|Verify and commit| P[("<b>PostgreSQL</b><br/>Encrypted token")]
+  P -->|Eligible token| R["<b>OCC and resolver</b>"]
+  R -->|Credential header| S["<b>Metadata sender</b><br/>Needs a send permit"]
+  classDef owner fill:#e7f1ec,stroke:#789884,color:#263e33
+  classDef issuer fill:#f0eaf6,stroke:#9584ab,color:#392c42
+  classDef stored fill:#e8eff6,stroke:#8498a9,color:#283746
+  class W,R,S owner
+  class G issuer
+  class P stored
+  linkStyle default stroke:#89919a
+```
+
+PostgreSQL custody requires a
+persistent 32-byte encryption key. Cold or expired reads return `not_ready`.
+Native Git uses a [private broker request](../reference/repository-credentials.md#native-git-from-the-agent-to-github).
+
+For `acme/widgets`, the worker requests repository ID `12345` and
+`metadata: read`. It checks the returned ID, name, permissions and expiry.
+The approved `github-installation` profile sends `{}` and inherits installation scope.
+
+**Renewal.** Eligible tokens serve requests during renewal. Committing the replacement
+retires the old version. OCC rechecks grant and version before authorizing a
+[protected send](credential-source-egress.md#3-resolve-versioned-material-and-authorize-its-sole-send).
+
+| Limit                                | Effect                                                                                                                                                                                                              |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Repository approval (Git)            | Removal or expiry stops new authorizations. [Standing approval](../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent) permits another finite session for the same running Agent and scope. |
+| Execution's repository session (Git) | The session ends at its deadline even if the token is fresh.                                                                                                                                                        |
+| Local cutoff (`usableUntil`)         | Readers stop selecting the token 60 seconds before GitHub expiry. A request may require more remaining time.                                                                                                        |
+| GitHub expiry (`expires_at`)         | GitHub sets a one-hour [installation token lifetime](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app).               |
+
+Metadata reads share both token limits. Withdrawing the credential-source
+binding stops new authorizations. A previously authorized send can finish.
+
+**Key rotation and withdrawal.** When the signing key changes version, the worker
+advances the owner epoch and retires old material before publishing its replacement.
+Deleting the Agent blocks use and renewal immediately. On its next pass, the
+worker disables the Agent-bound metadata family and retires the token. GitHub
+revocation can outlast Agent deletion. Source deletion waits up to 25 seconds
+for revocation, returning `409` if custody remains unsettled.
+
+**Uncertain outcomes.** A lost issuance or commit receipt blocks replay. The
+[response parser](repository-credentials.md#4-reserve-acquire-and-dispatch)
+keeps a unique cleanup candidate despite ambiguous scope. Duplicate root token
+fields leave none. The worker records possible revocation before
+`DELETE /installation/token`. HTTP 204 confirms revocation. A lost response
+leaves it unknown. Expiry plus the clock-skew allowance can settle an attempt
+without confirming revocation. See [App key recovery](../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key).
+
+`apps/controller/src/backends/token-service/retirement.ts:retireToken` clears
+detached bytes before settling the original receipt. If revocation and
+settlement both fail, the error names only the stages.
+
+`apps/controller/src/drivers/repo/github/credentials/prepared-postgres.ts:store`
+clears token buffers after successful or failed publication. Callers own their
+detached reads. Clearing bytes cannot revoke a token.
+
 ## Debugging and Verification
+
+- `node --test tests/integration/repository-credentials-github-prepared.test.mjs`
+  exercises producer → transaction commit → warm consumer over loopback HTTPS,
+  with a generated App key and actual JWT signature verification. It covers
+  renewal overlap, duplicate attempts, latest-admission fences, rejected provider
+  scope/expiry, cancellation, and transaction failures before/after commit.
+  Its serializable in-memory fixture reconnects owners to shared committed state;
+  it is not production durability, process-crash, live-provider, installed-runtime,
+  cluster or regular Agent workflow proof.
+  `postgres-prepared-github-lifecycle.test.mjs` exercises the durable lifecycle,
+  signed protected exchange, issuer rotation, withdrawal, Agent deletion and quarantine over loopback.
 
 - Read the source: `status.refresh.state`, `lastRefreshAt`, `failureCode`, and
   `recoveryAction` explain the last mint without exposing a token.
@@ -239,6 +337,40 @@ the record `deleting` for retry.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-31 21:13: Reconcile diagnostics. (authoring-run/0e8d85fa-aa72-48b7-bc35-06b23a663182 - 9c45357338431ec9334642aca5eac91de862ae95)
+
+- 2026-10-31 01:04: Trace safe issuer diagnostics without changing custody. (authoring-run/c776b2a1-dee6-4ade-a44e-145f1b37f57f - 39399f5bf4bc9a07b33c03a405e44d0614ffe9d5)
+
+- 2026-10-30 13:13: Reconcile recovery. (authoring-run/3c09c85b-a796-4bb6-ba0c-b1a7b496d3d7 - 8d689e31869b067327c13e69c104d29cc3414e4d)
+
+- 2026-10-30 11:48: Reconcile recovery. (authoring-run/6d054d8d-36a8-473d-a19e-d677d01685d1 - 72ac4681002676b346792a56cfc42dd45a4a4588)
+
+- 2026-10-30 12:27: Record late starts. (authoring-run/264fbe79-1af9-492d-aa8b-c020cde317f2 - cd2a58116a69f1a6d68a572a226ef8945408ef54)
+
+- 2026-10-30 11:39: Keep pending-start tabs. (authoring-run/ba84d894-356c-419d-ab61-c51ce59bdec6 - 01c78bee6b7eac13f95585291232ff763edb7828)
+
+- 2026-10-30 08:11: Reconcile device login. (authoring-run/9120ced5-00df-4b42-bd89-da00f981ef38 - 0ef6ddffdbe0688b9d7d3d87f75093ace992852b)
+
+- 2026-10-29 16:08: Qualify retry visibility. (authoring-run/91cf4dad-e612-4f33-8307-7989dfcd611e - 0dae5b3d5a3d4be177e8edad6d1baa07aa0747ed)
+
+- 2026-10-29 15:03: Trace device-start audit transactions. (authoring-run/7671e83f-de1e-402c-bc7c-7704dbdd54dd - 72dfce5bfdbde5a79f714dc62777425c26619581)
+
+- 2026-10-29 14:58: Retain unconfirmed Console starts across navigation. (authoring-run/f0c1d1b2-80e6-4a5b-9dce-e888c5e30bb2 - 2de02b7f995d5401c9a300b1e350b9f80be1073d)
+
+- 2026-10-27 19:10: Clarify GitHub token renewal and withdrawal. (authoring-run/0430a401-05fb-4e0b-9166-a02b77498311 - d0d593e0f6b4d2c8c1282f0f05e4d83aa607608f)
+
+- 2026-10-27 10:59: Trace dual retirement failures in the accompanying source change. (authoring-run/1280f6a3-93e3-43d7-b641-05139f54b08c - 0418ef3a2c116b73f025281395d92477daf665d2)
+
+- 2026-10-27 10:53: Illustrate installation token issuance and distinguish renewal from permission to send. (authoring-run/49b987ad-6c12-4e7c-8848-4d14b179981a - 0418ef3a2c)
+
+- 2026-10-26 22:20: Distinguish Git session limits from metadata access. (authoring-run/31aa1352-e139-4622-8019-4b5c08958c21 - c1fee5d433)
+
+- 2026-10-26 21:46: Trace GitHub App issuance, separate deadlines, replacement and retirement. (authoring-run/c959c07b-2be2-482d-83ae-fe63be655940 - e573b7de03)
+
+- 2026-10-22 09:48: Distinguish a start the Console cannot confirm from an uncertain exchange on a known session. (01a162e5-0e51-7b41-915c-00017912b787 - 9a6b9c3e69a9fce4a859d70307257c0319fbdfda)
+
+- 2026-10-16 22:08: Distinguish OpenShell-owned OAuth from background GitHub App preparation. (authoring-run/9fd90bae-7158-4df5-8f2e-62b0bd548272 - 4f98051f14)
 
 - 2026-10-14 23:26: Restore issuer redirect refusal in all three moved device-login requests. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - 6f0b9180125f80d9e490d77656d4919c574d5004)
 

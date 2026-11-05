@@ -27,7 +27,7 @@ const RUNTIME_FAILURE_CAUSE_DETAILS: Readonly<
   PROCESS_EXIT:
     /^(?:exit-[1-9][0-9]{0,2}|signal-SIG[A-Z0-9]{1,10}|error-E[A-Z0-9]{1,15}|UNRECOGNIZED)$/u,
   PROBE_STATUS:
-    /^(?:format|rate_limit|billing|unknown|no_model|other|turn-failed|error-event|tool-event|unexpected-event|no-reply)$/u,
+    /^(?:format|rate_limit|billing|unknown|model_not_found|no_model|other|turn-failed|error-event|tool-event|unexpected-event|no-reply)$/u,
   INVALID_OUTPUT: /^(?:json|shape)$/u,
   WRAPPER_ERROR: undefined,
 });
@@ -42,7 +42,7 @@ const PROCESS_EXIT_DETAILS: ReadonlySet<string> = new Set([
   ...PROCESS_EXIT_ERROR_CODES.map((code) => `error-${code}`),
 ]);
 
-// The startup probe retries a transient failure once; when the second attempt
+// The startup probe retries a timeout or reliability failure once; when the second attempt
 // fails too, its detail token carries this suffix.
 const RETRIED_DETAIL_SUFFIX = "-attempt2";
 

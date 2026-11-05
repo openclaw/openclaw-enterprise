@@ -89,14 +89,16 @@ export function routedOptions(overrides = {}) {
 }
 
 export function routedRevision(driver, overrides = {}) {
-  return {
+  const revision = {
     id: "revision-routed-1",
+    executionAdmission: { version: 2, mode: "unprotected" },
     namespaceId: tenant.id,
     agentId: "agent-routed",
     revision: 1,
     configurationId: "cfg_00000000-0000-4000-8000-000000000009",
     configurationKind: "agent",
     configurationGeneration: 1,
+    gatewayManagedMode: driver.options?.runtime !== undefined,
     configuration: {
       agents: { defaults: { model: "codex/gpt-5" } },
       logging: {
@@ -125,6 +127,16 @@ export function routedRevision(driver, overrides = {}) {
     createdAt: tenant.createdAt,
     ...overrides,
   };
+  // Mirror OCC admission for fixtures using the shared provider before deployment.
+  if (driver.options?.runtime?.modelProvider !== undefined) {
+    revision.compute.admission = driver.admitRevision(revision);
+  }
+  return revision;
+}
+
+/** The labels an equality-only Kubernetes `labelSelector` string ("key=value,key=value") names. */
+export function labelSelectorLabels(selector) {
+  return Object.fromEntries(selector.split(",").map((entry) => entry.split("=")));
 }
 
 export function selectorMatches(selector, labels) {

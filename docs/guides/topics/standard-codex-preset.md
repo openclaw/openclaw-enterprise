@@ -65,7 +65,7 @@ Open **Agents → Create Agent**, choose **Standard Codex**, and supply:
 Select **Use Preset** and review the draft; the API key remains masked. With
 supported Dedicated provisioning, such as Kubernetes, **Create Agent** stores it
 as a Secret in the current Namespace, binds it, grants the Agent `operate` on it,
-creates gateway runtime credentials, and deploys the first revision; check it on
+creates gateway runtime credentials, and deploys the first version; check it on
 the Agent page. Otherwise it saves a draft: follow the
 [credentials and deployment procedure](../../reference/console/create-and-deploy.md#initial-runtime-credentials).
 To bind an API key Secret already in the Namespace, choose **Use existing
@@ -94,7 +94,7 @@ The template grants these exact hostnames with value `allow` under
 | `proxy.golang.org`                         | Go modules and automatic toolchain selection.                                                                                                  |
 | `sum.golang.org`, `storage.googleapis.com` | Automatic Go toolchain checksum verification and redirected archive download.                                                                  |
 
-These hosts were observed on 2026-09-24 while building source revision
+These hosts were observed on 2026-09-24 while building source commit
 `63a70947fed440a875b2e6338d0a22500f9a9f5e` on Linux amd64 with Node 24.16.0,
 pnpm 11.15.1, and Go 1.27.0. A second fresh container repeated the build with
 only these hosts permitted by an HTTPS CONNECT proxy. Both runs started with

@@ -13,7 +13,7 @@ Advance the SemVer version in root `package.json` and set both `version` and
 `appVersion` in `deploy/helm/openclaw-enterprise/Chart.yaml` to the same value.
 Do this for each chart release, including releases with image changes.
 Image-only publication does not require a new chart version. OCE is evolving quickly;
-one version gives operators a chart and image pair tested from one source revision
+one version gives operators a chart and image pair tested from one source commit
 without an independent chart compatibility matrix. The shared tag identifies the
 release, while the recorded digests identify the exact bytes.
 
@@ -36,7 +36,7 @@ records the chart manifest digest, source SHA, and both image digests. The older
 inspect registry digests before starting a new full dispatch for the same source;
 existing tags with different bytes are never replaced. Rerunning only a failed
 chart job is unsupported: its new attempt has no matching image receipt. There
-is no dedicated chart recovery workflow. A later source revision requires a new
+is no dedicated chart recovery workflow. A later source commit requires a new
 OCE version for chart publication.
 
 A chart failure fails the combined run, while the image job and its verified
@@ -59,13 +59,15 @@ from the completed publication receipt:
 
 ```bash
 export OCE_VERSION='<published-version>'
-helm show chart oci://ghcr.io/openclaw/charts/openclaw-enterprise \
-  --version "$OCE_VERSION"
-helm show values oci://ghcr.io/openclaw/charts/openclaw-enterprise \
-  --version "$OCE_VERSION"
+helm pull oci://ghcr.io/openclaw/charts/openclaw-enterprise \
+  --version "$OCE_VERSION" --destination "${OCC_INPUT_DIRECTORY:?select a protected directory}"
+chart="$OCC_INPUT_DIRECTORY/openclaw-enterprise-$OCE_VERSION.tgz"
+helm show chart "$chart"
+helm show values "$chart"
 ```
 
-Check the chart's `openclaw.dev/source-revision`, `openclaw.dev/controller-image`,
+Compare the digest printed by `helm pull` with the chart manifest digest in the
+publication receipt. Check the local chart's `openclaw.dev/source-revision`, `openclaw.dev/controller-image`,
 and `openclaw.dev/runtime-image` annotations against the receipt. Set
 `images.controller` in your protected Helm values to the controller digest and
 set the Installation's `drivers.compute.configuration.images.gateway` and
@@ -76,15 +78,18 @@ placeholder image, so replace it before installation.
 Prepare the other operator-owned values, database, Secrets, routing, and
 bootstrap volume as described in the [production installation guide](../guides/deploy/production-installation.md).
 Public GHCR image pulls need no node pull Secret. Private mirrors still need node
-pull credentials configured by the operator. Install the selected chart version
-after the prerequisites are ready:
+pull credentials configured by the operator. Use the matching CLI and the reviewed
+local archive for the [first install and handoff](../guides/deploy/production-handoff.md#record-the-initialization-job-for-handoff):
 
 ```bash
-helm upgrade --install oce oci://ghcr.io/openclaw/charts/openclaw-enterprise \
-  --version "$OCE_VERSION" --namespace openclaw-system \
-  --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CONTEXT" \
-  -f "$OCC_INPUT_DIRECTORY/values.yaml" --wait --timeout 5m
+INSTALL_RECEIPT_DIRECTORY="$OCC_INPUT_DIRECTORY/install-receipt"
+occ installation install --release oce --chart "$chart" \
+  --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" --kube-namespace openclaw-system \
+  --values "$OCC_INPUT_DIRECTORY/values.yaml" --receipt "$INSTALL_RECEIPT_DIRECTORY"
 ```
+
+If the response is lost or Helm refuses the release name, stop; do not rerun or
+switch to an upgrade. [Resume the original installation](../guides/deploy/production-handoff.md#resume-an-installation-in-progress).
 
 This release packages the chart and images. It does not distribute the
 repository's bootstrap helper or Installation examples, and does not complete a

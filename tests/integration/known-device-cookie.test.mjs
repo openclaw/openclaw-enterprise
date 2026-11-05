@@ -11,6 +11,8 @@ import {
   knownDeviceSetCookie,
   verifyKnownDevice,
 } from "../../apps/controller/src/auth/known-device.ts";
+import { injectJson } from "../helpers/inject-json.mjs";
+import { within } from "../helpers/wait-for.mjs";
 
 const secret = "known-device-test-secret-at-least-32-bytes";
 const email = "member@example.test";
@@ -334,7 +336,7 @@ test(
     const Fastify = require("fastify");
     const { passwordFailureAdmission } =
       await import("../../apps/controller/src/auth/admission.ts");
-    const { createControllerAuth } = await import("../../apps/controller/src/auth/index.ts");
+    const { createControllerAuth } = await import("../helpers/password-hasher.mjs");
     const origin = "http://127.0.0.1";
     const authSecret = `test-secret-${randomUUID()}-${randomUUID()}`;
     const address = `route-${randomUUID()}@example.test`;
@@ -395,11 +397,9 @@ test(
     const app = Fastify();
     app.post("/api/auth/sign-in/email", auth.signInEmail);
     const requests = Array.from({ length: 3 }, () =>
-      app.inject({
-        method: "POST",
-        url: "/api/auth/sign-in/email",
-        headers: { host: "127.0.0.1", origin, cookie: `occ_known_device=${value}` },
-        payload: { email: address, password: "synthetic-wrong-password" },
+      injectJson(app, "POST", "/api/auth/sign-in/email", {
+        headers: { origin, cookie: `occ_known_device=${value}` },
+        body: { email: address, password: "synthetic-wrong-password" },
       }),
     );
     t.after(async () => {
@@ -408,19 +408,12 @@ test(
       await Promise.allSettled(requests);
       await app.close();
     });
-    let timer;
     let first;
     let before;
     try {
-      first = await Promise.race([
-        observed,
-        new Promise((_, reject) => {
-          timer = setTimeout(() => reject(new Error("route did not reach either boundary")), 8_000);
-        }),
-      ]);
+      first = await within(observed, "route did not reach either boundary", 8_000);
       before = { reads, admissions: admissions.filter((entry) => entry.beforeRelease) };
     } finally {
-      clearTimeout(timer);
       released = true;
       release();
     }
@@ -451,7 +444,7 @@ test(
     let reads = 0;
     const { passwordFailureAdmission } =
       await import("../../apps/controller/src/auth/admission.ts");
-    const { createControllerAuth } = await import("../../apps/controller/src/auth/index.ts");
+    const { createControllerAuth } = await import("../helpers/password-hasher.mjs");
     const admission = passwordFailureAdmission({
       perAddress: 1,
       perEmail: 1,
@@ -486,11 +479,9 @@ test(
     app.post("/api/auth/sign-in/email", auth.signInEmail);
     const statuses = [];
     for (let index = 0; index < 40; index += 1) {
-      const response = await app.inject({
-        method: "POST",
-        url: "/api/auth/sign-in/email",
-        headers: { host: "127.0.0.1", origin, cookie: `occ_known_device=${cookie}` },
-        payload: { email, password: "synthetic-wrong-password" },
+      const response = await injectJson(app, "POST", "/api/auth/sign-in/email", {
+        headers: { origin, cookie: `occ_known_device=${cookie}` },
+        body: { email, password: "synthetic-wrong-password" },
       });
       statuses.push(response.statusCode);
     }
@@ -514,7 +505,7 @@ async function globalProofHandler(lookup) {
     new URL("../../apps/controller/src/auth/index.ts", import.meta.url),
   );
   const Fastify = require("fastify");
-  const { createControllerAuth } = await import("../../apps/controller/src/auth/index.ts");
+  const { createControllerAuth } = await import("../helpers/password-hasher.mjs");
   const { passwordFailureAdmission } = await import("../../apps/controller/src/auth/admission.ts");
   const origin = "http://127.0.0.1";
   const address = `global-proof-${randomUUID()}@example.test`;
@@ -548,15 +539,12 @@ async function globalProofHandler(lookup) {
   const pending = [];
   const request = (cookie) => {
     const result = Promise.resolve(
-      app.inject({
-        method: "POST",
-        url: "/api/auth/sign-in/email",
+      injectJson(app, "POST", "/api/auth/sign-in/email", {
         headers: {
-          host: "127.0.0.1",
           origin,
           ...(cookie === undefined ? {} : { cookie: `occ_known_device=${cookie}` }),
         },
-        payload: { email: address, password: "global-proof-wrong-password" },
+        body: { email: address, password: "global-proof-wrong-password" },
       }),
     ).then(
       (response) => ({ kind: "response", response }),

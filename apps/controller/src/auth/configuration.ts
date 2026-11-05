@@ -95,7 +95,7 @@ export function validHttpBaseURL(value: string): boolean {
 
 const DEVELOPMENT_LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
-// The development browser origin rule in docs/reference/settings/development.md. server.mjs
+// The development browser origin rule in docs/reference/settings/development.md. startApi
 // refuses a development OCC_AUTH_BASE_URL that breaks it before startup does any other work, and
 // createFastifyApp applies it again to the development browser origin it admits.
 export const DEVELOPMENT_BROWSER_ORIGIN_RULE =

@@ -109,8 +109,8 @@ test("second backend retains renewal through expiry and finalizes through the re
     factory.drivers[0].settle(Object.freeze({ kind: "finalized", attemptId: "foreign" })),
     /foreign/,
   );
-  await assert.rejects(
-    factory.drivers[0].withAuthentication(Object.freeze({}), Object.freeze({}), async () => {}),
+  assert.throws(
+    () => factory.drivers[0].prepareAuthentication(Object.freeze({}), Object.freeze({})),
     /foreign/,
   );
 });

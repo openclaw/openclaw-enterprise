@@ -1,0 +1,358 @@
+# Protected repository access with OpenShell
+
+Selected repositories require a pre-credentials request binding. Before issuing
+credentials, OCE verifies the registration and matches a held launcher request to
+an authenticated middleware denial. The Agent starts after credential installation
+and signed release.
+
+Follow [OpenShell enrollment](../../guides/repository-credentials/openshell-enrollment.md).
+Select repositories sharing an explicit permission map. OCE requests their canonical
+IDs and verifies GitHub’s returned scope. GitHub governs refs and REST/GraphQL
+operations. Changing or removing a grant blocks subsequent use of that grant.
+
+Existing `git-write` grants retain their exact ref policy. OCE qualifies the live
+sender by its configured capabilities and runtime evidence. `git-read` and
+`git-full` keep their existing semantics. Installation preview requires separate
+opt-in. Exact-dispatch and v7 reduction guarantees remain unqualified.
+
+Keep Credential Gateway with the bundled OpenShell Backend. The Proxy serves
+repository access, while model access uses a Gateway Harness source. For an
+existing installation, follow the
+[compatibility upgrade](../../guides/deploy/credential-proxy-upgrade.md#check-compatibility-before-interrupting-access).
+
+## Prerequisites
+
+Check these before qualifying a release:
+
+- **Kernel.** The Driver requires Landlock (`hard_requirement`). Sandboxes need ABI
+  v3 or later and Linux 6.2 or newer. Ubuntu 22.04's 5.15 kernel cannot start them.
+- **Supervisor trust.** The supervisor uses its image's CA bundle for GitHub and
+  model TLS. Include any private or intercepting CA in that image; otherwise model
+  probes time out and Git requests fail.
+- **Unattended commands.** With
+  `plugins.entries.codex.config.appServer.approvalPolicy: on-request` and no
+  approver, Codex declines the shell commands it asks about, so Git never runs. For
+  unattended qualification, select an approval policy appropriate for that environment.
+
+## Configuration for a qualified release
+
+<a id="install-without-the-repository-broker"></a>
+
+Select Kubernetes Compute, dedicated Codex, Sandbox and Credential Proxy from one
+Driver registration. Use
+[Installation configuration](../../../deploy/examples/repository-credentials/openshell.fragment.yaml) and
+[artifact rules](../drivers/openshell-sandbox.md#protected-codex-artifact-rules).
+Set repository eligibility in the GitHub Backend registry at
+`/etc/openclaw/repository-registry/registry.json`. Keep the session duration and
+`repository.preparedGitHub` for prepared credentials. Connect the selected Driver
+with `repository.openShell` and Helm `openshellGit`. Omit `controlSocket`,
+`publicCaPath`, and `repository.nativeSender`.
+Remove Compute's `network.repositoryCredentials`: startup refuses it without
+`repository.nativeSender`.
+
+Set Helm `openshellGit.enabled: true`, `openshellGit.mode: protected`,
+`repositoryCredentials.enabled: false`, and
+`repositoryCredentials.authority: prepared-git`. Keep
+`repository.openShell.authority` on host `0.0.0.0` (or `::`) and on the
+`openshellGit.port` value (default 8445), with the chart's files
+`/etc/openclaw/openshell-git/tls.crt`, `tls.key` and `gateway-public.pem`.
+Startup and the upgrade check refuse another host, port or path with
+`CHART_LISTENER_MISMATCH`. The `repositoryCredentials`
+inputs select the registry ConfigMap, worker-only App-key and existing custody
+Secrets, and approved issuer CIDRs. Preserve the custody key across restarts;
+never put either key in Agent configuration or Helm values.
+
+## Prepare the request-phase service
+
+Prepare a separate serving certificate whose DNS SAN covers
+`openclaw-enterprise-openshell-git.openclaw-system.svc`, its private key, and the
+**public** PEM key from the selected OpenShell Gateway JWT signing bundle.
+Create these resources in the OCE namespace with your approved Kubernetes context:
+
+```bash
+kubectl --context "$CONTEXT" -n openclaw-system create secret tls openshell-git-tls \
+  --cert=/secure/occ/openshell-git/tls.crt \
+  --key=/secure/occ/openshell-git/tls.key
+kubectl --context "$CONTEXT" -n openclaw-system create configmap openshell-gateway-public \
+  --from-file=gateway-public.pem=/secure/occ/openshell-git/gateway-public.pem
+```
+
+Add this to the existing production values. Replace the example namespace and Pod
+labels with observed labels for your Gateway and trusted supervisors; both call
+the middleware. Do not select Agent workload Pods as trusted callers.
+
+```yaml
+openshellGit:
+  enabled: true
+  mode: protected
+  port: 8445
+  tlsSecretName: openshell-git-tls
+  issuerPublicKeyConfigMapName: openshell-gateway-public
+  clients:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: openshell-system
+      podSelector:
+        matchLabels:
+          app: openshell-gateway
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: openshell-system
+      podSelector:
+        matchLabels:
+          app: openshell-supervisor
+```
+
+The chart exposes a ClusterIP Service on port 8445 and allows that port only from
+these peers under the chart's default-deny policy. It mounts the serving key,
+certificate and public issuer key at the fragment's `/etc/openclaw/openshell-git`
+paths in the worker. The API, initialization Job and repository sidecar do not
+receive this projection. Keep the worker port equal in Helm and the Installation.
+If the OpenShell namespace enforces egress, also permit its Gateway and supervisors
+to reach this Service's selected worker Pods on TCP 8445 and resolve cluster DNS.
+
+Set `authority.issuer` to `openshell-gateway:<gateway_id>` from the actual Gateway
+JWT configuration, `keyId` to the contents of its `kid_path`, and `audience` to the
+registration audience below. The fragment's values are examples, not discovery.
+The Gateway's signing private key stays with the Gateway. Render and inspect the
+combined production values, then use your normal Helm upgrade procedure.
+
+## Register the request-phase service
+
+Use matching stock OpenShell 0.1.6 Gateway and supervisor images for required
+request bindings. Register this middleware so OpenShell can enforce OCE's
+decisions; [grant repository access separately](#grant-access-to-a-github-app-installation).
+Use the certificate's exact Service DNS name and mount the serving CA's public
+certificate at `tls_ca_cert_path` on the Gateway. Its
+`[openshell.gateway.gateway_jwt]` signing key, public key, key ID and gateway ID
+must match the OCE verifier settings.
+
+```toml
+[[openshell.supervisor.middleware]]
+binding_policy = "allowlist"
+bindings = ["http_request_pre_credentials"]
+name = "oce-prepared-git"
+grpc_endpoint = "https://openclaw-enterprise-openshell-git.openclaw-system.svc:8445"
+tls_ca_cert_path = "/etc/openshell/certs/oce-git-ca.pem"
+audience = "oce-prepared-git"
+max_payload_bytes = 4194304
+timeout = "5s"
+```
+
+The selected repository path and `github-installation` preview require exactly `5s` here. OCE still caps its
+authorization decision at three seconds.
+
+Start the configured OCE worker before restarting the Gateway: Gateway startup
+calls authenticated `Describe` and refuses an unavailable or incompatible service.
+OCE advertises the request-phase binding; policy admission calls `ValidateConfig`.
+The allowlist requires that binding: a service advertising only response hooks is
+refused by both Gateway and supervisor. Do not remove the required binding.
+The registration name must match `repository.openShell.registrationName`.
+OCE attaches the selected binding to the sandbox policy with `on_error: fail_closed`
+for `github.com` and `api.github.com`. Do not hand-author its binding identifier.
+Those hosts, and every other name under `github.com` (such as `ssh.github.com`,
+`codeload.github.com`, `gist.github.com`, `docs.github.com` and `*.pkg.github.com`),
+come only from this route: if another Sandbox Driver network policy
+(`policy.networkPolicies`, such as a `source-control` policy) also allows one, the
+Installation refuses to start and names that policy. `ghcr.io` and
+`githubusercontent.com` hosts are not covered. The Driver still needs at
+least one policy, such as the model endpoint's. An Agent network grant for those
+hosts on any port is refused the same way: saving it for an Agent with a repository
+binding, adding the binding beside it, deploy and live application each fail with a
+`409` that names the grant. IP-address hosts (IPv4, IPv6 or a range, private and
+loopback included) may lead to GitHub, so both checks refuse them too; use DNS names,
+such as a Service name. The checks compare names only: a DNS name that resolves to
+GitHub (a wildcard-IP name or your own record) is not detected; do not add one.
+Retain HTTPS, hostname verification and authenticated Gateway JWTs; do not enable
+`allow_insecure_transport`. This attachment alone does not establish qualified enforcement.
+
+## Grant access to a GitHub App installation
+
+Use the [GitHub App installation guide](https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app)
+for membership and permissions, and the
+[registry reference](../repository-credentials.md#canonical-platform-registry)
+for policy. Prefer repository scope. To expose an
+installation scope, set a distinct `installationAccess.repositoryRef`, allow the
+Namespace with `accessMode: installation`, and select that reference with
+`profile: github-installation` in the Agent's `repositoryBindings`, as its only
+binding (Agent save and deploy refuse it next to another). No default or wildcard selects this scope; the sender must confirm
+`github_installation` support. The bundled OpenShell Credential Proxy requires
+`observedHookPreviewWorkspace`; otherwise deploy answers
+`409 RESOURCE_CONFLICT`. Missing or incompatible registration returns
+`503 DEPENDENCY_UNAVAILABLE`. Use 0.1.6 for incident key distrust; 0.1.5 remains affected.
+
+Repository grants require authenticated `allowlist`/`exact` with only `pre_credentials`.
+Opted-in installation preview also accepts both binding fields absent; partial,
+malformed or explicit optional/wrong values fail. Both paths retain policy,
+recipient, isolation and authenticated launcher-denial checks. For `git-write`,
+startup probes stay within the selected repository endpoint without broadening
+grants, accessing credentials or releasing the Harness. `github-repository` and
+`github-installation` providers retain their discovery-path probe.
+
+Absence grants only observed assurance: 0.1.5 and 0.1.6 default dynamic registrations
+emit identical absence, without a distinct advertised support signal. Before
+qualification, intentional downgrade is indistinguishable. After qualification,
+registration changes break the recipient fingerprint and close the route.
+Repository grants never use this fallback.
+
+OCE does not add a ref allowlist to installation scope. GitHub's membership,
+permissions and branch rules set its limit. See
+[operator verification and withdrawal](../../guides/credential-proxy.md#verify-use-loss-and-withdrawal)
+for profile-specific allowed/denied requests and the required model-source choice.
+
+## Use the admitted repository
+
+The Sandbox sets process-scoped `safe.directory` for its approved mount,
+allowing root-owned workspaces without trusting nested repositories or changing
+persistent Git configuration. `push.negotiate=true` reduces redundant transfers; [push request limits](../../guides/repository-credentials/openshell-enrollment.md#plan-for-request-limits) apply.
+
+With `github-repository`, use selected HTTPS Git URLs. API operations
+use token permissions. Both API scopes refuse runner-token and deploy-key
+creation. For selected repositories, the sender accepts the CLI’s
+`Time-Zone: Etc/UTC` and, on GraphQL POSTs, `Graphql-Features: merge_queue`.
+Duplicate headers are refused. Each request requires current authorization.
+
+With `git-write`, use exactly
+`https://github.com/$OCE_OPENSHELL_GIT_REPOSITORY.git` for clone, fetch and push.
+Credential paths are case-sensitive: mixed-case URLs or those missing `.git`
+receive no credential. Git reports `could not read Username` or
+`The requested URL returned error: 403`.
+
+[OCC access rules](../../flows/agent-repository-credentials.md) own grant lifetime
+and standing approval. Access is finite unless separately approved as standing;
+each token and session still expires. Remove standing approval with its current
+approval generation **before** clearing the repository binding. An already
+authorized request can finish after withdrawal.
+
+For `git-write` grants permitting draft pull requests, `draftPullLimit: one-per-grant` allows one
+draft, and every Agent and version that has the grant shares it. To let Agents open a new
+draft from the same review ref, set `draftPullLimit: none` in the Namespace policy. OCE then
+records each draft use without spending an allowance; the draft-only, head and base checks
+still apply. This changes the grant identity: deploy a new version to use it.
+
+A one-draft grant spends its allowance at authorization, before
+OCE knows whether GitHub created a draft. On an uncertain push or draft outcome,
+inspect the original remote ref or PR and retained operation; do not replay it.
+See [Credential Proxy uncertainty](../drivers/credential-proxy.md#cancellation-retries-and-uncertainty).
+
+## Diagnose a refused request
+
+Git does not print the body of a JSON error response. When OpenShell refuses the
+first request of a clone, fetch, `ls-remote` or push, Git shows only
+`The requested URL returned error: 403` (exit 128). When it refuses only the
+push's upload, usually `request_not_allowed` for another branch or tag, Git
+shows `error: RPC failed; HTTP 403`, then
+`fatal: the remote end hung up unexpectedly`, and may end with
+`Everything up-to-date` (exit 1). That last line does not mean there was nothing
+to push: the push never reached GitHub.
+
+Only after a known pre-send refusal, diagnose with a fresh read using Git's HTTP
+trace, which redacts the authorization header. Never rerun an uncertain write. The trace splits the body across lines, so join them first:
+
+```bash
+GIT_TRACE_CURL=1 git ls-remote origin 2>&1 | sed -n 's/.*<= Recv data: //p' \
+  | tr -d '\n' | grep -o '"reason_code":"[a-z_]*"'
+```
+
+The draft helper prints the code and the matching advice itself, for example
+`Draft not created: the repository route refused it (access_withdrawn); GitHub did not receive it.`
+
+### Reason codes
+
+| Code                          | Meaning                                                                                                                      | What to do                                                                         |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `request_not_allowed`         | The selected profile does not admit the request; repository-scoped limits include ref, repository and draft constraints      | Do not retry. Change the request or ask an operator                                |
+| `draft_already_opened`        | The grant's one-draft allowance was consumed; creation may be uncertain                                                      | Inspect GitHub without replay; see the [draft limit](#use-the-admitted-repository) |
+| `access_withdrawn`            | This version's repository access ended: the binding was removed, the version was replaced or stopped, or its session expired | Do not retry. An operator binds and deploys                                        |
+| `credential_unavailable`      | The route lost its credential, for example because GitHub rejected the App key or a renewal failed                           | An operator checks the worker log; a rejected key needs a new deploy               |
+| `route_blocked`               | The worker closed this version's route for good, for example after the Sandbox was replaced                                  | An operator deploys a new version                                                  |
+| `route_not_ready`             | The route is starting, verifying or briefly unavailable                                                                      | Retry in a minute                                                                  |
+| `online_authorization_denied` | The worker did not answer in time, matched no route, or had too many decisions in flight for the Sandbox or in total         | Retry once, then ask an operator                                                   |
+
+Retry advice above applies only to a known pre-send refusal, never an uncertain send.
+
+A version that is still deploying has no credential yet, so its requests answer
+`route_not_ready` until it is active.
+
+### Worker log
+
+Each refused request logs one `worker.openshell-git-denied` line. Its `reasonCode`
+is the code above, and its `reason` is the worker's detailed cause, such as
+`ref_not_allowed`, `draft_rejected`, `session_closed`, `material_unavailable`,
+`installation_changed` or `route_blocked`. The line also carries the Sandbox ID and
+the request ID that the supervisor's own log shows. The
+`worker.openshell-git-route-warning` line for a lost credential carries the same
+`reasonCode`, so an alert can tell a removed binding (`access_withdrawn`) from a
+rejected App key (`credential_unavailable`).
+
+## Route state, restarts and recovery
+
+`REPOSITORY_GIT_ROUTE_PENDING` means the worker has not verified the current
+Sandbox, supervisor and provider generation, or material is unavailable.
+`REPOSITORY_GIT_ROUTE_BLOCKED` closes Git until a new revision; continued chat
+requires independent model access and verified Git-only removal. Unsafe identity
+changes, overlapping GitHub access from retained providers or failed observation
+can require runtime retirement instead. Git-only removal records one conditional
+detach request. While Git stays attached, the worker sends that same request again;
+a moved Sandbox version or an outcome the gateway cannot tell retires the runtime.
+An empty OpenShell profile workspace selects the platform profile, not a same-named
+Workspace profile.
+
+A transient observation failure closes access until the same installation verifies,
+with retry backoff from 1 s to 10 s. The held-launch paths (`github-repository`,
+protected `git-write`, and installation preview) cannot be adopted by a replacement
+worker: deploy a new revision after `worker_replaced` or terminal `bootstrap_failed`.
+Waiting for reconciliation cannot reopen that route. Other qualified paths may retry
+a pre-write read or re-observe durable delivery after restart. No path replays an
+uncertain provider write. Provider writes retain their own deadline. See
+[Credential Proxy lifecycle](../drivers/credential-proxy.md#cancellation-retries-and-uncertainty).
+Prepared-material expiry, quarantine and retirement belong to
+[Token Service lifecycle](../repository-credentials.md#token-service-lifecycle) and
+its [source flow](../../flows/credential-source-refresh.md#6-oce-prepared-github-core).
+
+Inspect `OPENSHELL_GIT_RECONCILIATION_REQUIRED` and its `reason`:
+`execution_replaced`, `supervisor_replaced`, `write_unknown`, `worker_restarted`
+or `gateway_unauthorized`. `worker.openshell-git-route-warning` distinguishes
+`unobserved` reads, `pending` material, `closed` routes (`worker_replaced`, or
+`withdrawn` and `repository_expired` when another worker closed the route) and
+`retained` ones.
+`OPENSHELL_GIT_WITHDRAWAL_UNRECORDED` means the store did not record a withdrawal:
+this worker still refuses the route, but confirm its Sandbox was deleted, or another
+worker could adopt it. The worker drops a closed route once its Sandbox reads absent
+(twice if it never observed one); a failed read keeps it. A read the gateway refuses by
+the worker's identity logs one `retained` warning with `gateway_unauthorized`: the
+route stays in memory, read again with backoff, until a read finds its Sandbox gone.
+The worker still refuses to
+prepare, adopt or verify that revision, and later denials log `no_binding`.
+`worker.openshell-git-route` reports adoption and restoration, with `durationMs`.
+Correlate the revision and request ID with `worker.openshell-git-denied`.
+
+### Qualification history
+
+OpenShell 0.1.4 (`5a7728c3`) reported supervisor process and network identities
+without Gateway attestation; the Gateway authenticated only the Sandbox
+principal. Reconnect continuity therefore relied on the supervisor's claims.
+This observation does not qualify a newer candidate's identity.
+
+That version also reset all Sandbox connections on provider material changes,
+including the workspace WebSocket and model streams. Activation passed through
+`REPOSITORY_GIT_MATERIAL_PENDING`, `WORKSPACE_NODE_RECONNECT_PENDING`, and
+`WORKSPACE_NODE_PENDING`. Later renewals repeated the reset (observed chat outages
+of about 1–7 s). Qualify connection continuity on the selected release; inspect
+uncertain request outcomes before retrying.
+
+## GitHub App key rotated or revoked
+
+See [replace a rejected App key](../../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key).
+A ready Agent is not evidence of usable Git material. A changed key retires
+issued material within about a minute, even when GitHub rejects the new key.
+
+## Move from the earlier trial
+
+Use [stop and settle](../../guides/deploy/credential-proxy-upgrade.md#stop-and-settle-before-upgrading)
+before changing the old owner. New startup rejects the broker trial. Keep
+[explicit native Git](prepared-native-git.md) separate from protected delivery.
+
+Earlier documentation URLs remain as anchor bridges:
+[setup](openshell-git.md), [refusals](openshell-git-refusals.md), and
+[restarts](openshell-git-restarts.md).

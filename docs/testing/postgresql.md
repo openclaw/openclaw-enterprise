@@ -1,3 +1,9 @@
+---
+tags: [human_verified]
+# Backfilled from the verification tag recorded in 17ff921c5.
+last_verified: "2026-11-04"
+---
+
 # PostgreSQL tests
 
 ## Overview
@@ -6,10 +12,14 @@ Run database tests against disposable PostgreSQL databases. Use the migrator
 role for migrations and the less-privileged application role for tests. Missing
 URLs skip cases, so check the test results for skips.
 
-## Revision-worker tests
+<a id="revision-worker-tests" class="anchor-alias"></a>
+
+## Version-worker tests
 
 The application lane prepares isolated databases and removes its resources on
-exit. Each run needs its own state file. With Docker Compose available, run:
+exit. Its PostgreSQL server is disposable, so preparation turns off `fsync`,
+`synchronous_commit` and `full_page_writes` there; keep no data in it. Each run
+needs its own state file. With Docker Compose available, run:
 
 ```sh
 (
@@ -25,7 +35,7 @@ exit. Each run needs its own state file. With Docker Compose available, run:
 )
 ```
 
-For one revision-worker file, replace the `run-tests` command above with:
+For one Agent revision worker file, replace the `run-tests` command above with:
 
 ```sh
 node scripts/ci/prepare.mjs --lane postgres-application \
@@ -42,7 +52,7 @@ file database: the suite copies it. The suite rejects a standalone
 `node scripts/ci/cleanup.mjs --state /printed/run/directory/state.json` and
 retain the state if cleanup fails. The `postgres`, `postgres-platform`, and
 `postgres-auth` lanes use the same prepare, run, and cleanup pattern; see
-[CI lanes](ci.md#manual-full-integration-lanes).
+[CI lanes](ci/full-integration.md#scenarios).
 
 <a id="postgresql"></a>
 
@@ -79,7 +89,7 @@ The bootstrap test uses passive Compute and test Drivers: it does not prove a
 live gateway. Four optional Configuration cases also require
 `OCC_TEST_KUBERNETES_CONFIGURATION=1` and a configured live Kubernetes Driver.
 Broad `pnpm test`, `pnpm test:integration`, and `pnpm test:postgres` include
-revision-worker tests and therefore require prepared ownership.
+version-worker tests and therefore require prepared ownership.
 
 ## GitHub human sign-in
 
@@ -108,6 +118,21 @@ its optional migration URL. Do not share that database with another process.
 
 ## Canonical migration compatibility
 
+Fresh installation, populated canonical upgrades, and logical restore checks
+pass on PostgreSQL 18.6 and 17.11. This evidence covers these workflows on those
+releases, not every server version or a complete production deployment.
+
+The `postgres` lane also runs a disposable PostgreSQL 16.15 container to verify
+early refusal for fresh and populated databases, unchanged dumps after refusal,
+and redaction of real connection errors. Run that regression alone with Docker:
+
+```sh
+OCC_TEST_MIGRATION_SERVER=1 node --test tests/integration/postgres-migration-version.test.ts
+```
+
+It pulls its pinned PostgreSQL image and removes only its own container and volume.
+Without the selector the case skips. It does not use an existing database.
+
 The `postgres` lane runs migration compatibility against its owned fixture. To
 run the canonical cases against an existing disposable loopback PostgreSQL 18
 container with the local test roles, select its container, port, and a new
@@ -122,7 +147,8 @@ OCC_MIGRATION_HISTORY_DATABASE_PREFIX=openclaw_migration_test_local \
 
 All three selectors are required. The prefix must start with `openclaw_`, use
 only lowercase letters, digits, and underscores, and contain at most 50
-characters. The test uses `docker exec` and drops only databases it created.
+characters. The test reads the container's administrator password with `docker inspect`,
+connects through the selected port, and drops only databases it created.
 See [migration recovery](../reference/settings/operations.md#migration-history).
 
 ## Azure workload-identity connections

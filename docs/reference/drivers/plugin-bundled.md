@@ -9,13 +9,16 @@ owns the API and policy vocabulary. The
 
 ## Selection and catalogs
 
-Select at most one bundled implementation in trusted Installation YAML:
+List the Plugin Drivers in trusted Installation YAML. Include one entry for each Harness whose catalog you want to offer.
 
 ```yaml
 drivers:
   plugin:
-    id: occ-plugin
-    configuration: {}
+    - id: occ-plugin
+      configuration: {}
+    - id: codex-plugin
+      configuration:
+        catalogSource: openai-curated
 ```
 
 Dedicated Codex defaults to `catalogSource: hosted`, which discovers plugins
@@ -25,24 +28,16 @@ using a PAT or a Secret containing one. Hosted discovery needs API HTTPS to
 renders matching Helm egress; manual YAML needs equivalent policy. The driver
 does not configure Kubernetes networking.
 
-Select the hardcoded OpenAI catalog to
-browse without a discovery credential or provider catalog requests:
-
-```yaml
-drivers:
-  plugin:
-    id: codex-plugin
-    configuration:
-      catalogSource: openai-curated
-```
+The `openai-curated` setting above enables browsing without a credential or
+provider request.
 
 The curated catalog includes Linear, Slack, GitHub, Notion, Figma, Canva,
 Datadog, Sentry, Adobe, Coursera Learning, and Google Contacts. Their recorded
-identities and presentation metadata omit tool inventory and account-specific
-availability. Notion, Figma, Canva, and Adobe include supported
-hosted apps with skills. Sentry remains unavailable because its recorded release
-has no concrete hosted app. Select a plugin and set its default policy; per-tool controls are
-unavailable until the catalog supplies tool details.
+entries omit tool inventory and account-specific availability, so set a default
+policy per plugin; per-tool controls need tool details. Notion, Figma, Canva, and
+Adobe include supported hosted apps with skills. Sentry is unavailable: its
+recorded release has no concrete hosted app. Details accept an entry's `remoteId`
+or `id`.
 
 An optional controller-side native `listCatalog` reader for hosted mode uses a
 separate Codex profile:
@@ -50,11 +45,11 @@ separate Codex profile:
 ```yaml
 drivers:
   plugin:
-    id: codex-plugin
-    configuration:
-      codexExecutable: /opt/codex/bin/codex
-      codexHome: /var/lib/occ/codex-catalog
-      requestTimeoutMs: 10000
+    - id: codex-plugin
+      configuration:
+        codexExecutable: /opt/codex/bin/codex
+        codexHome: /var/lib/occ/codex-catalog
+        requestTimeoutMs: 10000
 ```
 
 Supply `codexExecutable` and `codexHome` together. Provision that home with Codex
@@ -70,13 +65,13 @@ catalog searches its bundled entries.
 The console preloads the first page when a PAT is entered or selected in Create
 Agent, or an editable Agent's Plugins tab opens with a bound PAT Secret;
 **Configure plugins** reuses that page or its pending request. Replacing the PAT
-clears results and preloads a fresh first page; selections remain. Search runs
-300 ms after the last keystroke and resets pagination when the query changes;
-Enter, page navigation, and explicit loads run immediately. Loading feedback
-covers that delay and lasts until the response, even with no earlier entries;
-tool lookups show it until details arrive. Configured-plugin and tool filters
-stay instant and local. Closing the picker or changing its credential cancels
-pending searches. Requests have a 15-second deadline and 4 MiB response limit.
+clears results and preloads a fresh first page; selections remain. Search waits
+300 ms after the last keystroke (Enter, page navigation and explicit loads run at
+once) and resets pagination for a new query. Loading feedback lasts until the
+response, even with no earlier entries; tool lookups show it until details
+arrive. Closing the picker or changing its credential cancels pending searches.
+Hidden tabs cancel deferred prefetches; reopening the picker can request the catalog again.
+Configured-plugin and tool filters stay instant and local. Requests have a 15-second deadline and 4 MiB response limit.
 Discovery does not read Codex home, install plugins, or return download URLs.
 Plugin details show available website, privacy-policy, and terms-of-service
 links; invalid or non-HTTPS URLs are omitted.
@@ -97,8 +92,8 @@ Unavailable entries show the reported cause and a recovery link:
 
 | Cause                                              | Next step                                                                                           |
 | -------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| Disabled by administrator                          | Ask a workspace administrator to review access for the token's identity.                            |
-| Plan not eligible                                  | Ask the administrator to review workspace plan availability.                                        |
+| Disabled by a ChatGPT workspace administrator      | Ask a ChatGPT workspace administrator to review access for the token's identity.                    |
+| Plan not eligible                                  | Ask a ChatGPT workspace administrator to review plan availability.                                  |
 | Required app unavailable                           | Review app access and setup; credentials alone may not resolve this.                                |
 | No recognized reason                               | Review workspace plugin access without assuming a specific cause.                                   |
 | Unsupported native components or no apps or skills | Check [native limits](#native-mappings-and-limits); changing ChatGPT access cannot add OCE support. |
@@ -151,6 +146,8 @@ with the selected plugin. The pinned catalog currently exposes the `diffs` tool
 owned by `diffs`; adding another entry requires verified package and tool
 identities. Ambiguous global tool names or partial denials that would also deny
 an allowed sibling are rejected.
+
+Dedicated deployments also enforce the [Gateway tool policy](../configuration.md#gateway-tool-policy).
 
 The Codex app default also applies to actions added later; it does not require a
 tool inventory. `write_actions` asks for review when the native action lacks
@@ -245,27 +242,31 @@ when best-effort preparation allows authentication warnings, startup disables
 their selections and app/plugin features rather than retrying an unsupported
 login mode.
 
-The Driver rejects, rather than overwrites, raw Configuration that conflicts
-with its managed fields: for OpenClaw, a selected plugin entry in
-`values.plugins.entries` whose JSON differs from the managed entry; for Codex, a
-differing `values.plugins.entries.codex.config.codexPlugins` bridge selection.
-Identical managed entries are accepted. An enabled native plugin entry also
-conflicts with `plugins.enabled:false`, a matching `plugins.deny` entry, or a
-nonempty `plugins.allow` that excludes it. This includes the Codex transport
-plugin required by selected Codex apps. Disabled OpenClaw selections can remain
-denied. Gateway startup rejects these conflicts before OpenClaw package
-installation or starting the gateway; save-time policy checks do not inspect raw
-native Configuration for them. Native configuration outside managed fields,
-including tool denies and profiles, is retained.
+Gateway startup rejects, rather than overwrites, conflicting raw Configuration
+before package installation: a selected OpenClaw plugin's `plugins.entries`
+entry differing from the managed entry, a differing Codex
+`codexPlugins` bridge, or, for an enabled native plugin including the Codex
+transport plugin, `plugins.enabled:false`, a matching `plugins.deny` item, or a
+nonempty `plugins.allow` that excludes it. With an OpenClaw Harness, the
+OpenClaw Driver refuses the OpenClaw conflicts at Agent save, provisioning and
+deployment, but accepts exact copies: `{"enabled":false}` if disabled,
+`{"enabled":true}` if enabled. If `gateway.controlUi.allowedOrigins` lists an
+HTTPS `gateway.publicOrigin`, it refuses an enabled selection's entry, since
+the Gateway adds a public-origin `config` and PostgreSQL reorders a copy's keys;
+this over-refuses `{"enabled":true}` on Docker Compute with password
+authentication.
 
 ## Preparation and security
 
-Revision plugin state carries only requested IDs/policies and selected Driver
-identity. Compute resolves current native metadata and applies the resulting
-nonsecret configuration inside the exact revision workload before readiness. Codex installation is verified through native API metadata and effective configuration. Codex owns its private cache layout and integrity; Enterprise does not parse its cache records or version directories.
+Agent revision plugin state carries only requested IDs/policies and selected
+Driver identity. Compute resolves current native metadata and applies the
+resulting nonsecret configuration inside the workload with the same Agent
+revision ID before readiness. Codex installation is verified through native API
+metadata and effective configuration. Codex owns its private cache layout and
+integrity; Enterprise does not parse its cache records or version directories.
 Package files/configuration are revision-private. In Kubernetes, the native
 installation registry remains in the persistent Agent-owned OpenClaw state
-database. A different active revision keeps running during embedded-gateway
+database. A different selected version keeps running during embedded-gateway
 preparation; activation replaces it with a `Recreate` Deployment, so the new
 process installs only after the old gateway stops. This reuses the serialized
 lifecycle, with no database copy or plugin-specific coordinator.
@@ -277,8 +278,8 @@ settings. It refreshes the native registry, reapplies the requested policy to it
 private writable configuration, and checks plugin ID, package name,
 runtime/install version, recorded integrity, and that the runtime source resolves
 within the resolved install path. This requires an OpenClaw runtime that supports
-`--no-enable`; the currently pinned `2026.9.1` image must be updated before this
-preparation path can ship. There is no fallback to installation that changes policy.
+`--no-enable`. Unsupported runtimes fail preparation; installation cannot
+fall back to changing policy.
 Identity, integrity, or effective-policy verification failure prevents the
 replacement gateway from starting. A confirmed installation rejection can instead
 disable that optional selection and produce a warning. The previous revision
@@ -317,8 +318,7 @@ preserves other Agents' state.
 
 Source and contract tests, direct MCP calls, package listings, and rendered
 bridge configuration do not prove native Agent behavior or compatibility with
-every runtime image. Native proof requires the opt-in real-runtime lane; the
-testing guide also covers contributor fixture setup and proof notes.
+every runtime image; native proof needs the testing guide's opt-in real-runtime lane.
 
 Disabling a selection does not uninstall it. Native remote installation can enable
 the plugin on the credential's account. Agent-local plugin/app policy and the

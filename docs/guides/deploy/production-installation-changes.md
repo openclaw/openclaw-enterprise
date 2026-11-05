@@ -13,7 +13,7 @@ changes a protected setting`. Diff `deploy/examples/production/installation.yaml
 and `scripts/render-installation-profile.mjs` between the deployed and candidate
 source, decide which changes to adopt, and apply them as a separate change, not
 during an image upgrade. Run these commands from a checkout of the installed
-controller's source revision, not the release checkout, and keep the image
+controller's source commit, not the release checkout, and keep the image
 references in `values.yaml` unchanged:
 
 ```bash
@@ -37,8 +37,9 @@ helm upgrade oce deploy/helm/openclaw-enterprise \
 
 The new checksum restarts the API and worker so they read the new Installation.
 First, the `installation-check` container of the pre-upgrade initialization Job
-loads the new Installation in the release's controller image as API startup
-does, with the Preset files, Driver packages and repository registry it names.
+loads the new Installation in the release's controller image, as API startup
+does. It reads the Preset files, Driver packages, repository registry and
+prepared GitHub issuer CA that the Installation names.
 If startup would refuse it, the upgrade fails before migration and the old API
 and worker keep serving. The log names the setting and file:
 

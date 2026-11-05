@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 import { cleanupLogging, ciOtelBackendResourceKind } from "./logging.mjs";
 import { cleanupKeycloak, keycloakResourceKind } from "./keycloak.mjs";
-import { laneImagesResourceKind, restoreLaneImages } from "./lane-images.mjs";
+import { laneImagesResourceKind, restoreLaneImages } from "./lane-images.ts";
 import { fork, spawn } from "node:child_process";
 import { constants } from "node:fs";
-import { access, chmod, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { access, chmod, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { withStateLock } from "./state-lock.mjs";
+import { withStateLock } from "./state-lock.ts";
+import { runPostgresAdmin } from "./postgres-admin.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const composePostgresFile = join(repositoryRoot, "compose.postgres.yaml");
@@ -39,8 +40,9 @@ function parseArgs(argv) {
 }
 
 // Every container engine and k3d command has a limit, so one that never returns cannot hold
-// the job's Cleanup lane step, or a test's database drop, until the job timeout. Past it the
-// command gets SIGTERM, then SIGKILL after a grace period. Tests shorten both.
+// the job's Cleanup lane step until the job timeout. Past it the command gets SIGTERM, then
+// SIGKILL after a grace period. Tests shorten both. A test's database drop, a direct
+// connection to the lane's server, has the shorter limit below.
 function positiveEnvMs(name, fallback) {
   const value = Number(process.env[name]);
   return Number.isFinite(value) && value > 0 ? value : fallback;
@@ -309,29 +311,66 @@ async function cleanupDatabase(resource, state) {
   if (!compose) {
     return;
   }
-  await execFile(
-    process.env.OCC_DOCKER_BIN ?? "docker",
-    [
-      ...composeArgs(compose, state, "exec", "-T", "postgres"),
-      "psql",
-      "-v",
-      "ON_ERROR_STOP=1",
-      "-U",
-      "postgres",
-      "-d",
-      "postgres",
-      "-c",
-      `DROP DATABASE IF EXISTS ${quoteIdentifier(resource.name)} WITH (FORCE)`,
-    ],
-    { env: { OCC_POSTGRES_PORT: String(compose.port) }, timeoutMs: databaseDropTimeoutMs() },
-  );
+  // Checks the server is this state's owned lane server before connecting to its port.
+  composeArgs(compose, state);
+  // FORCE ends the database's remaining sessions first.
+  await runPostgresAdmin({
+    port: compose.port,
+    statements: [`DROP DATABASE IF EXISTS ${quoteIdentifier(resource.name)} WITH (FORCE)`],
+    timeoutMs: databaseDropTimeoutMs(),
+  });
 }
 
 async function cleanupK3dCluster(resource, state) {
   assertResourceOwner(resource, state);
   assertOwnedK3dFilesystem(resource);
   await deleteOwnedK3dCluster(resource);
+  await emptyK3dSharedStorage(resource);
   await rm(resource.directory, { recursive: true, force: true });
+}
+
+// The fixture lanes bind <directory>/storage into every node as local-path's storage
+// (prepare.mjs). local-path creates each claim's volume directory as root and removes it with a
+// helper Pod only after the claim is deleted, so volumes of namespaces that tests deleted without
+// waiting leave directories the runner user cannot remove. The cluster is gone by now, so nothing
+// writes there again: empty the storage as root from the cluster's own node image, which is
+// already present (never pulled here), with no network.
+async function emptyK3dSharedStorage(resource) {
+  const storage = join(resource.directory, "storage");
+  let entries;
+  try {
+    entries = await readdir(storage);
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+  if (entries.length === 0) {
+    return;
+  }
+  assertString(resource.nodeImage, "k3d node image");
+  if (resource.nodeImage.startsWith("-")) {
+    throw new Error(`Refusing an invalid k3d node image: ${resource.nodeImage}`);
+  }
+  await execFile(process.env.OCC_DOCKER_BIN ?? "docker", [
+    "run",
+    "--rm",
+    "--pull=never",
+    "--network=none",
+    "--user=0",
+    // The k3d nodes are privileged; this container is not, so SELinux hosts would deny it the
+    // unlabelled bind mount.
+    "--security-opt=label=disable",
+    "--entrypoint=find",
+    "--volume",
+    `${storage}:/storage`,
+    resource.nodeImage,
+    "/storage",
+    "-mindepth",
+    "1",
+    "-delete",
+  ]);
 }
 
 // Delete an owned cluster and its exact cluster-labelled Docker resources, and
@@ -376,13 +415,14 @@ async function deleteOwnedK3dCluster(resource, { execFile: run = execFile } = {}
     ) {
       throw new Error(`Invalid k3d ${kind} inventory: ${resource.name}`);
     }
+    let remaining = false;
+    // An empty labelled list already shows none remain: list them again only after a removal.
+    // The name check catches an unlabelled leftover either way.
     if (labelled.length) {
       await run(docker, [...remove, ...labelled]);
+      remaining = (await list(`label=k3d.cluster=${resource.name}`)).length > 0;
     }
-    if (
-      (await list(`label=k3d.cluster=${resource.name}`)).length ||
-      (await list(`name=k3d-${resource.name}`)).length
-    ) {
+    if (remaining || (await list(`name=k3d-${resource.name}`)).length) {
       throw new Error(`Possible owned k3d ${kind} remain after deletion: ${resource.name}`);
     }
   }
@@ -425,8 +465,57 @@ async function cleanupK3dImage(resource, state) {
   }
 }
 
+async function cleanupFirstAgentImages(resource, state) {
+  assertResourceOwner(resource, state);
+  assertOwnedName("openclaw-ci-first-images-", resource.name, "first-Agent registry");
+  if (!Number.isInteger(resource.port) || resource.port < 1 || resource.port > 65535) {
+    throw new Error("Invalid first-Agent image registry receipt.");
+  }
+  if (resource.controllerImage !== undefined) {
+    const prefix = `127.0.0.1:${resource.port}/${resource.name}/controller@`;
+    if (
+      typeof resource.controllerImage !== "string" ||
+      !resource.controllerImage.startsWith(prefix) ||
+      !/^sha256:[a-f0-9]{64}$/.test(resource.controllerImage.slice(prefix.length))
+    ) {
+      throw new Error("Refusing to remove an unowned first-Agent controller image.");
+    }
+  }
+  const docker = process.env.OCC_DOCKER_BIN ?? "docker";
+  const inspect = async (kind, name) => {
+    try {
+      return JSON.parse((await execFile(docker, [kind, "inspect", name])).stdout)[0];
+    } catch (error) {
+      if (/No such (?:image|object|container)/i.test(error.message)) {
+        return undefined;
+      }
+      throw error;
+    }
+  };
+  const container = await inspect("container", resource.name);
+  if (container) {
+    if (
+      container.Config.Labels?.["openclaw.dev/ci-owner"] !== state.prefix ||
+      !/^[a-f0-9]{64}$/.test(container.Id ?? "") ||
+      (resource.containerId !== undefined && container.Id !== resource.containerId)
+    ) {
+      throw new Error("First-Agent registry changed ownership.");
+    }
+  }
+  if (resource.controllerImage && (await inspect("image", resource.controllerImage))) {
+    // Remove the exact owned reference, without forcing removal from live readers.
+    await execFile(docker, ["image", "rm", resource.controllerImage]);
+  }
+  if (container) {
+    await execFile(docker, ["container", "rm", "--force", "--volumes", container.Id]);
+  }
+}
+
 async function cleanupResource(resource, state) {
   switch (resource.kind) {
+    case "first-agent-image-registry":
+      await cleanupFirstAgentImages(resource, state);
+      break;
     case ciOtelBackendResourceKind:
       assertResourceOwner(resource, state);
       await cleanupLogging(resource, { execFile });
@@ -462,8 +551,9 @@ async function cleanupResource(resource, state) {
   }
 }
 
-// lockTimeoutMs limits the wait for the CI state lock (state-lock.mjs's default otherwise), so a
+// lockTimeoutMs limits the wait for the CI state lock (state-lock.ts's default otherwise), so a
 // caller that has its own limit, such as a test fixture's database drop, stops waiting with it.
+// The selected databases are dropped before that wait, each within databaseDropTimeoutMs.
 async function cleanupResourceIds(statePath, resourceIds, { lockTimeoutMs } = {}) {
   const path = resolve(statePath);
   if (!isAbsolute(path)) {
@@ -472,10 +562,49 @@ async function cleanupResourceIds(statePath, resourceIds, { lockTimeoutMs } = {}
   if (!(await stateExists(path))) {
     return;
   }
+  const dropped = resourceIds === undefined ? undefined : await dropDatabases(path, resourceIds);
   // A test may prepare and clean databases from its own process beside the runner.
-  await withStateLock(path, () => cleanupLockedResourceIds(path, resourceIds), {
+  await withStateLock(path, () => cleanupLockedResourceIds(path, resourceIds, dropped), {
     timeoutMs: lockTimeoutMs,
   });
+}
+
+// DROP DATABASE requests an immediate checkpoint, which writes out every dirty buffer on
+// the server: about 0.25 s on an idle server, and 3-5 s while a lane's other files write.
+// Each test's copy is dropped this way, and under the CI state lock every other copy and
+// drop waited for it (finding 2180). The lock guards the state file, not the server, so
+// the selected databases are dropped first, from a state snapshot (writes replace the
+// file whole), and only their entries are removed under the lock. An entry stays until
+// its drop succeeds, so a crash in between leaves it for lane cleanup, as before. A lane
+// template stays on the locked path: prepareFile finds it through the state and copies it.
+async function dropDatabases(path, resourceIds) {
+  const results = new Map();
+  let state;
+  try {
+    state = await readState(path);
+  } catch (error) {
+    // Another cleanup removed the emptied state; the locked pass returns as before.
+    if (error.code === "ENOENT") {
+      return results;
+    }
+    throw error;
+  }
+  for (const resource of [...state.resources].reverse()) {
+    if (
+      resource.kind === "postgres-database" &&
+      resource.laneTemplate === undefined &&
+      resourceIds.includes(resource.id)
+    ) {
+      results.set(
+        resource.id,
+        await cleanupDatabase(resource, state).then(
+          () => ({}),
+          (error) => ({ error }),
+        ),
+      );
+    }
+  }
+  return results;
 }
 
 async function stateExists(path) {
@@ -490,7 +619,8 @@ async function stateExists(path) {
   }
 }
 
-async function cleanupLockedResourceIds(path, resourceIds) {
+// `dropped` maps the ids of databases dropped before the lock to {}, or to { error }.
+async function cleanupLockedResourceIds(path, resourceIds, dropped = new Map()) {
   if (!(await stateExists(path))) {
     return;
   }
@@ -503,7 +633,11 @@ async function cleanupLockedResourceIds(path, resourceIds) {
       continue;
     }
     try {
-      await cleanupResource(resource, state);
+      if (!dropped.has(resource.id)) {
+        await cleanupResource(resource, state);
+      } else if ("error" in dropped.get(resource.id)) {
+        throw dropped.get(resource.id).error;
+      }
       state.resources = state.resources.filter((candidate) => candidate.id !== resource.id);
       await writeState(path, state);
     } catch (error) {

@@ -12,6 +12,12 @@ Use these concepts to understand what you configure and deploy in **OpenClaw Ent
 Its API authorizes resource changes, and its worker uses Drivers to provision
 and update workloads asynchronously.
 
+OCC is a service, not a Kubernetes Operator. It keeps platform state, IAM policy,
+queued work, and audit records in PostgreSQL, and the Helm chart adds no
+CustomResourceDefinitions. A Compute Driver starts the workloads. Kubernetes is
+one Compute Driver; the [SSH Compute Driver](../reference/drivers/ssh-compute.md)
+runs embedded OpenClaw on Linux hosts instead.
+
 ### Data plane
 
 The **data plane** handles Agent conversations and execution. Agent
@@ -26,15 +32,18 @@ groups and isolates its Agents, configuration, and credentials. Fresh bootstrap
 creates a platform Namespace named `default`, not an Agent or Kubernetes'
 built-in `default` namespace. Wait for it to become `ready` before deploying.
 
-## Agents and revisions
+<span id="agents-and-revisions" class="anchor-alias"></span>
+
+## Agents and versions
 
 An [Agent](../reference/agents.md) is a persistent workload definition with its
 own identity. Creating it does not start a process.
 
-Deploying creates an immutable **AgentRevision**: a snapshot of the Agent's
-configuration and execution settings. The worker provisions it, then activates
-it to receive traffic. Editing an Agent or Configuration does not change the
-running revision; deploy again to apply those changes.
+Deploying creates an **Agent revision** (`AgentRevision`) that stores the
+configuration and execution settings for the requested version. Its saved values
+cannot change. A worker prepares the workload and enables its route. OCC can
+select the version before that route is ready. Editing an Agent or Configuration
+does not change the running version; deploy again to apply those changes.
 
 ## Gateways and Harnesses
 
@@ -86,5 +95,5 @@ the model service and model, not an Installation Backend.
 
 ## Next steps
 
-[Set up the platform locally](quickstart.md), then [deploy your first Agent](first-agent.md).
+[Set up OCE and an OpenShell Codex Agent locally](deploy/local-setup.md).
 For production, start with the [deployment guide](deploy.md).

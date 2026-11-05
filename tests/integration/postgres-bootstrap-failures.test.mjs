@@ -2,22 +2,27 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, open, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
-import { composePostgresDevelopment } from "../../apps/controller/src/composition/development-postgres.ts";
+import { composePostgresDevelopment } from "../helpers/password-hasher.mjs";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { injectJson } from "../helpers/inject-json.mjs";
+import { jsonEvent, jsonLines } from "../helpers/json-lines.mjs";
+import { withPool } from "../helpers/postgres-database.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { admittedLoggingLevel } from "../../packages/contracts/src/index.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import {
+  bootstrapInstallationInProcess,
   developmentBootstrapEnvironment,
   productionBootstrapEnvironment,
   runBootstrapInstallation,
@@ -100,15 +105,6 @@ function validatedFailureDatabaseUrl() {
     );
   }
   return parsed;
-}
-
-async function withPool(databaseUrl, operation) {
-  const pool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
-  try {
-    return await operation(pool);
-  } finally {
-    await pool.end();
-  }
 }
 
 async function resetFailureDatabase() {
@@ -232,15 +228,17 @@ function developmentEnvironment({ directory, email, name }) {
   });
 }
 
-async function runProductionBootstrap(environment) {
-  return runBootstrapInstallation(environment);
+// Most cases run the Job's code in this process (bootstrapInstallationInProcess, the function
+// scripts/bootstrap-installation.mjs runs), which saves a Node start per run. These run the
+// real script, for its exit status and its output streams: the lost COMMIT acknowledgement
+// (its fault loads with --import), the retained-output refusal, the known failure, the fresh
+// full path and the fast path.
+async function runBootstrap(environment) {
+  return bootstrapInstallationInProcess(environment);
 }
 
-function jsonLines(output) {
-  return output
-    .split(/\r?\n/)
-    .filter((line) => line.trim().startsWith("{"))
-    .map((line) => JSON.parse(line));
+async function runBootstrapScript(environment) {
+  return runBootstrapInstallation(environment);
 }
 
 async function bootstrapWithLostCommitAcknowledgement(environment) {
@@ -252,16 +250,18 @@ async function bootstrapWithLostCommitAcknowledgement(environment) {
     OCC_TEST_POSTGRES_COMMIT_ACK_FAULT: "installation-bootstrap",
   });
   assert.equal(result.ok, false);
-  const failure = jsonLines(result.stderr).find(
-    (line) => line.event === "installation.bootstrap-failed",
-  );
-  assert.ok(failure, result.stderr);
+  const failure = jsonEvent(result.stderr, "installation.bootstrap-failed");
   assert.equal(failure.code, "COMMIT_OUTCOME_UNKNOWN");
   assert.equal(failure.attempt.serviceKeyFile, environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE);
   assert.equal(existsSync(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE), true);
   const serviceKeyOutput = JSON.parse(
     await readFile(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE, "utf8"),
   );
+  // The logged attempt keeps the IDs the run assigned, each in its OCC format (finding 2246).
+  assert.match(failure.attempt.installationId, /^ins_[0-9a-f-]{36}$/);
+  assert.match(failure.attempt.principalId, /^prn_[0-9a-f-]{36}$/);
+  assert.match(failure.attempt.servicePrincipalId, /^spn_[0-9a-f-]{36}$/);
+  assert.equal(failure.attempt.servicePrincipalId, serviceKeyOutput.data.servicePrincipalId);
   assert.deepEqual(await rowCounts(), {
     installations: 1,
     bootstrap_audits: 1,
@@ -277,12 +277,7 @@ async function bootstrapWithLostCommitAcknowledgement(environment) {
 }
 
 async function request(app, method, url, apiKey, body) {
-  const response = await app.inject({
-    method,
-    url,
-    headers: { "x-api-key": apiKey, host: "127.0.0.1" },
-    ...(body === undefined ? {} : { payload: body }),
-  });
+  const response = await injectJson(app, method, url, { key: apiKey, body });
   const parsed = response.body.length === 0 ? undefined : response.json();
   return { status: response.statusCode, body: parsed };
 }
@@ -321,9 +316,54 @@ function passiveComputeDriver() {
   };
 }
 
+function assertBootstrapRaceOutcome(results, sharedOutput = false) {
+  const successful = results.filter((result) => result.ok === true);
+  const failed = results.filter((result) => result.ok === false);
+  assert.equal(successful.length, 1, "expected one successful bootstrap");
+  assert.equal(failed.length, 1, "expected one failed bootstrap");
+  const bootstrapped = jsonLines(successful[0].stdout).filter(
+    (line) => line.event === "installation.bootstrapped",
+  );
+  assert.equal(bootstrapped.length, 1, "expected one installation.bootstrapped event");
+  const failure = jsonLines(failed[0].stderr).find(
+    (line) => line.event === "installation.bootstrap-failed",
+  );
+  assert.ok(failure, "expected an installation.bootstrap-failed event");
+  if (sharedOutput && failure.code === "BOOTSTRAP_OUTPUT_EXISTS") {
+    // The winner wrote an output before the other run finished checking both destinations.
+    assert.equal(failure.attempt, undefined);
+  } else {
+    assert.ok(failure.attempt, "expected a failed bootstrap attempt");
+  }
+  return { winnerIndex: results.indexOf(successful[0]), winnerEvent: bootstrapped[0] };
+}
+
+function assertSingleDurableBootstrapSeed(counts) {
+  assert.deepEqual(
+    {
+      installations: counts.installations,
+      bootstrap_audits: counts.bootstrap_audits,
+      principals: counts.principals,
+      service_principals: counts.service_principals,
+      bindings: counts.bindings,
+      namespaces: counts.namespaces,
+      namespace_work: counts.namespace_work,
+    },
+    {
+      installations: 1,
+      bootstrap_audits: 1,
+      principals: 1,
+      service_principals: 1,
+      bindings: 2,
+      namespaces: 1,
+      namespace_work: 1,
+    },
+  );
+}
+
 for (const sharedOutput of [false, true]) {
   test(
-    `concurrent production bootstrap subprocesses ${sharedOutput ? "with shared output paths" : "with separate output paths"} commit at most one seed`,
+    `concurrent production bootstraps ${sharedOutput ? "with shared output paths" : "with separate output paths"} commit at most one seed`,
     requiresFailurePostgres,
     async (context) => {
       await resetFailureDatabase();
@@ -350,46 +390,10 @@ for (const sharedOutput of [false, true]) {
         }),
       );
 
-      const results = await Promise.all(environments.map((env) => runProductionBootstrap(env)));
-      const successful = results.filter(
-        (result) =>
-          result.ok &&
-          jsonLines(result.stdout).some((line) => line.event === "installation.bootstrapped"),
-      );
-      const failed = results.filter((result) => !successful.includes(result));
-      assert.equal(successful.length, 1, JSON.stringify(results));
-      assert.equal(failed.length, 1, JSON.stringify(results));
-      const failedEvent = jsonLines(failed[0].stderr).find(
-        (line) => line.event === "installation.bootstrap-failed",
-      );
-      assert.ok(failedEvent, failed[0].stderr);
-
-      const winner = jsonLines(successful[0].stdout).find(
-        (line) => line.event === "installation.bootstrapped",
-      );
-      assert.ok(winner);
-      assert.ok(failedEvent.attempt, failed[0].stderr);
+      const results = await Promise.all(environments.map((env) => runBootstrap(env)));
+      const { winnerEvent: winner } = assertBootstrapRaceOutcome(results, sharedOutput);
       const counts = await rowCounts();
-      assert.deepEqual(
-        {
-          installations: counts.installations,
-          bootstrap_audits: counts.bootstrap_audits,
-          principals: counts.principals,
-          service_principals: counts.service_principals,
-          bindings: counts.bindings,
-          namespaces: counts.namespaces,
-          namespace_work: counts.namespace_work,
-        },
-        {
-          installations: 1,
-          bootstrap_audits: 1,
-          principals: 1,
-          service_principals: 1,
-          bindings: 2,
-          namespaces: 1,
-          namespace_work: 1,
-        },
-      );
+      assertSingleDurableBootstrapSeed(counts);
       const winnerIndex = environments.findIndex(
         (environment) => environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE === winner.serviceKeyFile,
       );
@@ -429,7 +433,7 @@ for (const sharedOutput of [false, true]) {
 }
 
 test(
-  "concurrent development bootstrap subprocesses reject the loser and reload the committed winner",
+  "concurrent development bootstraps reject the loser and reload the committed winner",
   requiresFailurePostgres,
   async (context) => {
     await resetFailureDatabase();
@@ -454,21 +458,8 @@ test(
         name: `Development bootstrap race ${index}`,
       }),
     );
-    const results = await Promise.all(environments.map((env) => runBootstrapInstallation(env)));
-    const fulfilled = results.filter(
-      (result) =>
-        result.ok &&
-        jsonLines(result.stdout).some((line) => line.event === "installation.bootstrapped"),
-    );
-    const rejected = results.filter((result) => !fulfilled.includes(result));
-    assert.equal(fulfilled.length, 1, JSON.stringify(results));
-    assert.equal(rejected.length, 1, JSON.stringify(results));
-    const rejectedEvent = jsonLines(rejected[0].stderr).find(
-      (line) => line.event === "installation.bootstrap-failed",
-    );
-    assert.ok(rejectedEvent, rejected[0].stderr);
-
-    const winnerIndex = results.findIndex((result) => fulfilled.includes(result));
+    const results = await Promise.all(environments.map((env) => runBootstrap(env)));
+    const { winnerIndex } = assertBootstrapRaceOutcome(results);
     const loserIndex = winnerIndex === 0 ? 1 : 0;
     const winnerOutputBytes = await readFile(
       environments[winnerIndex].OCC_BOOTSTRAP_SERVICE_KEY_FILE,
@@ -476,32 +467,12 @@ test(
     );
     const winnerOutputDigest = sha256(winnerOutputBytes);
     const winnerOutput = JSON.parse(winnerOutputBytes);
-    assert.ok(rejectedEvent.attempt, rejected[0].stderr);
     const loserCreatedServiceKey = existsSync(
       environments[loserIndex].OCC_BOOTSTRAP_SERVICE_KEY_FILE,
     );
 
     const counts = await rowCounts();
-    assert.deepEqual(
-      {
-        installations: counts.installations,
-        bootstrap_audits: counts.bootstrap_audits,
-        principals: counts.principals,
-        service_principals: counts.service_principals,
-        bindings: counts.bindings,
-        namespaces: counts.namespaces,
-        namespace_work: counts.namespace_work,
-      },
-      {
-        installations: 1,
-        bootstrap_audits: 1,
-        principals: 1,
-        service_principals: 1,
-        bindings: 2,
-        namespaces: 1,
-        namespace_work: 1,
-      },
-    );
+    assertSingleDurableBootstrapSeed(counts);
     assert.equal(counts.service_keys, loserCreatedServiceKey ? 2 : 1);
     assert.equal(counts.users, loserCreatedServiceKey ? 2 : 1);
 
@@ -531,10 +502,8 @@ test(
       sha256(await readFile(environments[winnerIndex].OCC_BOOTSTRAP_SERVICE_KEY_FILE, "utf8")),
       winnerOutputDigest,
     );
-    const installation = await reloaded.inject({
-      method: "GET",
-      url: "/installation",
-      headers: { "x-api-key": winnerOutput.data.key, host: "127.0.0.1" },
+    const installation = await injectJson(reloaded, "GET", "/installation", {
+      key: winnerOutput.data.key,
     });
     assert.equal(installation.statusCode, 200, installation.body);
     assert.equal(installation.json().data.id, winnerOutput.meta.installationId);
@@ -572,6 +541,7 @@ test(
         name: "Logging Agent",
         configurationId: configuration.body.data.id,
         harnessAuth: { method: "api_key", source: secret.body.data.ref },
+        gatewayManagedMode: false,
       },
     );
     assert.equal(agent.status, 201, JSON.stringify(agent.body));
@@ -614,10 +584,8 @@ test(
       );
       assert.match(loserOutput.meta.installationId, /^ins_/);
       assert.match(loserOutput.data.servicePrincipalId, /^spn_/);
-      const rejectedInstallation = await reloaded.inject({
-        method: "GET",
-        url: "/installation",
-        headers: { "x-api-key": loserOutput.data.key, host: "127.0.0.1" },
+      const rejectedInstallation = await injectJson(reloaded, "GET", "/installation", {
+        key: loserOutput.data.key,
       });
       assert.ok([401, 403].includes(rejectedInstallation.statusCode), rejectedInstallation.body);
     }
@@ -644,6 +612,91 @@ test(
 );
 
 test(
+  "fresh production bootstrap refuses either retained credential output before creating credentials",
+  requiresFailurePostgres,
+  async (context) => {
+    const directory = await prepareBootstrapFailureFixture(context, "retained-output");
+    for (const retainPassword of [true, false]) {
+      // Separate directories let the fixture clean up both cases without unlinking the marker here.
+      const env = productionEnvironment({
+        directory: await mkdtemp(join(directory, "attempt-")),
+        email: "retained-output@example.test",
+        name: "Bootstrap retained output",
+      });
+      const password = env.OCC_BOOTSTRAP_PASSWORD_FILE;
+      const serviceKey = env.OCC_BOOTSTRAP_SERVICE_KEY_FILE;
+      const [retained, absent] = retainPassword ? [password, serviceKey] : [serviceKey, password];
+      const marker = "retained-credential-sentinel";
+      const file = await open(retained, "wx+", 0o600);
+      try {
+        await file.writeFile(marker);
+        const before = await file.stat({ bigint: true });
+
+        const result = await runBootstrapScript(env);
+        assert.equal(result.ok, false);
+        const failure = jsonLines(result.stderr).find(
+          (line) => line.event === "installation.bootstrap-failed",
+        );
+        assert.equal(failure?.code, "BOOTSTRAP_OUTPUT_EXISTS", result.stderr);
+        assert.equal(failure.attempt, undefined);
+        assert.match(result.stderr, /preserve it and reconcile the original installation/i);
+        for (const privateValue of [directory, marker]) {
+          assert.ok(
+            !(result.stdout + result.stderr).includes(privateValue),
+            "diagnostic disclosed a path or content",
+          );
+        }
+
+        const after = await lstat(retained, { bigint: true });
+        for (const field of ["dev", "ino", "mode", "size", "ctimeNs", "mtimeNs"]) {
+          assert.equal(after[field], before[field]);
+        }
+        // Check the bytes on the original file, never reopen the path we just inspected.
+        const buffer = Buffer.alloc(Buffer.byteLength(marker) + 1);
+        const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+        assert.equal(buffer.subarray(0, bytesRead).toString("utf8"), marker);
+        await assert.rejects(lstat(absent), { code: "ENOENT" });
+        const counts = await rowCounts();
+        for (const [table, count] of Object.entries(counts)) {
+          assert.equal(count, 0, table);
+        }
+      } finally {
+        await file.close();
+      }
+    }
+  },
+);
+
+for (const variable of ["OCC_BOOTSTRAP_PASSWORD_FILE", "OCC_BOOTSTRAP_SERVICE_KEY_FILE"]) {
+  test(
+    `fresh production bootstrap rejects a trailing separator in ${variable} before creating credentials`,
+    requiresFailurePostgres,
+    async (context) => {
+      const directory = await prepareBootstrapFailureFixture(context, "trailing-separator");
+      const env = productionEnvironment({
+        directory,
+        email: "trailing-separator@example.test",
+        name: "Bootstrap trailing separator",
+      });
+      // lstat can report ENOENT for this path, but an exclusive file create cannot use it.
+      env[variable] += sep;
+      const result = await runBootstrap(env);
+      assert.equal(result.ok, false);
+      const failure = jsonLines(result.stderr).find(
+        (line) => line.event === "installation.bootstrap-failed",
+      );
+      assert.equal(failure?.code, "BOOTSTRAP_FAILED");
+      assert.equal("attempt" in failure, false);
+      assert.equal((result.stdout + result.stderr).includes(directory), false, "path disclosed");
+      assert.deepEqual(await readdir(directory), []);
+      for (const [table, count] of Object.entries(await rowCounts())) {
+        assert.equal(count, 0, table);
+      }
+    },
+  );
+}
+
+test(
   "known bootstrap failures preserve created artifacts and report safe diagnostics",
   requiresFailurePostgres,
   async (context) => {
@@ -655,12 +708,9 @@ test(
       email: `bootstrap-cleanup-${randomUUID()}@example.test`,
       name: "Bootstrap cleanup diagnostics",
     });
-    const result = await runProductionBootstrap(environment);
+    const result = await runBootstrapScript(environment);
     assert.equal(result.ok, false);
-    const failure = jsonLines(result.stderr).find(
-      (line) => line.event === "installation.bootstrap-failed",
-    );
-    assert.ok(failure, result.stderr);
+    const failure = jsonEvent(result.stderr, "installation.bootstrap-failed");
     assert.equal(failure.code, "BOOTSTRAP_FAILED");
     assert.equal("cleanupFailures" in failure, false);
     assert.doesNotMatch(result.stderr, /^occ_/m);
@@ -710,7 +760,7 @@ test(
       }),
     ]) {
       const label = environment.NODE_ENV;
-      const result = await runBootstrapInstallation(environment);
+      const result = await runBootstrap(environment);
       assert.equal(result.ok, false, label);
       const failure = jsonLines(result.stderr).find(
         (line) => line.event === "installation.bootstrap-failed",
@@ -744,8 +794,7 @@ test(
   requiresFailurePostgres,
   async (context) => {
     const { environment } = await bootstrapExistingInstallation(context, "stored-name");
-    const configurationRoot = await privateOutputDirectory("openclaw-bootstrap-stored-name-");
-    context.after(() => rm(configurationRoot, { recursive: true, force: true }));
+    const configurationRoot = await temporaryDirectory(context, "openclaw-bootstrap-stored-name-");
     // An Installation stored before OCC applied the Name rule can hold a trailing NBSP:
     // PostgreSQL's name check accepts it.
     await withPool(migratorDatabaseUrl(), (pool) =>
@@ -873,14 +922,14 @@ const PARTIAL_INSTALLATIONS = [
   ],
 ];
 
-async function bootstrapExistingInstallation(context, label) {
+async function bootstrapExistingInstallation(context, label, run = runBootstrap) {
   const directory = await prepareBootstrapFailureFixture(context, label);
   const environment = productionEnvironment({
     directory,
     email: `bootstrap-${label}-${randomUUID()}@example.test`,
     name: `Bootstrap ${label}`,
   });
-  const fresh = await runProductionBootstrap(environment);
+  const fresh = await run(environment);
   assert.equal(fresh.ok, true, fresh.stderr);
   return { environment, fresh };
 }
@@ -895,11 +944,18 @@ test(
   "production bootstrap of a fresh database takes the full path",
   requiresFailurePostgres,
   async (context) => {
-    const { fresh } = await bootstrapExistingInstallation(context, "fresh-path");
-    assert.ok(
-      jsonLines(fresh.stdout).some((line) => line.event === "installation.bootstrapped"),
-      fresh.stdout,
+    const { fresh } = await bootstrapExistingInstallation(
+      context,
+      "fresh-path",
+      runBootstrapScript,
     );
+    const result = jsonEvent(fresh.stdout, "installation.bootstrapped");
+    // The log line names the new Installation too (finding 2245).
+    const logged = jsonLines(fresh.stderr).find(
+      (line) => line.event === "installation.bootstrapped",
+    );
+    assert.match(result.installationId, /^ins_[0-9a-f-]{36}$/);
+    assert.equal(logged?.installationId, result.installationId, fresh.stderr);
     assert.equal(alreadyBootstrappedEvent(fresh), undefined);
   },
 );
@@ -908,7 +964,7 @@ test(
   "production bootstrap of a complete Installation verifies it without the auth stack",
   requiresFailurePostgres,
   async (context) => {
-    const { environment } = await bootstrapExistingInstallation(context, "fast-path");
+    const { environment, fresh } = await bootstrapExistingInstallation(context, "fast-path");
     const counts = await rowCounts();
     const outputs = await Promise.all(
       [environment.OCC_BOOTSTRAP_PASSWORD_FILE, environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE].map(
@@ -916,13 +972,19 @@ test(
       ),
     );
 
-    const repeated = await runProductionBootstrap(environment);
+    const repeated = await runBootstrapScript(environment);
     assert.equal(repeated.ok, true, repeated.stderr);
     assert.ok(
       jsonLines(repeated.stdout).some((line) => line.event === "installation.already-bootstrapped"),
       repeated.stdout,
     );
     assert.equal(alreadyBootstrappedEvent(repeated)?.step, "fast-path", repeated.stderr);
+    assert.equal(
+      alreadyBootstrappedEvent(repeated)?.installationId,
+      jsonLines(fresh.stdout).find((line) => line.event === "installation.bootstrapped")
+        ?.installationId,
+      repeated.stderr,
+    );
     assert.deepEqual(await rowCounts(), counts);
     assert.deepEqual(
       await Promise.all(
@@ -942,7 +1004,7 @@ test(
     // Both checks look up the user only; its credential accounts do not count.
     const { environment } = await bootstrapExistingInstallation(context, "no-accounts");
     await withPool(migratorDatabaseUrl(), (pool) => pool.query("DELETE FROM occ.account"));
-    const repeated = await runProductionBootstrap(environment);
+    const repeated = await runBootstrap(environment);
     assert.equal(repeated.ok, true, repeated.stderr);
     assert.equal(alreadyBootstrappedEvent(repeated)?.step, "fast-path", repeated.stderr);
   },
@@ -953,7 +1015,7 @@ test(
   requiresFailurePostgres,
   async (context) => {
     const { environment } = await bootstrapExistingInstallation(context, "base-url");
-    const repeated = await runProductionBootstrap({
+    const repeated = await runBootstrap({
       ...environment,
       OCC_AUTH_BASE_URL: "http://127.0.0.1:0/auth",
     });
@@ -978,7 +1040,7 @@ for (const [invariant, breakInvariant] of PARTIAL_INSTALLATIONS) {
       await withPool(migratorDatabaseUrl(), (pool) => pool.query(breakInvariant));
       const counts = await rowCounts();
 
-      const repeated = await runProductionBootstrap(environment);
+      const repeated = await runBootstrap(environment);
       assert.equal(repeated.ok, false, repeated.stdout);
       assert.equal(alreadyBootstrappedEvent(repeated), undefined, repeated.stderr);
       const failure = jsonLines(repeated.stderr).find(

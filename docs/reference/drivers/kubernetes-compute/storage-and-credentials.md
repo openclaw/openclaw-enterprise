@@ -1,15 +1,13 @@
 # Kubernetes storage and credentials
 
-Configure separate Gateway and Harness storage, and runtime
+Configure [separate Gateway and Harness storage](../../../guides/topics/remote-harness.md) and runtime
 Secrets for the [Kubernetes Compute Driver](../kubernetes-compute.md).
 
 ## Shared contracts and the Codex implementation
 
-The public `ComputeDriver` and `HarnessWorkloadRequirements` contracts describe
-platform operations and workload requirements; OpenClaw's `AgentWorkspaceAccess`
-provides workspace capabilities without the Codex app-server protocol. The dedicated storage implementation below currently supports Codex;
-its launcher and filesystem layout are Codex-specific Kubernetes choices, not
-requirements for every Harness or additions to the public Compute contract.
+`ComputeDriver` and `HarnessWorkloadRequirements` are shared contracts.
+OpenClaw's `AgentWorkspaceAccess` is independent of Codex's protocol.
+The layout and launcher below describe dedicated Codex only.
 
 | Boundary         | Shared behavior                                                                           | Current dedicated Codex implementation                                                                                      |
 | ---------------- | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
@@ -17,14 +15,15 @@ requirements for every Harness or additions to the public Compute contract.
 | Execution        | The selected Harness owns execution and its workspace lifecycle.                          | Codex app-server executes turns; a separate node serves file, Memory and Skills operations.                                 |
 | Startup          | Compute delivers the selected workload and observes readiness.                            | The launcher supervises Codex and the file node separately, separates their credentials, and sets Codex shell/PATH options. |
 
-The file node's explicit command allowlist disables OpenClaw worker hosting;
-this launcher is not an OpenClaw remote worker launcher.
+The file node's command allowlist disables OpenClaw worker hosting.
 
-[Dedicated OpenClaw worker support (#77)](https://github.com/openclaw/openclaw-enterprise/issues/77)
-remains pending without end-to-end proof. It must align Gateway file access with
-the worker's assigned workspace and validate worker command admission,
-attachments and readiness. Codex validation neither establishes that
-compatibility nor requires the worker to adopt Codex paths or app-server settings.
+[Dedicated native OpenClaw](../../harness-execution.md#native-worker-support)
+has an experimental worker path with Sandbox-owned Harness provisioning.
+Compute manages the Harness PVC and supplies its approved storage mounts.
+[Issue #77](https://github.com/openclaw/openclaw-enterprise/issues/77) tracks outstanding
+end-to-end qualification of model/tool turns, replacement, and retirement.
+Codex validation does not qualify native workers or require them to use Codex
+paths or app-server settings.
 
 ## Gateway storage
 
@@ -37,11 +36,9 @@ Kubernetes DNS-subdomain `runtime.gatewayStorageClassName` selects an
 operator-provisioned StorageClass for a local or cloud block disk mounted as a
 filesystem.
 
-The filesystem must be SQLite-compatible: reliable file locking, durable writes
-through `fsync`, and support for SQLite's database and companion WAL/SHM files
-in the same directory. The driver checks the claim configuration but does not
-certify the storage provider's locking or durability guarantees.
-See [SQLite's filesystem requirements](https://sqlite.org/useovernet.html).
+The filesystem must support SQLite locking, durable `fsync`, and colocated
+database and WAL/SHM files. The Driver checks claim configuration, not filesystem
+guarantees. See [SQLite’s requirements](https://sqlite.org/useovernet.html).
 
 Do not use NFS or SMB/CIFS for gateway databases:
 [SQLite WAL does not support network filesystems](https://sqlite.org/wal.html).
@@ -58,8 +55,18 @@ writer.
 A stop deletes the Gateway and waits for its Pod to disappear before stopping the
 Harness, which finishes active work meanwhile; a refused candidate's stop deletes
 both at once. The Gateway supervisor and Pod allow up to 330 seconds for the
-pinned runtime's drain and cleanup; idle Gateways exit promptly. Forced termination can leave an owner lease until it
-expires and delay the successor; a longer grace period does not make it a clean shutdown.
+pinned runtime's drain and cleanup. Idle Gateways exit promptly. Forced
+termination can leave native Gateway locks and an owner lease on retained state.
+
+If the kubelet restarts an embedded Gateway container in the same Pod, OpenClaw
+can recover locks held by the **first container instance**. Before configurable
+code runs, that instance signs its Pod UID and Linux PID namespace and discards
+the signing key. The replacement uses a read-only public key held in the Pod
+to verify the previous instance, then asks OpenClaw to check every holder.
+This requires OCE's runtime launcher, private container PID namespaces and no
+custom lifecycle environment, additional Secret bindings, or repository tooling.
+Replacing the Pod discards its keys. A later container's locks or a missing
+record also require [operator recovery](../../../guides/topics/agent-troubleshoot.md#an-embedded-gateway-reports-an-unverifiable-state-owner).
 
 Only the Gateway Pod mounts these writable directories, including SQLite
 databases and their WAL/SHM siblings:
@@ -67,6 +74,7 @@ databases and their WAL/SHM siblings:
 | Private subpath             | Gateway mount                               |
 | --------------------------- | ------------------------------------------- |
 | `state`                     | `/home/node/.openclaw/state`                |
+| `client`                    | `/home/node/.openclaw/client`               |
 | `agent`                     | `/home/node/.openclaw/agents/main/agent`    |
 | `media`                     | `/home/node/.openclaw/media`                |
 | `worktrees`                 | `/home/node/.openclaw/worktrees`            |
@@ -74,13 +82,14 @@ databases and their WAL/SHM siblings:
 | `sessions` (dedicated mode) | `/home/node/.openclaw/agents/main/sessions` |
 
 Linked worktrees and Git metadata in `worktree-sources` persist across Gateway replacement.
+The retained database requires the client store’s migration receipt; both persist.
 
-Embedded Gateways also mount its `workspace` subpath at
+Embedded Gateways mount the claim's `workspace` subpath at
 `/home/node/.openclaw/workspace`, the default workspace under the configured
 `OPENCLAW_STATE_DIR`, retaining the workspace files attested by gateway
 SQLite so a continued turn after Pod replacement does not fail with
-`WorkspaceVanishedError`. Native configurations that override the workspace
-path are outside this persistence contract. In dedicated mode,
+`WorkspaceVanishedError`. Native workspace path overrides are outside this
+persistence contract. In dedicated mode,
 `/home/node/workspace` is a logical Gateway workspace key served by the paired
 node; Gateway does not mount the Harness workspace.
 
@@ -88,7 +97,7 @@ A nonroot init container prepares directories without credentials or extra privi
 `agents/main/agent/codex-home` is overmounted from Pod-local `emptyDir` so
 Codex credentials remain ephemeral; the rest of the private runtime home is
 ephemeral.
-The same init container creates a node-owned mode-`0700` subdirectory on the
+The init container creates a node-owned mode-`0700` subdirectory on the
 Pod-local temporary `emptyDir` and mounts it at `/tmp`, preserving private
 temp-workspace ancestry for Gateway and Harness processes; the fsGroup-writable
 volume root is never their runtime temp root.
@@ -97,10 +106,11 @@ OCE disables OpenClaw automatic package updates in the Gateway and workspace
 node; runtime upgrades use the operator-selected image and ordinary redeployment.
 State on this claim outlives those upgrades. Before OpenClaw starts, the Gateway
 wrapper runs `openclaw doctor --fix --non-interactive` once, with the
-configuration read-only, when an agent database uses an older schema than the
-pinned OpenClaw; Doctor keeps a `.pre-startup-migration-<id>.bak` copy beside
-it. A database still older afterwards holds the Gateway unready with check
-`state-migration` (`RUNTIME_STARTUP_FAILED`).
+configuration read-only, when the shared state database or an agent database
+uses an older schema than the pinned OpenClaw; Doctor keeps a
+`.pre-startup-migration-<id>.bak` copy beside each. A database still older
+afterwards holds the Gateway unready with check `state-migration`
+(`RUNTIME_STARTUP_FAILED`).
 
 ## Harness storage
 
@@ -114,42 +124,75 @@ from the default StorageClass, mounted only by its Harness:
 | `codex-sessions`                             | `/home/node/.codex/sessions`         |
 | `workspace-node-<agent-hash>-<harness-hash>` | `/home/node/.openclaw-node`          |
 
-The nonroot init container creates each subpath as uid 1000 with mode `0700`
-before the kubelet mounts it. Claims from the first release hold root-owned
-`workspace` and `generated-images` directories the kubelet created; the init
-renames such a directory aside, recreates it and moves its entries back. A name
-the new directory already has stays in `.<subpath>.kubelet-created`.
+The nonroot initializer creates each subpath as uid 1000 with mode `0700`.
+For existing root-owned `workspace` and `generated-images` directories, it
+recreates ownership and moves entries back; conflicting names remain in
+`.<subpath>.kubelet-created`.
 
-This directory keeps node identity across Pod and revision replacement.
-The node Secret's setup code expires ten minutes after preparation mints it. A
-node with a saved device token for the same Gateway reconnects with that token;
-one without saved credentials rejects an expired code.
+Node identity survives replacement. Before setup or connection,
+the Harness runs [Gateway](#gateway-storage) Doctor with the node environment
+for older databases; a still-old database holds at `state-migration`.
 
-A Deployment-backed Codex Harness renders this wiring from its first start,
-mounting the node Secret as an optional volume at `/run/openclaw-node-setup`
-that projects only `setupCode`, so the Harness starts before the Secret exists.
-Codex starts at once; the node starts when the file holds a complete code.
-After writing the Secret, preparation annotates the running Harness Pod so the
-kubelet refreshes the volume within about two seconds instead of its roughly
-one-minute periodic resync; enrollment restarts neither the Harness nor its
-Gateway. The worker needs `patch` on Pods in tenant
-namespaces; without it the pass fails.
+Setup expires after ten minutes. `--pair-or-reconnect` tries fresh setup;
+only `AUTH_BOOTSTRAP_TOKEN_INVALID` permits saved-token retry. Expired codes
+require credentials bound to the same device, Gateway scope and TLS pin.
+Renewal preserves the enrolled endpoint.
 
-The file mode is `0440`. Secret volume files are root-owned and the kubelet
-grants the Pod `fsGroup` read access, so `0400` would behave the same. Codex
-runs as the same user and group and can read the code, as it can already read
-the node's command line. Once readiness records the device ID, the controller
-removes `setupCode` from the Secret and annotates the Pod again, so the kubelet
-removes the file within seconds; the node then reconnects with its saved device
-token, and preparation mints no new code for it. If the Gateway loses that
-pairing, delete the Agent's node Secret: the next pass mints a code, which the
-node uses when it restarts. Native workers and SandboxDriver Harnesses receive the code in
-their environment, keep it for restarts, and are replaced to attach the node.
-Installations that enrolled one node per revision enroll a new Agent device once,
-at the first replacement; retiring each earlier revision deletes its node Secret.
-Sessions stay on the private Gateway claim, which the Harness never receives. Selected generated-image bytes return
-through the Codex remote-media reader; there is no shared image mount. Each image
-initializes its own bundled/plugin assets instead of mounting shared Skill trees.
+OCC records receipts as `setupReceiptDeviceId`. The node saves, reads back, and
+reconnects with its credential. `node.describe` must confirm
+current-session token authentication before setting `deviceId`. Disconnect or
+pairing replacement clears proof; live approval requires reauthentication.
+Grants stay unchanged. Readiness records the revision.
+
+After OCC retains the receipt, missing status cannot trigger fresh credentials.
+If its first reconciliation follows Gateway's 20-minute receipt retention,
+preparation can renew expired setup without recovering the prior receipt; this
+remains a limitation. Unconfirmed possession after expiry requires recovery below.
+
+Endpoint changes require successful credential retirement and preserve identity.
+Exact-device resume uses saved endpoint and Cloudflare Access settings without
+ambient overrides or configuration writes. Saved Access requires matching
+WebSocket scope and TLS pin.
+
+Each local profile permits one node runner; [lock recovery](../../../guides/topics/agent-troubleshoot.md#deployment-is-blocked-or-has-no-selected-version)
+never relies on age.
+
+Deployment-backed Codex mounts only `setupCode` at `/run/openclaw-node-setup`.
+Codex starts before enrollment; the node awaits complete setup. Preparation annotates the Pod after Secret writes to refresh kubelet's
+projection in about two seconds instead of one minute; tenant Pod `patch`
+permission is required.
+
+The projection is `0440`; kubelet grants `fsGroup` read access even with `0400`.
+Codex shares the node's user/group and can read code and arguments. Recording
+the device removes `setupCode` and annotates the Pod, removing the file within
+seconds. Later starts use the saved token.
+
+Supervisors poll Codex files and native-worker provider envelopes every second.
+Files and encoded setup are capped at 65,536 bytes each; Gateway URLs require
+`ws://`/`wss://` authority. A TLS fingerprint requires `wss://`.
+Changed complete setup replaces only the node or `connect` process group: TERM,
+then KILL after five seconds, awaiting child exit. Equivalent, missing, unreadable
+or malformed projections do not trigger restarts. Initial incomplete envelopes
+wait; pending replacements retain the latest complete setup if the file disappears.
+Operator stop cancels replacement. Environment-delivered setup is a startup
+snapshot.
+
+OpenShell accepts
+expired setup only from the same owned Secret with a recorded device; native
+code validates token, identity, scope and pin. Unpaired expired setup waits
+for Gateway before provider provisioning.
+
+For pairing loss or unconfirmed credential possession after setup expiry,
+[stop the Agent](../../agents/deployment.md#stop-and-resume) and wait for shutdown.
+Delete only the Agent-owned node Secret named in the failure, then deploy a new
+revision. Preserve node identity and the Harness PVC. Missing diagnostic exposure
+alone does not justify deleting credentials.
+Older per-revision installations enroll an Agent device at first replacement;
+retiring earlier revisions deletes their node Secrets.
+Gateway history stays on its private claim; resuming the original Codex thread
+requires the Harness claim’s `codex-sessions`.
+Selected generated-image bytes use the Codex remote-media reader; no image mount
+is shared. Images initialize bundled/plugin assets without shared Skill-tree mounts.
 Embedded Agents use the private claim without creating this Harness claim.
 
 Default node writes include workspace `skills/**`, `.clawhub/lock.json`,
@@ -157,19 +200,18 @@ Default node writes include workspace `skills/**`, `.clawhub/lock.json`,
 unchanged. Skill lifecycle operations require a compatible runtime. See the
 [workspace flow](../../../flows/workspace-files.md) for authorization boundaries.
 
-The worker stops all earlier revisions and waits for their Pods to terminate
-before preparing a dedicated replacement, including failed candidates and
-Sandbox-owned workloads. Replacement has a downtime window; it does not need
-simultaneous cross-node mounts. If preparation fails, retry the candidate or
-deploy the intended configuration as a new revision; OCC does not restart a lower
-revision automatically or roll back filesystem writes made by a failed candidate.
-The last committed active revision is not proof that its Pod still runs during
-replacement. A newer admitted exclusive revision supersedes older reconciliation and
-maintenance; see the [Compute replacement contract](../compute.md#production-revision-stages).
+Before preparing a dedicated replacement, the worker stops all earlier workloads
+and awaits Pod termination, including failed candidates and Sandbox-owned
+workloads. Replacement requires downtime, without simultaneous cross-node mounts.
+If preparation fails, retry the candidate or deploy the intended configuration as
+a new version. OCC neither restarts earlier versions nor reverses failed candidates'
+filesystem writes. The last selected version does not prove its Pod still runs.
+After OCC accepts a newer version that requires earlier workloads to stop, the
+worker stops their reconciliation and maintenance;
+see the [Compute replacement contract](../compute.md#production-revision-stages).
 
-Existing RWX Harness or Gateway claims are rejected during reconciliation and
-final Agent deletion; follow the
-[upgrade prerequisite](../../../guides/deploy/upgrade-checklist.md#remove-legacy-rwx-workspaces).
+RWX Harness or Gateway claims are rejected during reconciliation and final
+Agent deletion.
 
 As with the Gateway claim, RWO does not fence writers on a partitioned node. Pod
 termination and the storage provider's safe detach/attach behavior remain
@@ -177,45 +219,21 @@ required; the Driver never force detaches a disk. A local-path PV keeps its node
 affinity and cannot move its data to another node. Cross-node rescheduling needs
 an appropriate portable StorageClass, not RWX.
 
-Both claims retain exact Namespace and Agent ownership across revision
-cutover and gateway Pod replacement. Reconciliation rejects foreign,
-terminating, or incompatible claims without mutating them. The driver creates
-the claims before their consumers and relies on gateway workload readiness;
-waiting for `Bound` before creating a Pod would deadlock
-`WaitForFirstConsumer` storage classes. Stopping or retiring a revision retains
+Both claims retain Namespace and Agent owners across version and Gateway Pod
+changes. Reconciliation rejects foreign, terminating, or incompatible claims
+without mutation. Claims precede consumers; readiness uses the Gateway workload.
+Waiting for `Bound` before creating Pods would deadlock `WaitForFirstConsumer`
+storage classes. Stopping or retiring an Agent revision retains
 both claims, including when the gateway has already stopped. Agent deletion
-retires every revision before its final cleanup hook deletes the owned claims
+retires every Agent revision before its final cleanup hook deletes the owned claims
 using their exact Kubernetes UIDs. A cleanup failure keeps deletion pending
-for retry; it does not remove the Agent's database identity.
+for retry and preserves the Agent's database identity.
 
 ## Managed native configuration
 
-Ordinary runtime gateways read the managed ConfigMap at
-`/etc/openclaw/openclaw.json`. Native admin editing uses a writable copy only
-when runtime gateway images and private `gatewayRouting` are configured and
-the saved native Configuration explicitly enables the pilot shape:
-
-- Trusted-proxy authentication accepts `x-occ-identity: occ-workspace-files`
-  with `operator.admin` identity scopes.
-- Trusted-proxy device auto-approval is enabled with `operator.admin` scope.
-- `controlUi.enabled` is true and `controlUi.allowedOrigins` is nonempty.
-- Dangerous device-auth disabling and host-header origin fallback are disabled.
-
-For those gateways, the managed ConfigMap remains read-only at
-`/etc/openclaw-managed/openclaw.json`. The nonroot init container copies it to
-`/home/node/.openclaw/openclaw.json` on the Pod-local `emptyDir`, and
-`OPENCLAW_CONFIG_PATH` points to that writable copy. Gateways without the full
-opt-in shape, including ordinary routed gateways, keep the read-only path.
-
-Native edits change only the copy; Pod replacement or Agent redeployment
-restores the managed snapshot, while the persistent gateway and workspace claims
-retain their data. Pod-local provenance records revision, snapshot hash and
-generated bridges; only matches with the managed baseline are rebuilt.
-Peer recovery and same-Pod restarts retain unrelated edits; conflicting bridge
-edits remain refused. Pod replacement clears copy/provenance.
-Edits stay outside OCE Configuration and AgentRevisions; see
-the [native admin feature boundary](../../agent-native-admin.md#native-authority-and-drift)
-and [deployment procedure](../../../guides/deploy/native-admin.md).
+How runtime gateways read the managed native configuration, and when native
+admin editing uses a writable copy, is in
+[Managed native configuration](managed-native-configuration.md).
 
 ## Runtime credentials
 
@@ -228,8 +246,8 @@ There is no Gateway Secret mirror.
 New credentials use `transport-<agent-hash>` (configured prefix) with only
 `app-server-token`, and `gateway-password-<agent-hash>` with only
 `gateway-password`, in either execution mode. The hash is 12 hexadecimal
-characters. Startup refuses a prefix when `<prefix>-<hash>` is not a DNS-safe
-Kubernetes resource name, the same check credential provisioning already applies.
+characters. Startup and credential provisioning both reject prefixes unless
+`<prefix>-<hash>` is a DNS-safe Kubernetes resource name.
 Mode changes preserve these sources.
 Legacy combined transport Secrets remain readable. Before rendering new workloads,
 Compute copies their password into an owned separate source; the legacy Secret
@@ -237,19 +255,19 @@ survives for older Gateway Pods. Conflicting password sources fail closed.
 `harness-secrets-<agent-hash>-<revision-hash>` contains only selected model fields
 and the app-server token. Gateway passwords and channel tokens never enter the
 Harness projection. Managed account sources retain account ownership; runtime
-copies have exact Namespace, Agent, service-principal and revision ownership.
+copies record their Namespace, Agent, service-principal and Agent revision IDs.
 
 Preparation checks admitted source identities before writing runtime material
 and, when repeated, repairs absent or changed projections. Activation validates
-Gateway sources and selects the prepared revision; it does not issue credentials.
+Gateway sources and selects the prepared version; it does not issue credentials.
 Stop and retirement wait for the workload to stop, then delete its projection
-and revision ConfigMaps by UID. Canonical sources survive retirement; Agent deletion removes transport/password.
+and ConfigMaps for that Agent revision by UID. Canonical sources survive retirement; Agent deletion removes transport/password.
 Account and OCC Secret lifecycles remain independent.
 
-Source updates do not restart running processes. The supported model-key update
-sequence is: update the OCC Secret, redeploy each consuming Agent through OCE,
-wait for the new revision to become active, and verify a model request with the
-new credential. Preparation delivers current source values to the new revision's
+Source updates do not restart processes. To update model keys, update
+the OCC Secret, redeploy each consuming Agent through OCE,
+wait for the new version to be ready and selected, and verify a model request with the
+new credential. Preparation delivers current source values to the new Agent revision's
 runtime Secret. Merely recreating a Harness Pod or restarting its Deployment
 reads the existing projection and does not refresh it from the canonical source. See
 [update and redeploy](../kubernetes-secret.md#update-and-redeploy).
@@ -271,11 +289,13 @@ Backend-managed credentials and Configuration Secret bindings retain
 their separate provisioning paths.
 
 The controller API service account needs `list` permission for Deployments in
-each runtime target so it can reject an existing runtime before
+each runtime target to reject existing runtimes before
 creating initial Secrets.
 
 The Driver projects `gateway-password` as `OPENCLAW_GATEWAY_PASSWORD` only when
 `gateway.auth.password` explicitly uses an environment SecretRef with that ID.
+Deployment refuses a reference OpenClaw cannot read from the environment, as for
+[plugin secret inputs](../../harness-execution.md#native-runtime-selection).
 This supports native local-direct password access alongside
 [trusted-proxy authentication](networking-and-isolation.md#gateway-authentication),
 the only Kubernetes gateway mode; the API never returns the password. Plaintext password Configuration
@@ -284,8 +304,8 @@ is rejected.
 The Agent's required [harnessAuth binding](../../agents.md#harness-authentication)
 selects the model credential. API keys use the selected OCC Secret Driver's
 exact reference; account tokens use an account-owned CP source. Compute selects
-the explicit login mode during workload rendering. Only the combined embedded gateway/Harness or dedicated
-Codex consumer receives the model credential; a dedicated gateway never receives model auth. A
+the explicit login mode during workload rendering. The combined embedded workload
+or dedicated Harness receives the selected model credential; a dedicated Gateway does not. A
 [credential source](../../credential-sources.md) binding is the exception: Compute
 renders no model Secret and hands the Credential Gateway's attachments to the
 OpenShell Sandbox instead.
@@ -297,7 +317,7 @@ Pods by selector. Store the Agent's channel credentials as Namespace Secrets
 referenced by Configuration `secretBindings`; they are available only to the
 dedicated gateway, never to its Codex Harness.
 
-Repository-bearing revisions support embedded OpenClaw or dedicated Codex,
+Agent revisions with repository bindings support embedded OpenClaw or dedicated Codex,
 without a Sandbox Driver. Compute delivers each immutable repository-material
 generation only to the container that executes commands:
 
@@ -307,22 +327,22 @@ generation only to the container that executes commands:
 | Model credential         | Yes                      | No                | Yes             |
 | Slack channel tokens     | Unsupported              | Yes               | No              |
 
-Readiness must match that consumer's exact revision and material generation.
-Same-revision rotation replaces the consuming workload; a Ready Pod carrying
+Readiness must match that consumer's Agent revision ID and credential material generation.
+Credential rotation for the same Agent revision ID replaces the consuming workload; a Ready Pod carrying
 older material is insufficient. Cleanup retains Secrets while owned Deployments
 or Pods still reference them. The
 [repository credential flow](../../../flows/agent-repository-credentials.md#4-deliver-and-retain-one-complete-runtime-generation)
 covers generation rechecks, missing-material repair, and how dedicated
 replacement preserves node enrollment.
 
-Use an approved secret manager, protected files, or standard input when
-creating Secrets. Never expose credentials in command-line arguments or logs.
+Create Secrets with an approved secret manager, protected files, or standard
+input. Never expose credentials in command-line arguments or logs.
 Missing or incorrectly scoped credentials fail deployment.
 
 Use the optional `runtime.codexSeccompProfile` only for a reviewed Codex
 compatibility allowlist in source-backed cases; it does not relax filesystem or
 network policy. [Pod and container hardening](../../security.md#pod-and-container-hardening)
-states when Codex `0.163.0-alpha.2` needs it and which components own those boundaries.
+states when Codex `0.164.0` needs it and which components own those boundaries.
 
 See [service-account credential delivery](../../service-accounts.md#backend-managed-access-tokens)
 for provider-issued credentials and supported execution modes.

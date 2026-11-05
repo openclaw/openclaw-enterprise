@@ -30,9 +30,12 @@ production database, cluster, or credential for tests without explicit approval.
 
 ## Set up a development checkout
 
-Use Node.js 24 or newer, the exact pnpm version in [`package.json`](package.json),
-and the Go version selected by [`go.mod`](go.mod). In a trusted checkout,
-explicitly prepare dependencies with:
+Use Node.js 24.22.1 or newer (26.x requires 26.12.1 or newer), the exact pnpm version in [`package.json`](package.json),
+and the Go version selected by [`go.mod`](go.mod).
+For `pnpm format:fix` and `pnpm format:check`, use the Bun version in
+[`.bun-version`](.bun-version). Both commands scan the selected files without a
+formatter cache.
+In a trusted checkout, explicitly prepare dependencies with:
 
 ```sh
 pnpm install --frozen-lockfile
@@ -44,10 +47,8 @@ unmanaged hook and does not override `core.hooksPath`. Preserve existing hook
 configuration; run the checks directly when a custom hook path bypasses the
 managed hook.
 
-Dependency installation is setup, not an implicit verification step. Do not
-reconcile dependencies in a shared checkout or worktree while another job uses
-them. If the installed graph does not match the manifests, report the gap or
-use dependency-independent checks rather than installing as an agent side effect.
+Do not reconcile dependencies in a shared checkout or worktree while another
+job uses them.
 
 For a running local platform, follow [Local Setup](docs/guides/quickstart.md).
 It uses Kubernetes; see the [contributor profile](docs/guides/deploy/local-kubernetes-development.md)
@@ -138,7 +139,8 @@ branch. An explicit `--head` keeps `gh pr create` from choosing where to push th
 - Request relevant maintainers' feedback. Resolve substantive findings and
   required checks before merging.
 - Before merging Console UI changes, upload screenshots and a short video of
-  the final UI as native GitHub attachments in the PR's Verification section.
+  the final UI to GitHub (native attachments or a gist) and show them in the
+  PR's Verification section.
   Missing or stale media blocks merging even when CI passes. Follow the
   [Console evidence requirements](AGENTS.md#console-storybook) for capture,
   review, and reporting.
@@ -169,7 +171,7 @@ the applicable checks and review, set `PR_NUMBER` and `HEAD_SHA` to the observed
 PR number and final head, then merge from this checkout:
 
 ```sh
-gh pr merge "$PR_NUMBER" --merge --match-head-commit "$HEAD_SHA"
+gh pr merge "$PR_NUMBER" --squash --match-head-commit "$HEAD_SHA"
 ```
 
 If the review rule prevents an authorized core team author from merging their
@@ -190,7 +192,7 @@ help in the PR description. Credit follows the work; running the merge does not
 make someone its author. Recognition does not grant repository permissions.
 
 Before a release, or when correcting an omission, refresh the README wall from
-the repository root with Node.js 24 or newer and an authenticated GitHub CLI:
+the repository root with Node.js 24.22.1 or newer (26.x requires 26.12.1 or newer) and an authenticated GitHub CLI:
 
 ```sh
 pnpm contributors:update
