@@ -160,7 +160,6 @@ async function repositoryGitJourney(
   const runtime = new OpenShellGitRuntime(
     {
       registrationName: "oce-prepared-git",
-      protectedExecution: true,
       authority: {
         host: "127.0.0.1",
         port,
@@ -901,13 +900,36 @@ async function repositoryGitJourney(
       repositorySet.slice(0, 2).map(({ repositoryId }) => Number(repositoryId)),
     );
     assert.deepEqual(peer.gh.issuesOfTokens[0].permissions, repositorySetPermissions);
-    wrongIdentity = true;
+    const heldSyntheticValue = state.installed!;
+    const liveOriginBefore = peer.originCalls();
     assert.equal(
-      (await evaluate(probe)).decision,
-      2,
-      "a different supervisor cannot use the token",
+      (
+        (await peer.exchange(() => evaluate(probe), heldSyntheticValue, false)) as {
+          status: number;
+        }
+      ).status,
+      200,
+      "the admitted signed request delivers an ordinary Git advertisement",
     );
-    wrongIdentity = false;
+    const liveOriginDelta = peer.originCalls() - liveOriginBefore;
+    assert.ok(liveOriginDelta > 0, "the verified HTTPS Git origin received the request");
+    const foreignOriginBefore = peer.originCalls();
+    wrongIdentity = true;
+    try {
+      await peer.exchange(
+        async () => {
+          const refused = await evaluate(probe);
+          assert.equal(refused.decision, 2, "a fresh matching foreign Sandbox is refused");
+          return refused;
+        },
+        heldSyntheticValue,
+        false,
+      );
+    } finally {
+      wrongIdentity = false;
+    }
+    const foreignOriginDelta = peer.originCalls() - foreignOriginBefore;
+    assert.equal(foreignOriginDelta, 0, "foreign authority never reaches the Git origin");
     for (const [query, decision] of [
       ['query { repository(owner: "fixture", name: "repository") { name } }', 1],
       ['mutation { addStar(input: {starrableId: "repository"}) { starrable { id } } }', 1],
@@ -1094,20 +1116,121 @@ async function repositoryGitJourney(
     assert.equal(peer.gh.issuesOfTokens.length, 1, "all pushes retain one selected-set credential");
     t.diagnostic("Verified order: " + order.join(" -> "));
     await peer.noBroker();
+    const readRetainedRoute = async () => {
+      const { rows } = await f.observerPool.query(
+        "SELECT revision_id, binding_id, fence, blocked FROM occ.credential_deliveries WHERE revision_id=$1",
+        [revision.id],
+      );
+      assert.equal(rows.length, 1, "the exact old revision retains one committed route");
+      return rows[0];
+    };
+    const originalRoute = await readRetainedRoute();
     await f.controller.updateAgent(f.actor.id, {
       namespaceId: f.namespace.id,
       agentId: agent.id,
       configurationId: configuration.id,
       repositoryBindings: [{ repositoryRef: "A" }],
     });
-    const originBeforeWithdrawal = peer.originCalls() + peer.gh.trace.length;
-    const withdrawn = await evaluate(probe);
-    assert.equal(
-      peer.originCalls() + peer.gh.trace.length,
-      originBeforeWithdrawal,
-      "member removal denies before provider traffic",
+    const liveWithdrawalBefore = peer.originCalls() + peer.gh.trace.length;
+    const liveWithdrawal = await evaluate(probe);
+    assert.equal(liveWithdrawal.decision, 2, "withdrawal closes the running listener");
+    const liveWithdrawalDelta = peer.originCalls() + peer.gh.trace.length - liveWithdrawalBefore;
+    assert.equal(liveWithdrawalDelta, 0, "live withdrawal denies before provider traffic");
+    await f.stop();
+    await bound.close();
+    const routeBeforeReplacement = await readRetainedRoute();
+    assert.equal(routeBeforeReplacement.binding_id, originalRoute.binding_id);
+    const writesBeforeReplacement = wire.world.writes;
+    const replacement = new OpenShellGitRuntime(runtime.configuration, (r) =>
+      createGitHubRepositoryDeliveryResolver(peer.registry)(r),
     );
-    assert.equal(withdrawn.decision, 2, "withdrawal closes the same native route");
+    replacement["routes"] = new PostgresOpenShellGitRouteStore(f.observerPool);
+    const replacementBound = await replacement.bindRepositoryGit(peer.prepared.protectedGit!);
+    t.after(() => replacementBound.close());
+    await replacement["running"];
+    const replacementMiddleware = openShellMiddlewareClient(t, port, tls.caBundle);
+    // Production prepare/adopt owns the close-preview fence; do not manufacture a route.
+    await assert.rejects(
+      replacement.prepare(
+        revision,
+        client,
+        workspace,
+        state.sandbox,
+        t.signal,
+        "/sandbox/enterprise",
+        ["openai"],
+      ),
+      { name: "OpenShellGitRouteBlockedError" },
+    );
+    const retainedRoute = await readRetainedRoute();
+    const originalBindingRetained = retainedRoute.binding_id === originalRoute.binding_id;
+    assert.equal(originalBindingRetained, true, "replacement preserves the recorded binding");
+    if (routeBeforeReplacement.blocked == null) {
+      assert.ok(
+        BigInt(retainedRoute.fence) > BigInt(routeBeforeReplacement.fence),
+        "production adoption fences a route not already closed",
+      );
+    } else {
+      assert.equal(retainedRoute.fence, routeBeforeReplacement.fence);
+      assert.equal(retainedRoute.blocked, routeBeforeReplacement.blocked);
+    }
+    const replacementState = replacement["states"].get(revision.id);
+    const terminalReason = replacementState?.blocked ?? replacementState?.entry?.blocked;
+    assert.ok(
+      typeof terminalReason === "string" && terminalReason.length > 0,
+      "replacement preparation must record its actual terminal reason",
+    );
+    // Independent provider control, not an authority decision or an installed stock sender.
+    // The original producer may already have legitimately retired this synthetic bearer.
+    const heldControl = await peer.send(heldSyntheticValue, false);
+    const heldControlValid = heldControl.status === 200;
+    assert.ok(
+      heldControlValid || heldControl.status === 401 || heldControl.status === 403,
+      "the independent control must either succeed or report credential refusal",
+    );
+    const originBeforeWithdrawal = peer.originCalls();
+    const providerBeforeWithdrawal = peer.gh.trace.length;
+    await peer.exchange(
+      async () => {
+        const withdrawn = await invoke(
+          replacementMiddleware,
+          "EvaluateHttpRequest",
+          {
+            phase: 1,
+            middleware_name: "oce-prepared-git",
+            context: { sandbox_id: wire.world.id, request_id: randomUUID(), workspace },
+            config: { fields: { binding_id: { stringValue: retainedRoute.binding_id } } },
+            ...probe,
+          },
+          token(keys, "supervisor", wire.world.id, "repository-set"),
+        );
+        assert.equal(
+          withdrawn.decision,
+          2,
+          "the replacement listener refuses the retained binding",
+        );
+        return withdrawn;
+      },
+      heldSyntheticValue,
+      false,
+    );
+    const withdrawnOriginDelta = peer.originCalls() - originBeforeWithdrawal;
+    assert.equal(withdrawnOriginDelta, 0, "withdrawal denies before Git origin delivery");
+    assert.equal(
+      peer.gh.trace.length,
+      providerBeforeWithdrawal,
+      "withdrawn request sends no provider call",
+    );
+    assert.equal(wire.world.writes, writesBeforeReplacement, "replacement writes no credentials");
+    assert.equal((await readRetainedRoute()).binding_id, originalRoute.binding_id);
+    t.diagnostic(
+      `Authority counts: live=${liveOriginDelta}, foreign=${foreignOriginDelta}, liveWithdrawal=${liveWithdrawalDelta}, restartedWithdrawal=${withdrawnOriginDelta}, newWrites=${wire.world.writes - writesBeforeReplacement}, originalBinding=${Number(originalBindingRetained)}, independentHeldValid=${Number(heldControlValid)}`,
+    );
+    if (!heldControlValid) {
+      t.diagnostic(
+        "Limit: independent held synthetic credential was already refused by the origin",
+      );
+    }
   } catch (error) {
     if (standing) {
       t.diagnostic(
