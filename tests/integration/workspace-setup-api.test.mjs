@@ -1,7 +1,10 @@
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
+import { randomUUID } from "node:crypto";
 
+import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
+import { grantRole } from "../helpers/iam-grants.mjs";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
@@ -478,6 +481,74 @@ test("Agent admission refuses projected identity only for OpenShell-owned Harnes
       }
     }
   }
+});
+
+test("Credential-source deployment refuses OpenShell projected identity before creating a revision", async (t) => {
+  const sandbox = openShellSandbox(t);
+  const gateway = new OpenShellCredentialGatewayDriver(
+    { binaries: ["/app/bin/codex"] },
+    { id: "workspace-openshell-credentials", backend: sandbox.backend },
+  );
+  const f = await setup(t, sandbox);
+  const compute = createTestKubernetesComputeDriver("source-identity-admission", {
+    sandboxDriver: sandbox.sandboxDriver,
+    credentialGatewayDriver: gateway,
+    servicePrincipalCredentials: {
+      mode: "projectedServiceAccountToken",
+      audience: "occ",
+      expirationSeconds: 600,
+    },
+  });
+  for (const driver of [gateway, compute]) {
+    f.controller.registerDriver(driver);
+    f.controller.selectDriver(driver.capability, driver.id);
+  }
+  const secret = await f.createSecret(f.namespace.id, "model-token", "synthetic-model-token");
+  const sourceId = `cs_${randomUUID()}`;
+  // A previously registered source is ready; admission uses its real Driver catalog, not
+  // provider provisioning or live model credentials.
+  await f.state.transact((unit) =>
+    unit.credentialSources.createCredentialSource({
+      id: sourceId,
+      namespaceId: f.namespace.id,
+      name: "Codex account",
+      type: "codex-pat",
+      config: {},
+      secrets: { access_token: secret.ref },
+      ownerCapability: "credential_gateway",
+      driverId: gateway.id,
+      state: "ready",
+      createdAt: new Date().toISOString(),
+    }),
+  );
+  const configuration = await f.createConfiguration(
+    f.namespace.id,
+    createHarnessConfiguration("codex", "gpt-5.1"),
+  );
+  const saved = await f.create("Credential-source Agent", {
+    configurationId: configuration.id,
+    executionMode: "dedicated",
+    harnessAuth: { method: "credential_source", sourceId },
+    credentialSources: [{ sourceId }],
+  });
+  // Source-backed bindings intentionally defer authentication validation from save to deploy.
+  assert.equal(saved.status, 201, JSON.stringify(saved.body));
+  const agent = saved.data;
+  f.policy.identities.push({
+    kind: "service_principal",
+    id: agent.servicePrincipalId,
+    namespaceId: f.namespace.id,
+  });
+  grantRole(f.policy, agent.servicePrincipalId, {
+    id: `source-${agent.id}`,
+    namespaceId: f.namespace.id,
+    permissions: { credential_source: ["operate"] },
+    resource: { kind: "credential_source", id: sourceId },
+  });
+  const deployed = await f.request("POST", `${f.path}/${agent.id}/deploy`);
+  assertApiError(deployed, 400, "INVALID_REQUEST");
+  assert.match(deployed.body.error.message, /servicePrincipalCredentials\.mode to disabled/);
+  assert.deepEqual((await f.request("GET", `${f.path}/${agent.id}/revisions`)).data, []);
 });
 
 // Native OpenClaw's workspace preparation needs userNamespaces: false and at most one operator
