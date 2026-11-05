@@ -688,6 +688,7 @@ async function repositoryGitJourney(
       const otherPolicy = new GitHubRepositoryPolicy(
         { driverId: driver.id, backendId: peer.registry.backendId },
         peer.registry,
+        { sessionDurationSeconds: 120 },
       );
       const otherResolve = t.mock.method(otherPolicy, "resolveBindings");
       await assert.rejects(
