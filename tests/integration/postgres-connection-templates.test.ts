@@ -6,6 +6,7 @@ import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 import { selectTemplateDrivers } from "../helpers/connection-template-drivers.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
+import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
 import { signedInHeaders } from "../helpers/production-sign-in.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
@@ -93,7 +94,7 @@ test(
   "an administrator registers OAuth clients against a pinned template and its availability",
   requiresPostgres,
   async (t) => {
-    const { app, controller, inject } = await createPostgresAgentApp(t, options);
+    const { app, controller, inject, pool, state } = await createPostgresAgentApp(t, options);
     const { providers, createdProviders } = selectTemplateDrivers(controller);
     // A resource hidden in a configured URL must not bypass the version's effective audience.
     const override = await inject("POST", "/connection-templates", {
@@ -127,8 +128,15 @@ test(
       email: `reader-${randomUUID()}@example.test`,
       password: randomUUID(),
     };
-    const added = await inject("POST", "/api/auth/accounts", member);
-    assert.equal(added.statusCode, 201, added.body);
+    const auth = await createPostgresControllerAuth({
+      mode: "development",
+      installationId: controller.installation.id,
+      baseURL: "http://127.0.0.1",
+      secret: options.authSecret,
+      pool,
+    });
+    const reader = await auth.createAccount({ ...member, name: "Template reader" });
+    await state.appendNativeIAMPrincipal(auth.principalSeed(reader, { grant: "none" }));
     const session = await signedInHeaders(app, "http://127.0.0.1", member);
     const denied = await app.inject({
       method: "POST",

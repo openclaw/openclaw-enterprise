@@ -4723,6 +4723,14 @@ export class OpenClawController {
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
   ) {
     const template = await this.getConnectionTemplate(principalId, input.connectionTemplateId);
+    const assertSelectedVersion = (version: number | undefined) => {
+      if (version !== input.connectionTemplateVersion) {
+        throw new ResourceStateConflictError(
+          "The template changed. Choose its current version and register again.",
+        );
+      }
+    };
+    assertSelectedVersion(template.current.version);
     const { clientSecret, tokenEndpointAuthMethod } = input;
     if (
       tokenEndpointAuthMethod === "none"
@@ -4760,14 +4768,7 @@ export class OpenClawController {
       await holdSession?.(state);
       await this.lockTemplateScope(state, template.namespaceId);
       const current = await state.connectionTemplates.lockConnectionTemplate(template.id);
-      if (
-        current?.current.version !== input.connectionTemplateVersion ||
-        template.current.version !== input.connectionTemplateVersion
-      ) {
-        throw new ResourceStateConflictError(
-          "The template changed. Choose its current version and register again.",
-        );
-      }
+      assertSelectedVersion(current?.current.version);
     };
     const publish = async (state: PlatformUnitOfWork) => {
       const selected = !template.current.oauthClientId;
