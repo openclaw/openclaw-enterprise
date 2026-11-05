@@ -58,3 +58,16 @@ at 390.
 17. Open **Pages / Create Agent / A newer deployment took over** and click
     **Create Agent**. The form explains why the first deployment ended. Check
     that its feedback uses the informational stripe and offers no retry or link.
+
+## Check Console startup recovery
+
+At 1440 and 390, open `/console/index.html` on the built Storybook server
+directly. Block `/console/view-lifetime.mjs` for that navigation. Check that
+the startup status explains the failure and **Reload page** is beside it.
+Unblock the request and activate **Reload page**. The entry module should
+load on the same URL and the recovery action should disappear. This static
+server does not exercise Controller sessions.
+
+Open **Pages / Sign in / Signed out** at both widths. It should still show
+the sign-in form. This story imports the Console entry inside the fixture
+frame, so it exercises sign-in rather than the startup recovery shell.

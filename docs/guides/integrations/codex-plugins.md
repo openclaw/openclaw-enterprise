@@ -1,5 +1,7 @@
 ---
 tags: [human_verified]
+# Backfilled from the verification tag recorded in e22f558c0.
+last_verified: "2026-11-02"
 ---
 
 # Add Codex plugins to an OpenShell Agent
@@ -32,7 +34,7 @@ request GET "$base/credential-sources/${modelSource:?}" |
   jq -e --arg ns "$namespace" '.data|select(.type=="codex-pat" and .state=="ready" and .ownerCapability=="credential_gateway")|.secrets.access_token|select(.kind=="secret" and .namespaceId==$ns)' > "$RUN_DIR/catalog-secret-ref"
 cursor=""
 while true; do
-  jq --arg cursor "$cursor" '{secretRef:.,q:"linear"} +
+  jq --arg cursor "$cursor" '{harnessId:"codex",secretRef:.,q:"linear"} +
     (if $cursor=="" then {} else {cursor:$cursor} end)' "$RUN_DIR/catalog-secret-ref" |
     request POST "$base/agents/plugins" --data-binary @- > "$RUN_DIR/plugins"
   plugin=$(jq -r 'first(.data.plugins[]|select((.name|ascii_downcase)=="linear" and .available!=false)|.id) // empty' "$RUN_DIR/plugins")

@@ -170,6 +170,12 @@ export async function exerciseNativeRepositorySet(
     await git(["config", "user.email", "acceptance@example.test"], path);
   }
   await options.afterRead?.();
+  // A normal, test-owned receiver hook; other refs must remain writable below.
+  await writeFile(
+    join(origins[0]!.bare, "hooks", "update"),
+    '#!/bin/sh\nif [ "$1" = "refs/heads/main" ]; then\n  echo "TEST_ONLY_CONTROLLED_RECEIVER_MAIN_REFUSAL" >&2\n  exit 1\nfi\nexit 0\n',
+    { mode: 0o755, flag: "wx" },
+  );
   // Interleave pushes: opening B must not replace A's binding on the same Agent.
   for (const step of [1, 2]) {
     for (const index of [0, 1]) {
@@ -227,6 +233,39 @@ export async function exerciseNativeRepositorySet(
     commits[0]![1],
     "another permitted ref in A remains writable",
   );
+  const mainBefore = await origins[0]!.ref("refs/heads/main");
+  assert.match(mainBefore, /^[0-9a-f]{40}$/u, "A main has an independent preimage");
+  assert.notEqual(mainBefore, commits[0]![1], "main refusal must attempt a real ref change");
+  const aBefore = await readRefs(0);
+  const callbackStart = callbacks.length;
+  const originStart = origins[0]!.trace.length;
+  const receiverDenied = await git(
+    ["push", "origin", "HEAD:refs/heads/main"],
+    join(root, "0"),
+    true,
+  );
+  const receivePath = `/${options.repositories[0]}.git/git-receive-pack`;
+  const receiveCallbacks = callbacks
+    .slice(callbackStart)
+    .filter((entry) => entry.path === receivePath && entry.method === "POST");
+  assert.equal(receiveCallbacks.length, 1, "main attempt has exactly one signed A POST");
+  assert.equal(receiveCallbacks[0]!.decision, 1, "signed authority allows A's main POST");
+  assert.equal(
+    origins[0]!.trace
+      .slice(originStart)
+      .filter((entry) => entry.path === receivePath && entry.method === "POST").length,
+    1,
+    "main attempt reaches A as one authenticated receive-pack POST",
+  );
+  assert.equal(
+    await origins[0]!.ref("refs/heads/main"),
+    mainBefore,
+    "controlled receiver leaves main unchanged",
+  );
+  assert.equal(typeof receiverDenied.code, "number", "Git exits with an actual status");
+  assert.notEqual(receiverDenied.code, 0, "controlled receiver refuses the main update");
+  assert.match(receiverDenied.stderr, /TEST_ONLY_CONTROLLED_RECEIVER_MAIN_REFUSAL/u);
+  assert.equal(await readRefs(0), aBefore, "receiver refusal leaves every A ref unchanged");
   // Independently check the provider boundary with the exact credential used for A/B.
   // This bypasses the middleware only as a negative control; it must not grant C access.
   const selectedMaterial = options.installed(options.repositories[0]);
@@ -264,6 +303,6 @@ export async function exerciseNativeRepositorySet(
   assert.equal(await origins[2]!.ref(branch), commits[0]![1]);
   assert.deepEqual(failures, []);
   t.diagnostic(
-    `Native A/B pushes: ${JSON.stringify(commits)}; C denied unchanged; independent C control passed.`,
+    `Native A/B pushes: ${JSON.stringify(commits)}; controlled A receiver refused main unchanged after allowed POST; C denied unchanged; independent C control passed.`,
   );
 }

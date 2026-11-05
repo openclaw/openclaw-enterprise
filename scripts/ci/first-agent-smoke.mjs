@@ -1037,7 +1037,11 @@ export async function startLocalSetup(environment, { privateInstall = false } = 
     try {
       await run(occ, ["dev", "up"], { env: environment, timeout: 25 * minute, label: "dev-up" });
     } catch (error) {
-      await stopWatching({ finalCapture: true });
+      try {
+        await stopWatching({ finalCapture: true });
+      } catch {
+        // Watcher diagnostics are supplemental to the installation failure.
+      }
       await printWatchLog();
       throw error;
     }

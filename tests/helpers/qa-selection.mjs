@@ -9,7 +9,7 @@ const scenarioPresets = {
   "codex-search-config": ["Codex"],
   "console-secrets": ["OpenClaw", "Codex"],
   calendar: ["Codex"],
-  "git-write": ["OpenClaw", "Codex"],
+  "git-write": ["Codex"],
   "git-push-denied": ["Codex"],
   slack: ["Codex"],
 };
@@ -73,6 +73,21 @@ export function selectQaMatrix(env = process.env) {
       ),
     })),
   );
+  const exclusions = [];
+  if (env.OCC_TEST_QA_CUSTOM_PERMISSION_PROFILES === "0") {
+    // These scenarios start native Codex threads with a generated permission profile.
+    // Console Secret operations on the same preset do not start a model turn.
+    const needsProfile = new Set(["model-ui", "calendar", "git-write", "git-push-denied", "slack"]);
+    for (const cell of cells.filter((cell) => cell.preset === "Codex")) {
+      const excluded = cell.scenarios.filter((scenario) => needsProfile.has(scenario));
+      if (excluded.length > 0) {
+        exclusions.push(
+          `${cell.cell}: ${excluded.join(", ")} require a custom Codex permission profile that the CI account cannot select`,
+        );
+        cell.scenarios = cell.scenarios.filter((scenario) => !needsProfile.has(scenario));
+      }
+    }
+  }
   const activePresets = presets.filter((name) =>
     cells.some((cell) => cell.preset === name && cell.scenarios.length > 0),
   );
@@ -96,6 +111,14 @@ export function selectQaMatrix(env = process.env) {
   const sandboxPolicy = scenarios.includes("sandbox-policy");
   const pluginInstall = scenarios.includes("plugin-install");
   const linearRead = scenarios.includes("openshell-linear-read");
+  assert.ok(
+    exclusions.length === 0 ||
+      activeScenarios.length > 0 ||
+      sandboxPolicy ||
+      pluginInstall ||
+      linearRead,
+    "All selected QA scenarios require a custom Codex permission profile",
+  );
   if (linearRead) {
     assert.notEqual(installation, "compose", "OpenShell Linear reads require Kubernetes setup");
     if (!requiredEnv.includes("OCC_TEST_QA_CODEX_TOKEN_FILE")) {
@@ -144,6 +167,7 @@ export function selectQaMatrix(env = process.env) {
   }
   return {
     installations,
+    exclusions,
     sandboxPolicy,
     pluginInstall,
     linearRead,
@@ -154,7 +178,10 @@ export function selectQaMatrix(env = process.env) {
     repository,
     browser: activeScenarios.some((name) => ["model-ui", "console-secrets"].includes(name)),
     scope:
-      installation === "all" && preset === "all" && scenarios.length === defaultScenarios.length
+      exclusions.length === 0 &&
+      installation === "all" &&
+      preset === "all" &&
+      scenarios.length === defaultScenarios.length
         ? "full"
         : "partial:selected",
   };

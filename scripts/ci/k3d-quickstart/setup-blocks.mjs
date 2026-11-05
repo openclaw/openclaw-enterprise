@@ -21,7 +21,6 @@ const agent = "docs/guides/deploy/deploy-first-agent.md";
 const before = [
   step(local, './bin/occ dev up --sandbox-network-policy-file "$RUN_DIR/artifacts.yaml"'),
   step(local, 'node "$RUN_DIR/configure-installation.mjs"'),
-  step(local, 'secret="oce-openshell-codex-$(date +%s)"'),
   step(local, "PLATFORM=local-k3d"),
   step(agent, "source_type=codex-pat"),
   // The guide uses an example path. The workflow stages the service-account token here.

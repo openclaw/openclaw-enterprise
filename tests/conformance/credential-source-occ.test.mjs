@@ -2843,8 +2843,8 @@ test("an Agent's credentialSources list is validated, and binding or unbinding n
   };
 
   // The controller enforces the list grammar itself, whatever the store would accept.
-  const nine = Array.from({ length: 9 }, (_, i) => ({ sourceId: `${kept.id}-${i}` }));
-  await assert.rejects(update(nine), invalid);
+  const tooMany = Array.from({ length: 65 }, () => ({ sourceId: `cs_${crypto.randomUUID()}` }));
+  await assert.rejects(update(tooMany), invalid);
   await assert.rejects(update([{ sourceId: kept.id, type: "registry" }]), invalid);
   await assert.rejects(update([{ sourceId: 7 }]), invalid);
   await assert.rejects(update([{ sourceId: "" }]), invalid);

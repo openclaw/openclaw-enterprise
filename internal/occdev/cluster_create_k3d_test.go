@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -64,6 +65,10 @@ func TestK3dCreateRetriesOnceAfterAPodmanLogHandleRollback(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "retrying cluster creation once") {
 		t.Fatalf("retry was not reported: %s", out.String())
+	}
+	records := regexp.MustCompile(`(?m)^\[occ-dev-timing\] stage=cluster-create elapsed_ms=[0-9]+ failed=(true|false)$`).FindAllStringSubmatch(out.String(), -1)
+	if len(records) != 2 || records[0][1] != "true" || records[1][1] != "false" {
+		t.Fatalf("each real attempt needs its own timing and outcome: %s", out.String())
 	}
 }
 
@@ -267,13 +272,17 @@ func TestK3dCreateFailureNamesAFailedChannelLookup(t *testing.T) {
 
 // A cancelled create gets k3d's line but no nat hint.
 func TestK3dCreateCancelledSkipsTheNATHint(t *testing.T) {
-	fakeK3dCreate(t, "exit 1")
+	calls := fakeK3dCreate(t, "exit 1")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	r := &runner{opts: Options{Out: io.Discard, Err: io.Discard}, env: map[string]string{}, legacyNATUnconfirmed: true}
+	var out bytes.Buffer
+	r := &runner{opts: Options{Out: &out, Err: io.Discard}, env: map[string]string{}, legacyNATUnconfirmed: true}
 	err := r.createK3dCluster(ctx, "cluster", "create", "occ-dev-test")
 	if err == nil || strings.Contains(err.Error(), "iptable_nat") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if calls() != 0 || strings.Count(out.String(), "[occ-dev-timing] stage=cluster-create") != 1 || !strings.Contains(out.String(), "failed=true") {
+		t.Fatalf("cancellation must record failure without starting or retrying k3d: %s", out.String())
 	}
 }
 

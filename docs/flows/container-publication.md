@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-10-30
-last_updated_session: authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008
+updated: 2026-11-04
+last_updated_session: authoring-run/2811a56d-1652-4ba4-bb5f-a5be2e647c16
 ---
 
 # Container publication flow
@@ -103,6 +103,23 @@ pinned slim bases. `Dockerfile` checks its dependency and runtime stages, and
 `deploy/runtime/Dockerfile` checks both bases and its runtime, for Node 24.22.1+
 within the 24 series. Older explicit overrides fail. Both bases apply available
 Debian updates; image digests do not freeze Debian repositories.
+
+Publication builds use the default package registries. Operators building from
+source can [configure a package registry mirror](../guides/deploy/production-installation.md#build-through-a-package-registry-mirror)
+for both the pinned pnpm download and dependency installation.
+
+`deploy/runtime/Dockerfile:curl-packages` builds the Bookworm curl backport
+from checksum-pinned Debian source and runs its proxy authentication and TLS
+tests without external networking. `deploy/runtime/curl/build.sh` inserts the
+CVE-2026-86414 fix before Debian's backend patches, so both OpenSSL curl and
+Git's GnuTLS library reject origin authentication challenges on CONNECT. The
+final runtime installs all three generated Debian packages together and records
+their source and package checksums under `/usr/share/doc/curl/oce/`. Debian
+package metadata and the changelog retain the base version and the `+oce1`
+backport revision; a vulnerability scanner may still report the upstream CVE.
+The final install compares fresh APT indexes with the recorded Debian base
+version before selecting local packages, so a cached backport cannot silently
+replace a newer Debian security update.
 
 The build runs the caller-authority, Gateway recovery and Linux private-store
 tests offline. The private-store bridge normalizes inherited setgid only for a
@@ -247,6 +264,8 @@ owns package-write access and coordination.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-11-04 22:30: Document the Debian curl CONNECT-authentication backport and package verification. (authoring-run/2811a56d-1652-4ba4-bb5f-a5be2e647c16 - 80b9e2c5238385ff8a8f52e9ab047b76da4c8fb4)
 
 - 2026-10-30 10:12: Document the private-store bridge and its offline owning tests. (authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008 - 319e24a88facddd38a883bdfd5b226652d2a6e26)
 

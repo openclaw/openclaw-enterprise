@@ -3,7 +3,7 @@ import type { CredentialSourceType } from "@openclaw-enterprise/contracts";
 
 export const create = "/console/agents/new?namespace=ns_00000000-0000-4000-8000-000000000001";
 
-export const click = (text: string): StoryAction => ({ click: text });
+export const click = (text: string): { click: string } => ({ click: text });
 
 export const form: StoryAction[] = [click("Start with default Preset")];
 

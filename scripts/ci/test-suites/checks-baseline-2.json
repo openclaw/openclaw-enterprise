@@ -303,7 +303,7 @@
       "expectedTests": [
         "Native preview holds Git setup failures separately from other post-release startup failures",
         "Native worker without Git retains fatal startup errors without a repository label",
-        "Native preview connects after release when both Git and worker setup succeed"
+        "Native preview connects after release with a GitHub-scoped Git shim"
       ]
     },
     {

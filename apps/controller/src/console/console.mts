@@ -124,6 +124,7 @@ interface RetainedView {
 }
 
 const app = document.querySelector<HTMLElement>("#app")!;
+app.querySelector(":scope > .startup-recovery")?.remove();
 const lifetime = createViewLifetime();
 let session: Session | null = null;
 let namespaces: Namespace[] = [];

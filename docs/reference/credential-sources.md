@@ -113,7 +113,7 @@ bound or deployed.
 
 ## Bind a source to an Agent
 
-Set `credentialSources` to a list of up to eight distinct
+Set `credentialSources` to a list of up to 64 distinct
 `{ "sourceId": "cs_…" }` entries. On update, the list replaces the draft's
 bindings. Omit it to keep them or send `[]` to remove them all.
 

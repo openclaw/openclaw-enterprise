@@ -4,6 +4,8 @@ A repository binding gives an Agent HTTPS access to a named repository under
 an approved profile. The OpenClaw Control Plane (OCC) saves the grant with the
 Agent revision. To configure a binding, follow the [operator guide](../guides/repository-credentials.md).
 
+For the OpenShell path, see the [Git setup and request diagrams](../design/credential-proxy-architecture.md#how-does-openshell-authorize-a-git-request).
+
 ## Native Git from the Agent to GitHub
 
 Prepared native Git requires a dedicated Codex Harness (API key or ChatGPT service

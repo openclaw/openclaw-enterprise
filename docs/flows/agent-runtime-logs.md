@@ -1,7 +1,7 @@
 ---
 created: 2026-09-30
-updated: "2026-10-30"
-last_updated_session: fix-3012
+updated: "2026-11-04"
+last_updated_session: authoring-run/dcd46e24-f282-428e-8b71-91a98d9290a6
 ---
 
 # Agent runtime logs flow
@@ -204,6 +204,10 @@ A reread that a newer Agent state overtakes, such as this page's Stop, is droppe
 The view repeats the recovery card's failure line without its code (`deployment-recovery.mts:show`), in place, until a later deployment succeeds.
 For a version the reader cannot read, the view also says in place that a stop was requested or that the version is no longer selected for service (`detail.mts:servingChange`, 3012).
 Follow leaves loaded rows and unchanged statuses alone; its first line replaces an empty-tail status.
+A same-selection refresh checks the fields it needs and prepares every row before replacing the
+loaded output. An unreadable page reports the read error and keeps the current rows and cursor
+so the next valid page can recover. Follow likewise appends no rows and keeps its cursor if a page
+cannot be prepared. A changed selection or loss of log access still clears old output.
 Pod cards show state/exit; Gateway links Harness output or Deployment activity.
 
 CLI flags, follow polling and `Retry-After` handling (`internal/occclient/transport.go:apiError`): see the
@@ -233,6 +237,8 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-04 18:33: Keep loaded Console output when a log page cannot be prepared. (authoring-run/dcd46e24-f282-428e-8b71-91a98d9290a6 - d59eff6dc3b51e87eac86bb47eb4df3fd55846bb)
 
 - 2026-10-31 18:30: Mask values after literal escapes and percent-encoded separators. (3053, 3055)
 - 2026-10-31 17:30: Mask values after spacing controls and quoted keys. (3051, 3052)
