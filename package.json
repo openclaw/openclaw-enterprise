@@ -50,7 +50,7 @@
     "docs:build": "node scripts/docs-site/build.mjs && scripts/docs-site/node_modules/.bin/pagefind --site dist/docs",
     "docs:dev": "node scripts/docs-site/serve.ts --watch",
     "docs:check-length": "node scripts/docs-site/word-count.mjs",
-    "docs:check": "node scripts/docs-site/word-count.mjs && node scripts/docs-site/build.mjs --check && node scripts/check-specs.mjs",
+    "docs:check": "tsc --project scripts/docs-site/tsconfig.json --pretty false && node scripts/docs-site/word-count.mjs && node scripts/docs-site/build.mjs --check && node scripts/check-specs.mjs",
     "docs:install": "pnpm --dir scripts/docs-site install --frozen-lockfile --ignore-scripts",
     "test:files": "node scripts/test-files.mjs",
     "credentials:build": "tsc --build tsconfig.json --pretty false && node scripts/build-repository-credentials.mjs",
