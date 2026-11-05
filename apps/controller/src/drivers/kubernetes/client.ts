@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import type { AgentOptions } from "node:https";
 import type {
@@ -8,12 +9,29 @@ import type {
   RequestContext,
   ResponseContext,
 } from "@kubernetes/client-node";
-import { Agent, type buildConnector, type Dispatcher, fetch, ProxyAgent } from "undici";
+import {
+  Agent,
+  type buildConnector,
+  type Dispatcher,
+  fetch,
+  getGlobalDispatcher,
+  ProxyAgent,
+} from "undici";
 import {
   currentComputeAbortSignal,
   currentComputeOperationLifetime,
 } from "../compute/operation-context.ts";
 import type { KubernetesAuthentication } from "./authentication.ts";
+
+// The SDK awaits authentication and middleware before entering the HTTP transport.
+const requestGuards = new AsyncLocalStorage<() => void>();
+
+export function withKubernetesRequestGuard<T>(
+  guard: (() => void) | undefined,
+  request: () => Promise<T>,
+): Promise<T> {
+  return guard ? requestGuards.run(guard, request) : request();
+}
 
 type KubernetesSdk = typeof import("@kubernetes/client-node");
 
@@ -125,21 +143,42 @@ export async function createKubernetesClientConfiguration(
 export function nonRedirectingHttpLibrary(sdk: KubernetesSdk): HttpLibrary {
   return sdk.wrapHttpLibrary({
     async send(request) {
-      const deadline = currentComputeOperationLifetime()?.deadline;
-      if (deadline !== undefined && Date.now() >= deadline) {
-        throw new DOMException(
-          "The Kubernetes request deadline elapsed before dispatch.",
-          "TimeoutError",
-        );
-      }
-      const dispatcher = request.getDispatcher();
+      const lifetime = currentComputeOperationLifetime();
+      const signal = request.getSignal();
+      const selectionGuard = requestGuards.getStore();
+      const check = () => {
+        lifetime?.signal.throwIfAborted();
+        signal?.throwIfAborted();
+        if (lifetime?.deadline !== undefined && Date.now() >= lifetime.deadline) {
+          throw new DOMException(
+            "The Kubernetes request deadline elapsed before dispatch.",
+            "TimeoutError",
+          );
+        }
+        selectionGuard?.();
+      };
+      check();
+      const dispatcher = request.getDispatcher() ?? getGlobalDispatcher();
+      const guardedDispatcher = dispatcher.compose((dispatch) => (options, handler) => {
+        // Fetch retries HTTP 421 here; HTTP/2 stream retries occur below dispatch.
+        check();
+        return dispatch(options, {
+          ...handler,
+          onRequestStart(controller, context) {
+            // Undici calls this before each HTTP/1.1 write or HTTP/2 stream,
+            // including a refused stream replay and a request leaving its queue.
+            check();
+            handler.onRequestStart?.call(this, controller, context);
+          },
+        });
+      });
       const response = await fetch(request.getUrl(), {
         method: request.getHttpMethod().toString(),
         body: request.getBody() ?? null,
         headers: request.getHeaders(),
-        signal: request.getSignal() ?? null,
+        signal: signal ?? null,
         redirect: "manual",
-        ...(dispatcher === undefined ? {} : { dispatcher }),
+        dispatcher: guardedDispatcher,
       });
       const headers: Record<string, string> = {};
       response.headers.forEach((value, name) => {
@@ -192,11 +231,13 @@ type KubeConfigDispatcherFactory = {
  * material changes (a rotated client certificate or CA), it builds a new
  * dispatcher and closes the old one a few seconds later, once requests that
  * already picked it up have dispatched and finished.
- * Requests use HTTP/1.1, as before 2.0.0: undici would otherwise negotiate
+ * Configured direct and HTTP proxy requests use HTTP/1.1: undici would otherwise negotiate
  * HTTP/2 and multiplex every call over one shared connection, and its close
  * does not drain HTTP/2 streams gracefully. Direct and HTTP proxy connections
  * also get KUBERNETES_KEEP_ALIVE_LIMITS. A SOCKS proxy keeps client-node's own
  * dispatcher (its connector is private), so undici's defaults apply there.
+ * System-trust fallback can negotiate HTTP/2. The shared transport checks each
+ * request start, including internal stream replays.
  */
 export function reuseRequestDispatcher(
   configuration: KubeConfig,

@@ -68,6 +68,8 @@ and an HTTPS provider fixture. The Kubernetes Secret Driver reads UID and resour
 over TLS; one case deliberately gives logical and runtime Namespaces different names.
 No Sandbox, model service or cluster runs here.
 
+[Local transport checks](local.md#kubernetes-transport-checks) cover Secret-read selection and expiry.
+
 Gateway policy and V1 loaded-policy observations match the supplier protobuf, but
 do not prove supervisor enforcement. Missing observations refuse even with LOADED
 and legacy field 3. We check current evidence at access and send, admitting only

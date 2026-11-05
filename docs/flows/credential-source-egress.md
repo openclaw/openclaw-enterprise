@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: 2026-11-05
-last_updated_session: authoring-run/cdb62c1d-61db-4f65-985f-7b44e64f10d0
+last_updated_session: authoring-run/b8441e9c-e014-43fd-8bfa-2b691c639705
 ---
 
 # Protected credential request flow
@@ -160,7 +160,7 @@ releases material; pending policy or receipt work keeps its slot. No pipelining.
 maps the peer to persisted installation state and pins eligible providers and methods before
 classification. Ambiguity blocks classification. OCC rechecks pins before and after provider
 use and at material access, send authorization and response release. Changes restored between checks
-escape detection. Secret Driver network access and supervisor response writes remain downstream.
+escape detection. Supervisor response writes remain downstream.
 After one exact route matches, OCC reserves a UUIDv7 request ID before capture or policy I/O.
 Creation fixes the 30-second replay horizon. [Slots and IDs are bounded](../reference/drivers/credential-proxy.md#request-time-capacity);
 unsupported or ambiguous operations refuse before reservation.
@@ -183,12 +183,15 @@ without material.
 
 ### 3. Resolve versioned material and authorize its sole send
 
-The selected Secret Driver verifies ownership and reads UID/resourceVersion from the authoritative
-API. Static and prepared GitHub read ports share one `{ signal, deadlineAt }` lifetime.
-The Kubernetes Secret reader carries it through namespace verification, GET and retries;
-child scopes inherit cancellation and the earliest deadline. Each HTTP dispatch checks
-expiry independently of timers. Invalid deadlines fail closed; per-attempt timeouts cannot
-extend the lifetime.
+For request-time static reads, OCC pins the selected Secret Driver and read method.
+`apps/controller/src/drivers/secret/kubernetes/index.ts:readCredentialInput` passes the selection
+check to the shared Kubernetes transport before dispatch and before each request starts writing, including
+HTTP/2 stream replays. It discards material if selection changes in flight. OCC rechecks on return. See the
+[Secret Driver contract](../reference/drivers/secret.md#interface) for optional-reader limits.
+The Driver verifies the backend UID and returns its resourceVersion.
+Static and prepared GitHub reads share `{ signal, deadlineAt }`. Kubernetes propagates cancellation
+and the earliest deadline through namespace verification and retries. Each dispatch and request start checks
+expiry independently of timers. Invalid deadlines refuse.
 GitHub acquisition validation, transport and metadata injection share a wire check:
 1–16,384 bytes of nonspace printable ASCII, not authentication.
 
@@ -341,18 +344,10 @@ None.
 
 ## Changelog
 
-- 2026-11-05 02:35: Refresh model observation after Git credential rotation. (authoring-run/cdb62c1d-61db-4f65-985f-7b44e64f10d0 - 261e4b54cbd0366ff0cba0dc6a00b7890b8e39f2)
+- 2026-11-05 12:04: Check selection and expiry before transport writes. (authoring-run/b8441e9c-e014-43fd-8bfa-2b691c639705 - ef3bfd7c193e37f280bfc864255116a1bbaafab8)
 
-- 2026-11-04 08:59: Validate effective image policy in streamed response envelopes. (authoring-run/62d369a1-b693-49c9-badd-c92eeda35a6b - 54ad9dad2610ed99ab8ce8134fb03d3b10ed6be4)
+- 2026-11-05 11:53: Guard fetch-internal Secret retries at dispatch. (authoring-run/30343d21-03ee-4bb6-8bc2-64c565e32c0e - 5c2da10f84772f6c366cd4a1a425b3501cd9126f)
 
-- 2026-11-04 05:11: Separate response metadata validation. (authoring-run/aa69859c-0fd2-4688-97b0-b99dbbd65f95 - b9741c28dacdd6012790be431b97872de6611969)
-
-- 2026-11-04 01:56: Trace inline tool validation. (authoring-run/c172d58e-be9c-43c1-a44d-7853dfb585af - fdca6e74421067adc66dce4f141d153af0355f68)
-
-- 2026-10-30 10:12: Retain guarded OpenShell 0.1.6 preview. (authoring-run/9d2efbc4-c4d4-4678-a191-7b23d350a008 - 319e24a88facddd38a883bdfd5b226652d2a6e26)
-
-- 2026-10-27 16:00: Document provider pinning. (authoring-run/53dd6d74-5181-417f-934c-dd6c8ef6db2d - e2dfabf042852adea8ed797b48aae122927d6226)
-
-- 2026-10-27 10:54: Trace send authorization and response release for a repository metadata read. (authoring-run/2c5a77ee-7b17-4553-b360-486daa794f9a - 0418ef3a2c116b73f025281395d92477daf665d2)
+- 2026-11-05 11:46: Reconcile selection checks with the current request flow. (authoring-run/4f657203-a2dd-4392-84b3-f5019d83db5f - b8e47057c619ed3d281488c6d507315ec97de1b0)
 
 [Protected credential request documentation history](credential-source-egress/history.md) preserves the older dated entries.

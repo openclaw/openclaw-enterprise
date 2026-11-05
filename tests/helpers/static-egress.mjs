@@ -137,6 +137,7 @@ export async function staticEgressFixture(
   let runtimeNamespace;
   let secretReads = 0;
   let secretReadBarrier;
+  let failNextSecretGet;
   let beforeNamespaceResponse;
   const kube = createHttpsServer({ key, cert }, async (request, response) => {
     response.setHeader("content-type", "application/json");
@@ -205,6 +206,14 @@ export async function staticEgressFixture(
       response.writeHead(request.method === "POST" ? 201 : 200).end(JSON.stringify(stored));
     } else if (request.method === "GET" && previous) {
       secretReads += 1;
+      if (failNextSecretGet) {
+        response
+          .writeHead(failNextSecretGet.status)
+          .end(JSON.stringify({ code: failNextSecretGet.status }));
+        failNextSecretGet.resolve();
+        failNextSecretGet = undefined;
+        return;
+      }
       await secretReadBarrier;
       response.end(JSON.stringify(previous));
     } else {
@@ -1072,6 +1081,11 @@ export async function staticEgressFixture(
           paused.resolve();
         },
       };
+    },
+    failOneSecretGet(status = 503) {
+      const failed = Promise.withResolvers();
+      failNextSecretGet = { status, resolve: failed.resolve };
+      return failed.promise;
     },
     pauseSecretReads() {
       const paused = Promise.withResolvers();
