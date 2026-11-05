@@ -1,6 +1,8 @@
+import { exchangeAuthorizationCode, startBrowserAuthorization } from "./browser-authorization.ts";
 import { NativeIAMDriver } from "@openclaw-enterprise/iam";
 import { isReducedCredentialPlan } from "./credential-policy-reduction.ts";
 
+export { refreshPinnedOAuthGrant } from "./oauth-token-endpoint.ts";
 export { reduceCredentialPolicy, isReducedCredentialPlan } from "./credential-policy-reduction.ts";
 export { CredentialDeliveries } from "./state/credential-deliveries.ts";
 export type {
@@ -1251,6 +1253,7 @@ const BUNDLED_KUBERNETES_COMPUTE: ReadonlySet<string> = new Set([
 ]);
 /** Bounds each synchronous Credential Gateway call made while serving an API request. */
 const CREDENTIAL_GATEWAY_TIMEOUT_MS = 30_000;
+const CONNECTION_OPERATION_TIMEOUT_MS = 30_000;
 const CONNECTION_SESSION_TTL_MS = 10 * 60 * 1000;
 /** Only a claimed server-side consent attempt may operate on its still-pending source. */
 const PENDING_CONNECTION: unique symbol = Symbol("pending-connection");
@@ -4665,7 +4668,7 @@ export class OpenClawController {
         throw new NamespaceNotReadyError();
       }
       await this.authorizeConnectionCreation(principalId, namespaceId);
-      const refresh = this.browserConnectionDriver();
+      this.assertConnectionTokenCustody();
       const template = await state.connectionTemplates.lockConnectionTemplate(
         input.connectionTemplateId,
       );
@@ -4694,16 +4697,12 @@ export class OpenClawController {
           oauth_client_id: client.id,
         },
         secrets: {},
-        ownerCapability: "credential_refresh",
-        driverId: refresh.id,
+        ownerCapability: "token_service",
         state: "registering",
         createdAt,
       });
-      const started = await this.credentialGatewayOperation(() =>
-        refresh.startBrowserAuthorization!(
-          { namespace, source, signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS) },
-          browserAuthorizationRequest(version, client, input.redirectUri, selectedScopes),
-        ),
+      const started = startBrowserAuthorization(
+        browserAuthorizationRequest(version, client, input.redirectUri, selectedScopes),
       );
       await state.savedConnections.createConnectionSession({
         stateHash: createHash("sha256").update(started.state).digest("hex"),
@@ -4712,7 +4711,7 @@ export class OpenClawController {
         sessionId: input.sessionId,
         redirectUri: input.redirectUri,
         selectedScopes,
-        privateState: started.privateState,
+        pkceVerifier: started.pkceVerifier,
         issuerRequired: await state.connectionTemplates.hasOtherConnectionIssuer(version.issuer),
         actorId: principalId,
         connectionTemplateId: template.id,
@@ -4769,20 +4768,18 @@ export class OpenClawController {
     const { namespaceId, credentialSourceId } = session;
     let exchangeStarted = false;
     let handoffStarted = false;
-    let approved:
-      | Pick<
-          SavedConnection,
-          | "issuer"
-          | "tokenUrl"
-          | "mcpServerUrl"
-          | "oauthClientId"
-          | "clientId"
-          | "destinations"
-          | "resource"
-          | "requestedScopes"
-          | "grantedScopes"
-        >
-      | undefined;
+    let approved: Pick<
+      SavedConnection,
+      | "issuer"
+      | "tokenUrl"
+      | "mcpServerUrl"
+      | "oauthClientId"
+      | "clientId"
+      | "destinations"
+      | "resource"
+      | "requestedScopes"
+      | "grantedScopes"
+    >;
     try {
       await this.authorizeConnectionCreation(principalId, namespaceId);
       await this.assertConnectionTemplateScope(session.connectionTemplateId, namespaceId);
@@ -4812,76 +4809,52 @@ export class OpenClawController {
       ) {
         throw new BrowserAuthorizationError("issuer_required", "fix_configuration");
       }
-      const refresh = this.browserConnectionDriver();
-      const { namespace, source, client } = await this.mutate(async (view) => {
-        const namespace = await this.exactNamespace(view, namespaceId);
+      this.assertConnectionTokenCustody();
+      const client = await this.mutate(async (view) => {
         const source = await view.credentialSources.findCredentialSource(
           namespaceId,
           credentialSourceId,
         );
-        if (
-          source?.state !== "registering" ||
-          source.ownerCapability !== "credential_refresh" ||
-          source.driverId !== refresh.id
-        ) {
+        if (source?.state !== "registering" || source.ownerCapability !== "token_service") {
           throw new BrowserAuthorizationError("invalid_session", "retry");
         }
-        const client = await this.connectionClientForVersion(view, namespaceId, version);
+        const registration = await this.connectionClientForVersion(view, namespaceId, version);
         await holdSession?.(view);
-        return { namespace, source, client };
+        return registration;
       });
-      const context = {
-        namespace,
-        source,
-        signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-      };
       const request = browserAuthorizationRequest(
         version,
         client,
         session.redirectUri,
         session.selectedScopes,
       );
-      await this.credentialGatewayOperation(() =>
-        this.withOAuthClientSecret(client, async (clientSecret) => {
-          context.signal.throwIfAborted();
-          exchangeStarted = true;
-          await refresh.completeBrowserAuthorization!(
-            context,
-            session.privateState,
-            { code: input.code!, state: input.state },
-            request,
-            clientSecret,
-            async (grant) => {
-              handoffStarted = true;
-              approved = {
-                issuer: version.issuer,
-                tokenUrl: version.tokenUrl,
-                oauthClientId: client.id,
-                clientId: client.clientId,
-                destinations: version.destinations,
-                ...(version.mcp
-                  ? { resource: version.mcp.resource, mcpServerUrl: version.mcp.serverUrl }
-                  : {}),
-                requestedScopes: session.selectedScopes,
-                grantedScopes: grant.grantedScopes,
-              };
-
-              await this.acceptConnectionTokens(
-                namespaceId,
-                credentialSourceId,
-                grant,
-                context.signal,
-                holdSession,
-              );
-            },
-          );
-        }),
+      const signal = AbortSignal.timeout(CONNECTION_OPERATION_TIMEOUT_MS);
+      const code = input.code;
+      const grant = await this.withOAuthClientSecret(client, async (clientSecret) => {
+        signal.throwIfAborted();
+        exchangeStarted = true;
+        return exchangeAuthorizationCode(request, session.pkceVerifier, code, clientSecret, signal);
+      });
+      handoffStarted = true;
+      await this.acceptConnectionTokens(
+        namespaceId,
+        credentialSourceId,
+        grant,
+        signal,
+        holdSession,
       );
-      if (!approved) {
-        throw new DependencyUnavailableError(
-          "The Refresh Driver did not hand off the connection grant.",
-        );
-      }
+      approved = {
+        issuer: version.issuer,
+        tokenUrl: version.tokenUrl,
+        oauthClientId: client.id,
+        clientId: client.clientId,
+        destinations: version.destinations,
+        ...(version.mcp
+          ? { resource: version.mcp.resource, mcpServerUrl: version.mcp.serverUrl }
+          : {}),
+        requestedScopes: session.selectedScopes,
+        grantedScopes: grant.grantedScopes,
+      };
     } catch (error) {
       // A network timeout may have spent the code. Keep the pending source for explicit
       // retirement; never retry that exchange. Definite refusals have no material to retire.
@@ -4892,7 +4865,6 @@ export class OpenClawController {
       }
       throw error;
     }
-    const receipt = approved;
     try {
       return await this.mutate(async (state) => {
         await this.lockNamespace(state, namespaceId);
@@ -4908,7 +4880,7 @@ export class OpenClawController {
           throw new ResourceStateConflictError("The pending connection changed. Connect again.");
         }
         const connection = await state.savedConnections.createSavedConnection({
-          ...receipt,
+          ...approved,
           namespaceId,
           credentialSourceId,
           ownerPrincipalId: principalId,
@@ -4922,7 +4894,7 @@ export class OpenClawController {
         return connection;
       });
     } catch (error) {
-      // A driver may already have installed the usable grant. A commit with an uncertain
+      // The Token Service holds the grant. A commit with an uncertain
       // outcome is safe to retry: the internal pending-source delete refuses a ready account.
       await this.deleteCredentialSource(
         principalId,
@@ -5142,7 +5114,7 @@ export class OpenClawController {
       const source = await unit.credentialSources.lockCredentialSource(namespaceId, sourceId);
       if (
         source?.state !== "registering" ||
-        source.ownerCapability !== "credential_refresh" ||
+        source.ownerCapability !== "token_service" ||
         (await unit.savedConnections.findTokenCustody(namespaceId, sourceId))
       ) {
         throw new ResourceStateConflictError(
@@ -5239,7 +5211,7 @@ export class OpenClawController {
   async maintainConnectionToken(namespaceId: string, sourceId: string) {
     const custody = await this.read(async (view) => {
       const source = await view.credentialSources.findCredentialSource(namespaceId, sourceId);
-      if (source?.state !== "ready" || source.ownerCapability !== "credential_refresh") {
+      if (source?.state !== "ready" || source.ownerCapability !== "token_service") {
         return undefined;
       }
       return view.savedConnections.findTokenCustody(namespaceId, sourceId);
@@ -5247,7 +5219,7 @@ export class OpenClawController {
     if (!custody) {
       return undefined;
     }
-    const signal = AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS);
+    const signal = AbortSignal.timeout(CONNECTION_OPERATION_TIMEOUT_MS);
     const service = this.connectionTokenService();
     if (!custody.due) {
       return service.status(custody, signal);
@@ -5275,7 +5247,7 @@ export class OpenClawController {
     return result;
   }
 
-  private browserConnectionDriver(): CredentialRefreshDriver {
+  private assertConnectionTokenCustody(): void {
     this.connectionTokenService();
     const secrets = this.secretDriver();
     if (!secrets.withValue || !secrets.compareAndSwap) {
@@ -5284,14 +5256,6 @@ export class OpenClawController {
         "The selected Secret Driver cannot store an OAuth grant.",
       );
     }
-    const refresh = this.credentialRefreshDriver();
-    if (!refresh.startBrowserAuthorization || !refresh.completeBrowserAuthorization) {
-      throw new NotImplementedError(
-        "connection_templates",
-        "The selected Refresh Driver does not support browser connections.",
-      );
-    }
-    return refresh;
   }
 
   private async authorizeTemplateAdministration(principalId: string): Promise<void> {
@@ -8273,13 +8237,6 @@ export class OpenClawController {
         namespaceId: input.namespaceId,
       });
       const namespace = await this.exactNamespace(state, input.namespaceId);
-      // Check Installation capabilities before disclosing Namespace or source state.
-      if (!this.selections.has("credential_refresh")) {
-        this.assertCredentialSourceOwnerSelected();
-      }
-      if (namespace.status !== "ready") {
-        throw new NamespaceNotReadyError();
-      }
       // Lock order matches Agent admission: the source, then the Secrets it reads. Admission
       // with a Secret-method harnessAuth locks that Secret first; if the same Secret also backs
       // this source, PostgreSQL ends the cycle by failing one request.
@@ -8287,6 +8244,12 @@ export class OpenClawController {
         namespace.id,
         input.credentialSourceId,
       );
+      if (source?.ownerCapability !== "token_service") {
+        this.assertCredentialSourceOwnerSelected();
+      }
+      if (namespace.status !== "ready") {
+        throw new NamespaceNotReadyError();
+      }
       if (!source) {
         throw new ScopeViolationError(
           "The credential source does not belong to the exact Namespace.",
@@ -8295,12 +8258,11 @@ export class OpenClawController {
       if (source.state !== "ready") {
         throw new ResourceStateConflictError("Only a ready credential source can be updated.");
       }
-      if (source.ownerCapability === "credential_refresh") {
+      if (source.ownerCapability === "token_service") {
         throw new ResourceStateConflictError(
           "Reconnect the account to replace its saved OAuth grant.",
         );
       }
-      this.assertCredentialSourceOwnerSelected();
       if (source.egress?.adoption === "prepared" || source.egress?.adoption === "credential_free") {
         // After the update grant and lookup: the caller may change this source (finding 2536).
         throw new ResourceStateConflictError(FIXED_PROTECTED_SOURCE_REFUSALS.update);
@@ -8465,7 +8427,7 @@ export class OpenClawController {
       if (source.state !== "ready") {
         throw new ResourceStateConflictError("Only a ready credential source can be rotated.");
       }
-      if (source.ownerCapability === "credential_refresh") {
+      if (source.ownerCapability === "token_service") {
         if (!ownsTransaction) {
           throw new ResourceConflictError(
             "Connected-account rotation must own its retry transaction.",
@@ -8617,14 +8579,14 @@ export class OpenClawController {
       }
       return { namespace: exact, source: found };
     });
-    if (source.ownerCapability === "credential_refresh") {
+    if (source.ownerCapability === "token_service") {
       const custody = await this.read((view) =>
         view.savedConnections.findTokenCustody(namespaceId, source.id),
       );
       const refresh = custody
         ? await this.connectionTokenService().status(
             custody,
-            AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+            AbortSignal.timeout(CONNECTION_OPERATION_TIMEOUT_MS),
           )
         : { state: "pending" as const };
       return this.credentialSourceMetadata(source, {
@@ -8729,20 +8691,19 @@ export class OpenClawController {
               id: credentialSourceId,
               namespaceId,
             });
-      // A saved OAuth account can be owned by the Refresh Driver on an Installation without a Gateway.
-      if (!this.selections.has("credential_refresh")) {
-        this.assertCredentialSourceOwnerSelected();
-      }
       const found = await state.credentialSources.lockCredentialSource(
         locked.id,
         credentialSourceId,
       );
+      if (found?.ownerCapability !== "token_service") {
+        this.assertCredentialSourceOwnerSelected();
+      }
       if (!found) {
         throw new ScopeViolationError(
           "The credential source does not belong to the exact Namespace.",
         );
       }
-      if (found.ownerCapability === "credential_refresh") {
+      if (found.ownerCapability === "token_service") {
         const saved = await state.savedConnections.findSavedConnection(
           namespaceId,
           credentialSourceId,
@@ -8762,9 +8723,7 @@ export class OpenClawController {
         throw new CredentialWithdrawalInProgressError();
       }
       const owner =
-        found.ownerCapability === "credential_refresh"
-          ? undefined
-          : this.credentialSourceOwner(found);
+        found.ownerCapability === "token_service" ? undefined : this.credentialSourceOwner(found);
       const deleting =
         found.state === "deleting"
           ? found
@@ -8781,7 +8740,7 @@ export class OpenClawController {
     await this.retireCredentialSourceMaterial(namespace, source, gateway);
     const fenceMs =
       Date.parse(source.createdAt) + CREDENTIAL_REGISTRATION_FENCE_MS - this.clock().getTime();
-    if (fenceMs > 0) {
+    if (source.ownerCapability !== "token_service" && fenceMs > 0) {
       // After the delete grant and lookup; the text names only the wait (finding 2536).
       throw new RetryLaterError("registrationFence", fenceMs / 1000);
     }
@@ -8808,14 +8767,14 @@ export class OpenClawController {
     source: Readonly<CredentialSource>,
     gateway: CredentialGatewayDriver | undefined,
   ): Promise<void> {
-    if (source.ownerCapability === "credential_refresh") {
+    if (source.ownerCapability === "token_service") {
       const custody = await this.read((view) =>
         view.savedConnections.findTokenCustody(namespace.id, source.id),
       );
       if (custody) {
         await this.connectionTokenService().retire(
           custody,
-          AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+          AbortSignal.timeout(CONNECTION_OPERATION_TIMEOUT_MS),
         );
       }
       return;
@@ -14398,7 +14357,7 @@ export class OpenClawController {
         throw new CredentialProxyAdmissionError("sourcesWithoutProxy");
       }
       // TODO(Agent connection attachment): admit a saved account after verifying this Agent's grant.
-      if (source.ownerCapability === "credential_refresh") {
+      if (source.ownerCapability === "token_service") {
         throw new ResourceStateConflictError("This Agent has no grant for the saved account.");
       }
       this.credentialSourceOwner(source);
@@ -16165,12 +16124,7 @@ export class OpenClawController {
     try {
       return await operation();
     } catch (error) {
-      // A definite browser authorization failure keeps its safe code and recovery action.
-      if (
-        error instanceof ScopeViolationError ||
-        error instanceof ResourceConflictError ||
-        error instanceof BrowserAuthorizationError
-      ) {
+      if (error instanceof ScopeViolationError || error instanceof ResourceConflictError) {
         throw error;
       }
       throw new DependencyUnavailableError(

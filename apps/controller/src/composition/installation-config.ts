@@ -57,6 +57,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { NativeIAMDriver, type NativeIAMStateStore } from "@openclaw-enterprise/iam";
 import {
+  refreshPinnedOAuthGrant,
   InstalledDriver,
   SandboxRepositoryRecipientUnverifiedError,
   AuthorizationDeniedError,
@@ -104,7 +105,6 @@ import {
 import { OCCPluginDriver, CodexPluginDriver } from "../drivers/plugin/index.ts";
 import { createGatewayNodeEnrollment } from "../gateway/node-enrollment-client.ts";
 import { readWorkspaceFilesApiKey } from "./workspace-files.ts";
-import { refreshPinnedOAuthGrant } from "../drivers/credential-refresh/oauth-token-endpoint.ts";
 import { OAuthConnectionTokens } from "../backends/token-service/oauth-connection.ts";
 import { TokenService } from "../backends/token-service/service.ts";
 import { githubMetadataProvider } from "../drivers/egress-proxy/github-metadata.ts";

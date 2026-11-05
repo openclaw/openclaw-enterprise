@@ -272,7 +272,7 @@ export interface ConnectionSession {
   readonly namespaceId: string;
   readonly credentialSourceId: string;
   /** Server-private PKCE state, erased when the callback consumes the attempt. */
-  readonly privateState: string;
+  readonly pkceVerifier: string;
   readonly selectedScopes: readonly string[];
   readonly issuerRequired: boolean;
   readonly sessionId: string;

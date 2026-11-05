@@ -191,7 +191,7 @@ Stores the private, single-use OAuth attempt for the initiating principal and br
 - `state_hash`
 - `namespace_id`
 - `credential_source_id`
-- `private_state`
+- `pkce_verifier`
 - `selected_scopes`
 - `issuer_required`
 - `session_id`
@@ -214,7 +214,7 @@ Tracks the Token Service secret reference, the published access token version an
 
 ### `credential_sources`
 
-Records which Credential Gateway or Credential Proxy admitted each source. The capability and Driver ID are immutable; the table holds no credential values.
+Records the owner of each source. A Credential Gateway or Credential Proxy source identifies its admitting Driver. The Token Service owns saved account sources.
 
 - `id`
 - `namespace_id`
@@ -222,8 +222,8 @@ Records which Credential Gateway or Credential Proxy admitted each source. The c
 - `type`
 - `config`
 - `egress` (optional admitted source and versioned resolver references)
-- `owner_capability` (`credential_gateway`, `credential_proxy`, or `credential_refresh` for a saved account)
-- `driver_id`
+- `owner_capability` (`credential_gateway`, `credential_proxy`, or `token_service` for a saved account)
+- `driver_id` (Gateway and Proxy sources)
 - `state`
 - `created_at`
 

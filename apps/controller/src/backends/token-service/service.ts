@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type {
   EgressRef,
+  OAuthConnectionTokenService,
   PreparedTokenIssuer,
   PreparedTokenService,
 } from "@openclaw-enterprise/contracts";
@@ -22,9 +23,9 @@ type Preparation = {
  * input authority and custody. Capture, readiness and use never wake a maintenance pass.
  */
 export class TokenService implements PreparedTokenService {
-  readonly oauthConnections: PreparedTokenService["oauthConnections"];
+  readonly oauthConnections: OAuthConnectionTokenService | undefined;
 
-  constructor(oauthConnections?: PreparedTokenService["oauthConnections"]) {
+  constructor(oauthConnections?: OAuthConnectionTokenService) {
     this.oauthConnections = oauthConnections;
   }
 

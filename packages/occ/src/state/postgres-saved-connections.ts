@@ -54,7 +54,7 @@ function sessionFromRow(row: Row): Readonly<ConnectionSession> {
     stateHash: text(row, "state_hash"),
     namespaceId: text(row, "namespace_id"),
     credentialSourceId: text(row, "credential_source_id"),
-    privateState: text(row, "private_state"),
+    pkceVerifier: text(row, "pkce_verifier"),
     selectedScopes: row.selected_scopes as string[],
     issuerRequired: row.issuer_required === true,
     sessionId: text(row, "session_id"),
@@ -232,14 +232,14 @@ export function postgresSavedConnections(
       await requireInitialized();
       await client.query(
         `INSERT INTO occ.connection_sessions
-         (state_hash, namespace_id, credential_source_id, private_state, actor_id,
+         (state_hash, namespace_id, credential_source_id, pkce_verifier, actor_id,
           session_id, redirect_uri, connection_template_id, connection_template_version, created_at, expires_at, issuer_required,selected_scopes)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,$13)`,
         [
           session.stateHash,
           session.namespaceId,
           session.credentialSourceId,
-          session.privateState,
+          session.pkceVerifier,
           session.actorId,
           session.sessionId,
           session.redirectUri,

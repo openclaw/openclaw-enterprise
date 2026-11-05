@@ -2,15 +2,11 @@ import { type ErrorDetail } from "@openclaw-enterprise/contracts";
 import { requireConfiguration } from "@openclaw-enterprise/contracts";
 import type {
   Backend,
-  CredentialBrowserAuthorizationCallback,
-  CredentialBrowserAuthorizationRequest,
   CredentialRefreshDriver,
   CredentialRefreshInput,
   CredentialRefreshStatus,
-  OAuthConnectionGrant,
   CredentialSourceContext,
   CredentialSourceDeviceAuthorization,
-  CredentialSourceBrowserAuthorization,
   CredentialSourceDeviceAuthorizationResult,
 } from "@openclaw-enterprise/contracts";
 import { ScopeViolationError } from "@openclaw-enterprise/occ";
@@ -31,12 +27,6 @@ import type {
   OpenShellProviderResponse,
   OpenShellRefreshStatus,
 } from "../sandbox/openshell-gateway-client.ts";
-
-import {
-  browserAuthorizationState,
-  exchangeAuthorizationCode,
-  startBrowserAuthorization,
-} from "./browser-authorization.ts";
 
 import {
   CODEX_OAUTH_CLIENT_ID,
@@ -171,34 +161,6 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
     return this.completeCodexConnection(context, configured, state.rotateRequestId);
   }
 
-  async startBrowserAuthorization(
-    context: CredentialSourceContext,
-    request: CredentialBrowserAuthorizationRequest,
-  ): Promise<CredentialSourceBrowserAuthorization> {
-    this.requireBrowserSource(context);
-    return startBrowserAuthorization(context.source.id, request);
-  }
-
-  async completeBrowserAuthorization(
-    context: CredentialSourceContext,
-    privateState: string,
-    callback: CredentialBrowserAuthorizationCallback,
-    request: CredentialBrowserAuthorizationRequest,
-    clientSecret: string | undefined,
-    acceptGrant: (grant: OAuthConnectionGrant) => Promise<void>,
-  ): Promise<void> {
-    this.requireBrowserSource(context);
-    const state = browserAuthorizationState(context.source.id, privateState, callback);
-    const grant = await exchangeAuthorizationCode(
-      request,
-      state.verifier,
-      callback.code,
-      clientSecret,
-      context.signal,
-    );
-    await acceptGrant(grant);
-  }
-
   async configureRefresh(
     context: CredentialSourceContext,
     input: CredentialRefreshInput,
@@ -302,17 +264,6 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
       type.credentialKey(context.source.config),
       context.signal,
     );
-  }
-
-  private requireBrowserSource(context: CredentialSourceContext): void {
-    if (
-      context.source.type !== "oauth2-refresh-token" ||
-      context.source.namespaceId !== context.namespace.id ||
-      context.source.ownerCapability !== "credential_refresh" ||
-      context.source.driverId !== this.id
-    ) {
-      throw new ScopeViolationError("Browser connections create oauth2-refresh-token sources.");
-    }
   }
 
   private async completeCodexConnection(

@@ -1,42 +1,100 @@
+---
+created: "2026-11-04"
+updated: "2026-11-05"
+last_updated_session: codex/01a1aad6-adec-7fa0-802a-50b5e0486319
+---
+
 # How OCC saves an OAuth connection template
 
-The administrator selects manual configuration or supplies an MCP server URL. OCC checks Installation administration before discovery. For MCP, the controller reads protected resource metadata over TLS, resolves each metadata host to public addresses and pins those addresses for the request. It contacts only the selected advertised authorization server. OCC stores the metadata it observed with the approved version.
+## Overview
 
-The Installation starts with a saved Google OAuth template. Its first version contains the default Google Workspace API destinations. The Console reads that version through the same list and edit operations as other templates. When an administrator edits the destinations, OCC normalizes them and records a new version. The template ID stays the same across versions. It identifies the current manual delivery policy for accounts connected with that issuer. MCP discovery supplies one transport destination and its OAuth resource.
+An Installation administrator defines where an account can connect and which OAuth client represents the Installation. A person then selects that template to connect an account in a Namespace. OCC runs the browser authorization flow. The Token Service stores and renews the grant. The person can finish connecting before choosing an Agent.
 
-OCC checks scope and the client's allowed destinations before it references an OAuth client. PostgreSQL commits the template version and its audit together. A template can exist without a client. The Agent plugin release determines the local credential placeholder when the account is used.
+## Entry Points
 
-When the administrator registers a client, OCC reads its availability and approved endpoints from the selected template version. It checks the version again before publication. OCC reserves a hidden OAuth client row before its selected Secret Driver writes a confidential client’s secret. The private reference identifies the owning Driver, Installation, and registration. A public registration skips the storage step. OCC publishes the client and records its creation in one transaction. If the template had no client, that transaction also publishes a version that selects the new registration. If creation stops before publication, the worker removes the private material and the hidden row.
+- An Installation administrator opens **Credentials → Connection templates** to edit a template, or **OAuth clients** to register a client against a template version. `apps/controller/src/http/connection-templates.ts:connectionTemplateHandlers`
+- A signed-in person with permission to create a credential in the destination Namespace starts consent with a template available there. The OAuth provider returns the browser to OCC's shared callback. `packages/occ/src/index.ts:startNamespaceConnection` and `packages/occ/src/index.ts:completeNamespaceConnection`
 
-For rotation, OCC records the administrator’s request, locks the client, rechecks the session, and asks the Driver to replace the value at that same reference. Code exchange and token refresh use the current value. OCC records successful completion after the write. If the caller loses the response, repeating the operation with the same value is safe.
+## Flow
 
-When an administrator deletes a confidential client, OCC checks for dependent template versions, hides the client, and records the deletion. The worker retries private cleanup before removing the client row.
+### Template and client setup
 
-See [OAuth connection templates and clients](../reference/connection-templates.md) for the supported operations.
+```mermaid
+graph TD
+  Admin["Administrator"] -->|Manual settings| Version["OCC saves the template version"]
+  Admin -->|MCP server URL| Discovery["OCC reads provider metadata"]
+  Discovery --> Version
+  Version -->|Register a confidential client| Secret["Secret Driver stores its secret"]
+  Version -->|Register a public client| Publish["OCC publishes the registration"]
+  Secret --> Publish
+```
 
-## Consent and token custody
+### Consent and token custody
 
-The callback consumes the attempt once. OCC verifies the signed-in account and session after any database wait and before code exchange. It checks the session again before storing the grant or granting its owner access.
+```mermaid
+graph TD
+  Start["Person selects a template"] --> Attempt["OCC records the browser attempt"]
+  Attempt --> Provider["Provider asks for consent"]
+  Provider -->|Authorization code| Callback["OCC consumes the attempt and exchanges the code"]
+  Callback --> Custody["Token Service stores the grant"]
+  Custody --> Account["OCC records the owner's saved account"]
+  Account -->|Renewal due| Renew["Token Service refreshes at the pinned endpoint"]
+```
 
-OCC checks the caller's right to create a credential in the destination
-Namespace and pins the selected template version. It creates a pending source
-and saves the PKCE verifier in a private database row bound to that browser
-session and principal. The callback consumes the attempt once, rechecks
-authorization, and reads the client registration and exchange URL from the
-pinned version.
+## Execution Trace
 
-The Credential Refresh Driver exchanges the code using the pinned client and
-its registered authentication method. For an MCP connection it sends the
-approved resource at authorization, exchange, and refresh. The Token Service
-keeps the access token and refresh grant in a private Secret. OCC records the
-credential source ID, account owner, approved recipient, requested scopes, and
-granted scopes. When the person requests provider defaults, the Driver omits the scope parameter. It records the scopes the provider reports, or an empty list if the provider omits them. Renewal can narrow the recorded grant. It cannot add scopes to an unreported grant. A shared callback verifies the issuer when multiple issuers are
-configured. A provider timeout consumes the attempt.
+### 1. Save the template version
 
-OCC saves the consent receipt under its original immutable template version. When listing an account, `PlatformController.effectiveConnectionDestinations` reads the current version of that same template. For manual accounts, it returns the current destinations when the issuer and manual mode still match. For MCP accounts, it returns the original destinations only when issuer, discovery mode, exact server URL and protected resource still match. A missing or incompatible template returns an empty list. This projection does not rewrite the saved registration, grant, token endpoint or consent audit. For MCP, the Driver sends the original resource identifier to the provider.
+`packages/occ/src/index.ts:createConnectionTemplate` and `apps/controller/src/connections/mcp-discovery.ts:discoverMcpAuthorization`
 
-The worker renews the saved account through the Token Service. For each refresh, it checks the saved grant against the approved registration
-and asks OCC for the registration’s current secret from its owning Secret Driver. A public client authenticates with its client ID alone. A conditional write
-fences concurrent renewals and disconnects. OCC records the next renewal
-and any narrower scopes. Creating and renewing a saved account require no
-Agent or sender profile.
+OCC checks Installation administration before it accepts manual settings or starts MCP discovery. For MCP, it reads the protected resource metadata over HTTPS, pins each request to public addresses and contacts the selected advertised authorization server. The version records what OCC discovered, the OAuth resource and the MCP transport destination. An administrator can also edit the installed Google OAuth template and its prefilled Google Workspace destinations. OCC keeps the template ID and commits each new version with its audit record.
+
+### 2. Register and maintain the OAuth client
+
+`packages/occ/src/index.ts:createOAuthClient` and `packages/occ/src/index.ts:cleanupOAuthClients`
+
+A template can exist before its OAuth client. OCC takes the registration's availability and endpoints from the selected version. For a confidential client, it reserves a hidden row and asks the Installation's Secret Driver to store the secret under the registration ID. A public registration supplies a client ID and skips this private write. OCC rechecks the version, publishes the registration and records the audit. If the template lacked a client, that transaction also selects the new one.
+
+Rotation replaces the confidential client's secret at the same private reference. Code exchange and renewal read its current value. A template version that still references the client prevents deletion. On deletion or interrupted creation, the worker uses the hidden registration to retry private cleanup.
+
+### 3. Authorize the account in the browser
+
+`packages/occ/src/index.ts:startNamespaceConnection` and `packages/occ/src/browser-authorization.ts:startBrowserAuthorization`
+
+OCC verifies the person's Namespace permission and pins the selected template version. It reserves a pending credential source and records the state hash, browser session, principal, requested scopes and Proof Key for Code Exchange (PKCE) verifier in a private, expiring attempt. The provider receives the state and the challenge derived from that verifier. OCC includes the OAuth resource for MCP consent and omits the scope parameter when the person requests provider defaults.
+
+### 4. Exchange the code and save the account
+
+`packages/occ/src/index.ts:completeNamespaceConnection` and `apps/controller/src/backends/token-service/oauth-connection.ts:accept`
+
+On callback, OCC consumes the matching attempt once and rechecks the person's session and authority. It checks a returned issuer against the pinned issuer. If another issuer has a registered client at consent start or callback, OCC requires the issuer in the response. OCC sends the code and verifier to the pinned token endpoint, includes the MCP resource when applicable, and reads the current client secret if the registration requires one. If the exchange times out, the person starts a new attempt.
+
+The Token Service stores the access token and refresh grant in a private Secret. OCC records the approved recipient, reported scopes and template version, marks the account ready and grants its owner access. When the provider omits scopes after a provider-default request, the receipt records an empty list.
+
+### 5. Resolve current destinations and renew the grant
+
+`packages/occ/src/index.ts:effectiveConnectionDestinations` and `apps/controller/src/backends/token-service/oauth-connection.ts:renew`
+
+When listing a manual account, OCC returns the current destinations from the same template if its issuer and mode still match. For MCP it returns the original destinations only while the issuer, mode, server URL and protected resource match. A missing or incompatible template yields an empty list. The original consent receipt identifies the registration and token endpoint for renewal.
+
+When renewal is due, the worker calls the Token Service. It checks the saved grant against the registration, reads the current client secret through OCC if needed and sends the refresh request. A conditional write protects against concurrent renewal or disconnect. OCC records the next renewal and any narrower grant.
+
+## Debugging and Verification
+
+- If the callback redirects with `unknown_session`, start consent again in the signed-in browser that opened it. An expired or consumed attempt cannot complete.
+- If it redirects with `issuer_required`, check whether another configured issuer has a registered client. Inspect the provider's callback configuration for issuer reporting.
+- If refresh reports `client_refused`, check the current OAuth client registration and its secret. If the provider refused the user's refresh grant, reconnect the account. The [connection template reference](../reference/connection-templates.md) describes the recovery actions.
+
+## Related docs
+
+- [Manage credentials in the Console](../guides/console/secrets.md)
+- [OAuth connection templates and clients](../reference/connection-templates.md)
+- [Secret storage and delivery](secret-storage-and-delivery.md)
+
+## Manual Notes
+
+[keep this for the user to add notes. do not change between edits]
+
+## Changelog
+
+- 2026-11-05 21:47: Traced administrator setup, OCC browser consent and Token Service custody with the accompanying ownership change. (codex/01a1aad6-adec-7fa0-802a-50b5e0486319 - d32f76579)

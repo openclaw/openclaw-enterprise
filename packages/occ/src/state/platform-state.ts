@@ -1720,6 +1720,17 @@ function assertCredentialSource(source: CredentialSource): void {
   }
   const config: unknown = source.config;
   const secretInputs: unknown = source.secrets;
+  const validOwner =
+    source.ownerCapability === "token_service"
+      ? source.type === "oauth2-refresh-token" &&
+        source.egress === undefined &&
+        source.driverId === undefined
+      : (source.ownerCapability === "credential_gateway" ||
+          (source.ownerCapability === "credential_proxy" && source.egress !== undefined)) &&
+        typeof source.driverId === "string" &&
+        source.driverId.length >= 1 &&
+        source.driverId.length <= 200 &&
+        source.driverId === source.driverId.trim();
   if (
     !credentialSourceIdentifier.test(source.id) ||
     !namespaceIdentifier.test(source.namespaceId) ||
@@ -1743,12 +1754,7 @@ function assertCredentialSource(source: CredentialSource): void {
         value.length > 2048,
     ) ||
     !isPlainRecord(secretInputs) ||
-    (source.ownerCapability !== "credential_gateway" &&
-      (source.ownerCapability !== "credential_proxy" || source.egress === undefined)) ||
-    typeof source.driverId !== "string" ||
-    source.driverId.length < 1 ||
-    source.driverId.length > 200 ||
-    source.driverId !== source.driverId.trim() ||
+    !validOwner ||
     (source.state !== "registering" && source.state !== "ready" && source.state !== "deleting")
   ) {
     throw new ScopeViolationError("The credential source is invalid.");

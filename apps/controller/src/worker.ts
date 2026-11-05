@@ -1730,7 +1730,7 @@ export class ControllerWorker {
   /** Retire one account per maintenance pass, then wait before rescanning the same IDs. */
   private async sweepConnectionRevocation(): Promise<void> {
     if (
-      !this.credentialRefresh?.completeBrowserAuthorization ||
+      !this.preparedTokens?.oauthConnections ||
       !this.provisioningController ||
       this.connectionRevocationScanAfter > Date.now()
     ) {

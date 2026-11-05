@@ -1,32 +1,26 @@
-import { isFlowOwnedOAuthParameter } from "@openclaw-enterprise/contracts";
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-
-import type {
-  CredentialBrowserAuthorizationCallback,
-  CredentialBrowserAuthorizationRequest,
-  CredentialSourceBrowserAuthorization,
-  OAuthConnectionGrant,
+import { createHash, randomBytes } from "node:crypto";
+import {
+  isFlowOwnedOAuthParameter,
+  type OAuthConnectionGrant,
+  type OAuthConnectionRegistration,
 } from "@openclaw-enterprise/contracts";
-import { BrowserAuthorizationError } from "@openclaw-enterprise/occ";
-import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
+import { isNonEmptyString } from "@openclaw-enterprise/utils";
+import { BrowserAuthorizationError } from "./errors.ts";
 import { requestOAuthTokens } from "./oauth-token-endpoint.ts";
 
-interface BrowserAuthorizationState {
-  readonly version: 1;
-  readonly sourceId: string;
-  readonly state: string;
-  readonly verifier: string;
+interface BrowserAuthorizationRequest extends OAuthConnectionRegistration {
+  readonly authorizationUrl: string;
+  readonly scopes: readonly string[];
+  readonly authorizationParameters: Readonly<Record<string, string>>;
+  readonly redirectUri: string;
 }
 
 function randomToken(): string {
   return randomBytes(32).toString("base64url");
 }
 
-/** Builds the S256 PKCE consent URL; the verifier and `state` stay in `privateState`. */
-export function startBrowserAuthorization(
-  sourceId: string,
-  request: CredentialBrowserAuthorizationRequest,
-): CredentialSourceBrowserAuthorization {
+/** OCC stores the verifier and the state hash with the signed-in user's session. */
+export function startBrowserAuthorization(request: BrowserAuthorizationRequest) {
   const state = randomToken();
   const verifier = randomToken();
   const url = new URL(request.authorizationUrl);
@@ -51,41 +45,7 @@ export function startBrowserAuthorization(
     createHash("sha256").update(verifier).digest().toString("base64url"),
   );
   url.searchParams.set("code_challenge_method", "S256");
-  const privateState: BrowserAuthorizationState = {
-    version: 1,
-    sourceId,
-    state,
-    verifier,
-  };
-  return { authorizationUrl: url.toString(), state, privateState: JSON.stringify(privateState) };
-}
-
-/** Parses the stored state and proves the callback's `state` matches it. */
-export function browserAuthorizationState(
-  sourceId: string,
-  privateState: string,
-  callback: CredentialBrowserAuthorizationCallback,
-): BrowserAuthorizationState {
-  let parsed: Record<string, unknown> | undefined;
-  try {
-    parsed = asRecord(JSON.parse(privateState));
-  } catch {
-    parsed = undefined;
-  }
-  if (
-    parsed?.version !== 1 ||
-    !isNonEmptyString(parsed.state) ||
-    !isNonEmptyString(parsed.verifier) ||
-    parsed.sourceId !== sourceId
-  ) {
-    throw new BrowserAuthorizationError("invalid_session", "retry");
-  }
-  const expected = Buffer.from(parsed.state as string);
-  const received = Buffer.from(callback.state);
-  if (expected.length !== received.length || !timingSafeEqual(expected, received)) {
-    throw new BrowserAuthorizationError("state_mismatch", "retry");
-  }
-  return parsed as unknown as BrowserAuthorizationState;
+  return { authorizationUrl: url.toString(), state, pkceVerifier: verifier };
 }
 
 /**
@@ -93,7 +53,7 @@ export function browserAuthorizationState(
  * is uncertain to the issuer, so a failure here is never retried with the same code.
  */
 export async function exchangeAuthorizationCode(
-  request: CredentialBrowserAuthorizationRequest,
+  request: BrowserAuthorizationRequest,
   verifier: string,
   code: string,
   clientSecret: string | undefined,
@@ -108,7 +68,6 @@ export async function exchangeAuthorizationCode(
       grant_type: "authorization_code",
       code,
       redirect_uri: request.redirectUri,
-
       code_verifier: verifier,
     }),
     request.scopes.length ? request.scopes : undefined,

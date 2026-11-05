@@ -495,7 +495,7 @@ export const credentialSources = occSchema.table(
     type: text("type").notNull(),
     config: jsonb("config").$type<Readonly<Record<string, string>>>().notNull(),
     egress: jsonb("egress").$type<ProtectedEgressSource>(),
-    driverId: text("driver_id").notNull(),
+    driverId: text("driver_id"),
     ownerCapability: text("owner_capability").$type<CredentialSourceOwnerCapability>().notNull(),
     state: text("state").$type<CredentialSourceState>().notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
@@ -528,7 +528,7 @@ export const credentialSources = occSchema.table(
     ),
     check(
       "credential_sources_owner_capability_valid",
-      sql`${table.ownerCapability} = 'credential_gateway' OR (${table.ownerCapability} = 'credential_proxy' AND ${table.egress} IS NOT NULL) OR (${table.ownerCapability} = 'credential_refresh' AND ${table.type} = 'oauth2-refresh-token' AND ${table.egress} IS NULL)`,
+      sql`(${table.driverId} IS NOT NULL AND (${table.ownerCapability} = 'credential_gateway' OR (${table.ownerCapability} = 'credential_proxy' AND ${table.egress} IS NOT NULL))) OR (${table.ownerCapability} = 'token_service' AND ${table.driverId} IS NULL AND ${table.type} = 'oauth2-refresh-token' AND ${table.egress} IS NULL)`,
     ),
     check(
       "credential_sources_driver_id_valid",
@@ -2593,7 +2593,7 @@ export const connectionSessions = occSchema.table(
     stateHash: text("state_hash").primaryKey(),
     namespaceId: text("namespace_id").notNull(),
     credentialSourceId: text("credential_source_id").notNull(),
-    privateState: text("private_state").notNull(),
+    pkceVerifier: text("pkce_verifier").notNull(),
     selectedScopes: text("selected_scopes").array().notNull(),
     issuerRequired: boolean("issuer_required").notNull(),
     sessionId: text("session_id").notNull(),

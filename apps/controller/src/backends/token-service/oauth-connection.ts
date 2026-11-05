@@ -9,9 +9,8 @@ import type {
   OAuthConnectionStatus,
   SecretDriver,
 } from "@openclaw-enterprise/contracts";
-import { BrowserAuthorizationError } from "@openclaw-enterprise/occ";
+import { BrowserAuthorizationError, type refreshPinnedOAuthGrant } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
-import type { refreshPinnedOAuthGrant } from "../../drivers/credential-refresh/oauth-token-endpoint.ts";
 
 type ClientRetry = "client_refused" | "client_unavailable" | "client_registration_mismatch";
 

@@ -1,5 +1,5 @@
 import { isOAuthScopeToken, type OAuthConnectionGrant } from "@openclaw-enterprise/contracts";
-import { BrowserAuthorizationError } from "@openclaw-enterprise/occ";
+import { BrowserAuthorizationError } from "./errors.ts";
 import { asRecord, isNonEmptyString, isPositiveSafeInteger } from "@openclaw-enterprise/utils";
 
 const OAUTH_EXCHANGE_TIMEOUT_MS = 15_000;

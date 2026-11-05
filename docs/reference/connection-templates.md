@@ -39,6 +39,8 @@ See the [API reference](api.md#connections) for request and response fields.
 
 ## Connect an account
 
+OCC handles browser consent and the callback. The Token Service stores the resulting grant through the Installation’s Secret Driver and renews it. Users can connect an account before an administrator configures a Credential Gateway for Agent delivery.
+
 1. Use a signed-in browser session. List available templates at
    `GET /namespaces/{namespaceId}/connection-templates`. OCC requires
    `credential_source:create` for that Namespace.

@@ -5,14 +5,18 @@ import test from "node:test";
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
 import { OAuthConnectionTokens } from "../../apps/controller/src/backends/token-service/oauth-connection.ts";
 import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
-import { refreshPinnedOAuthGrant } from "../../apps/controller/src/drivers/credential-refresh/oauth-token-endpoint.ts";
 import type { ControllerAppOptions } from "../../apps/controller/src/index.ts";
 import { validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.ts";
-import { PostgresHumanAuthentication } from "../../packages/occ/src/index.ts";
+import {
+  DependencyUnavailableError,
+  PostgresHumanAuthentication,
+  refreshPinnedOAuthGrant,
+} from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
 import { keycloakRealmAdmin, rotateKeycloakClientSecret } from "../helpers/ci-keycloak-realm.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
-import { selectTemplateDrivers } from "../helpers/connection-template-drivers.mjs";
+import { createBackendFixture } from "../helpers/postgres-backend-state.mjs";
+import { waitFor } from "../helpers/wait-for.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -106,8 +110,8 @@ test(
       }
     });
 
-    // The real Token Service and OpenShell Drivers run against recording Secret/OpenShell stores.
-    // Keycloak issues real tokens for the saved accounts.
+    // The API and Token Service use the fixture Secret store. Keycloak authenticates the
+    // registration and issues actual tokens without OpenShell or a Credential Refresh Driver.
     const secretDriver = { ...createTestSecretDriver(), capability: "secret" as const };
     const preparedTokens = new TokenService(
       new OAuthConnectionTokens(secretDriver, refreshPinnedOAuthGrant),
@@ -115,13 +119,12 @@ test(
     const serverUrl = "https://api.connections.test/mcp";
     let discoveredResource = serverUrl;
     const tokenUrl = `${tokenOrigin}/realms/oce/protocol/openid-connect/token`;
-    let skew = 0;
-    const { app, controller, state, principal, computeDriver, inject, pool, adminAccount } =
+    const { app, controller, state, principal, inject, pool, adminAccount } =
       await createPostgresAgentApp(t, {
         label: "saved-account",
         authSecret: "saved-account-test-auth-secret-minimum-32-bytes",
         secretDriver,
-        controllerOptions: { preparedTokens, now: () => new Date(Date.now() + skew) },
+        controllerOptions: { preparedTokens },
         appOptions: {
           // Discovery metadata is controlled; authorization, consent and token exchange reach Keycloak.
           discoverMcpAuthorization: async (discoveredUrl: string) => ({
@@ -158,15 +161,6 @@ test(
       );
       await auth.provisionPasswordAccount(prepared, seed, audit, external);
     };
-    Object.assign(computeDriver, {
-      resolveSandboxNamespace: async (namespace: { id: string }) => ({
-        ...namespace,
-        name: `oce-${namespace.id.slice(3, 11)}`,
-      }),
-    });
-    const { createdProviders, refresh } = selectTemplateDrivers(controller, {
-      selectGateway: false,
-    });
     const makeNamespace = async () => {
       const result = await inject("POST", "/namespaces", { name: `Accounts ${randomUUID()}` });
       assert.equal(result.statusCode, 201, result.body);
@@ -212,6 +206,15 @@ test(
     // Registering the first client makes the current template ready for consent.
     const manualStart = await inject("POST", connections, manual);
     assert.equal(manualStart.statusCode, 201, manualStart.body);
+    // A cancelled browser attempt has no outstanding gateway write. An admin can retire it immediately.
+    const pendingId = manualStart.json().data.credentialSourceId;
+    const removed = await inject("DELETE", `${base}/credential-sources/${pendingId}`);
+    assert.equal(removed.statusCode, 204, removed.body);
+    const pendingSession = await pool.query(
+      "SELECT 1 FROM occ.connection_sessions WHERE credential_source_id=$1",
+      [pendingId],
+    );
+    assert.equal(pendingSession.rowCount, 0);
     const mcpConfig = {
       displayName: "Scope selection",
       mode: "mcp_discovery",
@@ -483,17 +486,22 @@ test(
       ],
     );
     const source = `${base}/credential-sources/${id}`;
-    assert.equal((await owner("GET", source)).statusCode, 200);
+    const sourceDetails = await owner("GET", source);
+    assert.equal(sourceDetails.statusCode, 200, sourceDetails.body);
+    assert.equal(sourceDetails.json().data.ownerCapability, "token_service");
     const readerAccounts = await reader("GET", connections);
     assert.equal(readerAccounts.statusCode, 200, readerAccounts.body);
     assert.deepEqual(readerAccounts.json().data, []);
     assert.equal((await reader("GET", source)).statusCode, 403);
     assert.equal((await reader("DELETE", `${connections}/${id}`)).statusCode, 403);
     const custody = await pool.query(
-      "SELECT secret_ref FROM occ.connection_token_custody WHERE namespace_id=$1 AND credential_source_id=$2",
+      `SELECT custody.secret_ref, source.driver_id FROM occ.connection_token_custody custody
+       JOIN occ.credential_sources source ON source.namespace_id = custody.namespace_id AND source.id = custody.credential_source_id
+       WHERE custody.namespace_id=$1 AND custody.credential_source_id=$2`,
       [namespaceId, id],
     );
     assert.equal(custody.rowCount, 1);
+    assert.equal(custody.rows[0].driver_id, null);
     const privateRef = custody.rows[0].secret_ref;
     assert.ok(secretDriver.has(privateRef));
     const account = accounts.json().data[0];
@@ -644,9 +652,33 @@ test(
       mcpConfig,
     );
     assert.equal(restoreMcp.statusCode, 200, restoreMcp.body);
-    // Advancing OCC's clock clears the credential registration fence without delaying the test.
-    skew = 120_000;
-    assert.equal((await owner("DELETE", `${connections}/${id}`)).statusCode, 204);
+    // The SQL revocation survives a transient custody failure. A worker with the same
+    // Secret store and Token Service finishes it after the API request has returned.
+    const unavailableDelete = t.mock.method(
+      secretDriver,
+      "delete",
+      async () => {
+        throw new DependencyUnavailableError("Secret store unavailable");
+      },
+      { times: 1 },
+    );
+    const interrupted = await owner("DELETE", `${connections}/${id}`);
+    assert.equal(interrupted.statusCode, 503, interrupted.body);
+    unavailableDelete.mock.restore();
+    assert.ok(secretDriver.has(privateRef));
+    const recovery = await createBackendFixture(t);
+    const { worker } = recovery.startWorker({
+      backends: [],
+      secretDriver,
+      tokenService: preparedTokens,
+    });
+    await worker.start();
+    await waitFor("the worker to retire the disconnected account", async () => {
+      const remaining = await state.read((view) =>
+        view.savedConnections.findSavedConnection(namespaceId, id),
+      );
+      return remaining === undefined ? true : undefined;
+    });
     assert.equal(
       (
         await pool.query(
@@ -657,11 +689,6 @@ test(
       0,
     );
     assert.equal(secretDriver.has(privateRef), false);
-    assert.deepEqual(
-      createdProviders,
-      [],
-      "no OpenShell provider receives user or OAuth client credentials",
-    );
     // A second issuer becomes eligible after the first browser obtained its code. Even after the
     // template changes, callbacks from both usable versions could still be in flight.
     const pending = await begin();
@@ -705,15 +732,16 @@ test(
       authSecret: "saved-account-test-auth-secret-minimum-32-bytes",
     });
     const waiting = await begin();
-    const exchange = t.mock.method(refresh, "completeBrowserAuthorization");
     const lock = await pool.connect();
     let blocked;
+    let verifier: string;
     try {
       await lock.query("BEGIN");
       const held = await lock.query(
-        "DELETE FROM occ.connection_sessions WHERE credential_source_id=$1 RETURNING pg_backend_pid() AS pid",
+        "DELETE FROM occ.connection_sessions WHERE credential_source_id=$1 RETURNING pg_backend_pid() AS pid, pkce_verifier",
         [waiting.id],
       );
+      verifier = held.rows[0].pkce_verifier;
       blocked = owner("GET", waiting.callback);
       await waitForLockWaiter(
         pool,
@@ -728,10 +756,21 @@ test(
     }
     const refused = await blocked;
     assert.match(String(refused.headers.location), /reason=session_required/);
-    assert.equal(
-      exchange.mock.callCount(),
-      0,
-      "the code must not reach the Refresh Driver after logout",
-    );
+    // Keycloak still accepts this one-time code. A callback that exchanged it after logout would consume it.
+    const unspent = await fetch(tokenUrl, {
+      method: "POST",
+      headers: {
+        authorization: "Basic " + Buffer.from(`${clientId}:${replacement}`).toString("base64"),
+      },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code: new URL(waiting.callback, publicOrigin).searchParams.get("code")!,
+        code_verifier: verifier,
+        redirect_uri: redirectUri,
+      }),
+      signal: t.signal,
+    });
+    await unspent.body?.cancel();
+    assert.equal(unspent.status, 200, "logout prevents OCE from redeeming the authorization code");
   },
 );
