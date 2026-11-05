@@ -35,7 +35,7 @@ function connectionFromRow(row: Row): Readonly<SavedConnection> {
     tokenUrl: text(row, "token_url"),
     ...(row.mcp_server_url == null ? {} : { mcpServerUrl: text(row, "mcp_server_url") }),
     issuer: text(row, "issuer"),
-    recipient: row.recipient as SavedConnection["recipient"],
+    destinations: row.destinations as SavedConnection["destinations"],
     ...(row.resource == null ? {} : { resource: text(row, "resource") }),
     requestedScopes: row.requested_scopes as string[],
     grantedScopes: row.granted_scopes as string[],
@@ -243,7 +243,7 @@ export function postgresSavedConnections(
         `INSERT INTO occ.saved_connections
          (namespace_id, credential_source_id, owner_principal_id,
           connection_template_id, connection_template_version, created_at,
-          oauth_client_id,client_id,issuer,recipient,resource,requested_scopes,granted_scopes,token_url,mcp_server_url)
+          oauth_client_id,client_id,issuer,destinations,resource,requested_scopes,granted_scopes,token_url,mcp_server_url)
          VALUES ($1, $2, $3, $4, $5, $6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,$15)`,
         [
           connection.namespaceId,
@@ -255,7 +255,7 @@ export function postgresSavedConnections(
           connection.oauthClientId,
           connection.clientId,
           connection.issuer,
-          JSON.stringify(connection.recipient),
+          JSON.stringify(connection.destinations),
           connection.resource ?? null,
           connection.requestedScopes,
           connection.grantedScopes,

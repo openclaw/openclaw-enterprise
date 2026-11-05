@@ -32,7 +32,7 @@ export interface PluginDiscoveryAuthentication {
 /** Only the issuer selects candidate accounts. The receiver controls where a token may go. */
 export type PluginAccountTarget = Pick<
   ConnectionTemplateValues,
-  "issuer" | "tokenUrl" | "recipient" | "mcp"
+  "issuer" | "tokenUrl" | "destinations" | "mcp"
 >;
 
 export interface PluginDriver extends Driver {

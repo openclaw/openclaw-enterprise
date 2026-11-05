@@ -215,7 +215,11 @@ function validGoogleRequest(
       )
     );
   }
-  if (!("kind" in scope) && (host !== scope.host || !googleSourcePathMatches(scope.path, path))) {
+  if (
+    !scope.destinations.some(
+      (row) => row.host === host && row.port === port && googleSourcePathMatches(row.path, path),
+    )
+  ) {
     return false;
   }
   if (

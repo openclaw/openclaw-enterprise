@@ -234,23 +234,25 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
   const namespaceId = await makeNamespace();
   const base = `/namespaces/${namespaceId}`;
   const connections = `${base}/connections`;
-  const recipient = {
-    host: pluginWorkflow ? "gmail.googleapis.com" : "api.connections.test",
-    port: 443,
-    path: "/**",
-  };
+  const recipient = { host: "api.connections.test", port: 443, path: "/mcp" };
+  const manualDestinations = [
+    recipient,
+    { host: "files.connections.test", port: 443, path: "/exports/**" },
+  ];
   const manualConfig = {
     mode: "manual",
-    displayName: "Keycloak",
-    namespaceId,
     issuer,
     authorizationUrl: `${issuer}/protocol/openid-connect/auth`,
     tokenUrl,
-    recipient,
+    destinations: pluginWorkflow
+      ? [{ host: "gmail.googleapis.com", port: 443, path: "/**" }]
+      : manualDestinations,
     scopes,
   };
   const template = await inject("POST", "/connection-templates", {
     ...manualConfig,
+    displayName: "Keycloak",
+    namespaceId,
     revocationUrl: `${issuer}/protocol/openid-connect/revoke`,
   });
   assert.equal(template.statusCode, 201, template.body);
@@ -321,6 +323,7 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
       oauthClientId,
       scopes: [],
       displayName: "Provider defaults",
+      namespaceId,
     });
     assert.equal(unrestrictedManual.statusCode, 201, unrestrictedManual.body);
     const [keycloakClient] = await keycloakRealmAdmin(
@@ -355,6 +358,41 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
       );
     assert.deepEqual(defaultAccount.requestedScopes, []);
     assert.deepEqual(defaultAccount.grantedScopes, ["profile"]);
+    assert.deepEqual(defaultAccount.destinations, manualDestinations);
+    // New destinations require new consent. The pinned version also rejects a forged wider receipt.
+    const widened = [
+      ...manualDestinations,
+      { host: "other.connections.test", port: 443, path: "/**" },
+    ];
+    const updated = await inject(
+      "PATCH",
+      "/connection-templates/" + defaultAccount.connectionTemplateId,
+      {
+        ...manualConfig,
+        oauthClientId,
+        scopes: [],
+        destinations: widened,
+      },
+    );
+    assert.equal(updated.statusCode, 200, updated.body);
+    assert.deepEqual(updated.json().data.current.destinations, widened);
+    const savedAgain = await owner("GET", connections);
+    assert.equal(savedAgain.statusCode, 200, savedAgain.body);
+    const approved = savedAgain
+      .json()
+      .data.find((row: { credentialSourceId: string }) => row.credentialSourceId === defaultsId);
+    assert.deepEqual(approved.destinations, manualDestinations);
+    assert.ok(approved.connectionTemplateVersion < updated.json().data.current.version);
+    await assert.rejects(
+      pool.query(
+        `INSERT INTO occ.saved_connections
+         SELECT (jsonb_populate_record(NULL::occ.saved_connections,
+           to_jsonb(s) || jsonb_build_object('destinations', $2::jsonb))).*
+         FROM occ.saved_connections s WHERE credential_source_id = $1`,
+        [defaultsId, JSON.stringify(widened)],
+      ),
+      { code: "23514", message: /approved template version/ },
+    );
     await keycloakRealmAdmin(issuer, secrets.admin, "DELETE", defaultPath);
     const disconnected = await owner("DELETE", connections + "/" + defaultsId);
     assert.equal(disconnected.statusCode, 204, disconnected.body);
@@ -557,38 +595,13 @@ test(
     assert.ok(secretDriver.has(privateRef));
     const account = accounts.json().data[0];
     // Google is the controlled exchange in this case. A receipt for an exact Google
-    // template with the same client cannot claim the wider provider recipient.
-    const google = await connectFixtureGoogleAccount(t, owner, namespaceId, [
-      "https://www.googleapis.com/auth/gmail.readonly",
-    ]);
-    const exact = await owner("POST", "/connection-templates", {
-      ...google.templateInput,
-      displayName: "Gmail only",
-      recipient: { host: "gmail.googleapis.com", port: 443, path: "/**" },
-    });
-    assert.equal(exact.statusCode, 201, exact.body);
-    await assert.rejects(
-      pool.query(
-        `INSERT INTO occ.saved_connections
-         SELECT (jsonb_populate_record(NULL::occ.saved_connections,
-           to_jsonb(s) || jsonb_build_object('connection_template_id',$2::text))).*
-         FROM occ.saved_connections s WHERE credential_source_id=$1`,
-        [google.credentialSourceId, exact.json().data.id],
-      ),
-      { code: "23514" },
-    );
-    assert.equal(
-      (await owner("DELETE", connections + "/" + google.credentialSourceId)).statusCode,
-      204,
-    );
-
     assert.deepEqual(
       [
         account.oauthClientId,
         account.clientId,
         account.issuer,
         account.tokenUrl,
-        account.recipient,
+        account.destinations,
         account.requestedScopes,
         account.grantedScopes,
       ],
@@ -597,7 +610,7 @@ test(
         clientId,
         issuer,
         tokenUrl,
-        { host: "api.connections.test", port: 443, path: "/mcp" },
+        [{ host: "api.connections.test", port: 443, path: "/mcp" }],
         ["openid"],
         ["openid"],
       ],
@@ -810,11 +823,34 @@ test(
           if (requestedPlugin !== pluginId) {
             return undefined;
           }
-          return managedPluginAccountSlot(
-            Object.hasOwn(primary.credentials, requestedSlot) ? primary : reports,
+          const directory = Object.hasOwn(primary.credentials, requestedSlot);
+          const admitted = managedPluginAccountSlot(
+            directory ? primary : reports,
             selections,
             requestedSlot,
           );
+          if (!directory || !admitted) {
+            return admitted;
+          }
+          return {
+            ...admitted,
+            delivery(target, grantedScopes) {
+              const delivery = admitted.delivery(target, grantedScopes);
+              const [receiver] = target.destinations;
+              // This test Driver presents its Keycloak account through the normal single-target
+              // sender. The bundled Google sender below requires Google's own issuer and client.
+              const { destinations: _, ...config } = delivery.config;
+              return {
+                ...delivery,
+                config: {
+                  ...config,
+                  host: receiver!.host,
+                  port: String(receiver!.port),
+                  path: receiver!.path,
+                },
+              };
+            },
+          };
         },
       },
     };
@@ -1256,8 +1292,8 @@ test(
         ])
         .sort(),
       [
-        ["gmail.googleapis.com", 443, "/gmail/**"],
-        ["www.googleapis.com", 443, "/calendar/**"],
+        ["gmail.googleapis.com", 443, "/gmail/v1/users/me/messages"],
+        ["www.googleapis.com", 443, "/calendar/v3/**"],
       ],
     );
     assert.ok(

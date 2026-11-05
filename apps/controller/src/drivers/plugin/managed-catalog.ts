@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import {
-  isGoogleApisRecipient,
   type CredentialSource,
   type PluginAccountTarget,
   type PluginCatalogEntry,
@@ -398,29 +397,26 @@ export function managedPluginAccountSlot(
   const current = bindings?.[slotId];
   const slot = install.credentials[slotId]!;
   function acceptsRecipient(target: PluginAccountTarget) {
-    const { recipient, mcp } = target;
-    if (isGoogleApisRecipient(recipient)) {
-      return (
-        install.kind === "cli" &&
-        googleWorkspaceCredentialPolicy.supportsGoogleApis(install, install.credentials[slotId]!) &&
-        !mcp &&
-        target.issuer === slot.issuer &&
-        target.tokenUrl === install.credentials[slotId]!.tokenEndpoint
-      );
+    const { destinations, mcp } = target;
+    if (target.issuer !== slot.issuer) {
+      return false;
     }
     if (install.kind === "mcp") {
+      const [endpoint] = destinations;
       return (
+        destinations.length === 1 &&
+        endpoint !== undefined &&
         mcp?.serverUrl === install.url &&
         mcp.resource === install.credentials[slotId]!.mcp.resource &&
-        recipient.host === install.endpoint.host &&
-        recipient.port === install.endpoint.port &&
-        recipient.path === install.endpoint.path
+        endpoint.host === install.endpoint.host &&
+        endpoint.port === install.endpoint.port &&
+        endpoint.path === install.endpoint.path
       );
     }
     return (
       !mcp &&
       target.tokenUrl === install.credentials[slotId]!.tokenEndpoint &&
-      isGoogleWorkspaceRecipient(recipient.host, recipient.port, recipient.path)
+      destinations.some(isGoogleWorkspaceRecipient)
     );
   }
   return {
@@ -429,20 +425,12 @@ export function managedPluginAccountSlot(
     issuers: [slot.issuer],
     acceptsRecipient,
     delivery(target: PluginAccountTarget, grantedScopes: readonly string[]) {
-      const { recipient } = target;
-      if (isGoogleApisRecipient(recipient) && !acceptsRecipient(target)) {
+      if (!acceptsRecipient(target)) {
         throw new ConfigurationHarnessError(
-          "Google APIs delivery requires the reviewed Google account slot.",
+          "The saved account does not match this plugin slot's approved destination.",
         );
       }
       const config: Record<string, string> = {
-        ...(isGoogleApisRecipient(recipient)
-          ? { recipient_kind: recipient.kind }
-          : {
-              host: recipient.host,
-              port: String(recipient.port),
-              path: recipient.path,
-            }),
         // Both reviewed senders use POST for protected requests. Each operation or tool
         // remains subject to its plugin's request policy.
         access: "full",
@@ -454,9 +442,15 @@ export function managedPluginAccountSlot(
         oauth_owner: "token_service",
       };
       if (install.kind === "mcp") {
+        const [endpoint] = target.destinations;
+        config.host = endpoint!.host;
+        config.port = String(endpoint!.port);
+        config.path = endpoint!.path;
         config.protocol = "mcp";
       } else {
-        const scopes = googleWorkspaceDeliveryScopes(target.recipient, grantedScopes);
+        const destinations = target.destinations.filter(isGoogleWorkspaceRecipient);
+        config.destinations = JSON.stringify(destinations);
+        const scopes = googleWorkspaceDeliveryScopes(destinations, grantedScopes);
         if (scopes.length) {
           config.scope = scopes.join(" ");
         }

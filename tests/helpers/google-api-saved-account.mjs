@@ -16,7 +16,10 @@ export async function connectFixtureGoogleAccount(t, owner, namespaceId, granted
     tokenUrl,
     revocationUrl,
     scopes: [],
-    recipient: { kind: "google_apis" },
+    destinations: [
+      { host: "gmail.googleapis.com", port: 443, path: "/gmail/v1/users/me/messages" },
+      { host: "www.googleapis.com", port: 443, path: "/calendar/v3/**" },
+    ],
   };
   const template = await owner("POST", "/connection-templates", templateInput);
   assert.equal(template.statusCode, 201, template.body);
@@ -65,7 +68,7 @@ export async function connectFixtureGoogleAccount(t, owner, namespaceId, granted
   const saved = await owner("GET", path);
   assert.equal(saved.statusCode, 200, saved.body);
   const receipt = saved.json().data.find((row) => row.credentialSourceId === credentialSourceId);
-  assert.deepEqual(receipt.recipient, templateInput.recipient);
+  assert.deepEqual(receipt.destinations, templateInput.destinations);
   assert.deepEqual(receipt.grantedScopes, grantedScopes);
   return {
     credentialSourceId,

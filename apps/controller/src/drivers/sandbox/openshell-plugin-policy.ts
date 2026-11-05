@@ -9,7 +9,6 @@ import {
 } from "./openshell-gateway-client.ts";
 import {
   eligibleGoogleOperations,
-  googleCredentialEndpoints,
   googleDiscoveryRequests,
   googleScopeFromString,
   type GoogleRequestScope,
@@ -123,7 +122,7 @@ export function openShellPluginPolicy(
   const providerRule = {
     name: provider,
     binaries: (binaries ?? googleCli).map((path) => ({ path })),
-    endpoints: googleCredentialEndpoints(scope).map((target) => ({
+    endpoints: scope.destinations.map((target) => ({
       ...openShellProfileEndpoint({ ...target, protocol: "rest" }),
       provider_credentialed: true,
     })),
@@ -140,10 +139,7 @@ export function googleRequestPolicy(scope: GoogleRequestScope, binaries?: readon
   }
   const discovery = googleDiscoveryRequests(scope, entries);
   const hosts = [
-    ...new Set([
-      ...entries.map(([, op]) => new URL(op.origin).hostname),
-      ...discovery.map((r) => r.host),
-    ]),
+    ...new Set([...entries.map(({ endpoint }) => endpoint.host), ...discovery.map((r) => r.host)]),
   ];
   const middlewares = {
     [managedPluginMiddleware]: {
@@ -171,14 +167,8 @@ export function googleRequestPolicy(scope: GoogleRequestScope, binaries?: readon
     rules.set(method + " " + path, { method, path });
     allows.set(host, rules);
   }
-  for (const [, op] of entries) {
-    const literal = op.path.split("{")[0]!;
-    const inside =
-      "kind" in scope ||
-      scope.path === "/**" ||
-      (scope.path.endsWith("/**") && literal.startsWith(scope.path.slice(0, -2)));
-    const path = inside ? op.path.replace(/\{\+?\w+\}/g, "*") : scope.path;
-    permit(new URL(op.origin).hostname, op.method, path);
+  for (const { op, endpoint, rulePath } of entries) {
+    permit(endpoint.host, op.method, rulePath);
   }
   for (const { host, path } of discovery) {
     permit(host, "GET", path);

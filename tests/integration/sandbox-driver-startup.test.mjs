@@ -1133,9 +1133,9 @@ test("a selected Google account uses its exact provider and a signed, fail-close
     },
   };
   const requestScope = {
-    host: "gmail.googleapis.com",
-    port: 443,
-    path: "/gmail/v1/users/me/messages",
+    destinations: [
+      { host: "gmail.googleapis.com", port: 443, path: "/gmail/v1/users/me/messages" },
+    ],
     scopes: ["https://www.googleapis.com/auth/gmail.readonly"],
   };
   requirements.credentialAttachments = [
@@ -1266,11 +1266,11 @@ test("a selected Google account uses its exact provider and a signed, fail-close
 
   // For a host-wide source, stock OpenShell also marks the matching operation
   // endpoint credentialed in GetSandboxConfig. The saved CreateSandbox spec stays raw.
-  requestScope.path = "/**";
+  requestScope.destinations[0].path = "/**";
   providerRule.endpoints[0].path = "/**";
   created = undefined;
   await assert.rejects(provision, /pinned Google request routes/);
-  credentialedHosts.add(requestScope.host);
+  credentialedHosts.add(requestScope.destinations[0].host);
   await provision();
   assert.ok(
     created.spec.policy.network_policies["oce-google-requests"].endpoints.every(
@@ -1329,19 +1329,24 @@ test("one saved Google account serves its granted APIs through the same request 
   const target = {
     issuer: managedGoogleInstall.credentials.account.issuer,
     tokenUrl: managedGoogleInstall.credentials.account.tokenEndpoint,
-    recipient: { kind: "google_apis" },
+    destinations: [
+      { host: "gmail.googleapis.com", port: 443, path: "/gmail/v1/users/me/messages" },
+      { host: "www.googleapis.com", port: 443, path: "/calendar/v3/**" },
+      { host: "www.googleapis.com", port: 8443, path: "/drive/v3/**" },
+    ],
   };
   assert.equal(slot.acceptsRecipient(target), true);
   assert.equal(
     slot.acceptsRecipient({
       ...target,
-      recipient: { host: "gmail.googleapis.com", port: 443, path: "/unreviewed/path" },
+      destinations: [{ host: "gmail.googleapis.com", port: 443, path: "/unreviewed/path" }],
     }),
     false,
   );
   const delivery = slot.delivery(target, [
     "https://www.googleapis.com/auth/gmail.metadata",
     "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/drive.readonly",
   ]);
   const config = { ...delivery.config, issuer: target.issuer, client_id: "test-google" };
   const source = {
@@ -1386,8 +1391,8 @@ test("one saved Google account serves its granted APIs through the same request 
   assert.equal(profile.credentials.length, 1);
   assert.deepEqual(profile.credentials[0].envVars, ["GOG_ACCESS_TOKEN"]);
   assert.deepEqual(profile.endpoints.map(({ host, port, path }) => [host, port, path]).sort(), [
-    ["gmail.googleapis.com", 443, "/gmail/**"],
-    ["www.googleapis.com", 443, "/calendar/**"],
+    ["gmail.googleapis.com", 443, "/gmail/v1/users/me/messages"],
+    ["www.googleapis.com", 443, "/calendar/v3/**"],
   ]);
   const guard = openShellPluginPolicy(
     revision,
@@ -1555,9 +1560,7 @@ test("OpenShell limits a Slack connection to the revision's exact MCP tools and 
       sourceId,
       ref,
       requestScope: {
-        host: "mcp.slack.com",
-        port: 443,
-        path: "/mcp",
+        destinations: [{ host: "mcp.slack.com", port: 443, path: "/mcp" }],
         scopes: ["search:read.public"],
       },
     },
@@ -1631,13 +1634,13 @@ test("OpenShell limits a Slack connection to the revision's exact MCP tools and 
   revision.plugins = plugins;
   revision.credentialSources = [{ sourceId }];
   const requestScope = requirements.credentialAttachments[0].requestScope;
-  requestScope.port = 8443;
+  requestScope.destinations[0].port = 8443;
   await assert.rejects(
     provision,
     /requires its reviewed OpenShell provider and an isolated endpoint/,
   );
   assert.equal(created, undefined);
-  requestScope.port = 443;
+  requestScope.destinations[0].port = 443;
   await provision();
   const route = created.spec.policy.network_policies[routeName];
   assert.equal(route.endpoints[0].protocol, "mcp");
@@ -5436,9 +5439,9 @@ test("a directly configured Google OAuth source admits only the pinned executabl
           sourceId,
           ref: openShellProviderName(sourceId),
           requestScope: {
-            host: "gmail.googleapis.com",
-            port: 443,
-            path: "/gmail/v1/users/me/messages",
+            destinations: [
+              { host: "gmail.googleapis.com", port: 443, path: "/gmail/v1/users/me/messages" },
+            ],
             scopes: ["https://www.googleapis.com/auth/gmail.readonly"],
           },
         },
@@ -5496,9 +5499,7 @@ test("a Slack MCP source stays independent and cannot acquire a broad REST crede
       sourceId,
       ref,
       requestScope: {
-        host: "mcp.slack.com",
-        port: 443,
-        path: "/mcp",
+        destinations: [{ host: "mcp.slack.com", port: 443, path: "/mcp" }],
         scopes: [],
       },
     },

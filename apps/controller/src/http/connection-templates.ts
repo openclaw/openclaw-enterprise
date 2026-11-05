@@ -8,6 +8,7 @@ import type {
 } from "@openclaw-enterprise/occ";
 import type { FastifyReply, FastifyRequest } from "fastify";
 
+import { googleWorkspaceDestinations } from "../drivers/plugin/google-workspace/operations.ts";
 import type { discoverMcpAuthorization } from "../connections/mcp-discovery.ts";
 
 function presentClient(client: OAuthClient) {
@@ -29,7 +30,7 @@ type TemplateHandler = (input: {
 export const connectionTemplateHandlers: Partial<Record<OccApiOperationId, TemplateHandler>> = {
   async listConnectionTemplates({ meta, controller, actorId, reply }) {
     const templates = await controller.listConnectionTemplates(actorId);
-    reply.send({ data: templates, meta });
+    reply.send({ data: templates, meta: { ...meta, googleWorkspaceDestinations } });
   },
   async createConnectionTemplate({
     holdSession,

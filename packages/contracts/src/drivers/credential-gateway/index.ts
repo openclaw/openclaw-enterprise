@@ -2,7 +2,7 @@ import type { CredentialRefreshStatus } from "../credential-refresh/index.ts";
 import type { Driver } from "../index.ts";
 import type {
   AgentRevision,
-  ConnectionRecipient,
+  ConnectionEndpoint,
   CredentialSource,
   CredentialSourceType,
   Namespace,
@@ -74,7 +74,8 @@ export interface CredentialSourceAttachment {
   readonly sourceId: string;
   readonly ref: string;
   /** Non-secret limits of the attached OAuth provider for a Sandbox request guard. */
-  readonly requestScope?: ConnectionRecipient & {
+  readonly requestScope?: {
+    readonly destinations: readonly ConnectionEndpoint[];
     readonly scopes: readonly string[];
     /** Sender-approved executables that share this saved account’s request guard. */
     readonly binaries?: readonly string[];

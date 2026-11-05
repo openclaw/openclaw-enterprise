@@ -435,7 +435,7 @@ function oauth2SourceType(
     // The token endpoint lives only in the profile: OpenShell refuses it as refresh material.
     profile: (sourceId, config, options, gateway) => {
       let endpoints: readonly ConnectionEndpoint[] | undefined;
-      if (config.recipient_kind === undefined) {
+      if (config.destinations === undefined) {
         checkStoredHost(config);
       } else {
         const slot = managedGoogleInstall.credentials.account!;
@@ -446,10 +446,9 @@ function oauth2SourceType(
           config.issuer !== slot.issuer ||
           config.token_url !== slot.tokenEndpoint ||
           config.env_var !== slot.delivery.env ||
-          !scope ||
-          !("kind" in scope)
+          !scope
         ) {
-          throw new StoredCredentialSourceConfigError("recipient_kind");
+          throw new StoredCredentialSourceConfigError("destinations");
         }
         endpoints = googleCredentialEndpoints(scope);
         if (!endpoints.length) {
@@ -1388,12 +1387,12 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     if (
       context.sources.some(
         (source) =>
-          source.config.recipient_kind === "google_apis" &&
+          source.config.destinations !== undefined &&
           (!savedGoogleAccount || source.id !== binding?.sourceId),
       )
     ) {
       throw new ScopeViolationError(
-        "A Google APIs account requires its managed Google request guard.",
+        "A saved Google account requires its managed Google request guard.",
       );
     }
     if (binding && selected) {
@@ -1482,9 +1481,10 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
           ref: name,
           ...((source.id === binding?.sourceId || source.config.protocol === "mcp") && {
             requestScope: {
-              ...(source.config.recipient_kind === "google_apis"
-                ? { kind: "google_apis" as const }
-                : bearerTokenEndpoint(source.config)),
+              destinations:
+                source.config.destinations === undefined
+                  ? [bearerTokenEndpoint(source.config)]
+                  : googleCredentialEndpoints(googleSourceRequestScope(source.config)!),
               scopes: (source.config.scope ?? "").split(/\s+/).filter(Boolean),
               ...(savedGoogleAccount &&
                 source.id === binding?.sourceId && {

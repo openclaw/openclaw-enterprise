@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
+import type { ConnectionEndpoint } from "../../packages/contracts/src/index.ts";
 import { discoverMcpAuthorization } from "../../apps/controller/src/connections/mcp-discovery.ts";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 import { selectTemplateDrivers } from "../helpers/connection-template-drivers.mjs";
@@ -33,7 +34,7 @@ const manual = {
   tokenUrl,
   revocationUrl: issuer + "/revoke",
   scopes: ["mail.read"],
-  recipient: { host: "mail.example.test", path: "/v1/**" },
+  destinations: [{ host: "mail.example.test", path: "/v1/**" }],
 };
 
 async function createManualDraft(
@@ -50,43 +51,77 @@ async function createManualDraft(
 }
 
 test(
-  "a Google API recipient pins the provider and can be narrowed in a new template version",
+  "Google defaults and edited HTTPS destination rows stay pinned to the saved template version",
   requiresPostgres,
   async (t) => {
-    const { inject, state } = await createPostgresAgentApp(t, options);
+    const { inject, state, pool } = await createPostgresAgentApp(t, options);
+    const list = await inject("GET", "/connection-templates");
+    assert.equal(list.statusCode, 200, list.body);
+    const defaults: ConnectionEndpoint[] = list.json().meta.googleWorkspaceDestinations;
+    assert.ok(
+      defaults.some((row) => row.host === "gmail.googleapis.com" && row.path === "/gmail/**"),
+    );
+    assert.deepEqual(
+      defaults.filter((row) => row.host === "www.googleapis.com"),
+      [
+        { host: "www.googleapis.com", port: 443, path: "/calendar/**" },
+        { host: "www.googleapis.com", port: 443, path: "/drive/**" },
+      ],
+    );
     const google = {
       ...manual,
       issuer: "https://accounts.google.com",
       authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
       tokenUrl: "https://oauth2.googleapis.com/token",
       revocationUrl: "https://oauth2.googleapis.com/revoke",
-      recipient: { kind: "google_apis" },
+      destinations: defaults,
     };
     const created = await inject("POST", "/connection-templates", google);
     assert.equal(created.statusCode, 201, created.body);
     const template = created.json().data;
-    assert.deepEqual(template.current.recipient, { kind: "google_apis" });
-    assert.equal(template.current.oauthClientId, undefined);
-    // The family is reserved for Google's OAuth flow, even when creating a draft without a client.
-    for (const field of ["issuer", "authorizationUrl", "tokenUrl", "revocationUrl"]) {
-      const mismatch = await inject("PATCH", "/connection-templates/" + template.id, {
-        ...google,
-        [field]: issuer,
-      });
-      assert.equal(mismatch.statusCode, 400, mismatch.body);
-    }
-    const endpoint = { host: "gmail.googleapis.com", port: 443, path: "/gmail/v1/**" };
-    const narrowed = await inject("PATCH", "/connection-templates/" + template.id, {
+    assert.deepEqual(template.current.destinations, defaults);
+    const url = "/connection-templates/" + template.id;
+    // The admin can keep two paths on a shared host and approve a separate host/port pair.
+    const expected = [
+      { host: "api.example.test", port: 443, path: "/**" },
+      { host: "api.example.test", port: 443, path: "/v2" },
+      { host: "files.example.test", port: 8443, path: "/v2/**" },
+    ];
+    const edited = await inject("PATCH", url, {
       ...google,
-      recipient: endpoint,
+      destinations: [expected[2], { host: "API.example.test" }, expected[1], expected[0]],
     });
-    assert.equal(narrowed.statusCode, 200, narrowed.body);
-    assert.equal(narrowed.json().data.current.version, 2);
-    assert.deepEqual(narrowed.json().data.current.recipient, endpoint);
+    assert.equal(edited.statusCode, 200, edited.body);
+    assert.equal(edited.json().data.current.version, 2);
+    assert.deepEqual(edited.json().data.current.destinations, expected);
+    const reordered = await inject("PATCH", url, {
+      ...google,
+      destinations: [...expected].reverse(),
+    });
+    assert.equal(reordered.statusCode, 200, reordered.body);
+    assert.equal(reordered.json().data.current.version, 2);
     const pinned = await state.read((tx) =>
       tx.connectionTemplates.findOAuthConnectionTemplateVersion(template.id, 1),
     );
-    assert.deepEqual(pinned?.recipient, { kind: "google_apis" });
+    assert.deepEqual(pinned?.destinations, defaults);
+    for (const bad of [
+      [],
+      [{ host: "*.example.test" }],
+      [{ host: "api.example.test", path: "/v1?token" }],
+    ]) {
+      assert.equal((await inject("PATCH", url, { ...google, destinations: bad })).statusCode, 400);
+    }
+    // A caller bypassing normal HTTP writes still cannot insert duplicate routes in a version.
+    await assert.rejects(
+      pool.query(
+        `INSERT INTO occ.oauth_connection_template_versions
+        (template_id, version, issuer, mode, authorization_url, token_url, scopes, authorization_parameters, destinations, created_at)
+       SELECT template_id, 3, issuer, mode, authorization_url, token_url, scopes, authorization_parameters, $2, now()
+       FROM occ.oauth_connection_template_versions WHERE template_id=$1 AND version=2`,
+        [template.id, JSON.stringify([expected[0], expected[0]])],
+      ),
+      { code: "23514", constraint: "oauth_connection_template_versions_destinations_valid" },
+    );
   },
 );
 
@@ -478,11 +513,7 @@ test(
     const { current } = result.json().data;
     assert.deepEqual(current.scopes, ["messages.read"]);
     assert.deepEqual(current.observed.resourceScopes, ["messages.read", "messages.write"]);
-    assert.deepEqual(current.recipient, {
-      host: "mcp.example.test",
-      port: 443,
-      path: "/mcp",
-    });
+    assert.deepEqual(current.destinations, [{ host: "mcp.example.test", port: 443, path: "/mcp" }]);
     assert.deepEqual(current.mcp, { serverUrl, resource });
     assert.equal(current.tokenUrl, issuer + "/token?tenant=acme");
   },

@@ -22,17 +22,13 @@ const ConnectionEndpointSchema = Type.Object(
   { additionalProperties: false },
 );
 
-const googleApisRecipient = Type.Object(
-  { kind: Type.Literal("google_apis") },
-  { additionalProperties: false },
-);
-export const ConnectionRecipientSchema = Type.Union([
+export const ConnectionDestinationsSchema = Type.Array(
   Type.Object(
     { host: Type.String(), port: Type.Integer(), path: Type.String() },
     { additionalProperties: false },
   ),
-  googleApisRecipient,
-]);
+  { minItems: 1 },
+);
 
 const Meta = Type.Object(
   { requestId: RequestId, redirectUri: Type.Optional(Type.String()) },
@@ -69,7 +65,7 @@ const manual = {
   authorizationUrl: HttpsUrl,
   tokenUrl: HttpsUrl,
   revocationUrl: Type.Optional(HttpsUrl),
-  recipient: Type.Union([ConnectionEndpointSchema, googleApisRecipient]),
+  destinations: Type.Array(ConnectionEndpointSchema, { minItems: 1 }),
 };
 const mcp = { mode: Type.Literal("mcp_discovery"), serverUrl: HttpsUrl, issuer: HttpsUrl };
 const strict = { additionalProperties: false };
@@ -147,7 +143,7 @@ export const OAuthConnectionTemplateVersionSchema = Type.Object(
     authorizationUrl: HttpsUrl,
     tokenUrl: HttpsUrl,
     revocationUrl: Type.Optional(HttpsUrl),
-    recipient: ConnectionRecipientSchema,
+    destinations: ConnectionDestinationsSchema,
     scopes: Scopes,
     authorizationParameters: Parameters,
     oauthClientId: Type.Optional(OAuthClientId),
@@ -168,7 +164,13 @@ export const ConnectionTemplateSchema = Type.Object(
 const template = Type.Ref("ConnectionTemplate");
 export const ConnectionTemplateResponse = Type.Object({ data: template, meta: Meta }, strict);
 export const ConnectionTemplateListResponse = Type.Object(
-  { data: Type.Array(template), meta: Meta },
+  {
+    data: Type.Array(template),
+    meta: Type.Object(
+      { ...Meta.properties, googleWorkspaceDestinations: ConnectionDestinationsSchema },
+      strict,
+    ),
+  },
   strict,
 );
 export const OAuthClientResponse = Type.Object({ data: publicClient, meta: Meta }, strict);

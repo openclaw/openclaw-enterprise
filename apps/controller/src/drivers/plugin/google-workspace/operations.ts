@@ -1,9 +1,13 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { normalizeConnectionDestinations } from "@openclaw-enterprise/contracts";
 import { asRecord } from "@openclaw-enterprise/utils";
-import type { ConnectionEndpoint, ConnectionRecipient } from "@openclaw-enterprise/contracts";
+import type { ConnectionEndpoint } from "@openclaw-enterprise/contracts";
 
-export type GoogleRequestScope = ConnectionRecipient & { readonly scopes: readonly string[] };
+export interface GoogleRequestScope {
+  readonly destinations: readonly ConnectionEndpoint[];
+  readonly scopes: readonly string[];
+}
 
 export interface GoogleParameter {
   type?: string;
@@ -55,6 +59,19 @@ if (createHash("sha256").update(bytes).digest("hex") !== googleRelease?.operatio
 }
 export const googleCatalog: Catalog = JSON.parse(bytes.toString("utf8"));
 
+function serviceDestination(operation: GoogleOperation): ConnectionEndpoint {
+  const root = operation.path.split("/")[1];
+  if (!root || !/^[A-Za-z0-9_-]+$/.test(root)) {
+    throw new Error("Google operation lacks a literal service path.");
+  }
+  return { host: new URL(operation.origin).hostname, port: 443, path: "/" + root + "/**" };
+}
+
+/** Service roots represented by the verified Google Workspace release, before account-specific grants. */
+export const googleWorkspaceDestinations = normalizeConnectionDestinations(
+  Object.values(googleCatalog.operations).map(serviceDestination),
+);
+
 const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 function compileRoute(rule: GoogleRoute, id?: string) {
@@ -103,16 +120,20 @@ for (const reserved of googleCatalog.reservedRoutes) {
   addRoute(compileRoute(reserved));
 }
 
+function routeMatches(route: Route, path: string): boolean {
+  const matched = route.regex.exec(path);
+  return (
+    !!matched &&
+    route.captures.every((constraint, index) => !constraint || constraint.test(matched[index + 1]!))
+  );
+}
+
 /** Prefer literal Google methods over parameterized routes, even when the literal is unavailable. */
 export function googleRouteCandidates(origin: string, method: string, path: string) {
   const found: Route[] = [];
   const literal: Route[] = [];
   for (const route of routes.get(origin + " " + method) ?? []) {
-    const matched = route.regex.exec(path);
-    if (
-      !matched ||
-      route.captures.some((constraint, i) => constraint && !constraint.test(matched[i + 1]!))
-    ) {
+    if (!routeMatches(route, path)) {
       continue;
     }
     if (route.captures.length === 0) {
@@ -136,77 +157,109 @@ export function googleSourcePathMatches(pattern: string, path: string) {
   return path === prefix || path.startsWith(prefix + "/");
 }
 
-/** The approved Google destination must contain a reviewed operation, independently of consented scopes. */
-export function isGoogleWorkspaceRecipient(host: string, port: number, path: string): boolean {
-  return port === 443 && googleOperationsAt({ host, port, path }).length > 0;
+/** A sender may accept only reviewed HTTPS routes and literal paths or the canonical subtree glob. */
+function isGoogleDestination(value: unknown): value is ConnectionEndpoint {
+  const row = asRecord(value);
+  return (
+    !!row &&
+    Object.keys(row).length === 3 &&
+    row.port === 443 &&
+    typeof row.host === "string" &&
+    /^[a-z0-9.-]+$/.test(row.host) &&
+    typeof row.path === "string" &&
+    (row.path === "/**" || /^\/[A-Za-z0-9/._~-]*(?:\/\*\*)?$/.test(row.path)) &&
+    !row.path.split("/").some((segment) => segment === ".." || segment === ".")
+  );
 }
 
-/** Only reviewed operations at this destination need to enter the runtime request policy. */
+const catalogRoutes = Object.entries(googleCatalog.operations).map(([id, op]) => {
+  const { host, path: servicePath } = serviceDestination(op);
+  const prefixes: Route[] = [];
+  // A narrower subtree can start below a path parameter (e.g. /users/me/messages/**).
+  // Match the complete segment prefix using the same reviewed parameter constraints.
+  const segments = op.path.split("/");
+  for (let count = 2; count <= segments.length; count++) {
+    prefixes.push(compileRoute({ ...op, path: segments.slice(0, count).join("/") }));
+  }
+  return { id, op, host, servicePath, prefixes };
+});
+
+function matchingRoutes(destinations: readonly ConnectionEndpoint[]) {
+  return destinations.flatMap((row) => {
+    if (!isGoogleDestination(row)) {
+      return [];
+    }
+    // One exact path can represent different operations by method, including reserved routes.
+    const exactByMethod = new Map<string, readonly Route[]>();
+    return catalogRoutes.flatMap(({ id, op, host, servicePath, prefixes }) => {
+      if (row.host !== host) {
+        return [];
+      }
+      const subtree = row.path.endsWith("/**");
+      const prefix = subtree ? row.path.slice(0, -3) : row.path;
+      let rulePath: string;
+      if (subtree && googleSourcePathMatches(row.path, op.path)) {
+        rulePath = op.path;
+      } else if (subtree) {
+        const segment = prefixes.find((route) => route.supported && routeMatches(route, prefix));
+        if (!segment) {
+          return [];
+        }
+        rulePath = prefix + op.path.slice(segment.rule.path.length);
+      } else {
+        let candidates = exactByMethod.get(op.method);
+        if (!candidates) {
+          candidates = googleRouteCandidates(op.origin, op.method, row.path);
+          exactByMethod.set(op.method, candidates);
+        }
+        if (!candidates.some((route) => route.id === id && route.supported)) {
+          return [];
+        }
+        rulePath = row.path;
+      }
+      // Preserve the approved path when it is narrower than this API's service root.
+      const path =
+        subtree && googleSourcePathMatches(row.path, servicePath.slice(0, -3))
+          ? servicePath
+          : row.path;
+      rulePath = rulePath.replace(/\{\+?\w+\}/g, "*");
+      return [{ id, op, endpoint: { host, port: row.port, path }, rulePath }];
+    });
+  });
+}
+
+/** Admission is independent of which OAuth scopes the provider later grants. */
+export function isGoogleWorkspaceRecipient(row: ConnectionEndpoint): boolean {
+  return matchingRoutes([row]).length > 0;
+}
+
+/** Only scopes for reviewed operations at the approved destinations enter the request guard. */
 export function googleWorkspaceDeliveryScopes(
-  recipient: ConnectionRecipient,
+  destinations: readonly ConnectionEndpoint[],
   grantedScopes: readonly string[],
 ): string[] {
-  const granted = new Set(grantedScopes);
-  const supported = new Set(
-    googleOperationsAt(recipient).flatMap(([, operation]) => operation.scopes),
-  );
-  return [...supported].filter((scope) => granted.has(scope));
+  const supported = new Set(matchingRoutes(destinations).flatMap(({ op }) => op.scopes));
+  return [...new Set(grantedScopes)].filter((scope) => supported.has(scope));
 }
 
 export function eligibleGoogleOperations(scope: GoogleRequestScope) {
-  return googleOperationsAt(scope).filter(([, op]) =>
+  return matchingRoutes(scope.destinations).filter(({ op }) =>
     op.scopes.some((value) => scope.scopes.includes(value)),
   );
 }
 
-/** One bearer profile serves only the pinned service roots with a currently granted operation.
- * Keep public discovery outside these routes, including on the shared Calendar and Drive host. */
 export function googleCredentialEndpoints(
   scope: GoogleRequestScope,
-  entries?: ReturnType<typeof eligibleGoogleOperations>,
 ): readonly ConnectionEndpoint[] {
-  if (!("kind" in scope)) {
-    return [{ host: scope.host, port: scope.port, path: scope.path }];
-  }
   const endpoints = new Map<string, ConnectionEndpoint>();
-  for (const [, op] of entries ?? eligibleGoogleOperations(scope)) {
-    const host = new URL(op.origin).hostname;
-    const root = op.path.split("/")[1];
-    if (!root || !/^[a-zA-Z0-9_-]+$/.test(root)) {
-      throw new Error("Google operation lacks a literal service path.");
-    }
-    const path = "/" + root + "/**";
-    endpoints.set(host + path, { host, port: 443, path });
+  for (const { endpoint } of eligibleGoogleOperations(scope)) {
+    endpoints.set(endpoint.host + endpoint.path, endpoint);
   }
   return [...endpoints.values()];
 }
 
-function googleOperationsAt(scope: ConnectionRecipient) {
-  if ("kind" in scope) {
-    return Object.entries(googleCatalog.operations);
-  }
-  const origin = "https://" + scope.host;
-  return Object.entries(googleCatalog.operations).filter(([id, op]) => {
-    if (op.origin !== origin) {
-      return false;
-    }
-    if (!scope.path.endsWith("/**")) {
-      return googleRouteCandidates(origin, op.method, scope.path).some(
-        (route) => route.id === id && route.supported,
-      );
-    }
-    const prefix = scope.path.slice(0, -3);
-    const staticPrefix = op.path.split("{")[0]!;
-    return (
-      staticPrefix.startsWith(prefix + "/") ||
-      staticPrefix === prefix ||
-      (op.path.includes("{") && prefix.startsWith(staticPrefix))
-    );
-  });
-}
-
 export function googleScopeFromString(raw: unknown): GoogleRequestScope | undefined {
-  if (typeof raw !== "string" || raw.length > 16384 || !raw) {
+  if (typeof raw !== "string" || !raw) {
     return undefined;
   }
   try {
@@ -220,26 +273,16 @@ export function googleRequestScope(input: unknown): GoogleRequestScope | undefin
   const value = asRecord(input);
   if (
     !value ||
+    Object.keys(value).length !== 2 ||
+    !Array.isArray(value.destinations) ||
+    !value.destinations.length ||
+    !value.destinations.every(isGoogleDestination) ||
     !Array.isArray(value.scopes) ||
-    !value.scopes.length ||
     !value.scopes.every((s) => typeof s === "string" && /^[\x21-\x7e]+$/.test(s))
   ) {
     return undefined;
   }
-  if (value.kind === "google_apis" && Object.keys(value).length === 2) {
-    return { kind: "google_apis", scopes: value.scopes };
-  }
-  if (
-    Object.keys(value).length !== 4 ||
-    value.port !== 443 ||
-    typeof value.host !== "string" ||
-    !/^[a-z0-9.-]+$/.test(value.host) ||
-    typeof value.path !== "string" ||
-    (!/^\/[A-Za-z0-9/._~-]*(?:\/\*\*)?$/.test(value.path) && value.path !== "/**")
-  ) {
-    return undefined;
-  }
-  return { host: value.host, port: value.port, path: value.path, scopes: value.scopes };
+  return { destinations: value.destinations, scopes: value.scopes };
 }
 
 /** gog lists the public directory and fetches an API description before a dynamic call.
@@ -255,7 +298,7 @@ export function googleDiscoveryRequests(
     { host: root, path: directory, query: "" },
     { host: root, path: directory, query: "preferred=true" },
   ];
-  for (const api of new Set(entries.map(([id]) => id.split("/")[0]!))) {
+  for (const api of new Set(entries.map(({ id }) => id.split("/")[0]!))) {
     const [service, version] = api.split(":");
     if (!service || !version) {
       continue;
@@ -265,7 +308,7 @@ export function googleDiscoveryRequests(
       { host: service + ".googleapis.com", path: "/$discovery/rest", query: "version=" + version },
     );
   }
-  const credentialed = googleCredentialEndpoints(scope, entries);
+  const credentialed = scope.destinations;
   return publicRequests.filter(
     ({ host, path }) =>
       !credentialed.some((ep) => host === ep.host && googleSourcePathMatches(ep.path, path)),

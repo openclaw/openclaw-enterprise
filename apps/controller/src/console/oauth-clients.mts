@@ -1,4 +1,8 @@
-import type { ConnectionTemplate, Namespace } from "@openclaw-enterprise/contracts";
+import type {
+  ConnectionEndpoint,
+  ConnectionTemplate,
+  Namespace,
+} from "@openclaw-enterprise/contracts";
 import { refusedAsNonAdministrator } from "./api-client.mjs";
 import { button, element } from "./dom.mjs";
 import type { ConsolePageContext } from "./page-context.mjs";
@@ -9,7 +13,7 @@ import {
   openOAuthClientRegistration,
   type PublicClient,
 } from "./oauth-client-registration.mjs";
-import { openConnectionTemplateEditor } from "./connection-templates.mjs";
+import { connectionTemplates, openConnectionTemplateEditor } from "./connection-templates.mjs";
 
 type Context = Pick<ConsolePageContext, "request" | "isCurrent">;
 
@@ -35,6 +39,7 @@ export function renderOAuthClients(
   let redirectUri: string | undefined;
   let clients: PublicClient[] = [];
   let templates: ConnectionTemplate[] = [];
+  let googleDestinations: ConnectionEndpoint[] = [];
   async function refresh(message?: string) {
     create.disabled = true;
     rows.replaceChildren();
@@ -42,14 +47,15 @@ export function renderOAuthClients(
     try {
       const [available, saved] = await Promise.all([
         oauthClients(context),
-        context.request("/connection-templates", { installationAdministration: "required" }),
+        connectionTemplates(context),
       ]);
       const { data, meta } = available;
       if (!context.isCurrent()) {
         return;
       }
       clients = data;
-      templates = saved as ConnectionTemplate[];
+      templates = saved.data;
+      googleDestinations = saved.meta.googleWorkspaceDestinations;
       redirectUri = meta?.redirectUri;
       const auth = {
         none: "Public client",
@@ -96,6 +102,7 @@ export function renderOAuthClients(
           namespaces,
           currentNamespace,
           clients,
+          googleDestinations,
           onSaved(saved) {
             templates.push(saved);
             selectCreated(saved);
