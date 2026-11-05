@@ -294,10 +294,14 @@ function verifiedPluginFile(path, expected) {
   return bytes;
 }
 
-function managedPluginInstallation() {
+function managedPluginInstallations() {
   const selection = process.env[${JSON.stringify(MANAGED_PLUGIN_ENVIRONMENT)}];
-  if (selection === undefined) return undefined;
-  const { id, kind, packageName, releaseSha256, slotId, toolNames = [] } = JSON.parse(selection);
+  if (selection === undefined) return [];
+  const settings = JSON.parse(selection);
+  return (Array.isArray(settings) ? settings : [settings]).map(readManagedPluginInstallation);
+}
+
+function readManagedPluginInstallation({ id, kind, packageName, releaseSha256, slotId, toolNames = [] }) {
   if ((kind !== "cli" && kind !== "mcp") || typeof packageName !== "string" || !/^[a-z][a-z0-9-]*$/.test(packageName)) {
     throw new Error("The managed plugin package type or name is invalid.");
   }
@@ -2678,26 +2682,29 @@ function requireWorkspaceNodePlugins(config) {
   }
 }
 
-function installGatewayPlugins(runtime, failures, install) {
-  if (runtime.manifest.kind !== "openclaw" || !install) return installOpenClawPlugins(runtime, failures);
+function installGatewayPlugins(runtime, failures, installs) {
+  if (installs.length === 0) return installOpenClawPlugins(runtime, failures);
 
-  // The image supplies the managed skill. Only native packages go through OpenClaw's installer.
-  const { id, release, skills: skillsDirectory, skill } = install;
-  if (skill) verifiedPluginFile(skill.instructions, release.skillSha256);
-  const { [id]: selection, ...selections } = runtime.manifest.selections ?? {};
-  if (!selection || Boolean(selection.enabled) !== Boolean(release)) throw new Error("The managed plugin selection differs from the runtime release.");
+  // Only native packages go through OpenClaw's installer. Managed releases are in the image.
+  const selections = { ...runtime.manifest.selections };
+  for (const { id, release, skill } of installs) {
+    if (skill) verifiedPluginFile(skill.instructions, release.skillSha256);
+    if (selections[id]?.enabled !== Boolean(release)) throw new Error("The managed plugin selection differs from the runtime release.");
+    delete selections[id];
+  }
   const native = { ...runtime, manifest: { ...runtime.manifest, selections } };
   const result = installOpenClawPlugins(native, failures);
-
   const config = readOpenClawConfig();
-  if (skill || config.skills?.load?.extraDirs?.includes(skillsDirectory)) {
-    const skills = config.skills ??= {};
-    const load = skills.load ??= {};
-    const directories = (load.extraDirs ?? []).filter((path) => path !== skillsDirectory);
-    load.extraDirs = skill ? [...directories, skillsDirectory] : directories;
-    writeOpenClawConfig(config);
+  for (const { id, release, skills: skillsDirectory, skill } of installs) {
+    if (skill || (skillsDirectory && config.skills?.load?.extraDirs?.includes(skillsDirectory))) {
+      const skills = config.skills ??= {};
+      const load = skills.load ??= {};
+      const directories = (load.extraDirs ?? []).filter((path) => path !== skillsDirectory);
+      load.extraDirs = skill ? [...directories, skillsDirectory] : directories;
+      writeOpenClawConfig(config);
+    }
+    if (release) result.successfulPluginIds.push(id);
   }
-  if (release) result.successfulPluginIds.push(id);
   return result;
 }
 
@@ -2742,7 +2749,8 @@ function configureWorkspaceNodePlugins(config, workspaceNodeId) {
   if (nodes[workspaceNodeId] === undefined && nodes["*"] === undefined) {
     // Native workspace.skills checks the source root for discovery, the skill directory for
     // resources and the instruction file for reads. This release needs exactly those paths.
-    const install = managedPluginInstallation();
+    const managedSkillPaths = managedPluginInstallations().flatMap(({ skills, skill }) =>
+      skill ? [skills, skill.directory, skill.instructions] : []);
     nodes[workspaceNodeId] = {
       ask: "off",
       allowReadPaths: [
@@ -2750,7 +2758,7 @@ function configureWorkspaceNodePlugins(config, workspaceNodeId) {
         remoteRoot + "/**",
         "/home/node/.openclaw",
         ...skillRoots.flatMap((root) => [root, root + "/**"]),
-        ...(install?.skill ? [install.skills, install.skill.directory, install.skill.instructions] : []),
+        ...managedSkillPaths,
       ],
       allowWritePaths: [
         ...editable.map((name) => remoteRoot + "/" + name),
@@ -3111,14 +3119,14 @@ function configureGateway(peerStatus) {
     process.env.APP_SERVER_TOKEN = derivePluginAppServerToken(peerStatus.startupId);
   }
   const pluginInstallStartedAt = Date.now();
-  const install = pluginRuntime?.manifest.kind === "openclaw" ? managedPluginInstallation() : undefined;
+  const installs = pluginRuntime?.manifest.kind === "openclaw"
+    ? managedPluginInstallations() : [];
   const pluginResult =
     pluginRuntime === undefined
       ? { successfulPluginIds: [], failures: peerFailures }
-      : installGatewayPlugins(pluginRuntime, peerFailures, install);
-  const mcp = install?.mcp;
+      : installGatewayPlugins(pluginRuntime, peerFailures, installs);
   // Reviewed MCP names fit OpenClaw's node-host descriptor limits without normalization.
-  const managedMcpGatewayTools = mcp?.toolNames.map((name) => mcp.localServer + "_" + name) ?? [];
+  const managedMcpGatewayTools = installs.flatMap(({ mcp }) => mcp?.toolNames.map((name) => mcp.localServer + "_" + name) ?? []);
   if (pluginRuntime !== undefined) {
     logStartupPhase("plugin-install", pluginInstallStartedAt);
   }
@@ -5049,33 +5057,35 @@ if (
 const outdatedNodeDatabases = outdatedOpenClawDatabases(state);
 let nodeStateCurrent = outdatedNodeDatabases.length === 0;
 
-const install = managedPluginInstallation();
-const release = install?.release;
+const installs = managedPluginInstallations();
 const boundCredentialEnv = process.env[${JSON.stringify(managedCredentialEnvironment)}];
 const boundMarker = boundCredentialEnv === undefined ? undefined : process.env[boundCredentialEnv];
 if (boundCredentialEnv !== undefined && (
-  install?.kind !== "cli" || install.credential?.delivery?.env !== boundCredentialEnv ||
+  !installs.some(({ kind, credential }) => kind === "cli" && credential?.delivery?.env === boundCredentialEnv) ||
   (boundMarker !== undefined && !isManagedPluginPlaceholder(boundCredentialEnv, boundMarker, "cli"))
 )) throw new Error("The selected account requires its issued credential placeholder.");
 // The credential adapter recognizes issued markers. A withdrawn attachment supplies no
 // marker after restart; unrelated raw environment values are never treated as credentials.
 const credentialEnvironments = [
   ...${JSON.stringify(managedPluginCredentialEnvironments)},
-  ...Object.values(release?.credentials ?? {}).map((slot) => ({ env: slot.delivery.env, kind: install.kind })),
+  ...installs.flatMap(({ kind, release }) => Object.values(release?.credentials ?? {}).map((slot) => ({ env: slot.delivery.env, kind }))),
 ];
 for (const { env, kind } of credentialEnvironments) {
   if (!isManagedPluginPlaceholder(env, process.env[env], kind)) delete process.env[env];
 }
-const pluginBin = install?.kind === "cli" && release ? join(release.runtimeDirectory, "bin") : undefined;
-if (pluginBin) {
-  const architecture = { x64: "linux-amd64", arm64: "linux-arm64" }[process.arch];
-  verifiedPluginFile(join(pluginBin, release.executable), release.artifacts[architecture]?.binarySha256);
-}
 
-// The selected credential runtime supplies the placeholder. A withdrawn account
-// leaves the MCP definition staged with discovery disabled.
-let nodeMcp;
-if (install?.mcp) {
+const pluginBins = [];
+const mcpServers = {};
+for (const install of installs) {
+  const { kind, release } = install;
+  if (kind === "cli" && release) {
+    const pluginBin = join(release.runtimeDirectory, "bin");
+    const architecture = { x64: "linux-amd64", arm64: "linux-arm64" }[process.arch];
+    verifiedPluginFile(join(pluginBin, release.executable), release.artifacts[architecture]?.binarySha256);
+    pluginBins.push(pluginBin);
+  }
+  // A withdrawn account leaves only its own MCP definition staged with discovery disabled.
+  if (!install.mcp) continue;
   const bytes = verifiedPluginFile(join(install.root, "mcp.json"), release.mcpServersSha256);
   const manifest = JSON.parse(bytes);
   const { delivery, server, localServer, toolNames } = install.mcp;
@@ -5087,18 +5097,14 @@ if (install?.mcp) {
   const matchingPlaceholder = isManagedPluginPlaceholder(delivery.env, placeholder, "mcp");
   const enabled = toolNames.length > 0 && matchingPlaceholder;
   if (!matchingPlaceholder) delete process.env[delivery.env];
-  nodeMcp = {
-    servers: {
-      [localServer]: {
-        enabled,
-        transport: endpoint.type,
-        url: endpoint.url,
-        ...(enabled && {
-          headers: { Authorization: "Bearer " + placeholder },
-          toolFilter: { include: toolNames },
-        }),
-      },
-    },
+  mcpServers[localServer] = {
+    enabled,
+    transport: endpoint.type,
+    url: endpoint.url,
+    ...(enabled && {
+      headers: { Authorization: "Bearer " + placeholder },
+      toolFilter: { include: toolNames },
+    }),
   };
 }
 
@@ -5163,7 +5169,7 @@ writeFileSync(workerConfigPath, JSON.stringify({
     entries: { "file-transfer": { enabled: true } },
   },
   nodeHost: {
-    ...(nodeMcp && { mcp: nodeMcp }),
+    ...(Object.keys(mcpServers).length > 0 && { mcp: { servers: mcpServers } }),
     workerRuns: {
       enabled: true,
       capacity: workerCapacity,
@@ -5176,7 +5182,7 @@ delete process.env.OPENCLAW_NATIVE_INFERENCE_CONFIG;
 delete process.env.OPENCLAW_HARNESS_PROBE_CONFIG;
 const nodeEnv = {
   ...process.env,
-  ...(pluginBin && { PATH: [pluginBin, process.env.PATH].filter(Boolean).join(require("node:path").delimiter) }),
+  ...(pluginBins.length > 0 && { PATH: [...pluginBins, process.env.PATH].filter(Boolean).join(require("node:path").delimiter) }),
   OPENCLAW_STATE_DIR: state,
   OPENCLAW_CONFIG_PATH: workerConfigPath,
 };

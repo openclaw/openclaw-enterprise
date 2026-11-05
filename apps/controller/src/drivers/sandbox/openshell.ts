@@ -41,6 +41,7 @@ import {
   managedMcpInstalls,
   managedInstalls,
 } from "../plugin/managed-catalog.ts";
+import { managedGoogleInstall } from "../plugin/google-workspace/install.ts";
 import { openShellLogDecisions } from "./openshell-log-decisions.ts";
 import { qualifyOpenShellCodexArtifactRules } from "./openshell-codex-artifacts.ts";
 import { workspaceNodeNetworkPolicy } from "./openshell-workspace-node-policy.ts";
@@ -3613,7 +3614,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     // DetachSandboxProvider removes the provider, but keeps the Sandbox's original launch
     // environment and policy. A replacement is created above without either plugin setting.
     let expectedSpec = create.spec;
-    if (!plugin && managedCredentialBinding(context.revision.plugins?.plugins)) {
+    if (
+      !plugin &&
+      managedCredentialBinding(context.revision.plugins?.plugins, managedGoogleInstall)
+    ) {
       const previous = googleRequestPolicyFromSandbox(existing.spec?.policy);
       if (previous) {
         expectedSpec = {
@@ -4582,7 +4586,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     if (plugin) {
       assertPluginRequestPolicy(candidate, plugin);
     } else {
-      const binding = managedCredentialBinding(context.revision.plugins?.plugins);
+      const binding = managedCredentialBinding(
+        context.revision.plugins?.plugins,
+        managedGoogleInstall,
+      );
       if (
         binding &&
         Array.isArray(sandbox.spec?.providers) &&

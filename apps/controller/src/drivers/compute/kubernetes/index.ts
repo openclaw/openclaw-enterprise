@@ -11526,12 +11526,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
       return [];
     }
     const { runtime } = pluginRuntime;
+    const selectedIds = Object.keys(runtime.selections);
     if (
       runtime.kind === "openclaw" &&
-      Object.keys(runtime.selections).length === 1 &&
-      managedInstalls.some(({ id }) => Object.hasOwn(runtime.selections, id))
+      selectedIds.length > 0 &&
+      selectedIds.every((id) => managedInstalls.some((install) => install.id === id))
     ) {
-      return []; // The managed package is already in the image.
+      return []; // The image supplies all selected packages.
     }
     const data = pluginRuntimeConfigMapData(runtime);
     const environment = new Map([
@@ -16190,26 +16191,29 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         });
       }
     }
-    // The managed release is in the image. The two processes receive only its
-    // identity and the reviewed tool selection, never the account's bearer.
+    // The image supplies the releases. Both processes receive only package identities and
+    // reviewed tool selections, never account credentials.
     if (dedicated && pluginRuntime?.runtime.kind === "openclaw") {
       const { selections } = pluginRuntime.runtime;
-      const install = managedInstalls.find(({ id }) => Object.hasOwn(selections, id));
-      if (install && (selections[install.id]?.enabled || role === "gateway")) {
-        const selection = selections[install.id]!;
+      const packages = [];
+      for (const install of managedInstalls) {
+        const selection = selections[install.id];
+        if (!selection || (!selection.enabled && role !== "gateway")) {
+          continue;
+        }
         const binding =
           install.kind === "mcp" ? managedMcpCredentialBinding(selections, install) : undefined;
-        variables.push({
-          name: MANAGED_PLUGIN_ENVIRONMENT,
-          value: JSON.stringify({
-            kind: install.kind,
-            packageName: install.packageName,
-            slotId: Object.keys(install.credentials)[0],
-            ...(role === "gateway" && { id: install.id }),
-            ...(selection.enabled && { releaseSha256: install.releaseSha256 }),
-            ...(binding?.toolNames.length && { toolNames: binding.toolNames }),
-          }),
+        packages.push({
+          kind: install.kind,
+          packageName: install.packageName,
+          slotId: Object.keys(install.credentials)[0],
+          ...(role === "gateway" && { id: install.id }),
+          ...(selection.enabled && { releaseSha256: install.releaseSha256 }),
+          ...(binding?.toolNames.length && { toolNames: binding.toolNames }),
         });
+      }
+      if (packages.length > 0) {
+        variables.push({ name: MANAGED_PLUGIN_ENVIRONMENT, value: JSON.stringify(packages) });
       }
     }
     const needsPluginRuntime =
