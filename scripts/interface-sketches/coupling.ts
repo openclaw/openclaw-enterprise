@@ -177,7 +177,10 @@ export function analyzeCoupling(
       // Only a literal key selects one property; dynamic indexing stays unresolved.
       return ts.isStringLiteral(key) || ts.isNumericLiteral(key)
         ? canonical(
-            checker.getPropertyOfType(checker.getTypeAtLocation(expression.expression), key.text),
+            checker.getPropertyOfType(
+              checker.getNonNullableType(checker.getTypeAtLocation(expression.expression)),
+              key.text,
+            ),
           )
         : undefined;
     }
@@ -217,7 +220,7 @@ export function analyzeCoupling(
     ) {
       return true;
     }
-    const declarations = canonical(symbol)?.declarations;
+    const declarations = symbolAt(expression)?.declarations;
     if (declarations?.length) {
       // A library call can return a project-owned receiver. Classify its method first.
       return declarations.every((declaration) => !ownSource(declaration.getSourceFile()));

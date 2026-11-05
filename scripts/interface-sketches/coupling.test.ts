@@ -273,6 +273,7 @@ test("preserves local calls through receivers returned by standard library metho
 export function run(authorities: Authority[]) {
   authorities[0].authorize();
   authorities.at(0)?.authorize();
+  authorities.at(0)?.["authorize"]();
 }
 `,
   });
@@ -284,6 +285,7 @@ export function run(authorities: Authority[]) {
     [
       ["caller.ts#run", "calls", "contracts.ts#Authority.authorize", 3],
       ["caller.ts#run", "calls", "contracts.ts#Authority.authorize", 4],
+      ["caller.ts#run", "calls", "contracts.ts#Authority.authorize", 5],
     ],
   );
 });
