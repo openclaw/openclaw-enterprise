@@ -218,12 +218,7 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
     ],
   );
   assert.deepEqual(selected.cells[1].unselected, ["git-write", "git-push-denied", "slack"]);
-  assert.deepEqual(selected.cells[0].notApplicable, [
-    "codex-search-config",
-    "git-write",
-    "git-push-denied",
-    "slack",
-  ]);
+  assert.deepEqual(selected.cells[0].notApplicable, ["git-write", "git-push-denied", "slack"]);
   assert.throws(() => validateQaInputs(selected, {}), /OPENAI_KEY_FILE is required/);
   assert.throws(
     () => selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "model-ui,typo" }),
