@@ -148,9 +148,15 @@ async function trustedSupervisor({ command, cleanup, directory, cluster, ca, che
       await command("docker", ["rm", container]);
     }
   };
-  await extract(parent, "/etc/ssl/certs/ca-certificates.crt", join(context, "ca-certificates.crt"));
+  const stockCertificates = join(directory, "stock-ca-certificates.crt");
+  await extract(parent, "/etc/ssl/certs/ca-certificates.crt", stockCertificates);
   await extract(parent, "/openshell-supervisor", join(directory, "stock-supervisor"));
-  await appendFile(join(context, "ca-certificates.crt"), `\n${ca}`);
+  // docker cp preserves the stock file's read-only mode. Build a new owned
+  // bundle without changing the stock certificates or their permissions.
+  await writeFile(
+    join(context, "ca-certificates.crt"),
+    Buffer.concat([await readFile(stockCertificates), Buffer.from(`\n${ca}`)]),
+  );
   await writeFile(
     join(context, "Dockerfile"),
     `FROM ${parent}\nCOPY --chmod=0644 ca-certificates.crt /etc/ssl/certs/ca-certificates.crt\n`,
