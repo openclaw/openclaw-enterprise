@@ -445,7 +445,7 @@ test(
     const admissionId = `${Date.now()}-${randomUUID()}`;
     const admissionEvents: string[] = [];
     let sessionId: string;
-    let exchangeId: string;
+    let exchangeId = "";
     let digest: string;
     let settlements = 0;
     let readbacks = 0;
@@ -458,7 +458,11 @@ test(
         settlements++;
         assert.equal(use.receiptId, exchangeId);
         assert.equal(use.outcome.created.draft, true);
-        receipt = { kind: "recorded", status: 201, body: { operationId, outcome: use.outcome } };
+        receipt = {
+          kind: "recorded",
+          status: 201,
+          body: { operationId, receiptId: exchangeId, ...use.outcome.created },
+        };
       } else {
         assert.equal(use.operation, "create-draft-pull");
         assert.equal(use.sessionId, sessionId);
@@ -629,7 +633,17 @@ test(
       const readCertificate = await readFile(certificate);
       const first = await send();
       assert.equal(first.status, 201);
-      assert.deepEqual(first.body, receipt?.body);
+      assert.deepEqual(first.body, {
+        operationId,
+        receiptId: exchangeId,
+        id: "1",
+        number: 1,
+        url: "https://github.com/example/project/pull/1",
+        state: "open",
+        draft: true,
+        head: { repositoryId: "789", ref: "agent-work", sha: "a".repeat(40) },
+        base: { repositoryId: "789", ref: "main", sha: "b".repeat(40) },
+      });
       assert.equal(github.trace.length, 1);
       assert.equal(settlements, 1);
       assert.deepEqual(await send(), first);
@@ -649,7 +663,16 @@ test(
         "guard-active\n",
         "prepared process attempted forbidden loads",
       );
-      assert.equal(preparedOutput.includes(token), false);
+      assert.equal(
+        preparedOutput.includes(preparedToken),
+        false,
+        "prepared process output exposed the provider credential",
+      );
+      assert.equal(
+        preparedOutput.includes(opened.bearer),
+        false,
+        "prepared process output exposed the session bearer",
+      );
     } finally {
       if (preparedService.exitCode === null && preparedService.signalCode === null) {
         preparedService.kill("SIGKILL");

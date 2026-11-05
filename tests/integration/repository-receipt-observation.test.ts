@@ -392,6 +392,7 @@ for (const stage of ["reserved", "authorizing", "dispatch"] as const) {
     resources.after(() => service.close(opened.session.sessionId));
     if (stage === "dispatch") {
       // Invalid digest syntax must stop before either owner authorization or sender entry.
+      let senderEntries = 0;
       for (const digest of [undefined, "", "a".repeat(63), "A".repeat(64), "g".repeat(64)]) {
         const exchange = service.reserve(
           opened.bearer,
@@ -409,11 +410,14 @@ for (const stage of ["reserved", "authorizing", "dispatch"] as const) {
         const outcome = await service.execute(
           exchange,
           async () => {
+            senderEntries++;
             assert.fail("invalid digest reached the sender");
           },
           digest,
         );
         assert.equal(outcome.kind, "not-dispatched");
+        assert.equal(senderEntries, 0, "invalid digest entered the sender");
+        assert.equal(authorizations, 0);
       }
       assert.equal(authorizations, 0);
       assert.equal(originRequests, 0);
