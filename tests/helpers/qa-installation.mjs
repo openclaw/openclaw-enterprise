@@ -23,15 +23,54 @@ import { createResourceScope } from "../fixtures/repository-credentials/resource
 import { maskPrivateKeyLines } from "../../scripts/ci/failure-redaction.mjs";
 
 function execute(command, args, options) {
-  const { input, allowExitCodes = [0], ...rest } = options;
+  const { input, allowExitCodes = [0], timeout = 0, ...rest } = options;
+  assert.ok(Number.isInteger(timeout) && timeout >= 0, "command timeout must be non-negative");
+  const started = performance.now();
   return new Promise((accept, reject) => {
+    let timedOut = false;
+    let timer;
+    const fail = (error, stdout = "", stderr = "") =>
+      reject(
+        Object.assign(error, {
+          stdout,
+          stderr,
+          timedOut,
+          elapsedMs: Math.round(performance.now() - started),
+          timeoutMs: timeout,
+        }),
+      );
     const child = execFile(command, args, rest, (error, stdout, stderr) => {
-      if (error && !allowExitCodes.includes(error.code)) {
-        reject(Object.assign(error, { stdout, stderr }));
+      clearTimeout(timer);
+      if (timedOut) {
+        fail(
+          error ??
+            Object.assign(new Error("command deadline exceeded"), {
+              code: child.exitCode,
+              signal: child.signalCode,
+            }),
+          stdout,
+          stderr,
+        );
+      } else if (error && !allowExitCodes.includes(error.code)) {
+        fail(error, stdout, stderr);
       } else {
         accept({ stdout, stderr });
       }
     });
+    if (timeout > 0) {
+      timer = setTimeout(() => {
+        timedOut = true;
+        // Match execFile's timeout teardown, but retain the deadline as the primary
+        // cause even if writing to a closed pipe ends the child with SIGPIPE.
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        try {
+          child.kill(rest.killSignal ?? "SIGTERM");
+        } catch (error) {
+          fail(error);
+        }
+      }, timeout);
+    }
     child.stdin.end(input);
   });
 }
@@ -136,7 +175,10 @@ export async function runQaCommand(f, command, args, options = {}) {
         );
     // execFile errors embed argv and output, potentially containing tokens.
     // Keep arguments/stdout private; include only redacted stderr for diagnosis.
-    error.message = `${command.split("/").at(-1)} failed (exit ${error.code ?? "unknown"}, signal ${error.signal ?? "none"}); private state: ${f.stateDirectory}${buildOutput ? `; failed image build step output: ${buildOutput}` : ""}${detail ? `; stderr: ${detail}` : ""}`;
+    const timing = Number.isInteger(error.elapsedMs)
+      ? ` after ${error.elapsedMs} ms (limit ${error.timeoutMs} ms)`
+      : "";
+    error.message = `${command.split("/").at(-1)} ${error.timedOut ? "timed out" : "failed"}${timing} (exit ${error.code ?? "unknown"}, signal ${error.signal ?? "none"}); private state: ${f.stateDirectory}${buildOutput ? `; failed image build step output: ${buildOutput}` : ""}${detail ? `; stderr: ${detail}` : ""}`;
     delete error.cmd;
     delete error.stdout;
     delete error.stderr;

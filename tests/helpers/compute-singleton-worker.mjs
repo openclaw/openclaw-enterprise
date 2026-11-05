@@ -27,7 +27,7 @@ async function setup(context) {
     import("../../packages/iam/src/index.ts"),
     import("../../apps/controller/src/composition/production-harness.ts"),
     import("../../packages/occ/src/state/postgres-state.ts"),
-    import("../helpers/configuration-driver.mjs"),
+    import("../helpers/configuration-driver.ts"),
     import("../helpers/installation-driver-configuration.mjs"),
     import("../helpers/secret-driver.mjs"),
     import("../helpers/development-iam-state.mjs"),

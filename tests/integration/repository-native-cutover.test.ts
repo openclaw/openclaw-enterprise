@@ -144,7 +144,6 @@ async function fixture(t: TestContext) {
       },
       config,
       clock,
-      factory.resolveBound !== undefined,
       "createPrepared" in factory,
     );
     const stop = service.observeDisposal(admissions.observe);
