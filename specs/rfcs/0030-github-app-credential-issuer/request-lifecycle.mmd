@@ -25,22 +25,24 @@ config:
 ---
 sequenceDiagram
     participant A as Agent
-    participant O as OCE
-    participant G as OpenShell gateway<br/>embedded issuer
-    participant S as OpenShell<br/>sender
+    participant P as OpenShell<br/>supervisor proxy
+    participant O as OCC<br/>credential API
+    participant I as OpenShell control<br/>plane issuer
     participant H as GitHub
-    Note over A,H: 1 · Proposed issuance and sender-only delivery
-    O->>G: Configure this Agent’s grant
-    G->>H: Sign with App key and request token
-    H-->>G: Scoped installation token
-    G->>S: Install for bound execution
-    Note over A,H: 2 · Send to an approved repository
-    A->>S: Git request
-    S->>O: Check Agent, repository and operation
-    O-->>S: Allow
-    S->>H: Send with token
-    Note over A,H: 3 · OCE withdraws this Agent’s Git grant
-    A->>S: Next Git request
-    S->>O: Check again
-    O-->>S: Deny
-    S-->>A: Access denied
+    Note over A,H: Git request with an uncached credential lookup
+    A->>P: Git request
+    P->>O: Authorize and resolve<br/>request + execution identity
+    Note over O: Check Agent grant,<br/>repo and operation
+    O->>I: Resolve approved<br/>GitHub scope
+    opt Issuer needs a new installation token
+        I->>H: Sign with App key<br/>and request token
+        H-->>I: Token and expiry
+    end
+    I-->>O: Scoped token
+    O-->>P: Approved token
+    P->>H: Inject token and send the Git request
+    Note over A,H: OCC withdraws this Agent’s Git access
+    A->>P: Next uncached request
+    P->>O: Authorize and resolve
+    O-->>P: Deny
+    P-->>A: Access denied
