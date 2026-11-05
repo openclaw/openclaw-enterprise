@@ -1,9 +1,14 @@
-/** Test-only passive storage; callers still exercise real OCC, IAM, and HTTP behavior. */
+import { isDeepStrictEqual } from "node:util";
+
+/**
+ * Test-only passive storage; callers still exercise real OCC, IAM, and HTTP behavior. `exact`
+ * adds the exact create and inspect that Agent provisioning requires of a Configuration Driver.
+ */
 export function createTestConfigurationDriver(options = {}) {
   const configurations = new Map();
   const key = ({ namespaceId, id }) => `${namespaceId}:${id}`;
 
-  return {
+  const driver = {
     id: options.id ?? "configuration-test",
     capability: "configuration",
     implementation: "test-memory-storage",
@@ -32,4 +37,15 @@ export function createTestConfigurationDriver(options = {}) {
     },
     async validate() {},
   };
+  if (options.exact) {
+    driver.createExact = (configuration) => driver.create(configuration);
+    // The stored Configuration, only when it is exactly the one provisioning wrote.
+    driver.inspectExact = async (configuration) => {
+      const stored = configurations.get(key(configuration));
+      return stored !== undefined && isDeepStrictEqual(stored, configuration)
+        ? structuredClone(stored)
+        : undefined;
+    };
+  }
+  return driver;
 }

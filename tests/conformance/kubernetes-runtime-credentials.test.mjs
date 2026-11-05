@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { Linter } from "eslint";
@@ -25,9 +24,11 @@ import {
   ResourceConflictError,
   RuntimeCredentialsForbiddenByClusterError,
 } from "../../packages/occ/src/index.ts";
+import { readJsonLinesSync } from "../helpers/json-lines.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
+import { temporaryDirectorySync } from "../helpers/temporary-directory.mjs";
 
-const { AGENT_RUNTIME_ENTRYPOINT } = runtimeEntrypoints;
+const { COMPUTE_AGENT_RUNTIME_ENTRYPOINT: AGENT_RUNTIME_ENTRYPOINT } = runtimeEntrypoints;
 const namespace = Object.freeze({
   id: "ns_runtime_00000000-0000-4000-8000-000000000001",
   name: "Runtime credential tenant",
@@ -87,7 +88,10 @@ function credentialFixture({
   secretCreateStatus = undefined,
   deploymentListStatus = undefined,
 } = {}) {
-  const configured = options(runtime ? {} : { runtime: undefined });
+  const configured = options();
+  if (!runtime) {
+    delete configured.runtime;
+  }
   if (twoCluster) {
     delete configured.network.gatewayClients;
     configured.gatewayRouting = {
@@ -403,7 +407,16 @@ test("concurrent legacy password delivery accepts only an identical owned source
         "gateway-password": original.data["gateway-password"],
       });
     } else {
-      await assert.rejects(delivery());
+      const refusal = {
+        different: ResourceConflictError,
+        foreign: {
+          message: /^Refusing unowned Kubernetes Secret gateway-password-[a-f0-9]{12}\.$/,
+        },
+        disappeared: { message: "HTTP 409", statusCode: 409 },
+        unavailable: { message: "HTTP 503", statusCode: 503 },
+      }[outcome];
+      assert.ok(refusal, `${outcome}: name its refusal`);
+      await assert.rejects(delivery(), refusal, outcome);
     }
     assert.deepEqual(secrets[name], original, `${outcome}: preserve the serving Gateway source`);
   }
@@ -716,6 +729,7 @@ test("embedded Gateway uses the separate canonical password source", () => {
     configurationId: "cfg_runtime_password_projection",
     configurationKind: "agent",
     configurationGeneration: 1,
+    gatewayManagedMode: true,
     configuration: {
       logging: { level: "info", consoleLevel: "info", consoleStyle: "json" },
       diagnostics: { otel: { logs: false } },
@@ -767,14 +781,23 @@ test("embedded Gateway uses the separate canonical password source", () => {
   };
 
   assert.equal(gatewayEnvironment({}).OPENCLAW_GATEWAY_PASSWORD, undefined);
-  assert.deepEqual(
-    gatewayEnvironment({
-      gateway: {
-        auth: { password: { source: "env", id: "OPENCLAW_GATEWAY_PASSWORD" } },
-      },
-    }).OPENCLAW_GATEWAY_PASSWORD.valueFrom.secretKeyRef,
-    { name: `gateway-password-${suffix}`, key: "gateway-password" },
-  );
+  // On the default env alias, and on an env provider the revision's secrets configure, which
+  // OpenClaw also reads from the Gateway's environment (finding 3057).
+  for (const [provider, secrets] of [
+    ["default", undefined],
+    ["vault", { providers: { vault: { source: "env" } } }],
+  ]) {
+    assert.deepEqual(
+      gatewayEnvironment({
+        gateway: {
+          auth: { password: { source: "env", provider, id: "OPENCLAW_GATEWAY_PASSWORD" } },
+        },
+        ...(secrets === undefined ? {} : { secrets }),
+      }).OPENCLAW_GATEWAY_PASSWORD.valueFrom.secretKeyRef,
+      { name: `gateway-password-${suffix}`, key: "gateway-password" },
+      provider,
+    );
+  }
   assert.throws(
     () =>
       driver.gatewayConfiguration({
@@ -964,28 +987,22 @@ test("Codex startup logs in, probes and starts the app server in each login mode
       flag: "--with-access-token",
       input: "at-fixture",
     },
-    oauth: { env: { OCE_CODEX_OAUTH_SOURCE_UID: "source", OCE_CODEX_OAUTH_VOLUME_UID: "volume" } },
+    chatgptAuthTokens: {
+      env: {
+        CODEX_ACCESS_TOKEN: "fixture-external-access-placeholder",
+        OCE_CODEX_CHATGPT_ACCOUNT: JSON.stringify({
+          accountId: "fixture-account",
+          planType: "team",
+        }),
+      },
+    },
   };
   for (const [mode, { env, flag, input }] of Object.entries(login)) {
-    const directory = mkdtempSync(join(tmpdir(), "oce-codex-login-mode-"));
-    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const directory = temporaryDirectorySync(t, "oce-codex-login-mode-");
     const codexHome = join(directory, "codex");
     mkdirSync(join(directory, "bin"));
     mkdirSync(codexHome);
     writeFileSync(join(directory, "bin", "codex"), codexCallRecorder, { mode: 0o755 });
-    if (mode === "oauth") {
-      writeFileSync(
-        join(codexHome, ".oce-oauth.json"),
-        JSON.stringify({ sourceUid: "source", volumeUid: "volume" }),
-      );
-      writeFileSync(
-        join(codexHome, "auth.json"),
-        JSON.stringify({
-          auth_mode: "chatgpt",
-          tokens: { id_token: "id", access_token: "access", refresh_token: "refresh" },
-        }),
-      );
-    }
     const child = spawnSync(
       process.execPath,
       ["-e", ...nodeProgramArguments(AGENT_RUNTIME_ENTRYPOINT)],
@@ -1008,10 +1025,7 @@ test("Codex startup logs in, probes and starts the app server in each login mode
     );
     assert.equal(child.status, 0, `${mode}: ${child.stderr}`);
     assert.match(child.stderr, /"event":"codex\.model_probe".*"code":"READY"/, mode);
-    const calls = readFileSync(join(directory, "calls"), "utf8")
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line));
+    const calls = readJsonLinesSync(join(directory, "calls"));
     assert.deepEqual(
       calls.map(({ args }) =>
         ["login", "exec", "app-server"].find((command) => args.includes(command)),
@@ -1021,9 +1035,31 @@ test("Codex startup logs in, probes and starts the app server in each login mode
     );
     if (flag !== undefined) {
       assert.deepEqual(calls[0], {
-        args: ["-c", "cli_auth_credentials_store=file", "login", flag],
+        args: [
+          "-c",
+          'otel.exporter="none"',
+          "-c",
+          'otel.metrics_exporter="none"',
+          "-c",
+          "otel.log_user_prompt=false",
+          "-c",
+          "cli_auth_credentials_store=file",
+          "login",
+          flag,
+        ],
         input,
       });
+    }
+    if (mode === "chatgptAuthTokens") {
+      // OpenShell owns the real grant; the launcher writes only its injection
+      // placeholder and account metadata, without a native refresh credential.
+      const auth = JSON.parse(readFileSync(join(codexHome, "auth.json"), "utf8"));
+      assert.equal(auth.auth_mode, "chatgptAuthTokens");
+      assert.equal(auth.OPENAI_API_KEY, null);
+      assert.equal(auth.tokens.access_token, env.CODEX_ACCESS_TOKEN);
+      assert.equal(auth.tokens.refresh_token, "");
+      assert.equal(auth.tokens.account_id, "fixture-account");
+      assert.doesNotMatch(JSON.stringify(auth), /fixture-transport-token/);
     }
     const probe = calls.find(({ args }) => args.includes("exec")).args;
     assert.equal(probe[probe.indexOf("--model") + 1], "gpt-5");

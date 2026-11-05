@@ -42,6 +42,8 @@ api:
   # channelDirectoryProxyUrl: http://198.51.100.25:3128
   # Optional; see model discovery in docs/reference/console/create-and-deploy.md.
   modelDiscoveryCidrs: []
+  # Optional MCP plugin discovery HTTPS hosts; see docs/guides/topics/plugins-configure.md.
+  pluginDiscoveryCidrs: []
   # Optional: trust client-address headers from ingress-nginx, an AWS ALB, or a
   # generic proxy. See docs/reference/settings/production.md.
   # trustedProxy:
@@ -61,7 +63,7 @@ controlPlane:
   nodeSelector:
     oce-role: control
 
-# Required by dedicated Harness storage; install Envoy Gateway and cert-manager,
+# Enabled by default and required by dedicated Harness storage. Install Envoy Gateway and cert-manager,
 # and create this service-key Secret before deployment. See workspace-routing.md.
 gatewayRouting:
   enabled: true
@@ -70,13 +72,15 @@ gatewayRouting:
 
 # Opt in only after provisioning Namespace IDs and the referenced immutable registry,
 # protected service configuration, App key, TLS certificate and separate public CA.
-# The matching Installation must select repo and its Compute peer.
+# The matching Installation selects repository.nativeSender, preparedGitHub and its Compute peer.
 repositoryCredentials:
   enabled: false
   # image: registry.example.invalid/openclaw-enterprise/repository-credentials@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
   # backendId: github-primary
   # registryConfigMapName: occ-repository-registry-v1
   # serviceConfigSecretName: occ-repository-service-config
+  # authority: prepared-git
+  # preparedCustodySecretName: occ-repository-custody
   # appKeySecretName: occ-repository-app-key
   # tlsSecretName: occ-repository-tls
   # publicCaSecretName: occ-repository-public-ca

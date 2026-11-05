@@ -35,7 +35,7 @@ export async function startReceiptState(t, fixture, bindings, deadlineWallMs) {
             admissionId,
             repositoryRef,
             durationSeconds,
-            brokerProtocol: 1,
+            brokerProtocol: 3,
           }),
         ),
       );

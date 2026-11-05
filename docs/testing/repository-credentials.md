@@ -1,5 +1,8 @@
 ---
 doc-schema-version: 1
+tags: [human_verified]
+# Backfilled from the verification tag recorded in 17ff921c5.
+last_verified: "2026-11-04"
 ---
 
 # Repository credential tests
@@ -18,17 +21,17 @@ node scripts/verify-repository-credentials-boundary.mjs
 node --test tests/conformance/repository-credentials-fixture-ownership.test.mjs \
   tests/conformance/repository-credentials-backend-conformance.test.mjs
 node --test tests/integration/repository-credentials-git.test.mjs \
-  tests/integration/repository-credentials-gh.test.mjs \
   tests/integration/repository-credentials-native-paths.test.mjs \
-  tests/integration/repository-credentials-long-session.test.mjs \
   tests/integration/repository-credentials-service-loss.test.mjs
 ```
 
-The Git and `gh` tests require a `node:24-bookworm` image and `gh` **2.100.0**
+The source Git tests require a `node:24-bookworm` image and `gh` **2.103.2**
 at `/usr/bin/gh`. Override these with `REPOSITORY_CREDENTIALS_NODE_IMAGE` and
 `REPOSITORY_CREDENTIALS_GH_BINARY`. Missing prerequisites fail the tests. The
 fixtures use a controlled provider and verified TLS; they do not prove live GitHub
-access. The long-session test advances controlled clocks; it is not a 13-hour soak.
+access. The `gh` workflow requires the [combined qualification image](#qualify-emitted-artifacts)
+because push-policy sessions require installed client hooks. Prepared token renewal
+is exercised by the worker Token Service suites.
 
 The source boundary check also runs in `pnpm check:workspace`. Changes to its
 privileged allowlists require security review of the authority, caller, scope,
@@ -46,7 +49,7 @@ Full Integration's Gateway Routing journey checks the dedicated Agent, managed
 skill, and native network path with a substituted external provider. The Agent
 must return a pull request title absent from its prompt. Record a pass with no
 skips on the reviewed source. The hosted lane accepts only approved main
-revisions; verify the full conversation and cluster policy there or in an
+versions; verify the full conversation and cluster policy there or in an
 authorized equivalent environment.
 
 For native selection and routing, run:
@@ -55,6 +58,20 @@ For native selection and routing, run:
 node --test tests/integration/repository-credentials-client-config.test.mjs \
   tests/integration/repository-credentials-router.test.mjs
 ```
+
+### Protected repository metadata reads
+
+`checks-baseline-2` runs the [metadata response test](../../tests/integration/protected-repository-metadata-read.test.mjs)
+with the real route policy, upstream sender, and a loopback TLS origin. An independent
+socket observer captures the decrypted request and the origin response through EOF.
+Two client processes read through FIN and receive only the configured repository identity.
+
+The test refuses changed routes and GET bodies before they reach the origin.
+On a successful read it strips synthetic credentials reflected in headers and body.
+A forbidden final trailer yields the exact `exchange-uncertain` response, while
+ordinary reads still accept benign trailers. The dispatch gate is a fixture.
+For authenticated sibling execution, joined authorization, and the response OpenShell
+actually delivers, use the [installed custody qualification](protected-repository-custody.md).
 
 ## Verify Agent admission and durable ownership
 
@@ -72,18 +89,22 @@ For durable session and recovery checks, prepare a migrated disposable database
 with an application role as described in [PostgreSQL testing](postgresql.md).
 Run `postgres-repository-sessions.test.mjs`,
 `postgres-repository-broker-receipts.test.mjs`, and the relevant restart and
-worker revision tests with `OCC_TEST_DATABASE_URL` set. These checks do not prove
+worker version tests with `OCC_TEST_DATABASE_URL` set. These checks do not prove
 a running Kubernetes Pod or model turn.
 
 ## Qualify emitted artifacts
 
 ```sh
 pnpm credentials:build
-node --test tests/integration/repository-credentials-package.test.mjs
+node --test tests/integration/repository-credentials-package.test.ts
+REPOSITORY_CREDENTIALS_APP_ROOT="$PWD/.build/repository-credentials/client/dist" \
+  node --test tests/integration/repository-credentials-router.test.mjs
 ```
 
 This verifies the emitted service and client without workspace source or runtime
-`node_modules`. To test those artifacts together, build both images as described in
+`node_modules`, including hooks reached through relative symlinks after package
+relocation. The router run uses the generated hook launchers for native Git checks.
+To test those artifacts together, build both images as described in
 the [operator guide](../guides/repository-credentials/standalone-service.md#container-images),
 then run:
 
@@ -94,10 +115,14 @@ docker build --builder default --load --pull=false \
   -f tests/fixtures/repository-credentials/Dockerfile.qualification \
   -t repository-credentials-qualification:test .
 REPOSITORY_CREDENTIALS_TEST_IMAGE=repository-credentials-qualification:test \
-  node --test tests/integration/repository-credentials-container.test.mjs
+  node --test tests/integration/repository-credentials-container.test.mjs \
+    tests/integration/repository-credentials-gh.test.mjs
 ```
 
-The qualification image runs the emitted components against a controlled provider.
+The combined suite runs the emitted service/client cases, native Git paths, pinned
+`gh` REST actions (including pull requests), and common-backend conformance against
+controlled peers. It mounts only tests from the workspace and uses controlled
+credentials. The client uses its installed hooks. No GitHub credentials are required.
 The Compose check only renders the configuration; it does not start the services.
 An unset image selector skips the container cases.
 
@@ -129,30 +154,47 @@ containers against a controlled provider. It does not prove network confinement
 or live GitHub access. Supplying neither selector skips the test; supplying only
 one fails it. Record both image IDs and the cleanup result.
 
-## Exercise the controlled platform path
+## Verify prepared native Git
 
-With the [CI runner prerequisites](ci.md) installed, run the prepared lane:
+Run `node --test tests/integration/repository-native-cutover.test.ts` for controller
+selection, real Unix control requests, prepared receipt binding, development-token
+rejection and v1 recovery. This uses the in-memory State adapter and no provider.
+PostgreSQL custody, old signing receiver rejection, stock images, native Git and
+protected runtime behavior require separate integration evidence.
+
+The [installed prepared Git lane](../../scripts/ci/test-suites/skipper-prepared-git-installed.json)
+uses a dedicated Codex Agent in a fresh installation with controlled private Git and model peers.
+Its authorized run proves the packaged sender in a real cluster; it is separate from ordinary CI.
+The PostgreSQL tests cover receipt recovery and no-replay behavior, while the runtime image tests
+cover stock Codex and generated client material. These checks do not replace the installed lane.
+
+To bind its receipt to a [selected OCE release](../guides/deploy/production-upgrade.md#prepare-the-release),
+prepare an independent JSON control file with `sourceSha` (the full OCE checkout SHA)
+and `images.controller`, `images.runtime`, and `images.repository` (the broker), each
+an immutable `sha256:<64 lowercase hex characters>` built manifest digest. Obtain
+these expected values from the release selection, not from the receipt being checked.
+From that release checkout, run:
 
 ```sh
-(
-  set -e
-  CREDENTIAL_TEST_RUN="$(mktemp -d)"
-  printf 'Evidence directory: %s\n' "$CREDENTIAL_TEST_RUN"
-  trap 'cleanup_exit_code=$?; trap - EXIT; node scripts/ci/cleanup.mjs --state "$CREDENTIAL_TEST_RUN/state.json" || cleanup_exit_code=1; exit "$cleanup_exit_code"' EXIT
-  node scripts/ci/prepare.mjs --lane repository-credentials-platform \
-    --state "$CREDENTIAL_TEST_RUN/state.json"
-  node scripts/ci/run-tests.mjs run repository-credentials-platform \
-    --state "$CREDENTIAL_TEST_RUN/state.json" \
-    --results "$CREDENTIAL_TEST_RUN/results.json"
-)
+node scripts/ci/run-tests.mjs aggregate skipper-prepared-git-installed \
+  --results-dir /path/to/results --release-selection /path/to/release.json
 ```
 
-The lane creates a disposable k3d cluster and PostgreSQL database. It tests OCC
-admission, worker recovery, Kubernetes material delivery, and repository
-operations against controlled repositories. It uses a fixture Harness, not a
-model or live GitHub. The command fails if preparation, a test, or cleanup fails.
-If cleanup fails, retain the private state and inspect owned containers, networks,
-and volumes before retrying cleanup.
+The consumer requires the selected SHA, all three built digests, recorded imported
+manifest and config digests, the complete chat/Git/withdrawal journey, and successful
+test and cluster cleanup. Missing control, release fields or proof fails qualification;
+a generic runner summary is insufficient. Success adds `releaseQualification` to the
+aggregate. Without `--release-selection`, normal smoke aggregation remains unchanged
+and does not qualify a selected release.
+
+The prepared runtime includes an added synthetic-model CA trust layer. Its recorded
+runtime digest identifies **that prepared image**, not the underlying stock or published
+runtime image. Qualification applies only to the exact selected digest set under
+`checkout-images-with-synthetic-model-trust-layer`; it cannot establish qualification
+of a different published image set, even at the same OCE commit.
+
+Run `node --test tests/integration/skipper-release.test.ts` for positive and adverse
+offline checks through the actual aggregate CLI. They do not execute an installed journey.
 
 ## Controller and broker image compatibility probe
 
@@ -166,9 +208,10 @@ for fixture setup and expected probe exchanges.
 
 ## Run an authorized live smoke
 
-Use a deployed gateway with valid DNS and TLS on port 443, its private control
-socket and public CA, pinned clients, and a disposable repository explicitly
-authorized for temporary branch, pull request, issue, and comment writes:
+Use an explicitly selected [development-token sender](../reference/repository-credentials/development-token.md)
+with valid DNS and TLS on port 443, its private control socket and public CA, pinned clients,
+and a disposable repository authorized for temporary branch, pull request, issue and comment
+writes. Configure exactly `pushRefAllowlist: ["refs/heads/credential-smoke/*"]`:
 
 ```sh
 REPOSITORY_CREDENTIALS_LIVE=1 \
@@ -178,9 +221,9 @@ REPOSITORY_CREDENTIALS_LIVE_CA=/run/credential-service/public-ca.pem \
   node --test tests/integration/repository-credentials-live.test.mjs
 ```
 
-This exercises a real provider through the gateway, not OCC Agent admission or a
-model. Provider keys and installation tokens stay on the service side. The test
-creates unique resources and attempts bounded cleanup. Ambiguous or incomplete
+This exercises a real provider through the development-token sender, not OCC Agent
+admission or a model. The static token stays in the sender. The test
+creates unique resources and attempts cleanup with a timeout. Ambiguous or incomplete
 cleanup fails the test: reconcile the reported run marker and repository manually.
 A closed session is not disposed until its active and pending credential
 obligations are resolved. An unset selector skips the test; selecting it without
@@ -192,15 +235,23 @@ The dedicated installed qualification is **disabled**. Its old automatic cleanup
 could race with changes to a branch or pull request. Preparation and selected
 tests fail before creating resources. Do not use that lane for qualification.
 
-Use the [QA matrix](ci.md#qa-matrix) for an installed Agent's real Git journey. It
+Use the [QA matrix](ci/qa-advisory.md) for an installed Agent's real Git journey. It
 requires an authorized disposable repository and independent provider readback;
-check the commit, pull request, credential disposal, and cleanup results. A direct
+check the commit, the refused push outside the granted branch, credential disposal,
+and cleanup results. Its `git-only` grant opens no pull request. A direct
 container command or ready Pod does not prove an Agent model turn.
 
 ## Record each evidence boundary
 
-Record the source revision, selected test and pass/fail/skip counts, artifact and
+Record the source commit, selected test and pass/fail/skip counts, artifact and
 image IDs where applicable, and cleanup results. A skip is not a pass. Source,
 packaged artifacts, controlled provider, separate containers, installed Agent,
 and live provider results establish different things; do not substitute one for
 another. Historical results apply to the artifacts that produced them.
+
+The native package excludes App signing and token issuance. Its detached package
+checks cover prepared configuration and explicit development-token clients.
+The prepared native workflow is verified in
+`tests/integration/postgres-prepared-repository-git-broker.test.mjs`, including
+exact-ref enforcement, draft creation, response loss and no replay. That suite
+requires real PostgreSQL; package checks and simulated providers do not replace it.

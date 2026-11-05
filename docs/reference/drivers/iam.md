@@ -1,3 +1,7 @@
+---
+kind: reference/driver
+---
+
 # IAMDriver contract
 
 ## Overview
@@ -16,7 +20,7 @@ and the [authorization reference](../authorization.md).
 
 ### Identity and authorization operations
 
-The [shared interface](../../../packages/contracts/src/index.ts) requires two
+The [shared interface](../../../packages/contracts/src/drivers/iam/index.ts) requires two
 methods. Optional `coversIdentityAccess(request)` takes a `principalId` and
 `targetIdentityId` and returns `true` only when the principal already holds
 every grant of the target at the same or a broader scope. OCC requires it before
@@ -32,6 +36,16 @@ Evidence identifies the contributing identity, Groups, AccessBindings, Roles,
 and Restrictions. OCC uses it to attribute audit records. The worker rejects
 malformed decisions, including a mismatched Driver identity; an invalid result
 cannot grant permission.
+
+### Namespace policy operations
+
+Optional Namespace policy methods list, read, create, or delete Roles and
+AccessBindings, and list, read, or create ServicePrincipals. OCC supplies their
+policy repository. Writes require the Driver to declare
+`namespacePolicyTransaction: "platform-unit-of-work"` and participate in that
+original transaction; policy and audit must commit or roll back together.
+OCC rejects a write before invoking a Driver without that declaration. Reads
+remain available when their methods are implemented.
 
 ## IAM
 
@@ -51,8 +65,8 @@ a denied request or unavailable authority cannot become an allow. See
 
 Startup creates the selected IAM Driver. The API and worker use it for later
 lookups and decisions; policy remains persisted platform state and is not frozen
-in Installation YAML or a deployment. The shared interface has no startup,
-disposal, identity-provisioning, or policy-mutation method.
+in Installation YAML or a deployment. The shared interface has no startup or
+disposal hook.
 
 ### Native IAM behavior
 

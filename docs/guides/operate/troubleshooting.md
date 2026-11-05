@@ -4,6 +4,8 @@ Use this page when local startup, the Kubernetes installation, the control plane
 or several Agents are affected. For a problem with one Agent, start with
 [Agent troubleshooting](../topics/agent-troubleshoot.md).
 
+For pnpm and Helm setup issues, see [Troubleshoot local k3d setup](local-setup-troubleshooting.md).
+
 ## Local K3s cannot find the cpuset controller
 
 If the k3d server logs report `failed to find cpuset cgroup (v2)`, inspect
@@ -113,6 +115,15 @@ and set a reachable resolver for a fresh start. That recovery changes only the
 owned node's resolver. If startup rolls the cluster back, wait until that
 command exits before starting again.
 
+## Local Agent Sandbox controller image pull fails
+
+Inspect controller Pod events in `agent-sandbox-system` with the
+[startup kubeconfig and context](#local-startup-stalls-on-cert-manager).
+`ImagePullBackOff` with resets from `cdn.registry.k8s.io` indicates failed image
+delivery. Verify node access to registry and redirected blob hosts. Local manifest
+overrides do not preload images. Use a [verified image cache](../deploy/local-openshell-images.md#preload-the-agent-sandbox-controller-from-a-verified-cache),
+or restore registry connectivity. Preserve image versions and TLS verification.
+
 ## Local Codex sandbox check fails
 
 Kubernetes Compute startup with `OCC_DEVELOPMENT_SANDBOX_DRIVER=none` verifies the
@@ -130,13 +141,18 @@ A production node uses the separate
 [Codex sandbox profile](../deploy/codex-sandbox.md) procedure. Do not copy this
 sysctl change onto a shared cluster.
 
+## Source build fails TLS certificate verification
+
+If HTTPS inspection causes a certificate error during a runtime download, install the approved proxy CA in the host trust store. Before retrying `occ dev up`, select a PEM bundle containing both public roots and the proxy CA. The build mounts it only for downloads.
+
+```bash
+# Fedora 44 system bundle after the approved CA has been installed.
+export OCC_DEVELOPMENT_BUILD_CA_FILE=/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
+```
+
 ## The local console reports a certificate error
 
-If the printed HTTPS console URL shows `NET::ERR_CERT_AUTHORITY_INVALID` or an
-unknown-issuer warning, check the certificate using the public CA from the same
-installation. Set `BROWSER_CA` to its path on the computer running these commands
-(`./browser-ca.crt` if copied from the startup machine), and `CONSOLE_URL` to
-startup's **Browser console** URL; keep the printed hostname and port:
+For `NET::ERR_CERT_AUTHORITY_INVALID` or an unknown issuer, check the Console URL against this installation’s public CA. Set `BROWSER_CA` to the local certificate path and use the exact **Browser console** URL printed at startup.
 
 ```bash
 BROWSER_CA='<local-browser-ca.crt-path>'
@@ -146,11 +162,7 @@ curl --fail --show-error --max-time 10 --cacert "$BROWSER_CA" \
   -o /dev/null -w 'HTTP %{http_code}; TLS verify %{ssl_verify_result}\n' "$CONSOLE_URL"
 ```
 
-Expect HTTP `200` and TLS verify `0`. This checks the served certificate chain
-and exact hostname. It does not add browser trust. When this check succeeds but
-the browser still rejects the issuer, trust that installation's public CA in
-the browser's local trust store. `occ dev up` never changes that store. Importing
-a certificate without enabling SSL trust may leave the warning unchanged.
+HTTP `200` and TLS verify `0` confirm the chain and hostname. If the browser still rejects the issuer, enable SSL trust for this installation’s CA in the browser’s trust store. `occ dev up` leaves browser trust settings unchanged.
 
 ### Trust the CA on macOS
 
@@ -178,19 +190,17 @@ that cause resolved. Do not use `curl -k` as a successful verification result.
 
 ### Remove trust when discarding the installation
 
-Record the CA fingerprint before `occ dev down` deletes the state files. In the
-same trust store, locate the certificate with that exact fingerprint, remove
-its explicit trust setting, and delete it. Do not remove every certificate named
-**OCC development browser CA**; another installation may still use one. A new
-installation generates a new CA and requires its own trust step.
+Before `occ dev down` deletes the state files, record the CA fingerprint. Remove trust and delete only the matching certificate. Other installations use the same CA name. Trust each new installation’s CA separately.
 
 ## Open the console from another machine
 
-Kubernetes-only startup without OpenShell prints an HTTPS console URL such as
+With the browser port enabled, Kubernetes-only startup prints an HTTPS console
+URL and its public CA, including when using OpenShell. For example:
 `https://console.<cluster>.oce.localhost:8443/console/`. `<cluster>` is the k3d
-cluster name from startup. `8443` is the default `OCC_DEVELOPMENT_BROWSER_PORT`;
-use the printed port when it differs. Kubernetes-only startup with OpenShell
-prints `Console: <apiURL>/console/` and does not print this browser URL or CA.
+cluster name from startup. The local OpenShell quickstart explicitly sets
+`OCC_DEVELOPMENT_BROWSER_PORT=8443`; use the printed port when it differs.
+When the browser port is disabled, OpenShell startup prints only the HTTP API
+Console URL. Enable the browser port for the HTTPS workflow below.
 
 Open that URL on the machine that ran `occ dev up`. The hostname ends in
 `.localhost`, so the computer that looks it up resolves it to its own loopback
@@ -257,12 +267,17 @@ If the Job started, inspect the failing container:
 
 ```bash
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+  logs "$INITIALIZATION_JOB" -c installation-check # upgrades only
+kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
   logs "$INITIALIZATION_JOB" -c migration
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
   logs "$INITIALIZATION_JOB" -c bootstrap
 ```
 
-Migration runs before bootstrap; an unstarted bootstrap container has no logs.
+On an upgrade, `installation-check` runs first. It loads any Console theme
+bundle and the Installation as API startup does. It names the refused setting or
+file. The running API keeps serving. Migration runs before bootstrap; an
+unstarted container has no logs.
 For image, scheduling, or volume errors, use the Pod events reported by
 `kubectl describe pod <pod-name>` with the same context and namespace. Fix the
 specific image, scheduling, or storage error. For a bootstrap failure, follow
@@ -290,6 +305,19 @@ worker logs and the [tenant RoleBindings](../deploy/production-agents.md#grant-t
 After fixing the cause, repeat `occ installation get` and confirm the Namespace
 reports `ready` before creating an Agent there. A healthy control plane does
 not prove an Agent has deployed or can run a model.
+
+## A deployment fails because Kubernetes refused a Secret
+
+`KUBERNETES_SECRET_WRITE_FORBIDDEN` means Kubernetes answered `403` to one of
+the version's private Secret writes or readbacks, so the worker failed the
+deployment without retrying. A preparation failure's
+`worker.compute-prepare-failed` log line names the `step`. Check that the worker's
+[tenant RoleBindings](../deploy/production-agents.md#grant-tenant-rolebindings)
+grant `get`, `create` and `update` on `secrets` in the Agent's Kubernetes
+namespaces (with an execution cluster, also the control cluster's Gateway
+namespace), and that no admission policy or ResourceQuota refuses Secrets
+there. Then deploy again. A running version's maintenance does not fail: it
+retries and recovers by itself once the grant is fixed.
 
 ## An Agent's Gateway or Harness Pod stays unready
 

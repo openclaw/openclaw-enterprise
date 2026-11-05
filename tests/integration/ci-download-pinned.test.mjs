@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, readdir, rm, open, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -13,24 +13,51 @@ const script = resolve(
 );
 const body = Buffer.alloc(16 * 1024, "pinned-tool-bytes ");
 const sha256 = createHash("sha256").update(body).digest("hex");
+const half = body.length / 2;
 
 // Serves `body` on 127.0.0.1. `plan(request number)` picks how each request
-// is answered: "fast" sends it at once; "trickle" sends 4 bytes per second
-// and never finishes.
+// is answered: "fast" sends it at once and honors a `Range: bytes=N-` resume
+// with 206; "no-range" sends it whole and ignores Range; "half" sends the
+// first half, then holds the connection open; "trickle" sends the next 4 bytes
+// each second and never finishes.
 async function withServer(plan, run) {
   const requests = [];
+  const ranges = [];
   const timers = new Set();
   const server = createServer((request, response) => {
     requests.push(request.url);
+    ranges.push(request.headers.range);
     const mode = plan(requests.length);
+    if (mode === "missing") {
+      response.writeHead(404);
+      response.end();
+      return;
+    }
+    const resumeAt = Number(/^bytes=(\d+)-$/.exec(request.headers.range ?? "")?.[1] ?? 0);
+    if (mode === "fast" && resumeAt > 0) {
+      response.writeHead(206, {
+        "content-length": body.length - resumeAt,
+        "content-range": `bytes ${resumeAt}-${body.length - 1}/${body.length}`,
+      });
+      response.end(body.subarray(resumeAt));
+      return;
+    }
     response.writeHead(200, { "content-length": body.length });
     // Send the headers now, so a trickle's first second already counts as a 200.
     response.flushHeaders();
-    if (mode === "fast") {
+    if (mode === "fast" || mode === "no-range") {
       response.end(body);
       return;
     }
-    const timer = setInterval(() => response.write(body.subarray(0, 4)), 1000);
+    if (mode === "half") {
+      response.write(body.subarray(0, half));
+      return;
+    }
+    let sent = 0;
+    const timer = setInterval(() => {
+      response.write(body.subarray(sent, sent + 4));
+      sent += 4;
+    }, 1000);
     timers.add(timer);
     response.on("close", () => clearInterval(timer));
   });
@@ -38,7 +65,7 @@ async function withServer(plan, run) {
   const dir = await mkdtemp(join(tmpdir(), "ci-download-pinned-"));
   try {
     const url = `http://127.0.0.1:${server.address().port}/tool`;
-    return await run({ url, destination: join(dir, "tool"), requests, dir });
+    return await run({ url, destination: join(dir, "tool"), requests, ranges, dir });
   } finally {
     for (const timer of timers) {
       clearInterval(timer);
@@ -49,11 +76,20 @@ async function withServer(plan, run) {
   }
 }
 
-function download(url, destination, checksum, env = {}) {
+function download(url, destination, checksum, env = {}, creationMask = "022") {
   return new Promise((resolveRun) => {
     execFile(
       "bash",
-      [script, url, destination, checksum],
+      [
+        "-c",
+        'umask "$1"; shift; exec bash "$@"',
+        "download-pinned-test",
+        creationMask,
+        script,
+        url,
+        destination,
+        checksum,
+      ],
       {
         env: { ...process.env, NO_PROXY: "127.0.0.1", no_proxy: "127.0.0.1", ...env },
         timeout: 30_000,
@@ -62,6 +98,17 @@ function download(url, destination, checksum, env = {}) {
         resolveRun({ code: error ? (error.code ?? 1) : 0, stdout, stderr }),
     );
   });
+}
+
+// Observe bytes and permissions through the same opened file, rather than
+// combining path-based metadata checks with later accesses to that path.
+async function readTool(path) {
+  const file = await open(path, "r");
+  try {
+    return { bytes: await file.readFile(), mode: (await file.stat()).mode & 0o777 };
+  } finally {
+    await file.close();
+  }
 }
 
 const fastAbort = { DOWNLOAD_PINNED_SPEED_LIMIT: "1000", DOWNLOAD_PINNED_SPEED_TIME: "2" };
@@ -79,6 +126,45 @@ test("a stalled download is cut off and retried, then checksum-verified", async 
       assert.deepEqual(await readFile(destination), body);
       // The stall ends after the speed window, not at the 300 s attempt cap.
       assert.ok(Date.now() - started < 20_000, `took ${Date.now() - started} ms`);
+    },
+  );
+});
+
+// The attempt cap (3 s here, 300 s on CI) ends an attempt that is still moving
+// data, after the 4 s retry budget would have run out. On CI, dl.k8s.io sent
+// kubectl at about 140 KB/s, so one attempt got about 42 of its 59 MB.
+const cappedAttempt = { DOWNLOAD_PINNED_MAX_TIME: "3", DOWNLOAD_PINNED_RETRY_BUDGET: "4" };
+
+test("an attempt cut off with bytes received is retried and resumes from them", async () => {
+  await withServer(
+    (n) => (n === 1 ? "half" : "fast"),
+    async ({ url, destination, requests, ranges }) => {
+      const result = await download(url, destination, sha256, cappedAttempt);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(requests.length, 2);
+      assert.match(
+        result.stderr,
+        /curl exit 28, HTTP 200\); retrying in 2s \(attempt 2\/8, resuming at byte 8192\)/,
+      );
+      // The retry asks only for the missing half, and the joined file passes the checksum.
+      assert.deepEqual(ranges, [undefined, `bytes=${half}-`]);
+      assert.match(result.stdout, /: OK$/m);
+      assert.deepEqual(await readFile(destination), body);
+    },
+  );
+});
+
+test("a server that ignores the resume request gets a fresh download", async () => {
+  await withServer(
+    (n) => (n === 1 ? "half" : n === 2 ? "no-range" : "fast"),
+    async ({ url, destination, requests, ranges }) => {
+      const result = await download(url, destination, sha256, { DOWNLOAD_PINNED_MAX_TIME: "3" });
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(requests.length, 3);
+      assert.match(result.stderr, /Server refused to resume at byte 8192; starting over/);
+      // A 200 answer to a resume is never appended to the partial file.
+      assert.deepEqual(ranges, [undefined, `bytes=${half}-`, undefined]);
+      assert.deepEqual(await readFile(destination), body);
     },
   );
 });
@@ -104,18 +190,61 @@ test("a slow but moving download above the floor is not cut off", async () => {
   );
 });
 
-test("default settings download a fast file once and never retry a checksum mismatch", async () => {
+test("downloads publish only verified bytes and preserve existing tools on failure", async () => {
+  let mode = "fast";
   await withServer(
-    () => "fast",
-    async ({ url, destination, requests }) => {
+    () => mode,
+    async ({ url, destination, requests, dir }) => {
       const ok = await download(url, destination, sha256);
       assert.equal(ok.code, 0, ok.stderr);
       assert.equal(requests.length, 1);
+      const first = await readTool(destination);
+      assert.deepEqual(first.bytes, body);
+      assert.equal(first.mode, 0o644);
 
+      const previous = Buffer.from("#!/bin/sh\nprintf old-tool\n");
+      await writeFile(destination, previous);
+      await chmod(destination, 0o755);
       const bad = await download(url, destination, "0".repeat(64));
       assert.notEqual(bad.code, 0);
       assert.equal(requests.length, 2);
       assert.doesNotMatch(bad.stderr, /Transient download failure/);
+      const rejected = await readTool(destination);
+      assert.ok(rejected.bytes.equals(previous), "failed download replaced the tool");
+      assert.equal(rejected.mode, 0o755);
+      assert.deepEqual(await readdir(dir), ["tool"]);
+
+      const replacement = await download(url, destination, sha256);
+      assert.equal(replacement.code, 0, replacement.stderr);
+      const published = await readTool(destination);
+      assert.deepEqual(published.bytes, body);
+      assert.equal(published.mode, 0o755);
+      assert.deepEqual(await readdir(dir), ["tool"]);
+
+      await rm(destination);
+      const absent = await download(url, destination, "0".repeat(64));
+      assert.notEqual(absent.code, 0);
+      assert.deepEqual(await readdir(dir), []);
+
+      mode = "missing";
+      await writeFile(destination, previous);
+      await chmod(destination, 0o755);
+      const missing = await download(url, destination, sha256);
+      assert.equal(missing.code, 22);
+      assert.equal(requests.length, 5);
+      const retained = await readTool(destination);
+      assert.ok(retained.bytes.equals(previous));
+      assert.equal(retained.mode, 0o755);
+      assert.deepEqual(await readdir(dir), ["tool"]);
+
+      mode = "fast";
+      await rm(destination);
+      const restrictive = await download(url, destination, sha256, {}, "077");
+      assert.equal(restrictive.code, 0, restrictive.stderr);
+      const privateTool = await readTool(destination);
+      assert.deepEqual(privateTool.bytes, body);
+      assert.equal(privateTool.mode, 0o600);
+      assert.deepEqual(await readdir(dir), ["tool"]);
     },
   );
 });

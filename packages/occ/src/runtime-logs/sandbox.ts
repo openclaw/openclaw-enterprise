@@ -1,3 +1,4 @@
+import { validSandboxPolicyDecision } from "@openclaw-enterprise/contracts";
 import type {
   AgentRuntimeDescription,
   RuntimeLogStream,
@@ -62,6 +63,7 @@ function validLine(value: unknown): value is SandboxLogLine {
     typeof line.message === "string" &&
     typeof line.source === "string" &&
     line.source.length <= 32 &&
+    (line.decision === undefined || validSandboxPolicyDecision(line.decision)) &&
     isStringMap(line.fields)
   );
 }

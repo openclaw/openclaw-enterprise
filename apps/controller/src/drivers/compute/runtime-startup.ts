@@ -3,14 +3,45 @@
 
 const STARTUP_PHASE_EVENT = "runtime.startup_phase";
 
+// Apply the controls to the Gateway child, after OCE finishes configuration and plugin setup.
+export function gatewayManagedModeEnvironment(managedMode: boolean): string {
+  return JSON.stringify(
+    managedMode
+      ? {
+          OPENCLAW_CONFIG_READONLY: "1",
+          OPENCLAW_DISABLE_GATEWAY_LOCAL_TERMINALS: "1",
+          OPENCLAW_DISABLE_CRON_HOST_EXECUTION: "1",
+          OPENCLAW_CONFIG_READONLY_NOTICE:
+            "OpenClaw Enterprise manages this Gateway’s configuration. In the OCE Console, edit and save the Agent’s draft Configuration, then select Deploy new version. https://docs-enterprise.openclaw.org/reference/agents/gateway-managed-mode/",
+        }
+      : {},
+  );
+}
+
+// V8 sizes each isolate's young generation from the memory it sees: in a 4 GiB
+// container a semi-space may grow to 64 MiB, in the Gateway's main isolate and in
+// each of its ~25 worker_threads isolates. The flag is process-wide and overrides
+// per-worker resourceLimits. On a remote test VM (median of 5, 1 CPU, finding
+// 2700), 8 MiB cut the first-turn peak 2.56 -> 2.26 GiB (-12%) for +1.5% CPU to
+// readiness and no slower first turn; 4 MiB saved 0.15 GiB more but cost +7% CPU
+// and +14% first-turn time. An operator's NODE_OPTIONS comes last, so it wins.
+const GATEWAY_NODE_OPTIONS = "--max-semi-space-size=8";
+
+// Program text for the Gateway child's NODE_OPTIONS entry, spread after its environment.
+export function gatewayNodeOptionsEnvironment(): string {
+  return `{ NODE_OPTIONS: [${JSON.stringify(GATEWAY_NODE_OPTIONS)}, process.env.NODE_OPTIONS].filter(Boolean).join(" ") }`;
+}
+
 // One stderr JSON line per startup phase, for deploy-time measurement. Callers
 // pass fixed phase names only: never provider, model, credential or path values.
-// A failed phase may add a fixed upper-case cause code, which the Collector exports.
+// A failed phase may add a fixed upper-case cause code, which the Collector exports,
+// and a fixed lower-case class of a native process's error output (finding 2017): callers
+// pass only codexFailureOutputClass's literals, and OCC keeps only the contract's list.
 // Date.now() keeps this usable in every wrapper, including stubbed test contexts.
 export function startupPhaseHelper(container: "gateway" | "agent"): string {
   return String.raw`
 const startupPhaseOrigin = Date.now();
-function logStartupPhase(phase, startedAt, outcome = "ok", code) {
+function logStartupPhase(phase, startedAt, outcome = "ok", code, failureClass) {
   const now = Date.now();
   const failed = outcome !== "ok";
   console.error(JSON.stringify({
@@ -21,6 +52,7 @@ function logStartupPhase(phase, startedAt, outcome = "ok", code) {
     ms: now - startedAt,
     sinceStartMs: now - startupPhaseOrigin,
     ...(failed && typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(code) ? { code } : {}),
+    ...(failed && typeof failureClass === "string" && /^[a-z][a-z0-9_]{0,31}$/.test(failureClass) ? { failureClass } : {}),
   }));
 }
 async function timeStartupPhase(phase, run) {
@@ -33,47 +65,120 @@ async function timeStartupPhase(phase, run) {
 }
 
 /**
- * OpenClaw's agent database schema (`OPENCLAW_AGENT_SCHEMA_VERSION` in
- * src/state/openclaw-agent-db-contract.ts) at the runtime image's pinned
- * OPENCLAW_COMMIT. The runtime image test that migrates a released Gateway
- * fails when a pin moves it; update it with the pin.
+ * OpenClaw's agent and shared state database schemas (`OPENCLAW_AGENT_SCHEMA_VERSION`
+ * and `OPENCLAW_STATE_SCHEMA_VERSION` in src/state/openclaw-schema-versions.ts) at
+ * the runtime image's pinned OPENCLAW_COMMIT. The runtime image tests that migrate
+ * a released Gateway and a released workspace node fail when a pin moves either;
+ * update them with the pin.
  */
-export const OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION = 24;
+export const OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION = 40;
+export const OPENCLAW_STATE_DATABASE_SCHEMA_VERSION = 39;
 
-// A Gateway keeps its agent databases across runtime image upgrades. OpenClaw
-// refuses one with an older schema (exit 78) until "openclaw doctor --fix"
-// migrates it, and its own image entrypoint runs that Doctor pass before every
-// Gateway start. The Kubernetes and Docker Gateway wrappers replace that
-// entrypoint, so they run the same pass, but only when a database needs it:
-// fresh and current state start without Doctor's ~15 s. Doctor must not
-// rewrite the controller-owned configuration (OPENCLAW_CONFIG_READONLY). The
-// schema versions after Doctor, not its exit status, decide: Doctor also exits
-// non-zero for problems it can only report here. On failure the step is named
+// A Gateway and a dedicated Harness's workspace node keep OpenClaw state across
+// runtime image upgrades. OpenClaw refuses an older agent database (exit 78) and
+// moves the client credentials of an older shared state database (schema 29)
+// only under Doctor's backed-up migration custody, so it needs
+// "openclaw doctor --fix" first. OpenClaw's own image entrypoint runs that Doctor
+// pass before every Gateway start. The Kubernetes and Docker wrappers replace
+// that entrypoint, so they run the same pass for each state directory they start
+// OpenClaw on when a database is older or prior maintenance remains pending.
+// Fresh and settled current state skip Doctor. It must not rewrite the controller-owned
+// configuration (OPENCLAW_CONFIG_READONLY), and it never deletes state: it saves
+// a pre-migration copy beside each database and verifies integrity first. The
+// schema versions and Doctor's settled machine result both gate startup. Harmless
+// diagnostic warnings do not override successful maintenance, but cleanup or
+// maintenance refusal must hold startup even if the schemas advanced. On failure
+// the step is named
 // and the wrapper must not start OpenClaw; `retry` completes the log line's
 // remedy. The wrapper provides `spawn`, `logStartupPhase` and
 // `publishRuntimeFailure`.
-export function gatewayStateMigrationHelper(retry: string): string {
+export function openClawStateMigrationHelper(
+  owner: "Gateway" | "Harness" | "Native worker",
+  retry: string,
+): string {
   return String.raw`
-function outdatedAgentDatabases() {
-  const agentsDirectory = require("node:path").join(process.env.OPENCLAW_STATE_DIR || "/home/node/.openclaw", "agents");
-  let agentIds;
+// This private presence marker survives a failed or interrupted repair even when
+// Doctor already advanced every schema. Keep it beside the shared database:
+// Gateway HOME is transient, but its state child is retained. Native owns its locks.
+function openClawMaintenancePending(stateDirectory) {
   try {
-    agentIds = require("node:fs").readdirSync(agentsDirectory);
+    const stat = require("node:fs").lstatSync(require("node:path").join(stateDirectory, "state", ".oce-maintenance-pending"));
+    if (!stat.isFile() || (stat.mode & 0o077) !== 0) throw new Error("Invalid pending maintenance marker");
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+function setOpenClawMaintenancePending(stateDirectory, pending) {
+  const fs = require("node:fs");
+  const marker = require("node:path").join(stateDirectory, "state", ".oce-maintenance-pending");
+  const storage = require("node:path").join(stateDirectory, "state");
+  if (pending) {
+    // Older agent-only state can lack the shared directory. Persist its creation
+    // before relying on a file inside it to survive a container replacement.
+    fs.mkdirSync(storage, { recursive: true, mode: 0o700 });
+    const parent = fs.openSync(stateDirectory, "r");
+    try { fs.fsyncSync(parent); } finally { fs.closeSync(parent); }
+  }
+  const directory = fs.openSync(storage, "r");
+  try {
+    if (pending) {
+      const fd = fs.openSync(marker, fs.constants.O_WRONLY | fs.constants.O_CREAT |
+        fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK, 0o600);
+      try {
+        const stat = fs.fstatSync(fd);
+        if (!stat.isFile() || (stat.mode & 0o077) !== 0) throw new Error("Invalid pending maintenance marker");
+        fs.fsyncSync(fd);
+      } finally { fs.closeSync(fd); }
+    } else {
+      fs.unlinkSync(marker);
+    }
+    // Publish presence before Doctor can write, and removal only after it settles.
+    fs.fsyncSync(directory);
+  } finally { fs.closeSync(directory); }
+}
+
+function outdatedOpenClawDatabases(stateDirectory) {
+  const { join } = require("node:path");
+  const candidates = [
+    { path: join(stateDirectory, "state", "openclaw.sqlite"), current: ${OPENCLAW_STATE_DATABASE_SCHEMA_VERSION}, shared: true },
+  ];
+  let agentIds = [];
+  try {
+    agentIds = require("node:fs").readdirSync(join(stateDirectory, "agents"));
   } catch {
-    // Fresh state has no agents directory.
-    return [];
+    // Fresh state, and a workspace node's, has no agents directory.
+  }
+  for (const agentId of agentIds) {
+    candidates.push({
+      path: join(stateDirectory, "agents", agentId, "agent", "openclaw-agent.sqlite"),
+      current: ${OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION},
+    });
   }
   // Outside the per-database try: without the module, startup fails instead of skipping.
   const { DatabaseSync } = require("node:sqlite");
   const outdated = [];
-  for (const agentId of agentIds) {
-    const path = require("node:path").join(agentsDirectory, agentId, "agent", "openclaw-agent.sqlite");
+  for (const { path, current, shared } of candidates) {
     let version;
     try {
       // A read-only open of a missing database fails here.
       const database = new DatabaseSync(path, { readOnly: true });
       try {
         version = database.prepare("PRAGMA user_version").get().user_version;
+        if (shared) {
+          // OpenClaw can publish current shared content under an older header
+          // while an older updater runs; its content marker then names the schema.
+          try {
+            const marker = Number(JSON.parse(database.prepare(
+              "SELECT value_json FROM config_machine_state WHERE state_key = 'state.schema.contentVersion'",
+            ).get()?.value_json ?? "0"));
+            if (Number.isSafeInteger(marker) && marker > version) version = marker;
+          } catch {
+            // No marker table or row: the header names the schema.
+          }
+        }
       } finally {
         database.close();
       }
@@ -82,58 +187,124 @@ function outdatedAgentDatabases() {
       continue;
     }
     // 0 is a database OpenClaw has not initialized; a newer one needs its backup.
-    if (version > 0 && version < ${OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION}) outdated.push({ path, version });
+    if (version > 0 && version < current) outdated.push({ path, version, current });
   }
   return outdated;
 }
 
-function runStateMigrationDoctor() {
+// Runs an OpenClaw command that takes the state directory's owner lock (Doctor,
+// native setup), and keeps the wrapper alive until the command has exited. If the
+// wrapper exited on a stop first, the container would end and the kernel would kill
+// the command (SIGKILL) while it holds the lock. That lock on retained state outlives
+// the Pod, and OpenClaw refuses it from every later PID namespace (finding 3104).
+// forwardStop passes a stop (SIGTERM, SIGINT) to the command, whose own handling
+// cancels its work. Otherwise the command runs to its end: OpenClaw's launcher kills
+// the CLI it respawns about 2 s after forwarding a stop, too soon for native setup to
+// release its lock, while setup itself ends within seconds, inside the Pod's
+// termination grace period. Resolves { status, signal, error } as spawnSync reports a
+// child, and terminating when a stop arrived.
+function runOpenClawStateOwner(args, options, { forwardStop, onStdout }) {
   return new Promise((resolve) => {
-    const doctor = spawn(
-      process.execPath,
-      ["/app/openclaw.mjs", "doctor", "--fix", "--non-interactive"],
-      { stdio: "inherit", env: { ...process.env, OPENCLAW_CONFIG_READONLY: "1" } },
-    );
+    const child = spawn(process.execPath, ["/app/openclaw.mjs", ...args], options);
     let terminating = false;
-    // Doctor's maintenance lease owns termination: let it stop its transaction.
     const stop = (signal) => {
       terminating = true;
-      doctor.kill(signal);
+      if (forwardStop) child.kill(signal);
     };
     const onTerm = () => stop("SIGTERM");
     const onInt = () => stop("SIGINT");
     process.on("SIGTERM", onTerm);
     process.on("SIGINT", onInt);
-    const settle = (outcome) => {
+    const settle = (result) => {
       process.off("SIGTERM", onTerm);
       process.off("SIGINT", onInt);
-      resolve({ outcome, terminating });
+      resolve({ status: null, signal: null, ...result, terminating });
     };
-    doctor.on("error", (error) => settle("error-" + (error?.code ?? "spawn")));
-    doctor.on("exit", (code, signal) => settle(signal ?? "exit-" + code));
+    let error;
+    child.on("error", (cause) => { error = cause; if (!onStdout) settle({ error }); });
+    if (onStdout) {
+      child.stdout.on("data", onStdout);
+      child.stdout.on("error", (cause) => { error = cause; });
+    }
+    // A piped final result can arrive after exit; close also waits for its EOF.
+    child.on(onStdout ? "close" : "exit", (status, signal) => settle({ status, signal, error }));
   });
 }
 
-// Resolves true once Doctor brought every outdated database current, false
-// after naming the failure; exits when terminated during Doctor.
-async function migrateGatewayState(outdated) {
+async function runStateMigrationDoctor(environment) {
+  const resultKey = "OPENCLAW_UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH";
+  const prefix = resultKey + "=";
+  const chunks = [];
+  let bytes = 0;
+  const limit = 4 * 1024 * 1024;
+  const onStdout = (chunk) => {
+    bytes += chunk.length;
+    // Match the native adapter's bound, but keep draining after overflow so
+    // output handling cannot strand Doctor's maintenance owner.
+    if (bytes <= limit) chunks.push(chunk);
+  };
+  // The native stdout adapter emits only after Doctor and its owned processes
+  // settle. Reading the internal result file directly would miss cleanup failure.
+  const doctor = await runOpenClawStateOwner(
+    ["doctor", "--fix", "--non-interactive"],
+    { stdio: ["inherit", "pipe", "inherit"], env: {
+      ...environment, OPENCLAW_CONFIG_READONLY: "1", [resultKey]: "-",
+    } },
+    { forwardStop: true, onStdout },
+  );
+  let result;
+  let records = 0;
+  let invalid = bytes > limit;
+  // Buffer only stdout (bounded above); stderr still reports progress live.
+  // Decode after close so split UTF-8 characters and the final line stay intact.
+  for (const line of require("node:buffer").Buffer.concat(chunks).toString("utf8").split("\n")) {
+    if (!line.startsWith(prefix)) {
+      if (line) process.stdout.write(line + "\n");
+      continue;
+    }
+    records += 1;
+    try { result = JSON.parse(line.slice(prefix.length)); } catch { invalid = true; }
+  }
+  const advisory = result?.advisory;
+  const acceptedStatus = result?.status === "ok" || (result?.status === "advisory" &&
+    advisory?.kind === "package-post-install-doctor" && advisory.reason === "deferred-configured-plugin-repair" &&
+    typeof advisory.message === "string" && Array.isArray(advisory.details) && advisory.details.length > 0 &&
+    advisory.details.every((detail) => typeof detail === "string" && detail.trim().length > 0));
+  const completed = !doctor.error && !doctor.signal && [0, 86].includes(doctor.status) &&
+    !invalid && records === 1 && acceptedStatus &&
+    result.maintenanceRefusal === undefined && result.configWriteRefusal === undefined &&
+    (result.failureFacts === undefined || (Array.isArray(result.failureFacts) && result.failureFacts.length === 0));
+  const outcome = doctor.error
+    ? "error-" + (doctor.error.code ?? "spawn")
+    : doctor.signal ?? "exit-" + doctor.status;
+  return { outcome, completed: Boolean(completed), terminating: doctor.terminating };
+}
+
+// Runs Doctor with the environment OpenClaw itself starts with on stateDirectory.
+// Resolves true once Doctor brought every outdated database current, false after
+// naming the failure; exits when terminated during Doctor.
+async function migrateOpenClawState(stateDirectory, outdated, environment) {
   const startedAt = Date.now();
   console.error(
-    "Migrating " + outdated.length + " OpenClaw agent database(s) from schema " +
-      outdated.map(({ version }) => version).join(", ") + " to ${OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION} with openclaw doctor --fix.",
+    "Migrating " + outdated.length + " OpenClaw database(s) from schema " +
+      outdated.map(({ version, current }) => version + " to " + current).join(", ") +
+      " with openclaw doctor --fix.",
   );
-  const doctor = await runStateMigrationDoctor();
+  setOpenClawMaintenancePending(stateDirectory, true);
+  const doctor = await runStateMigrationDoctor(environment);
   if (doctor.terminating) process.exit(0);
-  const remaining = outdatedAgentDatabases();
-  if (remaining.length === 0) {
+  const remaining = outdatedOpenClawDatabases(stateDirectory);
+  if (doctor.completed && remaining.length === 0) {
+    setOpenClawMaintenancePending(stateDirectory, false);
     logStartupPhase("state-migration", startedAt);
     return true;
   }
   logStartupPhase("state-migration", startedAt, "failed");
   publishRuntimeFailure("state-migration", "UNAVAILABLE");
   console.error(
-    "Gateway state migration failed: openclaw doctor --fix (" + doctor.outcome + ") left " +
-      remaining.map(({ path, version }) => path + " at schema " + version).join(", ") +
+    "${owner} state migration failed: openclaw doctor --fix (" + doctor.outcome + ") " +
+      (remaining.length ? "left " + remaining.map(({ path, version }) => path + " at schema " + version).join(", ")
+        : "did not confirm completed maintenance") +
       ". OpenClaw was not started. Read the Doctor output above, fix the cause, then ${retry}.",
   );
   return false;

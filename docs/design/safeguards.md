@@ -6,7 +6,7 @@ current behavior from remaining design work.
 
 ## Implementation status
 
-Secret storage, exact binding authorization, revision-scoped delivery, and
+Secret storage, exact binding authorization, delivery for one Agent revision, and
 transactional mutation audit are implemented. With Kubernetes, canonical Secrets
 live in the tenant storage namespace; the worker materializes admitted
 runtime Secrets for the exact consumer. Model credentials still reach the executing Harness.
@@ -27,16 +27,16 @@ references are unsupported. Namespace membership, Configuration access, Agent
 access, or possession of a reference does not grant consumption. OCC stores
 immutable Namespace/backend metadata without `agentId`, and the driver stores
 mutable secret material independently of gateway creation. Protected storage
-writes may contain plaintext; ordinary responses, OCC persistence, revisions,
+writes may contain plaintext; ordinary responses, OCC persistence, versions,
 ConfigMaps, and audit records contain references only.
 
 Default delivery is explicit Kubernetes `secretKeyRef` environment injection
-into the selected consumer for an admitted revision. Configuration bindings
+into the selected consumer for a saved version. Configuration bindings
 serve the gateway; Agent `harnessAuth` serves only the model-executing Harness.
 Native OpenClaw SecretRefs resolve the embedded environment. The dedicated
 [model-credential boundary](workloads.md#openclaw-gateways) keeps keys out of its gateway. Updating a Secret keeps its
 reference stable and does not restart a workload; the operator redeploys or
-restarts each consumer that should observe the latest value. Old revisions
+restarts each consumer that should observe the latest value. Old versions
 retain references, not historical values. Admission checks current authorization;
 Kubernetes process restarts do not reauthorize delivered env values. Immediate
 loss of access requires stopping the workload or revoking the upstream credential.
@@ -65,16 +65,14 @@ own admission and dispatch authorization; the dedicated gateway gets no key.
 
 For a provider-managed account, API-side Kubernetes Compute stores the issued
 access token and pinned provider workspace in one account-owned Secret in the
-tenant storage namespace. The revision snapshots only the OCC account
+tenant storage namespace. The Agent revision records only the OCC account
 identity, exact credential reference, and verified private Backend/workspace
-ownership. The worker materializes the admitted credential into a revision-owned
-runtime Secret in the data plane, which Kubernetes projects into the associated
+ownership. The worker materializes the admitted credential into a runtime Secret for that Agent revision in the data plane, which Kubernetes projects into the associated
 dedicated Codex workload. Codex logs in with its access token under the forced
 provider workspace. Its separate gateway never receives the
 token, workspace, or provider admin credential; embedded access-token execution
 is unsupported. The API has tenant-local credential provisioning permissions.
-The worker reads canonical control-plane Secrets and manages revision-owned
-data-plane Secrets;
+The worker reads canonical control-plane Secrets and manages data-plane Secrets for each Agent revision;
 Agent workloads receive no direct Secret API permissions. A trusted worker with
 Deployment write access can also indirectly project tenant Secrets, so its
 effective trust boundary remains each granted tenant namespace. Provider credentials
@@ -94,8 +92,8 @@ Harness identity and model credentials as well as broad controller credentials.
 Direct model-credential delivery to the tenant data-plane Harness is a temporary
 implementation exception. Target model-credential mediation keeps real upstream
 credentials outside Harness execution; the Harness receives only scoped substitutes.
-Workload-write authority must be bounded in each target, since it can indirectly
-expose Secrets there. Cross-target materialization does not establish brokered
+Each target must restrict workload-write authority to the resources required
+for the deployment, since that authority can indirectly expose Secrets there. Cross-target materialization does not establish brokered
 model access or workload-bound transport authentication; those guarantees remain deferred.
 
 ## Failure behavior
@@ -116,18 +114,17 @@ The selected `IAMDriver` evaluates each exact request before a side effect.
 `ComputeDriver` ensures Namespace infrastructure only after its independently
 authorized Namespace lifecycle operation. Authorization, reference validation,
 backing Namespace readiness, selected inference target, and sandbox policy
-support complete before OCC creates a revision. The Agent-owned gateway is
-configured and becomes ready during that exact revision's preparation in its
+support complete before OCC creates a version. The Agent-owned gateway is
+configured and becomes ready during that exact version's preparation in its
 selected target, independently of the candidate Harness's placement. A
 denied request may invoke its authoritative `IAMDriver` but cannot create a
 gateway, workload, resource, inference request, or messaging side effect.
 
 If candidate provisioning, containment enforcement, or nonserving route
-preparation fails, the candidate remains inactive and the previous active
-revision, Agent workload, and route remain unchanged. Once cutover begins,
+preparation fails, the candidate remains inactive and the previous selected version, Agent workload, and route remain unchanged. Once cutover begins,
 OCC disables the previous route before activating its replacement. A failure
 during or after cutover retains the previous workload but leaves routing
-disabled until the new route succeeds or the previous revision and route can be
+disabled until the new route succeeds or the previous version and route can be
 independently verified and restored.
 
 Rollback and cleanup cover both selected runtime targets and preserve exact
@@ -145,7 +142,7 @@ their enforcement outcome, and the result for platform operations. Exported
 audit events retain the stable Installation identifier at their top level so
 evidence remains attributable outside the singleton platform; nested resource
 references retain only their exact resource and applicable Namespace. Deployment
-audit identifies the candidate and previous active revisions, selected
+audit identifies the candidate and previous selected versions, selected
 service-account, compute, sandbox, inference, channel, and secret Drivers,
 Agent-owned gateway and workload operations with nonsecret runtime-target
 observations, the selected approved model target, readiness decisions, route
@@ -168,13 +165,13 @@ The platform preserves:
   OpenClaw gateway for each deployed Agent; a Namespace may contain multiple
   gateways. The selected `ComputeDriver` preserves exact ownership across the
   [topology's runtime targets](workloads.md#openclaw-gateways). Routing binds
-  Namespace, Agent, and the sole active revision; gateway ownership remains
-  stable across that Agent's revisions.
+  Namespace, Agent, and the sole selected version; gateway ownership remains
+  stable across that Agent's versions.
 - **Independent authorization:** an external identity provider authenticates;
   OAG verifies identity and scope; OCC authorizes exact platform operations.
   Kubernetes and external providers retain their own authority.
 - **Single-writer ownership:** OCC owns platform resources, desired state,
-  native platform policy, and revisions. External systems retain their own
+  native platform policy, and versions. External systems retain their own
   policy. Selected Drivers evaluate authority or report external and
   infrastructure state without rewriting platform resources or granting
   themselves permissions.
@@ -188,8 +185,8 @@ The platform preserves:
   integrations. Editing an
   Agent or changing runtime integrations affects only a later deployment.
 - **Stable workload identity:** each Agent has one OCC-owned runtime identity.
-  At most one revision is active, and only the exact Agent workload bound to
-  that revision executes, receives traffic, or acts. It cannot inherit the
+  At most one version is selected, and only the exact Agent workload bound to
+  that version executes, receives traffic, or acts. It cannot inherit the
   initiating user's credentials or permissions.
 - **Platform-wide Restrictions:** each applicable guardrail narrows native and
   external authority and is enforced by each relevant selected Driver.

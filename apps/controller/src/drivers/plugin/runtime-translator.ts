@@ -340,8 +340,11 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
           throw new Error("Codex destructiveEnabled must be a boolean.");
         }
         if (toolDefaults.enabled !== undefined && policy.destructiveEnabled !== undefined) {
-          throw new Error(
-            "Omit toolDefaults.enabled when using Codex destructiveEnabled; native default enablement bypasses category filtering.",
+          throw Object.assign(
+            new Error(
+              "Omit toolDefaults.enabled when using Codex destructiveEnabled; native default enablement bypasses category filtering.",
+            ),
+            { policyField: "conflictingEnablementDefaults" },
           );
         }
         for (const id of Object.keys(tools)) {
@@ -388,9 +391,7 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
       if (kind === "codex") {
         return codexNativeIdFromPluginId(pluginId);
       }
-      return pluginId.startsWith(OCC_DRIVER_ID + ":")
-        ? pluginId.slice((OCC_DRIVER_ID + ":").length)
-        : pluginId;
+      return openClawNativeIdFromPluginId(pluginId);
     });
     return new Set(nativeIds).size !== nativeIds.length;
   }
@@ -405,9 +406,7 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
       const key =
         kind === "codex"
           ? codexSlugFromNativeId(codexNativeIdFromPluginId(pluginId))
-          : pluginId.startsWith(OCC_DRIVER_ID + ":")
-            ? pluginId.slice((OCC_DRIVER_ID + ":").length)
-            : pluginId;
+          : openClawNativeIdFromPluginId(pluginId);
       const tools = Object.fromEntries(
         Object.entries(toolPolicies(selection))
           .filter(([, policy]) => policy.approvers !== undefined)
@@ -453,10 +452,13 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     return CODEX_DRIVER_ID + ":" + nativeId;
   }
 
+  function openClawNativeIdFromPluginId(pluginId: string): string {
+    const prefix = OCC_DRIVER_ID + ":";
+    return pluginId.startsWith(prefix) ? pluginId.slice(prefix.length) : pluginId;
+  }
+
   function openClawCatalogDescriptor(pluginId: string): OpenClawPluginDescriptor {
-    const nativeId = pluginId.startsWith(OCC_DRIVER_ID + ":")
-      ? pluginId.slice((OCC_DRIVER_ID + ":").length)
-      : pluginId;
+    const nativeId = openClawNativeIdFromPluginId(pluginId);
     const descriptor = nativeCatalog.find((entry) => entry.nativeId === nativeId);
     if (descriptor === undefined) {
       throw Object.assign(new Error("Unknown OpenClaw plugin selection."), {
@@ -534,7 +536,7 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     if (!isRecord(curated)) {
       return [];
     }
-    return array(curated.plugins).map(codexCatalogEntry);
+    return requiredArray(curated.plugins, "Codex catalog plugins").map(codexCatalogEntry);
   }
 
   function codexSummaryByNativeId(
@@ -571,6 +573,38 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
         pluginName: codexSummaryRemotePluginId(summary),
       };
     });
+  }
+
+  function codexSearchPlan(selections: unknown) {
+    return selectionEntries(selections).map(([pluginId]) => ({
+      pluginId,
+      params: {
+        searchTerm: codexSlugFromNativeId(codexNativeIdFromPluginId(pluginId)),
+        scope: "global",
+        limit: 100,
+      },
+    }));
+  }
+
+  function codexReadParamsFromSearch(pluginId: string, response: unknown) {
+    if (!isRecord(response)) {
+      throw new Error("Codex plugin search response is missing.");
+    }
+    const nativeId = codexNativeIdFromPluginId(pluginId);
+    for (const result of requiredArray(response.data, "Codex plugin search results")) {
+      if (
+        isRecord(result) &&
+        result.marketplaceName === CODEX_MARKETPLACE &&
+        isRecord(result.plugin) &&
+        result.plugin.id === nativeId
+      ) {
+        return {
+          remoteMarketplaceName: CODEX_MARKETPLACE,
+          pluginName: codexSummaryRemotePluginId(result.plugin),
+        };
+      }
+    }
+    return undefined;
   }
 
   function detailRecord(value: unknown): Record<string, unknown> {
@@ -985,9 +1019,7 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     const alsoAllow: string[] = [];
     const deny: string[] = [];
     for (const [pluginId, selection] of selectionEntries(selections)) {
-      const nativeId = pluginId.startsWith(OCC_DRIVER_ID + ":")
-        ? pluginId.slice((OCC_DRIVER_ID + ":").length)
-        : pluginId;
+      const nativeId = openClawNativeIdFromPluginId(pluginId);
       const descriptor = nativeCatalog.find((entry) => entry.nativeId === nativeId);
       if (descriptor === undefined) {
         throw new Error("Unknown OpenClaw plugin selection.");
@@ -1065,6 +1097,8 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     hasAliasedSelections,
     validatePolicies,
     codexReadParamsForSelections,
+    codexSearchPlan,
+    codexReadParamsFromSearch,
     codexRuntimeArtifact,
     openClawCatalogEntries,
     openClawManagedEntryConfig,
@@ -1114,6 +1148,11 @@ export function openClawRuntimeArtifact(
     defaultApprovers,
     gatewayPublicOrigin,
   ) as PluginRuntimeResolvedArtifacts;
+}
+
+// The plugins.entries keys Kubernetes Compute renders for OpenClaw catalog selections.
+export function openClawManagedPluginIds(): readonly string[] {
+  return OPENCLAW_PLUGIN_CATALOG.map(({ nativeId }) => nativeId);
 }
 
 export function openClawCatalogEntries(): readonly PluginCatalogEntry[] {

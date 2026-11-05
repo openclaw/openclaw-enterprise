@@ -13,7 +13,8 @@ function monitoringFailure(stage, reason, details = {}) {
 export async function waitForMonitoring(stage, read, containers, inspectContainer) {
   const end = Date.now() + 60_000;
   let lastHttpStatus;
-  while (Date.now() < end) {
+  // The deadline is checked after each read, so the last read happens at or past it.
+  for (;;) {
     // A detached container can exit before its listener binds; surface that
     // setup failure instead of waiting for a scrape that cannot succeed.
     for (const [role, name] of containers) {
@@ -54,6 +55,9 @@ export async function waitForMonitoring(stage, read, containers, inspectContaine
         });
       }
       lastHttpStatus = error.httpStatus ?? lastHttpStatus;
+    }
+    if (Date.now() >= end) {
+      break;
     }
     await delay(500);
   }
@@ -120,4 +124,34 @@ export async function checkGrafanaDatasource(origin) {
     });
   }
   return datasource.status === "OK";
+}
+
+// Picks `count` distinct free ports before any container starts. A port picked
+// after a host-network container was started could be one that container has not
+// bound yet (finding 1667).
+export async function distinctPorts(count, pick, attempts = 10 * count) {
+  const ports = new Set();
+  for (let attempt = 0; ports.size < count; attempt += 1) {
+    if (attempt >= attempts) {
+      throw new Error(`Unable to pick ${count} distinct free ports in ${attempts} attempts.`);
+    }
+    ports.add(await pick());
+  }
+  return [...ports];
+}
+
+// Prometheus exits with status 1 when its listener cannot bind. Only this cause is
+// worth a retry with new ports; any other exit is a real failure.
+export function portClash(log) {
+  return /\baddress already in use\b/i.test(log);
+}
+
+// The last lines of a container log, one entry per line. The CI reporter bounds
+// each diagnostic from its start, so a whole log in one diagnostic loses the tail,
+// which is where an exit reason is.
+export function containerLogTail(log, count = 15) {
+  return log
+    .split(/\r?\n/)
+    .filter((line) => line.trim() !== "")
+    .slice(-count);
 }

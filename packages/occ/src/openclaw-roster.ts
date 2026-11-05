@@ -5,7 +5,12 @@ import type {
 import { asRecord } from "@openclaw-enterprise/utils";
 
 import { canSpell } from "./configuration-settings.ts";
-import { requireAgentsShape, requireFallbackProviders } from "./configured-harness.ts";
+import {
+  type ModelPolicyAgent,
+  requireAgentsShape,
+  requireConsistentModelPolicy,
+  requireModelSelections,
+} from "./configured-harness.ts";
 import { agentEntryMessage, ConfigurationHarnessError } from "./errors.ts";
 
 // Every Kubernetes topology (embedded OpenClaw, dedicated OpenClaw or Codex) runs the pinned
@@ -127,18 +132,64 @@ function canFillExplicit(
 }
 
 /**
- * Refuses, when a Configuration is saved, an agents roster that every deployment refuses, with
- * the deployment's text: resolveConfiguredHarnessId's shape rules and its fallback provider rule
- * first, as deployment checks them first, then the OpenClaw Gateway's. Rules that depend on the
- * topology, such as dedicated OpenClaw serving the main Agent, stay at deployment because a
- * Configuration does not fix one. A Preset save runs them too (finding 1308), with `options`
- * locating its unfilled variables.
+ * The Configuration values a deployment admits with the OCC Agent name as the served OpenClaw
+ * Agent's display name. The Control UI shows `identity.name` of the first roster entry, or of
+ * main when the roster is omitted, and falls back to "Assistant". An omitted roster gains the
+ * main entry the Gateway already serves. A name the Configuration sets wins, and
+ * a roster of several entries keeps the names its entries set: the OCC Agent is the Gateway, not
+ * one of them. Shapes the roster rules refuse pass through unchanged for those rules to name.
+ */
+export function withAgentIdentityName(
+  values: Readonly<OpenClawConfigurationDocument>,
+  name: string,
+): OpenClawConfigurationDocument {
+  const agents = values.agents === undefined ? {} : asRecord(values.agents);
+  if (agents === undefined || agents.list !== undefined) {
+    return values;
+  }
+  const entries = agents.entries === undefined ? { main: {} } : asRecord(agents.entries);
+  const keys = Object.keys(entries ?? {});
+  if (entries === undefined || keys.length !== 1) {
+    return values;
+  }
+  const entry = asRecord(entries[keys[0]!]);
+  const identity = entry?.identity === undefined ? {} : asRecord(entry.identity);
+  if (entry === undefined || identity === undefined || identity.name !== undefined) {
+    return values;
+  }
+  return {
+    ...values,
+    agents: {
+      ...agents,
+      entries: { [keys[0]!]: { ...entry, identity: { ...identity, name } } },
+    },
+  };
+}
+
+/**
+ * Refuses, when a Configuration is saved, an agents roster and model policy that every deployment
+ * refuses, with the deployment's text. resolveConfiguredHarnessId's rules come first, in its order,
+ * as deployment checks them first (requireConsistentModelPolicy): the agents shape, each model
+ * selection's form and fallback provider, the rules for values the document sets that conflict
+ * (an entry primary, agents.*.models, provider catalog rows, runtime policies and ids; findings
+ * 3019 and 3020), then the OpenClaw Gateway's. A draft without a model, or a model without its
+ * required runtime, saves; deployment refuses it. Rules that depend on the topology, such as
+ * dedicated OpenClaw serving the main Agent, stay at deployment because a Configuration does not
+ * fix one. A Preset save runs the shape, selection and Gateway rules (finding 1308), with
+ * `options` locating its unfilled variables: a model, row or runtime that waits on a variable
+ * names no value yet, so the Configuration a launch creates gets the rest. `agent` is the one Agent
+ * the Configuration serves, when the write knows it (requireConsistentModelPolicy).
  */
 export function requireDeployableRoster(
   values: OpenClawConfigurationDocument,
   options?: ConfigurationValidationOptions,
+  agent?: ModelPolicyAgent,
 ): void {
-  requireAgentsShape(values);
-  requireFallbackProviders(values, options);
+  if (options?.unresolved === undefined) {
+    requireConsistentModelPolicy(values, agent);
+  } else {
+    requireAgentsShape(values);
+    requireModelSelections(values, options);
+  }
   requireOpenClawRoster(values, options);
 }

@@ -1,7 +1,14 @@
+import { protectedRepositoryGitAdmission } from "@openclaw-enterprise/contracts";
 import type { AgentRevision } from "@openclaw-enterprise/contracts";
+import { isDeepStrictEqual } from "node:util";
 import { immutableCopy } from "@openclaw-enterprise/utils";
-import { ResourceConflictError, ScopeViolationError } from "../errors.ts";
+import {
+  ResourceConflictError,
+  ResourceStateConflictError,
+  ScopeViolationError,
+} from "../errors.ts";
 import type {
+  RepositoryStandingApproval,
   RepositoryRevisionOwner,
   RepositorySessionAttempt,
   RepositoryBrokerReceipt,
@@ -41,10 +48,13 @@ function sameOwner(attempt: RepositorySessionAttempt, owner: RepositoryRevisionO
 
 /** The process-local adapter mirrors the database's constrained attempt lifecycle. */
 export function memoryRepositorySessions(
+  executions: Map<string, { executionId: string; fingerprint: string; closed: boolean }>,
+  approvals: Map<string, Readonly<RepositoryStandingApproval>>,
   attempts: Map<string, Readonly<RepositorySessionAttempt>>,
   receipts: Map<string, Readonly<RepositoryBrokerReceipt>>,
   findRevision: (owner: RepositoryRevisionOwner) => Readonly<AgentRevision> | undefined,
   ownerAcceptsAdmission: (owner: RepositoryRevisionOwner) => boolean,
+  executionAcceptsAdmission: (owner: RepositoryRevisionOwner) => boolean,
 ): RepositorySessionRepository {
   const list = (matches: (attempt: RepositorySessionAttempt) => boolean) =>
     Object.freeze(
@@ -77,6 +87,111 @@ export function memoryRepositorySessions(
   }
 
   return {
+    async findStandingExecution(owner) {
+      return executions.get(owner.revisionId);
+    },
+    async recordStandingExecution(owner, execution) {
+      const revision = findRevision(owner);
+      const snapshot = revision?.repositoryCredentials;
+      const approval = snapshot?.standingApprovalId
+        ? approvals.get(snapshot.standingApprovalId)
+        : undefined;
+      if (
+        !executionAcceptsAdmission(owner) ||
+        !approval ||
+        approval.revokedAt ||
+        approval.generation !== snapshot!.standingApprovalGeneration
+      ) {
+        throw new ScopeViolationError("Current standing approval required.");
+      }
+      const prior = executions.get(owner.revisionId);
+      if (prior && (prior.closed || !isDeepStrictEqual(prior, { ...execution, closed: false }))) {
+        throw new ResourceConflictError("Standing execution changed.");
+      }
+      if (!prior && snapshot!.deadlineWallMs <= Date.now()) {
+        throw new ScopeViolationError("Initial repository execution observation is too late.");
+      }
+      executions.set(owner.revisionId, immutableCopy({ ...execution, closed: false }));
+    },
+    async listStandingApprovals(namespaceId, agentId) {
+      return [...approvals.values()]
+        .filter((a) => a.namespaceId === namespaceId && a.agentId === agentId)
+        .sort(
+          (a, b) =>
+            a.binding.repositoryRef.localeCompare(b.binding.repositoryRef) ||
+            a.generation - b.generation,
+        );
+    },
+    async findStandingApproval(namespaceId, agentId, repositoryRef) {
+      return [...approvals.values()].find(
+        (a) =>
+          !a.revokedAt &&
+          a.namespaceId === namespaceId &&
+          a.agentId === agentId &&
+          a.binding.repositoryRef === repositoryRef,
+      );
+    },
+    async approveStanding(input) {
+      const old = approvals.get(input.id);
+      if (
+        old &&
+        !old.revokedAt &&
+        isDeepStrictEqual(
+          { ...old, createdAt: input.createdAt },
+          { ...input, generation: old.generation },
+        )
+      ) {
+        return old;
+      }
+      if (
+        old ||
+        [...approvals.values()].some(
+          (a) =>
+            !a.revokedAt &&
+            a.namespaceId === input.namespaceId &&
+            a.agentId === input.agentId &&
+            a.binding.repositoryRef === input.binding.repositoryRef,
+        )
+      ) {
+        throw new ResourceConflictError(
+          "Standing approval identity already used or binding already approved.",
+        );
+      }
+      const generation =
+        Math.max(
+          0,
+          ...[...approvals.values()]
+            .filter(
+              (a) =>
+                a.namespaceId === input.namespaceId &&
+                a.agentId === input.agentId &&
+                a.binding.repositoryRef === input.binding.repositoryRef,
+            )
+            .map((a) => a.generation),
+        ) + 1;
+      const approved = immutableCopy({ ...input, generation });
+      approvals.set(input.id, approved);
+      return approved;
+    },
+    async revokeStanding(approval, at) {
+      const current = approvals.get(approval.id);
+      if (
+        !current ||
+        current.revokedAt !== undefined ||
+        current.namespaceId !== approval.namespaceId ||
+        current.agentId !== approval.agentId ||
+        current.generation !== approval.generation
+      ) {
+        throw new ResourceStateConflictError("Standing approval changed.");
+      }
+      const revokedAt = new Date(
+        Math.max(Date.parse(current.createdAt), Date.parse(timestamp(at))),
+      ).toISOString();
+      approvals.set(
+        current.id,
+        immutableCopy({ ...current, revokedAt, generation: current.generation + 1 }),
+      );
+    },
     lockAttempt: async (admissionId) => {
       const attempt = attempts.get(admissionId);
       return attempt === undefined ? undefined : immutableCopy(attempt);
@@ -95,7 +210,7 @@ export function memoryRepositorySessions(
       const attempt = attempts.get(input.admissionId);
       if (
         !attempt ||
-        attempt.brokerProtocol !== 1 ||
+        ![1, 3].includes(attempt.brokerProtocol) ||
         ["invalidated", "disposed"].includes(attempt.phase) ||
         receipts.has(input.admissionId) ||
         (input.state === "reserved" && (attempt.phase !== "opening" || !input.generation)) ||
@@ -122,7 +237,7 @@ export function memoryRepositorySessions(
       }
       if (
         !attempt ||
-        attempt.brokerProtocol !== 1 ||
+        ![1, 3].includes(attempt.brokerProtocol) ||
         ["invalidated", "disposed"].includes(attempt.phase) ||
         !validIdentifier(input.sessionId) ||
         !Number.isSafeInteger(input.deadlineWallMs) ||
@@ -171,7 +286,7 @@ export function memoryRepositorySessions(
       }
       if (
         !attempt ||
-        attempt.brokerProtocol !== 1 ||
+        ![1, 3].includes(attempt.brokerProtocol) ||
         ["invalidated", "disposed", "open"].includes(attempt.phase) ||
         attempt.sessionId !== undefined
       ) {
@@ -200,8 +315,11 @@ export function memoryRepositorySessions(
       );
       if (
         !ownerAcceptsAdmission(input) ||
+        protectedRepositoryGitAdmission(revision?.executionAdmission) !==
+          (input.brokerProtocol === 2) ||
         admitted === undefined ||
-        admitted.deadlineWallMs !== input.deadlineWallMs ||
+        (input.predecessorAdmissionId === undefined &&
+          admitted.deadlineWallMs !== input.deadlineWallMs) ||
         binding === undefined
       ) {
         throw new ScopeViolationError(
@@ -221,6 +339,40 @@ export function memoryRepositorySessions(
       if (attempts.has(input.admissionId)) {
         throw new ResourceConflictError("The repository session admission already exists.");
       }
+      if (input.predecessorAdmissionId !== undefined) {
+        const previous = attempts.get(input.predecessorAdmissionId);
+        const receipt = receipts.get(input.predecessorAdmissionId);
+        const now = Date.now();
+        const execution = executions.get(input.revisionId);
+        const approval = admitted.standingApprovalId
+          ? approvals.get(admitted.standingApprovalId)
+          : undefined;
+        if (
+          !previous ||
+          !sameOwner(previous, input) ||
+          previous.repositoryRef !== input.repositoryRef ||
+          previous.phase !== "disposed" ||
+          previous.brokerProtocol !== input.brokerProtocol ||
+          (input.brokerProtocol === 2
+            ? receipt !== undefined
+            : input.brokerProtocol !== 3 ||
+              receipt?.state !== "disposed" ||
+              previous.sessionId !== receipt.sessionId) ||
+          !execution ||
+          execution.closed ||
+          !executionAcceptsAdmission(input) ||
+          input.executionFingerprint !== execution.fingerprint ||
+          !approval ||
+          approval.revokedAt ||
+          approval.generation !== admitted.standingApprovalGeneration ||
+          input.deadlineWallMs <= Math.max(previous.deadlineWallMs, now) ||
+          input.deadlineWallMs >
+            Math.min(now, Date.parse(input.createdAt)) + input.durationSeconds * 1000 ||
+          input.durationSeconds > Number(approval.scope.maximumSessionDurationSeconds)
+        ) {
+          throw new ScopeViolationError("Invalid standing session succession.");
+        }
+      }
       const createdAt = timestamp(input.createdAt);
       const attempt: RepositorySessionAttempt = {
         namespaceId: input.namespaceId,
@@ -234,6 +386,12 @@ export function memoryRepositorySessions(
         deadlineWallMs: input.deadlineWallMs,
         phase: "opening",
         brokerProtocol: input.brokerProtocol ?? 0,
+        ...(input.predecessorAdmissionId
+          ? {
+              predecessorAdmissionId: input.predecessorAdmissionId,
+              executionFingerprint: input.executionFingerprint,
+            }
+          : {}),
         createdAt,
         updatedAt: createdAt,
       };
@@ -254,7 +412,7 @@ export function memoryRepositorySessions(
         (receipt?.sessionId !== undefined &&
           sessionId !== undefined &&
           receipt.sessionId !== sessionId) ||
-        (current.brokerProtocol === 1 &&
+        ([1, 3].includes(current.brokerProtocol) &&
           input.phase === "disposed" &&
           (receipt?.state !== "disposed" || receipt.sessionId !== sessionId))
       ) {

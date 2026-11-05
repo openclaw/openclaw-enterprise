@@ -9,7 +9,6 @@ import {
 import { assertPrivateDirectory, readPrivateFile } from "./private-files.ts";
 
 export const repositoryMaterialRoot = "/run/oce/repository-credentials";
-export const repositoryManifestPath = join(repositoryMaterialRoot, "manifest.json");
 export const repositorySelectionVariable = "OCE_REPOSITORY_SELECTION";
 
 export interface RuntimeRepositoryBinding {

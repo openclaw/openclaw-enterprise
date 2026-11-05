@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
 
 const scenarioPresets = {
+  "sandbox-policy": ["Codex"],
+  "plugin-install": ["Codex"],
+  "openshell-linear-read": ["Codex"],
   "model-ui": ["OpenClaw", "Codex"],
+  "codex-search-config": ["Codex"],
+  "console-secrets": ["OpenClaw", "Codex"],
   calendar: ["Codex"],
-  "git-full": ["OpenClaw", "Codex"],
-  "git-read": ["Codex"],
+  "git-write": ["OpenClaw", "Codex"],
+  "git-push-denied": ["Codex"],
   slack: ["Codex"],
 };
 
@@ -20,12 +25,27 @@ export function selectQaMatrix(env = process.env) {
   assert.ok(["all", "OpenClaw", "Codex"].includes(preset), "invalid QA preset selection");
   const allScenarios = Object.keys(scenarioPresets);
   const input = env.OCC_TEST_QA_SCENARIOS ?? "all";
-  const scenarios = input === "all" ? allScenarios : input.split(",").map((name) => name.trim());
+  const scenarios =
+    input === "all"
+      ? allScenarios.filter(
+          (name) =>
+            ![
+              "sandbox-policy",
+              "plugin-install",
+              "openshell-linear-read",
+              "codex-search-config",
+            ].includes(name),
+        )
+      : input.split(",").map((name) => name.trim());
   assert.ok(
     scenarios.length > 0 && scenarios.every((name) => allScenarios.includes(name)),
     "invalid QA scenario selection",
   );
   assert.equal(new Set(scenarios).size, scenarios.length, "duplicate QA scenario selection");
+  const codexSearchConfig = scenarios.includes("codex-search-config");
+  if (codexSearchConfig) {
+    assert.equal(scenarios.length, 1, "codex-search-config requires an exclusive QA selection");
+  }
   const presets = preset === "all" ? ["OpenClaw", "Codex"] : [preset];
   const installations = installation === "all" ? ["compose", "kubernetes"] : [installation];
   for (const name of scenarios) {
@@ -39,11 +59,22 @@ export function selectQaMatrix(env = process.env) {
       cell: `${value}/${name}`,
       installation: value,
       preset: name,
-      scenarios: scenarios.filter((scenario) => scenarioPresets[scenario].includes(name)),
-      unselected: allScenarios.filter(
-        (scenario) => scenarioPresets[scenario].includes(name) && !scenarios.includes(scenario),
+      scenarios: scenarios.filter(
+        (scenario) =>
+          !["sandbox-policy", "plugin-install", "openshell-linear-read"].includes(scenario) &&
+          scenarioPresets[scenario].includes(name),
       ),
-      notApplicable: allScenarios.filter((scenario) => !scenarioPresets[scenario].includes(name)),
+      unselected: allScenarios.filter(
+        (scenario) =>
+          !["sandbox-policy", "plugin-install", "openshell-linear-read"].includes(scenario) &&
+          scenarioPresets[scenario].includes(name) &&
+          !scenarios.includes(scenario),
+      ),
+      notApplicable: allScenarios.filter(
+        (scenario) =>
+          !["sandbox-policy", "plugin-install", "openshell-linear-read"].includes(scenario) &&
+          !scenarioPresets[scenario].includes(name),
+      ),
     })),
   );
   const activePresets = presets.filter((name) =>
@@ -52,8 +83,41 @@ export function selectQaMatrix(env = process.env) {
   const activeScenarios = [...new Set(cells.flatMap((cell) => cell.scenarios))];
   const repository = activeScenarios.some((name) => name.startsWith("git-"));
   const requiredEnv = activePresets.map((name) =>
-    name === "Codex" ? "OCC_TEST_QA_CODEX_TOKEN_FILE" : "OCC_TEST_QA_OPENAI_KEY_FILE",
+    name === "Codex" && !codexSearchConfig
+      ? "OCC_TEST_QA_CODEX_TOKEN_FILE"
+      : "OCC_TEST_QA_OPENAI_KEY_FILE",
   );
+  if (codexSearchConfig) {
+    if (env.OCC_TEST_QA_MODEL_API_KEY !== undefined) {
+      requiredEnv.splice(
+        requiredEnv.indexOf("OCC_TEST_QA_OPENAI_KEY_FILE"),
+        1,
+        "OCC_TEST_QA_MODEL_API_KEY",
+      );
+    }
+    requiredEnv.push("OCC_TEST_QA_CODEX_MODEL_BASE_URL");
+  }
+  const sandboxPolicy = scenarios.includes("sandbox-policy");
+  const pluginInstall = scenarios.includes("plugin-install");
+  const linearRead = scenarios.includes("openshell-linear-read");
+  if (linearRead) {
+    assert.notEqual(installation, "compose", "OpenShell Linear reads require Kubernetes setup");
+    if (!requiredEnv.includes("OCC_TEST_QA_CODEX_TOKEN_FILE")) {
+      requiredEnv.push("OCC_TEST_QA_CODEX_TOKEN_FILE");
+    }
+    requiredEnv.push(
+      "OCC_TEST_QA_CODEX_MODEL",
+      "OCC_TEST_CODEX_LINEAR_PROMPT",
+      "OCC_TEST_CODEX_LINEAR_TOOL_NAME",
+      "OCC_TEST_CODEX_LINEAR_RESULT_EXPECT",
+    );
+  }
+  if (sandboxPolicy || pluginInstall) {
+    if (!requiredEnv.includes("OCC_TEST_QA_CODEX_TOKEN_FILE")) {
+      requiredEnv.push("OCC_TEST_QA_CODEX_TOKEN_FILE");
+    }
+    requiredEnv.push("OCC_TEST_QA_SANDBOX_ENV");
+  }
   if (activeScenarios.includes("calendar")) {
     requiredEnv.push("OCC_TEST_CODEX_CALENDAR_TOOL_NAME", "OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT");
   }
@@ -79,13 +143,16 @@ export function selectQaMatrix(env = process.env) {
   }
   return {
     installations,
+    sandboxPolicy,
+    pluginInstall,
+    linearRead,
     cells,
     scenarios,
     requiredEnv,
     repository,
-    browser: activeScenarios.includes("model-ui"),
+    browser: activeScenarios.some((name) => ["model-ui", "console-secrets"].includes(name)),
     scope:
-      installation === "all" && preset === "all" && scenarios.length === allScenarios.length
+      installation === "all" && preset === "all" && scenarios.length === allScenarios.length - 4
         ? "full"
         : "partial:selected",
   };

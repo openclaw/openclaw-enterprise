@@ -129,6 +129,13 @@ Before saving, to choose another Preset or supply different variables, select **
 and confirm that the unsaved draft can be discarded. A supplied
 `configuration.values` replaces the entire native JSON editor.
 
+If Create Agent refuses a Configuration setting that a variable filled, the
+refusal names that variable and offers **Change** with its name. That action
+returns to the Preset with your entries, except passwords. The variable shows
+the refusal and has focus. The action is available only while **Start over** is.
+A variable used in a key is named only for a refusal of that key, not of a setting inside it.
+If you changed that setting in the Configuration JSON, the refusal names no variable.
+
 Saving a Preset does not validate every launch setting. Review the draft before
 creating it; an invalid execution mode can fail when opening the form, while
 an invalid plugin policy can fail when saving the Agent.
@@ -140,7 +147,7 @@ replace its complete `template`, and `DELETE` on the same path, or
 `occ preset delete ID`, to remove it. `occ preset list` shows the IDs.
 You need the corresponding permission on the exact Preset. These operations
 affect future selections only. Already selected copies, saved Agents, and
-running revisions stay unchanged. See [CRUD and permissions](../../reference/presets.md#crud-and-permissions).
+running versions stay unchanged. See [CRUD and permissions](../../reference/presets.md#crud-and-permissions).
 
 If a Preset is missing from the selector, check the current Namespace and your
 exact Preset `read` grant. If applying fails, check the named variable and its

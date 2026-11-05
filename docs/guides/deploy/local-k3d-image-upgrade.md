@@ -2,13 +2,11 @@
 
 Upgrade an existing Helm-installed OpenClaw Control Plane (OCC) and Kubernetes
 Compute fleet in the same k3d cluster. This procedure retains PostgreSQL,
-Namespaces, Agents, revision history, Secrets, and Agent workspace and gateway
+Namespaces, Agents, version history, Secrets, and Agent workspace and gateway
 PersistentVolumeClaims (PVCs). Take verified backups first: retaining a volume is
 not a backup, and migrations or runtime changes can make rollback unsafe.
-Complete the [upgrade migration checklist](upgrade-checklist.md) before using
-this procedure. Its [legacy RWX prerequisite](upgrade-checklist.md#remove-legacy-rwx-workspaces)
-is an exception: explicitly discarded Agents lose their workspace and Gateway
-state and must be recreated if needed. Retention checks apply to the remaining Agents.
+Complete the [upgrade checklist](upgrade-checklist.md) before using
+this procedure.
 
 This path requires the production Helm chart, Kubernetes Compute, and a trusted
 HTTPS OCC endpoint. The [production image upgrade](production-upgrade.md) owns
@@ -48,7 +46,7 @@ upgrade or preserve a demo. See the [demo lifecycle](../../testing/kubernetes.md
   before it scales the API and worker to zero.
 - Meet the [upgrade permissions and concurrency requirements](production-upgrade.md#prepare-the-release).
   For runtime upgrades, review saved drafts and stop other deployments and edits:
-  new revisions use the current drafts. Schedule an interruption window and
+  new versions use the current drafts. Schedule an interruption window and
   capacity for old and new workloads to overlap.
 - For an installation with repository credentials enabled, run the upgrade from
   a native Linux operator environment that uses UID 1000 and the same architecture
@@ -98,7 +96,7 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
 chmod 600 "$VALUES" "$INSTALLATION"
 ```
 
-Record the Installation ID, Agent inventory, PVC names and volume identities:
+Record the Installation ID, Agent inventory, PVC UIDs and bound volume names:
 
 ```bash
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" get --raw=/readyz
@@ -106,7 +104,9 @@ helm --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CONTEXT" \
   --namespace "$NAMESPACE" status "$RELEASE"
 occ --output json installation get > /secure/occ/installation-before.json
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  get pvc --all-namespaces -o wide > /secure/occ/pvcs-before.txt
+  get pvc --all-namespaces \
+  -o custom-columns='NAMESPACE:.metadata.namespace,NAME:.metadata.name,UID:.metadata.uid,VOLUME:.spec.volumeName' \
+  > /secure/occ/pvcs-before.txt
 ```
 
 The first command returns `ok`, Helm reports the release, and OCC authenticates.
@@ -288,7 +288,7 @@ before rolling out OCC. Runtime-only also restarts OCC on its existing controlle
 image to load the updated Installation. The script deploys all recorded running
 Agents concurrently; stopped and deleting Agents are left alone. See the
 [production contract](production-upgrade.md#upgrade-agent-runtimes) for
-revision, readiness, and Doctor checks.
+version, readiness, and Doctor checks.
 
 ## Verify and recover
 
@@ -297,8 +297,8 @@ Installation records, and, for runtime upgrades, `deployments.jsonl` and
 `status/`. Confirm the selected controller digest in both API and worker
 Deployment templates and their successful rollouts. For a runtime change,
 confirm both image slots in the live Installation Secret, each running Agent's
-new active revision, and its ready gateway/Agent Pods on the selected digest.
-For controller-only, confirm existing revisions and gateways are ready again;
+new selected version, and its ready gateway/Agent Pods on the selected digest.
+For controller-only, confirm existing versions and gateways are ready again;
 the new worker can restart their Pods once.
 Inspect the live images, rollouts, initialization Job, and OCC access:
 
@@ -307,16 +307,27 @@ helm --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CONTEXT" \
   --namespace "$NAMESPACE" status "$RELEASE"
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
   --namespace "$NAMESPACE" get jobs
+selected_controller=$(cat "$UPGRADE_EVIDENCE/selected-controller") || exit 1
 for component in api worker; do
   kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-    --namespace "$NAMESPACE" rollout status "deployment/openclaw-enterprise-$component"
-  kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-    --namespace "$NAMESPACE" get "deployment/openclaw-enterprise-$component" \
-    -o "jsonpath={.spec.template.spec.containers[?(@.name=='$component')].image}{'\n'}"
+    --namespace "$NAMESPACE" rollout status "deployment/openclaw-enterprise-$component" || exit 1
+  actual=$(kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
+    --namespace "$NAMESPACE" get "deployment/openclaw-enterprise-$component" -o json |
+    jq -er --arg component "$component" --arg repository "$REPOSITORY_ENABLED" '
+      .spec.template.spec |
+      (.containers[]?, (.initContainers[]? |
+        select($component == "worker" and $repository == "true" and .restartPolicy == "Always"))) |
+      select(.name == $component) | .image') ||
+    { echo "$component: missing or invalid controller image readback" >&2; exit 1; }
+  printf '%s: %s\n' "$component" "$actual"
+  [ "$actual" = "$selected_controller" ] ||
+    { echo "$component: controller image differs from upgrade evidence" >&2; exit 1; }
 done
 occ --output json installation get > /secure/occ/installation-after.json
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
-  get pvc --all-namespaces -o wide > /secure/occ/pvcs-after.txt
+  get pvc --all-namespaces \
+  -o custom-columns='NAMESPACE:.metadata.namespace,NAME:.metadata.name,UID:.metadata.uid,VOLUME:.spec.volumeName' \
+  > /secure/occ/pvcs-after.txt
 ```
 
 Helm must be deployed, initialization successful, both rollouts complete, and
@@ -325,9 +336,11 @@ for runtime-only). To inspect the live runtime selection after a runtime change,
 recover the Installation Secret with the commands above into a separate private
 file and check `drivers.compute.configuration.images.gateway` and `.agent` with
 `yq`; both must equal `RUNTIME_IMAGE`. Compare the before and after Installation ID, Namespace and
-Agent inventory, PVC names and bound volumes; verify representative PostgreSQL records, Secrets,
-workspace and gateway data, and a fresh model response. Pod image IDs may show
-a platform-specific digest rather than the published multi-platform index.
+Agent inventory, and each PVC's UID and bound volume name. A different UID for
+the same namespace and claim name identifies a replacement claim. Verify
+representative PostgreSQL records, Secrets, workspace and gateway data, and a
+fresh model response. Pod image IDs may show a platform-specific digest rather
+than the published multi-platform index.
 Use [workload verification](production-agents.md#verify-production-workloads)
 and the [upgrade verification](production-upgrade.md#verify-the-release) for
 application checks. An empty fleet cannot prove a runtime starts.
@@ -336,8 +349,13 @@ If Helm or migration fails, inspect the initialization Job and rollouts, retain
 the evidence and backups, and prefer a forward fix. Helm rollback does not undo
 database migrations. If OCC succeeds but a runtime deployment fails, the fleet
 can be mixed: runtime rollout is **not transactional**. Inspect each dispatch,
-deployment status, and revision before retrying; an uncertain request may have
-already created a revision. Check compatibility before selecting an older image
+deployment status, and version before retrying; an uncertain request may have
+already created a version. Check compatibility before selecting an older image
 or restoring state, and follow [partial-failure recovery](production-upgrade-recovery.md).
-Do not delete the cluster, database volume, Namespaces, Agents, revisions,
+Do not delete the cluster, database volume, Namespaces, Agents, versions,
 Secrets, bootstrap volume, or Agent PVCs to force an upgrade or recovery.
+
+## Rehearse a compatible controller return
+
+Use the [populated controller return rehearsal](../../testing/populated-controller-return.md)
+to check a compatible release pair with a disposable installation and database.

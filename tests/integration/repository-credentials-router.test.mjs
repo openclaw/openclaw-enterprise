@@ -1,15 +1,19 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmod, cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
-import { availableParallelism, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { after, describe, it as test } from "node:test";
+import { chmod, cp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { availableParallelism } from "node:os";
+import { join, relative, resolve } from "node:path";
+import { describe, it as test } from "node:test";
+import { repositoryClientData } from "../fixtures/repository-credentials/builders.mjs";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
 import {
   cleanEnvironment,
   run,
   temporaryDirectory,
 } from "../fixtures/repository-credentials/process.mjs";
+import { settled as settle } from "../helpers/child-processes.mjs";
+import { fileCompileCache } from "../helpers/compile-cache.mjs";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { parseGhInvocation } from "../../apps/controller/src/drivers/repo/github/credentials/client/commands.ts";
 import { createClientEnvironment } from "../../apps/controller/src/drivers/repo/github/credentials/client/environment.ts";
 import {
@@ -24,12 +28,7 @@ import {
 
 // Children get an allowlisted environment, so they only share the lane's Node
 // compile cache when it is passed explicitly; outside CI the file keeps its own.
-const compileCache =
-  process.env.NODE_COMPILE_CACHE ||
-  (await mkdtemp(join(tmpdir(), "repository-credentials-router-cache-")));
-if (compileCache !== process.env.NODE_COMPILE_CACHE) {
-  after(() => rm(compileCache, { recursive: true, force: true }));
-}
+const compileCache = await fileCompileCache("repository-credentials-router");
 const clean = (extra = {}) => cleanEnvironment({ NODE_COMPILE_CACHE: compileCache, ...extra });
 
 // Every case spawns Git or Node children, and Git starts the managed hook
@@ -55,15 +54,6 @@ async function exec(command, args, options) {
     }
   }
 }
-/** Like Promise.all, but every sibling child settles before the first failure is thrown. */
-async function settle(promises) {
-  const results = await Promise.allSettled(promises);
-  const failed = results.find(({ status }) => status === "rejected");
-  if (failed) {
-    throw failed.reason;
-  }
-  return results.map(({ value }) => value);
-}
 const gitWith =
   (defaults = {}) =>
   (args, options = {}) =>
@@ -74,15 +64,7 @@ const hash = (value) => createHash("sha256").update(JSON.stringify(value)).diges
 const opened = (sessionId, { repository = "example/project", pushRefAllowlist } = {}) => ({
   session: { sessionId, deadlineWallMs: Date.now() + 86400000 },
   bearer: `controlled_gateway_${sessionId}_${"0".repeat(32)}`,
-  client: {
-    gatewayOrigin: "https://credentials.example.test",
-    gitRemote: `https://credentials.example.test/${repository}.git`,
-    gitUsername: "gateway-session",
-    canonicalApiHost: "github.com",
-    apiHost: "credentials.example.test",
-    repository,
-    ...(pushRefAllowlist && { pushRefAllowlist }),
-  },
+  client: repositoryClientData({ repository, ...(pushRefAllowlist && { pushRefAllowlist }) }),
 });
 /** Native material from `[repositoryRef, opened]` pairs. */
 const nativeMaterial = (t, ...entries) =>
@@ -261,6 +243,13 @@ describe("repository credential router", { concurrency: true }, () => {
     const selected = material.manifest.bindings.find(
       ({ repositoryRef }) => repositoryRef === "permitted",
     );
+    const stalePin = {
+      OCE_REPOSITORY_SELECTION: JSON.stringify([
+        "0".repeat(64),
+        "permitted",
+        permitted.session.sessionId,
+      ]),
+    };
     const notAllowed = "repository-push-ref-not-allowed\n";
     // [environment, destination, input, exit code (undefined: any failure), stderr]
     const cases = [
@@ -292,18 +281,8 @@ describe("repository credential router", { concurrency: true }, () => {
       ],
       [{ OCE_REPOSITORY_SELECTION: pin(material, selected) }, undefined, "topic", 0],
       [ref("permitted"), other.client.gitRemote, "topic", undefined],
-      [
-        {
-          OCE_REPOSITORY_SELECTION: JSON.stringify([
-            "0".repeat(64),
-            "permitted",
-            permitted.session.sessionId,
-          ]),
-        },
-        undefined,
-        "topic",
-        undefined,
-      ],
+      [stalePin, undefined, "topic", undefined],
+      [stalePin, "https://unrelated.example.test/example/repository.git", "topic", 0],
       [ref("restricted"), "/unmanaged/local/repository", "topic", 0],
       [ref("permitted"), undefined, "relativeTopic", 0],
       [ref("permitted"), undefined, "relativeMain", 1, notAllowed],
@@ -387,7 +366,12 @@ describe("repository credential router", { concurrency: true }, () => {
       "https://credentials.example.test:443/example/project.git",
       "https://CREDENTIALS.example.test/example/project.git",
       "https://credentials%2Eexample%2Etest/example/project.git",
-      "https://user:secret@unrelated.example.test/x/y.git",
+      syntheticCredentialUrl({
+        username: "user",
+        password: "secret",
+        host: "unrelated.example.test",
+        pathname: "/x/y.git",
+      }),
       "https://unrelated.example.test\\@credentials.example.test/example/project.git",
       "https://unrelated.example.test:443?@credentials.example.test/example/project.git",
       "https://a@b@credentials.example.test/example/project.git",
@@ -483,9 +467,10 @@ describe("repository credential router", { concurrency: true }, () => {
     const material = await nativeMaterial(t, ["project", selected]);
     const work = await temporaryDirectory(t);
     await git(["init", work]);
-    // A repository may install a symlink to the managed wrapper as its own hook.
-    // Delegation must fail promptly, preserving the caller's refs and process lifetime.
-    await symlink(join(material.hooks, "pre-push"), join(work, ".git/hooks/pre-push"));
+    // A repository may chain relative symlinks back to the managed wrapper.
+    // The wrapper must reach the recursion guard, not resolve imports from .git.
+    await symlink(relative(work, join(material.hooks, "pre-push")), join(work, "managed-hook"));
+    await symlink("../../managed-hook", join(work, ".git/hooks/pre-push"));
     const inputFile = join(work, "push-input");
     await writeFile(inputFile, pushLine("refs/heads/agent/topic"));
     const result = await git(

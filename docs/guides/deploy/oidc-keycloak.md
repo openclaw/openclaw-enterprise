@@ -19,11 +19,10 @@ and, if applicable, [reverse proxy guidance](https://www.keycloak.org/server/rev
 The CI and Local Setup fixture uses `start-dev` and a development file database;
 it is not a production deployment.
 
-The proposed OCE compatibility policy is Keycloak 26.x, pending team acceptance. The real-provider CI fixture
-currently pins **26.7.5** by digest in
-[`image.json`](../../../tests/fixtures/keycloak/image.json); the pin is the version
-exercised by that fixture, not qualification of every 26.x deployment. Other major
-versions are not verified. Qualify your actual production configuration before use.
+The real-provider CI fixture pins Keycloak **26.7.5** by digest in
+[`image.json`](../../../tests/fixtures/keycloak/image.json). That is the only version
+CI exercises; other versions, including other 26.x releases, are not verified.
+Qualify your actual production configuration before use.
 
 Prepare the [guarded OIDC profile](oidc-sign-in.md#requirements): one serving
 controller, PostgreSQL State, native IAM, one canonical HTTPS Console origin, and

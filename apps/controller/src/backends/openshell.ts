@@ -4,7 +4,9 @@ import type {
   OpenShellBackendDefinition,
   OpenShellBackendConfiguration,
 } from "@openclaw-enterprise/contracts";
-import { isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
+import { isNonEmptyString, publicCaBundle, sha256Hex } from "@openclaw-enterprise/utils";
+import { readFileSync } from "node:fs";
+import { isAbsolute } from "node:path";
 
 import {
   GrpcOpenShellGatewayClient,
@@ -38,6 +40,7 @@ export class OpenShellGateway {
   private readonly configuration: OpenShellBackendConfiguration;
   private readonly injectedClient: OpenShellGatewayClient | undefined;
   private readonly clients = new Map<string, OpenShellGatewayClient>();
+  private readonly credentialClients = new Map<string, OpenShellGatewayClient>();
 
   constructor(
     configuration: OpenShellBackendConfiguration,
@@ -63,6 +66,32 @@ export class OpenShellGateway {
     }
     const created = new GrpcOpenShellGatewayClient(options);
     this.clients.set(options.endpoint, created);
+    return created;
+  }
+
+  /** Export uses a distinct operator identity without broadening ordinary RPC authority. */
+  credentialClientForNamespace(
+    namespace: string,
+  ): Pick<OpenShellGatewayClient, "getProviderCredential"> {
+    if (this.injectedClient !== undefined) {
+      return this.injectedClient;
+    }
+    const operatorTls = this.configuration.operatorTls;
+    if (operatorTls === undefined) {
+      throw new OpenShellBackendConfigurationFailure(
+        "OpenShell credential retrieval requires operatorTls certificate and private key paths.",
+      );
+    }
+    const options: OpenShellGatewayClientOptions = {
+      ...this.clientOptions(namespace),
+      auth: { mode: "mutualTls", ...operatorTls },
+    };
+    const existing = this.credentialClients.get(options.endpoint);
+    if (existing !== undefined) {
+      return existing;
+    }
+    const created = new GrpcOpenShellGatewayClient(options);
+    this.credentialClients.set(options.endpoint, created);
     return created;
   }
 
@@ -96,12 +125,40 @@ export class OpenShellGateway {
       client.close();
     }
     this.clients.clear();
+    for (const client of this.credentialClients.values()) {
+      client.close();
+    }
+    this.credentialClients.clear();
+  }
+
+  /** Only the configured public root may cross into a Harness endpoint contract. */
+  publicRootCertificate(): string | undefined {
+    const path = this.configuration.rootCertificatePath;
+    if (path === undefined) {
+      return undefined;
+    }
+    if (!isAbsolute(path)) {
+      throw new OpenShellBackendConfigurationFailure(
+        "The OpenShell Backend root certificate requires an absolute path.",
+      );
+    }
+    try {
+      return publicCaBundle(readFileSync(path, "utf8"));
+    } catch {
+      throw new OpenShellBackendConfigurationFailure(
+        "The OpenShell Backend root must be a readable public PEM CA certificate bundle.",
+      );
+    }
   }
 
   private clientOptions(namespace: string): OpenShellGatewayClientOptions {
     const configuration = this.configuration;
     return {
       endpoint: configuration.endpoint ?? serviceEndpoint(configuration, namespace),
+      // TODO(namespaced OpenShell identities): the OAuth PoC deliberately shares one
+      // installation identity for ordinary RPCs and an operator certificate for exports.
+      // Namespace selection changes routing, not identity; later identity provisioning
+      // belongs here, while OCC continues authorizing each source operation.
       ...(configuration.auth === undefined ? {} : { auth: configuration.auth }),
       ...(configuration.requestTimeoutMs === undefined
         ? {}

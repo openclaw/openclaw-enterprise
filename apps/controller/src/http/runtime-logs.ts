@@ -29,7 +29,7 @@ export class RuntimeLogLimiter {
   private readonly rateLimit: RequestRateLimiter;
   private active = 0;
 
-  constructor(now: () => number = Date.now) {
+  constructor(now: () => number = () => performance.now()) {
     this.rateLimit = new RequestRateLimiter(RATE_BURST, RATE_PER_SECOND, now);
   }
 

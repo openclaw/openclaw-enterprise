@@ -19,6 +19,21 @@ interface ServiceTransportOptions {
   readonly requestTimeoutMs: number;
 }
 
+/** The gateway listener, or the service behind it, did not answer one bounded request. */
+export class OpenShellServiceTransportError extends DependencyUnavailableError {
+  readonly reason: "timeout" | "unreachable";
+
+  constructor(reason: "timeout" | "unreachable") {
+    super(
+      reason === "timeout"
+        ? "OpenShell service request timed out."
+        : "OpenShell service is unreachable.",
+    );
+    this.name = "OpenShellServiceTransportError";
+    this.reason = reason;
+  }
+}
+
 const MAX_SERVICE_RESPONSE_BYTES = 16 * 1024;
 const WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
@@ -107,6 +122,7 @@ function send(
     resolve: (value: OpenShellServiceDocument | boolean) => void,
     reject: (error: unknown) => void,
   ) => void,
+  body?: string,
 ): Promise<OpenShellServiceDocument | boolean> {
   const target = serviceTarget(options, serviceUrl);
   signal.throwIfAborted();
@@ -124,9 +140,18 @@ function send(
     const request = (target.secure ? httpsRequest : httpRequest)({
       hostname: target.hostname,
       port: target.port,
-      method: "GET",
+      method: body === undefined ? "GET" : "POST",
       path,
-      headers: { ...headers, host: target.host },
+      headers: {
+        ...headers,
+        host: target.host,
+        ...(body === undefined
+          ? {}
+          : {
+              "content-type": "application/json",
+              "content-length": String(Buffer.byteLength(body)),
+            }),
+      },
       agent: false,
       ...(target.secure
         ? {
@@ -141,29 +166,33 @@ function send(
     };
     const timer = setTimeout(() => {
       request.destroy();
-      finish(() => reject(new DependencyUnavailableError("OpenShell service request timed out.")));
+      finish(() => reject(new OpenShellServiceTransportError("timeout")));
     }, options.requestTimeoutMs);
     signal.addEventListener("abort", abort, { once: true });
     request.on("error", () =>
-      finish(() => reject(new DependencyUnavailableError("OpenShell service is unreachable."))),
+      finish(() => reject(new OpenShellServiceTransportError("unreachable"))),
     );
     handle(
       request,
       (value) => finish(() => resolve(value)),
       (error) => finish(() => reject(error)),
     );
-    request.end();
+    request.end(body);
   });
 }
 
-/** One bounded GET to a bearer-passthrough service path. */
-export async function getServiceDocument(
+/** A bounded JSON exchange through the existing authenticated service transport. */
+async function serviceDocument(
   options: ServiceTransportOptions,
   serviceUrl: string,
   path: string,
   bearer: string,
   signal: AbortSignal,
+  body?: string,
 ): Promise<OpenShellServiceDocument> {
+  if (body !== undefined && Buffer.byteLength(body) > 4096) {
+    throw new OpenShellGatewayFailure("OpenShell service request exceeds its size bound.");
+  }
   if (!path.startsWith("/") || path.startsWith("//")) {
     throw new OpenShellGatewayFailure("OpenShell service path must be absolute.");
   }
@@ -206,7 +235,29 @@ export async function getServiceDocument(
         });
       });
     },
+    body,
   )) as OpenShellServiceDocument;
+}
+
+export function getServiceDocument(
+  options: ServiceTransportOptions,
+  serviceUrl: string,
+  path: string,
+  bearer: string,
+  signal: AbortSignal,
+): Promise<OpenShellServiceDocument> {
+  return serviceDocument(options, serviceUrl, path, bearer, signal);
+}
+
+export function postServiceDocument(
+  options: ServiceTransportOptions,
+  serviceUrl: string,
+  path: string,
+  bearer: string,
+  body: Readonly<Record<string, unknown>>,
+  signal: AbortSignal,
+): Promise<OpenShellServiceDocument> {
+  return serviceDocument(options, serviceUrl, path, bearer, signal, JSON.stringify(body));
 }
 
 /**

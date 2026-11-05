@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { lstat, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
+import { lstat, mkdir, readdir } from "node:fs/promises";
 import { createServer } from "node:net";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import { withEnvironment } from "../helpers/environment.mjs";
 import { socketDirectory, socketPathLimit } from "../helpers/socket-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // An owner whose cleanups the test runs itself, so it can observe the removal.
 function ownerFor(t) {
@@ -19,18 +20,8 @@ function ownerFor(t) {
   return { after: (cleanup) => cleanups.push(cleanup), close };
 }
 
-async function withTemporaryRoot(directory, body) {
-  const previous = process.env.TMPDIR;
-  process.env.TMPDIR = directory;
-  try {
-    return await body();
-  } finally {
-    if (previous === undefined) {
-      delete process.env.TMPDIR;
-    } else {
-      process.env.TMPDIR = previous;
-    }
-  }
+function withTemporaryRoot(directory, body) {
+  return withEnvironment({ TMPDIR: directory }, body);
 }
 
 async function assertBinds(path) {
@@ -56,8 +47,7 @@ test("socket directories stay under a TMPDIR that leaves room for the socket", a
 });
 
 test("a TMPDIR too deep for the socket falls back to a short root", async (t) => {
-  const base = await mkdtemp(join(tmpdir(), "socket-directory-deep-"));
-  t.after(() => rm(base, { recursive: true, force: true }));
+  const base = await temporaryDirectory(t, "socket-directory-deep-");
   const deep = join(base, "d".repeat(Math.max(1, socketPathLimit - base.length)));
   await mkdir(deep);
   const owner = ownerFor(t);

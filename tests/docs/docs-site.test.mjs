@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import test from "node:test";
-import { renderMatrixMarkdown } from "../../scripts/generate-compute-matrix.mjs";
+import { renderMatrixMarkdown } from "../../scripts/generate-compute-matrix.ts";
 import {
   buildDocs,
   createDocsFixture,
@@ -13,6 +12,7 @@ import {
   writeComputeMatrixReadme,
   writeDocsConfig,
 } from "../helpers/docs-site.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 async function markdownFiles(directory) {
   const result = [];
@@ -70,7 +70,7 @@ test("docs build renders every authored page and preserves repository ownership"
     assert.doesNotMatch(chrome, /ask-molty|docs\.openclaw\.ai|discord\.gg/);
   }
   const index = await readFile(join(root, "dist/docs/index.html"), "utf8");
-  assert.match(index, /href="\/guides\/quickstart\//);
+  assert.match(index, /href="\/guides\/deploy\/local-setup\//);
   // A link out of docs/ points at the repository on GitHub.
   const specifications = await readFile(
     join(root, "dist/docs/contributing/specifications/index.html"),
@@ -93,7 +93,15 @@ test("docs build renders every authored page and preserves repository ownership"
     /GET \/namespaces\/\{namespaceId\}\/agents\/\{agentId\}\/workspace\/files\/\{name\}/,
   );
   const architecture = await readFile(join(root, "dist/docs/design/index.html"), "utf8");
-  assert.match(architecture, /mermaid/);
+  assert.match(architecture, /<img\b[^>]*src="\/assets\/oce-architecture\.svg"/);
+  assert.deepEqual(
+    await readFile(join(root, "dist/docs/assets/oce-architecture.svg")),
+    await readFile(join(root, "docs/assets/oce-architecture.svg")),
+    "The published architecture image must preserve the authored SVG",
+  );
+  // The overview uses an SVG; the deployment chapter still exercises Mermaid rendering.
+  const workloads = await readFile(join(root, "dist/docs/design/workloads/index.html"), "utf8");
+  assert.match(workloads, /<figure\b[^>]*data-mermaid=/);
   const asset = await readFile(join(root, "dist/docs/assets/lobster-mech-transparent.png"));
   assert.equal(asset.readUInt32BE(0), 0x89504e47, "Brand asset must remain a PNG");
 });
@@ -155,6 +163,11 @@ test("docs validation rejects broken links, anchors and navigation through the C
     [
       "# Contributing",
       '<a id="real-id"></a> and <a name="real-name"></a>',
+      '<div id="real-div-id">An explicit ID works on a non-anchor element.</div>',
+      '<A NAME="real-upper-name"></A>',
+      '<div name="div-name">A name on a div is not a fragment target.</div>',
+      '<span name="span-name">A name on a span is not a fragment target.</span>',
+      '<p name="p-name">A name on a paragraph is not a fragment target.</p>',
       '```html\n<a id="fenced-example"></a>\n```',
       '    <a id="indented-example"></a>',
       '`<a id="inline-example"></a>`',
@@ -162,7 +175,7 @@ test("docs validation rejects broken links, anchors and navigation through the C
       'Before <!-- <a id="inline-comment-example"></a> --> after',
     ].join("\n\n"),
   );
-  for (const fragment of ["real-id", "real-name"]) {
+  for (const fragment of ["real-id", "real-name", "real-div-id", "real-upper-name"]) {
     await writeFile(
       join(fixture, "docs/README.md"),
       `# Home\n\n[Valid](../CONTRIBUTING.md#${fragment})\n`,
@@ -171,6 +184,9 @@ test("docs validation rejects broken links, anchors and navigation through the C
     assert.equal(result.status, 0, result.stderr || result.stdout);
   }
   for (const fragment of [
+    "div-name",
+    "span-name",
+    "p-name",
     "fenced-example",
     "indented-example",
     "inline-example",
@@ -240,8 +256,7 @@ test("docs validation checks Markdown links in deploy example YAML comments", as
 });
 
 test("spec validation rejects links to missing headings", async (t) => {
-  const fixture = await mkdtemp(join(tmpdir(), "enterprise-specs-check-"));
-  t.after(() => rm(fixture, { recursive: true, force: true }));
+  const fixture = await temporaryDirectory(t, "enterprise-specs-check-");
   await mkdir(join(fixture, "specs/rfcs"), { recursive: true });
   await mkdir(join(fixture, "docs"), { recursive: true });
   await writeFile(join(fixture, "docs/guide.md"), "# Guide\n\n## Setup\n\n## Setup\n");
@@ -356,8 +371,7 @@ for (const [kind, label] of [
   ["plugin", "Plugin"],
 ]) {
   test(`${label} matrix generator updates only its block and checks without writing`, async (t) => {
-    const fixture = await mkdtemp(join(tmpdir(), "enterprise-matrix-generator-"));
-    t.after(() => rm(fixture, { recursive: true, force: true }));
+    const fixture = await temporaryDirectory(t, "enterprise-matrix-generator-");
     await mkdir(join(fixture, "docs/assets"), { recursive: true });
     await mkdir(join(fixture, "docs/reference/drivers"), { recursive: true });
     await writeFile(

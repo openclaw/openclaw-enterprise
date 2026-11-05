@@ -7,7 +7,7 @@ import type {
   RepositoryCredentialBoundSessionInput,
   SessionStatus,
 } from "../../drivers/repo/credentials/service-contracts.ts";
-import { sameBinding } from "../../drivers/repo/credentials/sessions.ts";
+import { sameBinding } from "../../drivers/repo/credentials/grant-identity.ts";
 
 /** Only the worker owns State; the detached broker receives this narrow journal. */
 export class RepositoryReceiptStore {
@@ -28,7 +28,7 @@ export class RepositoryReceiptStore {
   ): boolean {
     const { binding, driver } = attempt.cleanupContext;
     return (
-      attempt.brokerProtocol === 1 &&
+      attempt.brokerProtocol === (input.preparedOnly === true ? 3 : 1) &&
       attempt.namespaceId === input.namespaceId &&
       attempt.repositoryRef === input.repositoryRef &&
       attempt.durationSeconds === input.durationSeconds &&
@@ -43,7 +43,7 @@ export class RepositoryReceiptStore {
 
   private eligible(attempt: Readonly<RepositorySessionAttempt>): boolean {
     return (
-      attempt.brokerProtocol === 1 &&
+      [1, 3].includes(attempt.brokerProtocol) &&
       attempt.phase !== "invalidated" &&
       attempt.cleanupContext.binding.backendId === this.owner.backendId &&
       attempt.cleanupContext.driver.id === this.owner.driverId &&
@@ -111,7 +111,7 @@ export class RepositoryReceiptStore {
         await unit.repositorySessions.createBrokerReceipt({ admissionId, state: "fenced" });
         return { kind: "missing" as const };
       }
-      if (attempt.phase !== "opening") {
+      if (attempt.phase !== "opening" || input.preparedOnly !== true) {
         throw new Error("RECEIPT_UNAVAILABLE");
       }
       await unit.repositorySessions.createBrokerReceipt({
@@ -119,7 +119,18 @@ export class RepositoryReceiptStore {
         state: "reserved",
         generation,
       });
-      return { kind: "reserved" as const };
+      const revision = await unit.revisions.findRevision(
+        attempt.namespaceId,
+        attempt.agentId,
+        attempt.revisionId,
+      );
+      if (!revision?.repositoryCredentials) {
+        throw new Error("RECEIPT_UNAVAILABLE");
+      }
+      // Distinct wire result: an old broker cannot silently treat a standing grant as finite.
+      return revision.repositoryCredentials.standingApprovalId === undefined
+        ? { kind: "reserved" as const }
+        : { kind: "standing-reserved" as const };
     });
   }
 

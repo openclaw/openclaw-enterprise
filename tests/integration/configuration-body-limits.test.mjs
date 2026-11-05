@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
-import { request as httpRequest } from "node:http";
 import { test } from "node:test";
 
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
-import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
-import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { grantRole } from "../helpers/iam-grants.mjs";
+import {
+  assertWriteAuthorizationDenial,
+  partialWrite,
+} from "../helpers/partial-write-authorization.mjs";
+import { callerDenied, createDenied } from "../helpers/refusal-text.mjs";
 
 // The Configuration write limit: the Kubernetes Driver's 1 MiB of values and a 32 KiB envelope,
 // all written with six-byte JSON escapes.
@@ -28,11 +32,10 @@ const driverAccepts = async (values) => {
 };
 
 async function createFixture(t) {
-  const audit = new InMemoryAuditSink();
-  const fixture = await createConsoleAppFixture(t, { auditSink: audit, providers: [] });
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Configuration body limits", { ready: true });
-  return { ...fixture, audit, namespace };
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Configuration body limits", {
+    providers: [],
+  });
+  return { ...fixture, namespace };
 }
 
 // Sends `text` as the exact request body, without re-encoding it.
@@ -47,46 +50,6 @@ async function sendRaw(fixture, method, path, text, session) {
     signal: AbortSignal.timeout(30_000),
   });
   return { status: response.status, body: await response.json() };
-}
-
-// Declares `declaredBytes`, sends only a 64 KiB prefix, and resolves with the response, or null
-// when the controller waits for the rest of the body.
-function partialWrite(fixture, method, path, session, declaredBytes) {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const settle = (callback, value) => {
-      if (!settled) {
-        settled = true;
-        clearTimeout(timer);
-        request.destroy();
-        callback(value);
-      }
-    };
-    const request = httpRequest(new URL(path, fixture.origin), {
-      method,
-      headers: {
-        ...authenticatedHeaders(session, { origin: fixture.origin }),
-        "content-type": "application/json",
-        "content-length": String(declaredBytes),
-      },
-    });
-    const timer = setTimeout(() => settle(resolve, null), 15_000);
-    request.on("response", (response) => {
-      const chunks = [];
-      response.on("data", (chunk) => chunks.push(chunk));
-      response.on("end", () => {
-        try {
-          const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-          settle(resolve, { status: response.statusCode, body });
-        } catch (error) {
-          settle(reject, error);
-        }
-      });
-      response.on("error", (error) => settle(reject, error));
-    });
-    request.on("error", (error) => settle(reject, error));
-    request.write(`{"kind":"agent","values":{"notes":"${"x".repeat(64 * 1024)}`);
-  });
 }
 
 test("Configuration writes admit every Configuration the Kubernetes Driver stores", async (t) => {
@@ -150,8 +113,7 @@ test("Configuration writes admit every Configuration the Kubernetes Driver store
     ],
   ]) {
     const oversized = await sendRaw(fixture, method, path, padding(body), adminSession);
-    assert.equal(oversized.status, 413, `${method}: ${JSON.stringify(oversized.body)}`);
-    assert.equal(oversized.body.error.code, "PAYLOAD_TOO_LARGE", method);
+    assertApiError(oversized, 413, "PAYLOAD_TOO_LARGE", method);
   }
   const stored = await fixture.request("GET", configurationPath(namespace.id, created.data.id));
   assert.equal(stored.data.generation, 3);
@@ -173,9 +135,13 @@ test("Configuration writes refuse a caller without the grant before reading the 
   const session = await fixture.signIn(member.credentials);
   // Over the general 64 KiB limit and under the Configuration route limit.
   const declaredBytes = 6 * 1024 * 1024;
+  // Each refusal names the grant it checked, the same before and after the body arrives.
   const forbidden = {
-    code: "FORBIDDEN",
-    message: "The exact platform operation was not authorized.",
+    POST: { code: "FORBIDDEN", message: createDenied("Configuration", namespace.id) },
+    PATCH: {
+      code: "FORBIDDEN",
+      message: callerDenied("Configuration update", `Configuration ${existing.id}`),
+    },
   };
   for (const [method, path, action, grant, targetId] of [
     ["POST", collection(namespace.id), "openclaw.configurations.create", "create", namespace.id],
@@ -193,27 +159,23 @@ test("Configuration writes refuse a caller without the grant before reading the 
       body: method === "POST" ? { kind: "agent", values: {} } : { values: {} },
     });
     assert.equal(small.status, 403, `${method}: ${JSON.stringify(small.body)}`);
-    assert.deepEqual(small.body.error, forbidden, method);
-    const denials = () =>
-      fixture.audit.events.filter(
-        (event) =>
-          event.kind === "authorization_denial" &&
-          event.actor?.principalId === memberId &&
-          event.action === action,
-      );
-    const before = denials().length;
-    const refused = await partialWrite(fixture, method, path, session, declaredBytes);
+    assert.deepEqual(small.body.error, forbidden[method], method);
+    const auditStart = fixture.auditSink.events.length;
+    const refused = await partialWrite({
+      origin: fixture.origin,
+      method,
+      path,
+      session,
+      declaredBytes,
+      bodyPrefix: '{"kind":"agent","values":{"notes":"',
+    });
     assert.notEqual(refused, null, `${method}: the controller waited for the unread body`);
     assert.equal(refused.status, 403, `${method}: ${JSON.stringify(refused.body)}`);
-    assert.deepEqual(refused.body.error, forbidden, method);
+    assert.deepEqual(refused.body.error, forbidden[method], method);
     // The refusal keeps its audit row, naming the exact grant the write itself checks.
-    const recorded = denials().slice(before);
-    assert.equal(recorded.length, 1, method);
-    assert.equal(recorded[0].reasonCode, "AUTHORIZATION_DENIED", method);
-    assert.deepEqual(recorded[0].resource, target, method);
-    assert.deepEqual(
-      recorded[0].authorization,
-      { principalId: memberId, action: grant, resource: target },
+    assertWriteAuthorizationDenial(
+      fixture.auditSink.events.slice(auditStart),
+      { principalId: memberId, action, grant, resource: target },
       method,
     );
   }
@@ -252,8 +214,7 @@ test("Configuration writes check the grant again in their transaction after the 
     ["PATCH", configurationPath(namespace.id, existing.id), { values: notes("withdrawn") }],
   ]) {
     const refused = await fixture.request(method, path, { session, body });
-    assert.equal(refused.status, 403, `${method}: ${JSON.stringify(refused.body)}`);
-    assert.equal(refused.body.error.code, "FORBIDDEN", method);
+    assertApiError(refused, 403, "FORBIDDEN", method);
     assert.equal(fixture.policy.bindings.includes(writer), false, method);
     fixture.policy.bindings.push(writer);
   }

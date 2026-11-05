@@ -347,6 +347,8 @@ test(
     };
     const repositoryCredentials = {
       "repositoryCredentials.enabled": "true",
+      "repositoryCredentials.authority": "prepared-git",
+      "repositoryCredentials.preparedCustodySecretName": "repository-custody",
       "repositoryCredentials.image": `registry.example.invalid/repository-credentials@sha256:${"b".repeat(64)}`,
       "repositoryCredentials.backendId": "github-primary",
       "repositoryCredentials.registryConfigMapName": "repository-registry-v1",
@@ -367,7 +369,13 @@ test(
       [gatewayRouting, ["occ-gateway-api-key"]],
       [
         repositoryCredentials,
-        ["repository-config", "repository-app-key", "repository-tls", "repository-public-ca"],
+        [
+          "repository-config",
+          "repository-app-key",
+          "repository-custody",
+          "repository-tls",
+          "repository-public-ca",
+        ],
       ],
       [executionCluster, ["execution-api", "execution-worker"]],
     ]) {

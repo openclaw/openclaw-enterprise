@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { openclawBuildArguments, readOpenclawSource } from "../../scripts/lib/openclaw-source.mjs";
 import { availablePort } from "./available-port.mjs";
 import {
   configureModelProviderDNS,
@@ -17,7 +18,7 @@ const ownerLabel = "dev.openclaw.model-provider-owner";
 const registryImage =
   "docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373";
 const nodeBaseImage =
-  "docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584";
+  "docker.io/library/node:24.22.1-bookworm@sha256:6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a";
 
 function execute(
   command,
@@ -152,10 +153,11 @@ export function createDevUpModelProvider({
     try {
       return JSON.parse((await invoke([kind, "inspect", name])).stdout)[0];
     } catch (error) {
-      // A transport/permission failure is not evidence of absence.
+      // Match Docker's whole not-found diagnostic for this resource. Other inspect
+      // failures must leave the cleanup obligation in the recovery journal.
       const detail = error.stderr?.trim() ?? "";
       if (
-        /No such (?:object|container|network|image):/.test(detail) ||
+        detail === `Error response from daemon: No such ${kind}: ${name}` ||
         (kind === "network" && detail === `Error response from daemon: network ${name} not found`)
       ) {
         return undefined;
@@ -251,6 +253,7 @@ export function createDevUpModelProvider({
     const controllerTag = `${registry}/${prefix}/controller:${revision}`;
     const baseTag = `${registry}/${prefix}/runtime-base:${revision}`;
     const runtimeTag = `${registry}/${prefix}/runtime:${revision}`;
+    const sourceArguments = openclawBuildArguments(await readOpenclawSource());
     // Same recipes and revision inputs as FirstAgentSmoke. Tags are private to
     // this invocation; the launcher receives only the resulting digest pair.
     for (const tag of [controllerTag, baseTag, runtimeTag]) {
@@ -295,6 +298,7 @@ export function createDevUpModelProvider({
           "build",
           "--load",
           ...cache("runtime"),
+          ...sourceArguments,
           "--pull=false",
           "--file",
           "deploy/runtime/Dockerfile",

@@ -152,8 +152,8 @@ export async function launchTrustingBrowser(chromium, root, instructions) {
   return chromium.launch({
     headless: true,
     chromiumSandbox: true,
-    env: { ...process.env, HOME: home },
-    args: [`--host-resolver-rules=${rules.join(", ")}`],
+    env: { HOME: home, PATH: process.env.PATH, TMPDIR: root },
+    args: ["--no-proxy-server", `--host-resolver-rules=${rules.join(", ")}`],
     ...(process.env.OCC_TEST_BROWSER_EXECUTABLE
       ? { executablePath: process.env.OCC_TEST_BROWSER_EXECUTABLE }
       : {}),

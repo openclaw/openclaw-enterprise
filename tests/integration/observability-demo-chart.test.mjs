@@ -159,7 +159,7 @@ test(
 );
 
 test(
-  "demo chart refuses image digests that are not lowercase SHA-256",
+  "demo chart refuses unusable image digest and repository spellings",
   await helmAvailable(),
   async () => {
     const render = (overrides) =>
@@ -190,6 +190,30 @@ test(
           ({ stderr }) => stderr.includes(`images.${name} must use an immutable SHA-256 reference`),
           `${name} ${digest.slice(0, 8)}`,
         );
+      }
+      const digest = `@sha256:${"a".repeat(64)}`;
+      for (const image of [
+        `docker.io/Team/${name}${digest}`,
+        `Registry.Example.invalid/team/${name.toUpperCase()}:release_1${digest}`,
+        `[FD00::1]:5000/team/${name.toUpperCase()}${digest}`,
+        `${name.toUpperCase()}${digest}`,
+      ]) {
+        await assert.rejects(
+          render([`images.${name}=${image}`]),
+          ({ stderr }) => stderr.includes(`images.${name} repository path must be lowercase`),
+          image,
+        );
+      }
+      for (const image of [
+        `Registry.Example.invalid/team/${name}:RELEASE_1${digest}`,
+        `[FD00::1]:5000/team/${name}:RELEASE_1${digest}`,
+        `${name}:RELEASE_1${digest}`,
+      ]) {
+        const { stdout } = await render([`images.${name}=${image}`]);
+        const deployment = loadAllYaml(stdout).find(
+          (object) => object?.kind === "Deployment" && object.metadata.name === `demo-${name}`,
+        );
+        assert.equal(deployment.spec.template.spec.containers[0].image, image);
       }
     }
   },
