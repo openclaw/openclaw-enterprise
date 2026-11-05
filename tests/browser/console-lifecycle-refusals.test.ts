@@ -165,11 +165,28 @@ for (const action of ["Stop", "Delete"] as const) {
     const control = row.getByRole("button", { name: `${action} Agent`, exact: true });
     await waitForEnabled(control);
     await control.click();
+    const refused = responseTo(
+      page,
+      stopping ? "POST" : "DELETE",
+      `${fixture.origin}${agentPath}${stopping ? "/stop" : ""}`,
+    );
     await confirmAgentAction(page, stopping ? "Stop this Agent?" : `Delete ${name}?`, action);
+    const response = await refused;
+    assert.equal(response.status(), 403);
+    const { meta } = await response.json();
     const alert = row.getByRole("alert");
     await alert.getByText(stopping ? stopRefused(name) : deleteRefused(name)).waitFor();
+    await alert.getByText(`Request ID: ${meta.requestId}`, { exact: true }).waitFor();
+    const refusal = (await alert.textContent())?.trim() ?? "";
     assert.equal(await control.getAttribute("aria-disabled"), "true");
     await page.unroute(permissionsUrl);
+    // Confirming the denied permission must keep the attempted write's diagnostic reference.
+    const denied = responseTo(page, "GET", permissionsUrl);
+    await refocus(page);
+    assert.equal((await (await denied).json()).data[stopping ? "operate" : "delete"], false);
+    await settlePageRequests(page);
+    assert.equal(await accessibleDescription(control), refusal);
+    assert.equal((await alert.textContent())?.trim(), refusal);
     grantMember(fixture, MEMBER, [[stopping ? "operate" : "delete", "agent"]]);
     const answered = responseTo(page, "GET", permissionsUrl);
     await refocus(page);
@@ -179,6 +196,55 @@ for (const action of ["Stop", "Delete"] as const) {
     assert.equal(await hasFocus(control), true);
   });
 }
+
+// Cancel sends no write: subsequent permission advice belongs only to the latest access read.
+test("a re-grant clears Delete permission advice after a canceled confirmation", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Canceled deletion");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Canceled deletion",
+    nativeValues("cancel"),
+  );
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const member = await fixture.createNamespaceMember(MEMBER, namespace.id, [
+    ...AGENT_READ,
+    ["delete", "agent"],
+  ]);
+  const { page } = await newPage(t, fixture, { browser });
+  const requests = apiRequests(page, fixture.origin);
+  const permissionsUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/permissions`;
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration").href,
+    member.credentials,
+  );
+  const row = page.getByRole("region", { name: "Delete Agent", exact: true });
+  const control = row.getByRole("button", { name: "Delete Agent", exact: true });
+  await waitForEnabled(control);
+  await control.click();
+  await page.getByRole("dialog").getByRole("button", { name: "Cancel", exact: true }).click();
+  const restore = revokeMemberGrant(fixture, MEMBER, ["delete", "agent"]);
+  const denied = responseTo(page, "GET", permissionsUrl);
+  await refocus(page);
+  assert.equal((await (await denied).json()).data.delete, false);
+  await row
+    .getByRole("status")
+    .getByText(/Your access does not include/)
+    .waitFor();
+  assert.equal(await control.getAttribute("aria-disabled"), "true");
+  restore();
+  const allowed = responseTo(page, "GET", permissionsUrl);
+  await refocus(page);
+  assert.equal((await (await allowed).json()).data.delete, true);
+  await waitForEnabled(control);
+  assert.equal(await row.getByRole("status").count(), 0);
+  assert.equal(await control.getAttribute("aria-describedby"), null);
+  assert.equal(
+    requests.some((request) => request.method === "DELETE"),
+    false,
+  );
+});
 
 // A refocus reread that started before an Agent page Stop or Delete refusal lifted it when its
 // older "allowed" answer landed (finding 2966): the grant was revoked after that read and the API

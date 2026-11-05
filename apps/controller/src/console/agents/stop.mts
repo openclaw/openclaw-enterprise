@@ -103,7 +103,9 @@ export function createAgentStop(
     setText(summary, summaryText);
     // The result below replaces the action description once Stop has been requested.
     setHidden(summary, requested);
-    const forbiddenNote = state.forbidden ? statusBlock("info", null, permissionNotice) : null;
+    // A confirming denial must keep the attempted Stop's diagnostic as its accessible reason.
+    const forbiddenNote =
+      state.forbidden && !state.error?.refused ? statusBlock("info", null, permissionNotice) : null;
     const errorNote = state.error
       ? element(
           "div",

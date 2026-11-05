@@ -27,6 +27,7 @@ export function createAgentDeletion(
   const permissionNotice = AGENT_DELETE_DENIED;
   let refusedAfterReads = 0;
   let refused = false;
+  let permissionOnly = false;
   let deleteAnswered = false;
   let restrictConfirmation: (() => void) | undefined;
   const feedback = element("div", { className: "danger-zone-feedback" });
@@ -109,6 +110,7 @@ export function createAgentDeletion(
 
   function render(text?: string, tone: "info" | "danger" = "info", requestId?: string) {
     if (text) {
+      permissionOnly = false;
       feedback.replaceChildren(
         element(
           "div",
@@ -274,11 +276,18 @@ export function createAgentDeletion(
     state.forbidden = permitted === false;
     if (state.forbidden) {
       restrictConfirmation?.();
-    } else if (regranted) {
+    } else if (regranted || (permitted === true && permissionOnly)) {
       refused = false;
+      permissionOnly = false;
       feedback.replaceChildren();
     }
-    render(state.forbidden && state.used ? permissionNotice : undefined);
+    // Permission advice must not replace an attempted write's outcome or request ID.
+    if (state.forbidden && state.used && !feedback.firstElementChild) {
+      render(permissionNotice);
+      permissionOnly = true;
+    } else {
+      render();
+    }
   }
 
   actions.append(remove, refresh);

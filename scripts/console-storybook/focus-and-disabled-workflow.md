@@ -154,3 +154,8 @@ Previous row feedback disappears. No empty-list message appears beside the
 unavailable warning. Submitted requests report generic acceptance, refusal or
 unknown outcomes without Agent details or replay. Browser tests also cover session
 expiry. Use the late Stop response story to inspect its generic result.
+
+For **Components / Deletion / Permission denied** and **Components / Stop Agent /
+Permission denied**, move focus to another window and back. The later permission
+answer confirms denial. The attempted action's refusal and Request ID must remain
+visible and describe the unavailable control, without a duplicate permission notice.

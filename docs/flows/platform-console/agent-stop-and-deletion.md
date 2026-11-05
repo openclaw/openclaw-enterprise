@@ -62,7 +62,8 @@ not that Compute has shut down. Cancel restores focus to the invoking button; su
 **Refresh stop status**. A `403` about grants shows the Console's refusal with the Agent's name
 and the Request ID; any other `403` shows the API's text. Either way Stop stays unavailable,
 described by it, until a permission answer read after the refusal allows operate, such as the one
-a window refocus rereads. An answer read before the refusal, even one that arrives after it,
+a window refocus rereads. A confirming denial keeps the attempted Stop’s refusal and request
+ID as the control’s accessible reason. An answer read before the refusal, even one that arrives after it,
 does not lift it.
 
 For a stopped Agent, **Request Stop again** confirms a new stop intent, even with no selected
@@ -97,7 +98,9 @@ reference covers worker shutdown and preservation of versions, credentials, and 
 sends a bodyless `DELETE` to the exact Agent URL. The controller requires Agent
 `delete`. A refusal stays visible on the page. The Delete control remains focusable with its
 reason and becomes available only after a newer permission read allows deletion.
-The identified refusal alert includes its request ID. A conflict preserves the API's
+The identified refusal alert keeps its request ID when a permission reread confirms denial.
+Permission-only advice clears after a positive reread, including after canceling confirmation
+without a write. A conflict preserves the API's
 reason and requires a status read before another deletion attempt.
 If the response is lost or names
 a different Agent, the Console offers a read to find out what happened without

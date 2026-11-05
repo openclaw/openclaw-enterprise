@@ -1702,8 +1702,9 @@ const authoredScenarios = {
     group: "Components/Deletion",
     name: "Permission denied",
     path: draft,
+    agentPermissionSummary: { update: true, deploy: true, operate: true, delete: false },
     rules: [
-      { suffix: "/permissions", status: 503 },
+      { suffix: "/permissions", status: 503, once: true },
       {
         path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
         method: "DELETE",
@@ -1715,7 +1716,7 @@ const authoredScenarios = {
     ],
     actions: [click("Delete Agent"), click("Permanently delete Agent")],
     description:
-      "Permission advice is unavailable. The attempted deletion is denied; the Console names the Agent, the missing grant and who grants it, keeps the Request ID, and leaves Delete Agent unavailable, described by the refusal.",
+      "The initial permission advice is unavailable. The attempted deletion is denied; the Console names the Agent, the missing grant and who grants it, keeps the Request ID, and leaves Delete Agent unavailable, described by the refusal. Refocus the window: the next permission read confirms denial without losing that refusal or its Request ID.",
   } satisfies LocalScenario,
   deletionConflict: {
     group: "Components/Deletion",
@@ -2168,8 +2169,9 @@ const authoredScenarios = {
     name: "Permission denied",
     path: revision,
     deployed: true,
+    agentPermissionSummary: { update: true, deploy: true, delete: true, operate: false },
     rules: [
-      { suffix: "/permissions", status: 503 },
+      { suffix: "/permissions", status: 503, once: true },
       {
         suffix: "/stop",
         method: "POST",
@@ -2181,7 +2183,7 @@ const authoredScenarios = {
     ],
     actions: [click("Stop Agent"), { selector: ".agent-stop-dialog button.danger", click: true }],
     description:
-      "Permission advice is unavailable. The attempted stop is denied; the Console names the Agent, the missing grant and who grants it, keeps the Request ID, and leaves Stop Agent unavailable, described by the refusal.",
+      "The initial permission advice is unavailable. The attempted stop is denied; the Console names the Agent, the missing grant and who grants it, keeps the Request ID, and leaves Stop Agent unavailable, described by the refusal. Refocus the window: the next permission read confirms denial without losing that refusal or its Request ID.",
   } satisfies LocalScenario,
   stopUnknown: {
     group: "Components/Stop Agent",
