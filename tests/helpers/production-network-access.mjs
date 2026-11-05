@@ -36,10 +36,34 @@ const deniedErrors = new Set([
 const probeCode = `
 const {createConnection} = require('node:net');
 const {Resolver} = require('node:dns/promises');
+const {get} = require('node:https');
 async function probe(target) {
   try {
     if (target.dns) {
       await new Resolver({timeout: 1500, tries: 1}).resolve4(target.dns);
+    } else if (target.ca) {
+      await new Promise((resolve, reject) => {
+        const request = get({hostname: target.host, port: target.port, path: '/version',
+          servername: 'kubernetes.default.svc', ca: target.ca, agent: false}, response => {
+          let body = '';
+          response.setEncoding('utf8');
+          response.on('data', chunk => { body += chunk; });
+          response.once('error', reject);
+          response.once('end', () => {
+            try {
+              const result = JSON.parse(body);
+              const version = response.statusCode === 200 && typeof result.gitVersion === 'string';
+              const unauthenticated = response.statusCode === 401 && result.kind === 'Status' &&
+                result.reason === 'Unauthorized' && result.code === 401;
+              if (version || unauthenticated) resolve();
+              else reject(Object.assign(new Error('Expected Kubernetes response'), {code: 'INVALID_API_RESPONSE'}));
+            } catch (error) { reject(error); }
+          });
+        });
+        const deadline = setTimeout(() => request.destroy(Object.assign(new Error(), {code: 'ETIMEDOUT'})), 1500);
+        request.once('close', () => clearTimeout(deadline));
+        request.once('error', reject);
+      });
     } else {
       await new Promise((resolve, reject) => {
         const socket = createConnection({host: target.host, port: target.port});
@@ -71,18 +95,44 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
     kubectl,
     waitTimeoutMs: 60_000,
   });
-  const apply = (objects) =>
+  const kubectlWithInput = (args, object) =>
     new Promise((resolve, reject) => {
       const child = execFile(
         "kubectl",
-        kubectlArguments(selection, ["apply", "-f", "-"]),
+        kubectlArguments(selection, args),
         { timeout: 30_000 },
-        (error) => (error ? reject(error) : resolve()),
+        (error, stdout) => (error ? reject(error) : resolve(stdout)),
       );
       child.stdin.on("error", reject);
-      child.stdin.end(JSON.stringify({ apiVersion: "v1", kind: "List", items: objects }));
+      child.stdin.end(JSON.stringify(object));
     });
+  const apply = (objects, verb = "apply") =>
+    kubectlWithInput([verb, "-f", "-"], { apiVersion: "v1", kind: "List", items: objects });
+  let apiEndpointSlice;
+  let apiEndpointSliceCreationPending = false;
   t.after(async () => {
+    // The exclusive disposable cluster's API must stop routing to these proxies
+    // before their Pods disappear, including after a failed assertion.
+    assert.equal(
+      apiEndpointSliceCreationPending,
+      false,
+      "API EndpointSlice creation was not acknowledged; retain proxies until the disposable cluster is removed",
+    );
+    if (apiEndpointSlice) {
+      await kubectlWithInput(
+        [
+          "delete",
+          `--raw=/apis/discovery.k8s.io/v1/namespaces/default/endpointslices/${apiEndpointSlice.metadata.name}`,
+          "-f",
+          "-",
+        ],
+        {
+          apiVersion: "v1",
+          kind: "DeleteOptions",
+          preconditions: { uid: apiEndpointSlice.metadata.uid },
+        },
+      );
+    }
     if (ownedNamespaces.length) {
       await kubectl("delete", "namespace", ...ownedNamespaces, "--wait=false");
     }
@@ -95,7 +145,7 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
     ownedNamespaces.push(name);
   }
 
-  async function pod(name, podNamespace, labels, port) {
+  async function pod(name, podNamespace, labels, port, forwardTo) {
     await apply([
       {
         apiVersion: "v1",
@@ -112,7 +162,17 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
               command: [
                 "node",
                 "-e",
-                `for(const port of [${port},${port + 1}]) require('node:net').createServer(s=>s.end()).listen(port,'0.0.0.0')`,
+                forwardTo
+                  ? `const net = require('node:net');
+                    for (const port of [${port}, ${port + 1}]) net.createServer(socket => {
+                      const upstream = net.createConnection(${JSON.stringify(forwardTo)});
+                      socket.on('error', () => upstream.destroy());
+                      upstream.on('error', () => socket.destroy());
+                      socket.on('close', () => upstream.destroy());
+                      upstream.on('close', () => socket.destroy());
+                      socket.pipe(upstream).pipe(socket);
+                    }).listen(port, '0.0.0.0');`
+                  : `for(const port of [${port},${port + 1}]) require('node:net').createServer(s=>s.end()).listen(port,'0.0.0.0')`,
               ],
               securityContext: {
                 allowPrivilegeEscalation: false,
@@ -244,14 +304,18 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
       if (!selected.length) {
         continue;
       }
+      let last;
       await waitFor(
         `${source}: reachable positive controls ${selected}`,
         async () => {
-          const results = await probe(source, selected);
-          return selected.every((name) => results[name] === "connected");
+          last = await probe(source, selected);
+          return selected.every((name) => last[name] === "connected");
         },
         30_000,
-      );
+      ).catch((error) => {
+        t.diagnostic(`${source}: last positive-control results ${JSON.stringify(last)}`);
+        throw error;
+      });
     }
   }
 
@@ -431,6 +495,118 @@ export async function createProductionNetworkAccess(t, { selection, image }) {
           }),
         ),
       );
+    },
+    async installManagementRepositoryAccess() {
+      // Only the explicitly selected, exclusive disposable cluster may acquire an
+      // additional API EndpointSlice. Native slices are never changed. These real
+      // TCP proxies preserve API TLS and forward to a native endpoint, so Service
+      // traffic remains valid while Pod IPs make CNI revocation observable.
+      const api = await resource("service", "kubernetes", "default");
+      const https = api.spec.ports.find(({ port, protocol }) => port === 443 && protocol === "TCP");
+      assert.ok(https, "Kubernetes must expose its HTTPS Service port");
+      const slices = JSON.parse(
+        await kubectl(
+          "get",
+          "endpointslices",
+          "-n",
+          "default",
+          "-l",
+          "kubernetes.io/service-name=kubernetes",
+          "-o",
+          "json",
+        ),
+      );
+      let forwardTo;
+      for (const slice of slices.items) {
+        const port = slice.ports.find(
+          ({ name, protocol }) => name === https.name && protocol === "TCP",
+        )?.port;
+        const endpoint = slice.endpoints.find(({ conditions }) => conditions?.ready !== false);
+        if (port && endpoint?.addresses.length) {
+          forwardTo = { host: endpoint.addresses[0], port };
+          break;
+        }
+      }
+      assert.ok(forwardTo, "a native Kubernetes API endpoint must be ready before adding proxies");
+      const ca = (await resource("configmap", "kube-root-ca.crt", "default")).data["ca.crt"];
+      for (const name of ["managementApi", "withdrawnManagementApi"]) {
+        targets[name] = {
+          host: await pod(name.toLowerCase(), destinations, {}, 8443, forwardTo),
+          port: 8443,
+          ca,
+        };
+        targets[`${name}WrongPort`] = { ...targets[name], port: 8444 };
+      }
+      targets.kubernetesApi = { host: api.spec.clusterIP, port: 443, ca };
+      const dns = await resource("service", "kube-dns", "kube-system");
+      targets.dnsTcp = { host: dns.spec.clusterIP, port: 53 };
+      const labels = { app: "quickstart-git-hook" };
+      targets.managementGit = { host: await pod("git-hook", system, labels, 8445), port: 8445 };
+      targets.managementGitWrongPort = { ...targets.managementGit, port: 8446 };
+      await apply(
+        [
+          {
+            apiVersion: "v1",
+            kind: "Service",
+            metadata: { name: "openclaw-enterprise-openshell-git", namespace: system },
+            spec: { selector: labels, ports: [{ port: 8445, targetPort: 8445, protocol: "TCP" }] },
+          },
+        ],
+        "create",
+      );
+      const git = await resource("service", "openclaw-enterprise-openshell-git", system);
+      targets.managementGitService = { host: git.spec.clusterIP, port: 8445 };
+      const newTargets = [
+        "dns",
+        "dnsTcp",
+        "kubernetesApi",
+        "managementApi",
+        "managementApiWrongPort",
+        "withdrawnManagementApi",
+        "withdrawnManagementApiWrongPort",
+        "managementGit",
+        "managementGitService",
+        "managementGitWrongPort",
+        "unexpected",
+      ];
+      // Verify API TLS and either /version or Kubernetes' explicit Unauthorized
+      // response through both ports. No credentials are sent: this proves API
+      // transport, not authentication or permission to read cluster resources.
+      await controls(newTargets, "management");
+      const candidate = {
+        apiVersion: "discovery.k8s.io/v1",
+        kind: "EndpointSlice",
+        metadata: {
+          name: `${namespace}-api`,
+          namespace: "default",
+          labels: {
+            "kubernetes.io/service-name": "kubernetes",
+            "endpointslice.kubernetes.io/managed-by": "openclaw-enterprise-network-test",
+          },
+        },
+        addressType: "IPv4",
+        ports: [{ name: https.name, protocol: "TCP", port: 8443 }],
+        endpoints: [targets.managementApi, targets.withdrawnManagementApi].map(({ host }) => ({
+          addresses: [host],
+          conditions: { ready: true },
+        })),
+      };
+      // Only the API's successful create response establishes ownership. A lost
+      // response leaves the proxies running for explicit cluster cleanup.
+      apiEndpointSliceCreationPending = true;
+      apiEndpointSlice = JSON.parse(
+        await kubectlWithInput(["create", "-f", "-", "-o", "json"], candidate),
+      );
+      assert.ok(apiEndpointSlice.metadata.uid, "created EndpointSlice must have a UID");
+      apiEndpointSliceCreationPending = false;
+      await runNetworkHelper("repository_network", managementTenants[0]);
+    },
+    async withdrawManagementApiEndpoint() {
+      // Keep the old proxy listening. A failed connection must be caused by the
+      // rerendered egress policy, not by tearing down its destination.
+      apiEndpointSlice.endpoints[1].conditions.ready = false;
+      await apply([apiEndpointSlice]);
+      await runNetworkHelper("repository_network", managementTenants[0]);
     },
     async confirmManagementPortControls() {
       // Change only destination ingress. A successful connection from each caller

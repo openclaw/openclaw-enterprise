@@ -97,7 +97,7 @@ test(
 
     await t.test(
       "the public OpenShell quickstart preserves scoped management access across tenants",
-      async () => {
+      async (t) => {
         // Real listeners, Services, renderer output and CNI enforce this boundary. These
         // probes do not run OpenShell, an Agent lifecycle, or a model turn.
         await access.installOpenShellManagement(0);
@@ -138,6 +138,46 @@ test(
         });
 
         await access.confirmManagementPortControls();
+
+        await t.test(
+          "Git-enabled management egress preserves DNS and current API endpoints",
+          async () => {
+            await access.installManagementRepositoryAccess();
+            const allowed = [
+              "dns",
+              "dnsTcp",
+              "kubernetesApi",
+              "managementApi",
+              "withdrawnManagementApi",
+              "managementGit",
+              "managementGitService",
+            ];
+            const denied = [
+              "managementApiWrongPort",
+              "withdrawnManagementApiWrongPort",
+              "managementGitWrongPort",
+              "unexpected",
+            ];
+            await access.verify({ source: "management", allow: allowed, deny: denied });
+            // The Agent's tenant gateway must not inherit management-only API or Git
+            // grants even though repository_network also emits supervisor policies.
+            await access.verify({
+              source: "gateway0",
+              deny: [
+                "managementApi",
+                "withdrawnManagementApi",
+                "managementGit",
+                "managementGitService",
+              ],
+            });
+            await access.withdrawManagementApiEndpoint();
+            await access.verify({
+              source: "management",
+              allow: allowed.filter((name) => name !== "withdrawnManagementApi"),
+              deny: [...denied, "withdrawnManagementApi"],
+            });
+          },
+        );
 
         // Withdrawing one supervisor policy must preserve both the other tenant and
         // the independent per-Agent gateway grant.

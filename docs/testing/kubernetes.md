@@ -96,9 +96,10 @@ OCC_TEST_KUBERNETES_IMAGE=oce-fixture:local \
   node --test tests/integration/production-network-access.test.mjs
 ```
 
-Live listeners verify chart and quickstart NetworkPolicies, supervisor grant withdrawal,
-and loss of namespace ownership. Selectors exclude other releases.
-No database or model credentials are required.
+Checks cover workload isolation, namespace ownership, Git-enabled management DNS/API/Git
+connectivity, denied destinations and ports, and grant withdrawal. An owned API EndpointSlice
+uses TLS-preserving proxies to verify endpoint withdrawal; cleanup removes the slice before
+its proxies. No database or model credentials are required.
 
 ## Kubernetes model turns and Secrets
 
