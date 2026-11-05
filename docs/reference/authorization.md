@@ -320,10 +320,11 @@ and records them in the lifecycle event. After an unknown
 creation outcome, list and inspect policy before retrying; equivalent bindings
 may coexist. Names are labels: inspect permissions before reusing a Role.
 
-Deleting a binding does not establish effective denial: other bindings and
-Restrictions still apply. Revocation blocks later admission but cannot retract
+Other bindings and Restrictions can preserve access after deletion.
+Revocation blocks later admission but cannot retract
 already delivered bytes. Stop the Agent and revoke upstream credentials when
 immediate containment is necessary; IAM changes do neither automatically.
+See [generated Agent credential cleanup](drivers/iam.md#generated-agent-credential-grants).
 
 ## Restrictions
 

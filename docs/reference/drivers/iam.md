@@ -82,6 +82,24 @@ of becoming permission. Principal Group membership may contribute a grant.
 
 ## Limits
 
+### Generated Agent credential grants
+
+OCC removes unused credential AccessBindings that guided provisioning generated
+for an Agent. Cleanup retains sources referenced by its draft, active revision,
+or queued or claimed deployment revisions. Agent and Configuration edits, and
+worker completion, use the same retention rule. Independently administered
+bindings remain. Cleanup grants no new access and changes no account sharing.
+Publishing an active revision does not prove its predecessor retired. While that
+revision's reconciliation has not succeeded, cleanup keeps existing generated
+grants. A failed retirement keeps them until successful recovery or Stop.
+
+Each removal records `openclaw.iam.agent_credential_grant_removed` with the
+initiating actor and selected IAM Driver. Policy, audit, and the caller's state
+change commit together; cleanup fails closed if the Driver cannot delete bindings
+in that transaction. Missing retained snapshots or Configuration metadata also
+refuse cleanup. See the [Namespace policy flow](../../flows/namespace-iam-policy.md#6-reconcile-generated-agent-credential-grants)
+for the callers and retention sources.
+
 ### Installed Driver boundary
 
 Installed factories receive the controller-owned `platformState` and must read

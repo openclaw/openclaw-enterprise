@@ -1,3 +1,6 @@
+import { removeUnusedAgentCredentialGrants } from "./agent-credential-grants.ts";
+
+export { removeUnusedAgentCredentialGrants } from "./agent-credential-grants.ts";
 import { NativeIAMDriver } from "@openclaw-enterprise/iam";
 import { isReducedCredentialPlan } from "./credential-policy-reduction.ts";
 
@@ -7773,12 +7776,16 @@ export class OpenClawController {
     }
     const values = frozenValues(input.values);
     return this.mutate(async (state) => {
-      await this.authorize(principalId, "update", {
+      const target = {
         kind: "configuration",
         id: input.configurationId,
         namespaceId: input.namespaceId,
-      });
+      } as const;
+      await this.authorize(principalId, "update", target);
       const namespace = await this.lockNamespace(state, input.namespaceId);
+      // IAM withdrawals share this lock. Reject authority withdrawn while the update waited,
+      // before changing the Configuration or deleting any generated Agent credential grant.
+      await this.authorize(principalId, "update", target);
       const driver = this.configurationDriver();
       const metadata = await state.configurations.lockConfiguration(
         namespace.id,
@@ -7859,6 +7866,14 @@ export class OpenClawController {
         }
       });
       const updated = await this.driverOperation(() => driver.update(configuration));
+      for (const candidate of await state.agents.listAgents(namespace.id)) {
+        if (candidate.configurationId === configuration.id) {
+          const agent = await state.agents.lockAgent(namespace.id, candidate.id);
+          if (agent !== undefined) {
+            await this.removeUnusedCredentialGrants(state, agent, principalId);
+          }
+        }
+      }
       return this.exactConfiguration(updated, advanced);
     });
   }
@@ -10550,6 +10565,7 @@ export class OpenClawController {
       if (!updated) {
         throw new ResourceStateConflictError("The Agent Configuration changed during its update.");
       }
+      await this.removeUnusedCredentialGrants(state, updated, principalId);
       const activeApprovals = (
         await state.repositorySessions.listStandingApprovals(namespace.id, agent.id)
       ).filter((a) => !a.revokedAt);
@@ -14232,6 +14248,26 @@ export class OpenClawController {
       sources.push({ kind: "credential_source", namespaceId, id: source.id });
     }
     return Object.freeze(sources);
+  }
+
+  private async removeUnusedCredentialGrants(
+    state: PlatformUnitOfWork,
+    agent: Readonly<Agent>,
+    actorId: string,
+  ): Promise<void> {
+    await this.iamPolicyOperation(() =>
+      removeUnusedAgentCredentialGrants(
+        state,
+        agent,
+        this.selectedDriver("iam"),
+        { policy: state.iamPolicy },
+        {
+          installationId: this.installation.id,
+          actorId,
+          occurredAt: this.timestamp(),
+        },
+      ),
+    );
   }
 
   private async ensureAgentOperateGrants(

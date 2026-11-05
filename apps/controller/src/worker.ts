@@ -1,4 +1,7 @@
-import { reduceCredentialPolicy } from "@openclaw-enterprise/occ";
+import {
+  removeUnusedAgentCredentialGrants,
+  reduceCredentialPolicy,
+} from "@openclaw-enterprise/occ";
 import {
   assertExecutionReleaseAllowed,
   pluginRuntimeHarnessRequirement,
@@ -3128,6 +3131,27 @@ export class ControllerWorker {
     });
   }
 
+  private async removeUnusedCredentialGrants(
+    unit: PlatformUnitOfWork,
+    claim: ClaimedWork,
+    agent: Readonly<Agent>,
+  ): Promise<void> {
+    if (this.installation === undefined) {
+      throw new Error("The Installation is unavailable during credential grant cleanup.");
+    }
+    await removeUnusedAgentCredentialGrants(
+      unit,
+      agent,
+      this.iam,
+      { policy: unit.iamPolicy },
+      {
+        installationId: this.installation.id,
+        actorId: claim.actorId,
+        occurredAt: new Date().toISOString(),
+      },
+    );
+  }
+
   private async finalizeAgentStop(
     claim: ClaimedWork,
     result: AgentStopDispatchResult,
@@ -3163,6 +3187,10 @@ export class ControllerWorker {
 
       if (result.outcome === "success") {
         await queue.complete(claim);
+        const agent = await this.lockClaimAgent(unit, claim);
+        if (agent !== undefined) {
+          await this.removeUnusedCredentialGrants(unit, claim, agent);
+        }
       } else if (terminalFailure) {
         await queue.fail(claim, { code: result.code });
       } else if (result.outcome === "pending") {
@@ -6212,6 +6240,13 @@ export class ControllerWorker {
           code: resolved.code,
         });
       }
+      const work = await queue.findWork(claim.idempotencyKey);
+      if (work !== undefined && work.state !== "queued" && work.state !== "claimed") {
+        const agent = await this.lockClaimAgent(unit, claim);
+        if (agent !== undefined) {
+          await this.removeUnusedCredentialGrants(unit, claim, agent);
+        }
+      }
     }, this.queueOptions);
     if (stoppedCandidate !== undefined) {
       await this.closeRevisionCredentials(claim, stoppedCandidate);
@@ -6622,11 +6657,15 @@ export class ControllerWorker {
     code: string,
   ): Promise<void> {
     await this.closeRevisionCredentials(claim, revision);
-    await this.state.transactWithQueue(async (_unit, queue) => {
+    await this.state.transactWithQueue(async (unit, queue) => {
       if ((await queue.heartbeat(claim)) === undefined) {
         throw new WorkClaimLostError();
       }
+      const agent = await this.lockClaimAgent(unit, claim);
       await queue.complete(claim, { code });
+      if (agent !== undefined) {
+        await this.removeUnusedCredentialGrants(unit, claim, agent);
+      }
     }, this.queueOptions);
     this.passOutcome = "success";
     this.emit({
@@ -6693,6 +6732,7 @@ export class ControllerWorker {
         code: result.code,
         ...(result.resultData === undefined ? {} : { resultData: result.resultData }),
       });
+      await this.removeUnusedCredentialGrants(unit, claim, agent);
       if (this.revisionMaintenanceInterval(revision) !== undefined) {
         await this.enqueueMaintenance(queue, claim, revision);
       }

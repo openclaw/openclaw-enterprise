@@ -16,6 +16,7 @@ import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
   ConfigurationHarnessError,
   PostgresPlatformState,
+  PostgresWorkQueue,
   ProvisioningSecretDriverError,
   ServiceAccountDriverNotConfiguredError,
 } from "../../packages/occ/src/index.ts";
@@ -1468,13 +1469,20 @@ for (const authMethod of ["api_key", "codex_pat"]) {
     { ...requiresPostgres, timeout: 60_000 },
     async (context) => {
       let deploymentReady = false;
+      let provisioningWorkId;
       const computeDriver = createRuntimeComputeDriver();
       const prepareRevision = computeDriver.prepareRevision.bind(computeDriver);
       computeDriver.prepareRevision = async (...args) => ({
         ...(await prepareRevision(...args)),
         ready: deploymentReady,
       });
-      const fixture = await createFixture(context, { computeDriver });
+      const fixture = await createFixture(context, {
+        computeDriver,
+        stopWorkerAfter: (event) =>
+          !deploymentReady &&
+          event.workId === provisioningWorkId &&
+          event.code === "PROVISIONING_DEPLOYMENT_PENDING",
+      });
       const namespace = await fixture.bootstrapNamespace();
       const secrets = await createProvisioningSecrets(fixture, namespace.id);
       const secretCreateCallCount = fixture.secretDriver.calls.filter(
@@ -1504,6 +1512,7 @@ for (const authMethod of ["api_key", "codex_pat"]) {
         },
       );
       assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+      provisioningWorkId = admitted.data.provisioning.workId;
       // Until the worker runs, the queued plan is a consumer of its Harness Secret, whichever
       // Secret-backed method it uses.
       const pending = await fixture.request(
@@ -1524,7 +1533,66 @@ for (const authMethod of ["api_key", "codex_pat"]) {
         return observed.data.revisionId !== undefined ? observed.data : undefined;
       });
       assert.notEqual(handoff.status, "succeeded");
+      await fixture.stopWorker();
+      await assertProvisionedSecretAccess(fixture, namespace, handoff, secretCreateCallCount);
+      const agentPath = `/namespaces/${namespace.id}/agents/${handoff.agentId}`;
+      const configurationPath = `/namespaces/${namespace.id}/configurations/${handoff.configurationId}`;
+      const generatedId = `binding_${handoff.agentId}_${secrets.externalServiceToken.id}_operate`;
+      const grantExists = async (id) => {
+        const result = await fixture.pool.query(
+          "SELECT id FROM occ.iam_access_bindings WHERE id = $1",
+          [id],
+        );
+        return result.rowCount === 1;
+      };
+      const agent = await fixture.state.read((view) =>
+        view.agents.findAgent(namespace.id, handoff.agentId),
+      );
+      // A separately administered binding on the same source must survive generated-grant cleanup.
+      const independent = await fixture.request(
+        "POST",
+        `/namespaces/${namespace.id}/iam/access-bindings`,
+        {
+          body: {
+            subjectKind: "identity",
+            subjectId: agent.servicePrincipalId,
+            roleId: `role_${namespace.id}_agent_secret_operate`,
+            resourceKind: "secret",
+            resourceId: secrets.externalServiceToken.id,
+          },
+        },
+      );
+      assert.equal(independent.status, 201, JSON.stringify(independent.body));
+      const draftBindings = { ...body.configuration.secretBindings };
+      delete draftBindings.EXTERNAL_SERVICE_TOKEN;
+      const saveWithoutExternal = async () => {
+        const saved = await fixture.request("PATCH", configurationPath, {
+          body: { values: body.configuration.values, secretBindings: draftBindings },
+        });
+        assert.equal(saved.status, 200, JSON.stringify(saved.body));
+        assert.equal(
+          await grantExists(generatedId),
+          true,
+          "unfinished or active deployment must retain its generated grant",
+        );
+      };
+      // Provisioning queued the real revision. Only that snapshot now references the external
+      // Secret, so both queued and claimed work must retain its generated grant.
+      await saveWithoutExternal();
+      const due = await fixture.pool.query(
+        "UPDATE occ.controller_work SET available_at = '0001-01-01' WHERE idempotency_key = $1 AND state = 'queued'",
+        [`agent_revision:${handoff.revisionId}:reconcile`],
+      );
+      assert.equal(due.rowCount, 1, "the initial deployment must still be queued");
+      const queue = new PostgresWorkQueue(fixture.pool);
+      const claim = await queue.claim();
+      assert.equal(claim?.revisionId, handoff.revisionId);
+      await saveWithoutExternal();
+      // Return the real claim to the queue; the real worker must still activate this revision.
+      await queue.retry(claim, { code: "DEPENDENCY_UNAVAILABLE" });
+      await makeWorkDue(fixture.pool, { key: claim.idempotencyKey });
       deploymentReady = true;
+      await fixture.startWorker();
       const status = await waitFor("Agent provisioning to succeed", async () => {
         const observed = await fixture.request("GET", admitted.data.provisioning.url);
         assert.equal(observed.status, 200, JSON.stringify(observed.body));
@@ -1543,7 +1611,6 @@ for (const authMethod of ["api_key", "codex_pat"]) {
       assert.match(status.agentId, identifier("agt"));
       assert.match(status.configurationId, identifier("cfg"));
       fixture.cancelProvisioningAtTeardown(namespace.id, status.agentId);
-      await assertProvisionedSecretAccess(fixture, namespace, status, secretCreateCallCount);
       const revisions = await fixture.state.read((view) =>
         view.revisions.listRevisions(namespace.id, status.agentId),
       );
@@ -1565,6 +1632,205 @@ for (const authMethod of ["api_key", "codex_pat"]) {
       );
       assert.equal(work.rowCount, 1);
       assert.equal(work.rows[0].state, "succeeded");
+      await fixture.stopWorker();
+      // The active snapshot keeps its source after draft edits. Its replacement does not use
+      // that source, and completion must remove only the generated grant, with an audit event.
+      await saveWithoutExternal();
+      const replacement = await fixture.request("POST", `${agentPath}/deploy`);
+      assert.equal(replacement.status, 202, JSON.stringify(replacement.body));
+      let retiring = false;
+      const releaseRetirement = Promise.withResolvers();
+      const retireRevision = computeDriver.retireRevision.bind(computeDriver);
+      computeDriver.retireRevision = async (revision) => {
+        if (revision.id === handoff.revisionId) {
+          retiring = true;
+          await releaseRetirement.promise;
+        }
+        return retireRevision(revision);
+      };
+      await fixture.startWorker();
+      try {
+        // OCC publishes the replacement before Compute finishes retiring its predecessor.
+        // An edit during that real worker interval must not revoke the predecessor's source.
+        await waitFor("predecessor retirement to start", () => (retiring ? true : undefined));
+        const published = await fixture.request("GET", agentPath);
+        assert.notEqual(published.data.activeRevisionId, handoff.revisionId);
+        await saveWithoutExternal();
+      } finally {
+        releaseRetirement.resolve();
+      }
+      await waitFor("replacement activation to release the unused generated grant", async () => {
+        const current = await fixture.request("GET", agentPath);
+        assert.equal(current.status, 200, JSON.stringify(current.body));
+        return current.data.activeRevisionId !== handoff.revisionId &&
+          !(await grantExists(generatedId))
+          ? true
+          : undefined;
+      });
+      assert.equal(
+        await grantExists(independent.data.id),
+        true,
+        "administrator-managed bindings must remain",
+      );
+      const removal = (await fixture.state.transact((unit) => unit.audit.list())).filter(
+        (event) =>
+          event.namespaceId === namespace.id &&
+          event.action === "openclaw.iam.agent_credential_grant_removed" &&
+          event.details?.bindingId === generatedId,
+      );
+      assert.equal(removal.length, 1);
+      assert.equal(removal[0].actorId, await fixture.administratorPrincipalId());
+      assert.equal(removal[0].details.agentId, handoff.agentId);
+      assert.ok(removal[0].iamDriverId);
+
+      // A stopped Agent has no live revision retaining its Slack binding. A Configuration
+      // updater may remove that reference, but only while its exact update grant is current.
+      const stopped = await fixture.request("POST", `${agentPath}/stop`);
+      assert.equal(stopped.status, 202, JSON.stringify(stopped.body));
+      await waitFor("Stop to clear the active revision", async () => {
+        const current = await fixture.request("GET", agentPath);
+        assert.equal(current.status, 200, JSON.stringify(current.body));
+        return current.data.activeRevisionId === undefined ? true : undefined;
+      });
+      await fixture.stopWorker();
+      const slackGrantId = `binding_${handoff.agentId}_${secrets.slackBotToken.id}_operate`;
+      assert.equal(await grantExists(slackGrantId), true);
+      const independentSlack = await fixture.request(
+        "POST",
+        `/namespaces/${namespace.id}/iam/access-bindings`,
+        {
+          body: {
+            subjectKind: "identity",
+            subjectId: agent.servicePrincipalId,
+            roleId: `role_${namespace.id}_agent_secret_operate`,
+            resourceKind: "secret",
+            resourceId: secrets.slackBotToken.id,
+          },
+        },
+      );
+      assert.equal(independentSlack.status, 201, JSON.stringify(independentSlack.body));
+      const credentials = {
+        email: `configuration-updater-${randomUUID()}@example.test`,
+        password: `generated-password-${randomUUID()}`,
+      };
+      const account = await fixture.request("POST", "/api/auth/accounts", {
+        body: { ...credentials, name: "Configuration updater" },
+      });
+      assert.equal(account.status, 201, JSON.stringify(account.body));
+      const updater = await signInToControllerApp(fixture.app, credentials);
+      const updaterRole = await fixture.request("POST", `/namespaces/${namespace.id}/iam/roles`, {
+        body: {
+          permissions: [
+            { action: "read", resourceKind: "namespace" },
+            { action: "read", resourceKind: "configuration" },
+            { action: "update", resourceKind: "configuration" },
+            { action: "operate", resourceKind: "secret" },
+          ],
+        },
+      });
+      assert.equal(updaterRole.status, 201, JSON.stringify(updaterRole.body));
+      let updateBinding;
+      for (const [resourceKind, resourceId] of [
+        ["namespace", namespace.id],
+        ["configuration", handoff.configurationId],
+        ...[secrets.modelKey, secrets.slackBotToken, secrets.slackSigningSecret].map(({ id }) => [
+          "secret",
+          id,
+        ]),
+      ]) {
+        const bound = await fixture.request(
+          "POST",
+          `/namespaces/${namespace.id}/iam/access-bindings`,
+          {
+            body: {
+              subjectKind: "identity",
+              subjectId: account.data.principalId,
+              roleId: updaterRole.data.id,
+              resourceKind,
+              resourceId,
+            },
+          },
+        );
+        assert.equal(bound.status, 201, JSON.stringify(bound.body));
+        if (resourceKind === "configuration") {
+          updateBinding = bound.data.id;
+        }
+      }
+      assert.ok(updateBinding);
+      const allowed = await fixture.request("PATCH", configurationPath, {
+        session: updater,
+        body: { values: body.configuration.values, secretBindings: draftBindings },
+      });
+      assert.equal(allowed.status, 200, JSON.stringify(allowed.body));
+      const beforeConfiguration = (await fixture.request("GET", configurationPath)).data;
+      const successAudits = async () =>
+        (await fixture.state.transact((unit) => unit.audit.list())).filter(
+          (event) =>
+            event.action === "openclaw.configurations.update" &&
+            event.resource.id === handoff.configurationId &&
+            event.outcome === "success",
+        );
+      const beforeAudits = await successAudits();
+      const withoutSlack = { ...draftBindings };
+      delete withoutSlack.SLACK_BOT_TOKEN;
+      const edit = {
+        values: { agents: body.configuration.values.agents },
+        secretBindings: withoutSlack,
+      };
+
+      // Queue the real IAM withdrawal before PATCH. PostgreSQL's wait chain proves PATCH
+      // passed its initial check while the old grant was committed, then waited behind revoke.
+      const blocker = await fixture.pool.connect();
+      let withdrawal;
+      let update;
+      try {
+        await blocker.query("BEGIN");
+        const { rows } = await blocker.query(
+          "SELECT pg_backend_pid() AS pid FROM occ.namespaces WHERE id = $1 FOR UPDATE",
+          [namespace.id],
+        );
+        assert.equal(rows.length, 1);
+        withdrawal = fixture.request(
+          "DELETE",
+          `/namespaces/${namespace.id}/iam/access-bindings/${updateBinding}`,
+        );
+        const withdrawalPid = await waitForLockWaiter(
+          fixture.pool,
+          rows[0].pid,
+          "IAM withdrawal to wait on Namespace",
+        );
+        update = fixture.request("PATCH", configurationPath, { session: updater, body: edit });
+        await waitForLockWaiter(
+          fixture.pool,
+          withdrawalPid,
+          "Configuration edit to wait behind IAM withdrawal",
+        );
+      } finally {
+        try {
+          await blocker.query("ROLLBACK");
+        } finally {
+          blocker.release();
+          await Promise.allSettled([withdrawal, update]);
+        }
+      }
+      assert.equal((await withdrawal).status, 204);
+      const raced = await update;
+      assert.equal(
+        raced.status,
+        403,
+        `revoked Configuration update must not delete its generated grant; grant present: ${await grantExists(slackGrantId)}`,
+      );
+      assert.deepEqual((await fixture.request("GET", configurationPath)).data, beforeConfiguration);
+      assert.equal(await grantExists(slackGrantId), true);
+      assert.equal(await grantExists(independentSlack.data.id), true);
+      assert.deepEqual(await successAudits(), beforeAudits);
+
+      // The administrator remains authorized to make the same edit and remove only the
+      // generated binding. The independent grant survives both the denial and real cleanup.
+      const authorized = await fixture.request("PATCH", configurationPath, { body: edit });
+      assert.equal(authorized.status, 200, JSON.stringify(authorized.body));
+      assert.equal(await grantExists(slackGrantId), false);
+      assert.equal(await grantExists(independentSlack.data.id), true);
     },
   );
 }

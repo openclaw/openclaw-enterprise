@@ -1,7 +1,7 @@
 ---
 created: "2026-09-20"
 updated: 2026-11-04
-last_updated_session: "authoring-run/fbfcb29f-156c-4cfd-af1d-fa15224dd2e5"
+last_updated_session: "authoring-run/5e22c930-9153-4b59-9935-f003db1bb2e6"
 ---
 
 # Namespace IAM Policy Flow
@@ -44,6 +44,10 @@ graph TD
   D --> H["API returns policy metadata"]
   G -->|COMMIT validates held session| H
   G -->|held session expired| X
+  M["Agent or Configuration edit; worker completion"] --> R["Retain draft, active and unfinished revision sources"]
+  R --> K{"Unused OCC-generated binding?"}
+  K -->|yes| F
+  K -->|no| H
 ```
 
 ## Execution Trace
@@ -152,10 +156,12 @@ indexes each snapshot once (identities by id, issuer and subject; bindings by
 subject; Restrictions by action and kind). Nothing outlives the
 unit: the next request reads the policy again.
 
-`packages/occ/src/index.ts:OpenClawController.updateAgent` checks Agent `update`
-again after locking the Namespace. Namespace IAM writes take the same lock.
-If a binding withdrawal commits first and the caller has no other applicable
-`update` grant, the Agent save returns `403` and leaves the draft unchanged.
+`packages/occ/src/index.ts:OpenClawController.updateAgent` and
+`packages/occ/src/index.ts:OpenClawController.updateConfiguration` recheck exact
+resource `update` after locking the Namespace. Namespace IAM writes take the
+same lock. If a binding withdrawal commits first and the caller has no other
+applicable grant, the save returns `403` before changing the draft, deleting
+generated credential bindings, or appending a success audit.
 
 ### 5. Platform state commits policy and audit together
 
@@ -196,6 +202,37 @@ for an original transaction. Its SQL supplier is unregistered, and the
 Namespace routes above do not use it. It does not protect these routes until the
 selected account, session, and policy writers join the same protocol.
 
+### 6. Reconcile generated Agent credential grants
+
+`packages/occ/src/agent-credential-grants.ts:removeUnusedAgentCredentialGrants`
+owns credential-grant cleanup. It runs in the caller's transaction, with the
+Namespace lock held. It selects only the existing provisioning binding ID,
+Agent ServicePrincipal, exact resource, and generated operate Role together;
+other bindings remain independently administered.
+
+`packages/occ/src/index.ts:OpenClawController.updateConfiguration` runs cleanup
+for each Agent using the edited Configuration.
+`packages/occ/src/index.ts:OpenClawController.updateAgent` runs it after saving
+the draft. The shared function retains draft Configuration bindings, Harness
+authentication sources, and Agent credential sources. It also loads the active
+revision and each revision whose reconcile work is queued or claimed, retaining
+their saved sources. Missing retained data refuses the transaction.
+An active pointer can precede predecessor retirement. Until that active revision's
+reconcile work succeeds, cleanup keeps existing generated grants, including when
+retirement failed. A successful reconciliation or Stop permits another cleanup.
+
+`apps/controller/src/worker.ts:ControllerWorker.completeActivatedRevision` runs
+the same cleanup after activation and predecessor retirement. Stop and terminal
+revision completion also reconcile grants, after their queue transition, so
+finished work no longer retains a source by itself. The active revision remains
+a consumer until its pointer is cleared or replaced.
+
+The selected IAM Driver must support transactional deletion when unused generated
+bindings exist. Each successful deletion appends its actor-attributed audit event
+in the same transaction. A refused deletion or audit failure rolls back the
+policy and state change. The [IAM reference](../reference/drivers/iam.md#generated-agent-credential-grants)
+owns the supported lifetime and revocation limits.
+
 ## Debugging and Verification
 
 - `node --test tests/integration/occ-api.test.mjs` checks the HTTP contract and
@@ -205,6 +242,15 @@ selected account, session, and policy writers join the same protocol.
   responses expose `servicePrincipalId` without accepting caller-supplied values.
 - `node --test tests/integration/postgres-namespace-iam-policy.test.mjs` checks
   PostgreSQL persistence, audit atomicity, and deletion behavior with real state.
+- The Secret-backed cases in `tests/integration/postgres-agent-provisioning.test.mjs`
+  exercise real API admission, PostgreSQL queue claims, draft edits, and worker
+  activation. They prove queued, claimed, and active revision retention, generated
+  grant removal, retention while predecessor retirement waits, and preservation
+  of an administrator binding. Compute and Secret
+  delivery use test Drivers; this is not live model or Kubernetes proof.
+  The withdrawal race queues a real IAM deletion ahead of a Configuration PATCH
+  and checks `403`, unchanged Configuration and credential bindings, and no new
+  success audit. An administrator can still perform the same cleanup afterward.
 - `node --test tests/conformance/postgres-transaction-unknown-commit.test.mjs`
   checks that an unknown commit does not wait for a later rollback query.
 - The production bootstrap Sharing case in
@@ -235,6 +281,8 @@ selected account, session, and policy writers join the same protocol.
 
 ## Changelog
 
+- 2026-11-04 18:31: Recheck Configuration update authority under the Namespace lock before generated-grant cleanup. (authoring-run/5e22c930-9153-4b59-9935-f003db1bb2e6 - 775613fb00824bcadcac8781368cf03831bb9bbf)
+- 2026-11-04 17:36: Share generated credential-grant retention and cleanup across draft mutations and worker completion; accompanying local changes. (authoring-run/c8796acb-decf-43ea-bd64-ec100c7c2069 - e109c87191cf950096002751af2a7a2bef4d7f38)
 - 2026-11-04 02:25: Recheck Agent update permission under the Namespace lock. (authoring-run/fbfcb29f-156c-4cfd-af1d-fa15224dd2e5 - fdca6e74421067adc66dce4f141d153af0355f68)
 - 2026-10-15 13:28: Retain assigning sessions through policy COMMIT, require transactional IAM writes, and preserve caller limits with shared guarded-session holds. (authoring-run/ec3b3e9d-0724-4b9e-a41d-4eb8a44d4851 - a302a3e2061575b64dcc37e212c55075d5c74b9a)
 - 2026-10-14 11:00: Read, validate and index native policy once per State unit of work instead of once per decision. (fix-1322)
