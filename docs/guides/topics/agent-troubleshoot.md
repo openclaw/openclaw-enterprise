@@ -8,7 +8,7 @@ the console shows. Never include API keys, tokens, or Secret values.
 
 If a dedicated Codex Agent on OpenShell reports `Codex did not grant the requested :danger-full-access profile`, ask the account administrator to check its managed permission requirements. A policy limited to `ReadOnly` or `WorkspaceWrite` cannot meet the [OpenShell permission-profile requirement](../../reference/drivers/openshell-sandbox.md#codex-permission-profile).
 
-Successful login, a ready credential source, or a model reply under another permission profile does not prove compatibility. Use an approved compatible credential or an administrator-approved policy change, then [verify a model response from the actual Agent](../operate/model-verification.md). Keep managed policy, the Gateway permission check and OpenShell isolation intact.
+Successful login, a ready credential source, or a model reply under another permission profile does not prove compatibility. Use an approved compatible credential or an administrator-approved policy change. For a replacement credential, [update the source](../../reference/credential-sources.md#update-a-source) and redeploy the Agent to load the new Gateway copy. Then [verify a model response from the actual Agent](../operate/model-verification.md). Keep managed policy, the Gateway permission check and OpenShell isolation intact.
 
 ## The configured model is unavailable
 
