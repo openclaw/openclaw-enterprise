@@ -234,9 +234,13 @@ test("a template needs an explicit availability when the administrator has no Na
   );
   await registration.getByLabel("OAuth client name").fill("Tools client");
   await registration.getByLabel("Client ID", { exact: true }).fill("tools-client");
-  await registration
-    .getByRole("combobox", { name: "Token endpoint authentication method", exact: true })
-    .selectOption("none");
+  await registration.getByLabel("Client type", { exact: true }).selectOption({ label: "Public" });
+  const publicMethod = registration.getByLabel("Token endpoint authentication method", {
+    exact: true,
+  });
+  assert.equal(await publicMethod.inputValue(), "none");
+  assert.equal(await publicMethod.isDisabled(), true);
+  assert.equal(await registration.getByLabel("Client secret", { exact: true }).isVisible(), false);
   const registered = responseTo(page, "POST", fixture.origin + "/oauth-clients");
   await registration.getByRole("button", { name: "Register OAuth client" }).click();
   const regResult = await registered;
@@ -341,7 +345,10 @@ test("registering a provider-issued client uses a saved or newly created templat
     name: "Token endpoint authentication method",
     exact: true,
   });
-  for (const value of ["client_secret_basic", "client_secret_post", "none"]) {
+  const clientType = form.getByLabel("Client type", { exact: true });
+  assert.equal(await clientType.inputValue(), "confidential");
+  assert.equal(await method.getByRole("option", { name: "none", exact: true }).count(), 0);
+  for (const value of ["client_secret_basic", "client_secret_post"]) {
     assert.equal(
       await method.getByRole("option", { name: value, exact: true }).getAttribute("value"),
       value,
@@ -378,7 +385,11 @@ test("registering a provider-issued client uses a saved or newly created templat
   assert.equal(await method.inputValue(), "client_secret_post");
   await templateChoice.selectOption(template.id);
   await form.getByLabel("Client ID", { exact: true }).fill("second-directory");
-  await method.selectOption("none");
+  await form.getByLabel("Client secret", { exact: true }).fill(privateValue);
+  await clientType.selectOption("public");
+  await clientType.selectOption("confidential");
+  assert.equal(await form.getByLabel("Client secret", { exact: true }).inputValue(), "");
+  await clientType.selectOption("public");
   const secondRegistration = responseTo(page, "POST", fixture.origin + "/oauth-clients");
   await form.getByRole("button", { name: "Register OAuth client" }).click();
   const second = await secondRegistration;

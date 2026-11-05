@@ -75,7 +75,8 @@ export const connectionTemplateScenarios = {
         value: "ctp_00000000-0000-4000-8000-000000000003",
       },
     ],
-    description: "The Google OAuth template selects client_secret_post by default.",
+    description:
+      "The Google template defaults to client_secret_post for confidential clients. Selecting Public sets the method to none.",
   },
   credentialsRegisterFromMcp: {
     group: "Pages/Credentials",
@@ -90,7 +91,7 @@ export const connectionTemplateScenarios = {
       },
     ],
     description:
-      "The MCP authorization server advertises client_secret_basic and none. The registration form offers those two token endpoint authentication methods.",
+      "This MCP server advertises client_secret_basic for confidential clients and none for public clients. Select a client type to see its method.",
   },
   credentialsMemberAccess: {
     group: "Pages/Credentials",
