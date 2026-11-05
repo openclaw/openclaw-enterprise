@@ -78,8 +78,12 @@ export async function narrowOnlineGitJourney(
   return repositoryGitJourney(t, exercise, policy);
 }
 
-export async function repositorySetJourney(t: TestContext, standing = false) {
-  return repositoryGitJourney(t, undefined, {}, standing);
+export async function repositorySetJourney(
+  t: TestContext,
+  standing = false,
+  pendingSuccessor?: "recipient" | "approval",
+) {
+  return repositoryGitJourney(t, undefined, {}, standing, pendingSuccessor);
 }
 
 async function repositoryGitJourney(
@@ -87,6 +91,7 @@ async function repositoryGitJourney(
   narrow?: (journey: NarrowJourney) => Promise<void>,
   policy: NarrowPolicy = {},
   standing = false,
+  pendingSuccessor?: "recipient" | "approval",
 ) {
   const selectedRepositories = repositorySet.slice(0, standing ? 1 : 2);
   const workspace = "selected-journey";
@@ -684,6 +689,79 @@ async function repositoryGitJourney(
         executionId: execution.executionId,
         fingerprint: execution.fingerprint,
       });
+      if (pendingSuccessor) {
+        const writes = wire.world.writes;
+        const installed = state.installed;
+        const finalRead = deferred();
+        const getProvider = client.getProvider.bind(client);
+        let intercepted = false;
+        // The real runtime has already selected successor material and reserved its write.
+        // Change the controlled recipient or real approval at the last Gateway read,
+        // before the production release callback rechecks authority and sends credentials.
+        t.mock.method(client, "getProvider", async (...args: Parameters<typeof getProvider>) => {
+          const value = await getProvider(...args);
+          if (!intercepted && args[1] === entry.binding.provider) {
+            const { rows } = await f.observerPool.query(
+              "SELECT write_pending FROM occ.credential_deliveries WHERE revision_id=$1",
+              [revision.id],
+            );
+            if (rows.some((row) => row.write_pending === "rotate")) {
+              intercepted = true;
+              if (pendingSuccessor === "recipient") {
+                registration.audience = "different-recipient";
+              } else {
+                await f.controller.removeAgentStandingApproval(f.actor.id, {
+                  ...ownerKey,
+                  approvalId: credentials.standingApprovalId!,
+                  expectedGeneration: credentials.standingApprovalGeneration!,
+                });
+              }
+              finalRead.resolve();
+            }
+          }
+          return value;
+        });
+        await start();
+        await waitFor(
+          "a successor reaches the final recipient read",
+          async () => {
+            await peer.prepared.maintain();
+            return intercepted || undefined;
+          },
+          { timeoutMs: 60_000 },
+        );
+        await finalRead.promise;
+        await waitFor(
+          "the pending successor is refused",
+          () => entry.blocked || entry.absent === "withdrawn" || undefined,
+          { timeoutMs: 10_000 },
+        );
+        await f.stop();
+        assert.equal(peer.gh.issuesOfTokens.length, 2, "the successor was issued before refusal");
+        assert.equal(wire.world.writes, writes, "refusal precedes the credential write");
+        assert.equal(state.installed, installed, "no successor material reached the recipient");
+        assert.equal(
+          (await evaluate(probe)).decision,
+          2,
+          "the refused successor cannot authorize Git",
+        );
+        // A later maintenance pass cannot recover the selected material into this route.
+        registration.audience = audience;
+        await peer.prepared.maintain();
+        entry.nextRefreshAt = 0;
+        const pass = runtime["running"];
+        await waitFor("a later runtime pass", () => runtime["running"] !== pass || undefined, {
+          timeoutMs: 10_000,
+        });
+        await runtime["running"];
+        assert.equal(wire.world.writes, writes, "recovery cannot replay the refused successor");
+        assert.equal((await evaluate(probe)).decision, 2);
+        assert.equal(wire.world.id, initialSandbox, "refusal preserves the execution");
+        t.diagnostic(
+          `Pending successor ${pendingSuccessor} refusal: no credential write; signed listener denied`,
+        );
+        return;
+      }
       await start();
       await waitForRevisionPass(
         "selected repository successor installed",

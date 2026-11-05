@@ -432,7 +432,9 @@
     {
       "path": "tests/integration/postgres-openshell-standing-selected-repository.test.ts",
       "expectedTests": [
-        "one selected repository renews beyond its original session without replacing the execution and denies withdrawn approval"
+        "one selected repository renews beyond its original session without replacing the execution and denies withdrawn approval",
+        "an expired acknowledged launch refuses a pending successor after recipient changes",
+        "an expired acknowledged launch refuses a pending successor after approval changes"
       ]
     },
     {

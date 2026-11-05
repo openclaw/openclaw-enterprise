@@ -9,3 +9,11 @@ test(
   { ...requiresPostgres, timeout: 180_000 },
   (t) => repositorySetJourney(t, true),
 );
+
+for (const change of ["recipient", "approval"] as const) {
+  test(
+    `an expired acknowledged launch refuses a pending successor after ${change} changes`,
+    { ...requiresPostgres, timeout: 180_000 },
+    (t) => repositorySetJourney(t, true, change),
+  );
+}
