@@ -83,6 +83,7 @@ async function fixture(
     persistedIam = false,
     gateway = { endpoint: "http://127.0.0.1:1" },
     modelProvider,
+    placement,
   } = {},
 ) {
   const providers = new Map();
@@ -139,6 +140,9 @@ async function fixture(
     },
     { gatewayClient: client },
   );
+  if (placement !== undefined) {
+    t.mock.method(backend.client, "placement", placement);
+  }
   const driver = new OpenShellCredentialGatewayDriver(
     {
       binaries: ["/app/bin/codex"],
@@ -571,8 +575,13 @@ test("credential source HTTP deletion uses source ownership even with an invalid
 
 test("OpenShell credentials authorized for one provider keep independent ownership and lifecycle", async (t) => {
   const endpoint = "https://models.example.test:8443/api/v1";
+  let placementCalls = 0;
   const f = await fixture(t, {
     modelProvider: { protocol: "openai-responses", baseUrl: endpoint },
+    placement() {
+      placementCalls += 1;
+      throw new Error("Model profiles must not resolve gateway placement.");
+    },
   });
   const standard = await f.create("first", { authorized_base_url: endpoint });
   const custom = await f.create("custom", {
@@ -581,6 +590,7 @@ test("OpenShell credentials authorized for one provider keep independent ownersh
   const shared = await f.create("shared", {
     authorized_base_url: "https://models.example.test:8443/api/v1",
   });
+  assert.equal(placementCalls, 0, "static registration must not resolve Gateway placement");
   for (const result of [standard, custom, shared]) {
     assert.equal(result.status, 201, JSON.stringify(result.body));
     assert.equal(result.data.status.state, "ready");
@@ -604,6 +614,22 @@ test("OpenShell credentials authorized for one provider keep independent ownersh
   const source = await f.controller.transact((unit) =>
     unit.credentialSources.findCredentialSource(f.namespace.id, custom.data.id),
   );
+  assert.deepEqual(provider.credentials, { OPENAI_API_KEY: "synthetic-model-key" });
+  const replacement = await f.createSecret(
+    f.namespace.id,
+    "replacement-model-key",
+    "synthetic-replacement-model-key",
+  );
+  const updated = await f.replaceSecret({
+    ...source,
+    secrets: { api_key: replacement.ref },
+  });
+  assert.equal(updated.status, 200, JSON.stringify(updated.body));
+  assert.equal(updated.data.status.state, "ready");
+  assert.ok(f.mutations.includes("updateProvider"));
+  assert.deepEqual(provider.credentials, { OPENAI_API_KEY: "synthetic-replacement-model-key" });
+  assert.equal((await f.request("GET", f.path + "/" + source.id)).data.status.state, "ready");
+  assert.equal(placementCalls, 0);
   const context = {
     namespace: { ...f.namespace, name: provider.workspace },
     source,
@@ -717,6 +743,7 @@ test("OpenShell credentials authorized for one provider keep independent ownersh
     }),
     [{ sourceId: custom.data.id, ref: provider.name }],
   );
+  assert.equal(placementCalls, 0);
   provider.type = "oce-openai";
   assert.equal((await f.request("GET", f.path + "/" + custom.data.id)).data.status.state, "failed");
   await assert.rejects(

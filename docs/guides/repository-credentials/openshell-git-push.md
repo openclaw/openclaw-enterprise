@@ -1,5 +1,7 @@
 ---
 tags: [human_verified]
+# Backfilled from the verification tag recorded in e22f558c0.
+last_verified: "2026-11-02"
 ---
 
 # Push a Git branch from an OpenShell Agent
@@ -14,7 +16,7 @@ Use `fred` from setup, before or after [adding Linear](../integrations/codex-plu
 - **OCE and OpenShell:** Use a controller, runtime, CLI and Helm chart from the same release supporting the `github-repository` profile, with matching OpenShell 0.1.6 Gateway, supervisor and charts. Select compatible images before starting your selected installation setup. If your published channel lacks the feature, [build the matching image pair](../deploy/production-installation.md#build-and-publish-production-images). Check that the matching checkout includes `deploy/examples/repository-credentials/openshell.registry.json`. See the [enrollment guide](openshell-enrollment.md) for the required release files. Verify the selected source and publication receipt; a channel name alone does not prove support.
 - **GitHub App:** Choose a test repository with at least one commit. The screenshots use a private repository. [Install the App](https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app) on your test repository with **Contents write** and **Metadata read**. Obtain its App ID, installation ID, numeric repository ID and RSA signing key. The worker calls [GitHub's installation token endpoint](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app); the operator does not stage a token file.
 - **Operator:** Use an approved Kubernetes context, access to the Installation's Helm releases, and the [GitHub CLI](https://cli.github.com/). Check that `gh auth status` shows your approved reader account.
-- **Agent:** Use the operator session from [Deploy your first Agent](../deploy/deploy-first-agent.md), or source its private `session.sh`. Git works with either ready model credential from that guide: an OpenAI API key or a Codex service account token. For Linear, use the token for the account with the authorized connection. Keep the Agent’s provisioned runtime credentials and plugin selections. Register the model source before enabling the repository Credential Proxy.
+- **Agent:** Use the operator session from [Deploy your first Agent](../deploy/deploy-first-agent.md), or source its private `session.sh`. Git works with either ready Credential Gateway source from that guide: an OpenAI API key (`openai`) or a Codex service account token (`codex-pat`). For Linear, use the token for the account with the authorized connection. Keep the Agent’s provisioned runtime credentials and plugin selections. Register the model source before enabling the repository Credential Proxy.
 
 ## 1. Enroll one repository in the Installation
 
@@ -152,6 +154,8 @@ repository_network
 save_session
 ```
 
+On Kubernetes, `repository_network` retains Gateway DNS and Kubernetes API access alongside the Git authority route. Rerun it after the API endpoint addresses change.
+
 Complete the Gateway middleware rollout and authenticated worker installation check from steps 5–6 before proceeding. Use `$CONTEXT`, `$PLATFORM_NS` and `$namespace` in those commands. Replace the reference example’s `openclaw-system` in certificate SANs, middleware endpoints and commands with `$PLATFORM_NS`. The Supervisor namespace is `$TENANT_NAMESPACE`. Select the ready worker for the authenticated check:
 
 ```bash
@@ -283,6 +287,7 @@ else
   test "$(git ls-remote --exit-code --heads "$url" "refs/heads/$branch" | cut -f1)" = "$parent"
 fi
 # The remote must still advertise the parent before the empty commit is sent.
+# Current Sandbox environments enable negotiation; keep it explicit for older revisions.
 test "$(git ls-remote --exit-code origin "refs/heads/$source_branch" | cut -f1)" = "$parent"
 git -c push.negotiate=true push --thin --porcelain origin "HEAD:refs/heads/$branch"
 local_sha=$(git rev-parse HEAD)

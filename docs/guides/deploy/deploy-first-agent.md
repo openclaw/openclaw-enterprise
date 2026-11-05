@@ -2,6 +2,10 @@
 
 Complete the installation setup for [local k3d](local-setup.md), [Kubernetes](kubernetes-setup.md), or [Amazon EKS](eks-openshell-setup.md). Continue in the same Bash shell at the root of the matching release checkout. Use the API connection, namespace and browser origin from setup.
 
+Use this OpenShell workflow to evaluate Agent deployment and model execution.
+A successful run does not complete the
+[remaining OpenShell production qualification](../../reference/drivers/openshell-sandbox.md#remaining-qualification-work).
+
 Create an Agent called `fred` in the Console below, or [start with the API](#1-select-or-register-the-model-credential). Both paths lead to the same onboarding steps. Choose a fresh setup where the name `fred` is available.
 
 ## Create and deploy fred in the Console
@@ -29,6 +33,8 @@ Continue to [onboarding in the Control UI](#4-complete-onboarding-in-the-control
 ## 1. Select or register the model credential
 
 Choose one credential for the dedicated Codex Agent. Both paths use the [OpenShell Credential Gateway](../../reference/drivers/openshell-credential-gateway.md#source-type-catalog).
+
+Before selecting either credential, confirm its account policy meets the [OpenShell permission-profile requirement](../../reference/drivers/openshell-sandbox.md#codex-permission-profile).
 
 ### Option A. ChatGPT service account token
 
@@ -193,6 +199,9 @@ Continue when the deployment reports `succeeded` and the Agent's `activeRevision
 
 ## 4. Complete onboarding in the Control UI
 
+<AccordionGroup>
+<Accordion title="Control UI">
+
 Before sending the first prompt, use the operator shell to check the bootstrap file in this Agent's workspace. This check needs permission to list Pods and execute a command in the tenant namespace.
 
 ```bash
@@ -225,7 +234,21 @@ Send `Reply with OCE_READY.` and confirm the reply. Close the Agent tab, reopen 
 
 <Snippet file="../../snippets/openshell-quickstart/console-onboard.md" />
 
-The shared `turn` helper starts a new conversation on each call. A terminal model reply does not replace this browser onboarding and continuity check.
+</Accordion>
+<Accordion title="CLI">
+
+To check that the deployed Agent can answer through its Gateway, run this in the same operator shell:
+
+```bash
+printf '%s\n' 'Reply with OCE_READY.' > "$RUN_DIR/setup-prompt"
+turn "$RUN_DIR/setup-prompt" > "$RUN_DIR/setup-result" &&
+  jq -e '.outcome.status == "ok" and (.outcome.terminalReply.text | contains("OCE_READY"))' "$RUN_DIR/setup-result"
+```
+
+A successful check prints `true`. Each `turn` starts a new conversation. Use the Control UI steps to complete onboarding and verify recall in the same conversation.
+
+</Accordion>
+</AccordionGroup>
 
 <a id="keep-the-session-for-the-next-stage"></a>
 

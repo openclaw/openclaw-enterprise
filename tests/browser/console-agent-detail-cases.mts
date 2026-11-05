@@ -1,3 +1,4 @@
+import { waitForLiveControls } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
@@ -47,14 +48,16 @@ import {
   secretOptionLabel,
   selectSecret,
   settlePageRequests,
-  trackSettledFetches,
   waitForCondition,
   waitForEnabled,
-  waitForIdleFetches,
   waitForInputValue,
-  waitForSettledFetches,
   statusTone,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+import {
+  trackSettledFetches,
+  waitForIdleFetches,
+  waitForSettledFetches,
+} from "./console-fetch-accounting.ts";
 
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import {
@@ -63,8 +66,7 @@ import {
   agentDeleteRequests,
   agentStopRequests,
   replyWithDifferentAgentId,
-  waitForLiveControls,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
 import {
   callerDenied,
   DEPENDENCY_UNAVAILABLE,

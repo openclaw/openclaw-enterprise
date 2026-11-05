@@ -1,16 +1,15 @@
 ---
 created: "2026-10-14"
-updated: 2026-11-04
-last_updated_session: authoring-run/62d369a1-b693-49c9-badd-c92eeda35a6b
+updated: 2026-11-05
+last_updated_session: authoring-run/cdb62c1d-61db-4f65-985f-7b44e64f10d0
 ---
 
 # Protected credential request flow
 
 ## Overview
 
-A dedicated Agent requests GitHub repository identity. The supervisor holds the
-reply until OpenClaw Control Plane (OCC) permits release. The bundled legacy
-supervisor lacks this exchange; see the [release cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
+The supervisor holds an Agent's GitHub identity reply until OpenClaw Control Plane
+(OCC) permits release. See the [legacy supervisor cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
 and [threat model](../reference/security/credential-proxy.md).
 
 ## Entry Points
@@ -30,30 +29,27 @@ and [threat model](../reference/security/credential-proxy.md).
 Suppose the revision admits `github-app-metadata` for repository ID `12345`,
 `acme/widgets`, at `https://api.github.com`.
 
-1. **Match the request.** The supervisor captures the process's bodyless
-   `GET /repos/acme/widgets` and binds the reply to that exchange. The GitHub
-   adapter checks the method, URL, headers and body against the installed route.
-2. **Resolve the token.** OCC checks the installation, binding, withdrawal
-   state and the Agent's current `credential_source:operate`. The resolver
-   selects a usable installation token that the worker already prepared.
-   OCC returns the resulting `Authorization: Bearer …` header to the supervisor.
+1. **Match the request.** The supervisor binds the bodyless `GET /repos/acme/widgets`
+   reply to its exchange. The GitHub adapter checks method, URL, headers and body
+   against the installed route.
+2. **Resolve the token.** OCC checks installation, binding, withdrawal and current
+   `credential_source:operate`, selects a usable worker-prepared token, then returns
+   its `Authorization: Bearer …` header to the supervisor.
 3. **Permit one send.** On the same stream, OCC rechecks authority and the
    token version. If the Agent lost its source grant after resolution, OCC
    refuses the send. Otherwise, the supervisor can start the request by the
    deadline in the permit. Issuing a permit does not confirm receipt by GitHub.
-4. **Release the identity.** The supervisor submits GitHub's complete reply.
-   The adapter checks for a `200` JSON response of at most 64 KiB with the
-   admitted ID and name (ASCII letter case may differ). For example, even if
-   GitHub returns `"full_name":"Acme/Widgets"` and a description, the caller
-   can receive a `200` with `Content-Type: application/json`,
-   `Cache-Control: no-store` and this body.
+4. **Release the identity.** The adapter checks GitHub's complete reply: `200` JSON,
+   at most 64 KiB, with the admitted ID and name (ASCII case may differ). The caller
+   receives `200`, `Content-Type: application/json`, `Cache-Control: no-store`
+   and only this body.
 
 ```json
 { "id": 12345, "full_name": "acme/widgets" }
 ```
 
-If GitHub returns ID `67890` under the same name, the supervisor withholds the
-response. GitHub has already received the request. With the credential-free
+For ID `67890` under the same name, the supervisor withholds the response
+although GitHub received the request. With the credential-free
 profile the same filters apply, but resolution records `no_material_required`
 and the supervisor sends no credential header.
 [GitHub metadata adapter](https://github.com/openclaw/openclaw-enterprise/blob/0418ef3a2c116b73f025281395d92477daf665d2/apps/controller/src/drivers/egress-proxy/github-metadata.ts)
@@ -133,6 +129,12 @@ resolves material nor retries business requests. The worker's active-revision br
 repeat this sequence when work is queued. Default Kubernetes has no periodic maintenance
 interval, so Harness-only restart recovery is not automatic;
 see the [supported recovery boundary](../reference/credential-sources/protected-inference.md#installation-configuration).
+
+`openshell-git-installation.ts:observeOpenShellGitInstallation` completes a model
+OBSERVE per active environment for observed Git routes, including rotations.
+`ObservedHookPreview.completedModelReceipt` caches completion per environment revision.
+Stale or incomplete model receipts keep the route pending without changing the
+original launch witness or startup acknowledgment.
 
 ### 2. Capture identity, operation and first authority decision
 
@@ -338,6 +340,8 @@ the origin and caller independently.
 None.
 
 ## Changelog
+
+- 2026-11-05 02:35: Refresh model observation after Git credential rotation. (authoring-run/cdb62c1d-61db-4f65-985f-7b44e64f10d0 - 261e4b54cbd0366ff0cba0dc6a00b7890b8e39f2)
 
 - 2026-11-04 08:59: Validate effective image policy in streamed response envelopes. (authoring-run/62d369a1-b693-49c9-badd-c92eeda35a6b - 54ad9dad2610ed99ab8ce8134fb03d3b10ed6be4)
 

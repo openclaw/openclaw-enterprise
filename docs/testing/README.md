@@ -1,5 +1,7 @@
 ---
 tags: [human_verified]
+# Backfilled from the verification tag recorded in 17ff921c5.
+last_verified: "2026-11-04"
 ---
 
 # Testing and CI
@@ -114,7 +116,7 @@ only resources created by the run.
 - [SSH](ssh.md)
 - [Agent plugins](plugins.md)
 - [Repository credentials](repository-credentials.md)
-- [Slack and ChatGPT service accounts](slack.md)
+- [Slack and service-account coverage](slack.md)
 - [Test fixtures and scenarios](fixtures-and-scenarios.md)
 - [Developer skills](developer-skills.md)
 - [Code review](autoreview.md)

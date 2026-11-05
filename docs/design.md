@@ -5,6 +5,8 @@ authors:
 created: 2026-07-08
 last_updated: 2026-10-26
 tags: [human_verified]
+# Backfilled from the verification tag recorded in f90fbc2ef.
+last_verified: "2026-10-26"
 ---
 
 # OpenClaw Enterprise architecture

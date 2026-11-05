@@ -258,6 +258,10 @@
                     "label": "Credential Proxy"
                   },
                   {
+                    "page": "design/credential-proxy-architecture",
+                    "label": "Credential Proxy Architecture"
+                  },
+                  {
                     "page": "reference/security/credential-proxy",
                     "label": "Credential Proxy Threat Model"
                   },
@@ -915,10 +919,6 @@
                         "label": "Observability Demo"
                       },
                       {
-                        "page": "testing/ci/staging-qualification",
-                        "label": "Staging Qualification"
-                      },
-                      {
                         "page": "testing/ci/k3d-quickstart",
                         "label": "Local k3d Quickstart"
                       }
@@ -1131,6 +1131,10 @@
                     "label": "OCC CLI"
                   },
                   {
+                    "page": "release/staging-qualification",
+                    "label": "Staging Qualification"
+                  },
+                  {
                     "page": "release/container-promotion",
                     "label": "Docker Hub Promotion"
                   }
@@ -1263,6 +1267,10 @@
     ]
   },
   "redirects": [
+    {
+      "from": "/testing/ci/staging-qualification/",
+      "to": "/release/staging-qualification/"
+    },
     {
       "from": "/guides/deploy/local-openshell-setup/",
       "to": "/guides/deploy/local-setup/",

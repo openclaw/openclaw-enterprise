@@ -463,6 +463,20 @@
       "when": 1787000000066,
       "tag": "0066_agent_deploy_intent",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1787000000067,
+      "tag": "0067_agent_credential_source_limit",
+      "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1787000000068,
+      "tag": "0068_agent_plugin_driver",
+      "breakpoints": true
     }
   ]
 }

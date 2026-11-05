@@ -1,5 +1,17 @@
 /// <reference lib="es2024.promise" />
 
+import {
+  openCreateSecretDialog,
+  createModelCredentialSecret,
+  enterManualModel,
+  openAdvancedSettings,
+  assertAgentNameTaken,
+  optionValues,
+  runProvisioningPolls,
+  waitForProvisioningFailure,
+  createAgentThroughForm,
+  submitCreateAgent,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -27,47 +39,40 @@ import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
+  persistedDeploymentError,
   apiRequests,
   login,
+  isRecord,
   nativeValues,
   newPage,
   nonAuthWriteRequests,
   pathRequests,
-  persistedDeploymentError,
   recordLayoutShifts,
   secretOptionLabel,
   secretPostRequests,
   selectSecret,
-  settledFetches,
   takeLayoutShifts,
-  trackSettledFetches,
   waitForCondition,
   waitForEnabled,
+} from "./console-agents-browser-helpers.ts";
+
+import {
+  settledFetches,
+  trackSettledFetches,
   waitForIdleFetches,
   waitForSettledFetches,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-fetch-accounting.ts";
 import {
-  openCreateSecretDialog,
-  createModelCredentialSecret,
-  enterManualModel,
-  openAdvancedSettings,
   configurationPostRequests,
   routeInstallationProvisioning,
   routeInstallationWithoutProvisioning,
   agentPostRequests,
-  assertAgentNameTaken,
-  optionValues,
   raceAgentName,
-  runProvisioningPolls,
-  waitForProvisioningFailure,
-  createAgentThroughForm,
-  submitCreateAgent,
-  routeProvisioningJob,
-  provisioningJob,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
+import { provisioningJob, routeProvisioningJob } from "./console-provisioning-job-fixture.ts";
 import {
   AGENT_NAME_CONFLICT,
   CONSOLE_NAMESPACE_NOT_READY,
@@ -238,7 +243,7 @@ for (const malformed of ["revision ID", "error message"] as const) {
     await routeDedicatedProvisioning(page, fixture, namespace);
     const root = `/namespaces/${namespace.id}/agents/provision`;
     const work = provisioningJob(namespace.id, `work_${randomUUID()}`);
-    const served = await routeProvisioningJob(page, work, null);
+    const served = await routeProvisioningJob(page, fixture, work, null);
     const meta = { requestId: `req_${randomUUID()}` };
     const malformedMessage = { detail: "Unreadable provisioning message" };
     await page.route(`${fixture.origin}${work.url}`, (route) => {
@@ -955,6 +960,7 @@ test("Dedicated Agent creation distinguishes stopped, superseded and failed firs
   // A versioned job already identifies its revision when Create admits it.
   await routeProvisioningJob(
     page,
+    fixture,
     {
       ...work,
       job: (status, extra) =>
@@ -1073,7 +1079,7 @@ test("Dedicated Agent creation keeps the first revision observed after admission
         error: { code: "REVISION_SUPERSEDED", message: "Deployment was superseded." },
       }),
     ];
-    const served = await routeProvisioningJob(page, work, (index) => {
+    const served = await routeProvisioningJob(page, fixture, work, (index) => {
       const observation = observations[index];
       assert.ok(observation, "unexpected additional provisioning poll");
       return observation;
@@ -1292,7 +1298,7 @@ test("Dedicated Agent creation keeps one provisioning label while the job retrie
   const { url, job, failed } = work;
   // The worker starts the job, waits to retry it, then retries it twice before it fails.
   const reads = [job("running"), job("queued"), job("running"), job("running"), failed()];
-  const served = await routeProvisioningJob(page, work, reads);
+  const served = await routeProvisioningJob(page, fixture, work, reads);
 
   await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
@@ -1352,7 +1358,7 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
       job("running", handedOff),
       failed(handedOff),
     ];
-    const served = await routeProvisioningJob(page, work, reads);
+    const served = await routeProvisioningJob(page, fixture, work, reads);
     const attempts: (ProvisioningMessage | "stalled" | "unavailable")[] =
       mode === "interrupted"
         ? [
@@ -1580,7 +1586,7 @@ test("Dedicated Agent creation names the first deployment's wait while it provis
       job("queued", waiting(null)),
       failed(handedOff),
     ];
-    const served = await routeProvisioningJob(page, work, reads);
+    const served = await routeProvisioningJob(page, fixture, work, reads);
     await page.route(
       `**/namespaces/${namespace.id}/agents/${agentId}/deployments/${revisionId}`,
       (route) => {
@@ -1904,6 +1910,7 @@ test("Agent creation offers mainline Anthropic models before credentials and sav
   const selectedConfiguration = await page.getByLabel("Configuration JSON").inputValue();
   await page.getByLabel("Agent name").fill("Anthropic Agent");
   const credentialSecret = await createModelCredentialSecret(page, "test-anthropic-api-key");
+  assert.ok(credentialSecret, "Expected the created model credential Secret");
   assert.equal(await choice.inputValue(), "claude-fable-5-1");
   assert.equal(await page.getByLabel("Configuration JSON").inputValue(), selectedConfiguration);
   assert.deepEqual(
@@ -2282,6 +2289,168 @@ test("Agent creation can return from manual model entry to the list and save the
   const model = page.getByLabel("Model ID", { exact: true });
   const configuration = page.getByLabel("Configuration JSON");
 
+  await t.test(
+    "Malformed selected-provider catalogs preserve the draft and recover through model choices",
+    async () => {
+      const errors: string[] = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      const requests = apiRequests(page, fixture.origin);
+      await openAdvancedSettings(page);
+      const record = (value: unknown): Record<string, unknown> => {
+        assert.ok(isRecord(value));
+        return value;
+      };
+      const readValues = async () => record(JSON.parse(await configuration.inputValue()));
+      const primary = (values: Record<string, unknown>) =>
+        record(record(values.agents).defaults).model;
+      const chooseList = page.getByRole("button", {
+        name: "Choose a model from the list",
+        exact: true,
+      });
+      const original = await configuration.inputValue();
+      const base = record(JSON.parse(original));
+      const models = record(base.models ?? {});
+      const providers = record(models.providers ?? {});
+      const provider = record(providers.codex ?? {});
+      const editCatalog = async (catalog: unknown, selected = false) => {
+        const values = record(JSON.parse(original));
+        const agents = record(values.agents ?? {});
+        const defaults = record(agents.defaults ?? {});
+        if (selected) {
+          defaults.model = "codex/gpt-6-astra";
+        } else {
+          delete defaults.model;
+        }
+        values.agents = { ...agents, defaults };
+        values.models = {
+          ...models,
+          providers: {
+            ...providers,
+            // An unrelated malformed list must not block a Codex selection.
+            openai: { models: {} },
+            codex: { ...provider, extra: { keep: true }, models: catalog },
+          },
+        };
+        const raw = JSON.stringify(values, null, 2) + "\n";
+        await configuration.fill(raw);
+        return raw;
+      };
+      const assertBlocked = async (raw: string) => {
+        assert.equal(await configuration.inputValue(), raw);
+        assert.equal(await configuration.getAttribute("aria-invalid"), "true");
+        assert.equal(
+          await configuration.evaluate((node) => node.ownerDocument.activeElement === node),
+          true,
+        );
+        assert.equal(
+          await page.locator("#configuration-json-error").textContent(),
+          "Set models.providers.codex.models to an array of model objects with an id, or remove the field.",
+        );
+        assert.deepEqual(errors, []);
+        assert.deepEqual(nonAuthWriteRequests(requests), []);
+      };
+
+      // A native list change must roll back before it changes the hidden manual control.
+      const raw = await editCatalog({});
+      await page.getByText("Advanced settings", { exact: true }).click();
+      await choice.selectOption("gpt-6-sol");
+      await assertBlocked(raw);
+      assert.equal(await choice.inputValue(), "");
+      assert.equal(await model.inputValue(), "");
+      assert.equal(await choice.isVisible(), true);
+
+      // JSON selection edits expose manual entry. Preserve the attempted ID for a retry.
+      for (const catalog of [null, [null], [{ name: "missing id" }], [{ id: 7 }], {}]) {
+        const invalid = await editCatalog(catalog, true);
+        await model.fill("gpt-6-sol");
+        await model.press("Tab");
+        await assertBlocked(invalid);
+        assert.equal(await model.inputValue(), "gpt-6-sol");
+      }
+      const invalid = await configuration.inputValue();
+      await chooseList.click();
+      await assertBlocked(invalid);
+      assert.equal(await model.isVisible(), true);
+
+      // Clearing a selection leaves the malformed catalog in place, so keep its warning.
+      await model.fill("");
+      await model.press("Tab");
+      const cleared = await readValues();
+      assert.equal(primary(cleared), undefined);
+      assert.deepEqual(record(record(record(cleared.models).providers).codex).models, {});
+      assert.equal(await configuration.getAttribute("aria-invalid"), "true");
+      assert.equal(await page.locator("#configuration-json-error").isVisible(), true);
+      await model.fill("gpt-6-sol");
+      await model.press("Tab");
+      await assertBlocked(JSON.stringify(cleared, null, 2));
+
+      // Provider replacement repairs the transport without an intervening raw JSON edit.
+      const providerChoice = page.getByLabel("Provider", { exact: true });
+      await providerChoice.selectOption("anthropic");
+      assert.equal(await providerChoice.inputValue(), "anthropic");
+      assert.equal(await page.getByLabel("Harness", { exact: true }).inputValue(), "openclaw");
+      assert.equal(await choice.inputValue(), "");
+      assert.ok((await optionValues(choice)).some(({ value }) => value === "claude-opus-5-5"));
+      const replaced = await readValues();
+      assert.deepEqual(record(replaced.models).providers, {});
+      assert.equal(await configuration.getAttribute("aria-invalid"), null);
+      assert.equal(await page.locator("#configuration-json-error").isVisible(), false);
+      assert.doesNotMatch(
+        (await configuration.getAttribute("aria-describedby")) ?? "",
+        /\bconfiguration-json-error\b/,
+      );
+      await choice.selectOption("claude-opus-5-5");
+      const anthropic = await readValues();
+      assert.equal(primary(anthropic), "anthropic/claude-opus-5-5");
+      assert.deepEqual(record(record(record(anthropic.models).providers).anthropic).models, [
+        { id: "claude-opus-5-5", name: "claude-opus-5-5" },
+      ]);
+      assert.deepEqual(errors, []);
+      assert.deepEqual(nonAuthWriteRequests(requests), []);
+      await providerChoice.selectOption("openai");
+
+      // Correcting the list clears feedback and preserves extra catalog/provider fields.
+      const retained = { id: "another-model", contextWindow: 8192, extra: { keep: true } };
+      await editCatalog([{ id: "gpt-6-astra", cost: { input: 1 } }, retained], true);
+      assert.equal(await configuration.getAttribute("aria-invalid"), null);
+      await model.fill("  gpt-6-sol  ");
+      await model.press("Tab");
+      const corrected = await readValues();
+      assert.equal(primary(corrected), "codex/gpt-6-sol");
+      const correctedProviders = record(record(corrected.models).providers);
+      const correctedProvider = record(correctedProviders.codex);
+      assert.deepEqual(correctedProvider.extra, { keep: true });
+      assert.deepEqual(correctedProviders.openai, { models: {} });
+      assert.deepEqual(correctedProvider.models, [
+        { id: "gpt-6-sol", name: "gpt-6-sol", cost: { input: 1 } },
+        retained,
+      ]);
+      assert.equal(await page.locator("#configuration-json-error").isVisible(), false);
+      await chooseList.click();
+      await choice.selectOption("gpt-6-luna");
+      assert.equal(primary(await readValues()), "codex/gpt-6-luna");
+
+      // Removing the field is also a supported correction; explicit null above is not.
+      await editCatalog(undefined, true);
+      await model.fill("gpt-6-sol");
+      await model.press("Tab");
+      const withoutCatalog = await readValues();
+      assert.equal(primary(withoutCatalog), "codex/gpt-6-sol");
+      assert.deepEqual(record(record(record(withoutCatalog.models).providers).codex).models, [
+        { id: "gpt-6-sol", name: "gpt-6-sol" },
+      ]);
+      assert.equal(await configuration.getAttribute("aria-invalid"), null);
+      assert.deepEqual(errors, []);
+      assert.deepEqual(nonAuthWriteRequests(requests), []);
+
+      // Return this shared browser to the original round-trip scenario.
+      await configuration.fill(original);
+      if (await model.isVisible()) {
+        await chooseList.click();
+      }
+    },
+  );
+
   // JSON edits can change the provider; returning to the list must show its models.
   await choice.selectOption("gpt-6-astra");
   const values = JSON.parse(await configuration.inputValue());
@@ -2307,6 +2476,7 @@ test("Agent creation can return from manual model entry to the list and save the
   assert.equal(await choice.inputValue(), "");
   assert.equal(JSON.parse(await configuration.inputValue()).agents?.defaults?.model, undefined);
   const secret = await createModelCredentialSecret(page, "round-trip-model-key");
+  assert.ok(secret, "Expected the created model credential Secret");
   await choice.selectOption("gpt-6-astra");
   await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
   assert.equal(await choice.isVisible(), false);
@@ -2418,6 +2588,7 @@ test("Agent creation accepts a manual model outside the static list and saves th
     "manual-model-key",
     "gpt-manual-account-model",
   );
+  assert.ok(selectedSecret, "Expected the created model credential Secret");
   assert.deepEqual(
     secretPostRequests(requests, namespace.id).map((request) => request.body),
     [{ name: "Manual model Agent model credential", value: "manual-model-key" }],
@@ -2747,6 +2918,15 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const pluginDriver = new CodexPluginDriver();
+  // Keep optional catalog prefetch local while exercising the real Agent creation conflict.
+  t.mock.method(
+    pluginDriver,
+    "discoverCatalog",
+    async (): ReturnType<typeof pluginDriver.discoverCatalog> => ({
+      plugins: [],
+      nextCursor: null,
+    }),
+  );
   fixture.controller.registerDriver(pluginDriver);
   fixture.controller.selectDriver("plugin", pluginDriver.id);
   const namespace = await fixture.createNamespace("Partial save retry", { ready: true });
@@ -2825,6 +3005,7 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   requests.length = 0;
   await page.getByLabel("Agent name").fill("Retry Agent");
   const selectedSecret = await createModelCredentialSecret(page, "at-browser-pat");
+  assert.ok(selectedSecret, "Expected the created model credential Secret");
   assert.equal(
     await page.getByLabel("Service account token Secret", { exact: true }).inputValue(),
     secretOptionLabel(selectedSecret),
@@ -3047,6 +3228,7 @@ for (const swapped of ["Agent", "service principal"]) {
     await page.getByRole("button", { name: "Start with default Preset" }).click();
     await page.getByLabel("Agent name").fill("New Agent");
     const secret = await enterManualModel(page, "test-create-response-key");
+    assert.ok(secret, "Expected the created model credential Secret");
     await page.getByRole("button", { name: "Create Agent" }).click();
     const warning = page.getByRole("alert").filter({
       hasText: swapped === "Agent" ? "Outcome unknown" : "service principal could not be confirmed",

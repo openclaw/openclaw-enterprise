@@ -2478,10 +2478,11 @@ input.control-unavailable:not([type="checkbox"], [type="radio"]) {
 @media (max-width: 760px) {
   .agent-version-control {
     width: 100%;
+    flex-wrap: wrap;
   }
   .agent-version-control select {
     min-width: 0;
-    flex: 1;
+    flex: 1 1 min(12rem, 100%);
   }
   .agent-deployment-attention {
     align-items: flex-start;

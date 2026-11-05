@@ -2823,6 +2823,26 @@ export function createAgentDetailScenarios({
         ],
         description: "Deployment stays disabled when revision history cannot be read.",
       },
+      revisionRejected: {
+        group: "Pages/Agent detail",
+        name: "Revision history rejects with null",
+        path: `${draft}&tab=configuration`,
+        rules: [
+          {
+            method: "GET",
+            path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/revisions",
+            rejectWithNull: true,
+          },
+        ],
+        description:
+          "The revision-history fetch rejects with raw JavaScript null and no HTTP status. The draft Configuration GET uses its normal fixture response. The separate Revision history unavailable preview retains HTTP 403.",
+        steps: [
+          "At desktop and 390-pixel widths, confirm Version history unavailable appears without No readable versions or Load older versions.",
+          "Read the draft Configuration, open Edit Configuration, then Cancel. The history warning remains local to version history.",
+          "Confirm Deploy new version stays unavailable and explains that version history is required before deploying.",
+        ],
+        gap: "Simulated JavaScript rejection through the production Console; this does not prove a normal browser network failure, backend persistence, or deployment.",
+      },
       deployDenied: {
         group: "Pages/Agent detail",
         name: "Deployment denied",

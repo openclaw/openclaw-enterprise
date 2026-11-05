@@ -255,6 +255,9 @@ export async function composePostgresDevelopment(
         ...installationControllerOptions(drivers?.installation),
         state,
         ...(drivers?.tokenService && { preparedTokens: drivers.tokenService }),
+        ...(drivers?.pluginSourceReader === undefined
+          ? {}
+          : { pluginSourceReader: drivers.pluginSourceReader }),
         recordOperations: true,
         defaultPresets: drivers?.defaultPresets ?? [],
         bundledPresetVersions: drivers?.bundledPresetVersions ?? [],
@@ -292,10 +295,7 @@ export async function composePostgresDevelopment(
       controller.registerDriver(drivers.secretDriver);
       controller.selectDriver("secret", drivers.secretDriver.id);
     }
-    if (drivers?.pluginDriver !== undefined) {
-      controller.registerDriver(drivers.pluginDriver);
-      controller.selectDriver("plugin", drivers.pluginDriver.id);
-    }
+    controller.installPluginDrivers(drivers?.pluginDrivers ?? []);
     if (drivers?.repositoryPolicy !== undefined) {
       const driver = drivers.repositoryPolicy;
       controller.registerDriver(driver);

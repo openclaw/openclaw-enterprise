@@ -28,7 +28,7 @@ import {
 import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.mjs";
 import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 import { ensurePostgresAgentBootstrap } from "../helpers/postgres-agent-app.mjs";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
@@ -231,6 +231,127 @@ test(
     });
     assert.equal(secret.statusCode, 201, secret.body);
     const secretRef = secret.json().data.ref;
+
+    await t.test(
+      "selected repository approval persists exact permissions and fences withdrawal",
+      async () => {
+        const selectedRegistry = {
+          ...registry,
+          repositories: registry.repositories.map((repository) => ({
+            ...repository,
+            namespaces: [
+              {
+                namespaceId,
+                profiles: ["github-repository"],
+                permissions: { metadata: "read", contents: "write", pull_requests: "write" },
+                allowStandingApproval: true,
+              },
+            ],
+          })),
+        };
+        try {
+          await selectRepo(selectedRegistry, "registry", { bundled: true });
+          const created = await request("POST", `/namespaces/${namespaceId}/agents`, {
+            name: "Selected repository approval",
+            configurationId,
+            harnessAuth: { method: "api_key", source: secretRef },
+            repositoryBindings: [{ repositoryRef: "project", profile: "github-repository" }],
+          });
+          assert.equal(created.statusCode, 201, created.body);
+          const agent = created.json().data;
+          await grantAgentSecretOperate(pool, agent, secretRef.id);
+          const path = `/namespaces/${namespaceId}/agents/${agent.id}`;
+          const preview = await request("GET", path + "/repository-approval-scopes");
+          assert.equal(preview.statusCode, 200, preview.body);
+          assert.equal(preview.json().data.length, 1);
+          const [scope] = preview.json().data;
+          assert.equal(scope.scope.repositoryId, "789");
+          assert.equal(scope.scope.repository, "example/project");
+          assert.deepEqual(
+            scope.scope.apiPermissions,
+            selectedRegistry.repositories[0]!.namespaces[0]!.permissions,
+          );
+          const approvalId = randomUUID();
+          const save = {
+            configurationId,
+            repositoryStandingApproval: {
+              repositoryRef: "project",
+              approvalId,
+              approved: true,
+              duration: "until-removed",
+              expectedScopeFingerprint: scope.scopeFingerprint,
+            },
+          };
+          // A permission change after preview must not acquire the newly widened authority.
+          const changed = structuredClone(selectedRegistry);
+          changed.repositories[0]!.namespaces[0]!.permissions.contents = "read";
+          await selectRepo(changed, "registry", { bundled: true });
+          const stale = await request("PATCH", path, save);
+          assert.equal(stale.statusCode, 409, stale.body);
+          assert.equal(stale.json().error.message, STANDING_APPROVAL_SCOPE_CHANGED);
+          await selectRepo(selectedRegistry, "registry", { bundled: true });
+          const saved = await request("PATCH", path, save);
+          assert.equal(saved.statusCode, 200, saved.body);
+          const [stored] = await state.read((v) =>
+            v.repositorySessions.listStandingApprovals(namespaceId, agent.id),
+          );
+          assert.equal(stored!.id, approvalId);
+          assert.deepEqual(stored!.scope, scope.scope);
+          const deployed = await request("POST", path + "/deploy");
+          assert.equal(deployed.statusCode, 202, deployed.body);
+          const revision = await state.read((v) =>
+            v.revisions.findRevision(namespaceId, agent.id, deployed.json().data.id),
+          );
+          assert.equal(revision!.repositoryCredentials!.standingApprovalId, approvalId);
+          assert.equal(
+            revision!.repositoryCredentials!.standingApprovalScopeFingerprint,
+            scope.scopeFingerprint,
+          );
+          assert.equal(revision!.repositoryCredentials!.bindings[0]!.profile, "github-repository");
+          // Revoking the registry opt-in leaves the old approval recorded but cannot admit
+          // another deployment using it, even though the exact finite grant is unchanged.
+          const { allowStandingApprovals: _standing, ...finite } = selectedRegistry;
+          await selectRepo(finite, "registry", { bundled: true });
+          const denied = await request("POST", path + "/deploy");
+          assert.equal(denied.statusCode, 409, denied.body);
+          assert.equal(denied.json().error.message, STANDING_APPROVAL_POLICY_CHANGED);
+          await selectRepo(selectedRegistry, "registry", { bundled: true });
+          const removed = await request(
+            "POST",
+            path + `/repository-approvals/${approvalId}/remove`,
+            {
+              expectedGeneration: stored!.generation,
+            },
+          );
+          assert.equal(removed.statusCode, 204, removed.body);
+          const [after] = await state.read((v) =>
+            v.repositorySessions.listStandingApprovals(namespaceId, agent.id),
+          );
+          assert.ok(after!.revokedAt);
+          assert.ok(after!.generation > stored!.generation);
+
+          const multi = await request("POST", `/namespaces/${namespaceId}/agents`, {
+            name: "Finite selected repositories",
+            configurationId,
+            repositoryBindings: selectedRegistry.repositories.map(({ repositoryRef }) => ({
+              repositoryRef,
+              profile: "github-repository",
+            })),
+          });
+          assert.equal(multi.statusCode, 201, multi.body);
+          const multiPath = `/namespaces/${namespaceId}/agents/${multi.json().data.id}`;
+          assert.deepEqual(
+            (await request("GET", multiPath + "/repository-approval-scopes")).json().data,
+            [],
+          );
+          const unsupported = await request("PATCH", multiPath, save);
+          assert.equal(unsupported.statusCode, 409, unsupported.body);
+          assert.equal(unsupported.json().error.message, STANDING_APPROVAL_ONE_BINDING);
+        } finally {
+          await selectRepo(registry);
+        }
+      },
+    );
 
     await t.test(
       "finite repository picker uses the bound catalog without standing permission",
@@ -643,6 +764,124 @@ test(
         expectedScopeFingerprint: reviewed.scopeFingerprint,
       },
     };
+    await t.test(
+      "bundled standing preview and approval save use the exact bound owner",
+      async (t) => {
+        const created = await request("POST", `/namespaces/${namespaceId}/agents`, {
+          name: "Bound standing approval",
+          configurationId,
+          repositoryBindings: agent.repositoryBindings,
+        });
+        assert.equal(created.statusCode, 201, created.body);
+        const boundAgent = created.json().data;
+        const boundPath = `/namespaces/${namespaceId}/agents/${boundAgent.id}`;
+        const expected = {
+          ...reviewed,
+          scopeFingerprint: repositoryApprovalFingerprint({
+            ...fingerprintInput,
+            agentId: boundAgent.id,
+          }),
+        };
+        // Approval-only PATCH must not pick up a resolution from ordinary settings save.
+        const approval = {
+          configurationId,
+          repositoryStandingApproval: {
+            ...grant.repositoryStandingApproval,
+            approvalId: randomUUID(),
+            expectedScopeFingerprint: expected.scopeFingerprint,
+          },
+        };
+        const widened = structuredClone(registry);
+        widened.repositories[0]!.namespaces[0]!.pushRefAllowlist = ["refs/heads/*"];
+        try {
+          for (const control of ["bound-veto", "same-id-scope"] as const) {
+            const { repositoryAdmission } = await selectRepo(
+              control === "bound-veto" ? registry : widened,
+              control === "bound-veto" ? false : "registry",
+              {
+                bundled: true,
+                ...(control === "same-id-scope"
+                  ? {
+                      // Preserve every real policy decision behind a different selected object.
+                      adaptPolicy: (policy: GitHubRepositoryPolicy) =>
+                        new Proxy(policy, {
+                          get(target, property) {
+                            const value = Reflect.get(target, property, target);
+                            return typeof value === "function" ? value.bind(target) : value;
+                          },
+                        }),
+                    }
+                  : {}),
+              },
+            );
+            if (control === "same-id-scope") {
+              assert.notEqual(selectedPolicy, repositoryAdmission.policy);
+              assert.equal(selectedPolicy.id, repositoryAdmission.policy.id);
+            }
+            const adapter = t.mock.method(selectedPolicy, "resolve");
+            try {
+              const preview = await request("GET", boundPath + "/repository-approval-scopes");
+              assert.equal(preview.statusCode, 200, preview.body);
+              if (control === "bound-veto") {
+                assert.deepEqual(preview.json().data, []);
+              } else {
+                assert.notEqual(preview.json().data[0].scopeFingerprint, expected.scopeFingerprint);
+              }
+              const denied = await request("PATCH", boundPath, approval);
+              assert.equal(denied.statusCode, 409, denied.body);
+              assert.equal(
+                denied.json().error.message,
+                control === "bound-veto"
+                  ? STANDING_APPROVAL_NOT_PERMITTED
+                  : STANDING_APPROVAL_SCOPE_CHANGED,
+              );
+              assert.equal(adapter.mock.callCount(), control === "same-id-scope" ? 2 : 0);
+              assert.deepEqual(
+                await state.read((v) =>
+                  v.repositorySessions.listStandingApprovals(namespaceId, boundAgent.id),
+                ),
+                [],
+              );
+            } finally {
+              adapter.mock.restore();
+            }
+          }
+          await selectRepo(registry, "registry", { bundled: true });
+          const policy = selectedPolicy;
+          assert.ok(policy instanceof GitHubRepositoryPolicy);
+          const bound = t.mock.method(policy, "resolveBindings");
+          const adapter = t.mock.method(policy, "resolve");
+          try {
+            const preview = await request("GET", boundPath + "/repository-approval-scopes");
+            assert.equal(preview.statusCode, 200, preview.body);
+            assert.deepEqual(preview.json().data, [expected]);
+            assert.equal(bound.mock.callCount(), 1);
+            assert.equal(adapter.mock.callCount(), 0);
+            assert.deepEqual(bound.mock.calls[0]?.arguments, [
+              { namespaceId, bindings: agent.repositoryBindings },
+            ]);
+            const saved = await request("PATCH", boundPath, approval);
+            assert.equal(saved.statusCode, 200, saved.body);
+            assert.equal(bound.mock.callCount(), 2, "approval-only PATCH resolves exactly once");
+            assert.equal(adapter.mock.callCount(), 0);
+            assert.deepEqual(bound.mock.calls[1]?.arguments, bound.mock.calls[0]?.arguments);
+            const stored = await state.read((v) =>
+              v.repositorySessions.listStandingApprovals(namespaceId, boundAgent.id),
+            );
+            assert.equal(stored.length, 1);
+            assert.equal(stored[0]!.id, approval.repositoryStandingApproval.approvalId);
+            assert.equal(stored[0]!.scopeFingerprint, expected.scopeFingerprint);
+            assert.deepEqual(stored[0]!.scope, expected.scope);
+            assert.deepEqual(stored[0]!.binding, expected.binding);
+          } finally {
+            bound.mock.restore();
+            adapter.mock.restore();
+          }
+        } finally {
+          await selectRepo(registry);
+        }
+      },
+    );
     const unreviewed = {
       ...grant,
       repositoryStandingApproval: { ...grant.repositoryStandingApproval },
@@ -1049,6 +1288,7 @@ test(
     assert.doesNotMatch(staleDeploy.body, new RegExp(approvalId));
     await selectRepo(registry);
     const savedConfig = configuration.stored({ namespaceId, id: configurationId });
+    assert.ok(savedConfig, "Expected the stored Configuration");
     await configuration.delete({ namespaceId, id: configurationId });
     secrets.setResolveOverride(() => {
       throw new Error("Synthetic Secret unavailable");

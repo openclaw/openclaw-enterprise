@@ -107,8 +107,9 @@ Write `tags` as a list of strings. The `nolimit` tag exempts its page from both
 word-count thresholds while retaining count reporting; apply it only with the
 human approval required by `AGENTS.md`. Add `human_verified` to the tags only
 when a human has verified the document, for example `tags: [human_verified]`.
-Record verification as a tag, not a separate frontmatter field. Preserve
-existing tags and metadata.
+Keep verification status in the tag and record the human review date in
+`last_verified` (`YYYY-MM-DD`). Update that date only after another human review.
+Preserve existing tags and metadata.
 Change generated frontmatter through its generator. Snippet tags do not exempt
 pages that include the snippet.
 
