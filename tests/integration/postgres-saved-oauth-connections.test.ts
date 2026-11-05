@@ -1524,14 +1524,14 @@ test(
 
     // The fixture Compute does not place Kubernetes plugins. Keep its placement Driver
     // and delegate every slot and source decision to the bundled Google credential policy.
-    controller.registerDriver({
+    const googleSlotDriver = {
       ...plugin,
       id: "google-slot-fixture",
       credentials: new OCCPluginDriver().credentials,
-    });
+    };
     controller.installPluginDrivers([
-      codexCatalog,
-      controller.selectDriver("plugin", "google-slot-fixture"),
+      new CodexPluginDriver({ catalogSource: "openai-curated" }, { id: "codex-google-accounts" }),
+      googleSlotDriver,
     ]);
     const google = await connectFixtureGoogleAccount(t, owner, namespaceId, [
       gmailRead,
@@ -1695,7 +1695,10 @@ test(
       gateway,
       refresh,
       preparedTokens,
-      pluginDrivers: [codexCatalog, new OCCPluginDriver()],
+      pluginDrivers: [
+        new CodexPluginDriver({ catalogSource: "openai-curated" }, { id: "codex-worker-accounts" }),
+        new OCCPluginDriver({}, { id: "occ-worker-accounts" }),
+      ],
       namespaceId,
       async createAgent() {
         const workerAgent = await owner("POST", agents, {
