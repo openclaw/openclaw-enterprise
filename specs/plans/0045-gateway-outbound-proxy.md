@@ -1,9 +1,14 @@
+---
+rfc: ../rfcs/0019-gateway-outbound-proxy.md
+---
+
 # Implementation plan: one Gateway outbound proxy
 
 - **ID:** TASK-0045
 - **Delivery status:** In progress
 - **Owner:** OCE contributors
 - **Authority:** [Platform design](../../docs/design.md) and existing Kubernetes Compute/networking owners.
+- **Proposal:** [RFC-0019](../rfcs/0019-gateway-outbound-proxy.md), not yet accepted.
 - **Source baseline:** `80725162a946f80652b939a32a57ee4e922eeb5c`
 
 ## Outcome and scope
@@ -34,23 +39,23 @@ The bridge must be removed when OC provides the owning internal-transport hook.
 - [x] Render one endpoint for directory clients and embedded/dedicated Gateways.
 - [x] Preserve internal Codex transport through a lifecycle-owned exact bypass.
 - [x] Update [operator setup](../../docs/guides/integrations/gateway-proxy.md),
-  [networking reference](../../docs/reference/drivers/kubernetes-compute/gateway-proxy.md),
-  and [execution flow](../../docs/flows/harness-execution-topology.md).
+      [networking reference](../../docs/reference/drivers/kubernetes-compute/gateway-proxy.md),
+      and [execution flow](../../docs/flows/harness-execution-topology.md).
 - [ ] Exercise supported Agent deployment, permitted/denied requests, proxy failure,
-  and revision replacement through real dependencies.
+      and revision replacement through real dependencies.
 - [ ] Qualify embedded and dedicated model turns with approved images/credentials.
 - [ ] Complete final-head native image checks before merge; publication from main
-  remains a separately authorized operation.
+      remains a separately authorized operation.
 
 ## Verification
 
-| Required outcome | Check | Evidence |
-| --- | --- | --- |
-| Host-policy denial, real tunnel lifecycle | CONNECT tests and packaged runtime transport proof | Passed locally; see delivery record |
-| Channel-free selected endpoint and conflict handling | Compute and profile/Helm integration tests | Passed locally; see delivery record |
-| API/worker Agent deployment with enforced policies | Existing Kubernetes API/worker fixture and real-runtime cases | Pending |
-| Embedded/dedicated real model turns and failure recovery | Explicitly selected disposable cluster, immutable images, authorized model credentials | Pending |
-| Native image startup, AMD64 and ARM64 | Final-head container-check workflow | Pending |
+| Required outcome                                         | Check                                                                                  | Evidence                            |
+| -------------------------------------------------------- | -------------------------------------------------------------------------------------- | ----------------------------------- |
+| Host-policy denial, real tunnel lifecycle                | CONNECT tests and packaged runtime transport proof                                     | Passed locally; see delivery record |
+| Channel-free selected endpoint and conflict handling     | Compute and profile/Helm integration tests                                             | Passed locally; see delivery record |
+| API/worker Agent deployment with enforced policies       | Existing Kubernetes API/worker fixture and real-runtime cases                          | Pending                             |
+| Embedded/dedicated real model turns and failure recovery | Explicitly selected disposable cluster, immutable images, authorized model credentials | Pending                             |
+| Native image startup, AMD64 and ARM64                    | Final-head container-check workflow                                                    | Pending                             |
 
 ## Delivery record
 
