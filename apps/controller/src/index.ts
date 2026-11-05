@@ -141,7 +141,7 @@ import {
   limitNativeAdminReturn,
 } from "./http/native-admin.ts";
 import { presetHandlers } from "./http/presets.ts";
-import { connectionTemplateHandlers } from "./http/connection-templates.ts";
+import { connectionTemplateRoutes } from "./composition/connection-template-routes.ts";
 import {
   CONNECTION_CALLBACK_PATH,
   connectionCallbackOperation,
@@ -2271,7 +2271,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       return;
     }
 
-    const templateHandler = connectionTemplateHandlers[operation.operationId];
+    const templateHandler = connectionTemplateRoutes[operation.operationId];
     if (templateHandler) {
       const admitted = admissions.get(request);
       if (!admitted) {

@@ -2,7 +2,7 @@
 
 The administrator selects manual configuration or supplies an MCP server URL. OCC checks Installation administration before discovery. For MCP, the controller reads protected resource metadata over TLS, resolves each metadata host to public addresses and pins those addresses for the request. It contacts only the selected advertised authorization server. OCC stores the metadata it observed with the approved version.
 
-The Console reads the Google starter destinations from the reviewed Google Workspace release and displays them as editable rows. OCC normalizes the saved destinations and records the complete list on the immutable template version. MCP discovery supplies one transport destination and its OAuth resource.
+The Console reads the Google starter destinations from the reviewed Google Workspace release and displays them as editable rows. OCC normalizes the destinations and records them on a new template version. The template ID stays the same across versions. It identifies the current manual delivery policy for accounts connected with that issuer. MCP discovery supplies one transport destination and its OAuth resource.
 
 OCC checks scope and the client's allowed destinations before it references an OAuth client. PostgreSQL commits the template version and its audit together. A template can exist without a client. The Agent plugin release determines the local credential placeholder when the account is used.
 
@@ -33,7 +33,7 @@ credential source ID, account owner, approved recipient, requested scopes, and
 granted scopes. When the person requests provider defaults, the Driver omits the scope parameter. It records the scopes the provider reports, or an empty list if the provider omits them. Renewal can narrow the recorded grant. It cannot add scopes to an unreported grant. A shared callback verifies the issuer when multiple issuers are
 configured. A provider timeout consumes the attempt.
 
-OCC saves all destinations from the version the user approved. A later template edit applies to new connections. Manual HTTP destinations constrain credential delivery. For MCP, the Driver also sends the discovered resource identifier to the provider.
+OCC saves the consent receipt under its original immutable template version. When listing an account, `PlatformController.effectiveConnectionDestinations` reads the current version of that same template. For manual accounts, it returns the current destinations when the issuer and manual mode still match. For MCP accounts, it returns the original destinations only when issuer, discovery mode, exact server URL and protected resource still match. A missing or incompatible template returns an empty list. This projection does not rewrite the saved registration, grant, token endpoint or consent audit. For MCP, the Driver sends the original resource identifier to the provider.
 
 The worker renews the saved account through the Token Service. For each refresh, it checks the saved grant against the approved registration
 and resolves the current client secret from its Driver. A conditional write

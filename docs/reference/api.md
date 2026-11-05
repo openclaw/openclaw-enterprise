@@ -2547,7 +2547,7 @@ List completed connections the caller can read in this Namespace
 | `data[].connectionTemplateVersion` | `integer` | Yes | minimum: 1 |
 | `data[].createdAt` | `string` | Yes | — |
 | `data[].credentialSourceId` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data[].destinations` | `array<object>` | Yes | min items: 1 |
+| `data[].destinations` | `array<object>` | Yes | Effective credential delivery destinations; empty when the current template is unavailable or incompatible. |
 | `data[].destinations[].host` | `string` | Yes | — |
 | `data[].destinations[].path` | `string` | Yes | — |
 | `data[].destinations[].port` | `integer` | Yes | — |
