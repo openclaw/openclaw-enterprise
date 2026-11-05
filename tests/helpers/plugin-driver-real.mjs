@@ -271,7 +271,7 @@ function installationConfiguration({
   configuration.drivers.secret.configuration.authentication = authentication;
   configuration.drivers.configuration.id = "configuration-kubernetes-plugin-real";
   configuration.drivers.compute.id = "compute-kubernetes-plugin-real";
-  configuration.drivers.plugin = { id: pluginDriverId, configuration: pluginDriverConfiguration };
+  configuration.drivers.plugin = [{ id: pluginDriverId, configuration: pluginDriverConfiguration }];
   if (workspaceGateway !== undefined) {
     configuration.drivers.compute.configuration.gatewayRouting = workspaceGateway.routing;
     configuration.drivers.compute.configuration.network.gatewayTrustedProxyCidrs =
@@ -2535,8 +2535,8 @@ export async function createPluginDriverRealFixture(
       environment: { ...driverEnvironment, OCC_CONFIG_PATH: workerConfigurationPath },
     }),
   ]);
-  assert.equal(apiDrivers.pluginDriver?.id, pluginDriverId);
-  assert.equal(workerDrivers.pluginDriver?.id, pluginDriverId);
+  assert.equal(apiDrivers.pluginDrivers[0]?.id, pluginDriverId);
+  assert.equal(workerDrivers.pluginDrivers[0]?.id, pluginDriverId);
 
   const serviceAccountDriverFactory =
     codexServiceAccountImport === undefined

@@ -1,17 +1,16 @@
 ---
 created: "2026-09-18"
 updated: "2026-11-05"
-last_updated_session: authoring-run/f65a98dd-79e1-45e2-a740-b7e73c1d9dd3
+last_updated_session: authoring-run/507ebdda-c10f-4840-acd7-1667d5919fab
 ---
 
 # Agent repository credential flow
 
 ## Overview
 
-Deployment freezes repository grants.
-Compute-owned dedicated Codex uses prepared native sessions without a Sandbox Driver. On the
-[OpenShell path](../reference/repository-credentials/protected-openshell-git.md), the sandbox gets a placeholder.
-The worker delivers the credential to the provider and checks signed requests against the live grant.
+Compute-owned dedicated Codex uses prepared native sessions without a Sandbox Driver;
+[OpenShell sandboxes](../reference/repository-credentials/protected-openshell-git.md) receive placeholders.
+Workers deliver credentials to providers, checking signed requests against live grants.
 See [enrollment and mandatory hooks](../guides/repository-credentials/openshell-enrollment.md),
 [service forwarding and retirement](repository-credentials.md) and [runtime qualification](../testing/repository-credentials.md).
 
@@ -127,10 +126,13 @@ can supply several repositories. Omitted updates preserve selections; `[]` clear
 ### 2. Freeze a deployable version
 
 `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
-selects the Backend's GitHub policy. Its Backend ID must match the registry.
+selects the Backend's GitHub policy with a registry-matched Backend ID.
 `packages/occ/src/index.ts:OpenClawController.forInstallation` binds that owner
-and rejects missing or mismatched ownership for configured repository access.
+and rejects missing or mismatched repository ownership.
 Startup rejects `drivers.repo` in every mode before worker or attempt creation.
+
+OpenShell parsing and chart constraints belong to
+`apps/controller/src/drivers/egress-proxy/openshell-configuration.ts`.
 
 Bundled deploy calls `resolveBindings` in `OpenClawController.admitRepositoryCredentials`;
 a deselected policy fails. Programmatic controllers call `RepositoryPolicyDriver.resolve`.
@@ -289,30 +291,29 @@ fresh installation tokens under the same grant until the version deadline.
 
 ### 6. Maintain, recover and retire ownership
 
-The [worker](../../apps/controller/src/worker.mjs) passes only the selected `ProtectedRepositoryGitAuthority`
-to the [sender binder](../../apps/controller/src/composition/repository-credentials/transport.ts).
-The worker retains maintenance and shutdown. Missing authority or mismatched Drivers stop
-binding before route-store or sender calls.
-Bundled OpenShell connects its route store before binding; a bare Sandbox runs without Git.
+The [worker](../../apps/controller/src/worker.mjs) gives the selected `ProtectedRepositoryGitAuthority`
+to the [sender binder](../../apps/controller/src/composition/repository-credentials/transport.ts)
+and owns maintenance and shutdown. Missing authority or mismatched Drivers stop binding
+before route-store or sender calls. OpenShell connects the store first; bare Sandboxes have no Git.
 
-If an external binding provides `reconcile`, the worker calls it serially with a 25-second abort
-signal and a one-second delay between calls.
-Close aborts and joins. Independent readback settles the original OCC delivery without
-reinstalling or restoring withdrawn access.
+If supplied, external `reconcile` runs serially with a 25-second abort signal and one second
+between calls. Close aborts and joins. Independent readback settles the original delivery
+without reinstalling or restoring withdrawn access.
 
-The worker commits activation and next maintenance together, preserving the actor. Maintenance uses
-30 seconds, the native sender interval or a shorter Compute interval. After restart, the worker invalidates missing known sessions without reminting. Users can deploy during cleanup.
+Activation and maintenance commit together with the same actor. Maintenance uses 30 seconds,
+the native sender interval or a shorter Compute interval. Restart invalidates missing known
+sessions without reminting. Users can deploy during cleanup.
 
-[Preview, save and deploy](../../packages/occ/src/index.ts) require explicit repository policy
-permission and current scope for standing approval.
-The
-[worker](../../apps/controller/src/worker/repository-credentials.ts) rechecks
-[eligibility](../../packages/occ/src/repository-approval.ts) under Namespace then Agent locks.
-Withdrawal or a changed scope fingerprint raises `REPOSITORY_STANDING_POLICY_CHANGED` before successor release.
+[Preview, save and deploy](../../packages/occ/src/index.ts) require explicit standing permission
+and current scope. The [worker](../../apps/controller/src/worker/repository-credentials.ts) uses
+the selected Installation policy, or the registered Repo Driver when unbound. Contradictory
+policy selection prevents startup. The worker rechecks [eligibility](../../packages/occ/src/repository-approval.ts)
+under Namespace then Agent locks. Withdrawal or a changed scope fingerprint raises
+`REPOSITORY_STANDING_POLICY_CHANGED` before successor release.
 
-Prepared native Git issues a version's first token only after activation publishes it. The
-deployment's Work then runs `apps/controller/src/worker.ts:ControllerWorker.assertRepositoryGitMaterial`
-(`PreparedRepositoryGitStore.revisionMaterial`): it waits at `REPOSITORY_GIT_MATERIAL_PENDING`
+Prepared native Git issues the first token after activation publishes the version. Deployment runs
+`apps/controller/src/worker.ts:ControllerWorker.assertRepositoryGitMaterial`
+(`PreparedRepositoryGitStore.revisionMaterial`) and waits at `REPOSITORY_GIT_MATERIAL_PENDING`
 until each open session has a committed token and fails with `REPOSITORY_GIT_TOKEN_QUARANTINED`
 when an attempt is quarantined. For an existing Agent (`activatedEarlierRevision`),
 `continueRevisionWithoutGit` fails the deployment with `continuingRevision` and queues maintenance
@@ -322,10 +323,9 @@ maintenance accepts only these two failure codes. Otherwise the
 version is retired like any failed repository version
 ([reference](../reference/repository-credentials/prepared-native-git.md#deployment-and-the-first-token)).
 
-If standing Git evidence is missing, the worker keeps Git closed and observes the existing
-Harness without preparing or activating it. It checks again within five seconds, rechecking
-model authority, withdrawal, stop and replacement each pass. Harness readiness is not Git
-authority. See the [standing worker integration test](../../tests/integration/postgres-standing-session-worker.test.ts).
+Without standing Git evidence, the worker keeps Git closed and observes the Harness without
+preparing or activating it. Each pass rechecks model authority, withdrawal, stop and replacement.
+The worker checks again within five seconds. Harness readiness cannot authorize Git. See the [standing Worker test](../../tests/integration/postgres-standing-session-worker.test.ts).
 
 `apps/controller/src/worker.ts:ControllerWorker.processRepositoryCleanup` consumes
 owner-bound Work without admission or material delivery. Terminal-runtime Work fences
@@ -393,6 +393,10 @@ denied before reaching the provider, and chat continues.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 11:46: Document OpenShell configuration ownership. (authoring-run/507ebdda-c10f-4840-acd7-1667d5919fab - f960b469e2c6dfb6653fd72ba1c1a39b97a9bcf0)
+
+- 2026-11-05 11:20: Trace the selected repository policy in Worker validation. (authoring-run/69db70f5-508f-488f-9329-f7df994260ec - 66bc76b266fe0ba0e35498bbe6d7abe2e74ac0e5)
 
 - 2026-11-05 01:05: Trace Git-only branch-pattern authorization. (authoring-run/f65a98dd-79e1-45e2-a740-b7e73c1d9dd3 - dde29ac47a)
 

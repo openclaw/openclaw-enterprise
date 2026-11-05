@@ -11,6 +11,8 @@ the token. A trusted sender controls the connection to GitHub. The OpenClaw
 Control Plane (OCC) checks which credential the sender can use and whether it
 can send this particular request. A GitHub adapter decides which fields the Agent receives.
 
+The [architecture diagrams](credential-proxy-architecture.md) show where the worker prepares Git credentials, where OpenShell asks for authorization, and how the generic exchange handles replies.
+
 ## Read one repository's identity
 
 Suppose an operator binds a GitHub metadata source to a dedicated Agent. The
@@ -61,11 +63,12 @@ on the same host, the adapter refuses the request before OCC selects a token.
 
 ## Which checks does OpenShell provide?
 
-| Delivery path               | What happens to a request                                                                                                                                                                                                                |
-| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Ordinary Credential Gateway | A matching process can use a placeholder at an allowed endpoint. The supervisor substitutes the credential. The profile does not check each request body or filter the reply.                                                            |
-| Online GitHub preview       | On stock OpenShell 0.1.5, a one-use probe must receive the expected denial before the Agent starts. This observes the hook at startup. The opt-in profile grants installation-wide GitHub access.                                        |
-| Protected exchange above    | A qualified sender must capture the request, obtain permission to send it and release only the approved response to the original caller. Stock OpenShell lacks this guarantee. Its bundled Driver refuses repository-scoped `git-write`. |
+| Delivery path               | What happens to a request                                                                                                                                                                                                         |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Ordinary Credential Gateway | A matching process can use a placeholder at an allowed endpoint. The supervisor substitutes the credential. The profile does not check each request body or filter the reply.                                                     |
+| Selected repositories       | Before issuing credentials, OCE matches the held launcher request to an authenticated middleware denial. The worker checks subsequent GitHub requests against the grant. GitHub enforces token permissions and branch rules.      |
+| Online GitHub preview       | On stock OpenShell 0.1.5, a one-use probe must receive the expected denial before the Agent starts. This observes the hook at startup. The opt-in profile grants installation-wide GitHub access.                                 |
+| Protected exchange above    | A qualified sender must capture the request, obtain permission to send it and release only the approved response to the original caller. Stock OpenShell lacks the protected exchange’s exact-send and filtered-reply guarantees. |
 
 <a id="read-further"></a>
 

@@ -695,11 +695,13 @@ test(
     });
     const discoveryPath = `/namespaces/${namespaceOwner.id}/agents/plugins`;
     const catalog = await fixture.request("POST", discoveryPath, {
+      harnessId: "codex",
       secretRef: modelSecret.data.ref,
     });
     assert.equal(catalog.status, 200);
     assert.equal(catalog.data.plugins[0].remoteId, "fixture-plugin");
     const detail = await fixture.request("POST", `${discoveryPath}/details`, {
+      harnessId: "codex",
       secretRef: modelSecret.data.ref,
       pluginId: "fixture-plugin",
     });
@@ -718,7 +720,12 @@ test(
     );
     observedTokens.length = 0;
     assert.equal(
-      (await fixture.request("POST", discoveryPath, { secretRef: modelSecret.data.ref })).status,
+      (
+        await fixture.request("POST", discoveryPath, {
+          harnessId: "codex",
+          secretRef: modelSecret.data.ref,
+        })
+      ).status,
       200,
     );
     assert.ok(observedTokens.length > 0 && observedTokens.every((token) => token === rotatedPat));

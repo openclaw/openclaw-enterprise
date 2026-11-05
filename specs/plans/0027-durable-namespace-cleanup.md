@@ -1,13 +1,13 @@
 ---
-rfc: ../rfcs/0029-durable-namespace-cleanup.md
+rfc: ../rfcs/0030-durable-namespace-cleanup.md
 ---
 
 # Implementation plan: durable Namespace cleanup
 
-- **ID:** RFC-0029
+- **ID:** RFC-0030
 - **Delivery status:** In progress
 - **Owner:** @russellb
-- **Authority:** [RFC-0029](../rfcs/0029-durable-namespace-cleanup.md)
+- **Authority:** [RFC-0030](../rfcs/0030-durable-namespace-cleanup.md)
 - **Source baseline:** PR #4088 at `bfef7f0d5f8091390d5ec8296d0be4cd5bb5faaa` and main `330073017`.
 
 ## Outcome and scope
@@ -194,6 +194,8 @@ and closed-Installation custody 1/1. RFC, security and genuine-provider proof ho
 remain.
 
 ## Delivery record
+
+- 2026-11-05: Main reserves migration 68 for per-Agent plugin Driver selection and RFC-0029 for that proposal. This proposal moves to RFC-0030, retaining its status, plan filename and original submissions. The unchanged Namespace journal SQL moves to 69. PostgreSQL 18.6 qualification passes 176 canonical cases, one logical-restore case and six journal cases (177 leaves plus six parent groups), without failures or skips. Native, direct-restore and prefix-upgraded fingerprints were measured with separate migrator and limited application roles. Published prefixes 67/68 remain distinct; unmerged journal68 receipts remain unsupported. This is schema proof, not genuine provider cleanup.
 
 - 2026-11-05: Main reserves migration 67 for the 64-source credential validator. The unchanged Namespace journal SQL moves to 68. PostgreSQL 18.6 passes 44 reported canonical install/prefix/restore cases (43 leaves plus one parent) and six separate journal cases, with no failures/skips. Native/direct-restore/prefix-upgrade fingerprints were measured with the migrator and limited application roles. Published prefixes 65/66/67 retain distinct receipt/catalog identities; unsupported unmerged journal67 receipts remain refused. This proves schema composition, not genuine provider cleanup.
 

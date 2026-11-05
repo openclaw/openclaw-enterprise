@@ -211,7 +211,8 @@ create a replacement, and then push it to the gateway:
 ```
 
 For a replacement Secret, add `--file` with
-`{"secrets": {"api_key": <replacement ref>}}`. Running Agents keep the old value
+`{"secrets": {"api_key": <replacement ref>}}` for `openai`, or
+`{"secrets": {"access_token": <replacement ref>}}` for `codex-pat`. Running Agents keep the old value
 until they are redeployed. The
 [update reference](../../reference/credential-sources.md#update-a-source) lists the
 required permissions and failure cases.
@@ -222,7 +223,10 @@ A source cannot be deleted while an Agent references it. Record the source's
 current Secret, delete the Agent, and wait until `agent get` returns `404`:
 
 ```bash
-SECRET_ID="$(./bin/occ credential-source get "$SOURCE_ID" -o json | jq -r .secrets.api_key.id)"
+SECRET_ID="$(./bin/occ credential-source get "$SOURCE_ID" -o json | jq -er '
+  if .type == "openai" then .secrets.api_key.id
+  elif .type == "codex-pat" then .secrets.access_token.id
+  else error("Expected an openai or codex-pat source") end')"
 ./bin/occ agent delete "$AGENT_ID"
 ./bin/occ agent get "$AGENT_ID"
 ```
