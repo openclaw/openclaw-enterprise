@@ -1,3 +1,4 @@
+import { enterManualModel } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
@@ -7,7 +8,7 @@ import type { Locator } from "playwright";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
 
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   AGENT_CREATE_DENIED,
   AGENT_DEPLOY_NOT_INCLUDED,
@@ -28,9 +29,8 @@ import {
   newPage,
   shippedPreset,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
-import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.mjs";
-import { enterManualModel } from "./console-agents-test-support.mjs";
+} from "./console-agents-browser-helpers.ts";
+import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.ts";
 import { restrict } from "../helpers/iam-grants.mjs";
 
 // The shipped default Preset, so Create Agent offers "Start with default Preset".
@@ -169,10 +169,16 @@ test("a reader reaches the list, Secret and Slack token controls they cannot use
     "Reachable reader",
   );
   assertId(namespace);
-  const tokens: [unknown, unknown] = [
-    await fixture.createSecret(namespace.id, "Reachable Slack app token", "xapp-reachable"),
-    await fixture.createSecret(namespace.id, "Reachable Slack bot token", "xoxb-reachable"),
-  ];
+  const app = await fixture.createSecret(
+    namespace.id,
+    "Reachable Slack app token",
+    "xapp-reachable",
+  );
+  const bot = await fixture.createSecret(
+    namespace.id,
+    "Reachable Slack bot token",
+    "xoxb-reachable",
+  );
   // A running Agent for the row's Stop and Delete, and a Slack draft for the token fields.
   const running: unknown = await fixture.createAgent(
     namespace.id,
@@ -185,7 +191,7 @@ test("a reader reaches the list, Secret and Slack token controls they cannot use
     namespace.id,
     "Reachable Slack Agent",
     slackAgentValues("reach"),
-    slackTokenBindings(...tokens),
+    slackTokenBindings(app, bot),
   );
   assertId(agent);
   const reader = await fixture.createNamespaceMember("reachable-reader", namespace.id, [
@@ -351,15 +357,21 @@ test("a draft's disabled Save and Discard name their reasons", async (t) => {
     "Described draft",
   );
   assertId(namespace);
-  const tokens: [unknown, unknown] = [
-    await fixture.createSecret(namespace.id, "Described Slack app token", "xapp-described"),
-    await fixture.createSecret(namespace.id, "Described Slack bot token", "xoxb-described"),
-  ];
+  const app = await fixture.createSecret(
+    namespace.id,
+    "Described Slack app token",
+    "xapp-described",
+  );
+  const bot = await fixture.createSecret(
+    namespace.id,
+    "Described Slack bot token",
+    "xoxb-described",
+  );
   const agent: unknown = await fixture.createAgent(
     namespace.id,
     "Described Slack Agent",
     slackAgentValues("slack"),
-    slackTokenBindings(...tokens),
+    slackTokenBindings(app, bot),
   );
   assertId(agent);
   const { page } = await newPage(t, fixture);

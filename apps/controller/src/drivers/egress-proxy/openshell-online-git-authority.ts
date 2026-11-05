@@ -10,7 +10,10 @@ import type {
   PreparedGitHubUseRequest,
 } from "@openclaw-enterprise/contracts";
 import type { RequestHead } from "../repo/credentials/backend-contracts.ts";
-import { decodePushedBranchRef } from "../repo/credentials/client-contracts.ts";
+import {
+  decodePushedBranchRef,
+  normalizePushRefAllowlist,
+} from "../repo/credentials/client-contracts.ts";
 import { parseUnambiguousJson } from "../repo/credentials/json-members.ts";
 import { planDraftPull } from "../repo/github/credentials/prepared-draft-pull.ts";
 import { classifyRoute } from "../repo/github/credentials/routes/classification.ts";
@@ -186,6 +189,14 @@ function matchesOrigin(origin: string, request: OpenShellOnlineHttpRequest): boo
   );
 }
 
+function validPushRefPolicy(pushRef: string): boolean {
+  try {
+    return normalizePushRefAllowlist([pushRef])[0] === pushRef;
+  } catch {
+    return false;
+  }
+}
+
 function validBinding(
   binding: OpenShellOnlineGitBinding,
   request: OpenShellOnlineHttpRequest,
@@ -212,10 +223,11 @@ function validBinding(
       : /^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(binding.repository) &&
         !/\/(?:\.|\.\.)$/.test(binding.repository) &&
         typeof binding.pushRef === "string" &&
-        decodePushedBranchRef(Buffer.from(binding.pushRef)) === binding.pushRef &&
+        validPushRefPolicy(binding.pushRef) &&
         (binding.pullRequestBase === undefined ||
-          (decodePushedBranchRef(Buffer.from("refs/heads/" + binding.pullRequestBase)) ===
-            "refs/heads/" + binding.pullRequestBase &&
+          (decodePushedBranchRef(Buffer.from(binding.pushRef)) === binding.pushRef &&
+            decodePushedBranchRef(Buffer.from("refs/heads/" + binding.pullRequestBase)) ===
+              "refs/heads/" + binding.pullRequestBase &&
             "refs/heads/" + binding.pullRequestBase !== binding.pushRef)))
   );
 }

@@ -1,3 +1,9 @@
+import {
+  createModelCredentialSecret,
+  enterManualModel,
+  openAdvancedSettings,
+  waitForCreateFormReads,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
@@ -14,6 +20,7 @@ import type {
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
 import {
+  routeFailedDeployment,
   assertControlEdge,
   consoleViewports,
   detailUrl,
@@ -22,18 +29,14 @@ import {
   login,
   nativeValues,
   newPage,
-  routeFailedDeployment,
   settledView,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+
 import {
-  createModelCredentialSecret,
   createRepositoryLaunchFixture,
-  enterManualModel,
-  openAdvancedSettings,
   routeInstallationWithoutProvisioning,
-  waitForCreateFormReads,
 } from "./console-agents-test-support.mjs";
-import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 
 // The console's control patterns. Button hierarchy (UX plan C2): each view shows at most one
 // primary action, a secondary button's edge is visible against its surface, and a button waiting

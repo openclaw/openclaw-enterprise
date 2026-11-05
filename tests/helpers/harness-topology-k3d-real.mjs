@@ -914,7 +914,7 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
       baseUrl: process.env.OCC_TEST_CODEX_OPENAI_BASE_URL,
     };
   }
-  configuration.drivers.plugin = { id: "codex-plugin", configuration: {} };
+  configuration.drivers.plugin = [{ id: "codex-plugin", configuration: {} }];
   // The real Gateway loads its plugins during the first model request.
   configuration.drivers.compute.configuration.resources.gateway.limits.memory =
     productionGatewayMemoryLimit;

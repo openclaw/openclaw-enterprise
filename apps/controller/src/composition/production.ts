@@ -110,7 +110,7 @@ export async function composeProduction(
     credentialRefreshDriver,
     protectedDriver,
     preparedGitHub,
-    pluginDriver,
+    pluginDrivers,
     repositoryPolicy,
     createIAMDriver,
   } = config.drivers;
@@ -336,10 +336,7 @@ export async function composeProduction(
     controller.registerDriver(configurationDriver);
     controller.selectDriver("configuration", configurationDriver.id);
     config.serviceAccountDriverFactory?.(controller, state);
-    if (pluginDriver !== undefined) {
-      controller.registerDriver(pluginDriver);
-      controller.selectDriver("plugin", pluginDriver.id);
-    }
+    controller.installPluginDrivers(pluginDrivers ?? []);
     if (repositoryPolicy !== undefined) {
       controller.registerDriver(repositoryPolicy);
       controller.selectDriver("repo", repositoryPolicy.id);

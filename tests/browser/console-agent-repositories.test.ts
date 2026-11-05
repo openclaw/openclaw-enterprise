@@ -1,5 +1,10 @@
 /// <reference lib="es2024.promise" />
 
+import {
+  enterManualModel,
+  submitCreateAgent,
+  createAgentThroughForm,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -29,14 +34,11 @@ import {
   repositoryCheckbox,
   statusTone,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import {
   agentPostRequests,
   configurationPostRequests,
   createRepositoryLaunchFixture,
-  enterManualModel,
-  submitCreateAgent,
-  createAgentThroughForm,
 } from "./console-agents-test-support.mjs";
 import {
   AGENT_SAVE_DENIED,
@@ -704,7 +706,7 @@ test("Repository recovery preserves and updates hosted plugin policy before retr
       template: {
         agent: {
           name: "Recovered repository and plugin Agent",
-          executionMode: "embedded",
+          executionMode: "dedicated",
           harnessAuth: { method: "api_key", source: secret.ref },
           repositoryAccess: {
             defaultProfile: "git-read",
@@ -712,7 +714,9 @@ test("Repository recovery preserves and updates hosted plugin policy before retr
           },
           plugins: initialPlugins,
         },
-        configuration: { values: nativeValues("repository-plugin-recovery") },
+        configuration: {
+          values: nativeValues("repository-plugin-recovery", { harnessId: "codex" }),
+        },
       },
     },
   });

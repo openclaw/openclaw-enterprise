@@ -15,7 +15,7 @@ import {
 import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
 import { changeSignal, followContainer } from "./docker-follow.mjs";
 import {
-  AGENT_RUNTIME_ENTRYPOINT,
+  COMPUTE_AGENT_RUNTIME_ENTRYPOINT as AGENT_RUNTIME_ENTRYPOINT,
   gatewayRuntimeEntrypoint,
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";

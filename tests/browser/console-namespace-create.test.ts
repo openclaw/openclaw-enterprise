@@ -30,7 +30,7 @@ import {
   pathRequests,
   settledView,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 
 const require = createRequire(new URL("../../packages/contracts/package.json", import.meta.url));
 const {

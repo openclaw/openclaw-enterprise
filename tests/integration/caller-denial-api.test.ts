@@ -158,6 +158,7 @@ test("a caller's own denial names the missing grant without disclosing what the 
   // Agent's model Secret from its stored Harness binding; a deployer without Secret operate learns
   // its ID only when it holds Secret read, which already shows that ID, and Agent read, which
   // already shows that this Agent binds it.
+  assert.ok(agent.harnessAuth?.method === "api_key");
   const secretId = agent.harnessAuth.source.id;
   const deployer: Grants = [
     ["read", "namespace"],
@@ -222,6 +223,7 @@ test("an Agent principal's deploy refusal names its bound Secret only to a calle
     "Principal denied Agent",
     createHarnessConfiguration("openclaw", "gpt-4.1"),
   );
+  assert.ok(agent.harnessAuth?.method === "api_key");
   const secretId = agent.harnessAuth.source.id;
   // The Agent's principal loses its grant on the model credential; the callers below keep theirs.
   const agentGrants = fixture.policy.bindings.filter(
@@ -404,6 +406,7 @@ test("an Agent update's denial on the current Harness authentication says every 
   });
   const values = createHarnessConfiguration("openclaw", "gpt-4.1");
   const agent = await fixture.createAgent(namespace.id, "Harness Agent", values);
+  assert.ok(agent.harnessAuth?.method === "api_key");
   const current = agent.harnessAuth.source.id;
   const replacement = await fixture.createSecret(
     namespace.id,

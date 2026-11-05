@@ -19,12 +19,12 @@ import { inflateRawSync } from "node:zlib";
 import test from "node:test";
 import {
   AGENT_READINESS_ENTRYPOINT,
-  AGENT_RUNTIME_ENTRYPOINT,
-  AGENT_WITH_NODE_ENTRYPOINT,
+  COMPUTE_AGENT_RUNTIME_ENTRYPOINT as AGENT_RUNTIME_ENTRYPOINT,
+  COMPUTE_AGENT_WITH_NODE_ENTRYPOINT as AGENT_WITH_NODE_ENTRYPOINT,
   GATEWAY_RUNTIME_ENTRYPOINT,
   NATIVE_WORKER_ENTRYPOINT,
-  PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
-  PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
+  COMPUTE_PROTECTED_CODEX_RUNTIME_ENTRYPOINT as PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
+  COMPUTE_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT as PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   RUNTIME_WRAPPER_COMMAND,
   SETUP_WRAPPER_COMMAND,
   gatewayRuntimeEntrypoint,
@@ -131,6 +131,7 @@ import {
 } from "../fixtures/kubernetes-provider-readiness.mjs";
 import { writeSafeKubeconfig, writeUnsafeKubeconfigs } from "../helpers/unsafe-kubeconfigs.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { ControllerWorker } from "../../apps/controller/src/worker.ts";
 
 const { kubeconfigPath, context: contextName } = conformanceKubeconfig;
 test("Kubernetes peer Pod selectors and node selectors reject labels the API refuses before provisioning", () => {
@@ -628,7 +629,7 @@ test("retiring an upgraded revision removes its legacy node Secret and keeps the
   assert.deepEqual(deleted, [[legacyName, "legacy-uid"]]);
 });
 
-test("preparation renews an expired workspace node setup and keeps the enrolled device", async () => {
+test("preparation preserves an enrolled workspace node after its setup expires", async () => {
   const setups = [];
   const driver = new KubernetesComputeDriver(
     routedOptions({
@@ -654,13 +655,9 @@ test("preparation renews an expired workspace node setup and keeps the enrolled 
   const namespace = { name: kubernetesNamespaceName(revision.namespaceId), plane: "execution" };
   const name = driver.workspaceNodeName(revision);
   const encode = (value) => Buffer.from(value, "utf8").toString("base64");
-  const decode = (data) =>
-    Object.fromEntries(
-      Object.entries(data).map(([key, value]) => [key, Buffer.from(value, "base64").toString()]),
-    );
   const deviceId = "a".repeat(64);
-  // Enrolled on an earlier revision; the upstream native `connect --ephemeral`
-  // entrypoint refuses a setup code past its embedded expiry.
+  // A replacement reconnects with the device token on the shared claim; the
+  // expired setup must not replace that identity or credit the new revision.
   let secret = {
     ...driver.manifest("v1", "Secret", name, driver.workspaceNodeOwnership(revision), namespace),
     type: "Opaque",
@@ -669,10 +666,12 @@ test("preparation renews an expired workspace node setup and keeps the enrolled 
       setupCode: encode("code-1"),
       expiresAtMs: encode("1"),
       deviceId: encode(deviceId),
+      enrolledRevisionId: encode(revision.id),
     },
   };
   secret.metadata.uid = "enrolled-uid";
   secret.metadata.resourceVersion = "7";
+  const enrolled = structuredClone(secret);
   const writes = [];
   driver.reconcile = async () => {};
   driver.gatewayReady = async () => true;
@@ -699,23 +698,22 @@ test("preparation renews an expired workspace node setup and keeps the enrolled 
     },
   });
   const replacement = { ...revision, id: "revision-routed-2", revision: 2 };
-  assert.deepEqual(await driver.prepareWorkspaceNode(replacement, namespace), { name });
-  assert.deepEqual(writes, [["replace", name, "7"]]);
-  assert.equal(setups.length, 1);
-  const renewed = decode(secret.data);
-  assert.equal(renewed.deviceId, deviceId);
-  assert.equal(renewed.setupId, "setup-2");
-  assert.equal(renewed.setupCode, "code-2");
-  assert.ok(Number(renewed.expiresAtMs) > Date.now());
-  assert.equal(secret.metadata.uid, "enrolled-uid");
-  // A current setup is reused unchanged.
-  writes.length = 0;
-  assert.deepEqual(await driver.prepareWorkspaceNode(replacement, namespace), { name });
+  assert.deepEqual(await driver.prepareWorkspaceNode(replacement, namespace), {
+    name,
+  });
   assert.deepEqual(writes, []);
-  assert.equal(setups.length, 1);
+  assert.equal(setups.length, 0);
+  assert.deepEqual(secret, enrolled);
+  // Repeated reconciliation keeps the same persisted identity.
+  assert.deepEqual(await driver.prepareWorkspaceNode(replacement, namespace), {
+    name,
+  });
+  assert.deepEqual(writes, []);
+  assert.equal(setups.length, 0);
+  assert.deepEqual(secret, enrolled);
 });
 
-test("preparation records a device redeemed on an expired setup before renewing it", async () => {
+test("preparation records an expired setup's redeemed device and renews only unredeemed setups", async () => {
   for (const redeemed of [true, false]) {
     const setups = [];
     const observed = [];
@@ -733,9 +731,12 @@ test("preparation records a device redeemed on an expired setup before renewing 
             setups.push("setup");
             return { setupId: "setup-b", setupCode: "code-b", expiresAtMs: Date.now() + 600_000 };
           },
+          async isConnected() {
+            return true;
+          },
           async observeSetup(_url, setupId) {
             observed.push(setupId);
-            return redeemed ? { deviceId, connected: false } : undefined;
+            return redeemed ? { deviceId, connected: false, delivery: "confirmed" } : undefined;
           },
         },
       },
@@ -744,13 +745,15 @@ test("preparation records a device redeemed on an expired setup before renewing 
     const namespace = { name: kubernetesNamespaceName(revision.namespaceId), plane: "execution" };
     const name = driver.workspaceNodeName(revision);
     const encode = (value) => Buffer.from(value, "utf8").toString("base64");
-    // Setup A expired before readiness recorded the node that redeemed it.
+    // An expired setup may have been redeemed before readiness could record it.
     let secret = {
       ...driver.manifest("v1", "Secret", name, driver.workspaceNodeOwnership(revision), namespace),
       type: "Opaque",
       data: { setupId: encode("setup-a"), setupCode: encode("code-a"), expiresAtMs: encode("1") },
     };
+    secret.metadata.uid = "unobserved-uid";
     secret.metadata.resourceVersion = "3";
+    const metadata = structuredClone(secret.metadata);
     const writes = [];
     driver.reconcile = async () => {};
     driver.gatewayReady = async () => true;
@@ -760,8 +763,10 @@ test("preparation records a device redeemed on an expired setup before renewing 
           return structuredClone(secret);
         },
         async replaceNamespacedSecret(request) {
+          assert.equal(request.body.metadata.resourceVersion, secret.metadata.resourceVersion);
           writes.push(request.body.metadata.resourceVersion);
           secret = structuredClone(request.body);
+          secret.metadata.resourceVersion = String(Number(secret.metadata.resourceVersion) + 1);
         },
       },
       networking: {
@@ -770,20 +775,37 @@ test("preparation records a device redeemed on an expired setup before renewing 
         },
       },
     });
-    assert.deepEqual(await driver.prepareWorkspaceNode(revision, namespace), { name });
+    const expectedSetupId = redeemed ? "setup-a" : "setup-b";
+    assert.deepEqual(await driver.prepareWorkspaceNode(revision, namespace), {
+      name,
+    });
     assert.deepEqual(observed, ["setup-a"]);
-    assert.deepEqual(writes, ["3"]);
-    assert.equal(setups.length, 1);
+    assert.deepEqual(writes, redeemed ? ["3", "4"] : ["3"]);
+    assert.equal(setups.length, redeemed ? 0 : 1);
+    assert.deepEqual(secret.metadata, { ...metadata, resourceVersion: redeemed ? "5" : "4" });
     const data = Object.fromEntries(
       Object.entries(secret.data).map(([key, value]) => [
         key,
         Buffer.from(value, "base64").toString(),
       ]),
     );
-    assert.equal(data.setupId, "setup-b");
+    assert.equal(data.setupId, expectedSetupId);
+    assert.equal(data.setupCode, redeemed ? "code-a" : "code-b");
+    if (redeemed) {
+      assert.equal(data.expiresAtMs, "1");
+    } else {
+      assert.ok(Number(data.expiresAtMs) > Date.now());
+    }
     assert.equal(data.deviceId, redeemed ? deviceId : undefined);
     // The readiness check credits the revision whose node connects, not an observed setup.
     assert.equal(data.enrolledRevisionId, undefined);
+    // Neither the newly recorded device nor a current setup needs another mint.
+    assert.deepEqual(await driver.prepareWorkspaceNode(revision, namespace), {
+      name,
+    });
+    assert.deepEqual(observed, ["setup-a"]);
+    assert.deepEqual(writes, redeemed ? ["3", "4"] : ["3"]);
+    assert.equal(setups.length, redeemed ? 0 : 1);
   }
 });
 
@@ -1038,6 +1060,7 @@ test("activation refuses a missing or foreign workspace node before changing the
 // pairs within the wait, and never sleeps.
 function dedicatedFirstDeployFixture({
   statusProxy = true,
+  namespace = kubernetesNamespaceName(tenant.id),
   clock,
   modelEndpoint,
   modelProtocol = "openai-responses",
@@ -1051,8 +1074,12 @@ function dedicatedFirstDeployFixture({
   const state = {
     setupCalls: 0,
     connected: false,
-    // What a redeemed setup reports about the node's connection (enrolled, not connected yet).
-    observedConnected: true,
+    // A retained setup receipt can name a device that is currently disconnected.
+    redeemedDeviceId: undefined,
+    setupDelivery: "confirmed",
+    // Registry presence does not imply a completed token-authenticated connection.
+    possessionAvailable: undefined,
+    possessionDevices: [],
     enrollmentAvailable: true,
     // The node OpenClaw reports applied through the wrapper's runtime status,
     // or the reason it has not.
@@ -1106,6 +1133,13 @@ function dedicatedFirstDeployFixture({
           }
           // Like the client: one connection, re-read until connected or the wait ends.
           state.observeWaits.push(options?.waitMs ?? 0);
+          if (state.redeemedDeviceId !== undefined) {
+            return {
+              deviceId: state.redeemedDeviceId,
+              connected: state.connected,
+              delivery: state.setupDelivery,
+            };
+          }
           if (clock !== undefined && state.stepObservations) {
             // Like the client, poll by poll: read, then ask whether other Work
             // is waiting for the worker before the next read.
@@ -1120,7 +1154,7 @@ function dedicatedFirstDeployFixture({
                 (options?.stopWaiting !== undefined && (await options.stopWaiting()))
               ) {
                 return state.connected
-                  ? { deviceId: "node-1", connected: state.observedConnected }
+                  ? { deviceId: "node-1", connected: true, delivery: "confirmed" }
                   : undefined;
               }
               clock.now += 250;
@@ -1139,7 +1173,7 @@ function dedicatedFirstDeployFixture({
               clock.now = deadline;
             }
             return state.connected
-              ? { deviceId: "node-1", connected: state.observedConnected }
+              ? { deviceId: "node-1", connected: true, delivery: "confirmed" }
               : undefined;
           }
           const deadline = Date.now() + (options?.waitMs ?? 0);
@@ -1151,11 +1185,12 @@ function dedicatedFirstDeployFixture({
             await new Promise((resolve) => setTimeout(resolve, 2));
           }
           return state.connected
-            ? { deviceId: "node-1", connected: state.observedConnected }
+            ? { deviceId: "node-1", connected: true, delivery: "confirmed" }
             : undefined;
         },
-        async isConnected() {
-          return state.connected;
+        async isConnected(_url, deviceId) {
+          state.possessionDevices.push(deviceId);
+          return state.possessionAvailable ?? state.connected;
         },
       },
     },
@@ -1183,7 +1218,6 @@ function dedicatedFirstDeployFixture({
     },
   };
   revision.configuration = admitLoggingConfiguration(operatorSuppliedConfiguration, "info");
-  const namespace = kubernetesNamespaceName(tenant.id);
   const gatewayName = `gateway-${digest(revision.agentId)}`;
   const agentName = `agent-${digest(revision.agentId)}-rev-${digest(revision.id)}`;
   const objects = new Map();
@@ -1202,21 +1236,19 @@ function dedicatedFirstDeployFixture({
     }
     return structuredClone(value);
   };
-  save({
-    ...driver.manifest("v1", "Namespace", namespace, { namespaceId: tenant.id }),
-    status: { phase: "Active" },
-  });
-  save({
-    ...driver.gatewayNamespaceManifest({ namespaceId: tenant.id }),
-    status: { phase: "Active" },
-  });
+  const executionNamespace = driver.gatewayNamespaceManifest({ namespaceId: tenant.id });
+  executionNamespace.metadata.name = namespace;
+  if (namespace !== kubernetesNamespaceName(tenant.id)) {
+    executionNamespace.metadata.annotations["openclaw.dev/namespace-lifecycle"] = "external";
+  }
+  save({ ...executionNamespace, status: { phase: "Active" } });
   save({
     ...driver.manifest(
       "v1",
       "Secret",
       `transport-${digest(revision.agentId)}`,
       { namespaceId: tenant.id, agentId: revision.agentId },
-      { name: kubernetesNamespaceName(tenant.id), plane: "control" },
+      { name: namespace, plane: "control" },
     ),
     type: "Opaque",
     metadata: {
@@ -1225,7 +1257,7 @@ function dedicatedFirstDeployFixture({
         "Secret",
         `transport-${digest(revision.agentId)}`,
         { namespaceId: tenant.id, agentId: revision.agentId },
-        { name: kubernetesNamespaceName(tenant.id), plane: "control" },
+        { name: namespace, plane: "control" },
       ).metadata,
       uid: "transport-uid",
       resourceVersion: "1",
@@ -1239,14 +1271,14 @@ function dedicatedFirstDeployFixture({
     kind: "Secret",
     metadata: {
       name: "occ-model-key",
-      namespace: kubernetesNamespaceName(tenant.id),
+      namespace,
       uid: "model-secret-uid",
     },
     data: { value: Buffer.from("fixture-model-key").toString("base64") },
   });
   for (const target of [
     { name: namespace, plane: "execution" },
-    { name: kubernetesNamespaceName(tenant.id), plane: "control" },
+    { name: namespace, plane: "control" },
   ]) {
     for (const policy of driver.networkPolicies({ namespaceId: tenant.id }, target)) {
       save(policy);
@@ -1334,7 +1366,13 @@ function dedicatedFirstDeployFixture({
       api[`replaceNamespaced${kind}`] = (request) => write(request, { replace: true });
     }
   }
-  clients.core.listNamespace = async () => ({ items: [] });
+  clients.core.listNamespace = async ({ labelSelector }) => ({
+    items:
+      namespace !== kubernetesNamespaceName(tenant.id) &&
+      labelSelector === `openclaw.dev/namespace=${tenant.id}`
+        ? [read("Namespace", namespace)]
+        : [],
+  });
   clients.core.readNamespace = async ({ name }) => read("Namespace", name);
   clients.objects.read = async (object) =>
     read(object.kind, object.metadata.name, object.metadata.namespace);
@@ -1425,9 +1463,7 @@ function dedicatedFirstDeployFixture({
       assert.notEqual(clock, undefined, "pairAfterSetupMs needs the fake clock");
       state.pairAtMs = clock.now + state.pairAfterSetupMs;
     }
-    const binding = objects.get(
-      key("ConfigMap", `${gatewayName}-workspace-node`, kubernetesNamespaceName(tenant.id)),
-    );
+    const binding = objects.get(key("ConfigMap", `${gatewayName}-workspace-node`, namespace));
     if (name === "gateway-pod" && binding !== undefined && state.gatewayAppliesBinding) {
       // The kubelet refreshes the volume and the wrapper hot-applies the node.
       const { revisionId, deviceId } = JSON.parse(binding.data["workspace-node.json"]);
@@ -1466,13 +1502,10 @@ function dedicatedFirstDeployFixture({
     };
   };
   driver.apiClients = Promise.resolve(clients);
-  const prepare = () => driver.prepareRevision(revision, context ?? authContext(revision));
+  const prepare = () =>
+    driver.prepareRevision(revision, context ?? authContext(revision, namespace));
   const markReady = (name) => {
-    const object = read(
-      "Deployment",
-      name,
-      name === gatewayName ? kubernetesNamespaceName(tenant.id) : namespace,
-    );
+    const object = read("Deployment", name);
     object.status = {
       observedGeneration: object.metadata.generation,
       replicas: 1,
@@ -1918,7 +1951,10 @@ async function verifyManagedRelease({
   }
   for (const selection of selectionCases) {
     const { enabled, driverPolicy } = selection;
-    const selections = { [id]: selection };
+    const selections = {
+      ...(kind === "mcp" && { [managedGoogleInstall.id]: { enabled: true } }),
+      [id]: selection,
+    };
     let worker;
     const sandboxDriver = {
       id: "native-sandbox",
@@ -1963,17 +1999,30 @@ async function verifyManagedRelease({
     const gateway = fixture.read("Deployment", fixture.gatewayName).spec.template.spec;
     const gatewayEnv = gateway.containers[0].env;
     const variable = (environment, name) => environment.find((item) => item.name === name)?.value;
-    const workerSettings = variable(worker.environment, "OPENCLAW_MANAGED_PLUGIN_JSON");
-    const gatewaySettings = variable(gatewayEnv, "OPENCLAW_MANAGED_PLUGIN_JSON");
-    const expected = {
-      kind,
-      packageName,
-      slotId,
-      ...(enabled && { releaseSha256 }),
-      ...(driverPolicy?.toolNames?.length && { toolNames: driverPolicy.toolNames }),
+    const google = {
+      kind: managedGoogleInstall.kind,
+      id: managedGoogleInstall.id,
+      packageName: managedGoogleInstall.packageName,
+      slotId: Object.keys(managedGoogleInstall.credentials)[0],
+      releaseSha256: managedGoogleInstall.releaseSha256,
     };
-    assert.deepEqual(workerSettings && JSON.parse(workerSettings), enabled ? expected : undefined);
-    assert.deepEqual(JSON.parse(gatewaySettings), { ...expected, id });
+    const expected = [
+      ...(kind === "mcp" ? [google] : []),
+      {
+        id,
+        kind,
+        packageName,
+        slotId,
+        ...(enabled && { releaseSha256 }),
+        ...(driverPolicy?.toolNames?.length && { toolNames: driverPolicy.toolNames }),
+      },
+    ];
+    const workerSettings = variable(worker.environment, "OPENCLAW_MANAGED_PLUGIN_JSON");
+    assert.deepEqual(
+      JSON.parse(workerSettings ?? "[]"),
+      expected.filter((pkg) => pkg.releaseSha256).map(({ id, ...pkg }) => pkg),
+    );
+    assert.deepEqual(JSON.parse(variable(gatewayEnv, "OPENCLAW_MANAGED_PLUGIN_JSON")), expected);
     // An Agent editor cannot replace deployment inputs with Secret bindings.
     for (const { name } of gatewayEnv.filter(({ name }) => name.startsWith("OPENCLAW_MANAGED_"))) {
       assert.throws(
@@ -1989,6 +2038,109 @@ async function verifyManagedRelease({
     assert.deepEqual(JSON.parse(manifest).selections, selections);
   }
 }
+
+test("provider-owned Harness preparation waits to renew expired setup until its Gateway is ready", async (t) => {
+  const provisions = [];
+  const sandboxDriver = {
+    id: "native-sandbox",
+    implementation: "openshell",
+    capability: "sandbox",
+    supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
+    facets: ["networking", "filesystem", "process"],
+    async workspaceNodePeerLabels() {
+      return undefined;
+    },
+    async provisionHarness(context) {
+      provisions.push(context);
+      return {
+        namespaceName: context.namespace.name,
+        resourceName: "native-harness",
+        agentId: context.revision.agentId,
+        revisionId: context.revision.id,
+      };
+    },
+  };
+  const { driver, revision, namespace, state, gatewayName, prepare, markReady, read, save } =
+    dedicatedFirstDeployFixture({
+      sandboxDriver,
+      revision: {
+        harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+        sandboxDriverId: sandboxDriver.id,
+        configuration: createHarnessConfiguration("openclaw", "gpt-5"),
+        plugins: undefined,
+      },
+    });
+  assert.equal((await prepare()).ready, false);
+  assert.equal(provisions.length, 0);
+
+  // An earlier pass issued setup, but the Gateway has not recovered before it expires.
+  // These are transport fixtures; the real Compute driver decides when to call the provider.
+  const nodeName = driver.workspaceNodeName(revision);
+  const manifest = driver.manifest(
+    "v1",
+    "Secret",
+    nodeName,
+    driver.workspaceNodeOwnership(revision),
+    { name: namespace, plane: "execution" },
+  );
+  const expired = {
+    ...manifest,
+    type: "Opaque",
+    metadata: { ...manifest.metadata, uid: "node-uid", resourceVersion: "1" },
+    data: Object.fromEntries(
+      Object.entries({
+        setupId: "setup-0",
+        setupCode: "expired-setup-code",
+        expiresAtMs: String(Date.now() - 60_000),
+      }).map(([key, value]) => [key, Buffer.from(value).toString("base64")]),
+    ),
+  };
+  save(expired);
+  state.enrollmentAvailable = false;
+  const waiting = await prepare();
+  assert.equal(waiting.ready, false);
+  assert.equal(waiting.runtimeFailure, undefined);
+  assert.equal(provisions.length, 0, "expired unpaired setup must not reach the provider");
+  assert.equal(state.setupCalls, 0);
+  assert.deepEqual(state.observeWaits, []);
+  assert.deepEqual(read("Secret", nodeName), expired);
+
+  // Once the Gateway can answer, observe the old setup and replace only the unredeemed one.
+  state.enrollmentAvailable = true;
+  markReady(gatewayName);
+  assert.equal((await prepare()).ready, false, "provider workload readiness is still pending");
+  assert.equal(state.setupCalls, 1);
+  assert.deepEqual(state.observeWaits, [0]);
+  assert.equal(provisions.length, 1);
+  const setupVariable = provisions[0].requirements.environment.find(
+    ({ name }) => name === "OPENCLAW_NODE_SETUP_CODE",
+  );
+  assert.deepEqual(setupVariable.valueFrom, { secretKeyRef: { name: nodeName, key: "setupCode" } });
+  const renewed = read("Secret", nodeName);
+  assert.equal(Buffer.from(renewed.data.setupId, "base64").toString("utf8"), "setup-1");
+  assert.equal(Buffer.from(renewed.data.setupCode, "base64").toString("utf8"), "setup-code");
+
+  for (const [label, deviceId] of [
+    ["invalid device encoding", "%%%"],
+    ["invalid device identifier", Buffer.from("bad/id").toString("base64")],
+  ]) {
+    await t.test(label, async () => {
+      // A corrupt receipt is not an absent device. Neither mint replacement setup nor
+      // forward the retained expired setup to the provider under that identity.
+      const malformed = structuredClone(expired);
+      malformed.data.deviceId = deviceId;
+      save(malformed);
+      const setupCalls = state.setupCalls;
+      const observeWaits = [...state.observeWaits];
+      const provisionCalls = provisions.length;
+      await assert.rejects(prepare(), /workspace node device ID is invalid/i);
+      assert.deepEqual(read("Secret", nodeName), malformed);
+      assert.equal(state.setupCalls, setupCalls);
+      assert.deepEqual(state.observeWaits, observeWaits);
+      assert.equal(provisions.length, provisionCalls);
+    });
+  }
+});
 
 test("native OpenClaw preparation and activation use only outbound Sandbox enrollment", async () => {
   const provisions = [];
@@ -2253,11 +2405,21 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   // before it has.
   assert.ok(provisions.every(({ workspaceNodeEnrolled }) => workspaceNodeEnrolled === false));
   assert.deepEqual(withdrawals, []);
-  // A node that has enrolled but is not connected yet already loses the exposure: the pass
-  // that records its device withdraws. A deletion the provider does not confirm keeps its
-  // class and the pass fails; the provider completes the withdrawal on its next adoption.
+  // A setup receipt alone cannot confirm credentials for the disconnected device.
+  // Keep its diagnostics exposed until a token-authenticated connection is observed.
+  state.redeemedDeviceId = "node-1";
+  assert.equal((await prepare()).pendingReason, "WORKSPACE_NODE_PENDING");
+  assert.equal(withdrawals.length, 0, "a disconnected receipt must keep diagnostics available");
+  const nodeSecret = read("Secret", driver.workspaceNodeName(revision));
+  assert.equal(
+    Buffer.from(nodeSecret.data.setupReceiptDeviceId, "base64").toString("utf8"),
+    "node-1",
+  );
+  assert.equal(nodeSecret.data.deviceId, undefined);
+  assert.equal(nodeSecret.data.enrolledRevisionId, undefined);
+  // A deletion the provider does not confirm keeps its class and the pass fails;
+  // the provider completes the withdrawal on its next adoption.
   state.connected = true;
-  state.observedConnected = false;
   withdrawalFailure = new Error("OpenShell DeleteService did not confirm deletion.");
   await assert.rejects(prepare(), /did not confirm deletion/);
   assert.equal(withdrawals.length, 1);
@@ -2269,6 +2431,13 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   // nothing more; the connected node makes the revision ready.
   withdrawalFailure = undefined;
   assert.equal((await prepare()).ready, true);
+  const confirmedNodeSecret = read("Secret", driver.workspaceNodeName(revision));
+  assert.equal(confirmedNodeSecret.data.setupReceiptDeviceId, undefined);
+  assert.equal(Buffer.from(confirmedNodeSecret.data.deviceId, "base64").toString("utf8"), "node-1");
+  assert.equal(
+    Buffer.from(confirmedNodeSecret.data.enrolledRevisionId, "base64").toString("utf8"),
+    revision.id,
+  );
   assert.equal(provisions.at(-1).workspaceNodeEnrolled, true);
   assert.equal(withdrawals.length, 1);
   assert.deepEqual(read("NetworkPolicy", stale.metadata.name), stale);
@@ -2686,42 +2855,258 @@ test("Kubernetes native Sandbox redeploy reads the held failure before its own n
   assert.equal(withdrawals.length, 1);
   assert.equal(observations.length, 2);
 
-  // A Secret written before this check named no revision: the device it records enrolled
-  // under the revision that wrote it, so that revision still counts as enrolled, and the
-  // exposure its provider creates again goes at once (as before this change).
+  // Recovering a predecessor's expired setup receipt records the device without crediting
+  // this revision. Its held startup failure must remain visible until its node connects.
   provisions.length = 0;
   observations.length = 0;
   withdrawals.length = 0;
-  const upgraded = dedicatedFirstDeployFixture({ sandboxDriver, revision: nativeRevision });
-  const upgradedSecretKey = seedNodeSecret(upgraded, {
-    deviceId: "node-1",
+  const recovered = dedicatedFirstDeployFixture({ sandboxDriver, revision: nativeRevision });
+  const recoveredSecretKey = seedNodeSecret(recovered, {
     setupId: "setup-0",
-    expiresAtMs: String(Date.now() + 60_000),
+    setupCode: "expired-setup-code",
+    expiresAtMs: String(Date.now() - 60_000),
   });
-  assert.equal((await upgraded.prepare()).ready, false);
-  upgraded.markReady(upgraded.gatewayName);
-  assert.equal((await upgraded.prepare()).ready, false);
-  assert.equal(provisions.length, 2);
-  assert.ok(provisions.every(({ workspaceNodeEnrolled }) => workspaceNodeEnrolled === true));
-  upgraded.state.providerPod = {
+  recovered.state.redeemedDeviceId = "node-1";
+  recovered.state.possessionAvailable = true;
+  assert.equal((await recovered.prepare()).ready, false);
+  assert.equal(provisions.length, 0);
+  recovered.markReady(recovered.gatewayName);
+  assert.equal((await recovered.prepare()).ready, false);
+  assert.equal(recovered.state.setupCalls, 0, "the redeemed setup needs no replacement");
+  assert.deepEqual(recovered.state.observeWaits, [0]);
+  assert.equal(decode(recovered.objects.get(recoveredSecretKey).data.deviceId), "node-1");
+  assert.equal(recovered.objects.get(recoveredSecretKey).data.enrolledRevisionId, undefined);
+  assert.equal(provisions.length, 1);
+  assert.equal(provisions[0].workspaceNodeEnrolled, false);
+  recovered.state.possessionAvailable = undefined;
+  recovered.state.providerPod = {
     apiVersion: "v1",
     kind: "Pod",
     metadata: {
       name: "native-harness",
-      namespace: upgraded.namespace,
+      namespace: recovered.namespace,
       labels: provisions[0].requirements.labels,
     },
     status: { conditions: [{ type: "Ready", status: "True" }] },
   };
-  assert.equal((await upgraded.prepare()).pendingReason, "WORKSPACE_NODE_PENDING");
-  assert.deepEqual(observations, []);
-  upgraded.state.connected = true;
-  assert.equal((await upgraded.prepare()).ready, true);
-  assert.equal(
-    decode(upgraded.objects.get(upgradedSecretKey).data.enrolledRevisionId),
-    upgraded.revision.id,
-  );
+  answer = { state: "failed", runtimeFailure: heldFailure };
+  const recoveredFailure = await recovered.prepare();
+  assert.equal(recoveredFailure.ready, false);
+  assert.deepEqual(recoveredFailure.runtimeFailure, heldFailure);
+  assert.equal(observations.length, 1);
+  assert.equal(observations[0].workspaceNodeEnrolled, false);
   assert.deepEqual(withdrawals, []);
+  assert.equal(recovered.objects.get(recoveredSecretKey).data.enrolledRevisionId, undefined);
+  answer = { state: "starting" };
+  recovered.state.connected = true;
+  assert.equal((await recovered.prepare()).ready, true);
+  assert.equal(
+    decode(recovered.objects.get(recoveredSecretKey).data.enrolledRevisionId),
+    recovered.revision.id,
+  );
+  assert.equal(withdrawals.length, 1);
+  assert.equal(withdrawals[0].workspaceNodeEnrolled, true);
+  assert.equal((await recovered.prepare()).ready, true);
+  assert.equal(provisions.at(-1).workspaceNodeEnrolled, true);
+  assert.equal(withdrawals.length, 1);
+  assert.equal(observations.length, 1);
+
+  for (const { expired, delivery } of [
+    { expired: true, delivery: "confirmed" },
+    { expired: true, delivery: "uncertain" },
+    { expired: false, delivery: "confirmed" },
+    { expired: false, delivery: "uncertain" },
+  ]) {
+    // A Gateway can register a connected node before its credential-bearing
+    // hello reaches the client. Neither preparation nor readiness may promote
+    // that uncertain receipt into an enrolled device.
+    const uncertain = dedicatedFirstDeployFixture({
+      sandboxDriver,
+      revision: nativeRevision,
+      namespace: "n".repeat(63),
+    });
+    const uncertainKey = seedNodeSecret(uncertain, {
+      setupId: "setup-uncertain",
+      setupCode: "uncertain-setup-code",
+      expiresAtMs: String(expired ? 1 : Date.now() + 60_000),
+    });
+    uncertain.state.redeemedDeviceId = "uncertain-node";
+    uncertain.state.setupDelivery = delivery;
+    uncertain.state.connected = true;
+    uncertain.state.possessionAvailable = false;
+    assert.equal((await uncertain.prepare()).ready, false);
+    uncertain.markReady(uncertain.gatewayName);
+    if (!expired) {
+      uncertain.state.providerPod = {
+        apiVersion: "v1",
+        kind: "Pod",
+        metadata: {
+          name: "native-harness",
+          namespace: uncertain.namespace,
+          labels: provisions.at(-1).requirements.labels,
+        },
+        status: { conditions: [{ type: "Ready", status: "True" }] },
+      };
+    }
+    if (expired) {
+      await assert.rejects(
+        uncertain.prepare(),
+        /credential.*(?:unconfirmed|could not be confirmed).*Stop/,
+      );
+    } else {
+      assert.equal((await uncertain.prepare()).ready, false);
+    }
+    const retained = structuredClone(uncertain.objects.get(uncertainKey));
+    assert.equal(decode(retained.data.setupReceiptDeviceId), "uncertain-node");
+    assert.equal(retained.data.deviceId, undefined);
+    assert.equal(retained.data.enrolledRevisionId, undefined);
+    assert.equal(decode(retained.data.setupCode), "uncertain-setup-code");
+    assert.equal(uncertain.state.setupCalls, 0);
+
+    // Native status retention can elapse. Its absence must not erase the
+    // persisted handoff or silently issue credentials to another device.
+    uncertain.state.redeemedDeviceId = undefined;
+    uncertain.state.connected = false;
+    if (expired) {
+      await assert.rejects(
+        uncertain.prepare(),
+        /credential.*(?:unconfirmed|could not be confirmed)/,
+      );
+    } else {
+      assert.equal((await uncertain.prepare()).ready, false);
+    }
+    assert.deepEqual(uncertain.objects.get(uncertainKey), retained);
+    assert.equal(uncertain.state.setupCalls, 0);
+    if (expired && delivery === "uncertain") {
+      // Follow the real Driver failure through the worker's bounded diagnostic
+      // filter. Local fixtures supply state, IAM, queue and transport only.
+      const { driver, revision: pendingRevision } = uncertain;
+      pendingRevision.backendId = null;
+      const actorId = "authorized-actor";
+      const claim = {
+        idempotencyKey: `agent_revision:${pendingRevision.id}:reconcile`,
+        namespaceId: pendingRevision.namespaceId,
+        agentId: pendingRevision.agentId,
+        revisionId: pendingRevision.id,
+        actorId,
+        attemptCount: 1,
+      };
+      const iam = {
+        id: "fixture-iam",
+        capability: "iam",
+        async authorize() {
+          return {
+            allowed: true,
+            reason: "authorized deployment",
+            driverId: this.id,
+            evidence: {
+              identityId: actorId,
+              groupIds: [],
+              roleIds: [],
+              bindingIds: [],
+              restrictionIds: [],
+            },
+          };
+        },
+      };
+      // The active pointer is committed before activation verifies readiness;
+      // recovery must still surface an unconfirmed node credential.
+      const agent = {
+        id: pendingRevision.agentId,
+        namespaceId: pendingRevision.namespaceId,
+        servicePrincipalId: pendingRevision.servicePrincipalId,
+        activeRevisionId: pendingRevision.id,
+        desiredRuntimeState: "running",
+      };
+      const view = {
+        namespaces: { findNamespace: () => tenant },
+        agents: { findAgent: () => agent },
+        revisions: {
+          findRevision: () => structuredClone(pendingRevision),
+          listRevisionMetadata: () => [pendingRevision],
+        },
+        secrets: {
+          findSecret: () => ({
+            id: pendingRevision.harnessAuth.source.id,
+            namespaceId: pendingRevision.namespaceId,
+            driverId: pendingRevision.harnessAuth.secretDriverId,
+            backendRef: authContext(pendingRevision, uncertain.namespace).harnessAuth.backendRef,
+          }),
+        },
+        workspaceSetups: { find: () => undefined },
+        credentialSources: { listCredentialWithdrawals: () => [] },
+      };
+      const events = [];
+      const worker = new ControllerWorker({
+        pool: {},
+        mode: "production",
+        emit: (event) => events.push(event),
+        drivers: {
+          installation: { drivers: { iam, compute: driver } },
+          computeDriver: driver,
+          secretDriver: { id: pendingRevision.harnessAuth.secretDriverId },
+          createIAMDriver: () => iam,
+        },
+      });
+      worker.installation = { id: "node-recovery-test" };
+      worker.state.loadNativeIAMState = () => ({
+        identities: [
+          { id: actorId },
+          {
+            id: agent.servicePrincipalId,
+            kind: "service_principal",
+            namespaceId: agent.namespaceId,
+            agentId: agent.id,
+          },
+        ],
+      });
+      worker.state.read = (read) => read(view);
+      worker.queue.findWorkAttempt = () => undefined;
+      worker.queue.heartbeat = () => ({ ageMs: 100 });
+      const deferred = [];
+      worker.state.transactWithQueue = (update) =>
+        update(view, {
+          heartbeat: () => claim,
+          defer: (_claim, result) => deferred.push(result.code),
+        });
+      worker.workOrigins.set(claim, performance.now() - 100);
+      await worker.process(claim);
+      const diagnostics = events.filter(({ event }) => event === "worker.compute-prepare-failed");
+      assert.equal(diagnostics.length, 1, JSON.stringify(events));
+      const diagnostic = diagnostics[0];
+      const nodeName = driver.workspaceNodeName(pendingRevision);
+      assert.equal(uncertain.namespace.length, 63);
+      assert.equal(nodeName.length, 40);
+      assert.equal(diagnostic.code, "KUBERNETES_DEPENDENCY_UNAVAILABLE");
+      assert.equal(diagnostic.candidatePreparationReached, true);
+      assert.equal(
+        diagnostic.message,
+        "Node credential unconfirmed. Stop Agent; wait for shutdown. " +
+          `Delete only node Secret ${uncertain.namespace}/${nodeName}, then redeploy. ` +
+          "Preserve node identity and workspace storage.",
+      );
+      assert.ok(diagnostic.message.length <= 256);
+      assert.deepEqual(deferred, ["REVISION_FINALIZATION_INCOMPLETE"]);
+      assert.deepEqual(uncertain.objects.get(uncertainKey), retained);
+    }
+    // Later status cannot redirect the stored identity. Token authentication
+    // remains bound to the original device after the short-lived receipt is gone.
+    uncertain.state.setupDelivery = "confirmed";
+    uncertain.state.redeemedDeviceId = "another-node";
+    uncertain.state.possessionAvailable = true;
+    await uncertain.prepare();
+    assert.ok(uncertain.state.possessionDevices.every((id) => id === "uncertain-node"));
+    const confirmed = uncertain.objects.get(uncertainKey);
+    assert.equal(confirmed.metadata.uid, retained.metadata.uid);
+    assert.equal(confirmed.data.setupReceiptDeviceId, undefined);
+    assert.equal(decode(confirmed.data.deviceId), "uncertain-node");
+    if (expired) {
+      assert.equal(confirmed.data.enrolledRevisionId, undefined);
+    } else {
+      assert.equal(decode(confirmed.data.enrolledRevisionId), uncertain.revision.id);
+    }
+    assert.equal(uncertain.state.setupCalls, 0);
+  }
 });
 
 // Findings 1669 and 1672: a revision that gets no preparation pass (already active at an
@@ -4396,7 +4781,9 @@ test("dedicated replacement starts a candidate Gateway when the predecessor cann
           ) {
             throw new Error("gateway connection unavailable");
           }
-          return connected ? { deviceId: "node-1", connected: true } : undefined;
+          return connected
+            ? { deviceId: "node-1", connected: true, delivery: "confirmed" }
+            : undefined;
         },
         async isConnected() {
           return connected;
@@ -19646,7 +20033,9 @@ function workspaceSetupFixture(
           return { setupId: "setup-1", setupCode: "setup-code", expiresAtMs: Date.now() + 60000 };
         },
         async observeSetup() {
-          return state.ready ? { deviceId: "node-1", connected: true } : undefined;
+          return state.ready
+            ? { deviceId: "node-1", connected: true, delivery: "confirmed" }
+            : undefined;
         },
         async isConnected() {
           return state.ready;

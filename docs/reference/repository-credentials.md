@@ -99,7 +99,7 @@ for what the original broker can confirm.
 GitLab.com development uses registry-backed Repo policy, the credential service,
 and a PAT. Native Agents can read, push approved refs, and create drafts.
 OpenShell delivery and durable receipts are excluded. See the
-[proposal](../../specs/rfcs/0029-gitlab-repository-credentials.md) and
+[proposal](../../specs/rfcs/0030-gitlab-repository-credentials.md) and
 [development authority](repository-credentials/gitlab-development-token.md).
 
 ## Configuration

@@ -1,6 +1,7 @@
 import { reduceCredentialPolicy } from "@openclaw-enterprise/occ";
 import {
   assertExecutionReleaseAllowed,
+  pluginRuntimeHarnessRequirement,
   credentialSourceMatchesSnapshot,
   revisionCredentialSourceSnapshot,
 } from "@openclaw-enterprise/contracts";
@@ -1202,7 +1203,7 @@ export class ControllerWorker {
   private readonly repositoryPolicy: RepositoryPolicyDriver | undefined;
   private readonly repositoryAdmission: InstallationRuntimeDrivers["repositoryAdmission"];
   private readonly repositoryCleanupRetryMs: number;
-  private readonly pluginDriver: PluginDriver | undefined;
+  private readonly pluginDrivers: readonly PluginDriver[];
   private readonly repositoryCredentials: RepositoryCredentialLifecycle;
   private readonly mode: "development" | "production";
   private readonly emit: (event: Readonly<Record<string, unknown>>) => void;
@@ -1380,7 +1381,7 @@ export class ControllerWorker {
       this.nativeRepositorySender?.maintenanceIntervalMs ?? 30_000,
       "Repository cleanup retry interval",
     );
-    this.pluginDriver = drivers?.pluginDriver;
+    this.pluginDrivers = drivers?.pluginDrivers ?? [];
     if (this.repositoryPolicy !== undefined) {
       const driver = this.repositoryPolicy;
       if (driver.capability !== "repo" || typeof driver.resolve !== "function") {
@@ -1402,6 +1403,7 @@ export class ControllerWorker {
       state: this.state,
       queueOptions: this.queueOptions,
       driver: this.repositoryPolicy,
+      repositoryAdmission: this.repositoryAdmission,
       nativeSender: this.nativeRepositorySender,
       verifyExecution: (claim, revision) =>
         this.withClaimHeartbeat(
@@ -1460,7 +1462,6 @@ export class ControllerWorker {
       this.iam,
       this.secretDriver,
       this.repositoryPolicy,
-      this.pluginDriver,
       this.compute,
     ] as const) {
       if (driver !== undefined) {
@@ -1468,6 +1469,7 @@ export class ControllerWorker {
         provisioning.selectDriver(driver.capability, driver.id);
       }
     }
+    provisioning.installPluginDrivers(this.pluginDrivers);
     this.provisioningController = provisioning;
     const compute = this.compute;
     if (typeof compute.preflight === "function") {
@@ -1753,6 +1755,9 @@ export class ControllerWorker {
       throw new Error(`The selected production Compute Driver requires ${operation}.`);
     }
     if (operation === "activateRevision") {
+      if (!this.revisionPluginDriverAvailable(revision)) {
+        throw new Error("PLUGIN_DRIVER_MISMATCH");
+      }
       this.validateExecutionAdmission(revision);
       this.stoppedPredecessors.delete(revision.id);
     }
@@ -1915,6 +1920,9 @@ export class ControllerWorker {
     revision: Readonly<AgentRevision>,
     context: ComputeRevisionContext,
   ): Promise<{ readonly observation: ComputeReadiness; readonly context: ComputeRevisionContext }> {
+    if (!this.revisionPluginDriverAvailable(revision)) {
+      throw new Error("PLUGIN_DRIVER_MISMATCH");
+    }
     this.validateExecutionAdmission(revision);
     const timing = this.deployTimings.get(claim.idempotencyKey);
     const started = Date.now();
@@ -4505,6 +4513,7 @@ export class ControllerWorker {
                   candidate !== undefined &&
                   candidate.compute.id === this.compute.id &&
                   candidate.compute.implementation === this.compute.implementation &&
+                  this.revisionPluginDriverAvailable(candidate) &&
                   this.compute.requiresStoppedPredecessors?.(candidate) === true
                 ) {
                   return candidate;
@@ -4657,6 +4666,19 @@ export class ControllerWorker {
         // Verify Git before any preparation or binding can repair the running execution.
         supervisedRevision = revision;
         await this.repositoryCredentials.authorize(claim, revision);
+      }
+      // An incompatible active revision still needs withdrawal and standing execution supervision.
+      // Verify its plugin owner before Compute can bind, prepare or activate anything.
+      if (!this.revisionPluginDriverAvailable(revision)) {
+        if (agent.activeRevisionId === revision.id) {
+          await this.finalizeActiveRevision(claim, revision, "PLUGIN_DRIVER_MISMATCH");
+        } else {
+          await this.finalizeRevision(claim, {
+            outcome: "permanent",
+            code: "PLUGIN_DRIVER_MISMATCH",
+          });
+        }
+        return;
       }
       if (this.compute.bindAgent !== undefined) {
         try {
@@ -5437,6 +5459,20 @@ export class ControllerWorker {
       failureLogFields,
     );
     return true;
+  }
+
+  private revisionPluginDriverAvailable(revision: Readonly<AgentRevision>): boolean {
+    const pin = revision.plugins?.driver;
+    if (pin === undefined) {
+      return true;
+    }
+    return this.pluginDrivers.some(
+      (driver) =>
+        driver.id === pin.id &&
+        driver.implementation === pin.implementation &&
+        driver.harnessId === revision.harness.id &&
+        pluginRuntimeHarnessRequirement(driver.implementation, revision.harness) === undefined,
+    );
   }
 
   private validateExecutionAdmission(revision: AgentRevision): void {
