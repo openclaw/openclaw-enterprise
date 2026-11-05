@@ -22,6 +22,13 @@ This is a job in the CI workflow, selected when CI Impact chooses `full` mode.
 Documentation-only and recognized test-only changes skip it. CI also runs on
 `main` pushes, merge groups, and manual dispatch.
 
+In hosted CI, the job reuses the same verified runtime artifact as the four
+ordinary image lanes. It builds the test trust and provider layers from the verified local OCI image,
+then publishes the derived images to its existing local registry.
+The controller build and all installation, chat and lifecycle checks still run.
+See [shared runtime images](run-lanes.md#shared-runtime-image-in-ordinary-ci) for
+artifact verification and rerun behavior.
+
 The job is outside `CI Required`, so its failure does not fail that merge gate.
 A failed main-push CI workflow can still block container and CLI publication,
 which require successful CI for their source.

@@ -1,7 +1,8 @@
 {
   "env": {
     "OCC_TEST_CONTAINER_REGISTRY": "1",
-    "OCC_TEST_DOCKER_TOKEN_RETRY": "1"
+    "OCC_TEST_DOCKER_TOKEN_RETRY": "1",
+    "OCC_TEST_RUNTIME_ARTIFACT": "1"
   },
   "requiredEnv": [
     "OCC_TEST_RUNTIME_IMAGE",
@@ -31,7 +32,8 @@
     "tests/integration/production-image-qualification.test.mjs",
     "tests/integration/development-packaging.test.mjs",
     "tests/integration/container-publication-workflow.test.mjs",
-    "tests/integration/oidc-ca-trust.test.mjs"
+    "tests/integration/oidc-ca-trust.test.mjs",
+    "tests/integration/ci-runtime-artifact.test.mjs"
   ],
   "files": [
     {
@@ -147,6 +149,12 @@
         "rendered Harness node CA carries the Gateway root and never the IdP root",
         "rendered OIDC CA assembly reaches the callback transport and preserves Gateway and public trust",
         "rendered API guard isolates real PostgreSQL TLS from IdP trust before startup"
+      ]
+    },
+    {
+      "path": "tests/integration/ci-runtime-artifact.test.mjs",
+      "expectedTests": [
+        "same-run runtime artifact prepares an owned image and supplies a real OCI build context"
       ]
     }
   ]
