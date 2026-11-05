@@ -23,7 +23,7 @@ import {
   OpenClawController,
   ScopeViolationError,
 } from "../../packages/occ/src/index.ts";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { registerAndSelectDrivers } from "../helpers/development.mjs";
 import { bindRole, permissionsFor } from "../helpers/iam-grants.mjs";

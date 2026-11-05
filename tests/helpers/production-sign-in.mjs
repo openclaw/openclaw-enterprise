@@ -13,7 +13,7 @@ import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { createInstallationDriverConfiguration } from "./installation-driver-configuration.mjs";
-import { createTestConfigurationDriver } from "./configuration-driver.mjs";
+import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { jsonLineDestination } from "./json-lines.mjs";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import {

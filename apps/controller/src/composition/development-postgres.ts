@@ -255,6 +255,9 @@ export async function composePostgresDevelopment(
         ...installationControllerOptions(drivers?.installation),
         state,
         ...(drivers?.tokenService && { preparedTokens: drivers.tokenService }),
+        ...(drivers?.pluginSourceReader === undefined
+          ? {}
+          : { pluginSourceReader: drivers.pluginSourceReader }),
         recordOperations: true,
         defaultPresets: drivers?.defaultPresets ?? [],
         bundledPresetVersions: drivers?.bundledPresetVersions ?? [],

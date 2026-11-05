@@ -8,6 +8,8 @@ This record preserves the dated changes to the OpenShell Sandbox provisioning fl
 
 ## Changelog
 
+- 2026-11-05 05:35: Preserve journal cleanup, TLS setup validation and preparer shutdown while integrating main. (authoring-run/a169e925-2eda-47cf-b47c-192df70fcd3a - 7c113779d56e81637388a8a79b3a8de61bb15b59)
+
 - 2026-11-04 19:20: Preserve cleanup ownership and observed Harness readiness. (authoring-run/73695cc1-a0da-41a6-9cb1-c3fbde5f5a71 - 3f3150ce8a8b024e902ecf493a5e41ff5b72c934)
 
 - 2026-11-04 07:14: Preserve Namespace cleanup while retiring local middleware provisioning. (authoring-run/d89beadd-3258-4f64-873f-0033585df097 - dc5792f75970f2ac79ba462f6067019bdaa6c360)
@@ -239,3 +241,13 @@ This record preserves the dated changes to the OpenShell Sandbox provisioning fl
 - 2026-11-05 00:43: Trace exact workspace Git trust in the Sandbox environment. (authoring-run/5112cc08-58d9-46f9-9e8d-eb23191832e6 - 392d3f1d70fbf2d401afe0c1bdb2ddcf8f6341d9)
 
 - 2026-11-04 23:20: Reject plaintext setup with TLS pins. (authoring-run/63c54d1f-8f48-4ab3-a707-9b0d72978728 - 24c8c7f7c2b012bd1b802be333a3420645808533)
+
+- 2026-11-05 14:34: Reuse bounded retries for the pinned Agent Sandbox manifest. (authoring-run/33ffb317-d84b-4de5-b946-70b58f35af74 - a383313636fc348a2325c0b1f6e05ae80327fd30)
+
+- 2026-11-05 14:17: Revoke empty API grants. (authoring-run/a85a4857-880b-4f7b-8fe2-d648c86e601e - 2b92aa9b35de6e7633b960dfd7edcf1fd3fd46ea)
+
+- 2026-11-05 12:54: Extract shared setup validation while preserving OpenShell provisioning. (authoring-run/0428fede-167f-4783-a06f-00eb40ffa23c - f1295c81f3ac79f51af2b93b61013e0a8e5c0394)
+
+- 2026-11-05 12:54: Reject projected identity at admission. (authoring-run/root-deployment_docs - 894a5b6698049c41fba27f5c2c0764e86b4c0632)
+
+- 2026-11-05 11:46: Preserve Gateway DNS and Kubernetes API egress when enabling protected Git. (authoring-run/42be4d0d-c90e-4ade-bfa2-a8b8df80fc1d - a69245cb064932a4c7bf27df3fd8646a0107c4e4)

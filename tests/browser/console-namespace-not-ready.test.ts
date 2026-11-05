@@ -35,7 +35,7 @@ import {
   waitForEnabled,
 } from "./console-agents-browser-helpers.ts";
 import { fulfillPatchedJson } from "./console-patched-response.ts";
-import { routeInstallationProvisioning } from "./console-agents-test-support.mjs";
+import { routeInstallationProvisioning } from "./console-agents-test-support.ts";
 import { refocus } from "./console-refocus-helpers.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 

@@ -183,7 +183,7 @@
     "tests/integration/configuration-body-limits.test.mjs": 1300,
     "tests/integration/configuration-controller.test.mjs": 6700,
     "tests/integration/configuration-startup.test.mjs": 11200,
-    "tests/integration/console-api.test.mjs": 1700,
+    "tests/integration/console-api.test.ts": 1700,
     "tests/integration/console-build-metadata.test.mjs": 200,
     "tests/integration/console-provisioning-request.test.ts": 100,
     "tests/integration/console-theme.test.ts": 2500,

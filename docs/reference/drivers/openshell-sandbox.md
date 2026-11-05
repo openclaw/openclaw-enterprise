@@ -49,9 +49,9 @@ resolve its saved `sandboxDriverId` for provisioning and cleanup.
 | `filesystem` | Approved PVC subpath mounts and OpenShell filesystem policy for read-only/read-write paths.   |
 | `process`    | OpenShell runs the workload with the UID and GID selected by its driver.                      |
 
-The Driver requires `hard_requirement` for Landlock filesystem enforcement. Omit
-`policy.landlockCompatibility` or set it to `hard_requirement`; any other value,
-including `best_effort`, fails Installation startup. Hosts lacking these Landlock operations fail launch.
+Landlock requires `hard_requirement`. Omit `policy.landlockCompatibility` or set
+it to `hard_requirement`; other values, including `best_effort`, fail Installation
+startup. Missing required Landlock operations prevent launch.
 
 No `exec` facet or per-tool sandbox exists; Harness `exec` authorization is deferred.
 
@@ -231,9 +231,8 @@ Native OpenClaw already disables inner isolation. Its hook sets
 `agents.defaults.workspace` and any
 `agents.entries.main.workspace` to the approved `sandboxDataMount.mountPath`,
 which the Gateway, file transfer, and node address; admission refuses a roster
-that makes another Agent the default. Native workers have separate
-workspaces but share the Sandbox's user, filesystem, process, and network
-boundary. OpenShell isolates each Agent revision from other workloads, not mutually
+that makes another Agent the default. Native workers have separate workspaces but share the Sandbox's user, filesystem,
+process, and network boundary. OpenShell isolates each Agent revision from other workloads, not mutually
 untrusted sessions within one Agent. Kubernetes defaults to eight native workers;
 `runtime.nativeOpenClawSessionCapacity` accepts `1` through `1024`. Stopping a
 hosted session releases its slot; idle workers are not retired automatically.
@@ -274,19 +273,21 @@ and this scoping. See the
 
 ### Workload identity
 
-The local profile disables optional Harness workload credentials. OpenShell
-may use its gateway-configured infrastructure ServiceAccount, but must hide
-supervisor credentials from the Agent. Preserve any requested Agent
-ServiceAccount and projected token exactly, or reject the revision.
+OpenShell cannot preserve Agent ServiceAccounts and projected tokens. Dedicated
+Agents need Compute's `servicePrincipalCredentials.mode: disabled` or a compatible
+Sandbox Driver. Deployment admission rejects projected identity; saving
+credential-source bindings does not validate it. OpenShell may use its
+gateway-configured infrastructure ServiceAccount; supervisor credentials must
+remain inaccessible to the Agent.
 
 Kubernetes tokens cannot identify OCE Agents across cluster trust domains. Future
-exchange must bind evidence to the ServicePrincipal and Agent revision; Gateway
-and Harness authenticate separately. See
+exchange must bind ServicePrincipal and Agent revision evidence; Gateway and Harness
+authenticate separately. See
 [authorization](../authorization.md#principals).
 
 ### Writable runtime state
 
-OpenShell mounts `/sandbox/.openclaw-runtime` from a separate Agent revision PVC
+OpenShell mounts `/sandbox/.openclaw-runtime` from an Agent revision PVC
 subpath, never its root. Persistent categories use separate subpaths below
 `/sandbox/.openclaw-mounts`. Mount paths, including `OPENCLAW_NODE_STATE_DIR`, use
 a process-created `state` child for atomic writes without symlinks or permission

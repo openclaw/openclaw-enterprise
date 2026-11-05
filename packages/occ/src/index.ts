@@ -777,6 +777,11 @@ export interface RuntimeLogReadGrant {
 export type RuntimeLogReadAdmission = <T>(read: () => Promise<T>) => Promise<T>;
 
 export interface ControllerOptions {
+  /** Code-only composition binding for the bundled retained-source plugin reader. */
+  readonly pluginSourceReader?: {
+    readonly gateway: CredentialGatewayDriver;
+    readonly withSourceToken: NonNullable<CredentialGatewayDriver["withSourceToken"]>;
+  };
   readonly preparedTokens?: PreparedTokenService | undefined;
   readonly driverConfigurations?: readonly DriverConfigurationRegistration[];
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
@@ -2061,6 +2066,7 @@ export class OpenClawController {
   private readonly nativeWorkers: NativeWorkerSupportSource | undefined;
   private readonly credentialProxyCapacity: CredentialProxyCapacity;
   private readonly registry = new Map<string, RegisteredDriver>();
+  private readonly pluginSourceReader: ControllerOptions["pluginSourceReader"];
   private readonly preparedTokens: PreparedTokenService | undefined;
   private readonly selections = new Map<DriverCapability, RegisteredDriver>();
   private pluginRegistrations: readonly RegisteredDriver[] = [];
@@ -2102,6 +2108,7 @@ export class OpenClawController {
     }
     this.authorization = options.authorize;
     this.preparedTokens = options.preparedTokens;
+    this.pluginSourceReader = options.pluginSourceReader;
     this.clock = options.now ?? (() => new Date());
     this.identifier = options.createId;
     this.state = options.state ?? new InMemoryPlatformState();
@@ -8642,7 +8649,9 @@ export class OpenClawController {
         namespaceId,
         credentialSource.id,
       );
-      if (!gateway.withSourceToken) {
+      const reader = this.pluginSourceReader;
+      const selectedReader = reader?.gateway === gateway ? reader.withSourceToken : undefined;
+      if (!selectedReader && !gateway.withSourceToken) {
         throw new NotImplementedError(
           "agent_plugins.discovery",
           "The Credential Gateway does not support plugin discovery.",
@@ -8657,6 +8666,10 @@ export class OpenClawController {
         (invoke) =>
           this.credentialGatewayOperation(() => {
             context.signal.throwIfAborted();
+            if (selectedReader) {
+              return selectedReader(context, invoke);
+            }
+            // Preserve external callback invocation and its late/disconnect controls.
             return gateway.withSourceToken!(context, invoke);
           }),
         async () => {
@@ -9607,7 +9620,7 @@ export class OpenClawController {
   ): SandboxPolicySnapshot {
     if (driver?.admitProtectedCodexArtifactPolicy === undefined) {
       throw new ResourceStateConflictError(
-        "The selected Sandbox Driver cannot qualify protected Codex artifact policy.",
+        "Deploy requires a Sandbox Driver that supports protected Codex artifact admission. Ask your Installation administrator to check drivers.sandbox and the selected Driver version.",
       );
     }
     return this.checkedSandboxPolicySnapshot(driver, [], version, undefined, undefined, () => {

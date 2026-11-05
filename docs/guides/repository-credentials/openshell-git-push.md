@@ -155,6 +155,8 @@ repository_network
 save_session
 ```
 
+On Kubernetes, `repository_network` retains Gateway DNS and Kubernetes API access alongside the Git authority route. Rerun it after the API endpoint addresses change.
+
 Complete the Gateway middleware rollout and authenticated worker installation check from steps 5–6 before proceeding. Use `$CONTEXT`, `$PLATFORM_NS` and `$namespace` in those commands. Replace the reference example’s `openclaw-system` in certificate SANs, middleware endpoints and commands with `$PLATFORM_NS`. The Supervisor namespace is `$TENANT_NAMESPACE`. Select the ready worker for the authenticated check:
 
 ```bash

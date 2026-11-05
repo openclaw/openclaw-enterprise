@@ -1,14 +1,15 @@
 ---
 created: "2026-09-21"
 updated: 2026-11-05
-last_updated_session: authoring-run/a169e925-2eda-47cf-b47c-192df70fcd3a
+last_updated_session: authoring-run/50d65cc8-04ef-4050-bef5-3cf7563297a6
 ---
 
 # OpenShell Sandbox provisioning flow
 
 ## Overview
 
-Kubernetes Compute provisions dedicated Codex/OpenClaw through OpenShell.
+Kubernetes Compute provisions Codex/OpenClaw Harnesses through OpenShell.
+
 [Credential sources](credential-source-lifecycle.md) supply model access.
 
 ## Entry Points
@@ -91,32 +92,43 @@ graph TD
 `internal/occdev/openshell.go:prepareOpenShell`,
 `internal/occdev/kubernetes.go:writeInstallation`
 
-`openshell` launchers require Landlock, support Node and x64/ARM64 Codex on any launcher, verify 0.1.6 charts and pin Gateway/supervisor/sandbox images. OCE image import precedes k3s garbage collection. `writeInstallation` selects curated Codex plugins; the selected Credential Gateway supplies credentials.
+Both `openshell` launchers require Landlock, support Node and x64/ARM64 Codex
+regardless of launcher architecture, verify 0.1.6 charts and pin
+Gateway/supervisor/sandbox images. OCE image import precedes k3s garbage collection. `writeInstallation` selects curated Codex plugins; the selected
+Credential Gateway supplies credentials.
+
+Agent Sandbox downloads: `internal/occdev/routing_manifest.go`;
+CI bootstrap: `scripts/ci/routing.mjs:downloadPinnedArtifact`. Transient network failures
+and HTTP 408/429/5xx allow eight attempts, each limited to 60 seconds;
+retries require their delay to fit the 120-second budget. Other failures are terminal. Verified manifests are limited to 32 MiB and written `0600`; archives
+are unchanged.
 
 `dev-up` validates Kubernetes/OpenShell before `occ dev up`.
 `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` selects Kubernetes-only: in-cluster
 authentication, `oce-system`, imported PostgreSQL and [per-Agent HTTPS](../guides/deploy/local-setup.md).
-Its launcher checks port collisions and records engine, cluster, Namespace,
-ports and key path. Compose runs PostgreSQL/OCC with a k3d-targeting worker.
-The retired local static-inference profile no longer provisions an authority
-or verifies middleware chart configuration.
+Launcher checks port collisions and records engine, cluster, Namespace, ports
+and key path. Compose runs PostgreSQL/OCC with a k3d worker.
 
-After rollout failure, `prepareOpenShell` calls
+On rollout failure, `prepareOpenShell` calls
+
 `internal/occdev/agent_sandbox_rollout_diagnostics.go:captureAgentSandboxRollout`
-once, preserving rollback's original error. Diagnostics include Deployment,
+once, preserving rollback errors. Diagnostics include Deployment,
 UID-linked ReplicaSets/Pods and Warning reasons, excluding messages, environment,
-full labels and logs. Unavailable, malformed or oversized results are marked.
+full labels and logs. Unavailable, malformed or oversized results are identified.
 Limits: 15-second context; three seconds/256 KiB per command; 32 KiB per record.
 No retries; 200 ms pipe draining cannot terminate descendants.
 
 `network.providerHarness` records Gateway ClusterIP, Pod selector and TCP/8080.
-Agent Gateways alias its advertised hostname without changing HTTP Host;
-policy permits only those Pods/port. Both launchers install private Envoy routing
-and operator Workspaces. Gateway ingress admits API, worker, supervisor callbacks
-and dedicated Agent Gateways; the public quickstart's
-`docs/snippets/openshell-quickstart/kubernetes/service-policies.py` reads live selectors and admits these callers on TCP/8080, retaining each Namespace's
-supervisor policy when another is applied. Tenant callers must still match the namespace ownership label. The quickstart platform helper records each policy set before applying it; uninstall deletes every recorded set. See [local deployment](../guides/deploy/local-kubernetes-development.md)
-and the [local protected-profile retirement notice](../guides/deploy/local-openshell-images.md#select-the-protected-profile).
+Agent Gateways alias its hostname, preserving HTTP Host; policy permits only those
+Pods/port. Launchers install private Envoy routing and operator Workspaces.
+`docs/snippets/openshell-quickstart/kubernetes/service-policies.py` uses live
+selectors to admit API, worker, supervisors and Agent Gateways on TCP/8080.
+Supervisor grants accumulate per Namespace; callers must match ownership labels.
+Protected Git preserves Gateway DNS/API egress using Service addresses, DNS
+selectors/ports and ready API endpoints. Empty discovery warns and removes stale
+backend grants; failed reads abort. Policies are recorded before application and
+deleted on uninstall. See [local deployment](../guides/deploy/local-kubernetes-development.md)
+and the [retired local protected profile](../guides/deploy/local-openshell-images.md#select-the-protected-profile).
 
 `internal/occdev/sandbox_network_policy.go:loadSandboxNetworkPolicies` validates
 policies (maximum 1 MiB) before provisioning; persisted rules augment generated
@@ -146,21 +158,26 @@ Definitive refusals cannot settle earlier uncertainty.
 `from` fields to the SDK alias for create and update. Updates retain the saved
 UID, current `resourceVersion`, and creation nonce; readback restores wire fields
 for operator configuration checks.
-Preinstalled operator-owned resources require full configuration checks and are
-retained. Readiness and health precede Workspace creation.
+Preinstalled operator-owned resources require full configuration checks and remain
+retained. Readiness/health precede Workspace creation.
 
 `apps/controller/src/backends/openshell.ts:lifecycleTarget` binds the effective
 endpoint and public server trust. A bare Service resolves in the tenant Namespace;
 the development profile uses a central Gateway. `clientForNamespace` passes raw endpoints, including bracketed IPv6, unchanged to gRPC; HTTP retains explicit port 80; HTTPS and other ports are unchanged.
 
-The Workspace name is Compute's physical namespace: `oce-` plus a 15-character
-digest fits OpenShell's 19-character limit. Before `CreateWorkspace`, the Driver saves intent; before ready, it saves the returned immutable ID. Retries require that ID and ownership metadata; unbound Workspaces and unknown creates cannot be adopted by name. Callbacks commit under the worker's live claim/audit transaction; no credentials are stored.
+Compute's physical Namespace name, `oce-` plus a 15-character digest, fits
+OpenShell's 19-character Workspace limit. Before `CreateWorkspace`, the Driver saves intent; before ready, it saves the returned immutable ID. Retries require that ID and ownership metadata; names cannot authorize unbound Workspaces or unknown creates. Callbacks commit under the worker's live claim/audit transaction; no credentials are stored.
 
 ### 2. Derive the provider-owned Harness request
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`
 
-Compute derives `provisionHarness` from its ordinary Deployment. First deployment keeps the Service inactive and transport fail-closed. Attachments and provider/Sandbox creation await Gateway readiness and its Agent-owned setup Secret. Local projected identity is disabled; enabling it fails before mutation because the pinned API cannot preserve the Agent ServiceAccount/token.
+Compute derives `provisionHarness` from its Deployment, keeping the initial
+Agent Service inactive and Gateway transport fail-closed. Attachments
+and provider/Sandbox creation await Gateway readiness and its Agent-owned setup
+Secret reference. At deployment, `validateHarnessAuth` rejects dedicated OpenShell
+projected identity, naming `servicePrincipalCredentials.mode`: OpenShell cannot
+preserve the Agent ServiceAccount/token.
 
 For `credential_source`, Compute renders the catalog login mode without a model
 Secret and passes version and `attachForRevision` provider names through
@@ -218,8 +235,11 @@ Clean exit permits verifier WebSocket startup; failure triggers group TERM/KILL.
 Provider Gateway readiness checks transport, not HMAC plugin status.
 
 `oce-codex-runtime`/`oce-openclaw-runtime` provide read-only setup and Gateway CA.
-Only Codex accepts `runtime.json`/`config.toml`. Validated setup, including
-`bootstrapToken`, becomes `node-setup.json`. TLS-pinned setup requires `wss://`
+Only Codex accepts `runtime.json`/`config.toml`. `harnessRuntimeCredentials` reads
+the projected Secret; `packages/utils/src/workspace-node-setup.ts:validateWorkspaceNodeSetupSecret`
+checks ownership and setup material without further reads. OpenShell keeps provider
+output private and maps failures to `OpenShellSandboxConfigurationFailure`.
+Validated setup, including `bootstrapToken`, becomes `node-setup.json`. TLS-pinned setup requires `wss://`
 at admission and supervisor replacement. WebSocket rewriting is unsupported:
 device proofs sign the literal token.
 Renewal requires expired stored setup, later live expiry and unchanged endpoint,
@@ -273,9 +293,8 @@ After HTTP `400` or `404`, `observeHeldRepositoryGitPreview` and `enrollHarness`
 require the recorded release acknowledgment and authenticated WebSocket. Other
 non-`200` responses stay pending or refuse enrollment without an upgrade.
 
-The Backend reuses clients and retries setup. Cancellation is checked after
-setup/credential preparation; stalled initialization/file reads have no cancellation deadline. After dispatch, cancellation stops local gRPC; remote mutations
-may continue, requiring recovery.
+Setup retries reuse Backend clients. Cancellation follows setup/credential
+preparation; stalled initialization/file reads have no cancellation deadline. After dispatch, cancellation stops local gRPC; remote mutations may need recovery.
 
 `GetService` separates control URL and advertised workload host/port.
 `harnessEndpoint` returns WebSocket origin and configured
@@ -288,9 +307,9 @@ unanswered reads are transient `SANDBOX_GATEWAY_UNAVAILABLE`.
 `apps/controller/src/drivers/sandbox/openshell-service-transport.ts:serviceWebSocketHandshake`
 destroys HTTP refusals at once, releasing their connections.
 
-Provider files require reported absolute paths. Gateway failure blocks readiness; uncertain creates retain providers. Cleanup deletes their Sandbox first.
+Provider files require reported absolute paths. Gateway failure blocks readiness; uncertain creates retain providers. Cleanup deletes the Sandbox first.
 
-Both planes use the Gateway's scoped WSS node route. Envoy rewrites worker-transfer paths and attributes clients. Policy binds executable, host and port. On process-group `EPERM`, the supervisor signals the process.
+Both planes use scoped WSS node routes; Envoy rewrites worker-transfer paths and attributes clients. Policy binds executable, host and port. On process-group `EPERM`, the supervisor signals the process.
 
 ### 5. Observe readiness or clean up
 
@@ -313,15 +332,14 @@ Activation requires the Harness Pod and enrolled Secret node. Retries reread pro
 checks policy, recipient and launcher proof. Strict grants require `PRE_CREDENTIALS`;
 legacy preview accepts absent binding fields.
 
-`apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts:observeHeldPreview` arms one-use denial: `git-write` probes `/<owner>/<repo>.git/oce-observe-request/<nonce>.git/info/refs`; installation-shaped providers, including `github-repository`, probe `/oce-observe-request/<nonce>.git/info/refs`. Both use `service=git-upload-pack`. The credential-free HTTPS launcher reaches denial before binding lookup for either prefix; only the exact challenge qualifies. Observation cannot release the Harness.
+`apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts:observeHeldPreview` arms one-use denial: `git-write` probes `/<owner>/<repo>.git/oce-observe-request/<nonce>.git/info/refs`; installation-shaped providers, including `github-repository`, probe `/oce-observe-request/<nonce>.git/info/refs`. Both use `service=git-upload-pack`. Credential-free HTTPS launchers reach denial before either prefix's binding lookup; only that challenge qualifies. Observation cannot release the Harness.
 
 Compute checks sources through `attachmentStatus`/`GetSandboxProviderStatus`:
 `pending` or missing status retries; `failed`, `withheld`, `revoked` or `absent`
-fails preparation. Shutdown reads the Sandbox and checks its name, Workspace,
-Namespace, Agent, and revision annotations before `DeleteSandbox`. Absence needs
-`GetWorkspace` and a second `GetSandbox`. Cleanup then deletes runtime and Git
-providers and profiles. `cleanupNativeWorkspace` retires interrupted preparers,
-refusing foreign or replaced resources.
+fails preparation. Shutdown verifies Sandbox name, Workspace and
+Namespace/Agent/revision annotations before `DeleteSandbox`. Absence requires
+`GetWorkspace` and another `GetSandbox`. Cleanup deletes runtime/Git providers and
+profiles; `cleanupNativeWorkspace` refuses foreign or replaced preparers.
 
 `apps/controller/src/drivers/sandbox/openshell.ts:cleanupNamespace` checks saved
 Namespace/resource UIDs and ownership before provider mutations. It removes owned
@@ -330,7 +348,7 @@ runtime/Git providers and profiles only from the original Workspace ID. A fresh
 checkpoint. `ACCEPTED`, `ALREADY_ABSENT`, unknown responses and bare absence do not
 supply that receipt.
 
-After receipt commit, reverse-order cleanup uses saved UIDs/current `resourceVersion` and confirms removal. Finalizers defer completion. Compute saves all configured absent or retained references before sweeping other objects. Absent references refuse reappearance; retained references refuse replacement UIDs. Retries skip provider RPCs despite gateway/Namespace loss.
+After receipt commit, cleanup reverses creation order, using saved UIDs/current `resourceVersion` and confirming removal. Finalizers defer completion. Compute saves absent/retained configured references before other sweeps. Absent references refuse reappearance; retained references refuse replacement UIDs. Retries skip provider RPCs despite gateway/Namespace loss.
 Compute handles managed Namespace removal or external claim release;
 see [Namespace placement](kubernetes-existing-namespace-placement.md).
 
@@ -391,6 +409,6 @@ Workspace wire test checks request IDs and deletion outcomes. Live provider remo
 
 ## Changelog
 
-- 2026-11-05 05:35: Preserve journal cleanup, TLS setup validation and preparer shutdown while integrating main. (authoring-run/a169e925-2eda-47cf-b47c-192df70fcd3a - 7c113779d56e81637388a8a79b3a8de61bb15b59)
+- 2026-11-05 13:56: Preserve Namespace journal cleanup while integrating shared setup validation and current workload-identity refusal. (authoring-run/50d65cc8-04ef-4050-bef5-3cf7563297a6 - 26909c112b94322dcd7196631c2087c121ae2217)
 
 [OpenShell Sandbox provisioning documentation history](openshell-sandbox-provisioning/history.md) preserves the older dated entries.

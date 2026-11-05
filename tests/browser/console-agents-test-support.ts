@@ -1,20 +1,29 @@
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import type { TestContext } from "node:test";
+import type { Page, Route } from "playwright";
+import type {
+  AgentRevision,
+  Namespace,
+  SandboxFacet,
+  HarnessExecutionMode,
+} from "../../packages/contracts/src/index.ts";
+import { OpenClawController } from "../../packages/occ/src/index.ts";
+import defaultCodexPreset from "../../deploy/presets/default-codex.json" with { type: "json" };
 
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { withNativeAdminGateway } from "../helpers/harness-configuration.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
-import { nativeValues, pathRequests } from "./console-agents-browser-helpers.ts";
+import { isRecord, nativeValues, pathRequests } from "./console-agents-browser-helpers.ts";
 
-/** @import { GitHubRepositoryRegistration } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts" */
+import type { GitHubRepositoryRegistration } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 
-const defaultCodexPreset = JSON.parse(
-  await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
-);
+type Fixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
+type OriginFixture = Pick<Fixture, "origin">;
+type Requests = Parameters<typeof pathRequests>[0];
 
 export const STARTER_CONTROL_UI = {
   enabled: true,
@@ -23,15 +32,32 @@ export const STARTER_CONTROL_UI = {
 
 // Let the real operation finish, then change only the returned Agent ID. This tests a
 // plausible success that cannot settle the selected Agent's Stop or Delete request.
-export async function replyWithDifferentAgentId(route, agentId, expectedStatus) {
+export async function replyWithDifferentAgentId(
+  route: Route,
+  agentId: string,
+  expectedStatus: number,
+) {
   const response = await route.fetch();
   assert.equal(response.status(), expectedStatus);
-  const { data, meta } = await response.json();
+  const body: unknown = await response.json();
+  assert.ok(isRecord(body), "expected an object response envelope");
+  const { data, meta } = body;
+  assert.ok(
+    isRecord(data) && typeof data.id === "string" && data.id.length > 0,
+    "expected an Agent ID",
+  );
   assert.equal(data.id, agentId);
-  await route.fulfill({ response, json: { data: { ...data, id: `agt_${randomUUID()}` }, meta } });
+  assert.ok(
+    isRecord(meta) && typeof meta.requestId === "string" && meta.requestId.trim().length > 0,
+    "expected response request metadata",
+  );
+  await route.fulfill({
+    response,
+    json: { ...body, data: { ...data, id: `agt_${randomUUID()}` } },
+  });
 }
 
-export async function expectNativeAdminHidden(page) {
+export async function expectNativeAdminHidden(page: Page) {
   assert.equal(await page.locator(".native-admin-access").isVisible(), false);
   assert.equal(
     await page.getByRole("link", { name: "Open Agent UI", exact: true }).isVisible(),
@@ -42,7 +68,7 @@ export async function expectNativeAdminHidden(page) {
 // Unavailable native admin access keeps an "Open Agent UI" button in the Tab order, marked
 // aria-disabled and described by its reason, so a keyboard user reaches why it cannot open
 // (finding 2714). A natively disabled button takes no focus.
-export async function expectNativeAdminUnavailable(page, reason) {
+export async function expectNativeAdminUnavailable(page: Page, reason: string) {
   const control = page.getByRole("button", { name: "Open Agent UI", exact: true });
   await control.focus();
   assert.deepEqual(
@@ -67,20 +93,24 @@ export async function expectNativeAdminUnavailable(page, reason) {
   );
 }
 
-export function assertRevisionUrl(page, revisionId) {
+export function assertRevisionUrl(page: Page, revisionId: string) {
   const url = new URL(page.url());
   assert.equal(url.searchParams.get("revision"), revisionId);
 }
 
-export function configurationPostRequests(requests, namespaceId) {
+export function configurationPostRequests(requests: Requests, namespaceId: string) {
   return pathRequests(requests, "POST", `/namespaces/${namespaceId}/configurations`);
 }
 
-export function agentProvisionPostRequests(requests, namespaceId) {
+export function agentProvisionPostRequests(requests: Requests, namespaceId: string) {
   return pathRequests(requests, "POST", `/namespaces/${namespaceId}/agents/provision`);
 }
 
-export async function routeInstallationProvisioning(page, fixture, executionModes = ["dedicated"]) {
+export async function routeInstallationProvisioning(
+  page: Page,
+  fixture: OriginFixture,
+  executionModes: HarnessExecutionMode[] = ["dedicated"],
+) {
   await page.route(`${fixture.origin}/installation`, async (route) => {
     await route.fulfill({
       status: 200,
@@ -100,10 +130,12 @@ export async function routeInstallationProvisioning(page, fixture, executionMode
 
 // A Sandbox Driver that can provision dedicated OpenClaw. Without one, the Installation does not
 // report native worker support and the Console withholds Dedicated OpenClaw (finding 1608).
-export function nativeSandboxDriver(facets = ["networking", "filesystem", "process"]) {
+export function nativeSandboxDriver(
+  facets: SandboxFacet[] = ["networking", "filesystem", "process"],
+) {
   return {
     id: "console-native-sandbox",
-    capability: "sandbox",
+    capability: "sandbox" as const,
     implementation: "console-native",
     supportsHarnessExecutionMode: DEDICATED_OPENCLAW_SUPPORT,
     facets,
@@ -114,7 +146,11 @@ export function nativeSandboxDriver(facets = ["networking", "filesystem", "proce
   };
 }
 
-export async function routeInstallationWithoutProvisioning(page, fixture, capabilities) {
+export async function routeInstallationWithoutProvisioning(
+  page: Page,
+  fixture: OriginFixture,
+  capabilities?: Record<string, unknown>,
+) {
   await page.route(`${fixture.origin}/installation`, async (route) => {
     await route.fulfill({
       status: 200,
@@ -138,9 +174,14 @@ export async function routeInstallationWithoutProvisioning(page, fixture, capabi
  * 409. The preflight refuses a name that is already taken (finding 2420), so only this race
  * reaches a refusal after the form saved its Secret or Configuration.
  */
-export async function raceAgentName(page, fixture, namespaceId, name) {
+export async function raceAgentName(
+  page: Page,
+  fixture: Pick<Fixture, "origin" | "createAgent">,
+  namespaceId: string,
+  name: string,
+) {
   const url = `${fixture.origin}/namespaces/${namespaceId}/agents`;
-  const handler = async (route) => {
+  const handler = async (route: Route) => {
     if (route.request().method() !== "POST") {
       await route.continue();
       return;
@@ -152,11 +193,11 @@ export async function raceAgentName(page, fixture, namespaceId, name) {
   await page.route(url, handler);
 }
 
-export function agentPostRequests(requests, namespaceId) {
+export function agentPostRequests(requests: Requests, namespaceId: string) {
   return pathRequests(requests, "POST", `/namespaces/${namespaceId}/agents`);
 }
 
-export function agentDeleteRequests(requests, namespaceId, agentId) {
+export function agentDeleteRequests(requests: Requests, namespaceId: string, agentId: string) {
   return pathRequests(
     requests,
     "DELETE",
@@ -164,7 +205,7 @@ export function agentDeleteRequests(requests, namespaceId, agentId) {
   );
 }
 
-export function agentStopRequests(requests, namespaceId, agentId) {
+export function agentStopRequests(requests: Requests, namespaceId: string, agentId: string) {
   return pathRequests(
     requests,
     "POST",
@@ -172,7 +213,11 @@ export function agentStopRequests(requests, namespaceId, agentId) {
   );
 }
 
-export function configurationPatchRequests(requests, namespaceId, configurationId) {
+export function configurationPatchRequests(
+  requests: Requests,
+  namespaceId: string,
+  configurationId: string,
+) {
   return pathRequests(
     requests,
     "PATCH",
@@ -180,18 +225,18 @@ export function configurationPatchRequests(requests, namespaceId, configurationI
   );
 }
 
-export function nativeAdminComputeDriver(endpoint) {
+export function nativeAdminComputeDriver(endpoint: string) {
   const driver = createTestKubernetesComputeDriver("console-native-admin-compute");
 
   return Object.assign(driver, {
     implementation: "test-native-admin-endpoint",
-    async ensureNamespace(namespace) {
+    async ensureNamespace(namespace: Pick<Namespace, "id">) {
       return { namespaceId: namespace.id, namespaceReady: true };
     },
-    async deleteNamespace(namespace) {
+    async deleteNamespace(namespace: Pick<Namespace, "id">) {
       return { namespaceId: namespace.id, namespaceDeleted: true };
     },
-    async prepareRevision(revision) {
+    async prepareRevision(revision: Pick<AgentRevision, "namespaceId" | "agentId" | "id">) {
       return {
         namespaceId: revision.namespaceId,
         agentId: revision.agentId,
@@ -213,15 +258,13 @@ export const repositoryBackendFixture = Object.freeze({
   drivers: Object.freeze({ repo: "console-repository-driver" }),
 });
 
-/**
- * @param {import("node:test").TestContext} t
- * @param {(namespaceId: string) => readonly GitHubRepositoryRegistration[]} buildRepositories
- * @param {{ reloadablePolicy?: boolean, includeInstallationAccess?: boolean }} [options]
- */
 export async function createRepositoryLaunchFixture(
-  t,
-  buildRepositories,
-  { reloadablePolicy = false, includeInstallationAccess = false } = {},
+  t: TestContext,
+  buildRepositories: (namespaceId: string) => readonly GitHubRepositoryRegistration[],
+  {
+    reloadablePolicy = false,
+    includeInstallationAccess = false,
+  }: { reloadablePolicy?: boolean; includeInstallationAccess?: boolean } = {},
 ) {
   const fixture = await createConsoleAppFixture(t, {
     defaultPresets: [defaultCodexPreset],
@@ -242,28 +285,30 @@ export async function createRepositoryLaunchFixture(
         id: currentPolicy.id,
         capability: currentPolicy.capability,
         implementation: "test-reloadable-github-policy",
-        maintenanceIntervalMs: currentPolicy.maintenanceIntervalMs,
-        listOptions: (input) => currentPolicy.listOptions(input),
-        resolve: (input) => currentPolicy.resolve(input),
-        open: (input, signal) => currentPolicy.open(input, signal),
-        status: (id, signal) => currentPolicy.status(id, signal),
-        close: (id, signal) => currentPolicy.close(id, signal),
+        listOptions: (input: Parameters<GitHubRepositoryPolicy["listOptions"]>[0]) =>
+          currentPolicy.listOptions(input),
+        resolve: (input: Parameters<GitHubRepositoryPolicy["resolve"]>[0]) =>
+          currentPolicy.resolve(input),
       }
     : currentPolicy;
-  fixture.controller.registerDriver(repoDriver);
-  fixture.controller.selectDriver("repo", repoDriver.id);
+  const controller: unknown = fixture.controller;
+  assert.ok(controller instanceof OpenClawController);
+  controller.registerDriver(repoDriver);
+  controller.selectDriver("repo", repoDriver.id);
   return {
     fixture,
     namespace,
-    /** @param {readonly GitHubRepositoryRegistration[]} repositories */
-    replacePolicy(repositories) {
+    replacePolicy(repositories: readonly GitHubRepositoryRegistration[]) {
       assert.equal(reloadablePolicy, true);
       currentPolicy = repositoryPolicyDriver(repositories, installationNamespaceId);
     },
   };
 }
 
-function repositoryPolicyDriver(repositories, installationNamespaceId) {
+function repositoryPolicyDriver(
+  repositories: readonly GitHubRepositoryRegistration[],
+  installationNamespaceId?: string,
+) {
   const backend = repositoryBackendFixture;
   const registry = validateGitHubRepositoryRegistry(
     {
@@ -295,13 +340,18 @@ function repositoryPolicyDriver(repositories, installationNamespaceId) {
   );
 }
 
-export function nativeAdminValues(marker, origin) {
+export function nativeAdminValues(marker: string, origin: string) {
   return withNativeAdminGateway(nativeValues(marker), origin);
 }
 
 // Without a caller-permission summary the console keeps controls enabled, so the API's own
 // denial is what the reader sees.
-export async function withholdPermissionSummary(page, fixture, namespaceId, agentId) {
+export async function withholdPermissionSummary(
+  page: Page,
+  fixture: OriginFixture,
+  namespaceId: string,
+  agentId: string,
+) {
   await page.route(
     `${fixture.origin}/namespaces/${namespaceId}/agents/${agentId}/permissions`,
     async (route) => {

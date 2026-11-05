@@ -50,6 +50,7 @@
     "tests/integration/postgres-external-protected-git.test.ts",
     "tests/integration/postgres-openshell-standing-git-transfer.test.ts",
     "tests/integration/postgres-openshell-standing-repository-set.test.ts",
+    "tests/integration/postgres-openshell-standing-selected-repository.test.ts",
     "tests/integration/postgres-egress-send-receipts.test.mjs",
     "tests/integration/postgres-protected-credential-free.test.mjs",
     "tests/integration/postgres-standing-approval-api.test.ts",
@@ -427,6 +428,14 @@
       "path": "tests/integration/postgres-openshell-standing-repository-set.test.ts",
       "expectedTests": [
         "one deployed OpenShell Agent pushes A and B with one repository-scoped token and cannot push C"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-openshell-standing-selected-repository.test.ts",
+      "expectedTests": [
+        "one selected repository renews beyond its original session without replacing the execution and denies withdrawn approval",
+        "an expired acknowledged launch refuses a pending successor after recipient changes",
+        "an expired acknowledged launch refuses a pending successor after approval changes"
       ]
     },
     {
