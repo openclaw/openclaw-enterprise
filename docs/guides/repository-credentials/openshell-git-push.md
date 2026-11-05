@@ -10,6 +10,8 @@ Give an existing dedicated Codex Agent access to one GitHub repository. The OCE 
 
 Use `fred` from setup, before or after [adding Linear](../integrations/codex-plugins.md). Push one empty commit to a new test branch and verify it on GitHub. GitHub branch rules apply. The optional [renewal verification](openshell-git-renewal.md) adds a second push.
 
+For code changes after this access check, [prepare the Agent’s development tools](../topics/repository-development.md).
+
 ## Before you start
 
 - **Supervisor trust and network:** Verify approved Supervisor outbound TCP 443 to the Git origin and its public CA trust for that TLS path. Worker GitHub API reachability is a separate prerequisite. A successful model turn does not prove either path. If the network uses a private CA, complete the Supervisor CA configuration in your installation setup before deployment. A failed held request closes that revision; correct trust and deploy a new revision without replaying its challenge.
