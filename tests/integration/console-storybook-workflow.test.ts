@@ -1003,12 +1003,10 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
         (await request(`${agentPath}/deletion-status?receiptId=${id("aud", 999)}`)).status,
         404,
       );
+      const acceptedAgent = await request(agentPath);
+      assert.equal(acceptedAgent.status, 200);
+      assert.partialDeepStrictEqual(await acceptedAgent.json(), { data: { status: "deleting" } });
       for (const status of ["queued", "running", "deleted"]) {
-        if (status !== "deleted") {
-          const pending = await request(agentPath);
-          assert.equal(pending.status, 200);
-          assert.partialDeepStrictEqual(await pending.json(), { data: { status: "deleting" } });
-        }
         const progress = await request(statusPath);
         assert.equal(progress.status, 200);
         assert.partialDeepStrictEqual(await progress.json(), {
@@ -1019,20 +1017,37 @@ test("Storybook creation routes preserve persistence, recovery and malformed ter
             status,
           },
         });
+        // Polling a nonterminal state must not remove the Agent before completion.
+        if (status !== "deleted") {
+          const pending = await request(agentPath);
+          assert.equal(pending.status, 200);
+          assert.partialDeepStrictEqual(await pending.json(), { data: { status: "deleting" } });
+        }
       }
       assert.equal((await request(agentPath)).status, 404);
       // Completion remains readable through the exact receipt after the Agent is removed.
       assert.partialDeepStrictEqual(await (await request(statusPath)).json(), {
         data: { status: "deleted" },
       });
+      // Another deleting Agent has status to disclose; rejection must depend on receipt
+      // ownership, not on the independent guard against status reads for active Agents.
+      const otherAgentPath = `agents/${id("agt", 1)}`;
+      const otherDeletion = await request(otherAgentPath, "DELETE");
+      assert.equal(otherDeletion.status, 202);
+      const { meta: otherMeta } = await otherDeletion.json();
       assert.equal(
-        (
-          await request(
-            `agents/${id("agt", 1)}/deletion-status?receiptId=${meta.deletionReceiptId}`,
-          )
-        ).status,
+        (await request(`${otherAgentPath}/deletion-status?receiptId=${meta.deletionReceiptId}`))
+          .status,
         404,
       );
+      const otherProgress = await request(
+        `${otherAgentPath}/deletion-status?receiptId=${otherMeta.deletionReceiptId}`,
+      );
+      assert.equal(otherProgress.status, 200);
+      // The rejected cross-Agent read must not advance this Agent's cleanup either.
+      assert.partialDeepStrictEqual(await otherProgress.json(), {
+        data: { agentId: id("agt", 1), receiptId: otherMeta.deletionReceiptId, status: "queued" },
+      });
     },
   );
 
