@@ -75,7 +75,12 @@ const lane = {
     requiresPostgres.skip ||
     (!(issuer && tokenOrigin && secretsFile) && "Prepare the keycloak-oidc CI lane."),
 };
-async function oauthAccounts(t: TestContext) {
+const reportsUrl = "https://reports.example.test/mcp";
+
+const gmailRead = "https://www.googleapis.com/auth/gmail.readonly";
+const gmailModify = "https://www.googleapis.com/auth/gmail.modify";
+
+async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
   assert.ok(issuer && tokenOrigin && secretsFile);
   const secrets = JSON.parse(await readFile(secretsFile, "utf8"));
   const clientId = `oce-saved-${randomUUID()}`;
@@ -91,6 +96,41 @@ async function oauthAccounts(t: TestContext) {
     redirectUris: [redirectUri],
     attributes: { "pkce.code.challenge.method": "S256" },
   });
+  const scopes = ["openid"];
+  let optionalScopeId: string | undefined;
+  if (pluginWorkflow) {
+    // This disposable issuer grants the names used by the real Gmail request policy.
+    // Reading remains allowed while the optional modification scope varies on refresh.
+    const [client] = await keycloakRealmAdmin(
+      issuer,
+      secrets.admin,
+      "GET",
+      `/clients?clientId=${clientId}`,
+    );
+    for (const name of [gmailRead, gmailModify]) {
+      await keycloakRealmAdmin(issuer, secrets.admin, "POST", "/client-scopes", {
+        name,
+        protocol: "openid-connect",
+        attributes: { "include.in.token.scope": String(name === gmailRead) },
+      });
+      const registered = await keycloakRealmAdmin(issuer, secrets.admin, "GET", "/client-scopes");
+      const scope = registered.find((item: { name: string }) => item.name === name);
+      assert.ok(scope);
+      t.after(() =>
+        keycloakRealmAdmin(issuer, secrets.admin, "DELETE", `/client-scopes/${scope.id}`),
+      );
+      await keycloakRealmAdmin(
+        issuer,
+        secrets.admin,
+        "PUT",
+        `/clients/${client.id}/optional-client-scopes/${scope.id}`,
+      );
+      scopes.push(name);
+      if (name === gmailModify) {
+        optionalScopeId = scope.id;
+      }
+    }
+  }
   t.after(async () => {
     const [client] = await keycloakRealmAdmin(
       issuer,
@@ -895,6 +935,85 @@ test(
         .sort(),
       [grant.id, first.id, competing.id, denied.id].sort(),
     );
+    const reportTemplate = await inject("POST", "/connection-templates", {
+      mode: "mcp_discovery",
+      namespaceId,
+      displayName: "Reports",
+      serverUrl: reportsUrl,
+      issuer,
+      oauthClientId,
+      scopes: ["openid"],
+    });
+    assert.equal(reportTemplate.statusCode, 201, reportTemplate.body);
+    const reportInput = {
+      connectionTemplateId: reportTemplate.json().data.id,
+      selectedScopes: ["openid"],
+    };
+    const report = await begin(connections, reportInput, "carol");
+    assert.match(
+      String((await owner("GET", report.callback)).headers.location),
+      /connection=connected/,
+    );
+    const slotAgent = await agent("Slot assignments");
+    const choices = await owner("GET", `${path(slotAgent)}/plugins/capabilities`);
+    assert.equal(choices.statusCode, 200, choices.body);
+    const choicesFor = (id: string, sourceId: string) =>
+      (choices.json().data.credentialSlots as AgentPluginCredentialSlot[])
+        .find((slot) => slot.id === id)
+        ?.sources.find((source) => source.id === sourceId);
+    assert.ok(choicesFor(slotId, grant.id));
+    assert.equal(choicesFor(slotId, grant.id)?.authorization, undefined);
+    assert.equal(choicesFor("reports", grant.id)?.authorization, "required");
+    assert.equal(choicesFor("unrelated", grant.id), undefined);
+    assert.equal(choicesFor("reports", report.id)?.id, report.id);
+    assert.equal(choicesFor("reports", report.id)?.authorization, undefined);
+    const saveBindings = (credentials: Record<string, string>) =>
+      owner("PATCH", path(slotAgent), {
+        configurationId: config.json().data.id,
+        plugins: { [pluginId]: { enabled: true, driverPolicy: { releaseSha256, credentials } } },
+      });
+    // Hand-writing a source ID bypasses the picker but cannot send either token to the
+    // wrong recipient. The valid first binding must roll back with the rejected second one.
+    const rejected = await saveBindings({ account: grant.id, reports: grant.id });
+    assert.equal(rejected.statusCode, 409, rejected.body);
+    const wrongIssuer = await saveBindings({ unrelated: report.id });
+    assert.equal(wrongIssuer.statusCode, 409, wrongIssuer.body);
+    assert.deepEqual(await attached(slotAgent), []);
+    assert.equal(await canUse(slotAgent, grant.id), false);
+    assert.equal(await canUse(slotAgent, report.id), false);
+    // Alice's saved mail connection and Carol's saved reporting connection both belong to
+    // the signed-in OCE user. Assigning them commits the exact grants and two independent IDs.
+    const narrowAccount = accounts
+      .json()
+      .data.find((row: { credentialSourceId: string }) => row.credentialSourceId === grant.id);
+    assert.deepEqual(narrowAccount.requestedScopes, scopes);
+    assert.deepEqual([...narrowAccount.grantedScopes].sort(), [gmailRead, "openid"]);
+    const bindings = { account: grant.id, reports: report.id };
+    const updated = await saveBindings(bindings);
+    assert.equal(updated.statusCode, 200, updated.body);
+    assert.deepEqual((await draft(slotAgent)).plugins[pluginId].driverPolicy.credentials, bindings);
+    assert.deepEqual((await attached(slotAgent)).sort(), [grant.id, report.id].sort());
+    assert.equal(await canUse(slotAgent, grant.id), true);
+    assert.equal(await canUse(slotAgent, report.id), true);
+
+    // Replacing an already-saved slot requires the previous ID and fresh consent. Other
+    // bindings and previously delegated usage survive the replacement.
+    const replacement = await begin(`${path(slotAgent)}/connections`, {
+      ...reportInput,
+      connectionTemplateVersion: 1,
+      pluginId,
+      slotId: "reports",
+      releaseSha256,
+      expectedCredentialSourceId: report.id,
+    });
+    const replaced = await owner("GET", replacement.callback);
+    assert.match(String(replaced.headers.location), /connection=attached/);
+    assert.deepEqual((await draft(slotAgent)).plugins[pluginId].driverPolicy.credentials, {
+      account: grant.id,
+      reports: replacement.id,
+    });
+    assert.equal(await canUse(slotAgent, report.id), true);
+    assert.equal(await canUse(slotAgent, replacement.id), true);
     // The restriction on A stays in force. Two independently authorized Agents share the
     // standalone account. Detaching from C leaves B's operate decision and the account intact.
     const c = await agent("Third");
@@ -1015,6 +1134,9 @@ test(
       assert.equal(result.status, 200);
       return bearer;
     };
+    const admitted = await prepare(b);
+    assert.ok(admitted?.config.scope);
+    assert.deepEqual(admitted.config.scope.split(" ").sort(), [gmailModify, gmailRead]);
     const original = await usable(primarySender);
     assert.ok((await usable(secondarySender)) === original);
     const rotate = () => owner("POST", base + "/credential-sources/" + shared.id + "/rotate");
@@ -1063,6 +1185,11 @@ test(
     // can no longer be used, even though the account still has an upstream access token.
     await setOptionalScopeVisible(false);
     assert.equal((await rotate()).statusCode, 200);
+    const refreshedAccounts = (await owner("GET", connections)).json().data;
+    const refreshed = refreshedAccounts.find(
+      (account: { credentialSourceId: string }) => account.credentialSourceId === shared.id,
+    );
+    assert.deepEqual([...refreshed.grantedScopes].sort(), [gmailRead, "openid"]);
     assert.equal(await prepare(b), undefined);
     const withdrawn = provider(primarySender);
     assert.deepEqual(Object.keys(withdrawn.credentials), []);
