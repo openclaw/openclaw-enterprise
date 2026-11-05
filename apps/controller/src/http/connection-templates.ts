@@ -1,4 +1,4 @@
-import type { AuditEvent, OAuthClient, OccApiOperationId } from "@openclaw-enterprise/contracts";
+import type { AuditEvent, OccApiOperationId } from "@openclaw-enterprise/contracts";
 import type {
   CreateConnectionTemplateInput,
   CreateOAuthClientInput,
@@ -9,11 +9,6 @@ import type {
 import type { FastifyReply, FastifyRequest } from "fastify";
 
 import type { discoverMcpAuthorization } from "../connections/mcp-discovery.ts";
-
-function presentClient(client: OAuthClient) {
-  const { credentialRefreshDriverId: _driver, ...publicClient } = client;
-  return publicClient;
-}
 
 type TemplateHandler = (input: {
   controller: OpenClawController;
@@ -103,7 +98,7 @@ export const connectionTemplateHandlers: Partial<Record<OccApiOperationId, Templ
   },
   async listOAuthClients({ meta, controller, actorId, reply }) {
     const clients = await controller.listOAuthClients(actorId);
-    reply.send({ data: clients.map(presentClient), meta });
+    reply.send({ data: clients, meta });
   },
   async createOAuthClient({
     holdSession,
@@ -120,7 +115,7 @@ export const connectionTemplateHandlers: Partial<Record<OccApiOperationId, Templ
       mutationEvent,
       holdSession,
     );
-    reply.status(201).send({ data: presentClient(client), meta });
+    reply.status(201).send({ data: client, meta });
   },
   async rotateOAuthClientSecret({
     holdSession,
@@ -140,7 +135,7 @@ export const connectionTemplateHandlers: Partial<Record<OccApiOperationId, Templ
       mutationEvent(oauthClientId),
       holdSession,
     );
-    reply.send({ data: presentClient(client), meta });
+    reply.send({ data: client, meta });
   },
   async deleteOAuthClient({ holdSession, controller, actorId, request, reply, mutationEvent }) {
     const { oauthClientId } = request.params as { oauthClientId: string };

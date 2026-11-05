@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { nativeTaskFailureSummary } from "./normal-agent-tools.mjs";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmod, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
@@ -833,6 +834,7 @@ export function createRepositoryObserver({ run, repository, binary = "gh" }) {
 }
 
 export const submitRepositoryTaskScript = String.raw`
+  const summarizeFailure = ${nativeTaskFailureSummary.toString()};
   let stage = "input";
   (async () => {
     let input = "";
@@ -942,15 +944,35 @@ export const submitRepositoryTaskScript = String.raw`
       url = "http://127.0.0.1:" + (process.env.OPENCLAW_GATEWAY_PORT || "8080") + "/v1/chat/completions";
     }
     stage = "request";
+    const requestAbort = new AbortController();
     const response = await fetch(url, {
-      method: "POST", signal: AbortSignal.timeout(600000), redirect: "error",
+      method: "POST", signal: AbortSignal.any([AbortSignal.timeout(600000), requestAbort.signal]), redirect: "error",
       headers: { ...authentication, "content-type": "application/json", "x-openclaw-session-key": sessionKey },
       body: JSON.stringify({ model: "openclaw/default", stream: false, messages: [{ role: "user", content: prompt }] }),
     });
     // Persisted transcript and independent provider reads establish success, never reply prose.
     stage = "response-body";
-    await response.arrayBuffer();
-    process.stdout.write(JSON.stringify({ status: response.status }));
+    if (response.status === 200) {
+      await response.arrayBuffer();
+      process.stdout.write(JSON.stringify({ status: response.status }));
+    } else {
+      let bytes = Buffer.alloc(0);
+      let complete = false;
+      const bodyDeadline = setTimeout(() => requestAbort.abort(), 5000);
+      try {
+        for await (const chunk of response.body) {
+          const remaining = 65536 - bytes.length;
+          bytes = Buffer.concat([bytes, Buffer.from(chunk).subarray(0, remaining)]);
+          if (bytes.length === 65536) { requestAbort.abort(); break; }
+        }
+        complete = !requestAbort.signal.aborted;
+      } catch { /* Only fixed diagnostics leave this process. */ }
+      finally { clearTimeout(bodyDeadline); }
+      process.stdout.write(JSON.stringify({ status: response.status, failure: {
+        stage: "http-response", bodyComplete: complete, ...summarizeFailure(bytes.toString("utf8")),
+      } }));
+      bytes.fill(0);
+    }
   })().catch((error) => {
     const code = error?.cause?.code ?? error?.code;
     const allowed = [

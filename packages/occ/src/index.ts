@@ -395,6 +395,7 @@ import { accountDeliveryProfileId } from "./account-delivery.ts";
 import {
   InMemoryPlatformState,
   type ConnectionTokenCustody,
+  type StoredOAuthClient,
   type PlatformReadView,
   type PlatformOperation,
   type PlatformStateStore,
@@ -797,6 +798,11 @@ export interface RuntimeLogReadGrant {
 export type RuntimeLogReadAdmission = <T>(read: () => Promise<T>) => Promise<T>;
 
 export interface ControllerOptions {
+  /** Code-only composition binding for the bundled retained-source plugin reader. */
+  readonly pluginSourceReader?: {
+    readonly gateway: CredentialGatewayDriver;
+    readonly withSourceToken: NonNullable<CredentialGatewayDriver["withSourceToken"]>;
+  };
   readonly preparedTokens?: PreparedTokenService | undefined;
   readonly driverConfigurations?: readonly DriverConfigurationRegistration[];
   readonly sandboxNetworkPolicyCeiling?: readonly SandboxNetworkGrant[];
@@ -2213,6 +2219,7 @@ export class OpenClawController {
   private readonly nativeWorkers: NativeWorkerSupportSource | undefined;
   private readonly credentialProxyCapacity: CredentialProxyCapacity;
   private readonly registry = new Map<string, RegisteredDriver>();
+  private readonly pluginSourceReader: ControllerOptions["pluginSourceReader"];
   private readonly preparedTokens: PreparedTokenService | undefined;
   private readonly selections = new Map<DriverCapability, RegisteredDriver>();
   private pluginRegistrations: readonly RegisteredDriver[] = [];
@@ -2254,6 +2261,7 @@ export class OpenClawController {
     }
     this.authorization = options.authorize;
     this.preparedTokens = options.preparedTokens;
+    this.pluginSourceReader = options.pluginSourceReader;
     this.clock = options.now ?? (() => new Date());
     this.identifier = options.createId;
     this.state = options.state ?? new InMemoryPlatformState();
@@ -5028,7 +5036,6 @@ export class OpenClawController {
     view: PlatformReadView,
     namespaceId: string,
     version: OAuthConnectionTemplateVersion,
-    refreshDriverId: string,
   ) {
     const client = version.oauthClientId
       ? await view.connectionTemplates.findOAuthClient(version.oauthClientId)
@@ -5038,8 +5045,7 @@ export class OpenClawController {
       (client.namespaceId !== undefined && client.namespaceId !== namespaceId) ||
       client.issuer !== version.issuer ||
       client.tokenUrl !== version.tokenUrl ||
-      (version.revocationUrl !== undefined && client.revocationUrl !== version.revocationUrl) ||
-      client.credentialRefreshDriverId !== refreshDriverId
+      (version.revocationUrl !== undefined && client.revocationUrl !== version.revocationUrl)
     ) {
       throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
     }
@@ -5113,7 +5119,7 @@ export class OpenClawController {
           );
         }
       }
-      const client = await this.connectionClientForVersion(state, namespaceId, version, refresh.id);
+      const client = await this.connectionClientForVersion(state, namespaceId, version);
       const createdAt = this.timestamp();
       const expiresAt = new Date(Date.parse(createdAt) + CONNECTION_SESSION_TTL_MS).toISOString();
       // Consent starts with one atomic reservation. There is no grant or worker provider to retire
@@ -5274,12 +5280,7 @@ export class OpenClawController {
         ) {
           throw new BrowserAuthorizationError("invalid_session", "retry");
         }
-        const client = await this.connectionClientForVersion(
-          view,
-          namespaceId,
-          version,
-          refresh.id,
-        );
+        const client = await this.connectionClientForVersion(view, namespaceId, version);
         await holdSession?.(view);
         return { namespace, source, client };
       });
@@ -5294,40 +5295,41 @@ export class OpenClawController {
         session.redirectUri,
         session.selectedScopes,
       );
-      exchangeStarted = true;
       await this.credentialGatewayOperation(() =>
-        refresh.completeBrowserAuthorization!(
-          context,
-          session.privateState,
-          { code: input.code!, state: input.state },
-          request,
-          async (grant) => {
-            handoffStarted = true;
-            approved = {
-              issuer: version.issuer,
-              tokenUrl: version.tokenUrl,
-              oauthClientId: client.id,
-              clientId: client.clientId,
-              destinations: version.destinations,
-              ...(version.mcp
-                ? {
-                    resource: version.mcp.resource,
-                    mcpServerUrl: version.mcp.serverUrl,
-                  }
-                : {}),
-              requestedScopes: session.selectedScopes,
-              grantedScopes: grant.grantedScopes,
-            };
+        this.withOAuthClientSecret(client, async (clientSecret) => {
+          context.signal.throwIfAborted();
+          exchangeStarted = true;
+          await refresh.completeBrowserAuthorization!(
+            context,
+            session.privateState,
+            { code: input.code!, state: input.state },
+            request,
+            clientSecret,
+            async (grant) => {
+              handoffStarted = true;
+              approved = {
+                issuer: version.issuer,
+                tokenUrl: version.tokenUrl,
+                oauthClientId: client.id,
+                clientId: client.clientId,
+                destinations: version.destinations,
+                ...(version.mcp
+                  ? { resource: version.mcp.resource, mcpServerUrl: version.mcp.serverUrl }
+                  : {}),
+                requestedScopes: session.selectedScopes,
+                grantedScopes: grant.grantedScopes,
+              };
 
-            await this.acceptConnectionTokens(
-              namespaceId,
-              credentialSourceId,
-              grant,
-              context.signal,
-              holdSession,
-            );
-          },
-        ),
+              await this.acceptConnectionTokens(
+                namespaceId,
+                credentialSourceId,
+                grant,
+                context.signal,
+                holdSession,
+              );
+            },
+          );
+        }),
       );
       if (!approved) {
         throw new DependencyUnavailableError(
@@ -5847,7 +5849,6 @@ export class OpenClawController {
     namespaceId: string,
     sourceId: string,
   ): Promise<OAuthConnectionClient> {
-    const driver = this.browserConnectionDriver();
     return this.read(async (view) => {
       const account = await view.savedConnections.findSavedConnection(namespaceId, sourceId);
       if (!account || account.revocationRequestedBy) {
@@ -5860,7 +5861,7 @@ export class OpenClawController {
       if (!version || version.oauthClientId !== account.oauthClientId) {
         throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
       }
-      const client = await this.connectionClientForVersion(view, namespaceId, version, driver.id);
+      const client = await this.connectionClientForVersion(view, namespaceId, version);
       return {
         registration: {
           oauthClientId: client.id,
@@ -5870,16 +5871,16 @@ export class OpenClawController {
           tokenEndpointAuthMethod: client.tokenEndpointAuthMethod,
           ...(version.mcp && { resource: version.mcp.resource }),
         },
-        ...(client.tokenEndpointAuthMethod !== "none" &&
-          driver.readClientSecret && {
-            readSecret: (signal: AbortSignal) =>
-              driver.readClientSecret!({
-                registrationId: client.id,
-                issuer: client.issuer,
-                clientId: client.clientId,
-                signal,
-              }),
-          }),
+        ...(client.tokenEndpointAuthMethod !== "none" && {
+          readSecret: (signal: AbortSignal) =>
+            this.withOAuthClientSecret(client, async (value) => {
+              signal.throwIfAborted();
+              if (value === undefined) {
+                throw new BrowserAuthorizationError("client_unavailable", "fix_configuration");
+              }
+              return value;
+            }),
+        }),
       };
     });
   }
@@ -5933,7 +5934,7 @@ export class OpenClawController {
         "The selected Secret Driver cannot store an OAuth grant.",
       );
     }
-    const refresh = this.connectionRegistrationDriver();
+    const refresh = this.credentialRefreshDriver();
     if (!refresh.startBrowserAuthorization || !refresh.completeBrowserAuthorization) {
       throw new NotImplementedError(
         "connection_templates",
@@ -6176,9 +6177,17 @@ export class OpenClawController {
     });
   }
 
+  private oauthClientMetadata({
+    secretDriverId: _owner,
+    ...metadata
+  }: StoredOAuthClient): OAuthClient {
+    return immutableCopy(metadata);
+  }
+
   async listOAuthClients(principalId: string) {
     await this.authorizeTemplateAdministration(principalId);
-    return this.read((view) => view.connectionTemplates.listOAuthClients());
+    const clients = await this.read((view) => view.connectionTemplates.listOAuthClients());
+    return Object.freeze(clients.map((client) => this.oauthClientMetadata(client)));
   }
 
   async createOAuthClient(
@@ -6224,9 +6233,6 @@ export class OpenClawController {
       ...(revocationUrl !== undefined && { revocationUrl }),
       ...(template.namespaceId !== undefined && { namespaceId: template.namespaceId }),
       createdAt: this.timestamp(),
-      credentialRefreshDriverId: clientSecret
-        ? this.connectionRegistrationDriver().id
-        : this.credentialRefreshDriver().id,
     };
     const lockSelectedVersion = async (state: PlatformUnitOfWork) => {
       await this.authorizeTemplateAdministration(principalId);
@@ -6270,7 +6276,10 @@ export class OpenClawController {
       const cleanupAfter = clientSecret
         ? new Date(this.clock().getTime() + 5 * 60_000).toISOString()
         : undefined;
-      await state.connectionTemplates.createOAuthClient(client, cleanupAfter);
+      const registration = clientSecret
+        ? { ...client, secretDriverId: this.oauthClientSecretDriver().id }
+        : client;
+      await state.connectionTemplates.createOAuthClient(registration, cleanupAfter);
       if (!clientSecret) {
         await publish(state);
       }
@@ -6287,10 +6296,8 @@ export class OpenClawController {
             "The OAuth client reservation expired. Create the client again.",
           );
         }
-        const driver = this.connectionRegistrationDriver(client.credentialRefreshDriverId);
-        await this.credentialGatewayOperation(() =>
-          driver.registerClient!(this.oauthClientContext(client), clientSecret),
-        );
+        const { store, ref } = this.oauthClientSecret(reserved);
+        await this.secretOperation(() => store.create(ref, clientSecret));
         await state.connectionTemplates.setOAuthClientCleanup(client.id, null);
         await publish(state);
       });
@@ -6331,20 +6338,12 @@ export class OpenClawController {
     }
     return this.mutate(async (state) => {
       const client = await lockClient(state);
-      const driver = this.connectionRegistrationDriver(client.credentialRefreshDriverId);
-      if (!driver.rotateClientSecret) {
-        throw new NotImplementedError(
-          "connection_templates",
-          "The selected Refresh Driver does not support OAuth client rotation.",
-        );
-      }
-      await this.credentialGatewayOperation(() =>
-        driver.rotateClientSecret!(this.oauthClientContext(client), clientSecret),
-      );
+      const { store, ref } = this.oauthClientSecret(client);
+      await this.secretOperation(() => store.update(ref, clientSecret));
       if (audit) {
         await state.audit.append({ ...audit, occurredAt: this.timestamp() });
       }
-      return client;
+      return this.oauthClientMetadata(client);
     });
   }
 
@@ -6388,8 +6387,8 @@ export class OpenClawController {
           return;
         }
         try {
-          const driver = this.connectionRegistrationDriver(client.credentialRefreshDriverId);
-          await driver.removeClient!(this.oauthClientContext(client));
+          const { store, ref } = this.oauthClientSecret(client);
+          await this.secretOperation(() => store.delete(ref));
         } catch {
           await state.connectionTemplates.setOAuthClientCleanup(
             id,
@@ -6404,29 +6403,43 @@ export class OpenClawController {
     }
   }
 
-  private oauthClientContext(client: OAuthClient) {
-    return {
-      registrationId: client.id,
-      issuer: client.issuer,
-      clientId: client.clientId,
-      signal: AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-    };
+  /** Trusted, server-side OAuth operations resolve the current value at each use. */
+  async withOAuthClientSecret<T>(
+    client: Readonly<OAuthClient>,
+    use: (secret: string | undefined) => Promise<T>,
+  ): Promise<T> {
+    const current = await this.read((view) => view.connectionTemplates.findOAuthClient(client.id));
+    if (
+      !current ||
+      !isDeepStrictEqual(this.oauthClientMetadata(current), this.oauthClientMetadata(client))
+    ) {
+      throw new ResourceStateConflictError("The approved OAuth client is unavailable.");
+    }
+    if (current.tokenEndpointAuthMethod === "none") {
+      return use(undefined);
+    }
+    const { store, ref } = this.oauthClientSecret(current);
+    return store.withValue(ref, use);
   }
 
-  private connectionRegistrationDriver(expectedId?: string): CredentialRefreshDriver {
-    const driver = this.credentialRefreshDriver();
-    if (expectedId !== undefined && driver.id !== expectedId) {
+  private oauthClientSecretDriver(expectedId?: string) {
+    const driver = this.secretDriver(expectedId);
+    if (!driver.installationSecrets) {
       throw new DependencyUnavailableError(
-        "The selected Refresh Driver does not own this OAuth client.",
+        "The selected Secret Driver cannot store Installation-private OAuth client secrets.",
       );
     }
-    if (!driver.registerClient || !driver.removeClient) {
-      throw new NotImplementedError(
-        "connection_templates",
-        "The selected Refresh Driver does not support OAuth client registrations.",
-      );
+    return { id: driver.id, store: driver.installationSecrets };
+  }
+
+  private oauthClientSecret(client: StoredOAuthClient) {
+    if (!client.secretDriverId) {
+      throw new ResourceStateConflictError("The OAuth client has no private secret.");
     }
-    return driver;
+    return {
+      store: this.oauthClientSecretDriver(client.secretDriverId).store,
+      ref: { installationId: this.installation.id, id: client.id },
+    };
   }
 
   async listServiceAccounts(
@@ -10823,7 +10836,9 @@ export class OpenClawController {
         namespaceId,
         credentialSource.id,
       );
-      if (!gateway.withSourceToken) {
+      const reader = this.pluginSourceReader;
+      const selectedReader = reader?.gateway === gateway ? reader.withSourceToken : undefined;
+      if (!selectedReader && !gateway.withSourceToken) {
         throw new NotImplementedError(
           "agent_plugins.discovery",
           "The Credential Gateway does not support plugin discovery.",
@@ -10838,6 +10853,10 @@ export class OpenClawController {
         (invoke) =>
           this.credentialGatewayOperation(() => {
             context.signal.throwIfAborted();
+            if (selectedReader) {
+              return selectedReader(context, invoke);
+            }
+            // Preserve external callback invocation and its late/disconnect controls.
             return gateway.withSourceToken!(context, invoke);
           }),
         async () => {
@@ -11951,7 +11970,7 @@ export class OpenClawController {
   ): SandboxPolicySnapshot {
     if (driver?.admitProtectedCodexArtifactPolicy === undefined) {
       throw new ResourceStateConflictError(
-        "The selected Sandbox Driver cannot qualify protected Codex artifact policy.",
+        "Deploy requires a Sandbox Driver that supports protected Codex artifact admission. Ask your Installation administrator to check drivers.sandbox and the selected Driver version.",
       );
     }
     return this.checkedSandboxPolicySnapshot(driver, [], version, undefined, undefined, () => {
@@ -12617,6 +12636,7 @@ export class OpenClawController {
         namespaceId,
         agent.repositoryBindings,
         "saved",
+        this.selectedStandingRepositoryAdmission(),
       );
       return (resolved?.resolution.bindings ?? []).flatMap((binding) => {
         const scope = eligibleRepositoryApprovalScope(resolved!.driver, {
@@ -13010,7 +13030,13 @@ export class OpenClawController {
           );
           // The request's own selections resolved above, so only saved ones can fail here.
           const resolved =
-            selected && this.resolveRepositoryBindings(namespace.id, [selected], "saved");
+            selected &&
+            this.resolveRepositoryBindings(
+              namespace.id,
+              [selected],
+              "saved",
+              this.selectedStandingRepositoryAdmission(),
+            );
           const binding = resolved?.resolution.bindings[0];
           const scope =
             binding &&
@@ -13771,7 +13797,6 @@ export class OpenClawController {
           binding.repositoryRef,
         );
         if (approval) {
-          const admission = this.installationRepositoryAdmission;
           const resolved = this.resolveRepositoryBindings(
             namespace.id,
             [
@@ -13781,7 +13806,7 @@ export class OpenClawController {
               },
             ],
             "saved",
-            admission?.policy === this.selections.get("repo")?.driver ? admission : undefined,
+            this.selectedStandingRepositoryAdmission(),
           )!;
           const scope = eligibleRepositoryApprovalScope(resolved.driver, {
             namespaceId: namespace.id,
@@ -18549,6 +18574,11 @@ export class OpenClawController {
       repositoryBindings,
       repositoryAccess: normalizedRepositoryAccess(input.repositoryAccess, repositoryBindings)!,
     };
+  }
+
+  private selectedStandingRepositoryAdmission(): InstallationRepositoryAdmission | undefined {
+    const admission = this.installationRepositoryAdmission;
+    return admission?.policy === this.selections.get("repo")?.driver ? admission : undefined;
   }
 
   /**

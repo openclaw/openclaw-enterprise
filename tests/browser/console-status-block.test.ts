@@ -26,7 +26,7 @@ import {
 import {
   createRepositoryLaunchFixture,
   withholdPermissionSummary,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
 import {
   AGENT_SAVE_DENIED,
   CONFIGURATION_SAVE_DENIED,

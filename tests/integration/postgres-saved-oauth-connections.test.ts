@@ -181,7 +181,7 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
   assert.ok(issuer && tokenOrigin && secretsFile);
   const secrets = JSON.parse(await readFile(secretsFile, "utf8"));
   const clientId = `oce-saved-${randomUUID()}`;
-  const clientSecret = randomUUID();
+  let clientSecret = randomUUID();
   await keycloakRealmAdmin(issuer, secrets.admin, "POST", "/clients", {
     clientId,
     secret: clientSecret,
@@ -325,9 +325,12 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
       name: kubernetesNamespaceName(namespace.id),
     }),
   });
-  const { providers, transport, refresh, gateway } = selectTemplateDrivers(controller, {
-    selectGateway: pluginWorkflow,
-  });
+  const { providers, createdProviders, transport, refresh, gateway } = selectTemplateDrivers(
+    controller,
+    {
+      selectGateway: pluginWorkflow,
+    },
+  );
   const makeNamespace = async () => {
     const result = await inject("POST", "/namespaces", { name: `Accounts ${randomUUID()}` });
     assert.equal(result.statusCode, 201, result.body);
@@ -582,10 +585,11 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
     adminAccount,
     inject,
     providers,
+    createdProviders,
     refresh,
     transport,
     gateway,
-    rotateClientSecret: async (source: string) => {
+    rotateClientSecret: async (source?: string) => {
       const replacement = await rotateKeycloakClientSecret(
         issuer!,
         secrets.admin,
@@ -593,16 +597,19 @@ async function oauthAccounts(t: TestContext, pluginWorkflow = false) {
         clientSecret,
         tokenUrl,
       );
-      // A failed refresh during the rotation window requires an administrator, and the user retains the grant.
-      const clientRefused = await owner("POST", source + "/rotate");
-      assert.equal(clientRefused.statusCode, 503);
-      const repair = await owner("GET", source);
-      assert.equal(repair.statusCode, 200, repair.body);
-      const clientFailure = repair.json().data.status.refresh;
-      assert.deepEqual(
-        [clientFailure.state, clientFailure.failureCode, clientFailure.recoveryAction],
-        ["failed", "client_refused", "fix_configuration"],
-      );
+      clientSecret = replacement;
+      if (source) {
+        // A failed refresh during the rotation window requires an administrator, and the user retains the grant.
+        const clientRefused = await owner("POST", source + "/rotate");
+        assert.equal(clientRefused.statusCode, 503);
+        const repair = await owner("GET", source);
+        assert.equal(repair.statusCode, 200, repair.body);
+        const clientFailure = repair.json().data.status.refresh;
+        assert.deepEqual(
+          [clientFailure.state, clientFailure.failureCode, clientFailure.recoveryAction],
+          ["failed", "client_refused", "fix_configuration"],
+        );
+      }
       const updatedClient = await inject("POST", `/oauth-clients/${oauthClientId}/rotate-secret`, {
         clientSecret: replacement,
       });
@@ -653,7 +660,7 @@ test(
       pool,
       adminAccount,
       inject,
-      providers,
+      createdProviders,
       preparedTokens,
       rotateClientSecret,
       oauthClientId,
@@ -709,6 +716,9 @@ test(
     const { id, callback } = await begin();
     const stolen = await secondSession("GET", callback);
     assert.match(String(stolen.headers.location), /reason=unknown_session/);
+    // The code was issued while A was current. Keycloak now rejects A, so redeeming it proves
+    // the callback resolves this registration's current secret after the owner's consent.
+    await rotateClientSecret();
     const completed = await owner("GET", callback);
     assert.equal(completed.statusCode, 303, completed.body);
     assert.match(String(completed.headers.location), /connection=connected/);
@@ -789,9 +799,6 @@ test(
       assert.ok(token);
       return token.accessToken;
     }
-    const hasSender = () =>
-      [...providers.values()].some((provider) => provider.name.startsWith("oce-cs-"));
-    assert.equal(hasSender(), false);
     const subject = async (bearer: string) => {
       const result = await fetch(`${issuer}/protocol/openid-connect/userinfo`, {
         headers: { authorization: `Bearer ${bearer}` },
@@ -808,7 +815,7 @@ test(
     assert.ok(alice);
     // Lose access to the operator's registration before dispatch. The scheduler must back off
     // without losing the user's grant, and the owner can retry as soon as access returns.
-    const unavailable = t.mock.method(refresh, "readClientSecret", async () => {
+    const unavailable = t.mock.method(secretDriver.installationSecrets, "withValue", async () => {
       throw new Error("registration store unavailable");
     });
     assert.equal((await owner("POST", source + "/rotate")).statusCode, 503);
@@ -910,7 +917,11 @@ test(
       0,
     );
     assert.equal(secretDriver.has(privateRef), false);
-    assert.equal(hasSender(), false);
+    assert.deepEqual(
+      createdProviders,
+      [],
+      "no OpenShell provider receives user or OAuth client credentials",
+    );
     // A peer can revoke a browser session after its callback has already passed admission.
     const peer = await createPostgresAgentApp(t, {
       label: "saved-account",

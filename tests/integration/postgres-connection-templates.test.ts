@@ -4,11 +4,15 @@ import test from "node:test";
 import type { ConnectionTemplate } from "../../packages/contracts/src/index.ts";
 import { discoverMcpAuthorization } from "../../apps/controller/src/connections/mcp-discovery.ts";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
-import { selectTemplateDrivers } from "../helpers/connection-template-drivers.mjs";
+import { useInstallationSecretDriver } from "../helpers/kubernetes-secret-core.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
 import { signedInHeaders } from "../helpers/production-sign-in.mjs";
+import {
+  createBackendController,
+  createBackendFixture,
+} from "../helpers/postgres-backend-state.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
@@ -154,7 +158,7 @@ test(
   requiresPostgres,
   async (t) => {
     const { app, controller, inject, pool, state } = await createPostgresAgentApp(t, options);
-    const { providers, createdProviders } = selectTemplateDrivers(controller);
+    const { core, driver } = useInstallationSecretDriver(controller);
     // A resource hidden in a configured URL must not bypass the version's effective audience.
     const override = await inject("POST", "/connection-templates", {
       ...manual,
@@ -217,7 +221,7 @@ test(
       });
       assert.equal(refused.statusCode, 400, refused.body);
     }
-    assert.equal(createdProviders.length, 0);
+    assert.equal(core.calls.createNamespacedSecret, 0);
     const created = await inject("POST", "/oauth-clients", client);
     assert.equal(created.statusCode, 201, created.body);
     assert.equal(created.body.includes(client.clientSecret), false);
@@ -227,6 +231,13 @@ test(
     assert.equal(registration.tokenUrl, tokenUrl);
     assert.equal(registration.revocationUrl, manual.revocationUrl);
     assert.equal(registration.namespaceId, undefined);
+    assert.ok(!created.body.includes(driver.id));
+    assert.ok(
+      await controller.withOAuthClientSecret(
+        registration,
+        async (value) => value === client.clientSecret,
+      ),
+    );
     const read = () => inject("GET", `/connection-templates/${templateId}`);
     const selected = (await read()).json().data.current;
     assert.equal(selected.version, 2);
@@ -236,7 +247,11 @@ test(
       clientId: randomUUID(),
     });
     assert.equal(stale.statusCode, 409, stale.body);
-    assert.equal(createdProviders.length, 1, "a stale version must not stage private material");
+    assert.equal(
+      core.calls.createNamespacedSecret,
+      1,
+      "a stale version must not stage private material",
+    );
     const scopedDraft = await createManualDraft(inject, namespaceId);
     const scoped = await inject("POST", "/oauth-clients", {
       ...client,
@@ -244,6 +259,13 @@ test(
     });
     assert.equal(scoped.statusCode, 201, scoped.body);
     assert.equal(scoped.json().data.namespaceId, namespaceId);
+    const secrets = await inject("GET", `/namespaces/${namespaceId}/secrets`);
+    assert.equal(secrets.statusCode, 200, secrets.body);
+    assert.deepEqual(
+      secrets.json().data,
+      [],
+      "a Namespace registration never exposes a tenant Secret",
+    );
     assert.equal((await inject("DELETE", `/namespaces/${namespaceId}`, undefined)).statusCode, 409);
     assert.equal(
       (
@@ -273,6 +295,10 @@ test(
       tokenEndpointAuthMethod: "none",
     });
     assert.equal(pub.statusCode, 201, pub.body);
+    assert.equal(
+      await controller.withOAuthClientSecret(pub.json().data, async (value) => value),
+      undefined,
+    );
     assert.deepEqual(
       (await read()).json().data.current,
       selected,
@@ -302,7 +328,11 @@ test(
     assert.deepEqual(local.json().data.current.scopes, manyScopes);
     await inject("DELETE", `/connection-templates/${templateId}`, undefined);
     await inject("DELETE", `/connection-templates/${local.json().data.id}`, undefined);
-    const clients = (await inject("GET", "/oauth-clients", undefined)).json().data;
+    const listing = await inject("GET", "/oauth-clients", undefined);
+    assert.equal(listing.statusCode, 200, listing.body);
+    assert.equal(listing.body.includes(client.clientSecret), false);
+    assert.equal(listing.body.includes(driver.id), false);
+    const clients = listing.json().data;
     assert.deepEqual(
       clients
         .filter((item: { clientId: string }) => item.clientId === client.clientId)
@@ -310,7 +340,7 @@ test(
         .sort(),
       [globalId, scoped.json().data.id].sort(),
     );
-    assert.equal(providers.size, 2);
+    assert.equal(core.secrets.size, 2);
   },
 );
 
@@ -325,21 +355,22 @@ test(
       ...options,
       transportDatabaseUrl: proxy.url,
     });
-    const { refresh, providers } = selectTemplateDrivers(controller);
+    const { core } = useInstallationSecretDriver(controller);
     const templateId = await createManualDraft(inject);
     const input = clientInput(templateId);
     const original = await inject("POST", "/oauth-clients", input);
     assert.equal(original.statusCode, 201, original.body);
     const client = original.json().data;
     const next = randomUUID();
-    const providerNames = [...providers.keys()];
-    const rotate = refresh.rotateClientSecret.bind(refresh);
+    const secretNames = [...core.secrets.keys()];
+    const replace = core.replaceNamespacedSecret.bind(core);
     t.mock.method(
-      refresh,
-      "rotateClientSecret",
-      async (...args: Parameters<typeof rotate>) => {
-        await rotate(...args);
+      core,
+      "replaceNamespacedSecret",
+      async (request: Parameters<typeof core.replaceNamespacedSecret>[0]) => {
+        const updated = await replace(request);
         proxy.arm();
+        return updated;
       },
       { times: 1 },
     );
@@ -360,11 +391,14 @@ test(
     assert.equal(audit.rows[0].requester, audit.rows[0].writer);
 
     // An unknown audit commit cannot switch references or retire material still used by the client.
-    assert.deepEqual([...providers.keys()], providerNames);
+    assert.deepEqual([...core.secrets.keys()], secretNames);
     await controller.cleanupOAuthClients();
-    assert.equal(providers.size, 1);
-    assert.ok(JSON.stringify([...providers.values()]).includes(next));
-    assert.ok(!JSON.stringify([...providers.values()]).includes(input.clientSecret));
+    assert.equal(core.secrets.size, 1);
+    assert.equal(
+      await controller.withOAuthClientSecret(client, async (value) => value === next),
+      true,
+      "existing registrations must resolve the rotated value",
+    );
     assert.equal(
       (await inject("DELETE", `/connection-templates/${templateId}`, undefined)).statusCode,
       204,
@@ -374,16 +408,9 @@ test(
       204,
     );
     // A failed private deletion leaves a hidden client that the worker can still identify and retry.
-    t.mock.method(
-      refresh,
-      "removeClient",
-      async () => {
-        throw new Error("Private store unavailable");
-      },
-      { times: 1 },
-    );
+    core.failureCodes.deleteNamespacedSecret.push(403);
     await controller.cleanupOAuthClients();
-    assert.equal(providers.size, 1);
+    assert.equal(core.secrets.size, 1);
     const hidden = await inject("GET", "/oauth-clients");
     assert.equal(hidden.statusCode, 200, hidden.body);
     assert.ok(!hidden.json().data.some((row: { id: string }) => row.id === client.id));
@@ -393,7 +420,7 @@ test(
     );
     assert.equal(due.rowCount, 1);
     await controller.cleanupOAuthClients();
-    assert.equal(providers.size, 0);
+    assert.equal(core.secrets.size, 0);
   },
 );
 
@@ -413,30 +440,32 @@ test(
       ...options,
       transportDatabaseUrl: proxy.url,
     });
-    const { pool, controller: recovered } = await createPostgresAgentApp(t, options);
-    const { refresh, providers } = selectTemplateDrivers(controller);
-    recovered.registerDriver(refresh);
-    recovered.selectDriver("credential_refresh", refresh.id);
+    const recovery = await createBackendFixture(t);
+    const { pool } = recovery;
+    const recovered = createBackendController(recovery, { backends: [] });
+    const { core, driver } = useInstallationSecretDriver(controller);
+    recovered.registerDriver(driver);
+    recovered.selectDriver("secret", driver.id);
     const templateId = await createManualDraft(inject);
     const input = clientInput(templateId);
     const original = await inject("POST", "/oauth-clients", input);
     assert.equal(original.statusCode, 201, original.body);
-    const stage = refresh.registerClient.bind(refresh);
-    let stagedId = "";
+    const stage = core.createNamespacedSecret.bind(core);
+    const stagedClientId = randomUUID();
     t.mock.method(
-      refresh,
-      "registerClient",
-      async (...args: Parameters<typeof stage>) => {
-        await stage(...args);
-        stagedId = args[0].registrationId;
+      core,
+      "createNamespacedSecret",
+      async (request: Parameters<typeof core.createNamespacedSecret>[0]) => {
+        const created = await stage(request);
         proxy.arm({ pauseCommit: true });
+        return created;
       },
       { times: 1 },
     );
     const response = inject("POST", "/oauth-clients", {
       ...input,
       connectionTemplateVersion: 2,
-      clientId: randomUUID(),
+      clientId: stagedClientId,
       clientSecret: randomUUID(),
     });
     await waitFor(
@@ -447,16 +476,30 @@ test(
     await proxy.close();
     closed = true;
     assert.equal((await response).statusCode, 503);
-    assert.equal(providers.size, 2);
-    // Advance just this reservation to its due time, then run maintenance under a new controller.
+    assert.equal(core.secrets.size, 2);
+    // The worker has a Secret Driver and no Credential Gateway or Refresh Driver.
     const expired = await pool.query(
-      "UPDATE occ.oauth_clients SET cleanup_after=now() WHERE id=$1 AND cleanup_after IS NOT NULL RETURNING id",
-      [stagedId],
+      "UPDATE occ.oauth_clients SET cleanup_after=now() WHERE client_id=$1 AND cleanup_after IS NOT NULL RETURNING id",
+      [stagedClientId],
     );
     assert.equal(expired.rowCount, 1);
-    await recovered.cleanupOAuthClients();
-    assert.equal(providers.size, 1);
-    assert.ok(JSON.stringify([...providers.values()]).includes(input.clientSecret));
+    const { worker } = recovery.startWorker({ backends: [], secretDriver: driver });
+    await worker.start();
+    await waitFor("the worker to retire the hidden registration", async () => {
+      const remaining = await pool.query("SELECT id FROM occ.oauth_clients WHERE id=$1", [
+        expired.rows[0].id,
+      ]);
+      return remaining.rowCount === 0 ? true : undefined;
+    });
+    assert.equal(core.secrets.size, 1);
+    assert.equal(
+      await recovered.withOAuthClientSecret(
+        original.json().data,
+        async (value) => value === input.clientSecret,
+      ),
+      true,
+      "cleaning an expired reservation preserves the published client",
+    );
   },
 );
 
@@ -549,14 +592,14 @@ test(
   async (t) => {
     const { controller, inject, pool } = await createPostgresAgentApp(t, options);
     const { app: peer } = await createPostgresAgentApp(t, options);
-    const { createdProviders } = selectTemplateDrivers(controller);
+    const { core } = useInstallationSecretDriver(controller);
     const client = await inject(
       "POST",
       "/oauth-clients",
       clientInput(await createManualDraft(inject)),
     );
     assert.equal(client.statusCode, 201, client.body);
-    assert.equal(createdProviders.length, 1);
+    assert.equal(core.calls.createNamespacedSecret, 1);
     const id = client.json().data.id;
     const lock = await pool.connect();
     let rotation;
@@ -584,9 +627,9 @@ test(
     const denied = await rotation;
     assert.equal(denied.statusCode, 403, denied.body);
     assert.equal(
-      createdProviders.length,
-      1,
-      "logout must win before the Driver stages any replacement",
+      core.calls.replaceNamespacedSecret,
+      0,
+      "logout must win before any write of the replacement secret",
     );
   },
 );

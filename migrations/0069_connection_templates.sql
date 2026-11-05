@@ -10,7 +10,11 @@ CREATE TABLE occ.oauth_clients (
   token_url text NOT NULL CHECK (token_url ~ '^https://[^/?#@[:space:]]+([/?][^#[:space:]]*)?$'),
   revocation_url text CHECK (revocation_url ~ '^https://[^/?#@[:space:]]+([/?][^#[:space:]]*)?$'),
   client_id text COLLATE "C" NOT NULL,
-  credential_refresh_driver_id text COLLATE "C" NOT NULL,
+  secret_driver_id text COLLATE "C",
+  CONSTRAINT oauth_clients_secret_owner CHECK (
+    (token_endpoint_auth_method = 'none') = (secret_driver_id IS NULL) AND
+    (secret_driver_id IS NULL OR length(secret_driver_id) > 0)
+  ),
   created_at timestamptz NOT NULL,
   CONSTRAINT oauth_clients_id_format CHECK (
     id ~ '^ccr_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'

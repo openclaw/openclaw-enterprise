@@ -1,6 +1,6 @@
 # Use the quickstart operator session
 
-Each installation setup page creates a private `RUN_DIR` and stages the shared helpers. [Deploy your first Agent](deploy-first-agent.md) uses that directory and saves `session.sh` after onboarding. Continue in that shell or source the printed file in Bash. Select the platform once during setup; Add Git, Add Plugin and Delete Agent use this same session.
+Each installation setup page creates a private `RUN_DIR`, stages the shared helpers and saves `session.sh` before its first Installation update. [Deploy your first Agent](deploy-first-agent.md) updates that session after onboarding. Continue in that shell or source the printed file in Bash. Select the platform once during setup; Add Git, Add Plugin and Delete Agent use this same session.
 
 The operator needs Pod read and `pods/exec` access in `PLATFORM_NS` for the API and worker helpers. REST calls still authenticate with the service key and require the corresponding OCC permissions.
 
@@ -36,13 +36,54 @@ Platform-only inputs remain in setup: local `OCC_DEVELOPMENT_STATE_DIRECTORY`; c
 | `deploy_and_wait`                                       | Run platform preflight, submit one deployment, save its ID, prepare the required network rules, and wait for that revision to become active.                                |
 | `wait_deployment ID`                                    | Prepare network rules and wait for an already submitted Console deployment. It does not submit another deployment.                                                          |
 | `turn PROMPT_FILE`                                      | Send one OpenClaw WebSocket turn from the API Pod. Each call creates a new conversation; browser onboarding proves continuity separately.                                   |
-| `upgrade_installation`                                  | Load the current Installation through a new versioned Secret, upgrade the recorded Helm release with current values, and wait for API/worker rollout.                       |
+| `upgrade_installation`                                  | Verify the selected Installation, patch its existing Secret, set the rollout checksum, upgrade the recorded Helm release, and wait for API/worker rollout.                  |
 | `git_audit REVISION`                                    | Read scoped Git attempt custody and request receipts through the worker's database connection. It does not read keys or change records.                                     |
 | `stop_and_retire REVISION`                              | Stop a finite Git grant and wait for recorded revocation/expiry with no retained sealed material. This is for permission changes, not a prerequisite for deleting an Agent. |
 | `select_registry CONFIGMAP read\|write`                 | Check the exact repository/Namespace/permission map, upgrade the existing release, and verify the worker mount.                                                             |
 | `save_session`                                          | Save nonsecret IDs, paths and helper loading to the private `session.sh`.                                                                                                   |
 
 Use the same matching release checkout when running source-dependent setup commands. Retain service-key files, chart files and the private session directory; moving or deleting them breaks the saved session. A timed-out mutation has an unknown outcome. Read the existing resource or saved deployment ID before submitting it again.
+
+## Update and recover the Installation
+
+The operator needs Secret read/patch access and permission to upgrade this release. Exclude other Installation, Helm install/upgrade/rollback and initialization Job writers from preparation through rollout. This includes other operator sessions. The helper's status checks detect observed overlap; they do not lock out another writer.
+
+`upgrade_installation` requires a deployed Helm release and checks its revision again before patching. Saved values, live values and the verified API Pod must select the same Secret and key. The helper reads the Installation ID through that Pod. It initializes a missing `openclaw.dev/installation-id` annotation; an existing annotation must match. The patch preserves other data and metadata and rejects a concurrent Secret change.
+
+`INSTALLATION_FILE` and `VALUES_FILE` are **proposals**, including edits made by Git enrollment. The printed private evidence directory saves the original Secret and live values separately. A failed or interrupted patch or Helm upgrade may have changed the Secret. Inspect the saved evidence and Helm status before another mutation.
+
+To undo a refused change, keep other writers excluded. In a fresh Bash shell, load the saved session and use the printed evidence directory below. Confirm that no later upgrade or intended edit superseded this attempt and that Helm has no operation in progress. If the attempt's outcome is unknown, resolve it before recovery. These commands do not require a ready API:
+
+```bash
+set -euo pipefail
+source /absolute/path/to/run-directory/session.sh
+change=/absolute/path/to/printed/installation-upgrade.directory
+helm --kubeconfig "$KUBECONFIG" --kube-context "$CONTEXT" -n "$PLATFORM_NS" status "$RELEASE"
+secret=$(jq -er '.installation.secretName' "$change/live-values.json")
+key=$(jq -er '.installation.key' "$change/live-values.json")
+kube -n "$PLATFORM_NS" get secret "$secret" -o json > "$change/recovery-current.json"
+# Refuse replacement or a different document; retain current unrelated keys and metadata.
+jq -e --arg key "$key" --slurpfile before "$change/secret-before.json" \
+  --slurpfile proposed "$change/patch.json" '
+  .metadata.uid == $before[0].metadata.uid and
+  (.data[$key] == $before[0].data[$key] or .data[$key] == $proposed[0].data[$key])' \
+  "$change/recovery-current.json" >/dev/null
+jq --arg key "$key" --slurpfile before "$change/secret-before.json" '
+  {metadata: {uid: .metadata.uid, resourceVersion: .metadata.resourceVersion},
+   data: {($key): $before[0].data[$key]}}' "$change/recovery-current.json" \
+  > "$change/recovery-patch.json"
+kube -n "$PLATFORM_NS" patch secret "$secret" --type merge --patch-file "$change/recovery-patch.json"
+jq -jr --arg key "$key" '.data[$key] | @base64d' "$change/secret-before.json" > "$INSTALLATION_FILE"
+cp "$change/live-values.json" "$VALUES_FILE"
+helm --kubeconfig "$KUBECONFIG" --kube-context "$CONTEXT" -n "$PLATFORM_NS" \
+  upgrade "$RELEASE" "$OCE_CHART" -f "$VALUES_FILE" --wait
+# Restart even if the restored Helm checksum already matched the Pod template.
+kube -n "$PLATFORM_NS" rollout restart deployment/openclaw-enterprise-api deployment/openclaw-enterprise-worker
+kube -n "$PLATFORM_NS" rollout status deployment/openclaw-enterprise-api
+kube -n "$PLATFORM_NS" rollout status deployment/openclaw-enterprise-worker
+```
+
+The explicit restart replaces Pods that may have loaded the candidate before Helm changed the template. Wait for both fresh rollouts; pre-existing ready Pods do not prove recovery. Stop on any failed check. The UID/resourceVersion patch rejects a change after the recovery read. Preserve the evidence if recovery fails and inspect before retrying. See [Installation startup rejection](production-installation-changes.md) for the startup-check limits and logs.
 
 ## Where setup supplies the session
 
@@ -57,6 +98,6 @@ Use the same matching release checkout when running source-dependent setup comma
 | `modelSource`, `MODEL`                                     | Model and source selected during Agent deployment | Same as local k3d                                                                       | Agent authentication and Linear catalog                         |
 | `agent`, `principal`, `name`, `role`                       | Deploy your first Agent                           | Deploy your first Agent                                                                 | Update and redeploy the same Agent                              |
 | `platform.sh`                                              | Step 4; launcher owns network preparation         | Step 1; uses `ENVOY_IMAGE`, `TENANT_NAMESPACE`, `trusted-peers.json` saved in steps 1–3 | Deployment preflight, Gateway Service wait and network policies |
-| `session.sh`                                               | After Agent onboarding                            | After Agent onboarding                                                                  | Resume in a fresh Bash shell                                    |
+| `session.sh`                                               | Before first update; after Agent onboarding       | Before first update; after Agent onboarding                                             | Resume in a fresh Bash shell                                    |
 
 Both capability guides load `session.sh` before using these inputs. Add Git supplies its own App, repository, registry and commit inputs. Add Plugin discovers its plugin ID and creates its prompt marker and result files. Neither requires the other capability's files or identifiers.

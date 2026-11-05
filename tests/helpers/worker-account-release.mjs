@@ -31,6 +31,7 @@ export async function assertWorkerAccountRelease(t, input) {
     tenant,
     sandboxDriver,
     credentialGatewayDriver: input.gateway,
+    servicePrincipalCredentials: { mode: "disabled" },
     revisionOverrides: { namespaceId, agentId },
     async provisionHarness(context) {
       const membership = context.requirements.credentialAttachments.map(({ ref }) => ref);

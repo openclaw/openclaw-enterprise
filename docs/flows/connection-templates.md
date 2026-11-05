@@ -6,7 +6,7 @@ The Installation starts with a saved Google OAuth template. Its first version co
 
 OCC checks scope and the client's allowed destinations before it references an OAuth client. PostgreSQL commits the template version and its audit together. A template can exist without a client. The Agent plugin release determines the local credential placeholder when the account is used.
 
-When the administrator registers a client, OCC reads its availability and approved endpoints from the selected template version. It checks the version again before publication. OCC reserves a hidden OAuth client row before the Refresh Driver writes a confidential client’s secret. The Driver uses the client ID as its private storage reference. OCC publishes the client and records its creation in one transaction. If the template had no client, that transaction also publishes a version that selects the new registration. If creation stops before publication, the worker removes the private material and the hidden row.
+When the administrator registers a client, OCC reads its availability and approved endpoints from the selected template version. It checks the version again before publication. OCC reserves a hidden OAuth client row before its selected Secret Driver writes a confidential client’s secret. The private reference identifies the owning Driver, Installation, and registration. A public registration skips the storage step. OCC publishes the client and records its creation in one transaction. If the template had no client, that transaction also publishes a version that selects the new registration. If creation stops before publication, the worker removes the private material and the hidden row.
 
 For rotation, OCC records the administrator’s request, locks the client, rechecks the session, and asks the Driver to replace the value at that same reference. Code exchange and token refresh use the current value. OCC records successful completion after the write. If the caller loses the response, repeating the operation with the same value is safe.
 
@@ -36,7 +36,7 @@ configured. A provider timeout consumes the attempt.
 OCC saves the consent receipt under its original immutable template version. When listing an account, `PlatformController.effectiveConnectionDestinations` reads the current version of that same template. For manual accounts, it returns the current destinations when the issuer and manual mode still match. For MCP accounts, it returns the original destinations only when issuer, discovery mode, exact server URL and protected resource still match. A missing or incompatible template returns an empty list. This projection does not rewrite the saved registration, grant, token endpoint or consent audit. For MCP, the Driver sends the original resource identifier to the provider.
 
 The worker renews the saved account through the Token Service. For each refresh, it checks the saved grant against the approved registration
-and resolves the current client secret from its Driver. A conditional write
+and asks OCC for the registration’s current secret from its owning Secret Driver. A public client authenticates with its client ID alone. A conditional write
 fences concurrent renewals and disconnects. OCC records the next renewal
 and any narrower scopes. Creating and renewing a saved account require no
 Agent or sender profile.

@@ -323,7 +323,7 @@ if (gatewayToolPolicyInput !== undefined) configureManagedGatewayTools(gatewayTo
 // before readiness and nothing restarts it.
 const gatewayStateDirectory = process.env.OPENCLAW_STATE_DIR || "/home/node/.openclaw";
 const outdatedDatabases = outdatedOpenClawDatabases(gatewayStateDirectory);
-if (outdatedDatabases.length === 0) {
+if (outdatedDatabases.length === 0 && !openClawMaintenancePending(gatewayStateDirectory)) {
   startGateway();
 } else {
   migrateOpenClawState(gatewayStateDirectory, outdatedDatabases, process.env).then(

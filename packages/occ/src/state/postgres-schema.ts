@@ -2336,10 +2336,14 @@ export const oauthClients = occSchema.table(
       .notNull(),
     tokenUrl: text("token_url").notNull(),
     revocationUrl: text("revocation_url"),
-    credentialRefreshDriverId: collatedText("credential_refresh_driver_id").notNull(),
+    secretDriverId: collatedText("secret_driver_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
   (table) => [
+    check(
+      "oauth_clients_secret_owner",
+      sql`(${table.tokenEndpointAuthMethod} = 'none') = (${table.secretDriverId} IS NULL) AND (${table.secretDriverId} IS NULL OR length(${table.secretDriverId}) > 0)`,
+    ),
     unique("oauth_clients_pair_unique")
       .on(table.namespaceId, table.issuer, table.clientId)
       .nullsNotDistinct(),

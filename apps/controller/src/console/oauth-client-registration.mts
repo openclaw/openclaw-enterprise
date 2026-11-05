@@ -9,13 +9,12 @@ import { button, element, field, validateFields } from "./dom.mjs";
 import type { ConsolePageContext } from "./page-context.mjs";
 
 type Context = Pick<ConsolePageContext, "request" | "isCurrent">;
-export type PublicClient = Omit<OAuthClient, "credentialRefreshDriverId">;
 const option = (value: string, label: string) => element("option", { value }, label);
-const methods = {
-  client_secret_basic: "Client secret in Authorization header",
-  client_secret_post: "Client secret in request body",
-  none: "Public client (no secret)",
-} as const;
+const methods: readonly OAuthClient["tokenEndpointAuthMethod"][] = [
+  "client_secret_basic",
+  "client_secret_post",
+  "none",
+];
 
 export function advertisedClientMethods(observed: McpAuthorizationMetadata | undefined) {
   return observed?.tokenEndpointAuthMethods ?? ["client_secret_basic"];
@@ -48,7 +47,7 @@ export async function oauthClients(context: Context) {
   return (await context.request("/oauth-clients", {
     installationAdministration: "required",
     includeMeta: true,
-  })) as { data: PublicClient[]; meta?: { redirectUri?: string } };
+  })) as { data: OAuthClient[]; meta?: { redirectUri?: string } };
 }
 
 /** Both entry points register the provider-issued credentials against the displayed template version. */
@@ -61,7 +60,7 @@ export function openOAuthClientRegistration(
     selected?: ConnectionTemplate;
     redirectUri?: string | undefined;
     createTemplate?: (onSaved: (template: ConnectionTemplate) => void) => void;
-    onClose: (created?: PublicClient) => void;
+    onClose: (created?: OAuthClient) => void;
   },
 ) {
   const dialog = element("dialog", {
@@ -112,6 +111,7 @@ export function openOAuthClientRegistration(
   const availability = element("input", { readOnly: true });
   const name = element("input", { required: true });
   const clientId = element("input", { required: true, autocomplete: "off" });
+  const clientType = element("select", { required: true });
   const method = element("select", { required: true });
   const secret = element("input", {
     type: "password",
@@ -136,7 +136,12 @@ export function openOAuthClientRegistration(
     }),
     field({ label: "OAuth client name", control: name }),
     field({ label: "Client ID", control: clientId }),
-    field({ label: "Client authentication", control: method }),
+    field({ label: "Client type", control: clientType }),
+    field({
+      label: "Token endpoint authentication method",
+      control: method,
+      help: "Use the method registered for this client ID at the provider.",
+    }),
     secretField,
   );
   const fields = element(
@@ -152,14 +157,27 @@ export function openOAuthClientRegistration(
   let selected: ConnectionTemplate | undefined;
   let pending = false;
   let uncertain = false;
-  let created: PublicClient | undefined;
-  function showSecret() {
-    secretField.hidden = secret.disabled = method.value === "none" || !method.value;
+  let created: OAuthClient | undefined;
+  let confidentialMethods: typeof methods = [];
+  function showMethods(previous = "") {
+    const isPublic = clientType.value === "public";
+    const choices = isPublic ? ["none"] : confidentialMethods;
+    method.replaceChildren(...choices.map((value) => option(value, value)));
+    method.disabled = choices.length <= 1;
+    const preferred =
+      previous ||
+      (selected?.current.issuer === "https://accounts.google.com"
+        ? "client_secret_post"
+        : "client_secret_basic");
+    if (choices.some((value) => value === preferred)) {
+      method.value = preferred;
+    }
+    secretField.hidden = secret.disabled = isPublic || !method.value;
     if (secret.disabled) {
       secret.value = "";
     }
   }
-  method.addEventListener("change", showSecret);
+  clientType.addEventListener("change", () => showMethods());
   function select(template: ConnectionTemplate | undefined) {
     const sameTemplate =
       selected?.id === template?.id && selected?.current.version === template?.current.version;
@@ -176,20 +194,20 @@ export function openOAuthClientRegistration(
       template?.current.mode === "mcp_discovery"
         ? advertisedClientMethods(template.current.observed)
         : undefined;
-    method.replaceChildren(
-      ...Object.entries(methods)
-        .filter(([key]) => !allowed || allowed.includes(key))
-        .map(([key, label]) => option(key, label)),
-    );
-    const defaultMethod =
-      template?.current.issuer === "https://accounts.google.com"
-        ? "client_secret_post"
-        : "client_secret_basic";
-    const preferred = previousMethod || defaultMethod;
-    if (Array.from(method.options).some((item) => item.value === preferred)) {
-      method.value = preferred;
+    const availableMethods = methods.filter((value) => !allowed || allowed.includes(value));
+    confidentialMethods = availableMethods.filter((value) => value !== "none");
+    clientType.replaceChildren();
+    if (confidentialMethods.length) {
+      clientType.append(option("confidential", "Confidential"));
     }
-    showSecret();
+    if (availableMethods.includes("none")) {
+      clientType.append(option("public", "Public"));
+    }
+    clientType.disabled = clientType.options.length <= 1;
+    if (previousMethod === "none") {
+      clientType.value = "public";
+    }
+    showMethods(previousMethod);
     register.disabled = !template || !method.value;
     status.textContent =
       template && !method.value
@@ -225,7 +243,7 @@ export function openOAuthClientRegistration(
         installationAdministration: "required",
         expectedStatus: 201,
         body: registration,
-      })) as PublicClient;
+      })) as OAuthClient;
       if (!dialog.open || !context.isCurrent()) {
         return;
       }

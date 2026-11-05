@@ -9,12 +9,15 @@ import (
 	"encoding/json/v2"
 	"encoding/pem"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -145,7 +148,6 @@ func TestDevelopmentRepositoryInputsRejectUnapprovedNamespacePolicy(t *testing.T
 		t.Fatalf("a draft PR grant was rejected: %v", err)
 	}
 	reset()
-	// Provider egress must name specific authorized destinations, not a broad range.
 	if err := os.WriteFile(filepath.Join(directory, "upstream-cidrs.json"), []byte(`["192.0.2.0/24"]`), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -200,6 +202,59 @@ func TestDevelopmentRepositoryInputsRejectUnapprovedNamespacePolicy(t *testing.T
 	runner.env["OCC_DEVELOPMENT_PREPARED_GIT_HOST_IP"] = "172.17.0.2"
 	if _, err := runner.loadDevelopmentRepositoryInputs("none"); err == nil {
 		t.Fatal("unexpected Git issuer host accepted")
+	}
+}
+
+func TestRepositoryUpstreamCIDRs(t *testing.T) {
+	var calls, status atomic.Int32
+	status.Store(http.StatusOK)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodGet || req.Host != "api.github.com" || req.URL.Path != "/meta" || req.Header.Get("Authorization") != "" || req.Header.Get("Cookie") != "" {
+			t.Error("expected an unauthenticated GET to api.github.com")
+		}
+		calls.Add(1)
+		w.Header().Set("Location", "/other")
+		w.WriteHeader(int(status.Load()))
+		fmt.Fprint(w, `{"api":["140.82.112.0/20"],"git":["20.201.28.148/32"],"hooks":["8.0.0.0/8"]}`)
+	}))
+	defer server.Close()
+	// Dial the local TLS server for the fixed GitHub endpoint, using its test CA.
+	client := *repositoryMetaClient
+	transport := server.Client().Transport.(*http.Transport).Clone()
+	transport.TLSClientConfig.ServerName = "example.com"
+	transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
+	}
+	client.Transport = transport
+
+	valid := []byte(`{"githubApiAndGit":["140.82.112.0/20","20.201.28.148/32"]}`)
+	ranges, err := repositoryUpstreamCIDRs(valid, false, &client)
+	if err != nil || !reflect.DeepEqual(ranges, []string{"140.82.112.0/20", "20.201.28.148/32"}) {
+		t.Fatalf("published GitHub ranges: %v, %v", ranges, err)
+	}
+	for _, bad := range []string{"8.0.0.0/8", "140.82.0.0/16", "0.0.0.0/0", "10.0.0.0/8", "172.0.0.0/8", "140.82.112.1/20"} {
+		if _, err := repositoryUpstreamCIDRs([]byte(`{"githubApiAndGit":["`+bad+`"]}`), false, &client); err == nil {
+			t.Fatalf("accepted unauthorized range %s", bad)
+		}
+	}
+	for _, failure := range []int{http.StatusServiceUnavailable, http.StatusTemporaryRedirect} {
+		status.Store(int32(failure))
+		if _, err := repositoryUpstreamCIDRs(valid, false, &client); err == nil {
+			t.Fatalf("accepted hosted ranges after HTTP %d", failure)
+		}
+	}
+	n := calls.Load()
+	// These operator and private issuer inputs must never depend on GitHub Meta.
+	if _, err := repositoryUpstreamCIDRs(valid, true, &client); err == nil {
+		t.Fatal("private issuer accepted a published network object")
+	}
+	for _, private := range []bool{false, true} {
+		if _, err := repositoryUpstreamCIDRs([]byte(`["192.0.2.10/32"]`), private, &client); err != nil {
+			t.Fatalf("offline explicit endpoint refused: %v", err)
+		}
+	}
+	if calls.Load() != n {
+		t.Fatal("offline repository settings made a GitHub request")
 	}
 }
 
