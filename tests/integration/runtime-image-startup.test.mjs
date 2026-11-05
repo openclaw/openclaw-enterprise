@@ -1871,7 +1871,7 @@ assert.deepEqual(provenance.patches, {
   } : {
     "openclaw-control-ui-browser-reconnect.patch": "21fef3589702683a173dd2967d852954e1bfa56ea9d9e9a99bdaa28159ff5d2c",
     "openclaw-terminated-gateway-namespace.patch": "1ed77577d53d43619f7c8fb33dbcdcf6a728351821abfe1b0beee947bd6eb456",
-    "openclaw-node-setup-renewal.patch": "3d969fe6424839cb8283d3e3e5fe80bb6ccb714cb97b20708f1fbc45012efeb0",
+    "openclaw-node-setup-renewal.patch": "b4d860d00310e882404d62f630266c80d93df66492230c494e80cc1391bac538",
   }),
 });
 assert.equal(provenance.codex.version, ${JSON.stringify(stagingCodexVersion)});

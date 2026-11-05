@@ -3697,7 +3697,7 @@
 +});
 --- a/src/cli/connect-cli.reconnect.test.ts
 +++ b/src/cli/connect-cli.reconnect.test.ts
-@@ -1,26 +1,46 @@
+@@ -1,26 +1,47 @@
  // Real CLI, node-host auth, native credential storage, and WebSocket client.
 -// Only command capabilities and the remote Gateway protocol peer are fixtures.
 +// Authentication cases use fixture command capabilities and a remote Gateway protocol peer.
@@ -3713,6 +3713,7 @@
 +import { WebSocketServer, type WebSocket } from "ws";
  import type { RequestFrame } from "../../packages/gateway-protocol/src/index.js";
 +import { gatewayStartupUnavailableDetails } from "../../packages/gateway-protocol/src/startup-unavailable.js";
++import { withTestTimeout } from "../../test/helpers/promise.js";
 +import * as configFile from "../config/config.js";
  import {
 +  buildMinimalGatewayHelloOkPayload,
@@ -3747,7 +3748,7 @@
    connected: vi.fn(),
    runtime: { error: vi.fn(), exit: vi.fn() },
  }));
-@@ -29,25 +49,45 @@
+@@ -29,25 +50,45 @@
    ...(await importOriginal<typeof import("../runtime.js")>()),
    defaultRuntime: fixture.runtime,
  }));
@@ -3807,7 +3808,7 @@
  });
  
  async function runConnect(args: string[]) {
-@@ -57,28 +97,772 @@
+@@ -57,28 +98,772 @@
    await program.parseAsync(["connect", ...args], { from: "user" });
  }
  
@@ -4588,7 +4589,7 @@
          const identity = loadOrCreateDeviceIdentity();
          await storeDeviceAuthToken({
            deviceId: identity.deviceId,
-@@ -86,56 +870,67 @@
+@@ -86,56 +871,67 @@
            token: "synthetic-paired-node-token",
            scopes: [],
          });
@@ -4697,7 +4698,7 @@
        } finally {
          stop();
          await running;
-@@ -147,9 +942,777 @@
+@@ -147,9 +943,786 @@
      });
    });
  
@@ -5174,12 +5175,17 @@
 +        running = program
 +          .parseAsync(["node", "run", "--pair-if-needed", code], { from: "user" })
 +          .then(() => {});
-+        const frame = await Promise.race([
-+          received.promise,
-+          running.then(() => {
-+            throw new Error("Node exited before reaching its second candidate");
-+          }),
-+        ]);
++        // Fail inside the try so a stalled handshake still stops its runner.
++        const frame = await withTestTimeout(
++          Promise.race([
++            received.promise,
++            running.then(() => {
++              throw new Error("Node exited before reaching its second candidate");
++            }),
++          ]),
++          15_000,
++          "Node did not reach its second candidate",
++        );
 +        expect(frame.params).toHaveProperty("auth", {
 +          bootstrapToken: "synthetic-mixed-bootstrap",
 +        });
@@ -5189,12 +5195,16 @@
 +        // token-only confirmation, which must not wait for the ready callback.
 +        automaticallyAccept = true;
 +        accept?.();
-+        await Promise.race([
-+          connected.promise,
-+          running.then(() => {
-+            throw new Error("Node exited before its second candidate connected");
-+          }),
-+        ]);
++        await withTestTimeout(
++          Promise.race([
++            connected.promise,
++            running.then(() => {
++              throw new Error("Node exited before its second candidate connected");
++            }),
++          ]),
++          15_000,
++          "Node did not accept its second candidate's token-authenticated hello",
++        );
 +        expect(
 +          await loadDeviceAuthToken({ deviceId: identity.deviceId, role: "node" }),
 +        ).toMatchObject({
