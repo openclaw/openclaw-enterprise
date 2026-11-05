@@ -55,6 +55,10 @@ export {
   OpenShellWorkspaceAlreadyExistsError,
 } from "./openshell-gateway-errors.ts";
 
+// Each policy writer changes this OCC-owned annotation in the same native CAS transaction.
+// Policy-only native updates otherwise leave the Sandbox resource version unchanged.
+export const OPENSHELL_POLICY_OPERATION_ANNOTATION = "openclaw.dev/policy-update";
+
 type RecordValue = Readonly<Record<string, unknown>>;
 
 export interface OpenShellGatewayClientOptions {
@@ -1435,6 +1439,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
         workspace_scope: { workspace: request.workspace },
         policy: request.policy,
         expected_resource_version: request.expectedResourceVersion,
+        annotations: { [OPENSHELL_POLICY_OPERATION_ANNOTATION]: request.requestId },
         request_id: request.requestId,
       },
       signal,

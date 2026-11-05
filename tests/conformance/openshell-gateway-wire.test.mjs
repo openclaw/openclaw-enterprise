@@ -176,7 +176,21 @@ test("OpenShell policy updates preserve static and L7 constraints and carry fixe
   );
   assert.equal(calls[1][1].expected_resource_version, update.expectedResourceVersion);
   assert.equal(calls[1][1].request_id, update.requestId);
+  assert.deepEqual(
+    calls[1][1].annotations,
+    { "openclaw.dev/policy-update": update.requestId },
+    "the policy update advances Sandbox CAS metadata atomically",
+  );
   assert.deepEqual(calls[1][1].policy, status.policy);
+  await client.updatePolicy(
+    { ...update, requestId: "79962864-9cdc-4b12-9561-218b42d004b3" },
+    AbortSignal.timeout(2000),
+  );
+  assert.notEqual(
+    calls[3][1].annotations["openclaw.dev/policy-update"],
+    calls[1][1].annotations["openclaw.dev/policy-update"],
+    "different policy operations change the metadata CAS marker",
+  );
   const drafts = await client.getPolicyDrafts(target, AbortSignal.timeout(2000));
   assert.equal(drafts.version, "19");
   assert.equal(drafts.chunks[0].hit_count, 6);
@@ -193,7 +207,7 @@ test("OpenShell policy updates preserve static and L7 constraints and carry fixe
     client.updatePolicy({ ...update, expectedResourceVersion: "0" }, AbortSignal.timeout(2000)),
     /nonzero/,
   );
-  assert.equal(calls.length, 4, "unsafe CAS is refused before provider dispatch");
+  assert.equal(calls.length, 5, "unsafe CAS is refused before provider dispatch");
 });
 test(
   "OpenShell private initialization streams stdin and settles only on a complete exit",

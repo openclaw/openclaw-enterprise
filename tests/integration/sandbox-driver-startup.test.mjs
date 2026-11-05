@@ -1316,6 +1316,32 @@ test("a selected Google account keeps its request guard alongside an independent
   });
   assert.equal(created.spec.environment.OPENCLAW_MANAGED_CREDENTIAL_ENV, "GOG_ACCESS_TOKEN");
   assert.equal(created.spec.environment.GOG_ACCESS_TOKEN, undefined);
+  // Static credentials keep the existing immutable-baseline policy path, including
+  // native protobuf oneof markers on both Sandbox and policy-status reads.
+  const specCodec = controllerRequire("@grpc/proto-loader").loadSync(
+    fileURLToPath(
+      new URL(
+        "../../apps/controller/src/drivers/sandbox/proto/openshell-gateway.proto",
+        import.meta.url,
+      ),
+    ),
+    { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
+  )["openshell.v1.SandboxSpec"];
+  const decodedSpec = specCodec.deserialize(specCodec.serialize(created.spec));
+  const readSandbox = client.getSandbox;
+  client.getSandbox = async () => ({ ...created, resourceVersion: "1", spec: decodedSpec });
+  client.getPolicyStatus = async () => ({
+    policy: decodedSpec.policy,
+    version: 1,
+    activeVersion: 1,
+    state: "POLICY_STATUS_LOADED",
+  });
+  assert.equal(
+    (await driver.observeNetworkPolicy({ ...context, revision }, driver.admitNetworkPolicy([], 1)))
+      .matches,
+    true,
+  );
+  client.getSandbox = readSandbox;
   const guard = created.spec.policy.network_middlewares[registration];
   assert.equal(guard.config.fields.binding_id.stringValue, managedGoogleInstall.releaseSha256);
   assert.equal(guard.on_error, "fail_closed");
@@ -1390,7 +1416,7 @@ test("a selected Google account keeps its request guard alongside an independent
 test("one saved Google account serves its granted APIs through the same request guard for each executable", async () => {
   const client = workspaceGatewayClient();
   client.getGatewayInfo = async () => ({ extensions: [negotiatedGoogleGuard()] });
-  const senderBinaries = [managedGoogleInstall.binaryPath, "/usr/bin/curl"];
+  const senderBinaries = [managedGoogleInstall.binaryPath, "/usr/bin/curl", "/usr/local/bin/node"];
   const backend = backendFor(client);
   backend.drivers.credential_refresh = "credential-refresh-openshell";
   const gateway = new OpenShellCredentialGatewayDriver(
@@ -1459,6 +1485,39 @@ test("one saved Google account serves its granted APIs through the same request 
     },
   ];
 
+  const slackId = "cs_00000000-0000-4000-8000-000000000092";
+  const slackSource = {
+    id: slackId,
+    namespaceId: context.namespace.id,
+    state: "ready",
+    driverId: gateway.id,
+    type: "bearer-token",
+    ownerCapability: "credential_gateway",
+    config: { protocol: "mcp", host: "mcp.slack.com", path: "/mcp", env_var: "SLACK_MCP_TOKEN" },
+    secrets: { token: { kind: "secret", id: "sec_slack", namespaceId: context.namespace.id } },
+  };
+  await gateway.registerSource(
+    { ...context, source: slackSource },
+    {
+      type: slackSource.type,
+      config: slackSource.config,
+      secrets: { token: "synthetic-slack-bearer" },
+    },
+  );
+  revision.plugins.plugins[managedSlackInstall.id] = {
+    enabled: true,
+    driverPolicy: {
+      releaseSha256: managedSlackInstall.releaseSha256,
+      credentials: { account: slackId },
+      toolNames: ["slack_search_public"],
+    },
+  };
+  revision.credentialSources.push({
+    sourceId: slackId,
+    sourceType: "bearer-token",
+    credentialGatewayId: gateway.id,
+  });
+
   // The real Credential Gateway creates the profile and supplies the Sandbox with its sender baseline.
   await gateway.prepareConnectionSource({ ...context, source: { ...source, id: profileId } });
   await gateway.publishConnectionToken(
@@ -1473,7 +1532,13 @@ test("one saved Google account serves its granted APIs through the same request 
     }),
     /requires its managed Google request guard/,
   );
-  const attachments = await gateway.attachForRevision({ ...context, revision, sources: [source] });
+  const attachments = await gateway.attachForRevision({
+    ...context,
+    revision,
+    sources: [source, slackSource],
+  });
+  const slack = attachments.find(({ sourceId }) => sourceId === slackId);
+  assert.ok(slack);
   requirements.credentialAttachments = attachments;
 
   const profile = client.profiles.get(attachments[0].ref).profile;
@@ -1584,36 +1649,82 @@ test("one saved Google account serves its granted APIs through the same request 
     livePolicy = structuredClone(spec.policy);
     return created;
   };
-  client.getSandbox = async () => created;
-  client.getPolicyStatus = async () => ({
-    policy: livePolicy,
-    version: updates.length + 1,
-    activeVersion: loaded ? updates.length + 1 : 1,
-    state: loaded ? "POLICY_STATUS_LOADED" : "POLICY_STATUS_PENDING",
-  });
+  client.getSandbox = async () => created && structuredClone(created);
+  let concurrentGrant;
+  client.getPolicyStatus = async () => {
+    const status = {
+      policy: structuredClone(livePolicy),
+      version: updates.length + 1,
+      activeVersion: loaded ? updates.length + 1 : 1,
+      state: loaded ? "POLICY_STATUS_LOADED" : "POLICY_STATUS_PENDING",
+    };
+    if (concurrentGrant) {
+      const commit = concurrentGrant;
+      concurrentGrant = undefined;
+      await commit();
+    }
+    return status;
+  };
   client.updatePolicy = async (request) => {
+    assert.equal(
+      request.expectedResourceVersion,
+      created.resourceVersion,
+      "stale Sandbox policy version",
+    );
     updates.push(structuredClone(request));
     livePolicy = structuredClone(request.policy);
+    created.resourceVersion = String(Number(created.resourceVersion) + 1);
     loaded = false;
   };
   client.getSandboxConfig = async (workspace) => {
     const current = openShellPluginPolicy(revision, requirements, guard.endpoint, []);
-    return {
-      ...observed,
-      workspace,
-      policy: {
-        ...livePolicy,
-        network_policies: {
-          ...livePolicy.network_policies,
-          [current.providerRule.name]: current.providerRule,
-        },
+    const policy = structuredClone({
+      ...livePolicy,
+      network_policies: {
+        ...livePolicy.network_policies,
+        [current.providerRule.name]: current.providerRule,
       },
-    };
+    });
+    if (requirements.credentialAttachments.some(({ sourceId }) => sourceId === slackId)) {
+      admitSlackProvider(policy, slack.ref);
+    }
+    return { ...observed, workspace, policy };
   };
   await sandboxDriver.ensureNamespace(context);
   const provision = () => sandboxDriver.provisionHarness({ ...context, revision, requirements });
   await provision();
   const launchPolicy = structuredClone(created.spec.policy);
+  revision.executionAdmission = { mode: "standard" };
+  const policyContext = { ...context, revision };
+  const grant = {
+    id: "external",
+    host: "docs.googleapis.com",
+    binary: "/usr/bin/curl",
+    ports: [{ from: 443, to: 443 }],
+  };
+  let grantVersion = 0;
+  const snapshot = (additions) => sandboxDriver.admitNetworkPolicy(additions, ++grantVersion);
+  const applyGrant = async (additions, operationId) => {
+    const policy = snapshot(additions);
+    const before = await sandboxDriver.observeNetworkPolicy(policyContext, policy);
+    await sandboxDriver.applyNetworkPolicy(policyContext, {
+      snapshot: policy,
+      expectedProviderVersion: before.resourceVersion,
+      operationId,
+    });
+    loaded = true;
+    assert.deepEqual(await sandboxDriver.observeNetworkPolicy(policyContext, policy), {
+      resourceVersion: created.resourceVersion,
+      policyVersion: String(updates.length + 1),
+      state: "applied",
+      matches: true,
+    });
+    return policy;
+  };
+  const initialGuard = structuredClone(livePolicy.network_middlewares);
+  await applyGrant([grant], "grant-on-independent-host");
+  assert.deepEqual(livePolicy.network_middlewares, initialGuard);
+
   const changedConfig = {
     ...config,
     destinations: JSON.stringify([
@@ -1712,13 +1823,30 @@ test("one saved Google account serves its granted APIs through the same request 
   requirements.credentialAttachments = await gateway.attachForRevision({
     ...context,
     revision,
-    sources: [changedSource],
+    sources: [changedSource, slackSource],
   });
+  // The new account host overlaps a grant that was safe under the previous template.
+  await assert.rejects(provision, /bypass the managed plugin HTTP request guard/);
+  assert.equal(updates.length, 1, "a newly overlapping grant prevents account policy release");
+  const independent = { ...grant, host: "docs.example.test" };
+  await applyGrant([independent], "move-independent-grant");
+  const later = { ...grant, id: "status", host: "status.example.test" };
+  const latestGrants = snapshot([later]);
+  const stale = await sandboxDriver.observeNetworkPolicy(policyContext, latestGrants);
+  // The other owner commits after the account reads policy. Its CAS must then fail,
+  // and the next maintenance pass must compose from that newly authorized policy.
+  concurrentGrant = () => applyGrant([independent, later], "concurrent-agent-grant");
+  await assert.rejects(provision, /stale Sandbox policy version/);
+  assert.ok(livePolicy.network_policies["oce-agent-status"]);
+  assert.deepEqual(livePolicy.network_middlewares, initialGuard);
+  assert.equal(updates.length, 3);
   await assert.rejects(provision, /saved account request policy is not loaded yet/);
-  assert.equal(updates.length, 1);
+  assert.equal(updates.length, 4);
+  assert.ok(livePolicy.network_policies["oce-agent-status"]);
+  assert.ok(livePolicy.network_policies["oce-agent-external"]);
   assert.deepEqual(created.spec.policy, launchPolicy, "the immutable launch request is preserved");
   const currentScope = JSON.parse(
-    updates[0].policy.network_middlewares["oce-plugin-requests"].config.fields.request_scope
+    updates[3].policy.network_middlewares["oce-plugin-requests"].config.fields.request_scope
       .stringValue,
   );
   assert.deepEqual(currentScope.destinations.map(({ host }) => host).sort(), [
@@ -1736,15 +1864,103 @@ test("one saved Google account serves its granted APIs through the same request 
   );
   assert.equal(
     updates.length,
-    1,
+    4,
     "unchanged maintenance observes the current policy without rewriting it",
   );
+  const currentGuard = structuredClone(livePolicy.network_middlewares);
+  await assert.rejects(
+    sandboxDriver.applyNetworkPolicy(policyContext, {
+      snapshot: latestGrants,
+      expectedProviderVersion: stale.resourceVersion,
+      operationId: "stale-agent-apply",
+    }),
+    /stale Sandbox policy version/,
+  );
+  assert.ok(
+    livePolicy.network_policies["oce-agent-external"],
+    "a stale operator operation cannot remove the other committed grant",
+  );
+  await applyGrant([later], "latest-agent-apply");
+  assert.deepEqual(
+    livePolicy.network_middlewares,
+    currentGuard,
+    "an Agent grant preserves the latest signed Google scope",
+  );
+  const reducedSource = {
+    ...changedSource,
+    config: {
+      ...changedSource.config,
+      destinations: JSON.stringify([
+        { host: "docs.googleapis.com", port: 443, path: "/v1/documents/**" },
+      ]),
+      scope: "https://www.googleapis.com/auth/documents.readonly",
+    },
+  };
+  await gateway.prepareConnectionSource({
+    ...context,
+    source: { ...reducedSource, id: profileId },
+  });
+  requirements.credentialAttachments = await gateway.attachForRevision({
+    ...context,
+    revision,
+    sources: [reducedSource, slackSource],
+  });
+  await assert.rejects(provision, /saved account request policy is not loaded yet/);
+  assert.ok(livePolicy.network_policies["oce-agent-status"]);
+  assert.equal(livePolicy.network_policies["oce-agent-external"], undefined);
+  loaded = true;
+  await provision();
+  assert.equal(updates.length, 6);
+  // Native detach keeps Slack's launch network rule while removing its provider.
+  // Google refresh must use that same qualified launch baseline on every reread.
+  requirements.credentialAttachments = requirements.credentialAttachments.filter(
+    ({ sourceId }) => sourceId !== slackId,
+  );
+  created.spec.providers = created.spec.providers.filter((ref) => ref !== slack.ref);
+  await provision();
+  assert.ok(created.spec.policy.network_policies["oce-slack-mcp"]);
+  const securityBaseline = structuredClone(livePolicy);
+  livePolicy.process.run_as_user = "root";
+  await assert.rejects(provision, /differs outside its managed network rules/);
+  await assert.rejects(
+    sandboxDriver.applyNetworkPolicy(policyContext, {
+      snapshot: latestGrants,
+      expectedProviderVersion: created.resourceVersion,
+      operationId: "drifted-agent-apply",
+    }),
+    /differs outside its managed network rules/,
+  );
+  livePolicy = securityBaseline;
+  created.annotations["openclaw.dev/policy-update"] = "current-native-policy-operation";
+  await provision();
+  created.annotations["openclaw.dev/unrelated"] = "unowned";
+  await assert.rejects(provision, /exact AgentRevision ownership and content/);
+  delete created.annotations["openclaw.dev/unrelated"];
   livePolicy.network_policies.unrelated = {
     name: "unrelated",
     endpoints: [{ host: "other.example", ports: [443] }],
   };
-  await assert.rejects(provision, /differs outside the saved account request guard/);
-  assert.equal(updates.length, 1, "account maintenance does not overwrite unrelated policy drift");
+  await assert.rejects(provision, /differs outside its managed network rules/);
+  assert.equal(updates.length, 6, "account maintenance does not overwrite unrelated policy drift");
+  // A source withdrawn before provisioning is omitted by the Worker even though the
+  // admitted revision retains its receipt. Agent grant edits must not reattach it.
+  created = undefined;
+  requirements.credentialAttachments = [];
+  await provision();
+  assert.equal(created.spec.policy.network_middlewares, undefined);
+  await applyGrant([later], "grant-after-early-account-withdrawal");
+  assert.equal(livePolicy.network_middlewares, undefined);
+  livePolicy.network_middlewares = currentGuard;
+  assert.equal(
+    (await sandboxDriver.observeNetworkPolicy(policyContext, latestGrants)).matches,
+    false,
+  );
+  await applyGrant([later], "repair-early-withdrawal-policy");
+  assert.equal(
+    livePolicy.network_middlewares,
+    undefined,
+    "an immutable guard-free baseline cannot acquire a Google guard",
+  );
 });
 
 test("OpenShell builds managed MCP rules for the declared endpoint and upstream tool name", () => {
@@ -1850,6 +2066,12 @@ test("OpenShell limits a Slack connection to the revision's exact MCP tools and 
     return created;
   };
   client.getSandbox = async () => created;
+  client.getPolicyStatus = async () => ({
+    policy: created.spec.policy,
+    version: 1,
+    activeVersion: 1,
+    state: "POLICY_STATUS_LOADED",
+  });
   client.updatePolicy = async () => {
     updateCount++;
   };

@@ -141,6 +141,7 @@ import {
   OpenShellSandboxAlreadyExistsError,
   OpenShellWorkspaceAlreadyExistsError,
   toProtobufStruct,
+  OPENSHELL_POLICY_OPERATION_ANNOTATION,
 } from "./openshell-gateway-client.ts";
 import { OpenShellServiceTransportError } from "./openshell-service-transport.ts";
 import { RUNTIME_WRAPPER_COMMAND } from "../compute/kubernetes/runtime-entrypoints.ts";
@@ -2791,15 +2792,17 @@ function exactStringMap(
   );
 }
 
-function exactStringMapWithReservedPrefix(
+function sandboxAnnotationsMatch(
   actual: Readonly<Record<string, string>>,
   expected: Readonly<Record<string, string>>,
-  reservedPrefix: string,
 ): boolean {
   return (
     Object.entries(expected).every(([key, value]) => actual[key] === value) &&
     Object.keys(actual).every(
-      (key) => Object.hasOwn(expected, key) || key.startsWith(reservedPrefix),
+      (key) =>
+        Object.hasOwn(expected, key) ||
+        key.startsWith("internal.openshell.ai/") ||
+        key === OPENSHELL_POLICY_OPERATION_ANNOTATION,
     )
   );
 }
@@ -2973,17 +2976,64 @@ function verifyExistingSandbox(
     existing.name !== request.name ||
     existing.workspace !== request.workspace ||
     !exactStringMap(existing.labels, request.labels) ||
-    !exactStringMapWithReservedPrefix(
-      existing.annotations,
-      request.annotations,
-      "internal.openshell.ai/",
-    ) ||
+    !sandboxAnnotationsMatch(existing.annotations, request.annotations) ||
     !isDeepStrictEqual(canonicalSandboxSpec(existing.spec), canonicalSandboxSpec(request.spec))
   ) {
     throw new OpenShellSandboxConfigurationFailure(
       `Refusing OpenShell Sandbox ${request.name} without exact AgentRevision ownership and content.`,
     );
   }
+}
+
+/** Keep the live Agent grants and saved-account guard, while verifying the immutable restrictions. */
+function liveSandboxPolicy(
+  revision: Readonly<AgentRevision>,
+  baseline: Readonly<Record<string, unknown>>,
+  value: unknown,
+): Readonly<Record<string, unknown>> {
+  if (!revision.credentialSources?.some((source) => source.accountDelivery)) {
+    return baseline;
+  }
+  const binding = managedCredentialBinding(revision.plugins?.plugins, managedGoogleInstall);
+  const account =
+    binding &&
+    revision.credentialSources?.some(
+      (source) => source.sourceId === binding.sourceId && source.accountDelivery,
+    );
+  const initialPlugin = account && googleRequestPolicyFromSandbox(baseline);
+  // Other layouts retain their existing immutable-baseline application and repair semantics.
+  // An admitted account withdrawn before launch has no mutable request guard to preserve.
+  if (!initialPlugin) {
+    return baseline;
+  }
+  const current = asRecord(canonicalProtobufValues(value));
+  const network = asRecord(current?.network_policies);
+  const originalNetwork = asRecord(baseline.network_policies);
+  if (!current || !network || !originalNetwork) {
+    throw new OpenShellSandboxConfigurationFailure("The Sandbox policy baseline is unavailable.");
+  }
+  if (!googleRequestPolicyFromSandbox(current)) {
+    throw new OpenShellSandboxConfigurationFailure(
+      "The saved account request guard is unavailable.",
+    );
+  }
+  const fixedRules = (rules: Readonly<Record<string, unknown>>) =>
+    Object.fromEntries(
+      Object.entries(rules).filter(([name]) => !name.startsWith(AGENT_POLICY_PREFIX)),
+    );
+  const comparable = {
+    ...current,
+    ...(initialPlugin && { network_middlewares: baseline.network_middlewares }),
+    network_policies: { ...fixedRules(network), ...(initialPlugin && initialPlugin.networks) },
+  };
+  if (
+    !sameOpenShellPolicy(comparable, { ...baseline, network_policies: fixedRules(originalNetwork) })
+  ) {
+    throw new OpenShellSandboxConfigurationFailure(
+      "The Sandbox policy differs outside its managed network rules.",
+    );
+  }
+  return current;
 }
 
 function checkStartupConfiguration(configuration: unknown): void {
@@ -3462,55 +3512,44 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "OpenShell Git cannot share the protected execution proxy profile.",
       );
     }
-    const checkEffectivePolicy = async () => {
+    const checkEffectivePolicy = async (
+      baseline: Readonly<Record<string, unknown>> = create.spec,
+    ) => {
       if (plugin && accountDelivery) {
         if (!client.getPolicyStatus || !client.updatePolicy) {
           throw new OpenShellSandboxConfigurationFailure(
             "Saved accounts require live Sandbox policy reconciliation.",
           );
         }
-        const desired = {
-          ...create.spec.policy,
-          network_middlewares: plugin.middlewares,
-          network_policies: { ...create.spec.policy.network_policies, ...plugin.networks },
-        };
+        // Capture the write precondition before reading the live policy. A concurrent
+        // policy owner must make this conditional update retry, never lose its rules.
+        const target = await client.getSandbox(
+          { workspace, name: sandbox.resourceName },
+          context.signal,
+        );
+        if (!target?.resourceVersion) {
+          throw new DependencyUnavailableError("The account Sandbox policy target is unavailable.");
+        }
+        verifyExistingSandbox(target, { ...create, spec: baseline, requestId: requestIds[0]! });
+        const baselinePolicy = asRecord(baseline.policy);
+        if (!baselinePolicy) {
+          throw new OpenShellSandboxConfigurationFailure(
+            "The Sandbox policy baseline is unavailable.",
+          );
+        }
         let status = await client.getPolicyStatus(
           { workspace, sandbox: sandbox.resourceName },
           context.signal,
         );
-        const observed = asRecord(canonicalProtobufValues(status.policy));
-        // Only the account guard may change here. Filesystem, process, defaults and
-        // Agent grants retain the exact launch baseline, including during retries.
-        const previous = googleRequestPolicyFromSandbox(observed);
-        if (
-          !previous ||
-          !sameOpenShellPolicy(
-            {
-              ...observed,
-              network_middlewares: launchPlugin!.middlewares,
-              network_policies: {
-                ...asRecord(observed?.network_policies),
-                ...launchPlugin!.networks,
-              },
-            },
-            create.spec.policy,
-          )
-        ) {
-          throw new OpenShellSandboxConfigurationFailure(
-            "The Sandbox policy differs outside the saved account request guard.",
-          );
-        }
+        const observed = liveSandboxPolicy(context.revision, baselinePolicy, status.policy);
+        const desired = {
+          ...observed,
+          network_middlewares: plugin.middlewares,
+          network_policies: { ...asRecord(observed.network_policies), ...plugin.networks },
+        };
+        // A grant that was independent of the old account routes may overlap an added host.
+        assertPluginRequestPolicy(desired, plugin);
         if (!sameOpenShellPolicy(observed, desired)) {
-          const target = await client.getSandbox(
-            { workspace, name: sandbox.resourceName },
-            context.signal,
-          );
-          if (!target?.resourceVersion) {
-            throw new DependencyUnavailableError(
-              "The account Sandbox policy target is unavailable.",
-            );
-          }
-          verifyExistingSandbox(target, { ...create, requestId: requestIds[0]! });
           await client.updatePolicy(
             {
               workspace,
@@ -3859,7 +3898,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       }
       validateHarnessServiceUrl(service.url);
     }
-    await checkEffectivePolicy();
+    await checkEffectivePolicy(expectedSpec);
     await this.initializeWorkspace(context, sandbox, client);
     return result;
   }
@@ -4706,9 +4745,13 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     if (baseline === undefined) {
       throw new Error("Missing policy baseline.");
     }
-    const candidate = openShellPolicyCandidate(baseline, snapshot);
     const status = await client.getPolicyStatus(request, context.signal);
-    const matches = sameOpenShellPolicy(status.policy, candidate);
+    const current = liveSandboxPolicy(context.revision, baseline, status.policy);
+    const candidate = openShellPolicyCandidate(current, snapshot);
+    const matches = sameOpenShellPolicy(
+      canonicalProtobufValues(status.policy),
+      canonicalProtobufValues(candidate),
+    );
     const state =
       status.state === "POLICY_STATUS_LOADED" && status.activeVersion === status.version
         ? "applied"
@@ -4749,15 +4792,17 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       throw new Error("Live policy application is unavailable for protected execution.");
     }
     const { client, request, sandbox } = await this.policyTarget(context);
-    if (client.updatePolicy === undefined) {
+    if (client.updatePolicy === undefined || client.getPolicyStatus === undefined) {
       throw new Error("Live policy application is unsupported.");
     }
     const baseline = asRecord(sandbox.spec?.policy);
     if (baseline === undefined) {
       throw new Error("Missing policy baseline.");
     }
-    const candidate = openShellPolicyCandidate(baseline, input.snapshot);
-    const plugin = googleRequestPolicyFromSandbox(baseline);
+    const status = await client.getPolicyStatus(request, context.signal);
+    const current = liveSandboxPolicy(context.revision, baseline, status.policy);
+    const candidate = openShellPolicyCandidate(current, input.snapshot);
+    const plugin = googleRequestPolicyFromSandbox(current);
     if (plugin) {
       assertPluginRequestPolicy(candidate, plugin);
     } else {
