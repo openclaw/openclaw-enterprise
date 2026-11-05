@@ -156,7 +156,7 @@ export async function streamPublicGithubGit(
   });
   const upload = route.discovery
     ? (upstream.end(), Promise.resolve())
-    : pipeline(req, bounded(requestLimit), upstream);
+    : pipeline(req, bounded(requestLimit), upstream, { signal: abort.signal });
   // Attach immediately: an upload can fail before the provider sends headers.
   const uploading = upload.catch((error: unknown) => {
     abort.abort();
@@ -208,7 +208,10 @@ export async function streamPublicGithubGit(
       "cache-control": "no-store",
       "x-content-type-options": "nosniff",
     });
-    await Promise.all([uploading, pipeline(provider, bounded(responseLimit), res)]);
+    await Promise.all([
+      uploading,
+      pipeline(provider, bounded(responseLimit), res, { signal: abort.signal }),
+    ]);
   } catch {
     publicGithubGitFailure(
       res,

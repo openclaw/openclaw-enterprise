@@ -4743,7 +4743,16 @@ export class ControllerWorker {
         await this.processRepositoryCleanup(claim, revision);
         return;
       }
-      if (revision.repositoryCredentials !== undefined) {
+      const maintainServiceAccess =
+        agent.status === "active" &&
+        agent.activeRevisionId === revision.id &&
+        agent.desiredRuntimeState === "running" &&
+        claim.idempotencyKey.startsWith(`agent_revision:${revision.id}:maintenance:`) &&
+        (revision.compute.serviceAccess?.length ?? 0) > 0 &&
+        this.revisionPluginDriverAvailable(revision)
+          ? this.compute.maintainServiceAccess?.bind(this.compute)
+          : undefined;
+      if (revision.repositoryCredentials !== undefined && maintainServiceAccess === undefined) {
         await this.assertRepositoryAuthority(claim, revision);
         this.repositoryCredentials.validate(revision);
       }
@@ -4778,6 +4787,30 @@ export class ControllerWorker {
           await this.finalizeRevision(claim, secretContext.result);
         }
         return;
+      }
+      if (maintainServiceAccess !== undefined) {
+        // Frozen services have independent authority. Current runtime, model, Secret and
+        // plugin checks must precede renewal; Git recipient or disposal uncertainty must
+        // not prevent it. This neither prepares the runtime nor opens a repository session.
+        try {
+          await this.withClaimHeartbeat(claim, (signal) => maintainServiceAccess(revision, signal));
+        } catch (error) {
+          if (error instanceof WorkClaimLostError) {
+            throw error;
+          }
+          const pending = activationPendingResult(error);
+          await this.finalizeActiveRevision(claim, revision, pending.code, undefined, {
+            ...(pending.dependencyFailure === undefined
+              ? {}
+              : { dependencyFailure: pending.dependencyFailure }),
+            failureLogFields: revisionFailureLogFields(error),
+          });
+          return;
+        }
+        if (revision.repositoryCredentials !== undefined) {
+          await this.assertRepositoryAuthority(claim, revision);
+          this.repositoryCredentials.validate(revision);
+        }
       }
       if (
         agent.activeRevisionId === revision.id &&

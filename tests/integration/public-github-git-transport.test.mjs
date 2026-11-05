@@ -113,16 +113,32 @@ test("managed Git transport clones and fetches ordinary URLs while the reader en
     env: baseEnv,
   });
   const env = { ...baseEnv, ...JSON.parse(installed.stdout) };
+  // Parent Node debugging snapshots spawn options before child sanitization.
+  // Neither the reader capability nor unrelated caller secrets may be logged.
+  const callerCredential = "fixture-unrelated-caller-credential";
+  env.NODE_DEBUG = "child_process";
+  env.GITHUB_TOKEN = callerCredential;
+  env.GIT_TRACE_CURL = "1";
+  env.GIT_TRACE_REDACT = "0";
+  const privateOutput = (result) => {
+    for (const secret of [token, callerCredential]) {
+      assert.equal(
+        (result.stdout + result.stderr).includes(secret),
+        false,
+        "Git diagnostics disclosed authorization",
+      );
+    }
+  };
   const git = (cwd, ...args) => execute("git", ["-C", cwd, ...args], { env, timeout: 30_000 });
   const clone = path.join(directory, "clone");
   const url = "https://github.com/Example/Project.git";
-  await git(directory, "clone", "--depth=1", url, clone);
+  privateOutput(await git(directory, "clone", "--depth=1", url, clone));
   assert.equal(await readFile(path.join(clone, "readme.txt"), "utf8"), "first object\n");
   assert.equal((await git(clone, "remote", "get-url", "origin")).stdout.trim(), url);
   await writeFile(path.join(source, "readme.txt"), "second object\n");
   await publicProviderGit(source, "commit", "-am", "Second object");
   await publicProviderGit(source, "push", path.join(provider.root, "example/project.git"), "main");
-  await git(clone, "fetch", "origin");
+  privateOutput(await git(clone, "fetch", "origin"));
   assert.equal((await git(clone, "show", "origin/main:readme.txt")).stdout, "second object\n");
   for (const request of provider.requests) {
     assert.equal(request.headers.authorization, undefined);

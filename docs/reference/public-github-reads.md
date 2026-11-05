@@ -155,10 +155,20 @@ The API and worker can read and replace only the named registry through its
 Role. Compute publishes capability hashes, revision identities, scope and a
 10-minute lease, refreshed every 30 seconds. The reader reads the projected file
 afresh; an unreadable or expired authorization denies reads. The revision's
-capability stays in its owned Secret and is never sent to GitHub. The registry
-has a 1 MiB limit, including retained withdrawal records; Compute refuses additions
-at that limit. Automatic collection of retired records is not implemented. API and Git
-requests both authenticate before provider reads or sharing an in-flight result.
+capability stays in its owned Secret and is never sent to GitHub. The registry's
+combined data and binary data have a 1 MiB publication limit; Compute refuses
+additions at that limit. Versioned retirement metadata shares the same ConfigMap
+update as the reader projection. Permanent withdrawal removes the full grant and
+records the highest retired Agent revision number for its exact Installation,
+Namespace, Agent, Compute, Harness and Plugin Driver selection. Existing active or
+suspended grants remain available below that number. Legacy withdrawals retain
+compact denials for their original revision identities. This prevents retired
+revision churn from retaining full repository lists. Ever-created Agent and Driver
+identities still consume space; automatic identity collection is not implemented.
+Missing required or unknown-version metadata fails closed. Preserve the entire
+ConfigMap, including its annotation and metadata key; do not downgrade to a
+controller that cannot read that format. API and Git requests authenticate before
+provider reads or sharing an in-flight result.
 
 Keep the Service address, TLS trust, registry and Compute peer until selected
 revisions have retired. Withdraw selections and deploy successors before removing
@@ -167,6 +177,8 @@ Harness, then waits for the reader to acknowledge that revision's authorization
 digest. Registry or reader failure leaves withdrawal pending and does not prevent
 Compute from attempting runtime shutdown. Do not treat removing a NetworkPolicy alone as
 proof that existing connections closed, or disable the reader before that proof.
+After shutdown and reader acknowledgement, permanent retirement deletes the exact
+owned capability Secret. Temporary stop preserves that Secret for resume.
 
 ## Use and troubleshoot
 

@@ -1,7 +1,7 @@
 ---
 created: "2026-10-15"
 updated: "2026-11-05"
-last_updated_session: authoring-run/01a19cef-6046-7960-88eb-e30de1c96e9e
+last_updated_session: authoring-run/dce55ffb-40ba-44e5-8165-4ceb2605cbba
 ---
 
 # Public GitHub read flow
@@ -85,7 +85,12 @@ to the reader's verified HTTPS Service for readiness and withdrawal observation.
 creates or verifies an immutable revision Secret containing a random capability.
 It updates the verifier-only registry with Kubernetes `resourceVersion` checks.
 The row identifies the Installation, Namespace, Agent, revision and frozen scope,
-with a ten-minute lease. Preparation and activation wait for the reader's
+with a ten-minute lease. The same update preserves versioned retirement state:
+full retired grants compact into monotonic revision-number frontiers for each
+exact admission lineage. Existing active or suspended grants remain exceptions.
+Missing required metadata fails closed; legacy denials retain exact identities.
+The combined ConfigMap data and binary data must fit within 1 MiB.
+Preparation and activation wait for the reader's
 `/healthz?revision=...` digest to match the projected row. Unrelated Agent renewals
 do not change this acknowledgement.
 
@@ -123,30 +128,29 @@ retain the original URL, helper and credentials. Other canonical GitHub HTTPS
 repositories use the reader's `/git/OWNER/REPOSITORY.git` route. A reader denial
 never falls back to GitHub.
 
-For public requests, the child clears inherited command-line Git configuration
-and applies settings for the exact rewritten URL. It resets headers, cookies,
+For public requests, a fixed Node child starts with only a fixed PATH. Bounded
+configuration and environment bytes arrive through a private inherited pipe;
+the child closes that descriptor before native Git. Inherited Node/Git debug,
+trace and verbose settings cannot log the capability. The child clears inherited
+command-line Git configuration and applies settings for the rewritten URL. It resets headers, cookies,
 credential helpers and Git-configured proxies; verifies TLS with combined reader
 and current tool trust; disables redirects and interactive credentials; and preserves
 the environment proxy route used by OpenShell. An inherited client TLS identity
 causes refusal before contact. Configuration and public material files contain
 no capability value.
 
-The public Git branch sets an empty `GIT_ASKPASS` as well as disabling terminal
-prompts. Older Git checks askpass before the terminal flag and does not honor
-`credential.interactive`; the explicit empty value also blocks config/SSH fallback.
-Authenticated delegation retains its caller's askpass and credential settings.
+Public Git disables terminal prompts and askpass, including config/SSH fallback.
+Authenticated delegation retains its caller's credential settings.
 
 `transport.mjs:composeTrust` composes public certificates at each operation,
 including a fresh tool interception CA. Selected CA files are regular files of
 at most 1 MiB each; total input is at most 4 MiB and the deduplicated bundle at
 most 1 MiB. Missing, malformed or oversized trust fails closed. Standard hash
 comments and underlined certificate labels are accepted; keys are rejected.
-For Git and standalone non-Linux API reads, `operationTrust` selects the existing
-absolute `OPENCLAW_WORKSPACE_DIR`, supplied by
-Compute and used by the Harness as its workspace, including OpenShell relocation.
-A workspace-write native profile admits this root but need not expose `/tmp`. A missing or unwritable selected workspace fails without fallback. Only
-standalone callers without that runtime variable use `os.tmpdir()`; the helper
-never selects its cwd, which Git may move into protected `.git` metadata.
+For Git and standalone non-Linux API reads, `operationTrust` selects Compute's
+absolute `OPENCLAW_WORKSPACE_DIR`, including OpenShell relocation. A missing or
+unwritable workspace fails without fallback. Standalone callers without that
+variable use `os.tmpdir()`; Git's cwd may be protected `.git` metadata.
 Each operation creates a unique mode-0700 directory and exclusive mode-0400
 public-CA file in that root. Completion, failure and handled cancellation remove
 only that directory. Concurrent operations remain independent. Uncatchable
@@ -176,16 +180,11 @@ managed skill invokes it without supplying an origin, proxy, credentials or clie
 options. The helper uses configured authorization,
 refuses redirects and buffers responses within the reader's 12 MiB/24-second
 limits. Its capability header goes through child stdin, never a temporary file.
-The fixed `--api-get-metadata` mode returns `{status, link, body}` only after a
-successful response. Node parses HTTP framing and rejects folded headers.
-`responseMetadata` exposes only the final status and bounded relative Link alongside
-parsed JSON. Each response header block has a 16 KiB parser limit; the helper also
-bounds aggregate parsed informational/final metadata to 16 KiB, counting canonical
-status/header separators. Original whitespace is not retained by Node, so this is
-not a byte-exact cumulative wire-size limit. Link is limited to 8 KiB; malformed, duplicate or
-cross-resource continuation fails without output. The Agent follows relative
-next links through the same helper and reports interrupted listings as incomplete.
-Body-only `--api-get` remains unchanged.
+`--api-get-metadata` returns validated `{status, link, body}` after success.
+`responseMetadata` validates parsed headers and relative continuation links within
+the [reference limits](../reference/public-github-reads.md#use-and-troubleshoot).
+The Agent follows next links through the same helper and reports interrupted
+listings as incomplete. Body-only `--api-get` remains unchanged.
 
 `transport.mjs:refusalReceipt` appends only an allowlisted phase/code to the
 existing synchronous refusal. Configuration, authorization, trust input/composition,
@@ -206,8 +205,9 @@ authenticates before quota admission, deduplication or provider requests. API an
 Git reads apply the current ceiling and revision scope. The reader checks current
 public visibility and uses only fixed `api.github.com` and `github.com` HTTPS
 origins, without caller credentials, cookies or redirects. `git.ts` permits only
-Git upload-pack discovery and requests. It streams with backpressure and cancels
-upstream work on failure or disconnect; size and deadline limits fail explicitly.
+Git upload-pack discovery and requests. Its absolute deadline aborts both upload
+and downstream response pipelines, including after upstream completion. Failure,
+disconnect and size limits cancel transfer explicitly.
 Quota and in-flight state remain process-local. Address-based limits do not prove
 per-Agent fairness when Agents share a supervisor address.
 
@@ -215,11 +215,13 @@ per-Agent fairness when Agents share a supervisor address.
 
 ### 4. Maintain or withdraw the revision's access
 
-Kubernetes Compute renews only the frozen policy. After repository Git expires,
-`apps/controller/src/worker.ts:withdrawExpiredRepositoryAccess` verifies independent IAM, model, Secret/admission
-and Backend obligations before calling `ComputeDriver.maintainServiceAccess`
-under the claim heartbeat. This does not prepare or activate a runtime or issue
-another Git session. Loss of independent authority prevents renewal.
+Kubernetes Compute renews only the frozen policy. Active maintenance in
+`apps/controller/src/worker.ts:processRevision` checks independent IAM, model, Secret/admission,
+Backend and exact Plugin Driver authority before `ComputeDriver.maintainServiceAccess`
+under the claim heartbeat. Git recipient or disposal uncertainty cannot defer
+this renewal. `withdrawExpiredRepositoryAccess` retains that independent path
+after Git expiry. Neither path prepares a runtime or issues another Git session.
+Loss of independent authority prevents renewal.
 
 `beginPublicGithubReadWithdrawal` expires authorization before runtime shutdown,
 then observes the reader's revision digest. A registry write or reader failure
@@ -227,6 +229,8 @@ cannot prevent the shutdown attempt; cleanup reports failure and retries rather
 than claiming withdrawal complete. User stop can suspend and later resume the
 same immutable capability. Retirement and an observed peer change permanently
 withdraw the saved authorization; it cannot be restored by preparing that revision.
+After runtime shutdown and reader acknowledgement, permanent retirement removes
+the exact owned capability Secret; temporary stop retains it.
 An expired or unreadable row denies future reads even if maintenance is unavailable.
 
 For legacy `v1` reader revisions, `revokeUnavailablePublicGithubRead` removes the
@@ -255,6 +259,9 @@ that the owning runtime has stopped.
 
 ## Changelog
 
+- 2026-11-05 18:03: Compact retired grants, maintain independent leases and close transfer and diagnostic leaks (accompanying corrections; authoring-run/dce55ffb-40ba-44e5-8165-4ceb2605cbba - ed566e82a68f58ce1d5d1755bc01ef1fc2f2744f)
+
+- 2026-11-05 17:08: Retire service-owned reader policies after Harness shutdown (accompanying correction; authoring-run/f37e6ffb-bbb0-4112-ad9b-6066fa0e261b - 3dadfff895a2c4b4145f47670d6d113ff0e79a0c)
 - 2026-11-05 15:19: Resolve bare native Node through a fixed child-only executable path and report closed spawn errors (authoring-run/01a19cef-6046-7960-88eb-e30de1c96e9e - 9567489ec7121311b9fc938afc31f22bb777ed54)
 
 - 2026-11-05 14:10: Verify projected transport source before launch and preserve upstream workspace/provider composition (accompanying integration; authoring-run/147833b4-6d46-4ba7-8b0f-bd7df3bd09da - 35d51ed96a505420fa7e7d7c141be5223e5794c9)

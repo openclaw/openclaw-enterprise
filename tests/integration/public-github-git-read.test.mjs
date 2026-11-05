@@ -309,6 +309,89 @@ test(
       },
     );
     await t.test(
+      "the absolute deadline closes a backpressured client after the provider has completed",
+      async (st) => {
+        const completed = Promise.withResolvers();
+        const held = Promise.withResolvers();
+        const addRequest = https.Agent.prototype.addRequest;
+        st.mock.method(https.Agent.prototype, "addRequest", function (request, ...args) {
+          request.once("close", completed.resolve);
+          return addRequest.call(this, request, ...args);
+        });
+        const hold = (_req, res) => {
+          res.once("pipe", () => {
+            res.flushHeaders();
+            // Deliberately stop this real HTTP destination from draining. The
+            // completed TLS source must not be the only cancellation owner.
+            res.cork();
+            held.resolve(res);
+          });
+        };
+        reader.on("request", hold);
+        st.after(() => reader.removeListener("request", hold));
+        fixture.behavior = (_req, res) =>
+          res
+            .writeHead(200, {
+              "content-type": "application/x-git-upload-pack-advertisement",
+            })
+            .end(Buffer.alloc(64 * 1024));
+        const realTimeout = setTimeout;
+        const realClearTimeout = clearTimeout;
+        const within = async (promise, message) => {
+          let timeout;
+          try {
+            return await Promise.race([
+              promise,
+              new Promise((_resolve, reject) => {
+                timeout = realTimeout(() => reject(new Error(message)), 3000);
+              }),
+            ]);
+          } finally {
+            realClearTimeout(timeout);
+          }
+        };
+        st.mock.timers.enable({ apis: ["setTimeout"] });
+        const response = await new Promise((resolve, reject) =>
+          http
+            .get(
+              target + discovery,
+              { headers: { authorization: `Bearer ${capability}` } },
+              resolve,
+            )
+            .on("error", reject),
+        );
+        response.pause();
+        st.after(() => response.destroy());
+        const downstream = await held.promise;
+        await within(
+          completed.promise,
+          "provider did not complete before the downstream deadline control",
+        );
+        assert.equal(downstream.writableFinished, false);
+        const closed = new Promise((resolve) => downstream.once("close", resolve));
+        st.mock.timers.tick(10 * 60 * 1000);
+        await within(
+          closed,
+          "the completed upstream left the downstream transfer alive past its deadline",
+        );
+        assert.equal(downstream.destroyed, true);
+        assert.equal(
+          downstream.writableFinished,
+          false,
+          "a truncated transfer cannot finish successfully",
+        );
+        reader.removeListener("request", hold);
+        fixture.behavior = "git";
+        const retry = await fetch(discovery);
+        assert.equal(
+          retry.status,
+          200,
+          "deadline cancellation must release the caller/provider slot",
+        );
+        await retry.arrayBuffer();
+      },
+    );
+    await t.test(
       "visibility changes and redirects fail without another destination or credential retry",
       async () => {
         fixture.behavior = "private";

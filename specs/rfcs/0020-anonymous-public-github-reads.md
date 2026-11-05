@@ -169,6 +169,23 @@ caller's authorization before joining a shared provider read. Never log the
 capability, store it in a saved Git remote URL, or forward it to GitHub. This adds internal
 service authentication, not the deferred general Agent Identity component.
 
+Retirement must not retain a full repository list for every historical revision.
+Publish compact revocation metadata in the same ConfigMap compare-and-swap as
+the reader's flat grant projection. Version that metadata and mark its initialization;
+missing required or unknown-version state fails closed. A permanent withdrawal
+advances a monotonic frontier for the exact Installation, Namespace, Agent,
+Compute, Harness and Plugin Driver lineage. Preserve existing active or suspended
+grants below that frontier; a different unavailable Plugin Driver must not block
+an older valid lineage. Do not infer revision order from UUIDs or timestamps.
+
+Legacy permanent withdrawals retain exact compact denials; never infer missing
+ordinals, forget denials or clear the operator's registry. Bound the
+combined publication size. This bounds retired revision churn per stable lineage,
+while active/suspended grants and historical identities still consume finite
+capacity. Identity garbage collection requires durable terminal authority and
+is deferred. After workload fencing and reader acknowledgment, permanent
+retirement removes the exact owned capability Secret; temporary stop preserves it.
+
 ### Ordinary URLs and credential separation
 
 Deliver a managed `git-remote-https` adapter through the existing read-only

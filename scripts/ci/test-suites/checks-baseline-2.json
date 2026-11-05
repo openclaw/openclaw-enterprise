@@ -123,7 +123,8 @@
     "tests/integration/dev-up-model-provider.test.mjs",
     "tests/integration/egress-connected-preflight.test.mjs",
     "tests/integration/credential-proxy-configuration.test.ts",
-    "tests/helpers/socket-relay.test.mjs"
+    "tests/helpers/socket-relay.test.mjs",
+    "tests/integration/public-github-read-authorizations.test.ts"
   ],
   "serialFiles": {
     "tests/conformance/postgres-auth-binding.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read",
@@ -379,7 +380,9 @@
     {
       "path": "tests/integration/agent-create-validate-api.test.mjs"
     },
-    { "path": "tests/integration/model-provider.test.ts" },
+    {
+      "path": "tests/integration/model-provider.test.ts"
+    },
     {
       "path": "tests/conformance/repository-credentials-source-boundary.test.mjs"
     },
@@ -630,6 +633,17 @@
     },
     {
       "path": "tests/integration/staging-qualification.test.ts"
+    },
+    {
+      "path": "tests/integration/public-github-read-authorizations.test.ts",
+      "expectedTests": [
+        "retired public-reader revision churn keeps large-policy storage bounded and admits a new grant",
+        "retirement frontiers preserve suspended old grants and separate exact admission lineages",
+        "authorization CAS races cannot restore a retired revision or overwrite another lineage",
+        "legacy grants migrate atomically while exact withdrawn identities remain denied",
+        "retirement metadata and combined ConfigMap capacity fail closed before publication",
+        "the real reader observes compacted withdrawal and cold restart without resurrecting its bearer"
+      ]
     }
   ]
 }

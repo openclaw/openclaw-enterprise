@@ -14597,6 +14597,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           (await this.observePublicGithubRead(service, revision.id, expected)) &&
           expected === (await store.digest(revision))
         ) {
+          if (permanent) {
+            const { name: namespace } = await this.resolveNamespace(revision.namespaceId);
+            await store.retireCapability(revision, namespace.name);
+          }
           return;
         }
         await delay(1000, undefined, signal ? { signal } : undefined);

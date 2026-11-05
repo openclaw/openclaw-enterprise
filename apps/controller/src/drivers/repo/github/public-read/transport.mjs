@@ -328,12 +328,17 @@ async function apiClient() {
   }
 }
 
-function runChild(binary, args, env, input) {
+function runChild(binary, args, env, input, setup) {
   refusalPhase = "child-dispatch";
+  const stdio = input === undefined ? "inherit" : ["pipe", "pipe", "pipe"];
   const child = spawn(binary, args, {
     env,
-    stdio: input === undefined ? "inherit" : ["pipe", "pipe", "pipe"],
+    stdio: setup === undefined ? stdio : ["inherit", "inherit", "inherit", "pipe"],
   });
+  if (setup !== undefined) {
+    child.stdio[3].on("error", () => {});
+    child.stdio[3].end(setup);
+  }
   refusalPhase = "child-setup";
   const chunks = [];
   let responseSize = 0;
@@ -610,6 +615,124 @@ function appendGitConfig(env, entries) {
   env.GIT_CONFIG_COUNT = String(count + entries.length);
 }
 
+function publicGit({ helper, remote, url, env, token, ca }) {
+  // This process starts without Node debugging/preloads. Git's own traces can
+  // disclose authorization too, so they cannot follow the public operation.
+  for (const name of Object.keys(env)) {
+    if (name.startsWith("NODE_") || name.startsWith("GIT_TRACE") || name === "GIT_CURL_VERBOSE") {
+      delete env[name];
+    }
+  }
+  env.PATH = "/usr/local/bin:/usr/bin:/bin";
+  // Git's -c parameters outrank GIT_CONFIG_COUNT, and URL-specific options
+  // outrank origin-wide ones. Reset command configuration, then constrain the
+  // exact rewritten repository URL. Authenticated delegates retain every input.
+  for (const name of Object.keys(env)) {
+    if (/^GIT_CONFIG(?:_(?:COUNT|KEY_.*|VALUE_.*|PARAMETERS))?$/.test(name)) {
+      delete env[name];
+    }
+  }
+  for (const name of [
+    "GIT_SSL_NO_VERIFY",
+    "GIT_SSL_CERT",
+    "GIT_SSL_KEY",
+    "GIT_SSL_CAPATH",
+    "GIT_SSL_CERT_PASSWORD_PROTECTED",
+    "GIT_PROXY_SSL_CERT",
+    "GIT_PROXY_SSL_KEY",
+    "GIT_PROXY_SSL_CERT_PASSWORD_PROTECTED",
+  ]) {
+    delete env[name];
+  }
+  // An empty sslCert value still activates native Git's client-certificate
+  // credential path. Refuse configured client identities rather than sending
+  // them to a different service or relying on an ineffective empty override.
+  const inheritedHttp = spawnSync("git", ["config", "--null", "--get-urlmatch", "http", url], {
+    env,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024,
+  });
+  if (
+    inheritedHttp.error ||
+    ![0, 1].includes(inheritedHttp.status) ||
+    inheritedHttp.stdout.split("\0").some((entry) => {
+      const separator = entry.indexOf("\n");
+      return (
+        ["http.sslcert", "http.sslkey", "http.proxysslcert", "http.proxysslkey"].includes(
+          entry.slice(0, separator).toLowerCase(),
+        ) && entry.slice(separator + 1).length > 0
+      );
+    })
+  ) {
+    throw new Error("Inherited Git TLS client identities are unavailable for public reads.");
+  }
+  refusalPhase = "child-setup";
+  env.GIT_SSL_CAINFO = ca;
+  // Keep the Sandbox's environment proxy route; inherited Git config cannot
+  // replace it with a proxy that receives repository credentials.
+  const proxy = env.https_proxy ?? env.HTTPS_PROXY ?? env.all_proxy ?? env.ALL_PROXY ?? "";
+  const http = `http.${url}/`;
+  appendGitConfig(env, [
+    ["http.extraHeader", ""],
+    [`${http}.extraHeader`, ""],
+    [`${http}.extraHeader`, `Authorization: Bearer ${token}`],
+    [`${http}.sslCAInfo`, ca],
+    [`${http}.sslCAPath`, env.GIT_EXEC_PATH],
+    [`${http}.sslVerify`, "true"],
+    [`${http}.followRedirects`, "false"],
+    [`${http}.cookieFile`, ""],
+    [`${http}.saveCookies`, "false"],
+    [`${http}.proxy`, proxy],
+    [`${http}.emptyAuth`, "false"],
+    [`${http}.delegation`, "none"],
+    [`remote.${remote}.proxy`, proxy],
+    ["credential.helper", ""],
+    [`credential.${url}.helper`, ""],
+    [`credential.${url}.username`, ""],
+    ["credential.interactive", "false"],
+  ]);
+  // Older Git checks askpass before terminal prompting and ignores
+  // credential.interactive. A present empty value also blocks config/SSH fallback.
+  env.GIT_ASKPASS = "";
+  env.GIT_TERMINAL_PROMPT = "0";
+  runChild(helper, [remote, url], env);
+}
+
+function isolatedPublicGit(data) {
+  const input = JSON.stringify(data);
+  if (Buffer.byteLength(input) > 4 * 1024 * 1024) {
+    throw new Error("Public Git setup exceeds its bound.");
+  }
+  // Dynamic values never appear in spawn options, even when the outer process
+  // started with NODE_DEBUG. fd 0 remains the native Git remote-helper protocol.
+  const program = `import { spawn, spawnSync } from "node:child_process";
+import { closeSync, readFileSync, rmSync } from "node:fs";
+let refusalPhase = "child-setup";
+let trustDirectory;
+${refusalReceipt.toString()}
+${cleanupTrust.toString()}
+${runChild.toString()}
+${appendGitConfig.toString()}
+${publicGit.toString()}
+try {
+  const input = readFileSync(3);
+  closeSync(3);
+  if (input.length > 4 * 1024 * 1024) throw new Error("Public Git setup exceeds its bound.");
+  publicGit(JSON.parse(input.toString("utf8")));
+} catch (error) {
+  process.stderr.write("The managed public Git transport refused this invocation.\\n");
+  refusalReceipt(error);
+  process.exitCode = 1;
+}`;
+  runChild(
+    process.execPath,
+    ["--input-type=module", "-e", program],
+    { PATH: "/usr/local/bin:/usr/bin:/bin" },
+    undefined,
+    input,
+  );
+}
+
 function remoteHelper(remote, originalUrl) {
   const config = configuration(process.env.OCE_PUBLIC_GITHUB_READ_CONFIG);
   refusalPhase = "child-setup";
@@ -640,78 +763,9 @@ function remoteHelper(remote, originalUrl) {
   ) {
     const token = authorization(config);
     url = `${config.endpoint}/git/${repository}.git`;
-    // Git's -c parameters outrank GIT_CONFIG_COUNT, and URL-specific options
-    // outrank origin-wide ones. Reset command configuration, then constrain the
-    // exact rewritten repository URL. Authenticated delegates retain every input.
-    for (const name of Object.keys(env)) {
-      if (/^GIT_CONFIG(?:_(?:COUNT|KEY_.*|VALUE_.*|PARAMETERS))?$/.test(name)) {
-        delete env[name];
-      }
-    }
-    for (const name of [
-      "GIT_SSL_NO_VERIFY",
-      "GIT_SSL_CERT",
-      "GIT_SSL_KEY",
-      "GIT_SSL_CAPATH",
-      "GIT_SSL_CERT_PASSWORD_PROTECTED",
-      "GIT_PROXY_SSL_CERT",
-      "GIT_PROXY_SSL_KEY",
-      "GIT_PROXY_SSL_CERT_PASSWORD_PROTECTED",
-    ]) {
-      delete env[name];
-    }
-    // An empty sslCert value still activates native Git's client-certificate
-    // credential path. Refuse configured client identities rather than sending
-    // them to a different service or relying on an ineffective empty override.
-    const inheritedHttp = spawnSync("git", ["config", "--null", "--get-urlmatch", "http", url], {
-      env,
-      encoding: "utf8",
-      maxBuffer: 64 * 1024,
-    });
-    if (
-      inheritedHttp.error ||
-      ![0, 1].includes(inheritedHttp.status) ||
-      inheritedHttp.stdout.split("\0").some((entry) => {
-        const separator = entry.indexOf("\n");
-        return (
-          ["http.sslcert", "http.sslkey", "http.proxysslcert", "http.proxysslkey"].includes(
-            entry.slice(0, separator).toLowerCase(),
-          ) && entry.slice(separator + 1).length > 0
-        );
-      })
-    ) {
-      throw new Error("Inherited Git TLS client identities are unavailable for public reads.");
-    }
     const ca = operationTrust(config);
-    refusalPhase = "child-setup";
-    env.GIT_SSL_CAINFO = ca;
-    // Keep the Sandbox's environment proxy route; inherited Git config cannot
-    // replace it with a proxy that receives repository credentials.
-    const proxy = env.https_proxy ?? env.HTTPS_PROXY ?? env.all_proxy ?? env.ALL_PROXY ?? "";
-    const http = `http.${url}/`;
-    appendGitConfig(env, [
-      ["http.extraHeader", ""],
-      [`${http}.extraHeader`, ""],
-      [`${http}.extraHeader`, `Authorization: Bearer ${token}`],
-      [`${http}.sslCAInfo`, ca],
-      [`${http}.sslCAPath`, env.GIT_EXEC_PATH],
-      [`${http}.sslVerify`, "true"],
-      [`${http}.followRedirects`, "false"],
-      [`${http}.cookieFile`, ""],
-      [`${http}.saveCookies`, "false"],
-      [`${http}.proxy`, proxy],
-      [`${http}.emptyAuth`, "false"],
-      [`${http}.delegation`, "none"],
-      [`remote.${remote}.proxy`, proxy],
-      ["credential.helper", ""],
-      [`credential.${url}.helper`, ""],
-      [`credential.${url}.username`, ""],
-      ["credential.interactive", "false"],
-    ]);
-    // Older Git checks askpass before terminal prompting and ignores
-    // credential.interactive. A present empty value also blocks config/SSH fallback.
-    env.GIT_ASKPASS = "";
-    env.GIT_TERMINAL_PROMPT = "0";
+    isolatedPublicGit({ helper, remote, url, env, token, ca });
+    return;
   }
   runChild(helper, [remote, url], env);
 }
