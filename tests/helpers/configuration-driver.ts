@@ -1,14 +1,25 @@
 import { isDeepStrictEqual } from "node:util";
+import type {
+  Configuration,
+  ConfigurationDriver,
+  ConfigurationReference,
+} from "@openclaw-enterprise/contracts";
+
+type TestConfigurationDriver = ConfigurationDriver & {
+  stored(reference: ConfigurationReference): Configuration | undefined;
+};
 
 /**
  * Test-only passive storage; callers still exercise real OCC, IAM, and HTTP behavior. `exact`
  * adds the exact create and inspect that Agent provisioning requires of a Configuration Driver.
  */
-export function createTestConfigurationDriver(options = {}) {
-  const configurations = new Map();
-  const key = ({ namespaceId, id }) => `${namespaceId}:${id}`;
+export function createTestConfigurationDriver(
+  options: { id?: string; exact?: boolean } = {},
+): TestConfigurationDriver {
+  const configurations = new Map<string, Configuration>();
+  const key = ({ namespaceId, id }: ConfigurationReference) => `${namespaceId}:${id}`;
 
-  const driver = {
+  const driver: TestConfigurationDriver = {
     id: options.id ?? "configuration-test",
     capability: "configuration",
     implementation: "test-memory-storage",
