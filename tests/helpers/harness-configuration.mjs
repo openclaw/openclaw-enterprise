@@ -110,12 +110,14 @@ export function nativeAdminGatewayAuth() {
  * @param {string} origin
  */
 export function withNativeAdminGateway(configuration, origin) {
+  const { gateway, ...fields } = configuration;
+
   return {
-    ...configuration,
+    ...fields,
     gateway: {
-      ...configuration.gateway,
+      ...gateway,
       controlUi: {
-        ...configuration.gateway?.controlUi,
+        ...gateway?.controlUi,
         enabled: true,
         allowedOrigins: [origin],
       },
