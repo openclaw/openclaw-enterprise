@@ -1,6 +1,5 @@
-import { isOAuthScopeToken } from "@openclaw-enterprise/contracts";
 import { randomUUID } from "node:crypto";
-import { PENDING_OAUTH_CONNECTION } from "@openclaw-enterprise/contracts";
+import { isOAuthScopeToken, PENDING_OAUTH_CONNECTION } from "@openclaw-enterprise/contracts";
 import type {
   OAuthConnectionAccessToken,
   OAuthConnectionCustody,

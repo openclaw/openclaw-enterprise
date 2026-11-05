@@ -153,7 +153,7 @@ const reviewedImports = {
   // refresh adapter can POST that grant. The Token Service receives no general HTTP capability.
   "backends/token-service/oauth-connection.ts": {
     "node:crypto": ["randomUUID"],
-    "@openclaw-enterprise/contracts": ["PENDING_OAUTH_CONNECTION"],
+    "@openclaw-enterprise/contracts": ["PENDING_OAUTH_CONNECTION", "isOAuthScopeToken"],
     "@openclaw-enterprise/occ": ["BrowserAuthorizationError"],
     "@openclaw-enterprise/utils": ["asRecord", "isNonEmptyString"],
   },
