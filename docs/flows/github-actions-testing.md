@@ -89,22 +89,19 @@ A PR can change the workflow loaded from its merge checkout despite base-loaded
 policy. Separately trusted enforcement is a deployment decision, not an
 established source property.
 
-Full Integration checks out `github.sha`. Main pushes select `all`; manual main
-dispatches wait at secret-free `integration-main-approval`. Preflight verifies
-its team rule and binds the review to the dispatcher's ID and triggering login.
-Invalid approval or environment policy fails closed.
+Full Integration checks out `github.sha`. Main pushes select `all`. Manual main
+dispatches require secret-free `integration-main-approval`. Preflight checks
+the team rule, dispatcher ID, triggering login and environment policy.
 
-Main pushes share a workflow queue. Each manual dispatch has its own queue
-while it waits for approval. After preflight succeeds, Slack Live runs one job
-at a time for the shared channel and app. Local Kubernetes Installation and
-installed Skipper Git each use a separate per-branch queue for pushes and
-dispatches. All three job queues keep multiple authorized jobs waiting.
-Each test job checks the repository, main branch and event.
-Main push jobs can retry at the original commit. Manual retries require a fresh
-approved dispatch. The [environment guide](../testing/ci/configuration.md#environments) owns approval setup.
+Main pushes share a queue. Each dispatch waits separately for approval.
+Slack Live serializes access to its channel and app. Local Kubernetes Installation
+and installed Skipper Git each serialize per branch across pushes and dispatches.
+All three queues retain waiting jobs. Test jobs verify repository, main branch
+and event. Push retries use the original commit. Manual retries require a fresh
+approved dispatch. See [approval setup](../testing/ci/configuration.md#environments).
 
-`all` selects every suite. QA waits for Slack to finish, including after a Slack
-failure. Cancellation stops QA. Aggregation requires the selected results.
+`all` selects every suite. QA waits for Slack even after failure. Cancellation
+stops QA. Aggregation requires the selected results.
 
 PostgreSQL migration and application suites own separate servers; each Kubernetes fixture lane owns a separate cluster and PostgreSQL server. Before creating k3d nodes that share the runner kernel, the shared action enables bridge netfilter; missing filtering fails setup rather than leaving Pod network policies unenforced. The repository credential platform lane uses Blacksmith for full-image HTTP, PostgreSQL, Unix-control and credential-material proof; NetworkPolicy enforcement remains the fixture lanes' responsibility. State and cleanup stay on each runner; within a lane, `scripts/ci/run-tests.mjs:runLane` runs files sequentially except audited `parallelFiles`.
 

@@ -10,7 +10,7 @@ last_updated_session: authoring-run/1247283d-6d2a-4d1f-9804-287f1ae13518
 
 Compute-owned dedicated Codex uses prepared native sessions without a Sandbox Driver;
 [OpenShell sandboxes](../reference/repository-credentials/protected-openshell-git.md) receive placeholders.
-Workers deliver credentials to providers, checking signed requests against live grants.
+Workers deliver credentials and check signed requests against live grants.
 See [enrollment and mandatory hooks](../guides/repository-credentials/openshell-enrollment.md),
 [service forwarding and retirement](repository-credentials.md) and [runtime qualification](../testing/repository-credentials.md).
 
@@ -251,8 +251,8 @@ App keys, JWTs, installation tokens and the control socket never enter consumer 
 The [networking contract](../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking)
 defines Codex plugin and repository-bound filesystem and proxy access, explicit denies,
 and dedicated/embedded eligibility. Unbound policy, broker authorization and TLS
-verification stay in force. Stock Codex threads and turns select the named network
-profile. Start, resume and fork require Codex to confirm it before execution.
+verification stay in force. Stock Codex selects the named network profile for threads and turns.
+Start, resume and fork verify it.
 
 ### 5. Authenticate native Git and route GitHub CLI commands
 
