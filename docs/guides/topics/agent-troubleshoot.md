@@ -39,6 +39,19 @@ Once access is fixed, refresh and confirm the Namespace is `ready`.
 
 ## Deployment is blocked or has no selected version
 
+`active` is the Agent lifecycle, not workload health. An Agent can be
+`active` without a selected version. If you did not retain the version ID,
+inspect the latest deployment you can read:
+
+```bash
+occ --namespace NAMESPACE_ID agent deployment-status AGENT_ID --output json
+```
+
+Without a deployment ID, this command returns the status of the latest readable
+Agent revision. Inspect the deployment error before changing credentials. If it
+failed, follow the next step in `error.message`. See the
+[deployment status reference](../../reference/agents.md#deployment-status).
+
 On Kubernetes, open the Agent's **Open draft** draft, then
 **Credentials**. Select **Reload authentication source**, then confirm under
 **Harness authentication** that **Authentication source** is the source you
