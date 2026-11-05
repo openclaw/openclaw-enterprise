@@ -295,8 +295,8 @@ retaining maintenance and shutdown. Missing authority or mismatched Drivers prev
 route-store and sender calls. Bundled OpenShell connects its route store first;
 a bare Sandbox runs without Git.
 
-The worker serially calls an external binding’s `reconcile` with a 25-second abort
-signal and one-second intervals; closing aborts and joins it. Independent readback
+The worker calls an external binding’s `reconcile` with a 25-second abort signal,
+waiting one second after each call finishes; closing aborts and joins it. Readback
 settles delivery without reinstalling or restoring withdrawn access.
 
 Activation and maintenance commit atomically, preserving the actor.
