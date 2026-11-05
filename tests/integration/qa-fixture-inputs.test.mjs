@@ -611,6 +611,88 @@ test("the QA command runner records a failed image build step as redacted eviden
   );
 });
 
+// Real children distinguish an elapsed command deadline from an ordinary signal exit.
+// Neither private output nor argv may escape through the added timing diagnostics.
+test("QA command failures distinguish deadlines from signal exits without disclosing output", async (t) => {
+  const { runQaCommand } = await import("../helpers/qa-installation.mjs");
+  const directory = await temporaryDirectory(t, "qa-command-timeout-");
+  const f = {
+    directory,
+    stateDirectory: join(directory, "state"),
+    env: { PATH: process.env.PATH },
+  };
+  for (const scenario of [
+    {
+      name: "deadline",
+      command: process.execPath,
+      args: [
+        "-e",
+        "process.on('SIGTERM', () => process.exit(0)); console.error('private-timeout-canary'); setInterval(() => {}, 1000)",
+      ],
+      timeout: 1000,
+      timedOut: true,
+      // A graceful zero exit (or signal before the handler starts) cannot hide a timeout.
+      allowExitCodes: [0, null],
+    },
+    {
+      name: "signal",
+      command: "/bin/sh",
+      args: ["-c", "echo private-timeout-canary >&2; kill -PIPE $$"],
+      timeout: 5000,
+      timedOut: false,
+      signal: "SIGPIPE",
+    },
+  ]) {
+    await t.test(scenario.name, async () => {
+      await assert.rejects(
+        runQaCommand(f, scenario.command, scenario.args, {
+          timeout: scenario.timeout,
+          allowExitCodes: scenario.allowExitCodes,
+          privateFailureOutput: true,
+        }),
+        (error) => {
+          assert.equal(error.timedOut, scenario.timedOut);
+          assert.equal(error.timeoutMs, scenario.timeout);
+          assert.ok(Number.isInteger(error.elapsedMs) && error.elapsedMs >= 0);
+          assert.ok(
+            error.message.includes(`after ${error.elapsedMs} ms (limit ${scenario.timeout} ms)`),
+          );
+          if (scenario.timedOut) {
+            assert.ok(error.elapsedMs >= scenario.timeout);
+            assert.match(error.message, /timed out/);
+          } else {
+            assert.equal(error.signal, scenario.signal);
+            assert.doesNotMatch(error.message, /timed out/);
+          }
+          assert.doesNotMatch(
+            JSON.stringify(error),
+            /private-timeout-canary|process\.on|kill -PIPE/,
+          );
+          assert.doesNotMatch(error.message, /private-timeout-canary|process\.on|kill -PIPE/);
+          assert.equal(error.stdout, undefined);
+          assert.equal(error.stderr, undefined);
+          assert.equal(error.cmd, undefined);
+          return true;
+        },
+      );
+    });
+  }
+  // Explicitly allowed ordinary exits still succeed; timeout classification must not
+  // turn a supported nonzero exit into a failure when no deadline fired.
+  assert.equal(
+    await runQaCommand(
+      f,
+      process.execPath,
+      ["-e", "process.stdout.write('allowed'); process.exit(7)"],
+      {
+        timeout: 5000,
+        allowExitCodes: [7],
+      },
+    ),
+    "allowed",
+  );
+});
+
 // Finding 2026: a key whose BEGIN line falls before the failed step's last 200 lines, with no END
 // line, must lose every body line, not only the lines the tail still shows its BEGIN for.
 test("an image build step's unterminated private key is masked past the evidence window", async () => {
