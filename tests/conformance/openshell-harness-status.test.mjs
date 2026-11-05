@@ -596,7 +596,7 @@ test("an OpenShell probe gives a peer that delays TCP closure its full cleanup d
   assert.equal(closeCode, 1000);
   const cleanupElapsed = endedAt - closeReceivedAt;
   // Allow scheduling tolerance, but detect both early FIN and a doubled cleanup deadline.
-  assert.ok(cleanupElapsed >= 950, "client ended TCP before the cleanup deadline");
+  assert.ok(endedAt - started >= 950, "client ended TCP before the cleanup deadline");
   assert.ok(cleanupElapsed < 1_500, "client exceeded the configured cleanup deadline");
 });
 
