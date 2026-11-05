@@ -1982,6 +1982,13 @@ test("Git expiry observes the original model in the reduced stock installation, 
         evaluatedTime: new Date().toISOString(),
       };
       if (oldExpired) {
+        if (fault === "fractional predecessor") {
+          // A 14,999.2 ms witness remains live across the whole-second boundary.
+          const second = Math.floor(Date.now() / 1000) * 1000;
+          result.evaluatedTime = new Date(second).toISOString().slice(0, 19) + ".000100000Z";
+          result.observedTime =
+            new Date(second - 15_000).toISOString().slice(0, 19) + ".000900000Z";
+        }
         if (fault === "replaced live instance") {
           // Replacement lands after the first Sandbox read; the report still names the old one.
           box.mainProcessInstanceId = "replacement-instance";
@@ -2240,6 +2247,7 @@ test("Git expiry observes the original model in the reduced stock installation, 
   }
   for (const [fault, first, cold] of [
     ["success", "withdrawn"],
+    ["fractional predecessor", "withdrawn"],
     ["version churn", "pending"],
     ["lost reply", "pending"],
     ["pending", "withdrawn"],

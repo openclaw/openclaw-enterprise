@@ -160,6 +160,19 @@ const generation = (s: Snapshot) => [
   s.providerEnvRevision,
 ];
 
+/** Preserve the Gateway's RFC 3339 UTC wire precision for observation lease comparisons. */
+function timestampNanos(value: string | undefined): bigint | undefined {
+  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z$/.exec(value ?? "");
+  if (!match) {
+    return undefined;
+  }
+  const millis = Date.parse(`${match[1]}Z`);
+  if (!Number.isFinite(millis) || new Date(millis).toISOString().slice(0, 19) !== match[1]) {
+    return undefined;
+  }
+  return BigInt(millis) * 1_000_000n + BigInt((match[2] ?? "").padEnd(9, "0"));
+}
+
 /** An exact stock supervisor report. At expiry stock can report the old credentials expired;
  * accept that only before subtracting Git, never as the successful reduced installation. */
 function evidence(
@@ -178,8 +191,8 @@ function evidence(
     old &&
     state === "PROVIDER_READINESS_STATE_WITHHELD" &&
     reason === "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED";
-  const at = Date.parse(status.observedTime ?? "");
-  const evaluated = Date.parse(status.evaluatedTime ?? "");
+  const at = timestampNanos(status.observedTime);
+  const evaluated = timestampNanos(status.evaluatedTime);
   requireIdentity(
     r?.workspace === git.workspace &&
       r.provider === name &&
@@ -226,12 +239,13 @@ function evidence(
           o.launchEnvironmentInstalled &&
           (!o.reason || o.reason === unspecified))) &&
       isDeepStrictEqual(generation(o), generation(desired)) &&
-      Number.isFinite(at) &&
+      at !== undefined &&
+      evaluated !== undefined &&
       at <= evaluated &&
       // Stock reports expiry before checking its 15-second supervisor observation lease.
       // An expired credential can identify the predecessor only with a live witness.
-      (!expired || evaluated - at < 15_000) &&
-      Math.abs(Date.now() - evaluated) < 30_000,
+      (!expired || evaluated - at < 15_000_000_000n) &&
+      Math.abs(Date.now() - Date.parse(status.evaluatedTime ?? "")) < 30_000,
   );
   return desired;
 }
