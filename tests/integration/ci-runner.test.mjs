@@ -886,7 +886,6 @@ import { selectQaMatrix } from ${JSON.stringify(qaSelectionHelper)};
 test("QA inputs", async () => {
   assert.equal(process.env.OCC_TEST_QA_OPENAI_MODEL, "selected-openai-model");
   assert.equal(process.env.OCC_TEST_QA_CODEX_MODEL, "selected-codex-model");
-  assert.equal(process.env.OCC_TEST_CODEX_CALENDAR_PROMPT, "selected calendar read");
   assert.equal(process.env.OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE, undefined);
   assert.equal(process.env.QA_REPOSITORY_FIXTURE, "isolated");
   assert.equal(process.env.OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY, "selected-app-input");
@@ -895,7 +894,7 @@ test("QA inputs", async () => {
   assert.ok(!selection.requiredEnv.includes("OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE"));
   assert.equal(process.env.OCC_TEST_QA_INSTALLATION, "compose");
   assert.equal(process.env.OCC_TEST_QA_PRESET, "Codex");
-  assert.equal(process.env.OCC_TEST_QA_SCENARIOS, "model-ui,calendar,git-write");
+  assert.equal(process.env.OCC_TEST_QA_SCENARIOS, "console-secrets,git-write");
   await writeFile(join(process.env.OCC_TEST_QA_ARTIFACTS, "matrix.json"), JSON.stringify({ outcome: "inputs received" }));
 });
 `,
@@ -923,13 +922,12 @@ test("QA inputs", async () => {
       ...Object.fromEntries(lane.requiredEnv.map((name) => [name, "fixture-input"])),
       OCC_TEST_QA_OPENAI_MODEL: "selected-openai-model",
       OCC_TEST_QA_CODEX_MODEL: "selected-codex-model",
-      OCC_TEST_CODEX_CALENDAR_PROMPT: "selected calendar read",
       OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY: "selected-app-input",
       QA_REPOSITORY_FIXTURE: "isolated",
       OCC_TEST_QA_ARTIFACTS: artifacts,
       OCC_TEST_QA_INSTALLATION: "compose",
       OCC_TEST_QA_PRESET: "Codex",
-      OCC_TEST_QA_SCENARIOS: "model-ui,calendar,git-write",
+      OCC_TEST_QA_SCENARIOS: "console-secrets,git-write",
     },
   );
   assert.equal(result.status, 0, result.stderr);

@@ -122,8 +122,6 @@ async function runQaCredentialMaterializer(
     SLACK_BOT_TOKEN: "synthetic-slack-bot-token",
     SLACK_SENDER_TOKEN: "synthetic-slack-sender-token",
     OCC_TEST_QA_SLACK_CHANNEL_ID: "C0123456789",
-    OCC_TEST_CODEX_CALENDAR_TOOL_NAME: "calendar.list",
-    OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT: "Synthetic calendar result",
     OCC_TEST_QA_REPOSITORY_AUTHORIZED: "1",
     REPOSITORY_REGISTRY_FILE: registryFile,
     REPOSITORY_APP_KEY: "synthetic-private-key",
@@ -177,9 +175,9 @@ test("QA credential materializer reads reviewed registry files only for reposito
     assert.doesNotMatch(failure.stderr, /synthetic-private-key/);
   }
 
-  // Calendar/model-only advisory runs need no repository metadata or App key.
+  // Model-only advisory runs need no repository metadata or App key.
   const noRepository = await runQaCredentialMaterializer(t, {
-    OCC_TEST_QA_PRESET: "Codex",
+    OCC_TEST_QA_PRESET: "OpenClaw",
     OCC_TEST_QA_SCENARIOS: "model-ui",
     REPOSITORY_REGISTRY_FILE: undefined,
     REPOSITORY_APP_KEY: undefined,

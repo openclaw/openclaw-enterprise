@@ -11,8 +11,8 @@ last_verified: "2026-11-04"
 
 QA Matrix Advisory is one workflow with three groups of test jobs:
 
-- **QA matrix:** Codex model responses, Calendar access, and Console Secrets on
-  Compose and Kubernetes installations.
+- **QA matrix:** Console Secret management with Standard Codex Agents on Compose
+  and Kubernetes installations.
 - **OpenShell:** ten jobs with at most ten running at once for sandbox policy, credentials, plugins,
   installation, and Agent redeployment.
 - **Local installation:** the hosted local setup tests.
@@ -63,11 +63,10 @@ is in the [QA manifest](../../../scripts/ci/test-suites/qa-matrix.json).
 | ----------------------- | -------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `sandbox-policy`        | Yes — OpenShell jobs | Codex           | Discover and preview configuration, then apply, update, and withdraw OpenShell network policy in a prepared environment.                                   |
 | `plugin-install`        | Yes — OpenShell jobs | Codex           | Install a dedicated Codex plugin, find it after the Codex process restarts, then remove it from the Agent selection.                                       |
-| `model-ui`              | Yes (Codex)          | OpenClaw, Codex | Real model turn and native browser response.                                                                                                               |
+| `model-ui`              | No                   | OpenClaw        | Real model turn and native browser response.                                                                                                               |
 | `console-secrets`       | Yes (Codex)          | OpenClaw, Codex | Create and manage Console Secrets referenced by Agent drafts. Refusing Namespace deletion identifies the deployed Agent and links to its cleanup controls. |
 | `git-write`             | No                   | OpenClaw, Codex | Clone, edit, commit, push to the run's granted branch, dispose credentials.                                                                                |
 | `git-push-denied`       | No                   | Codex           | Reject a push to any other branch and dispose credentials.                                                                                                 |
-| `calendar`              | Yes (Codex)          | Codex           | Successful Calendar read, approvals and tool restrictions.                                                                                                 |
 | `slack`                 | No                   | Codex           | Threaded reply and new root message.                                                                                                                       |
 | `openshell-linear-read` | No                   | Codex           | Opt-in shipped OpenShell setup, Linear installation and verified native read.                                                                              |
 | `codex-search-config`   | No                   | Codex           | API-key Agent user configuration with omitted, false and true capability declarations; persistence after supported stop/deploy.                            |
@@ -83,13 +82,9 @@ To select these scenarios locally through the QA matrix, prepare their OpenShell
 fixtures: [network policy](../openshell-coverage.md#qa-matrix-selector) or
 [plugin installation](../openshell.md#codex-plugin-installation).
 
-`model-ui` checks the example console theme through sign-in and Agent use. On
-Kubernetes, dedicated Agents use `nativeAdmin: true` and must start with
-Configuration generation 1 and one revision before native browser chat.
-The optional OpenClaw cell also redeploys with a provider alias, the existing OCC
-Secret, and `OCE_MODEL_API_KEY`, then requires a real model turn. That cell is
-outside the scheduled Codex selection. Other scenarios do not require the theme
-or an extra API rollout.
+The OpenClaw `model-ui` case checks the example Console theme through sign-in
+and Agent use. It also redeploys the Agent with a provider alias, the existing OCC
+Secret, and `OCE_MODEL_API_KEY`, then requires a real model turn.
 
 ### OpenShell file coverage
 
@@ -184,13 +179,12 @@ and `certutil`. Store selected inputs in a private environment file. Credential
 files must be regular files without group/other permissions. Hosted settings
 are under [integration environments](configuration.md#environments).
 
-| Scenario/preset           | Inputs                                                                                                                                                                                 |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| OpenClaw model            | `OCC_TEST_QA_OPENAI_KEY_FILE`                                                                                                                                                          |
-| Codex, including Calendar | `OCC_TEST_QA_CODEX_TOKEN_FILE`: authorized service-account PAT                                                                                                                         |
-| Git                       | `OCC_TEST_QA_REPOSITORY_AUTHORIZED=1`, `OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY`, and `OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE` or absolute managed `OCC_TEST_QA_GITHUB_OBSERVER_BINARY` |
-| Calendar                  | `OCC_TEST_CODEX_CALENDAR_TOOL_NAME`, `OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT`: harmless read and successful-result pattern                                                              |
-| Slack                     | `OCC_TEST_QA_SLACK_APP_TOKEN_FILE`, `OCC_TEST_QA_SLACK_BOT_TOKEN_FILE`, `OCC_TEST_QA_SLACK_SENDER_TOKEN_FILE`, `OCC_TEST_QA_SLACK_CHANNEL_ID`                                          |
+| Scenario/preset | Inputs                                                                                                                                                                                 |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| OpenClaw model  | `OCC_TEST_QA_OPENAI_KEY_FILE`                                                                                                                                                          |
+| Codex           | `OCC_TEST_QA_CODEX_TOKEN_FILE`: authorized service-account PAT                                                                                                                         |
+| Git             | `OCC_TEST_QA_REPOSITORY_AUTHORIZED=1`, `OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY`, and `OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE` or absolute managed `OCC_TEST_QA_GITHUB_OBSERVER_BINARY` |
+| Slack           | `OCC_TEST_QA_SLACK_APP_TOKEN_FILE`, `OCC_TEST_QA_SLACK_BOT_TOKEN_FILE`, `OCC_TEST_QA_SLACK_SENDER_TOKEN_FILE`, `OCC_TEST_QA_SLACK_CHANNEL_ID`                                          |
 
 Slack sender and gateway bot must be distinct channel members; the sender needs
 post/history/reply access. Reserve the Socket Mode app for this run.
