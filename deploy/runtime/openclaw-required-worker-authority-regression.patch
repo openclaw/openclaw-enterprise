@@ -58,7 +58,7 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
        : {}),
    });
    if (required) {
-@@ -118,147 +139,257 @@
+@@ -118,148 +139,258 @@
    },
  );
 
@@ -262,7 +262,8 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
 +        let phase = "waiting for requested placement";
 +        try {
 +          if (afterAck) {
-+            expect(await created).toMatchObject({ ok: true });
++            const response = await created;
++            expect(response, JSON.stringify(response.error)).toMatchObject({ ok: true });
 +            // Release dispatch in finally even if the expected pause never arrives.
 +            await withinTest(
 +              withTestTimeout(
@@ -356,7 +357,8 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
 -      void created.catch(() => {});
 -      try {
 -        if (afterAck) {
--          expect(await created).toMatchObject({ ok: true });
+-          const response = await created;
+-          expect(response, JSON.stringify(response.error)).toMatchObject({ ok: true });
 -          await committed.promise;
 -        } else {
 -          await Promise.race([

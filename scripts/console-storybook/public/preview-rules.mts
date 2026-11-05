@@ -12,6 +12,7 @@ interface FixtureRule {
   delayMs?: number;
   hold?: boolean;
   networkError?: boolean;
+  rejectWithNull?: true;
   bodyError?: boolean;
   status?: number;
   code?: string;
@@ -159,6 +160,9 @@ export function createFixtureFetch(
       if (rule.networkError) {
         // The browser's own failure for a request that never reaches the API (offline).
         throw new TypeError("Failed to fetch");
+      }
+      if (rule.rejectWithNull) {
+        return Promise.reject(null);
       }
       if (rule.bodyError) {
         // A simulated after-headers failure exercises the production body reader.

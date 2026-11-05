@@ -389,7 +389,7 @@ test(
         ]);
         const catalog = await request(`/namespaces/${namespace.id}/agents/plugins`, {
           method: "POST",
-          body: "{}",
+          body: JSON.stringify({ harnessId: "codex" }),
         });
         assert.ok(
           catalog.data.plugins.some(({ id }) => id === "codex-plugin:linear@openai-curated-remote"),

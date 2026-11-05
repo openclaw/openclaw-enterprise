@@ -22,6 +22,7 @@ import type { StoryAction } from "../../story-action.mts";
 import type {
   AgentDeploymentStatusWire,
   CredentialSourceType,
+  InstallationCapabilities,
   NamespaceStatus,
   PresetVariable,
   OpenClawConfigurationDocument,
@@ -49,6 +50,7 @@ type CreateAgentScenario = {
   openclawSettingRefusal?: string;
   pluginDiscovery?: Parameters<typeof servePluginDiscovery>[0];
   pluginDiscoveryCredential?: "none";
+  pluginCatalogs?: InstallationCapabilities["pluginCatalogs"];
   pluginCapabilities?: PluginFieldsOptions["capabilities"];
   // Deliberately unsupported input for the Preset validation scenario.
   presetAgent?: { executionMode: "turbo" };
@@ -442,7 +444,7 @@ export const createAgentFormScenarios = {
       "Selecting the Secret starts catalog discovery before the picker opens, without entering a separate token.",
     steps: [
       "Choose Calendar to load its details, then click Done and select another Secret to clear the catalog.",
-      "Without a selected Secret, the optional token field remains available for a preview.",
+      "Set a default plugin approver, then change Harness to OpenClaw. This Installation serves only the Codex catalog. Switch back to Codex to verify the approver was cleared.",
     ],
     gap: "The Secret and OCC discovery responses are simulated. This preview does not verify live provider access or Secret storage.",
   },
@@ -467,8 +469,24 @@ export const createAgentFormScenarios = {
     group: "Pages/Create Agent",
     name: "Select Linear from the curated catalog",
     path: create,
-    pluginCapabilities,
-    pluginDiscoveryCredential: "none",
+    pluginCatalogs: [
+      {
+        harnessId: "codex",
+        pluginPolicies: pluginCapabilities,
+        pluginDiscovery: { credential: "none" },
+      },
+      {
+        harnessId: "openclaw",
+        pluginPolicies: {
+          driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+          approvers: { agent: true, plugin: true, tools: true },
+          toolDefaults: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
+          tools: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
+          driverPolicySchema: {},
+        },
+        pluginDiscovery: { credential: "none" },
+      },
+    ],
     pluginDiscovery: (() => {
       const linear = {
         id: "codex-plugin:linear@openai-curated-remote",
@@ -501,12 +519,16 @@ export const createAgentFormScenarios = {
         details: { [linear.remoteId]: linear },
       };
     })(),
-    actions: [...form, click("Configure plugins")],
+    actions: [
+      ...form,
+      { selector: "#agent-auth-method", value: "codex_pat" },
+      click("Configure plugins"),
+    ],
     description:
-      "The selected Driver exposes Linear without a discovery token. Its tool inventory remains unknown.",
+      "Both plugin catalogs are enabled. The Codex Harness offers Linear without a discovery token.",
     steps: [
       "Choose Linear, add it, and set a default policy. Close the modal and inspect Plugin selections JSON.",
-      "The catalog does not establish account access or runtime readiness; configure the Agent's actual credentials separately.",
+      "Change Harness to OpenClaw and reopen Configure plugins. The form clears the Codex selections and directs you to the saved Agent to install Google Workspace.",
     ],
     gap: "The catalog and provider responses are simulated. This preview does not invoke Linear or verify runtime authentication.",
   },
@@ -2481,6 +2503,8 @@ export const createAgentOutcomeScenarios = {
       "Select Choose a model from the list. Confirm the custom ID is cleared and Choose a model is selected, then select a listed model.",
       "Select Enter model ID manually again. Confirm Model ID keeps the selected model and receives focus. Edit it to another listed model, then return to the list and confirm that model is selected.",
       "Repeat the switch and edit Model ID to an ID outside the list. Return to the list and confirm a new selection is required; credentials and other form values remain.",
+      'With a Codex model selected, open Advanced settings and set plugins.allow to "codex", then to 7, null, and ["keep-plugin", 7]. For each value, select Choose a model from the list. Confirm Configuration JSON receives focus and an array-of-strings remedy; the JSON text and manual model choice stay unchanged.',
+      'Correct plugins.allow to [], then ["keep-plugin"], or remove the field. Retry the switch and select gpt-6-sol or gpt-6-luna. Confirm the selected model and whole plugin entries are preserved. Repeat at 1440 px and 390 px without creating an Agent.',
       "Under Advanced settings, edit Configuration JSON to use an anthropic/ model. Select Choose a model from the list and confirm it offers Anthropic models.",
     ],
   },

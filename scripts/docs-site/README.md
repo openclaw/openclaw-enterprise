@@ -76,12 +76,12 @@ examples, while excluding frontmatter, HTML comments, Markdown syntax, and link
 destinations. Symlinks resolve to one real file so aliases cannot duplicate
 counts or bypass the limit.
 
-`serve.mjs` serves `dist/docs/` on `127.0.0.1` by default. MP4 walkthrough links open
+`serve.ts` serves `dist/docs/` on `127.0.0.1` by default. MP4 walkthrough links open
 in the browser player with the `video/mp4` media type. It accepts an optional
 `--port` for parallel local previews. `docs:dev` adds `--watch` to enable the
 development workflow described in [Local preview](../../docs/local-preview.md).
 
-`preview-build.mjs` polls source metadata, combines rapid edits, and runs the
+`preview-build.ts` polls source metadata, combines rapid edits, and runs the
 renderer followed by Pagefind in a new directory. The renderer's internal
 `--output` option accepts only a fresh directory under `dist/.docs-preview-*/`;
 it never removes an existing preview directory. After both commands succeed,

@@ -384,7 +384,7 @@ test(
           assert.equal(r.id, revision.id);
           const s = AbortSignal.timeout(15000);
           const p = await runtime
-            .prepare(r, client, workspace, sandbox, s, [model])
+            .prepare(r, client, workspace, sandbox, s, "/sandbox/enterprise", [model])
             .catch((e: Error) => {
               t.diagnostic("prepare: " + e.message);
               throw e;

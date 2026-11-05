@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { lstatSync, readdirSync } from "node:fs";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
@@ -7,19 +7,19 @@ import { join, resolve, sep } from "node:path";
 // Poll directory entries as well as file metadata so atomic saves, new directories,
 // deletions and renames work without platform-specific recursive watch behavior.
 function sourceSnapshot() {
-  const entries = [];
+  const entries: string[] = [];
   const sourceRoots = new Set([
     "docs",
     "scripts/docs-site",
     "packages/contracts/openapi",
     "deploy/examples",
   ]);
-  function visit(file, includeAll = false) {
+  function visit(file: string, includeAll = false) {
     let info;
     try {
       info = lstatSync(file, { bigint: true });
     } catch (error) {
-      if (error.code === "ENOENT") {
+      if (isErrorCode(error, "ENOENT")) {
         return;
       }
       throw error;
@@ -41,44 +41,56 @@ function sourceSnapshot() {
   return entries.join("\n");
 }
 
-export async function createPreviewBuild(onState) {
+type Generation = { directory: string; readers: number };
+type PreviewState = { revision: string; error: string };
+
+function isErrorCode(error: unknown, code: string): boolean {
+  return error instanceof Error && "code" in error && error.code === code;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export async function createPreviewBuild(onState: (state: PreviewState) => void) {
   await mkdir("dist", { recursive: true });
   const workspace = await mkdtemp(resolve("dist/.docs-preview-"));
   const session = randomUUID();
-  let current;
+  let current: Generation | undefined;
   let revision = "";
   let error = "";
-  let child;
-  let running;
-  let timer;
+  let child: ChildProcess | undefined;
+  let running: Promise<void> | undefined;
+  let timer: NodeJS.Timeout | undefined;
   let stopped = false;
   let snapshot = sourceSnapshot();
   let requested = 1;
 
   const state = () => ({ revision, error });
-  function report(message) {
+  function report(message: string) {
     error = message;
     console.error(`Docs preview: ${message}`);
     onState(state());
   }
-  function run(command, args) {
-    return new Promise((accept, reject) => {
+  function run(command: string, args: string[]) {
+    return new Promise<void>((accept, reject) => {
       let diagnostic = "";
-      child = spawn(command, args, {
+      const processChild = spawn(command, args, {
         stdio: ["ignore", "pipe", "pipe"],
         detached: process.platform !== "win32",
       });
+      child = processChild;
       for (const [stream, destination] of [
-        [child.stdout, process.stdout],
-        [child.stderr, process.stderr],
-      ]) {
-        stream.on("data", (data) => {
+        [processChild.stdout, process.stdout],
+        [processChild.stderr, process.stderr],
+      ] as const) {
+        stream.on("data", (data: Buffer | string) => {
           destination.write(data);
           diagnostic = (diagnostic + data.toString()).slice(-12000);
         });
       }
-      child.on("error", reject);
-      child.on("close", (code, signal) => {
+      processChild.on("error", reject);
+      processChild.on("close", (code, signal) => {
         child = undefined;
         if (code === 0) {
           accept();
@@ -92,7 +104,7 @@ export async function createPreviewBuild(onState) {
       });
     });
   }
-  async function discard(generation) {
+  async function discard(generation: Generation | undefined) {
     if (generation && generation !== current && generation.readers === 0) {
       await rm(generation.directory, { recursive: true, force: true });
     }
@@ -126,7 +138,7 @@ export async function createPreviewBuild(onState) {
     } catch (cause) {
       if (!stopped) {
         report(
-          `Build failed. Fix the source and save again. The last successful preview is still available.\n${cause.message}`,
+          `Build failed. Fix the source and save again. The last successful preview is still available.\n${errorMessage(cause)}`,
         );
       }
       await rm(directory, { recursive: true, force: true });
@@ -156,7 +168,7 @@ export async function createPreviewBuild(onState) {
         schedule();
       }
     } catch (cause) {
-      report(`Cannot read documentation sources: ${cause.message}. Check file permissions.`);
+      report(`Cannot read documentation sources: ${errorMessage(cause)}. Check file permissions.`);
     }
   }, 750);
   schedule();
@@ -189,7 +201,7 @@ export async function createPreviewBuild(onState) {
           try {
             process.kill(-child.pid, "SIGTERM");
           } catch (cause) {
-            if (cause.code !== "ESRCH") {
+            if (!isErrorCode(cause, "ESRCH")) {
               throw cause;
             }
           }
