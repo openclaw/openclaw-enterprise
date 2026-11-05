@@ -1350,7 +1350,10 @@ test("every formatting check provisions pinned Bun and scans without a formatter
     assert.deepEqual(setup.with, { "bun-version-file": ".bun-version" });
     const check = steps.find((step) => step.run === "pnpm format:check");
     assert.ok(steps.indexOf(setup) < steps.indexOf(check));
-    assert.equal(setup.if, check.if);
+    if (steps === staticSteps) {
+      assert.equal(setup.if, undefined);
+      assert.equal(check.if, undefined);
+    }
     assert.equal(setup["continue-on-error"], undefined);
     assert.equal(check["continue-on-error"], undefined);
     assert.equal(
@@ -1363,10 +1366,15 @@ test("every formatting check provisions pinned Bun and scans without a formatter
     );
   }
   const setup = laneSteps.find((step) => step.name === "Set up formatter");
+  const check = laneSteps.find((step) => step.run === "pnpm format:check");
   for (const { lane } of laneTable()) {
     for (const staticChecks of ["true", "false"]) {
       assert.equal(
-        runInNewContext(setup.if.replace("inputs.static-checks", "inputs.staticChecks"), {
+        runInNewContext(setup.if, { inputs: { lane, staticChecks } }),
+        lane === "checks-baseline-1",
+      );
+      assert.equal(
+        runInNewContext(check.if.replace("inputs.static-checks", "inputs.staticChecks"), {
           inputs: { lane, staticChecks },
         }),
         lane === "checks-baseline-1" && staticChecks !== "false",

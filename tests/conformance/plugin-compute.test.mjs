@@ -3270,7 +3270,7 @@ test("gateway runtime status maps native Slack channel status without provider d
             return false;
           },
           lstatSync() {
-            return { isDirectory: () => true };
+            throw Object.assign(new Error("File not found"), { code: "ENOENT" });
           },
           mkdirSync() {},
           readFileSync() {
@@ -3776,6 +3776,12 @@ test("Codex gateway supervisor waits for its Harness plugin status without a dea
           existsSync(path) {
             return files.has(path);
           },
+          lstatSync(path) {
+            if (!files.has(path)) {
+              throw Object.assign(new Error("File not found"), { code: "ENOENT" });
+            }
+            return { isFile: () => true, mode: 0o600 };
+          },
           mkdirSync() {},
           readFileSync(path) {
             if (!files.has(path)) {
@@ -4015,6 +4021,12 @@ async function startCodexGatewaySupervisor(
       if (specifier === "node:fs") {
         return {
           existsSync: (path) => fixture.files.has(path),
+          lstatSync(path) {
+            if (!fixture.files.has(path)) {
+              throw Object.assign(new Error("File not found"), { code: "ENOENT" });
+            }
+            return { isFile: () => true, mode: 0o600 };
+          },
           mkdirSync() {},
           readFileSync(path) {
             if (!fixture.files.has(path)) {
@@ -5029,6 +5041,12 @@ for (const [dedicated, withBroker, proxyEnabled] of [
           return {
             existsSync(path) {
               return files.has(path);
+            },
+            lstatSync(path) {
+              if (!files.has(path)) {
+                throw Object.assign(new Error("File not found"), { code: "ENOENT" });
+              }
+              return { isFile: () => true, mode: 0o600 };
             },
             mkdirSync() {},
             readFileSync(path) {

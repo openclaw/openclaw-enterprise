@@ -232,8 +232,11 @@ Clean exit permits verifier WebSocket startup; failure triggers group TERM/KILL.
 Provider Gateway readiness checks transport, not HMAC plugin status.
 
 `oce-codex-runtime`/`oce-openclaw-runtime` provide read-only setup and Gateway CA.
-Only Codex accepts `runtime.json`/`config.toml`. Validated setup, including
-`bootstrapToken`, becomes `node-setup.json`. TLS-pinned setup requires `wss://`
+Only Codex accepts `runtime.json`/`config.toml`. `harnessRuntimeCredentials` reads
+the projected Secret; `packages/utils/src/workspace-node-setup.ts:validateWorkspaceNodeSetupSecret`
+checks ownership and setup material without further reads. OpenShell keeps provider
+output private and maps failures to `OpenShellSandboxConfigurationFailure`.
+Validated setup, including `bootstrapToken`, becomes `node-setup.json`. TLS-pinned setup requires `wss://`
 at admission and supervisor replacement. WebSocket rewriting is unsupported:
 device proofs sign the literal token.
 Renewal requires expired stored setup, later live expiry and unchanged endpoint,
@@ -412,6 +415,8 @@ model execution.
 
 - 2026-11-05 14:17: Revoke empty API grants. (authoring-run/a85a4857-880b-4f7b-8fe2-d648c86e601e - 2b92aa9b35de6e7633b960dfd7edcf1fd3fd46ea)
 
+- 2026-11-05 12:54: Extract shared setup validation while preserving OpenShell provisioning. (authoring-run/0428fede-167f-4783-a06f-00eb40ffa23c - f1295c81f3ac79f51af2b93b61013e0a8e5c0394)
+
 - 2026-11-05 12:54: Reject projected identity at admission. (authoring-run/root-deployment_docs - 894a5b6698049c41fba27f5c2c0764e86b4c0632)
 
 - 2026-11-05 11:46: Preserve Gateway DNS and Kubernetes API egress when enabling protected Git. (authoring-run/42be4d0d-c90e-4ade-bfa2-a8b8df80fc1d - a69245cb064932a4c7bf27df3fd8646a0107c4e4)
@@ -447,13 +452,5 @@ model execution.
 - 2026-10-29 23:56: Merge both capabilities. (authoring-run/0f5c25dc-b648-4d4a-9ef2-24db4179b122 - fbb3b8065fc907305e4f607208fb419df2ffe17a)
 
 - 2026-10-29 23:25: Qualify Git independently of release labels. (authoring-run/58990420-42d2-463b-911f-914ca3d54611 - 77d84ecbf76ce5c60193ad21c8be33184a304ee6)
-
-- 2026-10-29 04:23: Route OpenShell workspace nodes through Envoy for worker HTTP transfers and client attribution. (authoring-run/01a17fae-f253-7d71-af12-d3f259c4faf0 - 15440bacfc5a6553190c9580eb0eccf6f301f0ed)
-
-- 2026-10-28 21:24: Unify preparation cleanup. (01a184cd-7ec2-7fa2-8547-9629c51ad0ba - 208172f773)
-
-- 2026-10-28 16:50: Trace stdio plugin installation before verifier-only native startup. (01a184cd-7ec2-7fa2-8547-9629c51ad0ba - 000e1381e7)
-
-- 2026-10-28 15:09: Clarify mode support and Configuration transformation wording. (01a183dc-eb11-7f33-9992-dec02cd989e3 - a06c28fe0e)
 
 [OpenShell Sandbox provisioning documentation history](openshell-sandbox-provisioning/history.md) preserves the older dated entries.

@@ -1214,17 +1214,12 @@ export async function loadInstallationConfiguration(options: {
   const repositoryBackend = backends.find((backend) => backend.type === "github");
   let repositoryRuntime;
   if (repoSelection !== undefined && repositoryBackend !== undefined) {
-    if (repositoryDeliveryMode === "native") {
+    if (nativeRepositorySelection !== undefined) {
       const { composeRepositoryAccess } = await import("./repository-credentials/platform.ts");
-      repositoryRuntime = await composeRepositoryAccess({
-        backend: repositoryBackend,
-        selection: nativeRepositorySelection
-          ? {
-              ...repoSelection,
-              configuration: { ...repoSelection.configuration, ...nativeRepositorySelection },
-            }
-          : repoSelection,
-      });
+      repositoryRuntime = await composeRepositoryAccess(
+        { backend: repositoryBackend, selection: repoSelection },
+        nativeRepositorySelection,
+      );
     } else {
       const policy = await loadRepositoryPolicy({
         backend: repositoryBackend,

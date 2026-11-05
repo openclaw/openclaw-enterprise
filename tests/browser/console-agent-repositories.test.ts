@@ -39,7 +39,7 @@ import {
   agentPostRequests,
   configurationPostRequests,
   createRepositoryLaunchFixture,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
 import {
   AGENT_SAVE_DENIED,
   REPOSITORY_ACCESS_CHANGED,
