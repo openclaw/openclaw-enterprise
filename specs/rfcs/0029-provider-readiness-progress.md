@@ -4,36 +4,30 @@ implementation_status: Not implemented
 author: freeqaz-openai
 ---
 
-# Report which provider readiness check is still pending
+# Report the first pending provider readiness check
 
-**RFC-0029 · Proposed October 17, 2026.** [Provisioning investigation](https://github.com/openclaw/openclaw-enterprise/issues/2658) · [Draft implementation](https://github.com/openclaw/openclaw-enterprise/pull/2695)
+**RFC-0029 · Proposed October 17, 2026.**
 
-A deployment can spend eight minutes “waiting for the runtime to become ready” without telling the operator where to look. We propose that the Kubernetes Compute Driver report the first readiness check it reached that was still pending. Compute and deployment maintainers must decide whether to expose that observation through the Driver contract and retain it on deployment progress. Readiness, deadlines and recovery would continue to use their existing inputs.
+When a provider-managed Harness is not ready, the Kubernetes Compute Driver should report which check is still pending. The worker should save that observation for the operator without changing how it decides to retry, retire, or activate the revision.
 
-## What the operator would learn
+In [a first-Agent run](https://github.com/openclaw/openclaw-enterprise/actions/runs/39000684973/job/117302764514), the client timed out with only a generic readiness message. Both Pods were Ready when inspected later. Reading the Pods after a timeout cannot tell the operator which check the worker was waiting for.
 
-In [one run on main](https://github.com/openclaw/openclaw-enterprise/actions/runs/39000684973/job/117302764514), both Compose and Kubernetes first-Agent tests reached their provisioning deadline. The worker had recorded only `REVISION_INCOMPLETE`. A later observation found a Ready Gateway Pod and a Ready Agent Pod. Those observations can both be true; what we lost was the worker’s view at the time.
+## What Compute reports
 
-For a provider-managed Harness, Compute already checks the provider Pod, then the workspace connection, then credential attachments when required. Add three optional values to [`ComputePendingReason`](../../packages/contracts/src/drivers/compute/index.ts):
+Extend the existing optional [Compute pending reason](../../packages/contracts/src/drivers/compute/index.ts) with three values. Use the checks Compute already makes, in order:
 
-| First check still pending             | What Compute reports              | Where the operator looks next                  |
-| ------------------------------------- | --------------------------------- | ---------------------------------------------- |
-| One matching Ready provider Pod       | `PROVIDER_HARNESS_POD_PENDING`    | Pod selection and readiness                    |
-| Workspace node connected to Gateway   | `PROVIDER_WORKSPACE_NODE_PENDING` | Node startup and its connection to the Gateway |
-| Expected credential attachments ready | `CREDENTIAL_ATTACHMENT_PENDING`   | Attachment status, not credential values       |
+| What Compute is waiting for                               | Driver reason                     | What the operator should inspect                        |
+| --------------------------------------------------------- | --------------------------------- | ------------------------------------------------------- |
+| One matching Ready provider Pod                           | `PROVIDER_HARNESS_POD_PENDING`    | Pod selection and readiness                             |
+| The Gateway is Ready; its workspace node is not yet ready | `PROVIDER_WORKSPACE_NODE_PENDING` | Node enrollment and its connection to the ready Gateway |
+| All expected credential attachments to be ready           | `CREDENTIAL_ATTACHMENT_PENDING`   | Attachment status                                       |
 
-A pending Pod says nothing about the two checks Compute has yet to reach. A runtime failure, quota limit, scheduling problem, or image pull failure that Compute already observes takes precedence. Other Drivers need not report a new value. The proposal requires no additional Kubernetes reads, provider calls, permissions, identifiers, or free-form reasons.
+Report only a check that Compute reached. If the Pod is not ready, the node and attachments may not have been checked. A more specific failure or workload condition already observed by Compute takes precedence. No new provider calls, Kubernetes reads, permissions, or credential details are needed. Other Drivers can omit the reason.
 
-## Keep observation separate from recovery
+## What the worker records
 
-The worker should retain `REVISION_INCOMPLETE` as its durable lifecycle reason and record the more specific observation alongside it. An older worker uses that reason to recognize progress beyond credential bootstrap. Replacing it with a value the old worker does not recognize could make rollback retire a candidate that had already progressed.
+Store all three provider observations alongside the existing lifecycle reason `REVISION_INCOMPLETE`. The provider workspace wait previously used `WORKSPACE_NODE_PENDING` as its stored code. An older worker recognizes both stored codes as progress past credential bootstrap. Storing only the new Driver reason could cause that worker to retire the candidate after a rollback.
 
-While deployment is pending, [deployment progress](../../docs/reference/agents/deployment.md) would show the last recorded observation, using the existing `WORKSPACE_NODE_PENDING` code for the workspace case. Record changes, suppress identical repeats, and show generic readiness progress for absent or unknown detail. An older worker may leave the previous detail in place. A client's deadline can expire while deployment is still pending. A later Ready Pod cannot establish when the earlier check passed. Terminal deployments expose their result and clear progress.
+While the deployment is pending, [deployment progress](../../docs/reference/agents/deployment.md) shows the last recorded observation. The workspace reason displays as the existing `WORKSPACE_NODE_PENDING`; the other two keep their Driver names. Record a change of reason once. Missing or unknown detail gives the generic readiness message. An older worker may leave the last detail in place. Terminal deployments have no pending progress.
 
-## Decision and verification
-
-Keeping the Driver contract unchanged would let tests inspect resources after timeout, but those reads cannot reconstruct the worker’s earlier observation. We are not proposing a progress-event framework.
-
-Driver tests exercise all three pending checks. PostgreSQL tests use the current worker to verify the durable reason an older worker recognizes, duplicate suppression, and cleanup after a dependency outage.
-
-An [earlier OpenShell run](https://github.com/openclaw/openclaw-enterprise/actions/runs/39006219175/job/117319152661) on `f164c4cc620d` missed the guided provisioning deadline. Deployment progress showed `WORKSPACE_NODE_PENDING`. A later read found one Ready Gateway Pod and one Ready Agent Pod. Before landing, capture the worker's observation on the final candidate during a provider-managed attempt. The provisioning issue remains open.
+[Implementation #2695](https://github.com/openclaw/openclaw-enterprise/pull/2695) tracks verification, including a provider-managed attempt that captures the worker’s observation on the final candidate. This proposal explains a wait; [the provisioning failure](https://github.com/openclaw/openclaw-enterprise/issues/2658) remains a separate investigation.
