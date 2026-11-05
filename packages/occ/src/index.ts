@@ -1822,6 +1822,19 @@ function selectsModel(values: Readonly<OpenClawConfigurationDocument>): boolean 
   );
 }
 
+type DeviceConnectionOrigin =
+  | { kind: "namespace"; sessionKey: "namespace" }
+  | { kind: "agent"; sessionKey: string; agentId: string | undefined };
+
+function deviceConnectionOrigin(
+  namespaceConnection: boolean,
+  agentId: string | undefined,
+): DeviceConnectionOrigin {
+  return namespaceConnection
+    ? { kind: "namespace", sessionKey: "namespace" }
+    : { kind: "agent", sessionKey: agentId ?? "create_agent", agentId };
+}
+
 // A Driver names unsupported Configuration content the caller owns; keep that message. Other
 // refusals get this fixed text; the caller is already authorized for the Agent.
 function validateAgentHarnessAuth(
@@ -10318,22 +10331,18 @@ export class OpenClawController {
   private async authorizeDeviceConnection(
     principalId: string,
     namespaceId: string,
-    origin: string,
+    origin: DeviceConnectionOrigin,
   ) {
     await this.authorizeConnectionCreation(principalId, namespaceId);
-    if (origin !== "namespace") {
-      await this.authorizeDeviceAuthorizationScope(
-        principalId,
-        namespaceId,
-        origin === "create_agent" ? undefined : origin,
-      );
+    if (origin.kind === "agent") {
+      await this.authorizeDeviceAuthorizationScope(principalId, namespaceId, origin.agentId);
     }
   }
 
   private async startSavedDeviceConnection(
     principalId: string,
     namespaceId: string,
-    origin: string,
+    origin: DeviceConnectionOrigin,
     browserSessionId: string | undefined,
     refresh: CredentialRefreshDriver,
     device: NonNullable<CredentialRefreshDriver["deviceConnection"]>,
@@ -10429,7 +10438,7 @@ export class OpenClawController {
         credentialSourceId: source.id,
         actorId: principalId,
         browserSessionId,
-        origin,
+        origin: origin.sessionKey,
         connectionTemplateId: template.id,
         connectionTemplateVersion: current.current.version,
         authorization,
@@ -10453,7 +10462,7 @@ export class OpenClawController {
     id: string,
     principalId: string,
     namespaceId: string,
-    origin: string,
+    origin: DeviceConnectionOrigin,
     browserSessionId: string | undefined,
   ) {
     const session = await unit.savedConnections.lockDeviceSession(id);
@@ -10461,7 +10470,7 @@ export class OpenClawController {
       !session ||
       session.namespaceId !== namespaceId ||
       session.actorId !== principalId ||
-      session.origin !== origin ||
+      session.origin !== origin.sessionKey ||
       !browserSessionId ||
       session.browserSessionId !== browserSessionId
     ) {
@@ -10476,7 +10485,7 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
     id: string,
-    origin: string,
+    origin: DeviceConnectionOrigin,
     browserSessionId: string | undefined,
     holdSession?: (unit: PlatformUnitOfWork) => Promise<void>,
     auditReady?: (sourceId: string) => AuditEvent,
@@ -10699,7 +10708,7 @@ export class OpenClawController {
       return this.startSavedDeviceConnection(
         principalId,
         namespaceId,
-        namespaceConnection ? "namespace" : (agentId ?? "create_agent"),
+        deviceConnectionOrigin(namespaceConnection, agentId),
         browserSessionId,
         savedRefresh,
         device,
@@ -10893,7 +10902,7 @@ export class OpenClawController {
         principalId,
         namespaceId,
         secretId,
-        namespaceConnection ? "namespace" : (agentId ?? "create_agent"),
+        deviceConnectionOrigin(namespaceConnection, agentId),
         browserSessionId,
         holdSession,
         auditReady,
@@ -11016,7 +11025,7 @@ export class OpenClawController {
     namespaceConnection = false,
   ): Promise<void> {
     if (secretId.startsWith("cda_") || namespaceConnection) {
-      const origin = namespaceConnection ? "namespace" : (agentId ?? "create_agent");
+      const origin = deviceConnectionOrigin(namespaceConnection, agentId);
       await this.authorizeDeviceConnection(principalId, namespaceId, origin);
       await this.mutate(async (unit) => {
         const session = await this.lockOwnedDeviceSession(
