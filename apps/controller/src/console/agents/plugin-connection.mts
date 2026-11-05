@@ -91,12 +91,16 @@ function consentScopes(template: SlotTemplate, setSelection: (scopes: string[] |
 export function pluginConnectionControl(
   slot: AgentPluginCredentialSlot,
   connections: SlotConnection,
-  currentName?: string,
+  currentSourceId?: string,
 ) {
   const notice = element("p", { className: "hint", role: "status" });
   const panel = element("div");
   let busy = false;
-  const needsConsent = slot.sources.some((source) => source.authorization === "required");
+  const currentSource = slot.sources.find((source) => source.id === currentSourceId);
+  const currentName = currentSourceId ? (currentSource?.name ?? "the current account") : undefined;
+  const needsConsent = currentSourceId
+    ? currentSource?.authorization === "required"
+    : slot.sources.some((source) => source.authorization === "required");
   const open = button(
     needsConsent
       ? "Authorize for this server"

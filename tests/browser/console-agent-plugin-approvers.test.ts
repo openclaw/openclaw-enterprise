@@ -1187,60 +1187,120 @@ test("plugin prefetch remains usable after leaving during its debounce", async (
   );
 });
 
-test("an unrestricted plugin connection requests only required or explicitly chosen OAuth scopes", async (t) => {
+test("plugin account replacement and new OAuth consent follow the selected source and requested scopes", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, "/console");
   await page.locator(settledView).waitFor();
 
-  // Mount the served picker with a discovered template and a manual one, recording its
-  // consent request before the provider redirect. The integration lane exercises the issuer.
-  await page.evaluate(async () => {
-    const path = "/console/agents/plugin-connection.mjs";
-    const { pluginConnectionControl } = (await import(
+  // Exercise the served plugin editor with a saved account approved for this server and
+  // another account that still needs consent. The provider redirect is covered in integration.
+  await page.evaluate(async (capabilities) => {
+    const path = "/console/agents/plugin-fields.mjs";
+    const { createPluginFields } = (await import(
       path
-    )) as typeof import("../../apps/controller/src/console/agents/plugin-connection.mjs");
+    )) as typeof import("../../apps/controller/src/console/agents/plugin-fields.mjs");
     const output = document.createElement("output");
     output.id = "chosen-scopes";
-    const slot = {
-      id: "support",
-      pluginId: "occ-plugin:support@1.0.0",
-      releaseSha256: "0".repeat(64),
-      label: "Support account",
-      sources: [],
-    };
-    const picker = pluginConnectionControl(slot, {
-      unavailable: () => undefined,
-      async list() {
-        return [
-          {
-            id: "mcp",
-            displayName: "Support MCP",
-            version: 1,
-            mode: "mcp_discovery",
-            scopes: [],
-            offeredScopes: ["read", "write"],
-            requiredScopes: ["read"],
-          },
-          {
-            id: "manual",
-            displayName: "Support OAuth",
-            version: 1,
-            mode: "manual",
-            scopes: [],
-            offeredScopes: [],
-            requiredScopes: [],
-          },
-        ];
-      },
-      async start(_slot, _template, selected) {
-        output.value = JSON.stringify(selected);
+    const pluginId = "occ-plugin:support@1.0.0";
+    const releaseSha256 = "0".repeat(64);
+    const source = { id: "cs_00000000-0000-4000-8000-000000000001", name: "Service desk" };
+    const input = document.createElement("textarea");
+    input.value = JSON.stringify({
+      [pluginId]: {
+        enabled: true,
+        driverPolicy: { releaseSha256, credentials: { support: source.id } },
       },
     });
-    document.body.replaceChildren(picker, output);
-  });
-  await page.getByRole("button", { name: "Choose a connection template" }).click();
+    const picker = createPluginFields({
+      input,
+      capabilities: {
+        ...capabilities,
+        driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+        credentialSlots: [
+          {
+            id: "support",
+            pluginId,
+            releaseSha256,
+            label: "Support account",
+            connectAccount: true,
+            toolDiscovery: true,
+            sources: [
+              source,
+              {
+                id: "cs_00000000-0000-4000-8000-000000000002",
+                name: "Reporting",
+                authorization: "required",
+              },
+            ],
+          },
+        ],
+      },
+      catalog: {
+        status: "ready",
+        entries: [
+          {
+            id: pluginId,
+            name: "Support",
+            selectableWithoutTools: true,
+            tools: [],
+            managedTools: {
+              connection: { slot: "support", sourceId: source.id },
+              status: "loaded",
+              tools: [{ id: "ticket_get", ownerId: pluginId, name: "ticket_get" }],
+            },
+          },
+        ],
+      },
+      slotConnection: {
+        unavailable: () => undefined,
+        async list() {
+          return [
+            {
+              id: "mcp",
+              displayName: "Support MCP",
+              version: 1,
+              mode: "mcp_discovery",
+              scopes: [],
+              offeredScopes: ["read", "write"],
+              requiredScopes: ["read"],
+            },
+            {
+              id: "manual",
+              displayName: "Support OAuth",
+              version: 1,
+              mode: "manual",
+              scopes: [],
+              offeredScopes: [],
+              requiredScopes: [],
+            },
+          ];
+        },
+        async start(_slot, _template, selected) {
+          output.value = JSON.stringify(selected);
+        },
+      },
+    });
+    document.body.replaceChildren(picker.section, output);
+  }, new OCCPluginDriver().policyCapabilities);
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const editor = page.getByRole("dialog", { name: "Configure plugins" });
+  await editor.getByRole("button", { name: "Support", exact: true }).click();
+  await editor.getByRole("checkbox", { name: "ticket_get", exact: true }).waitFor();
+  assert.equal(
+    await editor.getByText("No tools listed for this plugin.", { exact: true }).count(),
+    0,
+  );
+  await editor.getByRole("button", { name: "Connect a different account", exact: true }).click();
+  await editor
+    .getByRole("button", { name: "Authorize and replace account", exact: true })
+    .waitFor();
+  await editor.getByText(/replace Service desk in the Support account slot/).waitFor();
+
+  // Clearing the selected account restores the authorization action before a new connection.
+  await editor.getByLabel("Support account", { exact: true }).selectOption("");
+  await editor.getByRole("button", { name: "Authorize for this server", exact: true }).click();
   const template = page.getByRole("combobox", { name: "Connection template for Support account" });
   await template.selectOption("mcp");
   const required = page.getByRole("checkbox", { name: "read (required)" });

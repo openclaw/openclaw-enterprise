@@ -1033,12 +1033,13 @@ export function createPluginFields({
           const needsConsent = slot.sources.some((source) => source.authorization === "required");
           if (slotConnection && !stale) {
             if (slot.connectAccount) {
-              const currentName =
-                typeof current === "string"
-                  ? (slot.sources.find((source) => source.id === current)?.name ??
-                    "the current account")
-                  : undefined;
-              details.append(pluginConnectionControl(slot, slotConnection, currentName));
+              details.append(
+                pluginConnectionControl(
+                  slot,
+                  slotConnection,
+                  typeof current === "string" ? current : undefined,
+                ),
+              );
             } else if (needsConsent) {
               const reason = slotConnection.unavailable(slot);
               details.append(
@@ -1270,7 +1271,7 @@ export function createPluginFields({
           );
           details.append(load);
         }
-      } else if (!enablementOnly && tools.size === 0) {
+      } else if (!enablementOnly && !hasManagedTools && tools.size === 0) {
         details.append(element("p", { className: "hint" }, "No tools listed for this plugin."));
       }
       if (entry.toolError) {

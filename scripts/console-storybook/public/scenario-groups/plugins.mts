@@ -184,7 +184,23 @@ const namedSlotScenario = {
 } satisfies PluginScenario;
 
 export const pluginsScenarios = {
-  namedSlotAccounts: namedSlotScenario,
+  namedSlotAccounts: {
+    ...namedSlotScenario,
+    pluginSelections: JSON.stringify({
+      [namedPlugin]: {
+        enabled: true,
+        driverPolicy: {
+          releaseSha256: namedRelease,
+          credentials: { support: savedSupportAccount.id },
+        },
+      },
+    }),
+    description:
+      "The Support slot already has its approved account. Another saved account needs provider consent for this server.",
+    steps: [
+      "Open Connect a different account to see which saved account it will replace. The separate Reports slot keeps its own account selection.",
+    ],
+  },
   namedSlotAuthorize: {
     ...namedSlotScenario,
     name: "Authorize a saved account for this server",
