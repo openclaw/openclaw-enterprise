@@ -2005,9 +2005,15 @@ test("dedicated package inspection retains skill resources and reports omitted M
       "---\nname: report\ndescription: Generate a report\n---\nRead scripts/run.",
     ],
     ["package/skills/report/scripts/run", Buffer.from([0, 127, 128, 255]), 0o755],
+    // Portable discovery considers only immediate child directories of skills/.
+    ["package/skills/SKILL.md", "This stray file must not shadow report."],
   ];
   const driver = new OCCPluginDriver();
   const result = await driver.inspectPackage(gzipSync(await packagedFiles(files)));
+  assert.deepEqual(
+    result.skills.map(({ name }) => name),
+    ["report"],
+  );
   assert.deepEqual(result.skills[0].files[1], {
     path: "scripts/run",
     contentBase64: "AH+A/w==",

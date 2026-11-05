@@ -973,6 +973,27 @@ export function createOpenShellKubernetesFixture({
     }
   }
 
+  async function applyTrustBundle(namespace, name, pem) {
+    const directory = await mkdtemp(join(tmpdir(), "openshell-gateway-trust-"));
+    const path = join(directory, "configmap.json");
+    try {
+      await writeFile(
+        path,
+        JSON.stringify({
+          apiVersion: "v1",
+          kind: "ConfigMap",
+          metadata: { name, namespace },
+          data: { "ca.crt": pem },
+        }),
+        { mode: 0o600 },
+      );
+      // The bundle exceeds what client-side apply can record in its annotation.
+      await kubectl("apply", "--server-side", "--namespace", namespace, "-f", path);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+
   /**
    * Installs the Namespace's gateway. `extraTrustPem` adds a private CA through the chart's
    * extra volume settings. The gateway image sets SSL_CERT_FILE to its CA bundle, so its TLS
@@ -1049,14 +1070,7 @@ export function createOpenShellKubernetesFixture({
       // Only this disposable release trusts the controlled MCP provider. The supervisor still
       // verifies the upstream TLS certificate and applies its normal request policy.
       const configMap = "test-mcp-provider-ca";
-      await kubectl(
-        "create",
-        "configmap",
-        configMap,
-        "--namespace",
-        namespace,
-        "--from-file=ca.crt=" + upstreamProxy.caFile,
-      );
+      await applyTrustBundle(namespace, configMap, upstreamProxy.caPem);
       values.push(
         "--set-string=upstreamProxy.url=" + upstreamProxy.url,
         "--set-json=upstreamProxy.noProxy=" + JSON.stringify(upstreamProxy.noProxy),
@@ -1066,24 +1080,7 @@ export function createOpenShellKubernetesFixture({
     }
     if (extraTrustPem !== undefined) {
       const trust = "oce-gateway-extra-trust";
-      const directory = await mkdtemp(join(tmpdir(), "openshell-gateway-trust-"));
-      const path = join(directory, "configmap.json");
-      try {
-        await writeFile(
-          path,
-          JSON.stringify({
-            apiVersion: "v1",
-            kind: "ConfigMap",
-            metadata: { name: trust, namespace },
-            data: { "ca.crt": [...rootCertificates, extraTrustPem].join("\n") },
-          }),
-          { mode: 0o600 },
-        );
-        // The bundle exceeds what client-side apply can record in its annotation.
-        await kubectl("apply", "--server-side", "--namespace", namespace, "-f", path);
-      } finally {
-        await rm(directory, { recursive: true, force: true });
-      }
+      await applyTrustBundle(namespace, trust, [...rootCertificates, extraTrustPem].join("\n"));
       values.push(
         `--set-string=server.extraVolumes[0].name=${trust}`,
         `--set-string=server.extraVolumes[0].configMap.name=${trust}`,

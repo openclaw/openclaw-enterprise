@@ -7578,7 +7578,7 @@ async function assertImportedNativeMcp(context, topology, provider) {
     credentialSources: [...topology.agent.credentialSources, { sourceId: source.id }],
     plugins: selectTools(release, source, ["get_allowed"]),
   });
-  const client = await connectGatewayOperator(context, topology, "http://127.0.0.1");
+  let client = await connectGatewayOperator(context, topology, "http://127.0.0.1");
   async function turn(message, expectedCall, expectedResult) {
     const key = "agent:main:imported-mcp-" + randomUUID();
     await client.request("sessions.create", { key, agentId: "main", message: "" });
@@ -7692,6 +7692,7 @@ async function assertImportedNativeMcp(context, topology, provider) {
     { sourceId: source.id },
     { sourceId: nextSource.id },
   ];
+  await client.stopAndWait();
   const cutover = await deploy({
     credentialSources,
     plugins: selectTools(replacement, nextSource, ["get_denied"]),
@@ -7712,6 +7713,7 @@ async function assertImportedNativeMcp(context, topology, provider) {
     );
   }
   await assertProviders(cutover, true);
+  client = await connectGatewayOperator(context, topology, "http://127.0.0.1");
   await turn(
     "Use the configured MCP get_denied tool. Return its result.",
     (call) => call.name.endsWith("get_denied"),
@@ -7723,6 +7725,7 @@ async function assertImportedNativeMcp(context, topology, provider) {
 
   // Clearing the tool selection leaves both accounts on the Agent for future revisions.
   // The new Sandbox must carry neither source, even though the saved policy still names one.
+  await client.stopAndWait();
   const disabled = await deploy({
     credentialSources,
     plugins: selectTools(replacement, nextSource, []),

@@ -74,10 +74,20 @@ function loadManagedInstall(packageName: string) {
     throw new Error(`Invalid placement in bundled package: ${packageName}.`);
   }
 
+  // The Gateway exposes this skill root only when the bundled release declares it.
+  const gateway = asRecord(release?.capabilities)?.gateway;
+  let skillName: string | undefined;
+  if (Array.isArray(gateway) && gateway.includes("skill")) {
+    if (!isNonEmptyString(release?.skill)) {
+      throw new Error(`Invalid Gateway skill in bundled package: ${packageName}.`);
+    }
+    skillName = release.skill;
+  }
   const id = `${extension.id}@${pkg.version}`;
   return {
     id,
     packageName,
+    skillName,
     directory,
     release,
     runtimeName,

@@ -15470,7 +15470,6 @@ export class OpenClawController {
     plugins: PluginDesiredState | undefined,
   ) {
     const imported: Record<string, InspectedPluginPackage> = {};
-    const names = new Set<string>();
     for (const [id, selection] of Object.entries(plugins ?? {})) {
       const digest = importedPluginDigest(id);
       if (!digest) {
@@ -15488,14 +15487,6 @@ export class OpenClawController {
         );
       }
       if (selection.enabled) {
-        for (const skill of release.skills) {
-          if (names.has(skill.name)) {
-            throw new ConfigurationHarnessError(
-              "Selected plugin releases declare the same skill name.",
-            );
-          }
-          names.add(skill.name);
-        }
         imported[id] = release;
       }
     }

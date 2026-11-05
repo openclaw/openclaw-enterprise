@@ -166,11 +166,11 @@ function list(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [value];
 }
 
-function skillDirs(files: Files, root: string, roots: string[]): string[] {
+function skillDirs(files: Files, root: string, roots: string[], portable: boolean): string[] {
   const result = new Set<string>();
   for (const source of roots) {
     const prefix = source ? root + source + "/" : root;
-    if (files.has(prefix + "SKILL.md")) {
+    if (!portable && files.has(prefix + "SKILL.md")) {
       result.add(prefix);
       continue;
     }
@@ -415,7 +415,7 @@ function inspectContents(files: Files, marketplaceEntry?: string) {
     );
     skills.push(readSkill(skillFiles, root, false, name));
   }
-  for (const dir of skillDirs(files, root, roots)) {
+  for (const dir of skillDirs(files, root, roots, portable)) {
     const skill = readSkill(files, dir, portable);
     if (skills.some((item) => item.name === skill.name)) {
       invalid("Package includes two skills with the same effective name.");

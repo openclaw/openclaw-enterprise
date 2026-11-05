@@ -6170,8 +6170,8 @@ test("a Namespace publisher admits an immutable plugin release only for Agents i
     controller.request("POST", `${path}/plugin-releases`, {
       body: { archiveBase64, digest: review.digest, archiveSha256: review.archiveSha256 },
     });
-  const v1 = await importedPluginPackage(t, "marker-before-upgrade");
-  const v2 = await importedPluginPackage(t, "marker-after-upgrade");
+  const v1 = await importedPluginPackage(t, "marker-before-upgrade", { skillName: "oce-google" });
+  const v2 = await importedPluginPackage(t, "marker-after-upgrade", { skillName: "oce-google" });
   assert.equal((await preview(otherPath, v1)).status, 200);
   // Switch this fixture's caller from the Installation-wide grant to an exact Namespace role.
   const admin = controller.fixture.state.roles[0];
@@ -6199,7 +6199,7 @@ test("a Namespace publisher admits an immutable plugin release only for Agents i
   controller.fixture.state.bindings.push(binding.data);
   const reviewed = await preview(nsPath, v1);
   assert.equal(reviewed.status, 200, JSON.stringify(reviewed.body));
-  assert.deepEqual(reviewed.data.skills, ["import-probe"]);
+  assert.deepEqual(reviewed.data.skills, ["oce-google"]);
   assert.deepEqual(reviewed.data.mcpServers, []);
   assert.equal((await publish(otherPath, v1, reviewed.data)).status, 403);
   // A source that changes after inspection cannot publish under the reviewed digest.
@@ -6215,7 +6215,8 @@ test("a Namespace publisher admits an immutable plugin release only for Agents i
   const saved = await publish(nsPath, v1, reviewed.data);
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   const pluginId = `occ-import:${saved.data.digest}`;
-  const plugins = { [pluginId]: { enabled: true } };
+  const googleId = "occ-plugin:google@1.0.0";
+  const plugins = { [pluginId]: { enabled: true }, [googleId]: { enabled: false } };
   for (const [path, expected] of [
     [nsPath, true],
     [otherPath, false],
@@ -6242,6 +6243,16 @@ test("a Namespace publisher admits an immutable plugin release only for Agents i
   assert.equal((await create(other.id)).status, 400);
   const agent = await create(ns.id);
   assert.equal(agent.status, 201, JSON.stringify(agent.body));
+  // The selected import supplies oce-google. Enabling the bundled Google Workspace skill
+  // would make its source ambiguous, so the save must fail before changing deployment state.
+  const conflict = await controller.request("PATCH", nsPath + "/agents/" + agent.data.id, {
+    body: {
+      configurationId: agent.data.configurationId,
+      plugins: { ...plugins, [googleId]: { enabled: true } },
+    },
+  });
+  assertApiError(conflict, 400, "INVALID_REQUEST");
+  assert.match(conflict.body.error.message, /Two enabled plugins provide the skill "oce-google"/);
   await bindHarnessKey(controller.fixture, ns.id, agent.data);
   const deployed = await controller.request("POST", `${nsPath}/agents/${agent.data.id}/deploy`);
   assert.equal(deployed.status, 202, JSON.stringify(deployed.body));

@@ -423,11 +423,27 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
     releases?: Readonly<Record<string, InspectedPluginPackage>>,
   ): void {
     const { managed, native, imported } = splitOpenClawSelections(selections);
+    const skillNames = new Set(
+      managed.flatMap(({ id, skillName }) =>
+        selections[id]!.enabled && skillName ? [skillName] : [],
+      ),
+    );
     for (const id of imported) {
-      if (Object.keys(selections[id]!).some((key) => key !== "enabled" && key !== "driverPolicy")) {
+      const selection = selections[id]!;
+      if (Object.keys(selection).some((key) => key !== "enabled" && key !== "driverPolicy")) {
         throw new ConfigurationHarnessError(
           "Imported releases support enablement and reviewed tool selections.",
         );
+      }
+      if (selection.enabled) {
+        for (const { name } of releases?.[id]?.skills ?? []) {
+          if (skillNames.has(name)) {
+            throw new ConfigurationHarnessError(
+              `Two enabled plugins provide the skill "${name}". Select one of them.`,
+            );
+          }
+          skillNames.add(name);
+        }
       }
     }
     this.validate("openclaw", native, defaultApprovers);

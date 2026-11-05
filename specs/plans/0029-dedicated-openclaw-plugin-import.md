@@ -5,7 +5,7 @@ rfc: ../rfcs/0029-dedicated-openclaw-plugin-import.md
 # Deliver imported plugins to dedicated OpenClaw Agents
 
 - **ID** RFC-0029
-- **Delivery status** Planned
+- **Delivery status** In progress
 - **Source baseline** `516ee6d87`
 
 ## Implementation

@@ -98,7 +98,7 @@ export async function startImportedMcpEndpoint(context, kubectl, image) {
   const token = randomUUID();
   const directory = await mkdtemp(join(tmpdir(), "oce-import-mcp-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
-  await issueServingCertificate(directory, host);
+  const { caPem } = await issueServingCertificate(directory, host);
   await kubectl("create", "namespace", namespace);
   context.after(() =>
     kubectl("delete", "namespace", namespace, "--ignore-not-found=true", "--wait=false"),
@@ -154,7 +154,7 @@ export async function startImportedMcpEndpoint(context, kubectl, image) {
     marker,
     upstreamProxy: {
       url: `http://mcp.${namespace}.svc.cluster.local:8080`,
-      caFile: join(directory, "ca.crt"),
+      caPem,
     },
     receipts: async () =>
       JSON.parse(
