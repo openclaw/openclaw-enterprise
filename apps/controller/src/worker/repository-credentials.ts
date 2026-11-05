@@ -52,6 +52,13 @@ interface Dependencies {
   readonly state: PostgresPlatformState;
   readonly queueOptions: PostgresWorkQueueOptions;
   readonly driver: RepositoryPolicyDriver | undefined;
+  readonly repositoryAdmission?:
+    | {
+        readonly policy: RepositoryPolicyDriver & {
+          readonly resolveBindings: RepositoryPolicyDriver["resolve"];
+        };
+      }
+    | undefined;
   readonly nativeSender?: NativeRepositorySender | undefined;
   readonly verifyExecution?: (
     claim: ClaimedWork,
@@ -135,6 +142,14 @@ export class RepositoryCredentialLifecycle {
   private readonly dependencies: Dependencies;
 
   constructor(dependencies: Dependencies) {
+    const { driver, repositoryAdmission } = dependencies;
+    if (
+      repositoryAdmission !== undefined &&
+      (repositoryAdmission.policy !== driver ||
+        typeof repositoryAdmission.policy.resolveBindings !== "function")
+    ) {
+      throw new Error("The bound repository admission owner is not selected or unavailable.");
+    }
     this.dependencies = dependencies;
   }
 
@@ -177,13 +192,16 @@ export class RepositoryCredentialLifecycle {
     }
     let resolved;
     try {
-      resolved = driver.resolve({
+      const input = {
         namespaceId: revision.namespaceId,
         bindings: snapshot.bindings.map(({ repositoryRef, profile }) => ({
           repositoryRef,
           profile,
         })),
-      });
+      };
+      const admission = this.dependencies.repositoryAdmission;
+      resolved =
+        admission === undefined ? driver.resolve(input) : admission.policy.resolveBindings(input);
     } catch {
       throw new RepositoryCredentialAuthorityError("REPOSITORY_BINDING_UNAVAILABLE");
     }
