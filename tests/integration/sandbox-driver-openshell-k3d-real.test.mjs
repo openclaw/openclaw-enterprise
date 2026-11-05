@@ -1,3 +1,4 @@
+import { modelEndpointSupportsDnsProofs } from "../helpers/openshell-dns-proof-endpoint.ts";
 import { DEDICATED_OPENCLAW_SUPPORT } from "../helpers/sandbox-driver.ts";
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mts";
 import { RUNTIME_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
@@ -18,7 +19,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { createRequire } from "node:module";
-import { isIP, isIPv4 } from "node:net";
+import { isIPv4 } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -6147,10 +6148,6 @@ async function setModelProviderDns(topology, address) {
   modelDnsOverride = address;
 }
 
-function modelEndpointSupportsDnsProofs() {
-  return isIP(modelEndpoint.hostname) === 0;
-}
-
 /**
  * Serves the model host from an upstream signed by a CA nothing trusts. The model profile allows
  * the provider's exact host even at a cluster address, so OpenShell connects, and must refuse
@@ -6159,7 +6156,7 @@ function modelEndpointSupportsDnsProofs() {
  */
 async function assertModelRouteRefusesUntrustedUpstream(topology) {
   // Cluster DNS cannot redirect an endpoint selected by address; report the gap instead.
-  if (!modelEndpointSupportsDnsProofs()) {
+  if (!modelEndpointSupportsDnsProofs(modelEndpoint)) {
     process.stderr.write(
       "OpenShell integration: untrusted model upstream not tested; the model endpoint is an address.\n",
     );
@@ -6379,7 +6376,7 @@ async function replacementActivationDiagnostic(topology, revision, worker) {
  * the key, and the same running Harness must complete a turn once the provider is back.
  */
 async function assertModelProviderOutageFailsClosed(topology) {
-  if (!modelEndpointSupportsDnsProofs()) {
+  if (!modelEndpointSupportsDnsProofs(modelEndpoint)) {
     process.stderr.write(
       "OpenShell integration: model provider outage not tested; the model endpoint is an address.\n",
     );
@@ -8411,7 +8408,7 @@ test(
       await measurePhase(
         "untrusted-model-upstream",
         () => assertModelRouteRefusesUntrustedUpstream(topology),
-        modelEndpointSupportsDnsProofs(),
+        modelEndpointSupportsDnsProofs(modelEndpoint),
       );
       process.stderr.write(
         "OpenShell integration: untrusted model upstream refused; testing a tool upstream outage.\n",
@@ -8425,7 +8422,7 @@ test(
       await measurePhase(
         "model-provider-outage",
         () => assertModelProviderOutageFailsClosed(topology),
-        modelEndpointSupportsDnsProofs(),
+        modelEndpointSupportsDnsProofs(modelEndpoint),
       );
       process.stderr.write(
         "OpenShell integration: model provider outage verified; testing an OpenShell gateway outage.\n",
