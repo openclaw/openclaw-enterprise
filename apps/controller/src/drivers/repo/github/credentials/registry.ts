@@ -607,13 +607,30 @@ export function createGitHubRepositoryDeliveryResolver(
   };
 }
 
-/** Resolve every admitted member; neither registry inventory nor installation membership grants access. */
 export function resolveSelectedRepositoryGrant(
   registry: GitHubRepositoryRegistry,
   namespaceId: string,
   revisionId: string,
   bindings: readonly AdmittedRepositoryBinding[],
 ): GitHubRepositoryGrant {
+  const scope = resolveSelectedRepositoryScope(registry, namespaceId, bindings);
+  return Object.freeze({
+    id: bindings[0]!.grant.grantId,
+    isolationId: revisionId,
+    appId: registry.appId,
+    installationId: registry.githubInstallationId,
+    profile: "github-repository",
+    repositories: scope.repositories,
+    permissions: scope.permissions,
+  });
+}
+
+/** Resolve every admitted member; neither registry inventory nor installation membership grants access. */
+export function resolveSelectedRepositoryScope(
+  registry: GitHubRepositoryRegistry,
+  namespaceId: string,
+  bindings: readonly AdmittedRepositoryBinding[],
+): Pick<GitHubRepositoryGrant, "repositories" | "permissions"> {
   if (
     !bindings.length ||
     bindings.length > 16 ||
@@ -650,11 +667,6 @@ export function resolveSelectedRepositoryGrant(
     })
     .sort((a, b) => Number(a.repositoryId) - Number(b.repositoryId));
   return Object.freeze({
-    id: bindings[0]!.grant.grantId,
-    isolationId: revisionId,
-    appId: registry.appId,
-    installationId: registry.githubInstallationId,
-    profile: "github-repository",
     repositories: Object.freeze(repositories),
     permissions: permissions!,
   });

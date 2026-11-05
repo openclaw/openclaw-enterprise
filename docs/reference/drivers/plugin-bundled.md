@@ -9,13 +9,16 @@ owns the API and policy vocabulary. The
 
 ## Selection and catalogs
 
-Select at most one bundled implementation in trusted Installation YAML:
+List the Plugin Drivers in trusted Installation YAML. Include one entry for each Harness whose catalog you want to offer.
 
 ```yaml
 drivers:
   plugin:
-    id: occ-plugin
-    configuration: {}
+    - id: occ-plugin
+      configuration: {}
+    - id: codex-plugin
+      configuration:
+        catalogSource: openai-curated
 ```
 
 Dedicated Codex defaults to `catalogSource: hosted`, which discovers plugins
@@ -25,24 +28,16 @@ using a PAT or a Secret containing one. Hosted discovery needs API HTTPS to
 renders matching Helm egress; manual YAML needs equivalent policy. The driver
 does not configure Kubernetes networking.
 
-Select the hardcoded OpenAI catalog to
-browse without a discovery credential or provider catalog requests:
-
-```yaml
-drivers:
-  plugin:
-    id: codex-plugin
-    configuration:
-      catalogSource: openai-curated
-```
+The `openai-curated` setting above enables browsing without a credential or
+provider request.
 
 The curated catalog includes Linear, Slack, GitHub, Notion, Figma, Canva,
 Datadog, Sentry, Adobe, Coursera Learning, and Google Contacts. Their recorded
-identities and presentation metadata omit tool inventory and account-specific
-availability. Notion, Figma, Canva, and Adobe include supported
-hosted apps with skills. Sentry remains unavailable because its recorded release
-has no concrete hosted app. Select a plugin and set its default policy; per-tool controls are
-unavailable until the catalog supplies tool details.
+entries omit tool inventory and account-specific availability, so set a default
+policy per plugin; per-tool controls need tool details. Notion, Figma, Canva, and
+Adobe include supported hosted apps with skills. Sentry is unavailable: its
+recorded release has no concrete hosted app. Details accept an entry's `remoteId`
+or `id`.
 
 An optional controller-side native `listCatalog` reader for hosted mode uses a
 separate Codex profile:
@@ -50,11 +45,11 @@ separate Codex profile:
 ```yaml
 drivers:
   plugin:
-    id: codex-plugin
-    configuration:
-      codexExecutable: /opt/codex/bin/codex
-      codexHome: /var/lib/occ/codex-catalog
-      requestTimeoutMs: 10000
+    - id: codex-plugin
+      configuration:
+        codexExecutable: /opt/codex/bin/codex
+        codexHome: /var/lib/occ/codex-catalog
+        requestTimeoutMs: 10000
 ```
 
 Supply `codexExecutable` and `codexHome` together. Provision that home with Codex

@@ -1,5 +1,10 @@
 /// <reference lib="es2024.promise" />
 
+import {
+  enterManualModel,
+  submitCreateAgent,
+  createAgentThroughForm,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -29,14 +34,11 @@ import {
   repositoryCheckbox,
   statusTone,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import {
   agentPostRequests,
   configurationPostRequests,
   createRepositoryLaunchFixture,
-  enterManualModel,
-  submitCreateAgent,
-  createAgentThroughForm,
 } from "./console-agents-test-support.mjs";
 import {
   AGENT_SAVE_DENIED,
@@ -704,7 +706,7 @@ test("Repository recovery preserves and updates hosted plugin policy before retr
       template: {
         agent: {
           name: "Recovered repository and plugin Agent",
-          executionMode: "embedded",
+          executionMode: "dedicated",
           harnessAuth: { method: "api_key", source: secret.ref },
           repositoryAccess: {
             defaultProfile: "git-read",
@@ -712,7 +714,9 @@ test("Repository recovery preserves and updates hosted plugin policy before retr
           },
           plugins: initialPlugins,
         },
-        configuration: { values: nativeValues("repository-plugin-recovery") },
+        configuration: {
+          values: nativeValues("repository-plugin-recovery", { harnessId: "codex" }),
+        },
       },
     },
   });
@@ -891,6 +895,54 @@ test("Agent repository editor distinguishes stale, rejected, and uncertain saves
   await waitForEnabled(page.getByRole("tab", { name: "Channels", exact: true }));
   assert.equal(pathRequests(requests, "PATCH", path).length, 2);
 });
+
+for (const includeInstallationAccess of [false, true]) {
+  const catalog = includeInstallationAccess ? "installation scope only" : "empty catalog";
+  test(`Agent repository discovery offers missing-repository help for ${catalog}`, async (t) => {
+    const { fixture, namespace: approvedNamespace } = await createRepositoryLaunchFixture(
+      t,
+      () => [],
+      {
+        includeInstallationAccess: true,
+      },
+    );
+    const namespace = includeInstallationAccess
+      ? approvedNamespace
+      : await fixture.createNamespace("Namespace without repository approvals", { ready: true });
+    const { page } = await newPage(t, fixture);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    const discovery = page.waitForResponse(
+      (response) =>
+        response.request().method() === "GET" &&
+        response.url().endsWith(`/namespaces/${namespace.id}/agents/repository-options`),
+    );
+    await page.getByRole("button", { name: "Start without Preset" }).click();
+    const response = await discovery;
+    assert.equal(response.status(), 200);
+    const { data, meta }: RepositoryOptionListResponse = await response.json();
+    assert.notEqual(meta?.notConfigured, true);
+    assert.deepEqual(
+      data.map(({ allowedProfiles }) => allowedProfiles),
+      includeInstallationAccess ? [["github-installation"]] : [],
+    );
+
+    // An installation-wide grant is not an individual repository choice.
+    const section = page.getByRole("region", { name: "Repository access" });
+    await section
+      .getByRole("status")
+      .filter({
+        hasText:
+          "No approved repositories are available for this Namespace. Ask your Namespace operator about missing repositories. You can continue without repository access.",
+      })
+      .waitFor();
+    assert.equal(await section.getByRole("checkbox").count(), 0);
+    assert.equal(await section.getByText("test-installation").count(), 0);
+    assert.equal(
+      await section.getByRole("button", { name: "Retry repository choices" }).isVisible(),
+      false,
+    );
+  });
+}
 
 for (const count of [1, 5, 25, 140]) {
   test(`Agent repository discovery adapts to ${count} choices with bounded, keyboard-accessible results`, async (t) => {
@@ -1202,7 +1254,17 @@ test("Agent repository search prioritizes exact names before prefix matches", as
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   const search = page.getByLabel("Find a repository");
+  const results = page.locator("#repository-results");
+  const missing = results.getByRole("status").filter({
+    hasText:
+      "No repositories match this search. If a repository is missing, ask your Namespace operator.",
+  });
+  await search.fill("unknown/repository");
+  await missing.waitFor();
+  assert.equal(await results.getByRole("checkbox").count(), 0);
+  assert.equal(await results.getByText("unknown/repository").count(), 0);
   await search.fill("ApPlIcAtIoN");
+  assert.equal(await missing.count(), 0);
   // Enter adds the first match, so exact short names must outrank a different owner's prefix.
   assert.deepEqual(
     await page.locator("#repository-results .repository-identity strong").allTextContents(),

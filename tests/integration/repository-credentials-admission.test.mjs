@@ -32,7 +32,6 @@ import {
   CredentialSourceUnprotectedError,
   InstalledDriver,
   OpenClawController,
-  RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
   SandboxNetworkPolicyConflictError,
 } from "../../packages/occ/src/index.ts";
@@ -1309,7 +1308,7 @@ test("Agent save and deployment refuse a Codex network proxy that blocks the rep
   assert.equal(unbound.status, 202, JSON.stringify(unbound));
 });
 
-test("Embedded OpenClaw refuses a broker-blocking Codex proxy only with the Codex Plugin Driver", async (t) => {
+test("Embedded OpenClaw skips the Codex broker proxy and refuses Codex plugin selections", async (t) => {
   const f = await fixture(t);
   const configuration = await f.request("POST", `/namespaces/${f.namespace.id}/configurations`, {
     kind: "agent",
@@ -1326,15 +1325,13 @@ test("Embedded OpenClaw refuses a broker-blocking Codex proxy only with the Code
   // Without plugins no Plugin Driver runs Codex in the Gateway, so nothing reads the proxy.
   const plain = await create();
   assert.equal(plain.status, 201, JSON.stringify(plain));
-  // With the Codex Plugin Driver, the Gateway's Codex carries the broker traffic.
+  // Enabling the Codex catalog does not install a Codex bridge on an OpenClaw Harness.
   const driver = new CodexPluginDriver();
   f.controller.registerDriver(driver);
   f.controller.selectDriver("plugin", driver.id);
-  assertBrokerProxyRefused(
-    await create({ "codex-plugin:linear@openai-curated-remote": { enabled: true } }),
-    BROKER_PROXY_DISABLED,
-    "embedded Codex plugins",
-  );
+  const refused = await create({ "codex-plugin:linear@openai-curated-remote": { enabled: true } });
+  assert.equal(refused.status, 400, JSON.stringify(refused));
+  assert.match(refused.error.message, /Plugin Driver.*openclaw Harness/i);
 });
 
 test("Provisioning refuses a Codex network proxy that blocks the repository broker before queueing", async (t) => {
@@ -1980,10 +1977,13 @@ test("Deploy refuses a repository profile a Credential Proxy cannot deliver by n
     { repositoryRef: "project", profile: "git-write" },
     { repositoryRef: "second-project", profile: "git-read" },
   ];
-  for (const [name, bindings] of [
-    ["git-read", [{ repositoryRef: "project", profile: "git-read" }]],
-    ["git-full", [{ repositoryRef: "project", profile: "git-full" }]],
-    ["two bindings", several],
+  // A lone unsupported binding and a mixed selection need different fixes. The mixed one must
+  // point to github-repository, which delivers several repositories, not say they are refused.
+  const lone = /cannot deliver this repository's Git access level/u;
+  for (const [name, bindings, message] of [
+    ["git-read", [{ repositoryRef: "project", profile: "git-read" }], lone],
+    ["git-full", [{ repositoryRef: "project", profile: "git-full" }], lone],
+    ["two bindings", several, /To use more than one repository, .*`github-repository`/u],
   ]) {
     for (const advertised of [false, true]) {
       const label = `${name}${advertised ? " with the execution profile" : ""}`;
@@ -1992,7 +1992,7 @@ test("Deploy refuses a repository profile a Credential Proxy cannot deliver by n
       });
       assert.equal(response.status, 409, `${label}: ${JSON.stringify(response)}`);
       assert.equal(response.error.code, "REPOSITORY_GIT_PROFILE_UNSUPPORTED", label);
-      assert.equal(response.error.message, RepositoryGitProfileUnsupportedError.description);
+      assert.match(response.error.message, message, label);
       assert.deepEqual(revisions, [], label);
       assert.equal(gatewayReads, 0, `${label}: the refusal needs no gateway read`);
     }

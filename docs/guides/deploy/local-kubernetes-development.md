@@ -55,9 +55,10 @@ export OCC_DEVELOPMENT_SANDBOX_DRIVER=none
 ./scripts/dev-up
 ```
 
-This profile uses the pinned K3s image, installs PostgreSQL and OCE (not
-OpenShell) in `oce-system`, and writes a generated administrator password and
-service key to the private state directory.
+The launcher installs PostgreSQL and OCE, without OpenShell, on pinned K3s in
+`oce-system` and writes the administrator password and service key to private state.
+It prepares [routing prerequisites](workspace-routing.md#requirements)
+and matching Helm/Installation settings before bootstrap.
 
 Before bootstrapping, startup checks the Codex `0.164.0` sandbox with
 its exact imported runtime image. If the node's `RuntimeDefault` blocks it, the
@@ -261,11 +262,7 @@ Verify directory search and gateway Socket Mode using the
 
 ## Verify the local boundary
 
-Startup prints API and Kubernetes access paths. Sandbox Driver `none` and
-Compose-backed OpenShell also print the HTTPS Console URL and browser CA; follow
-[Local Setup](../quickstart.md#open-the-platform-console) and its
-[shared session boundary](../../reference/agent-native-admin.md#shared-session-boundary).
-Kubernetes-only OpenShell does not configure that browser endpoint.
+Startup prints the API, kubeconfig, HTTPS Console URL and public browser CA. See [Local Setup](../quickstart.md#open-the-platform-console), the [shared session boundary](../../reference/agent-native-admin.md#shared-session-boundary) and [OpenShell browser access](local-setup.md).
 
 Use the printed paths with other tools:
 
@@ -303,10 +300,11 @@ to register a key and bind it to an Agent, follow
 The profile also selects the curated Codex Plugin Driver for managed Codex
 plugin selections. See [Agent plugins](../../reference/agent-plugins.md).
 
-The OpenShell Gateway permits unauthenticated users, a development setting safe
-only inside this disposable, loopback-owned cluster. Tenant egress selects only
-OpenShell supervisor Pods for Gateway callbacks. Do not use this profile, or
-carry that setting, into a shared cluster or container network.
+The Kubernetes-only OpenShell Gateway requires TLS, mTLS and authentication.
+Static-inference enforcement is separate and off by default; it is not required
+for model access or protected Git. The Compose-backed profile still permits
+unauthenticated Gateway users inside its disposable, loopback-owned cluster.
+Do not carry that setting into a shared cluster or container network.
 
 Because this cluster is disposable and single-profile, the helper binds the chart's tenant worker, configuration, and Secret ClusterRoles
 to the OCE service accounts cluster-wide. This is not a production RBAC pattern:

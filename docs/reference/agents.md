@@ -6,7 +6,7 @@ access across Namespaces.
 
 Use a [Preset](presets.md) to copy launch settings into an Agent draft.
 
-[Deploy your first Agent](../guides/first-agent.md), choose
+[Set up an OpenShell Codex Agent](../guides/deploy/local-setup.md), choose
 [Compute](../guides/topics/agent-compute.md), manage
 [versions](../guides/topics/agent-revisions.md), or
 [troubleshoot deployment](../guides/topics/agent-troubleshoot.md).
@@ -357,7 +357,7 @@ The [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires Kubernetes 
 
 ## Related
 
-- [Deploy your first Agent](../guides/first-agent.md)
+- [Set up an OpenShell Codex Agent](../guides/deploy/local-setup.md)
 - [Agent Revisions](../guides/topics/agent-revisions.md)
 - [Workspace files](../guides/topics/workspace-files.md)
 - [Troubleshoot Agents](../guides/topics/agent-troubleshoot.md)

@@ -55,7 +55,6 @@ type developmentState struct {
 	// killed before its own detach ran.
 	ImageRegistryContainer string `json:"imageRegistryContainer,omitempty"`
 	ImageRegistryNetwork   string `json:"imageRegistryNetwork,omitempty"`
-	egressKeyID            string
 	directory              string
 }
 
@@ -214,7 +213,7 @@ func readState(directory string) (*developmentState, error) {
 		return nil, fmt.Errorf("unsupported development state")
 	}
 	if (state.ImageRegistryContainer != "" || state.ImageRegistryNetwork != "") &&
-		(state.DeploymentMode != "k3d" || !registryContainerName.MatchString(state.ImageRegistryContainer) || state.ImageRegistryNetwork != "k3d-"+state.Cluster) {
+		(!registryContainerName.MatchString(state.ImageRegistryContainer) || state.ImageRegistryNetwork != developmentImageRegistryNetwork(&state)) {
 		return nil, fmt.Errorf("unsupported development state")
 	}
 	if state.KeyOwned && state.KeyPath != filepath.Join(directory, "initial-admin-service-key.json") {

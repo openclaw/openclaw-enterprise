@@ -113,6 +113,11 @@ const APPLICATION_FAILURES: Readonly<Record<string, string>> = {
 const APPLICATION_UNCONFIRMED =
   "Application was not confirmed. The provider may have accepted part of the request; refresh and retry explicitly. No redeployment was started.";
 
+function readablePort(value: unknown): value is SandboxNetworkGrant["ports"][number] {
+  const { from, to } = responseFields(value);
+  return Number.isSafeInteger(from) && Number.isSafeInteger(to);
+}
+
 // Review the rules returned by validation, including any normalization. The controller owns admission.
 function readableRules(value: unknown): value is SandboxNetworkGrant[] {
   return (
@@ -125,10 +130,7 @@ function readableRules(value: unknown): value is SandboxNetworkGrant[] {
         typeof host === "string" &&
         Array.isArray(ports) &&
         ports.length > 0 &&
-        ports.every((port: unknown) => {
-          const { from, to } = responseFields(port);
-          return Number.isSafeInteger(from) && Number.isSafeInteger(to);
-        })
+        ports.every(readablePort)
       );
     })
   );
@@ -236,15 +238,7 @@ function ruleList(rules: readonly unknown[], actions?: (index: number) => Node) 
           id: typeof fields.id === "string" ? fields.id : "",
           binary: typeof fields.binary === "string" ? fields.binary : "Executable not set",
           host: typeof fields.host === "string" ? fields.host : "Destination not set",
-          ports: Array.isArray(fields.ports)
-            ? fields.ports.filter(
-                (port): port is { from: number; to: number } =>
-                  typeof port === "object" &&
-                  port !== null &&
-                  Number.isSafeInteger(port.from) &&
-                  Number.isSafeInteger(port.to),
-              )
-            : [],
+          ports: Array.isArray(fields.ports) ? fields.ports.filter(readablePort) : [],
         };
         return { rule, index };
       })
@@ -479,7 +473,6 @@ export function renderAgentSandboxPolicy(
   }
   const suggestions = element("section", { className: "agent-card" });
   const logStatus = element("p", { role: "status" }, "Loading policy denials…");
-  const logWindowStatus = element("p", { className: "hint" });
   const logWarnings = element("p", { className: "notice", role: "status", hidden: true });
   let withheldRecords = 0;
   let truncatedWindow = false;
@@ -625,7 +618,6 @@ export function renderAgentSandboxPolicy(
       logWarnings,
       newDenials,
       selection,
-      windowDetails,
     ]) {
       node.hidden = true;
     }
@@ -937,13 +929,14 @@ export function renderAgentSandboxPolicy(
       truncatedWindow = (restart ? false : truncatedWindow) || page.truncated;
       logWarnings.hidden = withheldRecords === 0 && !truncatedWindow;
       logWarnings.textContent = [
-        withheldRecords ? `${withheldRecords} records withheld since the last refresh.` : "",
+        withheldRecords
+          ? `${withheldRecords} ${withheldRecords === 1 ? "record" : "records"} withheld since the last refresh.`
+          : "",
         truncatedWindow ? "Some log output was truncated. This window is incomplete." : "",
       ]
         .filter(Boolean)
         .join(" ");
       logStatus.hidden = true;
-      logWindowStatus.textContent = `Loaded ${records.filter(({ type }) => type === "line").length} records. One action may produce several denial records. Log retention and gaps limit this window.${page.withheld ? ` ${page.withheld} records withheld in the latest read.` : ""}${page.truncated ? " The latest read was truncated." : ""}`;
       if (restart || firstRead) {
         renderLogs();
       }
@@ -1398,11 +1391,11 @@ export function renderAgentSandboxPolicy(
       let changes = 1;
       if (Array.isArray(additions)) {
         const addedOrChanged = additions.filter(
-          (rule) => !policy.additions.some((saved) => sameValue(saved, rule)),
+          (rule: unknown) => !policy.additions.some((saved) => sameValue(saved, rule)),
         ).length;
         const proposed = additions;
         const removed = policy.additions.filter(
-          (saved) => !proposed.some((rule) => rule?.id === saved.id),
+          (saved) => !proposed.some((rule: unknown) => responseFields(rule).id === saved.id),
         ).length;
         changes = Math.max(1, addedOrChanged + removed);
       }
@@ -1714,7 +1707,7 @@ export function renderAgentSandboxPolicy(
         ),
         button(
           "Add rule",
-          () => {
+          (event) => {
             if (!editable() || !Array.isArray(additions)) {
               return;
             }
@@ -1730,6 +1723,13 @@ export function renderAgentSandboxPolicy(
             reviewSummary = "";
             stagedReview = undefined;
             renderEditor();
+            if (event.detail === 0) {
+              policyPanel
+                .querySelector<HTMLInputElement>(
+                  '[data-configuration-path="/binary"] input:enabled',
+                )
+                ?.focus();
+            }
           },
           { tone: "primary", size: "sm", className: "sandbox-add-rule", disabled: !editable() },
         ),
@@ -2117,7 +2117,11 @@ export function renderAgentSandboxPolicy(
                   ? `Admitted for running revision ${view.defaultsRevisionId}. Generated transport access is managed separately.`
                   : "Defaults from the selected Sandbox Driver. Generated transport access is managed separately.",
               ),
-              element("pre", {}, visibleText(JSON.stringify(view.defaults, null, 2))),
+              element(
+                "pre",
+                { className: "driver-configuration-json" },
+                JSON.stringify(view.defaults, null, 2),
+              ),
             ),
             policy.application
               ? element(
@@ -2267,17 +2271,6 @@ export function renderAgentSandboxPolicy(
     }
   });
   policyCard.append(policySummary, suggestions);
-  const windowDetails = element(
-    "details",
-    { className: "sandbox-window-details" },
-    element("summary", {}, "About this window"),
-    logWindowStatus,
-    element(
-      "p",
-      { className: "hint" },
-      "Counts are retained records for this version, not unique requests or lifetime denials. One action can produce multiple records. Following keeps this view in place until you choose Show newest.",
-    ),
-  );
   section.append(
     policyCard,
     element("div", { className: "sandbox-denials-heading" }, element("h2", {}, "Denials"), count),
@@ -2289,7 +2282,6 @@ export function renderAgentSandboxPolicy(
     selection,
     logRows,
     logPager,
-    windowDetails,
     dialog,
     limitsDialog,
   );
@@ -2321,7 +2313,6 @@ export function renderAgentSandboxPolicy(
       logWarnings,
       newDenials,
       selection,
-      windowDetails,
     ]) {
       node.hidden = true;
     }

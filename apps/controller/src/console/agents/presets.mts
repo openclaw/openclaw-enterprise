@@ -772,7 +772,8 @@ export function createPresetFields(
       applyUnavailable = false;
       describeApply();
       // Create Agent refused the setting these variables filled: its refusal shows under each,
-      // and focus moves to the first to change (finding 3122).
+      // and focus moves to the first to change (finding 3122). Focus scrolls only the field into
+      // view, so at phone width the refusal under it can start below the fold: it scrolls in too.
       const returned = refused?.draft.id === selectedId ? refused : undefined;
       refused = undefined;
       const marked = fields.filter(
@@ -781,7 +782,11 @@ export function createPresetFields(
       for (const field of marked) {
         setFieldError(field.input, returned?.refusal);
       }
-      marked[0]?.input.focus();
+      const first = marked[0]?.input;
+      if (first) {
+        first.focus();
+        document.getElementById(`${first.id}-error`)?.scrollIntoView({ block: "nearest" });
+      }
       if (applyDefault && fields.length === 0) {
         applyButton.click();
       }

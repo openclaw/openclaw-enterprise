@@ -206,7 +206,7 @@ export async function verifyOpenShellLinearRead(context, artifacts) {
   let deployedAgent;
   let sessionKey;
   try {
-    assert.equal(f.configuration.drivers.plugin.id, "codex-plugin");
+    assert.ok(f.configuration.drivers.plugin.some(({ id }) => id === "codex-plugin"));
     const base = `/namespaces/${f.namespace.id}`;
     const preset = JSON.parse(
       await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
