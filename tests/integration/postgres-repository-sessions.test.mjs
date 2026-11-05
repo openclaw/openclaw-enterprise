@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import pg from "pg";
 import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
 import {
   seedSessionRevision,
@@ -13,7 +12,7 @@ import {
   repositoryCredentials,
   repositoryGrant,
 } from "../fixtures/repository-credentials/session-state.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { databaseUrl, requiresPostgres, testPool } from "../helpers/postgres-database.mjs";
 import { waitForLockHolder } from "../helpers/postgres-lock-waits.mjs";
 
 function insertAttempt(
@@ -48,8 +47,7 @@ test(
   "PostgreSQL repository sessions enforce durable admission boundaries",
   { ...requiresPostgres, timeout: 60_000 },
   async (t) => {
-    const pool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
-    t.after(() => pool.end());
+    const pool = testPool(t, { connectionString: databaseUrl, max: 4 });
     const store = new PostgresPlatformState(pool);
     await verifyRepositorySessions(t, store);
 

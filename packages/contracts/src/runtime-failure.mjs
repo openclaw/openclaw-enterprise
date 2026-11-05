@@ -28,6 +28,7 @@ export const RUNTIME_DIAGNOSTIC_CODES = Object.freeze([
 
 /** The startup steps a runtime entrypoint holds a failure under. */
 export const RUNTIME_FAILURE_CHECKS = Object.freeze([
+  "gateway-tool-policy",
   "login",
   "model-probe",
   "peer-bridge-record",
@@ -37,6 +38,15 @@ export const RUNTIME_FAILURE_CHECKS = Object.freeze([
   "egress-enrollment",
   // The worker's prepared Git route for an OpenShell Sandbox is blocked (finding 2136).
   "repository-git-route",
+  // A dedicated Harness's native workspace setup (`openclaw setup --baseline`) failed (finding 2686).
+  "workspace-baseline",
+  // A dedicated Gateway cannot verify that an earlier process holding its state lock stopped
+  // (finding 2864).
+  "gateway-state-lock",
+  // A Kubernetes Gateway exited before it served, and OpenClaw's validator reports its
+  // configuration invalid, such as a plugin entry that fails its schema (finding 3043); or a
+  // dedicated Gateway's tool policy step found invalid settings outside the policy (finding 3045).
+  "gateway-config",
 ]);
 
 /**

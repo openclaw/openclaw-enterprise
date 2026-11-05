@@ -66,7 +66,7 @@ async function packageCli(directory) {
   const version = await releaseVersion();
   if (process.env.SOURCE_SHA) {
     assert.match(process.env.SOURCE_SHA, sourcePattern);
-    assert.equal(command("go", ["env", "GOVERSION"]).trim(), "go1.27.1");
+    assert.equal(command("go", ["env", "GOVERSION"]).trim(), "go1.27.3");
   }
   await mkdir(directory, { recursive: true });
   const checksums = [];

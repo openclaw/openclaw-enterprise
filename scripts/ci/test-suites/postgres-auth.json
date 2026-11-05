@@ -42,6 +42,7 @@
         "PostgreSQL native admin WebSocket lease closes at the next renewal after active revision replacement",
         "PostgreSQL native admin WebSocket closes on API shutdown and disabled redeploy denies reuse",
         "PostgreSQL role changes and revocation close existing proxy leases across replicas",
+        "PostgreSQL runtime-role updates retain the assigning session until commit",
         "PostgreSQL persists only one exact human assignment and limits updates to the runtime role"
       ]
     },

@@ -29,3 +29,7 @@ export const AdministratorNeedsAssignment = {
 };
 export const NativeDisabled = { ...story("nativeDisabled"), name: "Disabled and hidden" };
 export const NativeRefreshing = { ...story("nativeRefreshing"), name: "Refreshing access" };
+export const NativeAvailableAfterDeploy = {
+  ...story("nativeAvailableAfterDeploy"),
+  name: "Available once a deployment completes",
+};

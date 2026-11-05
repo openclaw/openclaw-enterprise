@@ -1,11 +1,9 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:https";
 import { createConnection } from "node:net";
 import { once } from "node:events";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
@@ -26,9 +24,12 @@ import {
   ensureDevelopmentBootstrap,
   privateBootstrapDirectory,
 } from "../helpers/bootstrap-installation.mjs";
+import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { selfSigned } from "../helpers/certificates.mjs";
+import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.mjs";
 import { waitFor, waitUntil } from "../helpers/wait-for.mjs";
 
 import { nativeRolesGateway } from "../helpers/runtime-roles.mjs";
@@ -71,26 +72,11 @@ function nativeAdminHarnessConfiguration(nativeOrigin) {
 }
 
 function nativeComputeDriver(upstreamPort) {
-  return {
-    id: "native-admin-postgres-compute",
-    capability: "compute",
+  return createReadyComputeDriver("native-admin-postgres-compute", {
     implementation: "native-admin-postgres-test-upstream",
+    // The HTTPS upstream is no OC Gateway, so this Compute applies no managed mode.
+    supportsGatewayManagedMode: undefined,
     validateHarnessAuth() {},
-    async ensureNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceReady: true };
-    },
-    async deleteNamespace(namespace) {
-      return { namespaceId: namespace.id, namespaceDeleted: true };
-    },
-    async prepareRevision(revision) {
-      return {
-        namespaceId: revision.namespaceId,
-        agentId: revision.agentId,
-        revisionId: revision.id,
-        ready: true,
-      };
-    },
-    async retireRevision() {},
     listAgentRuntimeRoles(configuration) {
       return configuredRuntimeRoles(configuration);
     },
@@ -105,41 +91,21 @@ function nativeComputeDriver(upstreamPort) {
     getGatewayEndpoint(revision) {
       return `wss://localhost:${upstreamPort}/namespaces/${revision.namespaceId}/agents/${revision.agentId}/`;
     },
-  };
+  });
 }
 
 async function startNativeHttpsUpstream(t) {
   const directory = await temporaryDirectory(t, "openclaw-native-admin-pg-upstream-");
-  const keyPath = join(directory, "tls.key");
-  const certPath = join(directory, "tls.crt");
-  const generated = spawnSync(
-    "openssl",
-    [
-      "req",
-      "-x509",
-      "-newkey",
-      "rsa:2048",
-      "-nodes",
-      "-days",
-      "2",
-      "-keyout",
-      keyPath,
-      "-out",
-      certPath,
-      "-subj",
-      "/CN=localhost",
-      "-addext",
-      "subjectAltName=DNS:localhost,IP:127.0.0.1",
-    ],
-    { encoding: "utf8" },
-  );
-  assert.equal(generated.status, 0, generated.stderr || generated.error?.message);
+  const { key, cert } = await selfSigned(directory, {
+    keyPem: sharedRsaPrivateKeyPem("native-admin-pg-upstream"),
+    days: 2,
+  });
 
   const requests = [];
   const upgrades = [];
+  const peers = [];
   const upgradedSockets = new Set();
-  const cert = await readFile(certPath, "utf8");
-  const server = createServer({ key: await readFile(keyPath), cert }, async (request, response) => {
+  const server = createServer({ key, cert }, async (request, response) => {
     requests.push({
       method: request.method,
       url: request.url,
@@ -153,6 +119,7 @@ async function startNativeHttpsUpstream(t) {
     response.end("native postgres upstream\n");
   });
   server.on("upgrade", (request, socket) => {
+    peers.push(socket);
     upgradedSockets.add(socket);
     socket.once("close", () => upgradedSockets.delete(socket));
     upgrades.push({ url: request.url, headers: { ...request.headers } });
@@ -180,7 +147,7 @@ async function startNativeHttpsUpstream(t) {
   const address = server.address();
   assert.equal(typeof address, "object");
   assert.notEqual(address, null);
-  return { port: address.port, requests, upgrades, cert };
+  return { port: address.port, requests, upgrades, peers, cert };
 }
 
 async function ensureBootstrap(t) {
@@ -248,7 +215,7 @@ async function createApi(t, label, upstreamPort, options = {}) {
     configurationDriver,
     secretDriver,
     resolveHarness: resolveApprovedHarness,
-    auditSink: state.auditSink,
+    auditSink: options.auditSink?.(state.auditSink) ?? state.auditSink,
     auth,
     development: { enabled: false },
     publicOrigin,
@@ -336,6 +303,7 @@ async function createNativeAgent(api, session, upstream) {
       name: `Native admin Agent ${randomUUID()}`,
       configurationId: configuration.id,
       harnessAuth: { method: "api_key", source: secret.ref },
+      gatewayManagedMode: false,
     },
   });
   assert.equal(agentResponse.statusCode, 201, agentResponse.body);
@@ -347,7 +315,9 @@ async function createNativeAgent(api, session, upstream) {
     `/namespaces/${namespace.id}/configurations/${configuration.id}`,
     {
       session,
-      body: { values: nativeAdminHarnessConfiguration(nativeOrigin) },
+      body: {
+        values: nativeAdminHarnessConfiguration(nativeOrigin),
+      },
     },
   );
   assert.equal(compatibleConfiguration.statusCode, 200, compatibleConfiguration.body);
@@ -793,6 +763,55 @@ async function assertRevokedHttp(scenario) {
   return denied;
 }
 
+function within(promise, milliseconds, description) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(description)), milliseconds);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+// Keep the real PostgreSQL append; only its timing is controlled. Session and
+// NativeIAM decisions still come from the composed controller and database.
+function holdLeaseDenialAppend(onEntered) {
+  const entered = Promise.withResolvers();
+  const gate = Promise.withResolvers();
+  const pending = [];
+  let attempts = 0;
+  let released = false;
+  return {
+    entered: entered.promise,
+    attempts: () => attempts,
+    released: () => released,
+    wrap(sink) {
+      return {
+        append(event) {
+          if (
+            event.kind !== "authorization_denial" ||
+            event.action !== "openclaw.agents.native_admin.proxy.authorize" ||
+            event.details?.nativeAdmin?.revisionId === undefined
+          ) {
+            return sink.append(event);
+          }
+          attempts += 1;
+          onEntered();
+          entered.resolve(event);
+          const append = gate.promise.then(() => sink.append(event));
+          pending.push(append);
+          return append;
+        },
+      };
+    },
+    async release() {
+      released = true;
+      gate.resolve();
+      await within(Promise.all(pending), 5_000, "the retained denial append did not settle");
+    },
+  };
+}
+
 test(
   "PostgreSQL native admin shared session and HTTP proxy work across two OCC API replicas",
   { ...requiresPostgres, timeout: 30_000 },
@@ -905,8 +924,60 @@ test(
   "PostgreSQL native admin WebSocket lease closes at the next renewal after IAM use restriction",
   { ...requiresPostgres, timeout: 30_000 },
   async (t) => {
-    const scenario = await openNativeAdminSocketScenario(t, "iam-restriction");
-    const closedAfterMs = await assertSocketClosesAfterMutation(scenario.socket, async () => {
+    const startedAt = performance.now();
+    const phases = [];
+    const mark = (phase) =>
+      phases.push({ phase, elapsedMs: Math.round(performance.now() - startedAt) });
+    const audit = holdLeaseDenialAppend(() => mark("denial_append_pending"));
+    t.after(() => audit.release());
+    const scenario = await openNativeAdminSocketScenario(t, "iam-restriction", {
+      auditSink: audit.wrap,
+    });
+    const peer = scenario.upstream.peers[0];
+    assert.ok(peer, "the real HTTPS upstream must own the admitted relay");
+    // Closed-stream write callbacks below are the oracle for their expected errors.
+    scenario.socket.on("error", () => {});
+    peer.on("error", () => {});
+    let clientBytes = "";
+    let peerBytes = "";
+    scenario.socket.on("data", (chunk) => {
+      clientBytes += chunk.toString();
+    });
+    peer.on("data", (chunk) => {
+      peerBytes += chunk.toString();
+    });
+    const clientClosed = new Promise((resolve) => scenario.socket.once("close", resolve));
+    const peerClosed = new Promise((resolve) => peer.once("close", resolve));
+    const leaseDenialCount = async () => {
+      const result = await scenario.apiA.pool.query(
+        `SELECT count(*)::int AS count FROM occ.audit_events
+          WHERE namespace_id = $1 AND resource_id = $2
+            AND kind = 'authorization_denial'
+            AND action = 'openclaw.agents.native_admin.proxy.authorize'
+            AND details->'nativeAdmin'->>'revisionId' = $3`,
+        [scenario.namespace.id, scenario.agent.id, scenario.revision.id],
+      );
+      return result.rows[0].count;
+    };
+    try {
+      scenario.socket.write("allowed-client-message");
+      peer.write("allowed-upstream-message");
+      await waitFor(
+        "allowed application bytes across both relay directions",
+        () =>
+          clientBytes.includes("allowed-upstream-message") &&
+          peerBytes.includes("allowed-client-message"),
+        2_000,
+      );
+      mark("allowed_bidirectional_relay");
+      assert.equal(await leaseDenialCount(), 0);
+      const closure = within(
+        Promise.all([clientClosed, peerClosed]),
+        3_500,
+        "both relay ends must close before the five-second fallback and audit release",
+      );
+      // Attach a rejection observer while the actual database restriction commits.
+      void closure.catch(() => {});
       const restricted = await scenario.apiA.pool.query(
         `INSERT INTO occ.iam_restrictions
            (id, namespace_id, action, resource_kind, resource_id, effect)
@@ -914,30 +985,72 @@ test(
         [`restriction-native-admin-${randomUUID()}`, scenario.namespace.id, scenario.agent.id],
       );
       assert.equal(restricted.rowCount, 1);
-    });
-    t.diagnostic(`IAM use restriction closed native admin WebSocket in ${closedAfterMs}ms`);
-    await assertSocketAuditCloseReason(scenario, "authorization_denied");
-    // Lease renewals check the socket's revision, so their denials record it; the HTTP
-    // denial carries none. That keeps a second, overlapping renewal's denial from passing
-    // for the HTTP one.
-    const leaseDenial = await waitForAuthorizationDenialAudit(
-      scenario.apiA.pool,
-      scenario.namespace.id,
-      scenario.agent.id,
-      "openclaw.agents.native_admin.proxy.authorize",
-      scenario.principal.id,
-      { leaseRenewal: true },
-    );
-    assert.equal(leaseDenial.details.nativeAdmin.revisionId, scenario.revision.id);
-    await assertRevokedHttp(scenario);
-    await waitForAuthorizationDenialAudit(
-      scenario.apiA.pool,
-      scenario.namespace.id,
-      scenario.agent.id,
-      "openclaw.agents.native_admin.proxy.authorize",
-      scenario.principal.id,
-      { excludeId: leaseDenial.id, leaseRenewal: false },
-    );
+      mark("restriction_commit_acknowledged");
+      await within(audit.entered, 3_000, "the real denied renewal must reach its audit append");
+      await closure;
+      mark("both_transport_ends_closed");
+      assert.equal(audit.released(), false);
+      assert.equal(audit.attempts(), 1);
+      assert.equal(await leaseDenialCount(), 0, "denial persistence must still be pending");
+      await assertSocketAuditCloseReason(scenario, "authorization_denied");
+      assert.equal(scenario.socket.destroyed, true);
+      assert.equal(peer.destroyed, true);
+
+      const before = { clientBytes, peerBytes };
+      // Check actual writes after close, without a sleep or teardown closing the sockets.
+      for (const socket of [scenario.socket, peer]) {
+        const error = await within(
+          new Promise((resolve) => socket.write("after-revocation-message", resolve)),
+          1_000,
+          "a post-revocation write must complete with failure",
+        );
+        assert.ok(error, "a closed relay must refuse later application bytes");
+      }
+      assert.deepEqual({ clientBytes, peerBytes }, before);
+      mark("later_application_bytes_refused");
+      assert.equal(audit.released(), false);
+      mark("audit_gate_released");
+      await audit.release();
+
+      // The lease denial names its revision; the later HTTP denial does not.
+      const leaseDenial = await waitForAuthorizationDenialAudit(
+        scenario.apiA.pool,
+        scenario.namespace.id,
+        scenario.agent.id,
+        "openclaw.agents.native_admin.proxy.authorize",
+        scenario.principal.id,
+        { leaseRenewal: true },
+      );
+      assert.equal(leaseDenial.details.nativeAdmin.revisionId, scenario.revision.id);
+      assert.equal(await leaseDenialCount(), 1);
+      mark("attributable_lease_denial_persisted_once");
+      await assertRevokedHttp(scenario);
+      await waitForAuthorizationDenialAudit(
+        scenario.apiA.pool,
+        scenario.namespace.id,
+        scenario.agent.id,
+        "openclaw.agents.native_admin.proxy.authorize",
+        scenario.principal.id,
+        { excludeId: leaseDenial.id, leaseRenewal: false },
+      );
+      assert.equal(await leaseDenialCount(), 1);
+      assert.equal(audit.attempts(), 1);
+    } finally {
+      t.diagnostic(`Composed native-admin revocation phases: ${JSON.stringify(phases)}`);
+      try {
+        await audit.release();
+      } finally {
+        scenario.socket.destroy();
+        peer.destroy();
+        const closed = await Promise.allSettled([
+          scenario.apiA.app.close(),
+          scenario.apiB.app.close(),
+        ]);
+        for (const result of closed) {
+          assert.equal(result.status, "fulfilled", "both owned API replicas must close");
+        }
+      }
+    }
   },
 );
 

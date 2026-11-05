@@ -10,43 +10,32 @@ To introduce restricted roles on an existing Agent:
 
 1. Use the patched runtime image and [configure the Agent](#configure-each-agent) with named `gateway.roles.definitions` and a `gateway.roles.default` naming one of them. Deploy the new version and wait for it to become active. The Kubernetes Driver configures the trusted-proxy role headers.
 2. Open **Share Agent**, enter the person's Principal ID, and select their OpenClaw role.
-3. Sign in as that person and open **Open OpenClaw**. An `administer` grant alone no longer grants entry; each person needs exact Agent `use` permission and a runtime assignment.
+3. Sign in as that person and open **Open Agent UI**. An `administer` grant alone no longer grants entry; each person needs exact Agent `use` permission and a runtime assignment.
 
 ## Local development
 
-Local setup prepares private routing and the browser endpoint. To opt a selected
-Agent into native admin access:
+Local setup prepares private routing and the browser endpoint. When you
+[create an Agent in the console](../../reference/console/create-and-deploy.md),
+select **Enable Native admin UI** before **Create Agent**. The checkbox requires
+supported Dedicated provisioning and Installation native admin support. Wait
+for deployment, then use **Share Agent** to assign your Principal ID the
+`platform-administrator` role. Select **Open Agent UI** on the Agent detail page.
+Installation administration alone does not grant native entry.
 
-1. [Create and deploy an Agent](../../reference/console/create-and-deploy.md) in the
-   console, for example with the Standard Codex Preset. Wait for its active
-   version. Use **Share Agent** to assign your existing Principal ID `platform-administrator` on that Agent. Named `gateway.roles` are optional; configure and deploy them when you need restricted roles and individual native profiles.
-2. In the authenticated console session, follow [Configure each Agent](native-admin.md#configure-each-agent)
-   to obtain the exact `data.origin` and selected version ID from the status
-   route. Include the returned port; do not construct or reuse another Agent's
-   origin. An `unsupported` response can include the origin. If the Agent has no
-   selected version, resolve that first.
-3. Use **Create new version** → **Configuration** → **Edit Configuration** to
-   merge the documented native policy and origin into the existing JSON. Review
-   other Agents that share the Configuration: they use its new values on their
-   next deployment. Preserve existing origins, gateway settings, and Secret
-   references. Resolve explicit opt-outs or conflicting policy before changing
-   them; do not silently replace them. Recheck the selected version before saving;
-   if it changed, refresh and review the current Configuration again.
-4. Save the Configuration and select **Deploy new version**. After its deployment succeeds,
-   request status again and expect `available` with the same origin. Open
-   **Native admin UI** on the Agent detail page. For stale drafts or uncertain
-   saves, follow the [Configuration editor recovery](../console/configuration-plugins-and-files.md#configuration-tab).
+For an existing Agent, follow [Configure each Agent](#configure-each-agent).
+Named `gateway.roles` are optional; configure and deploy them when you need
+restricted roles and individual native profiles. Preserve existing origins,
+gateway settings and Secret references when editing the Configuration. Review
+other Agents that share it: they receive the new values on their next deployment.
 
-For the Compose control plane with Kubernetes Compute and OpenShell, the
-[first-Agent command](../first-agent.md) can perform these per-Agent steps with
-`--control-ui`. Other local profiles still require the console-managed workflow
-above. The helper refuses to reuse its Agent after outside Configuration edits.
+The [local OpenShell quickstart](local-setup.md) includes native admin setup,
+browser onboarding and reopening the same conversation.
 
 <a id="requirements"></a>
 
 ## Production requirements
 
-- Private workspace routing already works for the target Agents. Helm rejects `agentNativeAdmin.enabled: true` unless `gatewayRouting.enabled: true` is also set.
+- Private workspace routing already works for the target Agents. Private routing is enabled by default, but its controllers, GatewayClass, service-key Secret, and matching Installation settings must be ready. Helm rejects an explicit routing opt-out while native admin is enabled.
 - A public wildcard DNS name and HTTPS certificate route traffic to the OCC API Service, not to Envoy. Use a previously unused `agentNativeAdmin.domain` for the first pilot rollout; do not reuse a domain from prior native UI experiments because OCC does not evict already registered browser service workers.
 - The configured Agent domain is separate from the console host and does not include a wildcard, scheme, port, or path.
 - The configured `agentNativeAdmin.sharedCookieDomain` is the shared OCE session cookie parent domain. The console host and Agent domain must both be inside it on DNS-label boundaries, for example `console.oce.example.com`, `agents.oce.example.com`, and cookie domain `oce.example.com`. All matching subdomains that can receive the OCE session cookie must be trusted OCE ingress endpoints.
@@ -157,7 +146,14 @@ its matching identity fields and opt-in settings in the saved Configuration.
 
 ## Configure each Agent
 
-Enable the API feature and wildcard route, deploy the Agent, then assign your Principal ID through **Share Agent**. Kubernetes offers `platform-administrator` without named roles. For restricted roles and individual profiles, configure and deploy `gateway.roles` first. Without an assignment, status returns `403`, including for Installation administrators. Kubernetes adds trusted role headers and reserved policies; keep native role definitions in OCE. The Agent must trust its exact derived origin. Open this status URL in an authenticated console browser before the final redeploy:
+For a new Agent, use **Enable Native admin UI** on Create Agent. After deployment,
+assign your Principal ID through **Share Agent**. Kubernetes offers
+`platform-administrator` without named roles. For restricted roles and individual
+profiles, configure and deploy `gateway.roles` first. An assignment is required,
+including for Installation administrators. Kubernetes adds the trusted role
+headers and reserved policies; keep native role definitions in OCE. For existing
+Agents, enable the API feature and wildcard route, then obtain the exact origin
+from this status URL before the final compatible deployment:
 
 ```text
 https://occ.example.com/namespaces/<namespaceId>/agents/<agentId>/native-admin
@@ -171,7 +167,7 @@ await fetch("/namespaces/<namespaceId>/agents/<agentId>/native-admin", {
 }).then((response) => response.json());
 ```
 
-A `200` response with `data.status: "unsupported"` can still include `data.host`, `data.origin`, `data.activeRevisionId`, and `data.url`. Copy the exact returned `data.origin`, including any port. In the [console Configuration editor](../console/configuration-plugins-and-files.md#configuration-tab), merge the following JSON fields into the selected Agent's existing Configuration:
+A `200` response with `data.status: "unsupported"` can still include `data.host`, `data.origin`, `data.activeRevisionId`, and `data.url`. Copy the exact returned `data.origin`, including any port. Select **Open draft** → **Configuration** → **Edit Configuration** to open the [console Configuration editor](../console/configuration-plugins-and-files.md#configuration-tab), then merge the following JSON fields into the selected Agent's existing Configuration:
 
 ```json
 {
@@ -184,7 +180,7 @@ A `200` response with `data.status: "unsupported"` can still include `data.host`
         "allowUsers": [],
         "deviceAutoApprove": {
           "enabled": true,
-          "scopes": ["operator.read", "operator.write", "operator.admin"]
+          "scopes": ["operator.read", "operator.write"]
         }
       },
       "identityScopes": {
@@ -257,6 +253,9 @@ gatewayRouting:
             app.kubernetes.io/name: ingress-nginx
 ```
 
+Each peer is an `ipBlock` or namespace and Pod selectors; Helm refuses a peer
+the Kubernetes API would refuse.
+
 Route the preview wildcard through your ingress to the Envoy Service's sandbox
 port, preserving the requested hostname and TLS server name. Keep the private
 administrative listener restricted. `listenerPort` is also the Envoy Pod port;
@@ -295,7 +294,7 @@ the same file and verify its contents are retained.
 
 ## Tests
 
-Open the console, choose a running Agent with a selected version, and verify the **Gateway administration** section on its detail page reports available for an administrator. Select **Open admin console** and confirm the Agent host loads in a new tab without native-admin exchange, bootstrap, callback, or Agent-specific session-cookie requests.
+Open the console, choose a running Agent with a selected version, and assign the person an explicit OpenClaw role in Share Agent, then verify **Open Agent UI** is available to that person. Its description names the version selected for service. Select **Open Agent UI** and confirm the Agent host loads in a new tab without native-admin exchange, bootstrap, callback, or Agent-specific session-cookie requests.
 
 Full runtime proof still requires a real browser test that loads native assets through OCC, reconnects native WebSocket traffic, verifies the OCE session cookie never reaches the native gateway, and performs a reversible native admin edit against a disposable Agent.
 
@@ -328,13 +327,16 @@ the OCE login.
 If an open Gateway tab offers **Reconnect in browser**, select it. Your sign-in
 may have expired, or your access may have changed. If OCE asks you to sign in,
 it checks your access again and returns you to that Agent’s detail page. Select
-**Open admin console** to continue. With an older runtime, open the Agent root
+**Open Agent UI** to continue. With an older runtime, open the Agent root
 or its console page to start the same recovery.
 
 If expiry coincides with controller restarts, check persistent session storage
 and whether the configured auth secret changed. In-memory sessions disappear
 on restart; production uses PostgreSQL. Distinguish a console `401` from an
-actual permission denial (`403`), which signing in cannot repair.
+actual permission denial (`403`), which signing in cannot repair. That browser
+document navigation shows a generic 403 page whose only link is the signed-in
+person's Agents list. API clients and WebSocket upgrades still get the refusal
+without that page.
 
 ## Related
 

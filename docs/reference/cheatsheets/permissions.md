@@ -14,7 +14,7 @@ override grants, and one action never implies another. See
 | `read`       | Read a resource or include it in a list; Secret reads return metadata, not values.                                                                |
 | `update`     | Change a resource or its credential.                                                                                                              |
 | `delete`     | Request deletion of the exact resource.                                                                                                           |
-| `deploy`     | Create a new Agent revision.                                                                                                                      |
+| `deploy`     | Create an Agent revision or recover its exact first-deployment receipt.                                                                           |
 | `operate`    | Stop an Agent, provision its runtime credentials, write its workspace files, read its runtime status, or use a bound Secret or credential source. |
 | `administer` | Run Installation administration or read the exact Agent’s runtime log text. It does not imply `read`, `deploy`, or other actions.                 |
 | `use`        | Enter an Agent runtime as a human with an exact runtime-role assignment. Does not imply OCE management permissions.                               |
@@ -37,7 +37,7 @@ Rerunning bootstrap does not add missing permissions to existing Roles.
 | [`secret`](../api.md#secrets)                   | `create`, `read`, `update`, `delete`, `operate`                                                              | Namespace collection for create; list needs Namespace `read` and returns only Secrets with exact `read`. Other actions target the exact Secret. `operate` is checked when a Secret is bound or used.                                                                                                                                                       |
 | [`credential_source`](../credential-sources.md) | `create`, `read`, `update`, `delete`, `operate`                                                              | Namespace collection for create; list needs Namespace `read` and returns only sources with exact `read`. Other actions target the exact source. `operate` is checked when a source is bound or deployed. `update` also gates rotation and needs `secret:operate` on each Secret it reads; Roles bootstrapped before `update` existed must have it granted. |
 | [`agent`](../api.md#agents)                     | `create`, `read`, `update`, `delete`, `deploy`, `operate`, `administer`, `read_logs`, `manage_policy`, `use` | Namespace for create; exact Agent otherwise. OpenClaw entry requires a human session and an exact runtime-role assignment. Bootstrap does not grant `read_logs` or `use`.                                                                                                                                                                                  |
-| [`sandbox_policy`](../sandbox-policies.md)      | `read`, `update`                                                                                             | Exact Agent-owned policy. Reads and discovery require Agent read; preview/save/apply require Agent manage_policy and enabled editing.                                                                                                                                                                                                                      |
+| [`sandbox_policy`](../sandbox-policies.md)      | `read`, `update`                                                                                             | Exact Agent-owned policy. Reads and discovery require Agent read; preview/save/apply require Agent manage_policy and enabled editing; apply also requires `read`, as do Agent deploy and an Agent update with repository bindings when saved additions exist.                                                                                              |
 | [`agent_revision`](../api.md#agent-revisions)   | `read`                                                                                                       | Exact AgentRevision; deployment-status reads use this permission too.                                                                                                                                                                                                                                                                                      |
 
 Namespace, Preset, Agent, ServiceAccount, AgentRevision, Secret, and credential
@@ -53,13 +53,36 @@ authorized Installation-scoped service key. A Namespace-scoped key cannot access
 another Namespace or Installation endpoints. An Installation-scoped key still
 needs its principal’s own grants; it does not inherit the issuer’s. See
 [service key scope](../authentication/service-api-keys.md#request-admission-and-scope).
+An account created with the Installation administrator `roleId` holds only
+`installation:administer` and `installation:read`; see
+[Appoint an administrator](../../guides/topics/iam.md#appoint-an-administrator).
+
+## Denial messages
+
+A `403 FORBIDDEN` for a grant you lack names it and who grants it, for example
+`Not authorized: this needs Agent deploy on Agent agt_1. Ask an Installation
+administrator to grant it.` No Role can hold create, so a create denial names
+its Namespace and says only an Installation administrator can create it. The
+message names a resource ID only when your request sent it in the path or an ID
+field, or you can already read that resource, never a binding, Role or
+Restriction. A Secret or credential source that an Agent, Configuration or
+credential source binds is named only when you can also read the record that
+binds it. Log text needs `Agent read_logs (or Agent administer)`. A Restriction, a missing grant and
+a resource that does not exist get the same message. A denial about your own
+account, session or provisioning job says so: `The acting account is disabled.`,
+`The acting identity is unavailable.`, `The human administrator session is no
+longer current.`, `The assigning session is no longer current.`, `Only the
+initiating actor can retry provisioning.` or `Only the initiating actor can read
+provisioning status.` A denial that names no grant says `The exact platform
+operation was not authorized.`
 
 ## Additional checks
 
 - [Experimental personal Codex login](../../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login)
-  requires Namespace `agent:create`, or exact `agent:read` and `agent:update` for
-  an existing Agent. Start also requires `secret:create` and
-  `credential_source:create`. Polling and closure require the initiating actor
+  (device login) requires Namespace `agent:create`, or exact `agent:read` and
+  `agent:update` for an existing Agent. Start also requires `secret:create` and
+  `credential_source:create`, which no Namespace Role can grant, so only an
+  Installation administrator can start it. Polling and closure require the initiating actor
   and exact session `secret:operate`; source use requires exact
   `credential_source:operate`. The session holds only an opaque Gateway handle.
   Saved-Agent discovery also checks the Agent principal's source grant.
@@ -79,11 +102,17 @@ needs its principal’s own grants; it does not inherit the issuer’s. See
   for each source in `credentialSources`. At
   deployment the Agent’s own service principal also needs `secret:operate` on each
   bound Secret and `credential_source:operate` on each source.
+- Creating an Agent with [Gateway managed mode](../agent-native-admin.md#gateway-managed-mode)
+  off or changing the setting also requires `installation:administer`.
 - [Registering](../api.md#post-namespacesnamespaceidcredentialsources) or
   [updating a credential source](../api.md#patch-namespacesnamespaceidcredentialsourcescredentialsourceid)
   also requires `secret:operate` on each Secret it reads.
 - [Withdrawing a credential source](../api.md#post-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdraw)
   from an Agent requires `agent:operate`; the worker rechecks it before revoking.
+- [First-deployment receipt recovery](../agents/deployment.md#guarded-first-deployment)
+  requires current exact Agent `deploy` and reviewed Configuration `read`.
+  It does not grant Agent revision `read`; deployment-status access needs that
+  separate permission.
 - [Create](../api.md#post-namespacesnamespaceidconfigurations) or
   [update a Configuration](../api.md#patch-namespacesnamespaceidconfigurationsconfigurationid)
   with Secret bindings requires `secret:operate` on each bound Secret.

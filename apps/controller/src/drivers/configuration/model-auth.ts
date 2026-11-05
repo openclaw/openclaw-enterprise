@@ -3,12 +3,15 @@ import type {
   OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
 import {
+  configurationSettingMessage,
   environmentReference,
   invalidHeaderNameRequirement,
   isAdmittedHeaderName,
   isCredentialHeaderName,
+  keyedSettingPath,
   ModelCredentialValueError,
   refuseLiteralGatewayPassword,
+  secretInputShorthandName,
 } from "@openclaw-enterprise/occ";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { createUrlCredentialChecks } from "./url-credentials.ts";
@@ -81,6 +84,46 @@ const credentialHeaderMessage = (path: string): string =>
   `Configuration field ${path} holds a credential value inline, where a reference is required. Make the header value a \${NAME} reference, or Bearer \${NAME} for an Authorization header.`;
 const credentialKeyMessage = (path: string): string =>
   `Configuration field ${path} holds a credential value inline, where a reference is required. Make the value a \${NAME} reference or a SecretRef.`;
+// A channel's credential setting is named as Configuration save's channel rules name it
+// (`channels.slack.botToken`), so the Console shows the refusal under the Configuration JSON as
+// it shows theirs (finding 2517). The message never shows the value.
+const channelCredentialKeyMessage = (path: string): string =>
+  configurationSettingMessage(
+    settingPath(path),
+    "holds a credential value inline, where a reference is required. Make the value a ${NAME} reference or a SecretRef",
+  );
+// A key slot's value that holds a reference the runtime substitutes, but not as the whole value:
+// the `$NAME` form, a `${NAME:-fallback}`, or a `${NAME}` with other text, spaces or references
+// (findings 2493, 2503). The message names the form and never the text, which may hold the
+// credential, and names the setting as Configuration save's channel rules do
+// (`channels.slack.botToken`); any other value keeps the slot's inline-value message.
+function referenceFormMessage(value: unknown): ((path: string) => string) | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const references = [...value.matchAll(environmentReference)].filter(
+    ([, escaped]) => escaped === undefined,
+  );
+  const requirement =
+    secretInputShorthandName(value) !== undefined
+      ? "holds a $NAME value, where a credential reference is required. Write it as one ${NAME} reference, or a SecretRef"
+      : references.some(([, , fallback]) => fallback !== undefined)
+        ? "holds a ${NAME:-…} fallback, which would replace a missing credential. Make the value one ${NAME} reference without a fallback, or a SecretRef"
+        : references.length > 0
+          ? "holds a ${NAME} reference with other text, spaces or references. Make the value exactly one ${NAME} reference, or a SecretRef"
+          : undefined;
+  return requirement === undefined
+    ? undefined
+    : (path) => configurationSettingMessage(settingPath(path), requirement);
+}
+// The Configuration setting a JSON pointer names, such as `channels.slack.botToken`.
+function settingPath(path: string): string {
+  const [first = "", ...keys] = path
+    .slice(1)
+    .split("/")
+    .map((segment) => segment.replaceAll("~1", "/").replaceAll("~0", "~"));
+  return keys.reduce((parent, key) => keyedSettingPath(parent, key), first);
+}
 // A media query option that counts tokens rather than carrying one.
 const TOKEN_COUNT_OPTION =
   /(?:^|[-_.])(?:max|min|num|total|context|input|output|completion)[-_.]?tokens?$/i;
@@ -110,6 +153,65 @@ const SENSITIVE_MANIFEST_SETTINGS: Readonly<Record<string, readonly string[]>> =
     "accounts.*.incomingUrl",
     "accounts.*.webhookUrl",
   ],
+};
+// The plugin settings the pinned OpenClaw resolves as secret inputs, as dotted paths under
+// `plugins.entries.<id>.config` (`*` for any key or list index): each bundled manifest's
+// `configContracts.secretInputs` paths, and the `webSearch.apiKey` and `webFetch.apiKey` of a
+// web search or fetch provider that marks it sensitive (`src/secrets/target-registry-data.ts`).
+// OpenClaw reads a whole `$NAME` value there (trimmed) as an environment SecretRef, as it reads
+// `${NAME}` (`parseEnvTemplateSecretRef` in `src/config/types.secrets.ts`); elsewhere it keeps
+// the text as written (finding 3044). acpx's `mcpServers.*.env.*` is an environment map, which
+// keeps its own rules. Update this list when that pin changes.
+const PLUGIN_SECRET_INPUTS: Readonly<Record<string, readonly string[]>> = {
+  beam: ["mirror.token"],
+  brave: ["webSearch.apiKey"],
+  codex: ["appServer.authToken", "appServer.headers.*"],
+  comfy: ["headers.*"],
+  deepseek: ["webSearch.apiKey"],
+  exa: ["webSearch.apiKey"],
+  facetime: ["realtime.providers.*.apiKey"],
+  firecrawl: ["webSearch.apiKey", "webFetch.apiKey"],
+  google: ["webSearch.apiKey", "webSearch.headers.*"],
+  "google-meet": ["realtime.providers.*.apiKey"],
+  imap: ["accounts.*.password"],
+  minimax: ["webSearch.apiKey"],
+  moonshot: ["webSearch.apiKey"],
+  parallel: ["webSearch.apiKey"],
+  perplexity: ["webSearch.apiKey"],
+  subq: ["apiKey"],
+  tavily: ["webSearch.apiKey"],
+  "team-reports": ["github.token", "discord.token"],
+  typesafe: ["apiKey"],
+  "voice-call": [
+    "twilio.authToken",
+    "realtime.providers.*.apiKey",
+    "streaming.providers.*.apiKey",
+    "tts.providers.*.apiKey",
+    "numbers.*.tts.providers.*.apiKey",
+  ],
+  xai: ["webSearch.apiKey"],
+};
+
+// Whether the setting at `relative` matches one of the dotted `fields` (`*` for any key).
+const matchesField = (fields: readonly string[], relative: SettingPath): boolean =>
+  fields.some((field) => {
+    const segments = field.split(".");
+    return (
+      segments.length === relative.length &&
+      segments.every((segment, index) => segment === "*" || segment === relative[index])
+    );
+  });
+// Whether OpenClaw resolves the setting at `path` as a plugin secret input (`PLUGIN_SECRET_INPUTS`).
+const isPluginSecretInput = (path: SettingPath): boolean => {
+  const [plugins, entries, plugin, config, ...relative] = path;
+  return (
+    plugins === "plugins" &&
+    entries === "entries" &&
+    config === "config" &&
+    typeof plugin === "string" &&
+    Object.hasOwn(PLUGIN_SECRET_INPUTS, plugin) &&
+    matchesField(PLUGIN_SECRET_INPUTS[plugin]!, relative)
+  );
 };
 
 const isSecretRef = (value: unknown): boolean => {
@@ -155,11 +257,16 @@ export function validateModelCredentialReferences(
     path: string,
     authorizationHeader = false,
     message?: (path: string) => string,
+    secretInput = false,
   ): void => {
     if (value === undefined || value === null) {
       return;
     }
     if (typeof value === "string" && /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(value)) {
+      return;
+    }
+    // A secret input OpenClaw resolves also takes its `$NAME` shorthand (finding 3044).
+    if (secretInput && typeof value === "string" && secretInputShorthandName(value) !== undefined) {
       return;
     }
     if (
@@ -172,7 +279,12 @@ export function validateModelCredentialReferences(
     if (isSecretRef(value)) {
       return;
     }
-    throw new ModelCredentialValueError(path, message);
+    throw new ModelCredentialValueError(
+      path,
+      message === credentialKeyMessage || message === channelCredentialKeyMessage
+        ? (referenceFormMessage(value) ?? message)
+        : message,
+    );
   };
   // Whether a header named `name` in the headers object at `headersPath` carries a credential, and
   // whether it may hold `Bearer ${NAME}`: some gateways carry the bearer token in an
@@ -208,6 +320,7 @@ export function validateModelCredentialReferences(
     headersPath: SettingPath,
     headers: unknown,
     message?: (path: string) => string,
+    secretInput?: (name: string) => boolean,
   ): void => {
     for (const [name, value] of Object.entries(asRecord(headers) ?? {})) {
       if (message && !isAdmittedHeaderName(name, options, headersPath)) {
@@ -222,7 +335,13 @@ export function validateModelCredentialReferences(
       }
       const credential = credentialHeader(headersPath, name);
       if (credential) {
-        validateReference(value, pointer(...headersPath, name), credential.authorization, message);
+        validateReference(
+          value,
+          pointer(...headersPath, name),
+          credential.authorization,
+          message,
+          secretInput?.(name),
+        );
       }
     }
   };
@@ -282,15 +401,10 @@ export function validateModelCredentialReferences(
   // by key, each child judged by its own name, except a service account, refused whole. OpenClaw
   // refuses other shapes there, so it never reads them. A `headers` map follows the credential
   // header rule, and an `env` map keeps the environment rules above. A number or boolean
-  // (`requireToken: true`) passes.
+  // (`requireToken: true`) passes. A plugin secret input also takes `$NAME`.
   const refuseSensitiveSettings = (root: SettingPath, settings: unknown, owner: string): void => {
-    const manifest = (SENSITIVE_MANIFEST_SETTINGS[owner] ?? []).map((field) => field.split("."));
-    const marked = (relative: SettingPath): boolean =>
-      manifest.some(
-        (field) =>
-          field.length === relative.length &&
-          field.every((segment, index) => segment === "*" || segment === relative[index]),
-      );
+    const manifest = SENSITIVE_MANIFEST_SETTINGS[owner] ?? [];
+    const keyMessage = root[0] === "channels" ? channelCredentialKeyMessage : credentialKeyMessage;
     const pending: [SettingPath, unknown, boolean][] = [[[], settings, false]];
     for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
       const [relative, value, sensitive] = next;
@@ -298,7 +412,7 @@ export function validateModelCredentialReferences(
       const key = relative.at(-1);
       if (typeof value === "string") {
         if (sensitive) {
-          validateReference(value, pointer(...path), false, credentialKeyMessage);
+          validateReference(value, pointer(...path), false, keyMessage, isPluginSecretInput(path));
         }
         continue;
       }
@@ -314,10 +428,12 @@ export function validateModelCredentialReferences(
         continue;
       }
       if (sensitive && typeof key === "string" && SERVICE_ACCOUNT_SETTING.test(key)) {
-        validateReference(record, pointer(...path), false, credentialKeyMessage);
+        validateReference(record, pointer(...path), false, keyMessage);
       }
       if (key === "headers") {
-        refuseCredentialHeaders(path, record, credentialHeaderMessage);
+        refuseCredentialHeaders(path, record, credentialHeaderMessage, (name) =>
+          isPluginSecretInput([...path, name]),
+        );
         continue;
       }
       if (key === "env") {
@@ -328,7 +444,8 @@ export function validateModelCredentialReferences(
         pending.push([
           at,
           child,
-          (SENSITIVE_SETTING.test(name) && !CREDENTIAL_LOCATION_SETTING.test(name)) || marked(at),
+          (SENSITIVE_SETTING.test(name) && !CREDENTIAL_LOCATION_SETTING.test(name)) ||
+            matchesField(manifest, at),
         ]);
       }
     }
@@ -477,11 +594,13 @@ export function validateModelCredentialReferences(
       for (const [provider, settings] of Object.entries(at(block, ["providers"]) ?? {})) {
         refuseUrlUserinfo([...path, "providers", provider, "proxy"], asRecord(settings)?.proxy);
         // The speech or Talk provider's key, which OpenClaw marks sensitive (finding 1307).
+        const apiKey = [...path, "providers", provider, "apiKey"];
         validateReference(
           asRecord(settings)?.apiKey,
-          pointer(...path, "providers", provider, "apiKey"),
+          pointer(...apiKey),
           false,
           credentialKeyMessage,
+          isPluginSecretInput(apiKey),
         );
       }
     }
@@ -546,11 +665,11 @@ export function validateModelCredentialReferences(
     // SSH key material (default and per Agent) and each storage location's encryption passphrase.
     // OpenClaw reads a `${NAME}` reference in every one, and a SecretRef where the slot takes one.
     // A hook mapping's `sessionKey`, also registered, is a routing key (often a template), not a
-    // credential, and stays as written. The Gateway password also takes `{source: "env", id}`
-    // with no provider, the form Kubernetes Compute requires (`usesGatewayPasswordEnvironment`);
-    // every other slot takes OpenClaw's SecretRef, whose provider is required. Saves refuse a
-    // literal password first (validateConfigurationSettings), but deployment does not run that:
-    // this call is what refuses a stored document that predates the rule, with the same message.
+    // credential, and stays as written. Each slot that takes a SecretRef takes OpenClaw's, whose
+    // provider is required; saves and deployment refuse a Gateway password reference OpenClaw
+    // cannot read (refuseUnreadableGatewayPassword). Saves refuse a literal password first
+    // (validateConfigurationSettings), but deployment does not run that: this call is what refuses
+    // a stored document that predates the rule, with the same message.
     refuseLiteralGatewayPassword(values);
     const sensitiveSlots: [SettingPath, unknown][] = [
       ...[

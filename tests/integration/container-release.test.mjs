@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -208,9 +207,8 @@ test("chart bootstrap package is valid OCI chart content but cannot be installed
 });
 
 test("chart push accepts a digest on stderr only after a successful exit", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "oce-chart-push-stream-"));
+  const directory = await temporaryDirectory(t, "oce-chart-push-stream-");
   const helm = join(directory, "helm");
-  t.after(() => rm(directory, { recursive: true, force: true }));
   setEnvironment(t, { OCC_HELM_BIN: helm });
   const reported = `sha256:${"f".repeat(64)}`;
   // Helm writes the successful push digest to stderr, so stdout-only parsing fails.
@@ -929,9 +927,9 @@ test("the runtime release smoke runs every Image Runtime Startup file", () => {
   const notInSmoke = {
     // Drives the image helpers against a stand-in docker binary; it needs no image.
     "tests/integration/runtime-image-failure-output.test.mjs": null,
-    // Image Model Probes files: the release smoke has never run them. The outcomes moved
-    // into Image Runtime Startup 2 and stay out of the smoke.
-    "tests/integration/runtime-image-model-probe.test.mjs": "images-model-probes",
+    // Model probe files: the release smoke has never run them. The contention case runs
+    // in Image Runtime Startup 3 and the outcomes in Image Runtime Startup 2.
+    "tests/integration/runtime-image-model-probe.test.mjs": "images-runtime-startup-3",
     "tests/integration/runtime-image-model-probe-outcomes.test.mjs": "images-runtime-startup-2",
   };
   for (const [path, lane] of Object.entries(notInSmoke)) {
@@ -945,6 +943,7 @@ test("the runtime release smoke runs every Image Runtime Startup file", () => {
   }
   // Image Runtime Startup files outside the runtime-image-* names.
   const otherSmokeFiles = [
+    "tests/integration/codex-plugin-stdio-real.test.ts",
     // Its OpenShell initializer case executes the pinned native workspace initializer.
     "tests/integration/sandbox-driver-startup.test.mjs",
     "tests/integration/workspace-files-native.test.mjs",

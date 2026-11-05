@@ -21,6 +21,15 @@
         "Drizzle second migration preserves the applied journal and PostgreSQL schema",
         "Runtime-role upgrade preserves existing human administrators without a revocation fallback"
       ]
+    },
+    {
+      "path": "tests/integration/postgres-migration-version.test.ts",
+      "expectedTests": [
+        "Migration refuses PostgreSQL 16 before first installation or upgrade without exposing credentials"
+      ]
     }
-  ]
+  ],
+  "env": {
+    "OCC_TEST_MIGRATION_SERVER": "1"
+  }
 }

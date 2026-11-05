@@ -325,16 +325,12 @@ for (const action of ["retire", "finalize"]) {
       const record = await lifecycle.acquire(1000, new AbortController().signal);
       lifecycle.assertUse(record, 89999);
       assert.throws(() => lifecycle.assertUse(record, 90000), /USE_CLOSED/);
-      // Frozen wall time cannot extend authentication, while retirement still
-      // owns the original bytes beyond the earlier use deadline.
+      // Frozen wall time cannot extend authentication beyond the earlier use deadline.
       await clock.advance(89500, 0);
       await assert.rejects(
-        custody.driver.withAccess(record.ref, "authenticate", async () => {}),
+        custody.withUseBytes(record, async () => {}),
         /CREDENTIAL_CLOSED/,
       );
-      await custody.driver.withAccess(record.ref, "retire", async (bytes) => {
-        assert.equal(Buffer.from(bytes).toString(), "access");
-      });
       lifecycle.release(record);
     }
     open = false;

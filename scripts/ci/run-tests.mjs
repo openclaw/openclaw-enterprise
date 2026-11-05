@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { constants, readdirSync, readFileSync } from "node:fs";
+import { constants, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { availableParallelism, cpus, constants as osConstants } from "node:os";
 import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -15,6 +15,7 @@ import {
   redactLogLine,
   redactOutputLines,
 } from "./failure-redaction.mjs";
+import { qualifySkipperRelease } from "./skipper-release.ts";
 import { loadTestSuites } from "./test-suites.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -26,8 +27,9 @@ function usage() {
   return [
     "Usage:",
     "  node scripts/ci/run-tests.mjs audit [--manifest <file>] [--root <dir>]",
-    "  node scripts/ci/run-tests.mjs run <lane> --state <file> --results <file> [--manifest <file>] [--root <dir>]",
-    "  node scripts/ci/run-tests.mjs aggregate <group> --results-dir <dir> [--needs <json-file>] [--lanes <json-array>] [--manifest <file>] [--root <dir>]",
+    "  node scripts/ci/run-tests.mjs check-selection <lane> --file <manifest-path> [--manifest <file>] [--root <dir>]",
+    "  node scripts/ci/run-tests.mjs run <lane> --state <file> --results <file> [--file <manifest-path>] [--manifest <file>] [--root <dir>]",
+    "  node scripts/ci/run-tests.mjs aggregate <group> --results-dir <dir> [--needs <json-file>] [--lanes <json-array>] [--release-selection <file>] [--manifest <file>] [--root <dir>]",
   ].join("\n");
 }
 
@@ -52,7 +54,7 @@ function parseArgs(argv) {
     index += 1;
   }
 
-  if (!["audit", "run", "aggregate"].includes(command)) {
+  if (!["audit", "check-selection", "run", "aggregate"].includes(command)) {
     throw new Error(usage());
   }
 
@@ -116,6 +118,7 @@ function normalizeFile(file, laneName, index, issues) {
   return {
     path: file.path,
     expectedTests: stringArray(file.expectedTests, `${path}.expectedTests`, issues),
+    requiredEnv: stringArray(file.requiredEnv, `${path}.requiredEnv`, issues),
   };
 }
 
@@ -285,6 +288,43 @@ function absoluteInputPath(root, path) {
 
 function repoRelativePath(root, path) {
   return relative(root, absoluteInputPath(root, path)).split(sep).join("/");
+}
+
+function suiteSource(root, data) {
+  if (typeof data.file !== "string" || data.file.length === 0) {
+    return undefined;
+  }
+  try {
+    // Normalizing '..' before resolving a symlink can identify a different file.
+    const rawPath = data.file.startsWith("file://") ? decodeURIComponent(data.file) : data.file;
+    if (rawPath.split(/[/\\]/).includes("..")) {
+      return undefined;
+    }
+    const path = absoluteInputPath(root, data.file);
+    const file = repoRelativePath(root, path);
+    const actual = relative(realpathSync(root), realpathSync(path));
+    if (
+      !file ||
+      file === ".." ||
+      file.startsWith("../") ||
+      isAbsolute(file) ||
+      actual === ".." ||
+      actual.startsWith(`..${sep}`) ||
+      isAbsolute(actual) ||
+      !statSync(path).isFile()
+    ) {
+      return undefined;
+    }
+    const source = { file };
+    for (const key of ["line", "column", "nesting"]) {
+      if (Number.isSafeInteger(data[key]) && data[key] >= (key === "nesting" ? 0 : 1)) {
+        source[key] = data[key];
+      }
+    }
+    return source;
+  } catch {
+    return undefined;
+  }
 }
 
 function resolveRepoPath(root, path, issues, context) {
@@ -652,7 +692,7 @@ function sanitizePreparationError(error) {
   if (
     code !== "CI_PREPARATION_COMMAND_FAILED" ||
     !["database-create", "database-schema", "database-migrate"].includes(stage) ||
-    !["spawn", "exit", "signal", "timeout"].includes(failure)
+    !["spawn", "exit", "signal", "timeout", "connect", "query"].includes(failure)
   ) {
     return result;
   }
@@ -1049,6 +1089,50 @@ function imageDigests(env) {
   );
 }
 
+function validateExpectedTests(path, expectedTests, tests, issues) {
+  if (expectedTests.length === 0) {
+    return;
+  }
+  const statusByName = new Map();
+  for (const testCase of tests) {
+    if (!isObject(testCase) || typeof testCase.name !== "string") {
+      issues.push(
+        issue("invalid-test-evidence", "test evidence contains an invalid case entry", {
+          file: path,
+        }),
+      );
+      return;
+    }
+    const previousStatus = statusByName.get(testCase.name);
+    // A pass cannot erase a non-passing occurrence of the same required name.
+    if (previousStatus === undefined || previousStatus === "passed") {
+      const status = ["passed", "failed", "skipped", "todo"].includes(testCase.status)
+        ? testCase.status
+        : "invalid";
+      statusByName.set(testCase.name, status);
+    }
+  }
+  for (const name of expectedTests) {
+    const status = statusByName.get(name);
+    if (status === undefined) {
+      issues.push(
+        issue("missing-expected-test", `expected test did not run: ${name}`, {
+          file: path,
+          name,
+        }),
+      );
+    } else if (status !== "passed") {
+      issues.push(
+        issue("expected-test-not-passed", `expected test did not pass: ${name}`, {
+          file: path,
+          name,
+          status,
+        }),
+      );
+    }
+  }
+}
+
 async function runFile(root, lane, file, statePath, prepareFile, setup = (step) => step()) {
   const issues = [];
   const relativePath = repoRelativePath(root, file.path);
@@ -1135,12 +1219,9 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
     issues.push(laneDeadlineIssue(relativePath));
   }
 
-  const env = mergeEnv(
-    baseChildEnv([...lane.requiredEnv, ...lane.optionalEnv]),
-    lane.env,
-    prepared.env,
-  );
-  for (const name of lane.requiredEnv) {
+  const requiredEnv = [...lane.requiredEnv, ...file.requiredEnv];
+  const env = mergeEnv(baseChildEnv([...requiredEnv, ...lane.optionalEnv]), lane.env, prepared.env);
+  for (const name of requiredEnv) {
     if (env[name] === undefined || env[name] === "") {
       issues.push(
         issue("missing-env", `lane ${lane.name} requires env ${name}`, {
@@ -1231,7 +1312,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
             event.data.skip !== undefined &&
             event.data.name !== absolutePath,
         )
-        .map((event) => event.data.name);
+        .map((event) => ({ name: event.data.name, source: suiteSource(root, event.data) }));
     }
   } catch (error) {
     issues.push(
@@ -1304,26 +1385,7 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   }
 
   if (nodeResult) {
-    const testsByName = new Map(tests.map((testCase) => [testCase.name, testCase]));
-    for (const name of file.expectedTests) {
-      const expected = testsByName.get(name);
-      if (!expected) {
-        issues.push(
-          issue("missing-expected-test", `expected test did not run: ${name}`, {
-            file: relativePath,
-            name,
-          }),
-        );
-      } else if (expected.status !== "passed") {
-        issues.push(
-          issue("expected-test-not-passed", `expected test did not pass: ${name}`, {
-            file: relativePath,
-            name,
-            status: expected.status,
-          }),
-        );
-      }
-    }
+    validateExpectedTests(relativePath, file.expectedTests, tests, issues);
 
     for (const skipped of tests.filter((testCase) =>
       ["skipped", "todo"].includes(testCase.status),
@@ -1336,11 +1398,12 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
         }),
       );
     }
-    for (const name of skippedSuites) {
+    for (const suite of skippedSuites) {
       issues.push(
-        issue("unexpected-skip", `selected suite did not run its tests: ${name}`, {
+        issue("unexpected-skip", `selected suite did not run its tests: ${suite.name}`, {
           file: relativePath,
-          name,
+          name: suite.name,
+          ...(suite.source ? { source: suite.source } : {}),
           status: "skipped",
         }),
       );
@@ -1384,12 +1447,27 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   };
 }
 
-async function runLane(root, manifest, laneName, statePath, resultsPath) {
-  const source = sourceEvidence(root);
-  const lane = manifest.lanes.get(laneName);
-  const issues = [...manifest.issues, ...source.issues];
-  const files = [];
-  let preservedNodeExitCode = 0;
+function selectLane(manifest, laneName, selectedFile) {
+  let lane = manifest.lanes.get(laneName);
+  const issues = [...manifest.issues];
+
+  if (lane && selectedFile !== undefined) {
+    const selected = lane.files.find((file) => file.path === selectedFile);
+    if (!selected) {
+      issues.push(
+        issue("invalid-file-selection", "--file must exactly match a file in the selected lane", {
+          lane: laneName,
+        }),
+      );
+    } else {
+      // Keep the manifest's expected tests, environment and cleanup requirements.
+      lane = {
+        ...lane,
+        files: [selected],
+        parallelFiles: lane.parallelFiles.filter((path) => path === selected.path),
+      };
+    }
+  }
 
   if (!lane) {
     issues.push(
@@ -1398,6 +1476,15 @@ async function runLane(root, manifest, laneName, statePath, resultsPath) {
   } else if (lane.files.length === 0) {
     issues.push(issue("selected-zero", `lane ${laneName} selects no files`, { lane: laneName }));
   }
+  return { lane, issues };
+}
+
+async function runLane(root, manifest, laneName, statePath, resultsPath, selectedFile) {
+  const source = sourceEvidence(root);
+  const { lane, issues } = selectLane(manifest, laneName, selectedFile);
+  issues.push(...source.issues);
+  const files = [];
+  let preservedNodeExitCode = 0;
 
   const prepareFile = await loadPrepare(root);
   const startedAt = new Date().toISOString();
@@ -1480,6 +1567,7 @@ async function runLane(root, manifest, laneName, statePath, resultsPath) {
     command: "run",
     sourceSha: source.sha,
     lane: laneName,
+    scope: selectedFile === undefined ? "full" : "focused",
     status,
     exitCode: preservedNodeExitCode || (status === "passed" ? 0 : 1),
     fileConcurrency: concurrency,
@@ -1565,6 +1653,13 @@ function validateLaneEvidence(summary, laneName, lane, issues) {
     );
     return;
   }
+  if (summary.scope === "focused") {
+    issues.push(
+      issue("focused-lane-evidence", `focused results do not complete lane ${laneName}`, {
+        lane: laneName,
+      }),
+    );
+  }
   if (summary.status === "passed" && summary.exitCode !== 0) {
     issues.push(
       issue("lane-exit-mismatch", `lane ${laneName} reported success with a nonzero exit`, {
@@ -1607,6 +1702,8 @@ function validateLaneEvidence(summary, laneName, lane, issues) {
           file: expectedFile.path,
         }),
       );
+    } else {
+      validateExpectedTests(expectedFile.path, expectedFile.expectedTests, observed.tests, issues);
     }
     if (observed.cleanup != null && observed.cleanup.status !== "passed") {
       issues.push(
@@ -1641,7 +1738,16 @@ function selectedLaneNames(groupLanes, selection, issues) {
   return groupLanes.filter((lane) => lanes.includes(lane));
 }
 
-async function aggregateGroup(root, manifest, groupName, resultsDir, needsPath, selection) {
+async function aggregateGroup(
+  root,
+  manifest,
+  groupName,
+  resultsDir,
+  needsPath,
+  selection,
+  releaseSelection,
+) {
+  let releaseQualification;
   const source = sourceEvidence(root);
   const issues = [...manifest.issues, ...source.issues];
   let laneNames = laneNamesForTarget(manifest, groupName);
@@ -1658,6 +1764,14 @@ async function aggregateGroup(root, manifest, groupName, resultsDir, needsPath, 
     laneNames = selectedLaneNames(laneNames, selection, issues);
   }
 
+  if (releaseSelection && !laneNames?.includes("skipper-prepared-git-installed")) {
+    issues.push(
+      issue(
+        "release-selection-lane-missing",
+        "release selection requires installed Skipper evidence",
+      ),
+    );
+  }
   let needs = null;
   if (needsPath) {
     try {
@@ -1738,6 +1852,23 @@ async function aggregateGroup(root, manifest, groupName, resultsDir, needsPath, 
       }
       if (lane && summary.status === "passed") {
         validateLaneEvidence(summary, laneName, lane, issues);
+        if (releaseSelection && laneName === "skipper-prepared-git-installed") {
+          try {
+            releaseQualification = qualifySkipperRelease(
+              await readJson(releaseSelection),
+              summary,
+              currentSha,
+            );
+          } catch {
+            issues.push(
+              issue(
+                "skipper-release-mismatch",
+                "installed Skipper evidence does not qualify the selected release",
+                { lane: laneName },
+              ),
+            );
+          }
+        }
       }
     } catch (error) {
       issues.push(
@@ -1754,6 +1885,7 @@ async function aggregateGroup(root, manifest, groupName, resultsDir, needsPath, 
     command: "aggregate",
     sourceSha: currentSha,
     group: groupName,
+    ...(releaseQualification && issues.length === 0 ? { releaseQualification } : {}),
     status: issues.length === 0 ? "passed" : "failed",
     lanes,
     issues,
@@ -1770,6 +1902,15 @@ async function main() {
   const root = resolve(options.root ?? repositoryRoot);
   const manifestPath = resolve(root, options.manifest ?? defaultManifestPath);
   const manifest = normalizeManifest(loadTestSuites(manifestPath), manifestPath);
+
+  if (command === "check-selection") {
+    if (!positionals[0] || options.file === undefined) {
+      throw new Error(`check-selection requires <lane> and --file\n${usage()}`);
+    }
+    const { issues } = selectLane(manifest, positionals[0], options.file);
+    logIssues(issues);
+    return issues.length === 0 ? 0 : 1;
+  }
 
   if (command === "audit") {
     const summary = await auditManifest(root, manifest);
@@ -1788,6 +1929,7 @@ async function main() {
       laneName,
       resolve(root, options.state),
       resolve(root, options.results),
+      options.file,
     );
   }
 
@@ -1802,6 +1944,7 @@ async function main() {
     resolve(root, options["results-dir"]),
     options.needs ? resolve(root, options.needs) : null,
     options.lanes,
+    options["release-selection"] ? resolve(root, options["release-selection"]) : null,
   );
   process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
   return summary.status === "passed" ? 0 : 1;

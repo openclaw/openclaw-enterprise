@@ -38,6 +38,7 @@ import type {
   AgentDesiredRuntimeState,
   AgentStatus,
   AgentRevision,
+  FirstDeploymentReceipt,
   AuditEvent,
   CredentialSource,
   CredentialSourceSnapshot,
@@ -194,6 +195,11 @@ export interface AgentReadRepository {
   findAgent(namespaceId: string, agentId: string): Promise<Readonly<Agent> | undefined>;
   listAgents(namespaceId: string): Promise<readonly Readonly<Agent>[]>;
   /**
+   * Whether an Agent in the Namespace has exactly this name: the names the unique name
+   * constraint covers, Agents being deleted included. Reads no Agent settings.
+   */
+  hasAgentNamed(namespaceId: string, name: string): Promise<boolean>;
+  /**
    * The identity of every Agent in every live Namespace, in one read that decodes no saved
    * settings, for callers that resolve an opaque Agent address before authorizing it.
    */
@@ -201,7 +207,9 @@ export interface AgentReadRepository {
 }
 
 export interface AgentRepository extends AgentReadRepository {
-  createAgent(agent: Agent): Promise<Readonly<Agent>>;
+  createAgent(
+    agent: Omit<Agent, "gatewayManagedMode"> & { readonly gatewayManagedMode?: boolean },
+  ): Promise<Readonly<Agent>>;
   setSandboxPolicyEditing(
     namespaceId: string,
     agentId: string,
@@ -220,6 +228,7 @@ export interface AgentRepository extends AgentReadRepository {
     pluginApprovers?: PluginApprovers | null,
     repositoryAccess?: RepositoryAccess | null,
     credentialSources?: readonly AgentCredentialSourceBinding[],
+    gatewayManagedMode?: boolean,
   ): Promise<Readonly<Agent> | undefined>;
   compareAndSetActiveRevision(
     namespaceId: string,
@@ -255,6 +264,11 @@ export interface AgentRepository extends AgentReadRepository {
 }
 
 export interface AgentRevisionReadRepository {
+  findFirstDeploymentReceipt(
+    namespaceId: string,
+    agentId: string,
+    digest: string,
+  ): Promise<Readonly<FirstDeploymentReceipt> | undefined>;
   findRevisionForBrowsing(
     namespaceId: string,
     agentId: string,
@@ -296,7 +310,10 @@ export interface AgentRevisionRepository extends AgentRevisionReadRepository {
    * clock, the one that stamps controller work, so the worker can order a revision against a
    * stop or deletion without controller clock skew (finding 1195); use the returned value.
    */
-  createRevision(revision: AgentRevision): Promise<Readonly<AgentRevision>>;
+  createRevision(
+    revision: AgentRevision,
+    firstDeploymentDigest?: string,
+  ): Promise<Readonly<AgentRevision>>;
 }
 
 export interface ConfigurationOwnership {
@@ -749,6 +766,65 @@ export async function assertHarnessAuthAvailable(
   }
 }
 
+/** Validate new snapshots against rows held by the insertion transaction, never archive reads. */
+export async function assertRevisionAuthAvailable(
+  state: Pick<PlatformReadView, "secrets" | "serviceAccounts" | "credentialSources">,
+  revision: AgentRevision,
+  loadSources: (
+    ids: readonly string[],
+  ) => Promise<
+    readonly Pick<
+      CredentialSource,
+      "id" | "namespaceId" | "type" | "state" | "ownerCapability" | "driverId"
+    >[]
+  >,
+): Promise<void> {
+  const snapshots: CredentialSourceSnapshot[] = [...(revision.credentialSources ?? [])];
+  if (revision.harnessAuth?.method === "credential_source") {
+    snapshots.push(revision.harnessAuth);
+  } else {
+    await assertHarnessAuthAvailable(
+      state,
+      revision.namespaceId,
+      harnessAuthBindingFromSnapshot(revision.harnessAuth),
+    );
+  }
+  if (snapshots.length === 0) {
+    return;
+  }
+  const sources = new Map(
+    (await loadSources([...new Set(snapshots.map(({ sourceId }) => sourceId))])).map((source) => [
+      source.id,
+      source,
+    ]),
+  );
+  // Deduplicate locks, not assertions: the Harness and list can disagree on the same ID.
+  for (const snapshot of snapshots) {
+    const source = sources.get(snapshot.sourceId);
+    if (
+      source === undefined ||
+      source.namespaceId !== revision.namespaceId ||
+      source.state !== "ready"
+    ) {
+      throw new ScopeViolationError(
+        "The AgentRevision references an unavailable credential source.",
+      );
+    }
+    const ownerMatches =
+      (source.ownerCapability === "credential_gateway" &&
+        snapshot.credentialProxyId === undefined &&
+        snapshot.credentialGatewayId === source.driverId) ||
+      (source.ownerCapability === "credential_proxy" &&
+        snapshot.credentialGatewayId === undefined &&
+        snapshot.credentialProxyId === source.driverId);
+    if (source.type !== snapshot.sourceType || !ownerMatches) {
+      throw new ScopeViolationError(
+        "The AgentRevision credential source snapshot does not match its current owner or type.",
+      );
+    }
+  }
+}
+
 /** In-memory mirror of `agents_harness_credential_source_listed`. */
 export function assertHarnessCredentialSourceListed(
   harnessAuth: HarnessAuthBinding | null,
@@ -1046,6 +1122,7 @@ interface PlatformSnapshot {
   readonly sandboxPolicies: Map<string, Readonly<SandboxPolicy>>;
   readonly workspaceSetups: Map<string, Readonly<WorkspaceSetup>>;
   readonly revisions: Map<string, readonly Readonly<AgentRevision>[]>;
+  readonly firstDeploymentDigests: Map<string, string>;
   readonly roles: Map<string, Readonly<Role>>;
   readonly bindings: Map<string, Readonly<AccessBinding>>;
   readonly servicePrincipals: Map<string, Readonly<ServicePrincipal>>;
@@ -1094,67 +1171,112 @@ function operationIdempotencyKey(operation: Readonly<PlatformOperation>): string
   }`;
 }
 
+// Records that are plain data (objects, arrays, primitives) and frozen all the way down, so
+// every later snapshot can share them instead of copying them again. A record holding a Map,
+// Set, Date or other object that deepFreeze cannot freeze is copied on every snapshot, as before.
+const sharedRecords = new WeakSet<object>();
+
+// `seen` stops at a cycle (structuredClone keeps one), whose objects are checked once. With
+// `frozen`, every object must also be frozen already.
+function isPlainData(value: unknown, frozen = false, seen = new Set<object>()): boolean {
+  if (typeof value !== "object" || value === null || seen.has(value)) {
+    return true;
+  }
+  seen.add(value);
+  if (frozen && !Object.isFrozen(value)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return (
+    (Array.isArray(value) || prototype === Object.prototype || prototype === null) &&
+    Object.values(value).every((entry) => isPlainData(entry, frozen, seen))
+  );
+}
+
+// A snapshot's copy of one stored record. Before this, every read and every transaction
+// structuredCloned the whole store, audit log included, so a long test's reads grew with
+// everything it had written. A shared record is frozen, so sharing it keeps each snapshot
+// isolated: transactions replace records, they cannot change one in place.
+function storedCopy<T>(value: T): Readonly<T> {
+  if (typeof value !== "object" || value === null) {
+    return value;
+  }
+  if (sharedRecords.has(value)) {
+    return value;
+  }
+  // A write stores its own `immutableCopy` (see `repositories`). Share that record as it is:
+  // a read's snapshot is discarded, so a record copied only there was copied again by every
+  // read until the next transaction (finding 2781: 0.5 s per request for 4 large Presets).
+  if (isPlainData(value, true)) {
+    sharedRecords.add(value);
+    return value;
+  }
+  const copy = immutableCopy(value);
+  if (isPlainData(copy)) {
+    sharedRecords.add(copy);
+  }
+  return copy;
+}
+
 function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
   return {
     installation:
-      snapshot.installation === undefined ? undefined : immutableCopy(snapshot.installation),
+      snapshot.installation === undefined ? undefined : storedCopy(snapshot.installation),
     namespaces: new Map(
-      Array.from(snapshot.namespaces, ([key, namespace]) => [key, immutableCopy(namespace)]),
+      Array.from(snapshot.namespaces, ([key, namespace]) => [key, storedCopy(namespace)]),
     ),
     configurations: new Map(
       Array.from(snapshot.configurations, ([key, configuration]) => [
         key,
-        immutableCopy(configuration),
+        storedCopy(configuration),
       ]),
     ),
-    presets: new Map(Array.from(snapshot.presets, ([key, preset]) => [key, immutableCopy(preset)])),
-    secrets: new Map(Array.from(snapshot.secrets, ([key, secret]) => [key, immutableCopy(secret)])),
+    presets: new Map(Array.from(snapshot.presets, ([key, preset]) => [key, storedCopy(preset)])),
+    secrets: new Map(Array.from(snapshot.secrets, ([key, secret]) => [key, storedCopy(secret)])),
     egressRejected: new Set(snapshot.egressRejected),
     egressSendReceipts: new Map(snapshot.egressSendReceipts),
     egressInstallations: new Map(
-      Array.from(snapshot.egressInstallations, ([key, value]) => [key, immutableCopy(value)]),
+      Array.from(snapshot.egressInstallations, ([key, value]) => [key, storedCopy(value)]),
     ),
     credentialPolicyReductions: new Map(snapshot.credentialPolicyReductions),
     credentialWithdrawals: new Map(
       Array.from(snapshot.credentialWithdrawals, ([key, withdrawal]) => [
         key,
-        immutableCopy(withdrawal),
+        storedCopy(withdrawal),
       ]),
     ),
     credentialSources: new Map(
-      Array.from(snapshot.credentialSources, ([key, source]) => [key, immutableCopy(source)]),
+      Array.from(snapshot.credentialSources, ([key, source]) => [key, storedCopy(source)]),
     ),
     serviceAccounts: new Map(
-      Array.from(snapshot.serviceAccounts, ([key, account]) => [key, immutableCopy(account)]),
+      Array.from(snapshot.serviceAccounts, ([key, account]) => [key, storedCopy(account)]),
     ),
-    agents: new Map(Array.from(snapshot.agents, ([key, agent]) => [key, immutableCopy(agent)])),
+    agents: new Map(Array.from(snapshot.agents, ([key, agent]) => [key, storedCopy(agent)])),
     sandboxPolicies: new Map(
-      Array.from(snapshot.sandboxPolicies, ([key, policy]) => [key, immutableCopy(policy)]),
+      Array.from(snapshot.sandboxPolicies, ([key, policy]) => [key, storedCopy(policy)]),
     ),
     workspaceSetups: new Map(
-      Array.from(snapshot.workspaceSetups, ([key, setup]) => [key, immutableCopy(setup)]),
+      Array.from(snapshot.workspaceSetups, ([key, setup]) => [key, storedCopy(setup)]),
     ),
     // Revisions are copied on ingress/egress; appends replace frozen history arrays.
     // A separate Map isolates this snapshot's future appends without copying history.
     revisions: new Map(snapshot.revisions),
-    roles: new Map(Array.from(snapshot.roles, ([key, role]) => [key, immutableCopy(role)])),
+    firstDeploymentDigests: new Map(snapshot.firstDeploymentDigests),
+    roles: new Map(Array.from(snapshot.roles, ([key, role]) => [key, storedCopy(role)])),
     bindings: new Map(
-      Array.from(snapshot.bindings, ([key, binding]) => [key, immutableCopy(binding)]),
+      Array.from(snapshot.bindings, ([key, binding]) => [key, storedCopy(binding)]),
     ),
     servicePrincipals: new Map(snapshot.servicePrincipals),
     repositoryStandingExecutions: new Map(snapshot.repositoryStandingExecutions),
     repositoryStandingApprovals: new Map(snapshot.repositoryStandingApprovals),
     repositorySessions: new Map(
-      Array.from(snapshot.repositorySessions, ([key, attempt]) => [key, immutableCopy(attempt)]),
+      Array.from(snapshot.repositorySessions, ([key, attempt]) => [key, storedCopy(attempt)]),
     ),
     repositoryBrokerReceipts: new Map(
-      Array.from(snapshot.repositoryBrokerReceipts, ([key, receipt]) => [
-        key,
-        immutableCopy(receipt),
-      ]),
+      Array.from(snapshot.repositoryBrokerReceipts, ([key, receipt]) => [key, storedCopy(receipt)]),
     ),
-    audit: snapshot.audit.map((event) => immutableCopy(event)),
-    operations: snapshot.operations.map((operation) => immutableCopy(operation)),
+    audit: snapshot.audit.map((event) => storedCopy(event)),
+    operations: snapshot.operations.map((operation) => storedCopy(operation)),
   };
 }
 
@@ -1177,6 +1299,20 @@ export function namespaceRoleGrantsBeyondRead(role: Pick<Role, "permissions">): 
   return role.permissions.some(
     (permission) => permission.resourceKind === "namespace" && permission.action !== "read",
   );
+}
+
+/**
+ * An AccessBinding subject is a principal ID, which never holds "@". An email is the caller's own
+ * input, so naming the mistake reveals nothing about which principals exist; an unknown ID keeps
+ * the answer an ineligible one gets (finding D753).
+ */
+export function assertBindingSubjectNotEmail(subjectId: string): void {
+  if (subjectId.includes("@")) {
+    throw new IAMPolicyValidationError(
+      "/subjectId",
+      "The IAM AccessBinding subject is an email address, not a principal ID. Use the person's principalId (prn_…): creating their account returns it; see the IAM guide.",
+    );
+  }
 }
 
 const secretIdentifier =
@@ -2680,6 +2816,11 @@ function repositories(
               .map((agent) => immutableCopy(agent))
           : [],
       ),
+    hasAgentNamed: async (namespaceId, name) =>
+      snapshot.namespaces.get(namespaceId)?.deletedAt === undefined &&
+      Array.from(snapshot.agents.values()).some(
+        (agent) => agent.namespaceId === namespaceId && agent.name === name,
+      ),
     listAgentReferences: async () => {
       const live = new Set(
         Array.from(snapshot.namespaces.values())
@@ -2770,6 +2911,7 @@ function repositories(
       } = agent;
       const saved = immutableCopy({
         ...withoutPlugins,
+        gatewayManagedMode: agent.gatewayManagedMode ?? true,
         ...(plugins === undefined ? {} : { plugins }),
         ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
         ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
@@ -2851,6 +2993,7 @@ function repositories(
       nextPluginApprovers,
       nextRepositoryAccess,
       nextCredentialSources,
+      gatewayManagedMode,
     ) => {
       const current = await agents.findAgent(namespaceId, agentId);
       if (!current) {
@@ -2920,6 +3063,7 @@ function repositories(
         configurationId,
         backendId: nextBackendId,
         executionMode: executionMode ?? current.executionMode,
+        gatewayManagedMode: gatewayManagedMode ?? current.gatewayManagedMode,
         harnessAuth: association,
         ...(agentCredentialSources === undefined || agentCredentialSources.length === 0
           ? {}
@@ -2979,6 +3123,24 @@ function repositories(
   };
 
   const revisions: AgentRevisionRepository = {
+    findFirstDeploymentReceipt: async (namespaceId, agentId, digest) => {
+      if (snapshot.namespaces.get(namespaceId)?.deletedAt !== undefined) {
+        return undefined;
+      }
+      const first = snapshot.revisions
+        .get(agentKey(namespaceId, agentId))
+        ?.find((revision) => revision.revision === 1);
+      return first !== undefined && snapshot.firstDeploymentDigests.get(first.id) === digest
+        ? immutableCopy({
+            revisionId: first.id,
+            namespaceId,
+            agentId,
+            configurationId: first.configurationId,
+            configurationGeneration: first.configurationGeneration,
+            createdAt: first.createdAt,
+          })
+        : undefined;
+    },
     findRevisionForBrowsing: async (namespaceId, agentId, revisionId) =>
       revisions.findRevision(namespaceId, agentId, revisionId),
     listRevisionsForBrowsing: async (namespaceId, agentId) =>
@@ -3059,7 +3221,8 @@ function repositories(
         ...(older.length > limit ? { nextBefore: page.at(-1)!.revision } : {}),
       });
     },
-    createRevision: async (revision) => {
+    createRevision: async (input, firstDeploymentDigest) => {
+      const revision = immutableCopy(input);
       assertInitialized(snapshot);
       assertAdmittedAgentRevision(revision);
       const owner = await agents.findAgent(revision.namespaceId, revision.agentId);
@@ -3067,15 +3230,21 @@ function repositories(
         owner === undefined ||
         owner.servicePrincipalId !== revision.servicePrincipalId ||
         owner.backendId !== revision.backendId ||
+        revision.gatewayManagedMode !== owner.gatewayManagedMode ||
         !harnessAuthMatches(owner.harnessAuth, revision.harnessAuth) ||
         !credentialSourcesMatch(owner.credentialSources, revision.credentialSources)
       ) {
         throw new ScopeViolationError("The AgentRevision belongs to an unavailable Agent.");
       }
-      await assertHarnessAuthAvailable(
+      await assertRevisionAuthAvailable(
         { secrets, serviceAccounts, credentialSources },
-        revision.namespaceId,
-        harnessAuthBindingFromSnapshot(revision.harnessAuth),
+        revision,
+        async (ids) => {
+          const sources = await Promise.all(
+            ids.map((id) => findCredentialSource(revision.namespaceId, id)),
+          );
+          return sources.filter((source) => source !== undefined);
+        },
       );
       const secretBindings = normalizedSecretBindings(revision.secretBindings);
       const plugins = revision.plugins === undefined ? undefined : immutableCopy(revision.plugins);
@@ -3095,6 +3264,16 @@ function repositories(
         ...(secretBindings === undefined ? {} : { secretBindings }),
         ...(plugins === undefined ? {} : { plugins }),
       });
+      if (firstDeploymentDigest !== undefined) {
+        if (
+          previous.length !== 0 ||
+          revision.revision !== 1 ||
+          !/^[a-f0-9]{64}$/.test(firstDeploymentDigest)
+        ) {
+          throw new ResourceConflictError("Invalid first-deployment admission.");
+        }
+        snapshot.firstDeploymentDigests.set(saved.id, firstDeploymentDigest);
+      }
       snapshot.revisions.set(key, Object.freeze([...previous, saved]));
       return saved;
     },
@@ -3274,6 +3453,7 @@ function repositories(
           "Namespace IAM Roles support only Namespace read.",
         );
       }
+      assertBindingSubjectNotEmail(binding.subjectId);
       if (
         binding.subjectKind !== "identity" ||
         !policySubjectExists(namespace.id, binding.subjectId)
@@ -3699,6 +3879,9 @@ function finalizeAgentDeletion(
   // The setup cascades with its Agent. Credential withdrawals already end with their revision
   // here (liveWithdrawal), as the database cascade does.
   snapshot.workspaceSetups.delete(key);
+  for (const id of revisionIds) {
+    snapshot.firstDeploymentDigests.delete(id);
+  }
   snapshot.revisions.delete(key);
   snapshot.sandboxPolicies.delete(key);
   snapshot.agents.delete(key);
@@ -3752,6 +3935,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     sandboxPolicies: new Map(),
     workspaceSetups: new Map(),
     revisions: new Map(),
+    firstDeploymentDigests: new Map(),
     roles: new Map(),
     bindings: new Map(),
     servicePrincipals: new Map(),

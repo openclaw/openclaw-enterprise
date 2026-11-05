@@ -1,10 +1,16 @@
 diff --git a/src/config/zod-schema.gateway-auth.test.ts b/src/config/zod-schema.gateway-auth.test.ts
-index 63a9fb5..74f5c24 100644
+index 1575579..31ece8e 100644
 --- a/src/config/zod-schema.gateway-auth.test.ts
 +++ b/src/config/zod-schema.gateway-auth.test.ts
-@@ -343,3 +343,53 @@ it.each([
- it("rejects a relative worktreeRoot", () => {
-   expect(OpenClawSchema.safeParse({ worktreeRoot: "worktrees" }).success).toBe(false);
+@@ -1,4 +1,4 @@
+-import { expect, test } from "vitest";
++import { describe, expect, it, test } from "vitest";
+ import { validateConfigObject, validateConfigObjectRaw } from "./validation-core.js";
+ import { ModelsConfigSchema } from "./zod-schema.core.js";
+ import { OpenClawSchema } from "./zod-schema.js";
+@@ -255,3 +255,53 @@ test("validates the realtime input transcription model as an optional string", (
+     ["talk", "realtime", "providers", "openai", "inputTranscriptionModel"],
+   );
  });
 +
 +describe("verified proxy role identity scope config", () => {
@@ -57,7 +63,7 @@ index 63a9fb5..74f5c24 100644
 +  });
 +});
 diff --git a/src/config/zod-schema.gateway.ts b/src/config/zod-schema.gateway.ts
-index ccb8a1f..55cbb95 100644
+index 745b043..f8e8884 100644
 --- a/src/config/zod-schema.gateway.ts
 +++ b/src/config/zod-schema.gateway.ts
 @@ -27,6 +27,14 @@ import {
@@ -75,7 +81,7 @@ index ccb8a1f..55cbb95 100644
  const OperatorScopeSchema = z.enum([
    ADMIN_SCOPE,
    READ_SCOPE,
-@@ -335,6 +343,20 @@ export const GatewayConfigSchema = z
+@@ -356,6 +364,20 @@ export const GatewayConfigSchema = z
               * Common values: "x-forwarded-user", "x-remote-user", "x-pomerium-claim-email"
               */
              userHeader: z.string().min(1, "userHeader is required for trusted-proxy mode"),
@@ -96,7 +102,7 @@ index ccb8a1f..55cbb95 100644
              /**
               * Additional headers that MUST be present for the request to be trusted.
               * Use this to verify the request actually came through the proxy.
-@@ -623,6 +645,28 @@ export const GatewayConfigSchema = z
+@@ -644,6 +666,28 @@ export const GatewayConfigSchema = z
        .optional(),
    })
    .superRefine((gateway, ctx) => {
@@ -126,18 +132,18 @@ index ccb8a1f..55cbb95 100644
      if (!ingress) {
        return;
 diff --git a/src/gateway/http-auth-user-profile.ts b/src/gateway/http-auth-user-profile.ts
-index 2cfa322..f558bdc 100644
+index dbe4b76..5d7bef5 100644
 --- a/src/gateway/http-auth-user-profile.ts
 +++ b/src/gateway/http-auth-user-profile.ts
-@@ -30,6 +30,7 @@ import type { GatewayOperatorAccessAuthority } from "./operator-access-policy.ty
+@@ -34,6 +34,7 @@ import type { GatewayOperatorAccessAuthority } from "./operator-access-policy.ty
  import { resolveOperatorRolePolicyForAssignment } from "./operator-role-policy.js";
  import { resolveBrowserOriginPolicy } from "./origin-check.js";
- import type { GatewayClient } from "./server-methods/shared-types.js";
+ import type { GatewayClient, GatewayOperatorRoleActor } from "./server-methods/shared-types.js";
 +import { prepareVerifiedProxyRoleProfile, resolveVerifiedProxyRole } from "./trusted-proxy-role.js";
  import { formatForLog } from "./ws-log.js";
  
  const profileLog = createSubsystemLogger("gateway/user-profiles");
-@@ -152,6 +153,14 @@ export async function resolveAuthenticatedHttpUserProfile(params: {
+@@ -169,6 +170,14 @@ export async function resolveAuthenticatedHttpUserProfile(params: {
    assertCurrent();
    const options = { assertCurrent };
    const authenticatedUserId = normalizeOptionalString(params.authResult.user);
@@ -152,7 +158,7 @@ index 2cfa322..f558bdc 100644
    const rolesConfigured = Boolean(params.cfg.gateway?.roles);
    const accessPoliciesConfigured = hasGatewayOperatorAccessPolicies(params.cfg);
    if (!authenticatedUserId) {
-@@ -193,11 +202,21 @@ export async function resolveAuthenticatedHttpUserProfile(params: {
+@@ -211,11 +220,21 @@ export async function resolveAuthenticatedHttpUserProfile(params: {
            )
          : await ensureCanonicalUserProfileForEmail(authenticatedUserId, options);
      const profileId = "profileId" in profile ? profile.profileId : profile.id;
@@ -175,7 +181,7 @@ index 2cfa322..f558bdc 100644
      );
    } catch (error) {
      assertCurrent();
-@@ -215,13 +234,14 @@ async function prepareHttpProfile(
+@@ -233,13 +252,14 @@ async function prepareHttpProfile(
    updatedAt: number,
    assertCurrent: () => void,
    cfg?: OpenClawConfig,
@@ -192,15 +198,22 @@ index 2cfa322..f558bdc 100644
    if (!authority?.isCurrent()) {
      throw new Error("HTTP profile authority changed during acquisition");
 diff --git a/src/gateway/server.auth.identity-scopes.test.ts b/src/gateway/server.auth.identity-scopes.test.ts
-index c2c3a0c..7a19cb5 100644
+index 2aef949..8b55219 100644
 --- a/src/gateway/server.auth.identity-scopes.test.ts
 +++ b/src/gateway/server.auth.identity-scopes.test.ts
-@@ -1,3 +1,4 @@
+@@ -1,9 +1,10 @@
 +import { createHash } from "node:crypto";
  import path from "node:path";
  import {
    createPluginRegistryFixture,
-@@ -24,16 +25,18 @@ import { seedOriginDeviceToken } from "../infra/device-auth-store.test-support.j
+   registerVirtualTestPlugin,
+ } from "openclaw/plugin-sdk/plugin-test-contracts";
+-import { afterEach, expect, onTestFinished, test, vi } from "vitest";
++import { afterEach, describe, expect, onTestFinished, test, vi } from "vitest";
+ import type { WebSocket } from "ws";
+ import {
+   buildGatewayConnectAuth,
+@@ -23,17 +24,20 @@ import {
  import { loadOrCreateDeviceIdentity } from "../infra/device-identity.js";
  import { getPairedDevice, listDevicePairing } from "../infra/device-pairing.js";
  import { connectUserModelAccount } from "../state/user-model-accounts.js";
@@ -210,22 +223,31 @@ index c2c3a0c..7a19cb5 100644
    setDisplayName,
    setUserProfileRole,
  } from "../state/user-profile-writes.worker.js";
--import { ensureProfileForEmail } from "../state/user-profiles.js";
-+import { ensureProfileForEmail, getUserProfileRole } from "../state/user-profiles.js";
+ import { ensureProfileForEmail } from "../state/user-profiles.js";
++import { readResidentUserProfileIdentity } from "../state/user-profile-list.js";
+ import { gitHubPublicApi } from "./github-public-api.js";
  import { invalidateOperatorRolePolicy } from "./operator-role-policy.js";
  import type { OperatorScope } from "./operator-scopes.js";
  import type { GatewayServer } from "./server-public.js";
  import {
 +  BACKEND_GATEWAY_CLIENT,
    connectReq,
-   CONTROL_UI_CLIENT,
-   installGatewayTestHooks,
-@@ -958,3 +961,301 @@ describe("gateway identity scope grants", () => {
-     );
+   BROWSER_ORIGIN,
+   TRUSTED_BROWSER_HEADERS as TRUSTED_PROXY_HEADERS,
+@@ -769,3 +773,309 @@ test.each<[string, GatewayAuthConfig, ConnectOptions, string[]]>([
+     expectScopes(connected, scopes);
    });
  });
 +
 +describe("verified proxy profile roles", () => {
++  const connectProxyBrowser = (ws: WebSocket, options: ConnectOptions) =>
++    connectReq(ws, {
++      prePairDevice: true,
++      client: CONTROL_UI_CLIENT,
++      browserOrigin: BROWSER_ORIGIN,
++      ...options,
++    });
++
 +  const definitions = {
 +    administrator: { sessions: { others: "write" }, agents: "*", scopes: ["operator.admin"] },
 +    researcher: {
@@ -280,7 +302,7 @@ index c2c3a0c..7a19cb5 100644
 +          },
 +        },
 +      },
-+      { roles: { default: "denied", definitions } },
++      { default: "denied", definitions },
 +    );
 +
 +  test("assigns first-login profiles, enforces native scopes and agents, and retires an old role", async () => {
@@ -305,7 +327,7 @@ index c2c3a0c..7a19cb5 100644
 +        }
 +        const ws = await openWs(port, headers);
 +        sockets.push(ws);
-+        const connected = await (backend ? connectReq : connectIdentity)(ws, {
++        const connected = await (backend ? connectReq : connectProxyBrowser)(ws, {
 +          skipDefaultAuth: true,
 +          prePairDevice: false,
 +          scopes: backend ? [] : requestedScopes,
@@ -414,7 +436,7 @@ index c2c3a0c..7a19cb5 100644
 +
 +        const owner = await openWs(port, { origin: BROWSER_ORIGIN });
 +        sockets.push(owner);
-+        const ownerConnected = await connectIdentity(owner, {
++        const ownerConnected = await connectProxyBrowser(owner, {
 +          skipDefaultAuth: true,
 +          password: "proxy-owner-password",
 +          scopes: ["operator.admin"],
@@ -441,7 +463,7 @@ index c2c3a0c..7a19cb5 100644
 +      setUserProfileRole(profile.id, "administrator");
 +      let raced = false;
 +      const stop = onUserProfilesChanged(() => {
-+        if (!raced && getUserProfileRole(profile.id) === "researcher") {
++        if (!raced && readResidentUserProfileIdentity(profile.id)?.role === "researcher") {
 +          raced = true;
 +          // A native administrator's committed mutation wins before the connecting
 +          // researcher acquires authority. Admission must not adopt that wider role.
@@ -457,7 +479,7 @@ index c2c3a0c..7a19cb5 100644
 +        });
 +        try {
 +          const closed = waitForWsClose(ws, 5_000);
-+          const response = await connectIdentity(ws, {
++          const response = await connectProxyBrowser(ws, {
 +            skipDefaultAuth: true,
 +            scopes: ["operator.read", "operator.write"],
 +            deviceIdentityPath: deviceIdentityPath(`binding-${identity}`),
@@ -478,17 +500,17 @@ index c2c3a0c..7a19cb5 100644
 +      const unmanaged = ensureProfileForEmail("unmanaged@example.test");
 +      setUserProfileRole(unmanaged.id, "administrator");
 +      await connect("unmanaged@example.test");
-+      expect(getUserProfileRole(unmanaged.id)).toBe("administrator");
++      expect(readResidentUserProfileIdentity(unmanaged.id)?.role).toBe("administrator");
 +      const ambiguous = ensureProfileForEmail("team:prn_ambiguous");
 +      setUserProfileRole(ambiguous.id, "administrator");
 +      linkEmail("directory:prn_other", ambiguous.id);
 +      await connect("team:prn_ambiguous");
-+      expect(getUserProfileRole(ambiguous.id)).toBe("administrator");
++      expect(readResidentUserProfileIdentity(ambiguous.id)?.role).toBe("administrator");
 +      const service = ensureProfileForEmail("gateway-workspace");
 +      setUserProfileRole(service.id, "administrator");
 +      linkEmail("team:prn_service_alias", service.id);
 +      await connect("team:prn_service_alias");
-+      expect(getUserProfileRole(service.id)).toBe("administrator");
++      expect(readResidentUserProfileIdentity(service.id)?.role).toBe("administrator");
 +    });
 +  });
 +
@@ -509,7 +531,7 @@ index c2c3a0c..7a19cb5 100644
 +      const ws = await openWs(port, { ...TRUSTED_PROXY_HEADERS, ...headers });
 +      try {
 +        const closed = waitForWsClose(ws, 5_000);
-+        const response = await connectIdentity(ws, {
++        const response = await connectProxyBrowser(ws, {
 +          skipDefaultAuth: true,
 +          scopes: ["operator.read"],
 +          deviceIdentityPath: deviceIdentityPath("proxy-rejected"),
@@ -523,16 +545,17 @@ index c2c3a0c..7a19cb5 100644
 +  });
 +});
 diff --git a/src/gateway/server.plugin-http-role-scopes.test.ts b/src/gateway/server.plugin-http-role-scopes.test.ts
-index 2b3340a..0ecd87d 100644
+index b640c86..ef13eea 100644
 --- a/src/gateway/server.plugin-http-role-scopes.test.ts
 +++ b/src/gateway/server.plugin-http-role-scopes.test.ts
-@@ -1,17 +1,19 @@
- // Exercise named-role ceilings through real HTTP auth and plugin runtime dispatch.
+@@ -1,16 +1,20 @@
++// Exercise named-role ceilings through real HTTP auth and plugin runtime dispatch.
 +import { createHash } from "node:crypto";
  import { once } from "node:events";
- import type { IncomingMessage, ServerResponse } from "node:http";
+-import type { IncomingMessage } from "node:http";
++import type { IncomingMessage, ServerResponse } from "node:http";
  import { PassThrough } from "node:stream";
- import { describe, expect, it } from "vitest";
+ import { expect, it } from "vitest";
  import { WebSocketServer } from "ws";
 +import { GATEWAY_OWNER_PROFILE_ID } from "../../packages/gateway-protocol/src/schema/users.js";
  import { createDeferred } from "../../test/helpers/promise.js";
@@ -542,16 +565,16 @@ index 2b3340a..0ecd87d 100644
  import { createSubsystemLogger } from "../logging/subsystem.js";
  import { getPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
 -import { setUserProfileRole } from "../state/user-profile-writes.worker.js";
--import { ensureProfileForEmail } from "../state/user-profiles.js";
 +import { linkEmail, setUserProfileRole } from "../state/user-profile-writes.worker.js";
-+import { ensureProfileForEmail, getUserProfileRole } from "../state/user-profiles.js";
+ import { ensureProfileForEmail } from "../state/user-profiles.js";
++import { prepareUserProfileRoleAuthority } from "../state/user-channel-identity-operations.js";
  import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
  import { resolveGatewayAuth } from "./auth.js";
  import { authorizeOperatorScopesForMethod, CLI_DEFAULT_OPERATOR_SCOPES } from "./method-scopes.js";
-@@ -354,3 +356,161 @@ it("retires prepared plugin effects when role or proxy policy changes", async ()
-     invalidateOperatorRolePolicy(profile.id);
-   });
- });
+@@ -300,3 +304,161 @@ it("retires prepared plugin effects when role or proxy policy changes", async ()
+       }
+     },
+   ));
 +
 +it("applies verified proxy roles to HTTP before first login and role reduction", async () => {
 +  await withOpenClawTestState({ scenario: "minimal" }, async () => {
@@ -705,82 +728,16 @@ index 2b3340a..0ecd87d 100644
 +        });
 +        expect(ambiguous.res.statusCode).toBe(401);
 +        expect(calls).toBe(beforeAmbiguous);
-+        expect(getUserProfileRole(profileId!)).toBe("reviewer");
++        expect((await prepareUserProfileRoleAuthority(profileId!))?.role).toBe("reviewer");
 +      },
 +    });
 +  });
 +});
-diff --git a/src/gateway/server/ws-connection/connect-admission.ts b/src/gateway/server/ws-connection/connect-admission.ts
-index 5a5b574..6e0bf79 100644
---- a/src/gateway/server/ws-connection/connect-admission.ts
-+++ b/src/gateway/server/ws-connection/connect-admission.ts
-@@ -23,7 +23,7 @@ import {
-   GATEWAY_STARTUP_RETRY_AFTER_MS,
- } from "../../../../packages/gateway-protocol/src/startup-unavailable.js";
- import { getRuntimeConfig } from "../../../config/io.js";
--import { roleScopesAllow } from "../../../shared/operator-scope-compat.js";
-+import { intersectOperatorScopes, roleScopesAllow } from "../../../shared/operator-scope-compat.js";
- import {
-   isBrowserCopilotClient,
-   isBrowserOperatorUiClient,
-@@ -106,6 +106,7 @@ export async function rejectUnavailableProfileConnect(
- }
- 
- export function applyConnectionScopeCap(params: {
-+  role: string;
-   scopes: string[];
-   upgradeReq: IncomingMessage;
- }): string[] {
-@@ -122,7 +123,9 @@ export function applyConnectionScopeCap(params: {
-   );
-   return declaredScopes.size === 0
-     ? []
--    : params.scopes.filter((scope) => declaredScopes.has(scope));
-+    : params.role === "operator"
-+      ? intersectOperatorScopes(params.scopes, [...declaredScopes])
-+      : params.scopes.filter((scope) => declaredScopes.has(scope));
- }
- 
- export function resolveEffectiveConnectionScopes(params: {
-@@ -138,6 +141,7 @@ export function resolveEffectiveConnectionScopes(params: {
-     identityScopes = resolveIdentityOperatorScopes(verifiedIdentity, params.identityScopes);
-   }
-   const scopes = applyConnectionScopeCap({
-+    role: params.role,
-     scopes: [...new Set([...params.deviceScopes, ...identityScopes])],
-     upgradeReq: params.upgradeReq,
-   });
-diff --git a/src/gateway/server/ws-connection/connect-auth.ts b/src/gateway/server/ws-connection/connect-auth.ts
-index 373f3ba..6b1e2ac 100644
---- a/src/gateway/server/ws-connection/connect-auth.ts
-+++ b/src/gateway/server/ws-connection/connect-auth.ts
-@@ -471,7 +471,7 @@ async function authenticateGatewayConnectCore(
-     authMethod,
-   });
-   if (trustedProxyAuthOk) {
--    scopes = applyConnectionScopeCap({ scopes, upgradeReq });
-+    scopes = applyConnectionScopeCap({ role, scopes, upgradeReq });
-     connectParams.scopes = scopes;
-   }
-   const controlUiPairingKind = shouldSkipControlUiPairing({
-diff --git a/src/gateway/server/ws-connection/connect-device-pairing.ts b/src/gateway/server/ws-connection/connect-device-pairing.ts
-index 1e8a4be..09c303c 100644
---- a/src/gateway/server/ws-connection/connect-device-pairing.ts
-+++ b/src/gateway/server/ws-connection/connect-device-pairing.ts
-@@ -184,7 +184,7 @@ export async function authorizeGatewayConnectDevice(
-         scopes,
-         hasRequestedScopes,
-         connectionScopeCap: (capped: string[]) =>
--          applyConnectionScopeCap({ scopes: capped, upgradeReq: context.handler.upgradeReq }),
-+          applyConnectionScopeCap({ role, scopes: capped, upgradeReq: context.handler.upgradeReq }),
-       };
-       const plan = await resolvePairingApprovalPlan(pairingPlanParams);
-       // Same-key reconnects reuse paired grants without pairing or false upgrade audits.
 diff --git a/src/gateway/server/ws-connection/connect-user-profile.ts b/src/gateway/server/ws-connection/connect-user-profile.ts
-index 83b9573..56e43ad 100644
+index 6ae8335..3a3bd43 100644
 --- a/src/gateway/server/ws-connection/connect-user-profile.ts
 +++ b/src/gateway/server/ws-connection/connect-user-profile.ts
-@@ -16,6 +16,10 @@ import {
+@@ -14,6 +14,10 @@ import {
  } from "../../local-user-ingress.js";
  import { hasGatewayOperatorAccessPolicies } from "../../operator-access-policy.js";
  import { WEBSOCKET_OPEN_READY_STATE } from "../../server-constants.js";
@@ -791,25 +748,23 @@ index 83b9573..56e43ad 100644
  import { formatForLog } from "../../ws-log.js";
  import type { GatewayWsClient } from "../ws-types.js";
  import {
-@@ -91,13 +95,14 @@ async function resolveAuthenticatedProfile(
+@@ -156,11 +160,12 @@ async function resolveAuthenticatedProfile(
    profileId: string,
    updatedAt: number,
    assertCurrent?: () => void,
 +  preparedAuthority?: NonNullable<Awaited<ReturnType<typeof prepareUserProfileRoleAuthority>>>,
+   recordTiming?: GatewayConnectPhaseContext["recordAttachTiming"],
  ) {
    assertCurrent?.();
-   if (hasGatewayOperatorAccessPolicies(getRuntimeConfig())) {
-     (await prepareUserProfileCatalog()).release();
-     assertCurrent?.();
-   }
+   const authorityStartedAt = performance.now();
 -  const authority = await prepareUserProfileRoleAuthority(profileId);
 +  const authority = preparedAuthority ?? (await prepareUserProfileRoleAuthority(profileId));
+   recordTiming?.("profileAuthorityMs", authorityStartedAt);
    assertCurrent?.();
    if (!authority?.isCurrent()) {
-     throw new Error("Gateway profile changed during acquisition");
-@@ -119,7 +124,10 @@ async function resolveAuthenticatedProfile(
- export async function resolveGatewayConnectProfileAdmission(params: {
-   context: Pick<GatewayConnectPhaseContext, "configSnapshot"> &
+@@ -189,7 +194,10 @@ export async function resolveGatewayConnectProfileAdmission(params: {
+     "configSnapshot" | "recordAttachTiming" | "setConnectPhase"
+   > &
      Parameters<typeof rejectUnavailableProfileConnect>[0] & {
 -      handler: Pick<GatewayConnectPhaseContext["handler"], "connId" | "logWsControl">;
 +      handler: Pick<
@@ -819,7 +774,7 @@ index 83b9573..56e43ad 100644
      };
    state: Pick<DeviceAuthorizedGatewayConnect, "authResult" | "role" | "authMethod">;
    ownerProfileExpected: boolean;
-@@ -128,16 +136,31 @@ export async function resolveGatewayConnectProfileAdmission(params: {
+@@ -198,16 +206,31 @@ export async function resolveGatewayConnectProfileAdmission(params: {
    assertCurrent?: () => void;
  }): Promise<{ ok: true; prepared?: PreparedConnectProfile } | { ok: false }> {
    const { context, state, ownerProfileExpected, authenticatedUserId } = params;
@@ -850,11 +805,11 @@ index 83b9573..56e43ad 100644
 +      : undefined;
      params.assertCurrent?.();
      const options = { assertCurrent: params.assertCurrent };
-     const ownerDisplayName = ownerProfileExpected ? await resolveHostAccountName() : undefined;
-@@ -153,10 +176,23 @@ export async function resolveGatewayConnectProfileAdmission(params: {
-             )
-           : await ensureCanonicalUserProfileForEmail(authenticatedUserId!, options);
+     const ensureStartedAt = performance.now();
+@@ -225,10 +248,23 @@ export async function resolveGatewayConnectProfileAdmission(params: {
      params.assertCurrent?.();
+     params.context.recordAttachTiming?.("profileEnsureMs", ensureStartedAt);
+     context.setConnectPhase?.("profile-authority");
 +    const profileId = "profileId" in profile ? profile.profileId : profile.id;
 +    const verified =
 +      proxyRole !== undefined
@@ -874,10 +829,10 @@ index 83b9573..56e43ad 100644
 +      verified?.updatedAt ?? profile.updatedAt,
        params.assertCurrent,
 +      verified?.authority,
+       context.recordAttachTiming,
      );
      params.assertCurrent?.();
-     if (!prepared.authority.isCurrent()) {
-@@ -168,11 +204,12 @@ export async function resolveGatewayConnectProfileAdmission(params: {
+@@ -241,11 +277,12 @@ export async function resolveGatewayConnectProfileAdmission(params: {
        `user profile resolution failed conn=${context.handler.connId} user=${formatForLog(authenticatedUserId)}: ${formatForLog(error)}`,
      );
      if (

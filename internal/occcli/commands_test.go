@@ -3,16 +3,22 @@ package occcli
 import (
 	"bytes"
 	"encoding/json/v2"
+	"encoding/pem"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/openclaw/openclaw-enterprise/internal/occclient"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -79,16 +85,23 @@ func runOCC(t *testing.T, responses map[string]string, args ...string) (string, 
 func runOCCWithNotices(t *testing.T, responses map[string]string, args ...string) (string, string, []string, error) {
 	t.Helper()
 	fake := &fakeOCC{responses: responses}
-	server := httptest.NewServer(fake)
+	out, errOut, err := runOCCAgainst(t, fake, args...)
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	return out, errOut, append([]string(nil), fake.requested...), err
+}
+
+// runOCCAgainst runs occ against handler and returns stdout, stderr, and the error.
+func runOCCAgainst(t *testing.T, handler http.Handler, args ...string) (string, string, error) {
+	t.Helper()
+	server := httptest.NewServer(handler)
 	defer server.Close()
 	keyFile := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
 	var out, errOut bytes.Buffer
 	command := New(&out, &errOut)
 	command.SetArgs(append([]string{"--url", server.URL, "--service-key-file", keyFile}, args...))
 	err := command.Execute()
-	fake.mu.Lock()
-	defer fake.mu.Unlock()
-	return out.String(), errOut.String(), append([]string(nil), fake.requested...), err
+	return out.String(), errOut.String(), err
 }
 
 func TestNamespaceTableLabelsTheAdoptedNamespaceColumn(t *testing.T) {
@@ -135,7 +148,7 @@ func TestAgentGetShowsTheObservedHarnessSandbox(t *testing.T) {
 		// The logs hint names the observed revision, so a later deployment cannot redirect it.
 		{"restarting", observed(`{"state":"starting","code":"HARNESS_RESTARTING","exitCode":1,"restarts":2}`), "Harness Sandbox: starting (HARNESS_RESTARTING, last exit code 1, restart 2). The Harness process exited and OpenShell is restarting it; if this persists, read its Sandbox logs (occ --namespace " + testNamespaceID + " agent logs " + testAgentID + " --source sandbox --revision " + testRevision1ID + ")."},
 		// A revision ID OCC would not issue is not echoed into the logs hint.
-		{"odd revision", `{"status":"observed","revisionId":"rev_1 --source gateway","harness":{"state":"starting","code":"HARNESS_RESTARTING","exitCode":1,"restarts":2}}`, "Harness Sandbox: starting (HARNESS_RESTARTING, last exit code 1, restart 2). The Harness process exited and OpenShell is restarting it; if this persists, read its Sandbox logs (occ --namespace " + testNamespaceID + " agent logs " + testAgentID + " --source sandbox)."},
+		{"odd revision", `{"status":"observed","revisionId":"rev_00000000-0000-4000-8000-000000000001 --source gateway","harness":{"state":"starting","code":"HARNESS_RESTARTING","exitCode":1,"restarts":2}}`, "Harness Sandbox: starting (HARNESS_RESTARTING, last exit code 1, restart 2). The Harness process exited and OpenShell is restarting it; if this persists, read its Sandbox logs (occ --namespace " + testNamespaceID + " agent logs " + testAgentID + " --source sandbox)."},
 		// A stopped Agent, an embedded Harness or a Driver without a Sandbox record adds nothing.
 		{"unobserved", `{"status":"unobserved"}`, ""},
 	} {
@@ -175,25 +188,26 @@ func TestAgentGetShowsTheObservedHarnessSandbox(t *testing.T) {
 }
 
 func TestResourceCommandsRejectNamesWithAHintBeforeCallingOCC(t *testing.T) {
+	inNamespace := "occ --namespace " + testNamespaceID
 	cases := []struct {
 		args []string
-		hint string
+		want string
 	}{
-		{[]string{"--namespace", testNamespaceID, "agent", "get", "dogfood-agent"}, "occ --namespace " + testNamespaceID + " agent list"},
-		{[]string{"--namespace", "default", "agent", "list"}, "occ namespace list"},
-		{[]string{"namespace", "get", "default"}, "occ namespace list"},
-		{[]string{"--namespace", testNamespaceID, "secret", "get", "model-key"}, "occ --namespace " + testNamespaceID + " secret list"},
-		{[]string{"--namespace", testNamespaceID, "preset", "delete", "default-codex"}, "occ --namespace " + testNamespaceID + " preset list"},
-		{[]string{"--namespace", testNamespaceID, "agent", "deployment-status", testAgentID, "1"}, "occ --namespace " + testNamespaceID + " agent revisions"},
-		{[]string{"--namespace", testNamespaceID, "credential-source", "update", "openai"}, "occ --namespace " + testNamespaceID + " credential-source list"},
-		{[]string{"--namespace", testNamespaceID, "service-account", "delete", "--force", "ci-bot"}, "occ --namespace " + testNamespaceID + " service-account list"},
-		{[]string{"--namespace", testNamespaceID, "agent", "credential-withdrawal", "request", "dogfood-agent", "cs_1"}, "occ --namespace " + testNamespaceID + " agent list"},
-		{[]string{"--namespace", testNamespaceID, "agent", "credential-withdrawal", "get", testAgentID, "openai"}, "occ --namespace " + testNamespaceID + " credential-source list"},
+		{[]string{"--namespace", testNamespaceID, "agent", "get", "dogfood-agent"}, nameNotIDRefusal("dogfood-agent", "Agent", "agt_", inNamespace+" agent list")},
+		{[]string{"--namespace", "default", "agent", "list"}, "OCC_NAMESPACE or --namespace: " + nameNotIDRefusal("default", "Namespace", "ns_", "occ namespace list")},
+		{[]string{"namespace", "get", "default"}, nameNotIDRefusal("default", "Namespace", "ns_", "occ namespace list")},
+		{[]string{"--namespace", testNamespaceID, "secret", "get", "model-key"}, nameNotIDRefusal("model-key", "Secret", "sec_", inNamespace+" secret list")},
+		{[]string{"--namespace", testNamespaceID, "preset", "delete", "default-codex"}, nameNotIDRefusal("default-codex", "Preset", "pre_", inNamespace+" preset list")},
+		{[]string{"--namespace", testNamespaceID, "agent", "deployment-status", testAgentID, "1"}, nameNotIDRefusal("1", "deployment", "rev_", inNamespace+" agent revisions AGENT_ID")},
+		{[]string{"--namespace", testNamespaceID, "credential-source", "update", "openai"}, nameNotIDRefusal("openai", "credential source", "cs_", inNamespace+" credential-source list")},
+		{[]string{"--namespace", testNamespaceID, "service-account", "delete", "--force", "ci-bot"}, nameNotIDRefusal("ci-bot", "ServiceAccount", "sa_", inNamespace+" service-account list")},
+		{[]string{"--namespace", testNamespaceID, "agent", "credential-withdrawal", "request", "dogfood-agent", "cs_00000000-0000-4000-8000-000000000001"}, nameNotIDRefusal("dogfood-agent", "Agent", "agt_", inNamespace+" agent list")},
+		{[]string{"--namespace", testNamespaceID, "agent", "credential-withdrawal", "get", testAgentID, "openai"}, nameNotIDRefusal("openai", "credential source", "cs_", inNamespace+" credential-source list")},
 	}
 	for _, testCase := range cases {
 		_, requested, err := runOCC(t, map[string]string{}, testCase.args...)
-		if err == nil || !strings.Contains(err.Error(), testCase.hint) {
-			t.Errorf("%v: expected an error pointing at %q, got %v", testCase.args, testCase.hint, err)
+		if err == nil || err.Error() != testCase.want {
+			t.Errorf("%v: error = %v, want %q", testCase.args, err, testCase.want)
 		}
 		if len(requested) != 0 {
 			t.Errorf("%v: expected no request, got %v", testCase.args, requested)
@@ -204,40 +218,20 @@ func TestResourceCommandsRejectNamesWithAHintBeforeCallingOCC(t *testing.T) {
 func TestIDHintsKeepTheSelectedNamespace(t *testing.T) {
 	// A stale environment scope must not replace the explicitly selected Namespace in the hint.
 	t.Setenv("OCC_NAMESPACE", "ns_55555555-5555-4555-8555-555555555555")
+	inNamespace := "occ --namespace " + testNamespaceID
 	cases := []struct {
 		args []string
 		want string
 	}{
-		{
-			[]string{"--namespace", testNamespaceID, "agent", "get", "dogfood-agent"},
-			`"dogfood-agent" is not a valid Agent ID: OCC accepts IDs that start with "agt_", not names; run "occ --namespace ` + testNamespaceID + ` agent list" to find the ID`,
-		},
-		{
-			[]string{"--namespace", testNamespaceID, "agent", "deployment-status", testAgentID, "1"},
-			`"1" is not a valid deployment ID: OCC accepts IDs that start with "rev_", not names; run "occ --namespace ` + testNamespaceID + ` agent revisions AGENT_ID" to find the ID`,
-		},
-		{
-			[]string{"--namespace", testNamespaceID, "agent", "logs", testAgentID, "--source", "gateway", "--revision", "1"},
-			`"1" is not a valid deployment ID: OCC accepts IDs that start with "rev_", not names; run "occ --namespace ` + testNamespaceID + ` agent revisions AGENT_ID" to find the ID`,
-		},
-		{
-			[]string{"--namespace", testNamespaceID, "configuration", "get", "base"},
-			`"base" is not a valid Configuration ID: OCC accepts IDs that start with "cfg_", not names; run "occ --namespace ` + testNamespaceID + ` agent get AGENT_ID" to find the ID`,
-		},
-		{
-			[]string{"--namespace", testNamespaceID, "secret", "get", "model-key"},
-			`"model-key" is not a valid Secret ID: OCC accepts IDs that start with "sec_", not names; run "occ --namespace ` + testNamespaceID + ` secret list" to find the ID`,
-		},
+		{[]string{"--namespace", testNamespaceID, "agent", "get", "dogfood-agent"}, nameNotIDRefusal("dogfood-agent", "Agent", "agt_", inNamespace+" agent list")},
+		{[]string{"--namespace", testNamespaceID, "agent", "deployment-status", testAgentID, "1"}, nameNotIDRefusal("1", "deployment", "rev_", inNamespace+" agent revisions AGENT_ID")},
+		{[]string{"--namespace", testNamespaceID, "agent", "logs", testAgentID, "--source", "gateway", "--revision", "1"}, nameNotIDRefusal("1", "deployment", "rev_", inNamespace+" agent revisions AGENT_ID")},
+		{[]string{"--namespace", testNamespaceID, "configuration", "get", "base"}, nameNotIDRefusal("base", "Configuration", "cfg_", inNamespace+" agent get AGENT_ID")},
+		{[]string{"--namespace", testNamespaceID, "secret", "get", "model-key"}, nameNotIDRefusal("model-key", "Secret", "sec_", inNamespace+" secret list")},
 		// Namespaces are not Namespace-scoped, and a selection that is not a
 		// Namespace ID is left out rather than repeated into the hint.
-		{
-			[]string{"--namespace", testNamespaceID, "namespace", "get", "default"},
-			`"default" is not a valid Namespace ID: OCC accepts IDs that start with "ns_", not names; run "occ namespace list" to find the ID`,
-		},
-		{
-			[]string{"--namespace", "default", "agent", "get", "dogfood-agent"},
-			`"dogfood-agent" is not a valid Agent ID: OCC accepts IDs that start with "agt_", not names; run "occ agent list" to find the ID`,
-		},
+		{[]string{"--namespace", testNamespaceID, "namespace", "get", "default"}, nameNotIDRefusal("default", "Namespace", "ns_", "occ namespace list")},
+		{[]string{"--namespace", "default", "agent", "get", "dogfood-agent"}, nameNotIDRefusal("dogfood-agent", "Agent", "agt_", "occ agent list")},
 	}
 	for _, testCase := range cases {
 		_, requested, err := runOCC(t, map[string]string{}, testCase.args...)
@@ -253,12 +247,70 @@ func TestIDHintsKeepTheSelectedNamespace(t *testing.T) {
 func TestIDHintsNameTheEnvironmentNamespaceWhenNoFlagIsPassed(t *testing.T) {
 	t.Setenv("OCC_NAMESPACE", testNamespaceID)
 	_, requested, err := runOCC(t, map[string]string{}, "agent", "get", "dogfood-agent")
-	want := `"dogfood-agent" is not a valid Agent ID: OCC accepts IDs that start with "agt_", not names; run "occ --namespace ` + testNamespaceID + ` agent list" to find the ID`
-	if err == nil || err.Error() != want {
+	if want := nameNotIDRefusal("dogfood-agent", "Agent", "agt_", "occ --namespace "+testNamespaceID+" agent list"); err == nil || err.Error() != want {
 		t.Errorf("error = %v, want %q", err, want)
 	}
 	if len(requested) != 0 {
 		t.Errorf("expected no request, got %v", requested)
+	}
+}
+
+// Finding D744: a value with the right prefix but not the API's ID shape is
+// refused before any request; "agt_../../namespaces" used to reach a gateway that
+// normalized it into another path and answered 307, which occ blamed on OCC_URL.
+func TestMalformedIDsAreRefusedBeforeAnyRequest(t *testing.T) {
+	cases := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"agent", "get", "agt_../../namespaces"}, malformedIDRefusal("agt_../../namespaces", "Agent", "agt_")},
+		{[]string{"agent", "get", "agt_.."}, malformedIDRefusal("agt_..", "Agent", "agt_")},
+		{[]string{"agent", "get", testAgentID + "/"}, malformedIDRefusal(testAgentID+"/", "Agent", "agt_")},
+		{[]string{"agent", "get", "agt_%2e%2e%2fnamespaces"}, malformedIDRefusal("agt_%2e%2e%2fnamespaces", "Agent", "agt_")},
+		{[]string{"agent", "get", "AGT_22222222-2222-4222-8222-222222222222"}, malformedIDRefusal("AGT_22222222-2222-4222-8222-222222222222", "Agent", "agt_")},
+		{[]string{"agent", "get", "agt_"}, malformedIDRefusal("agt_", "Agent", "agt_")},
+		{[]string{"agent", "get", "agt_22222222-2222-4222-8222-22222222222Z"}, malformedIDRefusal("agt_22222222-2222-4222-8222-22222222222Z", "Agent", "agt_")},
+		{[]string{"secret", "get", "sec_x\x00"}, malformedIDRefusal("sec_x\x00", "Secret", "sec_")},
+		{[]string{"agent", "deployment-status", testAgentID, "rev_../1"}, malformedIDRefusal("rev_../1", "deployment", "rev_")},
+		{[]string{"agent", "logs", testAgentID, "--source", "gateway", "--revision", "rev_1/"}, malformedIDRefusal("rev_1/", "deployment", "rev_")},
+		{[]string{"iam", "role", "get", "../roles"}, opaqueIDRefusal("../roles", "Role")},
+		{[]string{"iam", "access-binding", "delete", ".."}, opaqueIDRefusal("..", "AccessBinding")},
+		{[]string{"iam", "service-principal", "get", "a/b"}, opaqueIDRefusal("a/b", "ServicePrincipal")},
+	}
+	for _, testCase := range cases {
+		_, requested, err := runOCC(t, map[string]string{}, append([]string{"--namespace", testNamespaceID}, testCase.args...)...)
+		if err == nil || err.Error() != testCase.want {
+			t.Errorf("%v: error = %v, want %q", testCase.args, err, testCase.want)
+		}
+		if len(requested) != 0 {
+			t.Errorf("%v: expected no request, got %v", testCase.args, requested)
+		}
+	}
+	// A malformed selected Namespace is refused the same way, and never echoed into a lookup hint.
+	_, requested, err := runOCC(t, map[string]string{}, "--namespace", "ns_../..", "agent", "list")
+	if want := "OCC_NAMESPACE or --namespace: " + malformedIDRefusal("ns_../..", "Namespace", "ns_"); err == nil || err.Error() != want {
+		t.Errorf("error = %v, want %q", err, want)
+	}
+	if len(requested) != 0 {
+		t.Errorf("expected no request, got %v", requested)
+	}
+}
+
+func TestWellFormedIDsAreStillSent(t *testing.T) {
+	agentPath := "GET /namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	out, requested, err := runOCC(t, map[string]string{
+		agentPath: `{"id":"` + testAgentID + `","name":"a","status":"active","desiredRuntimeState":"running"}`,
+	}, "--namespace", testNamespaceID, "agent", "get", testAgentID)
+	if err != nil || !strings.Contains(out, testAgentID) || !slices.Equal(requested, []string{agentPath}) {
+		t.Fatalf("agent get: err=%v requested=%v out=%s", err, requested, out)
+	}
+	// An opaque ID may hold dots, as long as it is not only dots.
+	rolePath := "GET /namespaces/" + testNamespaceID + "/iam/roles/role_custom.v2"
+	_, requested, err = runOCC(t, map[string]string{
+		rolePath: `{"id":"role_custom.v2","namespaceId":"` + testNamespaceID + `","permissions":[{"action":"read","resourceKind":"agent"}]}`,
+	}, "--namespace", testNamespaceID, "iam", "role", "get", "role_custom.v2")
+	if err != nil || !slices.Equal(requested, []string{rolePath}) {
+		t.Fatalf("role get: err=%v requested=%v", err, requested)
 	}
 }
 
@@ -456,9 +508,11 @@ func TestServiceAccountListShowsNamespaceAccounts(t *testing.T) {
 	}
 }
 
+// agentRevisionsResponse is a revision list as OCC answers it: summaries that
+// carry each revision's deployment status and error code.
 func agentRevisionsResponse() string {
-	return `[{"id":"` + testRevision2ID + `","revision":2,"agentId":"` + testAgentID + `","configurationGeneration":2,"createdAt":"2026-09-30T01:00:00.000Z"},` +
-		`{"id":"` + testRevision1ID + `","revision":1,"agentId":"` + testAgentID + `","configurationGeneration":1,"createdAt":"2026-09-30T00:00:00.000Z"}]`
+	return `[{"id":"` + testRevision2ID + `","revision":2,"agentId":"` + testAgentID + `","configurationGeneration":2,"createdAt":"2026-09-30T01:00:00.000Z","deploymentStatus":"failed","deploymentErrorCode":"CONVERGENCE_DEADLINE_EXCEEDED"},` +
+		`{"id":"` + testRevision1ID + `","revision":1,"agentId":"` + testAgentID + `","configurationGeneration":1,"createdAt":"2026-09-30T00:00:00.000Z","deploymentStatus":"succeeded","deploymentErrorCode":null}]`
 }
 
 // agentRevisionResponses serves an Agent whose active revision is revision 1,
@@ -466,10 +520,8 @@ func agentRevisionsResponse() string {
 func agentRevisionResponses() map[string]string {
 	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
 	return map[string]string{
-		"GET " + agentPath:                                     `{"id":"` + testAgentID + `","activeRevisionId":"` + testRevision1ID + `"}`,
-		"GET " + agentPath + "/revisions":                      agentRevisionsResponse(),
-		"GET " + agentPath + "/deployments/" + testRevision1ID: `{"deploymentId":"` + testRevision1ID + `","status":"succeeded"}`,
-		"GET " + agentPath + "/deployments/" + testRevision2ID: `{"deploymentId":"` + testRevision2ID + `","status":"failed"}`,
+		"GET " + agentPath:                `{"id":"` + testAgentID + `","activeRevisionId":"` + testRevision1ID + `"}`,
+		"GET " + agentPath + "/revisions": agentRevisionsResponse(),
 	}
 }
 
@@ -511,24 +563,12 @@ func TestAgentRevisionsStructuredOutputCarriesActiveAndStatus(t *testing.T) {
 		if len(rows) != 2 {
 			t.Fatalf("%s: expected two revisions:\n%s", format, out)
 		}
-		if rows[0]["active"] != false || rows[0]["deploymentStatus"] != "failed" {
+		if rows[0]["active"] != false || rows[0]["deploymentStatus"] != "failed" || rows[0]["deploymentErrorCode"] != "CONVERGENCE_DEADLINE_EXCEEDED" {
 			t.Fatalf("%s: revision 2 = %v", format, rows[0])
 		}
 		if rows[1]["active"] != true || rows[1]["deploymentStatus"] != "succeeded" {
 			t.Fatalf("%s: revision 1 = %v", format, rows[1])
 		}
-	}
-}
-
-func TestAgentRevisionsToleratesUnreadableDeploymentStatus(t *testing.T) {
-	responses := agentRevisionResponses()
-	delete(responses, "GET /namespaces/"+testNamespaceID+"/agents/"+testAgentID+"/deployments/"+testRevision2ID)
-	out, _, err := runOCC(t, responses, "--namespace", testNamespaceID, "agent", "revisions", testAgentID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out, testRevision2ID) || !strings.Contains(out, "succeeded") {
-		t.Fatalf("expected both revisions with the readable status:\n%s", out)
 	}
 }
 
@@ -770,7 +810,7 @@ func TestDeploymentStatusWithoutRevisionsExplainsHowToDeploy(t *testing.T) {
 		agentPath + "/revisions":   `[]`,
 		agentPath + "/permissions": `{"update":false,"deploy":false,"operate":false,"delete":false}`,
 	}, "--namespace", testNamespaceID, "agent", "deployment-status", testAgentID)
-	want := "agent " + testAgentID + " has no revision you can read; listing revisions needs revision read (ask an administrator to grant it)"
+	want := "agent " + testAgentID + " has no revision you can read; " + revisionReadAdvice
 	if err == nil || err.Error() != want {
 		t.Fatalf("reader error = %v, want %q", err, want)
 	}
@@ -780,12 +820,12 @@ func TestDeploymentStatusWithoutRevisionsExplainsHowToDeploy(t *testing.T) {
 // diffable from run to run, including nested objects in table cells.
 func TestJSONOutputAndTableCellsKeepAStableKeyOrder(t *testing.T) {
 	responses := map[string]string{
-		"GET /namespaces/" + testNamespaceID + "/agents/" + testAgentID: `{"status":"active","name":"a","id":"` + testAgentID + `","executionMode":"embedded","desiredRuntimeState":"running","createdAt":"2026-09-30T00:00:00.000Z","configurationId":"cfg_1","activeRevisionId":"rev_1","servicePrincipalId":"sp_1"}`,
+		"GET /namespaces/" + testNamespaceID + "/agents/" + testAgentID: `{"status":"active","name":"a","id":"` + testAgentID + `","executionMode":"embedded","desiredRuntimeState":"running","createdAt":"2026-09-30T00:00:00.000Z","configurationId":"cfg_00000000-0000-4000-8000-000000000001","activeRevisionId":"rev_00000000-0000-4000-8000-000000000001","servicePrincipalId":"sp_1"}`,
 		"GET /namespaces/" + testNamespaceID + "/iam/roles/role_1":      `{"id":"role_1","permissions":[{"resourceKind":"agent","action":"read"}]}`,
 	}
 	want := `{
-  "activeRevisionId": "rev_1",
-  "configurationId": "cfg_1",
+  "activeRevisionId": "rev_00000000-0000-4000-8000-000000000001",
+  "configurationId": "cfg_00000000-0000-4000-8000-000000000001",
   "createdAt": "2026-09-30T00:00:00.000Z",
   "desiredRuntimeState": "running",
   "executionMode": "embedded",
@@ -1042,23 +1082,93 @@ func TestAgentBrowsingShowsUnreadableSavedSettings(t *testing.T) {
 	}
 }
 
-// List items are summaries, so a revision whose saved settings are unreadable is
-// found only when its deployment status read fails (503). The listing keeps the
-// other revisions' status and names the unreadable one instead of failing.
-func TestAgentRevisionBrowsingKeepsHealthyStatusBesideUnreadableSnapshot(t *testing.T) {
+// OCC reads each listed revision's deployment status with the list, without
+// decoding saved settings. The CLI shows those statuses as OCC listed them, even
+// when the Agent's or a revision's saved settings are unreadable and their exact
+// deployment status reads fail (503), and sends no read per revision.
+func TestAgentRevisionsShowTheStatusOCCListed(t *testing.T) {
 	responses := agentRevisionResponses()
 	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
-	responses["GET "+agentPath+"/deployments/"+testRevision2ID] = `raw:503 {"error":{"code":"DEPENDENCY_UNAVAILABLE","message":"Persisted AgentRevision plugin state is invalid."}}`
+	responses["GET "+agentPath] = `{"id":"` + testAgentID + `","activeRevisionId":"` + testRevision1ID + `","configurationReadError":{"code":"SAVED_CONFIGURATION_UNREADABLE","field":"plugins"}}`
+	unavailable := `raw:503 {"error":{"code":"DEPENDENCY_UNAVAILABLE","message":"Persisted AgentRevision plugin state is invalid."}}`
+	responses["GET "+agentPath+"/deployments/"+testRevision1ID] = unavailable
+	responses["GET "+agentPath+"/deployments/"+testRevision2ID] = unavailable
 	for _, format := range []string{"table", "json", "yaml"} {
-		out, notices, _, err := runOCCWithNotices(t, responses, "--namespace", testNamespaceID, "--output", format, "agent", "revisions", testAgentID)
+		out, notices, requested, err := runOCCWithNotices(t, responses, "--namespace", testNamespaceID, "--output", format, "agent", "revisions", testAgentID)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(out, testRevision2ID) || !strings.Contains(out, "succeeded") {
-			t.Fatalf("%s must list both revisions and the healthy status: %s", format, out)
+		for _, request := range requested {
+			if strings.Contains(request, "/deployments/") {
+				t.Fatalf("%s: the list already carries each status; unexpected %s", format, request)
+			}
 		}
-		if !strings.Contains(notices, "deployment status of revision "+testRevision2ID+" is unavailable") {
-			t.Fatalf("%s must name the revision whose status is unavailable: %q", format, notices)
+		if notices != "" {
+			t.Fatalf("%s: no status is unavailable: %q", format, notices)
+		}
+		if format == "table" {
+			lines := strings.Split(strings.TrimSpace(out), "\n")
+			if len(lines) != 3 || strings.Fields(lines[1])[3] != "failed" || strings.Fields(lines[2])[4] != "succeeded" {
+				t.Fatalf("table must show the listed statuses:\n%s", out)
+			}
+			continue
+		}
+		var rows []map[string]any
+		if format == "json" {
+			err = json.Unmarshal([]byte(out), &rows)
+		} else {
+			err = yaml.Unmarshal([]byte(out), &rows)
+		}
+		if err != nil || len(rows) != 2 {
+			t.Fatalf("%s: %v\n%s", format, err, out)
+		}
+		if rows[0]["deploymentStatus"] != "failed" || rows[0]["deploymentErrorCode"] != "CONVERGENCE_DEADLINE_EXCEEDED" || rows[1]["deploymentStatus"] != "succeeded" {
+			t.Fatalf("%s must keep the listed statuses: %v", format, rows)
+		}
+	}
+}
+
+// OCC lists deployment work that a newer revision or a Stop ended as failed,
+// with the code that says so. The table has no error column, so its STATUS
+// names that ending, as the console does; json and yaml keep OCC's fields.
+// REPOSITORY_REVISION_STOPPED and AUTHORIZATION_DENIED are real failures.
+func TestAgentRevisionsTableNamesNeutralEndings(t *testing.T) {
+	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	for _, c := range []struct {
+		status, code, shown string
+	}{
+		{"failed", "REVISION_SUPERSEDED", "superseded"},
+		{"failed", "REPOSITORY_REVISION_SUPERSEDED", "superseded"},
+		{"failed", "REVISION_STOPPED", "stopped"},
+		{"failed", "REPOSITORY_REVISION_STOPPED", "failed"},
+		{"failed", "AUTHORIZATION_DENIED", "failed"},
+		// Only a failed status is relabelled.
+		{"succeeded", "REVISION_SUPERSEDED", "succeeded"},
+	} {
+		responses := agentRevisionResponses()
+		responses["GET "+agentPath+"/revisions"] = `[{"id":"` + testRevision2ID + `","revision":2,"agentId":"` + testAgentID + `","configurationGeneration":2,"createdAt":"2026-09-30T01:00:00.000Z","deploymentStatus":"` + c.status + `","deploymentErrorCode":"` + c.code + `"}]`
+		out, _, err := runOCC(t, responses, "--namespace", testNamespaceID, "agent", "revisions", testAgentID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines := strings.Split(strings.TrimSpace(out), "\n")
+		if len(lines) != 2 || !strings.Contains(lines[0], "STATUS") || strings.Fields(lines[1])[3] != c.shown {
+			t.Fatalf("%s %s: STATUS must read %s:\n%s", c.status, c.code, c.shown, out)
+		}
+		for _, format := range []string{"json", "yaml"} {
+			out, _, err := runOCC(t, responses, "--namespace", testNamespaceID, "-o", format, "agent", "revisions", testAgentID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var rows []map[string]any
+			if format == "json" {
+				err = json.Unmarshal([]byte(out), &rows)
+			} else {
+				err = yaml.Unmarshal([]byte(out), &rows)
+			}
+			if err != nil || len(rows) != 1 || rows[0]["deploymentStatus"] != c.status || rows[0]["deploymentErrorCode"] != c.code {
+				t.Fatalf("%s %s: %s must keep OCC's fields: %v\n%s", c.status, c.code, format, err, out)
+			}
 		}
 	}
 }
@@ -1105,12 +1215,64 @@ func TestAgentRevisionsNextPageHintOmitsAnUnsetLimit(t *testing.T) {
 	responses := agentRevisionResponses()
 	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
 	responses["GET "+agentPath+"/revisions"] = `raw:200 {"data":[{"id":"` + testRevision2ID + `","revision":2,"createdAt":"2026-09-30T01:00:00.000Z"}],"meta":{"requestId":"req_test","nextCursor":"v1.2"}}`
-	_, notices, _, err := runOCCWithNotices(t, responses, "--namespace", testNamespaceID, "agent", "revisions", testAgentID)
+	_, notices, requested, err := runOCCWithNotices(t, responses, "--namespace", testNamespaceID, "agent", "revisions", testAgentID)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The request leaves the page size to OCC too: OCC refuses limit=0.
+	if !slices.Contains(requested, "GET "+agentPath+"/revisions") {
+		t.Fatalf("an unset --limit must send no limit (OCC refuses limit=0): %v", requested)
+	}
 	if next := nextPageCommand(t, notices); slices.Contains(next, "--limit") {
 		t.Fatalf("next-page command adds a --limit the caller did not pass: %q", next)
+	}
+}
+
+// A revision list without data is a malformed answer, not an Agent without revisions.
+func TestAgentRevisionsRefusesAPageWithoutData(t *testing.T) {
+	responses := agentRevisionResponses()
+	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	responses["GET "+agentPath+"/revisions"] = `raw:200 {"meta":{"requestId":"req_test"}}`
+	_, _, err := runOCC(t, responses, "--namespace", testNamespaceID, "agent", "revisions", testAgentID)
+	if err == nil || err.Error() != "OCC returned an invalid response (HTTP 200)" {
+		t.Fatalf("error = %v, want the invalid response refusal", err)
+	}
+}
+
+// The default revision lookup stops when OCC hands back the cursor it was sent, as
+// older servers can, instead of asking for the same empty page forever.
+func TestDefaultRevisionLookupStopsAtARepeatedCursor(t *testing.T) {
+	responses := agentRevisionResponses()
+	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	responses["GET "+agentPath+"/revisions"] = `raw:200 {"data":[],"meta":{"requestId":"req_test","nextCursor":"v1.2"}}`
+	fake := &fakeOCC{responses: responses}
+	var lists []string
+	handler := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == agentPath+"/revisions" {
+			lists = append(lists, request.URL.RawQuery)
+			if len(lists) > 3 {
+				// Bound a looping client so a regression fails instead of hanging.
+				writer.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+		}
+		fake.ServeHTTP(writer, request)
+	})
+	_, _, err := runOCCAgainst(t, handler, "--namespace", testNamespaceID, "agent", "deployment-status", testAgentID)
+	if err == nil || !strings.HasPrefix(err.Error(), "agent "+testAgentID+" has no revision you can read") {
+		t.Fatalf("error = %v, want the no readable revision refusal", err)
+	}
+	if want := []string{"limit=100", "cursor=v1.2&limit=100"}; !slices.Equal(lists, want) {
+		t.Fatalf("revision list queries = %q, want %q", lists, want)
+	}
+}
+
+// OCC answers a delete with a bodyless 204; any other success is malformed.
+func TestDeleteRefusesASuccessOtherThanNoContent(t *testing.T) {
+	path := "/namespaces/" + testNamespaceID + "/configurations/cfg_00000000-0000-4000-8000-000000000001"
+	_, _, err := runOCC(t, map[string]string{"DELETE " + path: "raw:200 "}, "--namespace", testNamespaceID, "configuration", "delete", "cfg_00000000-0000-4000-8000-000000000001")
+	if err == nil || err.Error() != "OCC returned an invalid empty response (HTTP 200)" {
+		t.Fatalf("error = %v, want the invalid empty response refusal", err)
 	}
 }
 
@@ -1161,6 +1323,379 @@ func TestIAMAccessBindingTablesDistinguishIdentityAndGroupSubjects(t *testing.T)
 			if len(fields) != 6 || fields[1] != want || fields[2] != "operators" {
 				t.Fatalf("table must keep %s subject beside its opaque ID: %s", want, line)
 			}
+		}
+	}
+}
+
+func TestFirstDeploymentCommandsUseExplicitRoutes(t *testing.T) {
+	configurationID := "cfg_55555555-5555-4555-8555-555555555555"
+	path := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID + "/deploy-first"
+	for _, command := range []string{"deploy-first", "recover-first-deployment"} {
+		t.Run(command, func(t *testing.T) {
+			calls := 0
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				expectedPath := path
+				if command == "recover-first-deployment" {
+					expectedPath += "/review-1/" + configurationID + "/3"
+				}
+				if r.URL.Path != expectedPath {
+					t.Errorf("unexpected path: %s", r.URL.Path)
+				}
+				if command == "deploy-first" {
+					if r.Method != http.MethodPost {
+						t.Errorf("method = %s", r.Method)
+					}
+					var body map[string]any
+					if err := json.UnmarshalRead(r.Body, &body); err != nil {
+						t.Fatal(err)
+					}
+					if body["key"] != "review-1" || body["expectedConfigurationId"] != configurationID || body["expectedGeneration"] != float64(3) {
+						t.Errorf("body = %#v", body)
+					}
+				} else {
+					if r.Method != http.MethodGet || r.ContentLength > 0 {
+						t.Errorf("recovery must be bodyless GET")
+					}
+					if r.URL.RawQuery != "" {
+						t.Errorf("unexpected query: %s", r.URL.RawQuery)
+					}
+
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if command == "deploy-first" {
+					w.WriteHeader(http.StatusAccepted)
+				}
+				_, _ = w.Write([]byte(`{"data":{"revisionId":"` + testRevision1ID + `","namespaceId":"` + testNamespaceID + `","agentId":"` + testAgentID + `","configurationId":"` + configurationID + `","configurationGeneration":3,"createdAt":"2026-10-30T00:00:00.000Z"},"meta":{"requestId":"test"}}`))
+			})
+			stdout, stderr, err := runOCCAgainst(t, handler, "--namespace", testNamespaceID, "--output", "json", "agent", command, testAgentID, "--key", "review-1", "--configuration", configurationID, "--generation", "3")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 {
+				t.Fatalf("requests = %d", calls)
+			}
+			var receipt map[string]any
+			if err := json.Unmarshal([]byte(stdout), &receipt); err != nil {
+				t.Fatal(err)
+			}
+			if len(receipt) != 6 || receipt["revisionId"] != testRevision1ID || receipt["configurationGeneration"] != float64(3) || receipt["configurationId"] != configurationID || receipt["agentId"] != testAgentID || receipt["namespaceId"] != testNamespaceID || receipt["createdAt"] != "2026-10-30T00:00:00.000Z" {
+				t.Fatalf("receipt = %s", stdout)
+			}
+			if strings.Contains(stderr, "No matching admission") {
+				t.Fatalf("receipt reported as a miss: %s", stderr)
+			}
+		})
+	}
+}
+
+func TestFirstDeploymentLostResponsePrintsExactRecoveryCommand(t *testing.T) {
+	calls := 0
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		// Simulate a missing HTTP reply, not server admission. The API integration
+		// test drops a real accepted reply after the regular workflow commits.
+		connection, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		_ = connection.Close()
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	keyFile := filepath.Join(dir, "operator's $(printf injected) key.json")
+	caBundle := filepath.Join(dir, "operator's $(printf injected) ca.pem")
+	if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"private-test-credential"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(caBundle, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	configurationID := "cfg_55555555-5555-4555-8555-555555555555"
+	var out, notices bytes.Buffer
+	command := New(&out, &notices)
+	command.SetArgs([]string{"--url", server.URL, "--service-key-file", keyFile, "--ca-bundle", caBundle, "--timeout-seconds", "17", "--namespace", testNamespaceID, "agent", "deploy-first", testAgentID, "--key", "review-1", "--configuration", configurationID, "--generation", "3"})
+	err := command.Execute()
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("lost original transport cause: %v", err)
+	}
+	if calls != 1 || out.Len() != 0 {
+		t.Fatalf("requests = %d, stdout = %q; no request or receipt may be invented", calls, out.String())
+	}
+	if !strings.Contains(notices.String(), "same caller") || strings.Contains(notices.String(), "private-test-credential") {
+		t.Fatalf("missing caller reminder or leaked credential: %s", notices.String())
+	}
+	lines := strings.Split(strings.TrimSpace(notices.String()), "\n")
+	if len(lines) != 2 || !strings.Contains(lines[0], "outcome is unconfirmed") {
+		t.Fatalf("missing recovery guidance: %s", notices.String())
+	}
+	// Parse the displayed command with a real POSIX shell, without executing occ.
+	// Paths with quotes and command substitutions must remain literal arguments.
+	parsed, err := exec.Command("sh", "-c", `occ() { printf '%s\0' "$@"; }; `+lines[1]).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Split(strings.TrimSuffix(string(parsed), "\x00"), "\x00")
+	want := []string{"--url", server.URL, "--service-key-file", keyFile, "--ca-bundle", caBundle, "--timeout-seconds", "17", "--namespace", testNamespaceID, "agent", "recover-first-deployment", testAgentID, "--key", "review-1", "--configuration", configurationID, "--generation", "3"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("recovery arguments = %q, want %q", got, want)
+	}
+}
+
+func TestFirstDeploymentRecoveryGuidanceDistinguishesRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		hint   bool
+	}{
+		{"malformed accepted reply", http.StatusAccepted, `{`, true},
+		{"unavailable", http.StatusServiceUnavailable, `{"error":{"code":"UNAVAILABLE","message":"unavailable"}}`, true},
+		{"request timeout", http.StatusRequestTimeout, ``, true},
+		{"forbidden", http.StatusForbidden, `{"error":{"code":"FORBIDDEN","message":"The operation is not permitted."}}`, false},
+		{"precondition", http.StatusConflict, `{"error":{"code":"FIRST_DEPLOYMENT_PRECONDITION_FAILED","message":"review configuration"}}`, false},
+		{"unsupported server", http.StatusNotFound, ``, false},
+		{"redirect", http.StatusTemporaryRedirect, ``, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			})
+			out, notices, err := runOCCAgainst(t, handler, "--ca-bundle=", "--namespace", testNamespaceID, "agent", "deploy-first", testAgentID, "--key", "review-1", "--configuration", "cfg_55555555-5555-4555-8555-555555555555", "--generation", "1")
+			if err == nil || calls != 1 || out != "" {
+				t.Fatalf("err = %v, requests = %d, stdout = %q", err, calls, out)
+			}
+			if strings.Contains(notices, "agent recover-first-deployment") != tc.hint {
+				t.Fatalf("recovery hint = %q, want present = %t", notices, tc.hint)
+			}
+			if tc.hint && !strings.Contains(notices, "--ca-bundle ''") {
+				t.Fatalf("recovery command must preserve explicit empty trust setting: %s", notices)
+			}
+		})
+	}
+}
+
+func TestFirstDeploymentDoesNotFallBackOnOlderServer(t *testing.T) {
+	_, _, requests, err := runOCCWithNotices(t, map[string]string{}, "--namespace", testNamespaceID, "agent", "deploy-first", testAgentID, "--key", "review-1", "--configuration", "cfg_55555555-5555-4555-8555-555555555555", "--generation", "1")
+	if err == nil {
+		t.Fatal("older server must fail closed")
+	}
+	if len(requests) != 1 || !strings.HasSuffix(requests[0], "/deploy-first") {
+		t.Fatalf("unexpected fallback: %v", requests)
+	}
+}
+
+func TestFirstDeploymentRejectsUnusableReceipts(t *testing.T) {
+	configurationID := "cfg_55555555-5555-4555-8555-555555555555"
+	for _, command := range []string{"deploy-first", "recover-first-deployment"} {
+		for _, tc := range []struct {
+			name, field string
+			value       any
+		}{
+			{"empty", "", nil},
+			{"revision ID", "revisionId", "unusable-private-receipt"},
+			{"timestamp", "createdAt", "2026-10-30T00:00:00Z"},
+			{"Namespace", "namespaceId", "ns_66666666-6666-4666-8666-666666666666"},
+			{"Agent", "agentId", "agt_66666666-6666-4666-8666-666666666666"},
+			{"Configuration", "configurationId", "cfg_66666666-6666-4666-8666-666666666666"},
+			{"generation", "configurationGeneration", 4},
+			{"additional field", "unexpected", "unusable-private-receipt"},
+		} {
+			t.Run(command+"/"+tc.name, func(t *testing.T) {
+				receipt := map[string]any{"revisionId": testRevision1ID, "namespaceId": testNamespaceID, "agentId": testAgentID, "configurationId": configurationID, "configurationGeneration": 3, "createdAt": "2026-10-30T00:00:00.000Z"}
+				if tc.field == "" {
+					clear(receipt)
+				} else {
+					receipt[tc.field] = tc.value
+				}
+				calls := 0
+				handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					calls++
+					if command == "deploy-first" {
+						w.WriteHeader(http.StatusAccepted)
+					}
+					_ = json.MarshalWrite(w, map[string]any{"data": receipt, "meta": map[string]string{"requestId": "test"}})
+				})
+				out, notices, err := runOCCAgainst(t, handler, "--namespace", testNamespaceID, "--output", "json", "agent", command, testAgentID, "--key", "review-1", "--configuration", configurationID, "--generation", "3")
+				// A readable envelope is not a receipt for the requested admission.
+				// Reject it without echoing payload values or inventing another request.
+				if err == nil || !strings.Contains(err.Error(), "invalid first-deployment receipt") || out != "" || calls != 1 {
+					t.Fatalf("error = %v, stdout = %q, requests = %d", err, out, calls)
+				}
+				if strings.Contains(err.Error()+notices, "unusable-private-receipt") {
+					t.Fatal("invalid receipt payload leaked")
+				}
+				if strings.Contains(notices, "agent recover-first-deployment") != (command == "deploy-first") {
+					t.Fatalf("unexpected recovery guidance: %s", notices)
+				}
+			})
+		}
+	}
+}
+
+func TestFirstDeploymentClientRejectsDotSegmentsBeforeRequest(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls++; w.WriteHeader(404) }))
+	defer server.Close()
+	client, err := occclient.New(occclient.Config{URL: server.URL, Timeout: time.Second, ServiceKeyFile: writeKeyFile(t, `{"data":{"key":"test-key"}}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{".", "..", "a/b"} {
+		intent := occclient.FirstDeploymentIntent{Key: key, ExpectedConfigurationID: "cfg_55555555-5555-4555-8555-555555555555", ExpectedGeneration: 1}
+		if _, err := client.RecoverAgentFirstDeployment(testNamespaceID, testAgentID, intent); err == nil {
+			t.Fatalf("accepted recovery key %q", key)
+		}
+		if _, err := client.DeployAgentFirst(testNamespaceID, testAgentID, intent); err == nil {
+			t.Fatalf("accepted deployment key %q", key)
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("invalid keys caused %d requests", calls)
+	}
+}
+
+func TestFirstDeploymentNullResponse(t *testing.T) {
+	for _, command := range []string{"recover-first-deployment", "deploy-first"} {
+		formats := []string{"", "json", "yaml"}
+		if command == "deploy-first" {
+			formats = []string{"json"}
+		}
+		for _, format := range formats {
+			t.Run(command+"/"+format, func(t *testing.T) {
+				calls := 0
+				handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					calls++
+					if command == "recover-first-deployment" && r.Method != http.MethodGet {
+						t.Errorf("recovery used %s", r.Method)
+					}
+					w.Header().Set("Content-Type", "application/json")
+					if command == "deploy-first" {
+						w.WriteHeader(http.StatusAccepted)
+					}
+					_, _ = w.Write([]byte(`{"data":null,"meta":{"requestId":"test"}}`))
+				})
+				args := []string{"--namespace", testNamespaceID}
+				if format != "" {
+					args = append(args, "--output", format)
+				}
+				args = append(args, "agent", command, testAgentID, "--key", "review-1", "--configuration", "cfg_55555555-5555-4555-8555-555555555555", "--generation", "1")
+				stdout, stderr, err := runOCCAgainst(t, handler, args...)
+				if calls != 1 {
+					t.Fatalf("requests = %d; must not retry", calls)
+				}
+				if command == "deploy-first" {
+					if err == nil || !strings.Contains(err.Error(), "invalid") {
+						t.Fatalf("null admission must be malformed: %v", err)
+					}
+					if strings.Contains(stderr, "No matching admission") {
+						t.Fatalf("admission was reported as a lookup miss: %s", stderr)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(stderr, "No matching admission found") || !strings.Contains(stderr, "does not prove failure") {
+					t.Fatalf("missing uncertainty notice: %s", stderr)
+				}
+				if format == "" {
+					if stdout != "" {
+						t.Fatalf("unexpected table: %s", stdout)
+					}
+				} else if strings.TrimSpace(stdout) != "null" {
+					t.Fatalf("structured miss = %q", stdout)
+				}
+			})
+		}
+	}
+}
+
+func TestFirstDeploymentIntentValidationBeforeClientConstruction(t *testing.T) {
+	for _, command := range []string{"deploy-first", "recover-first-deployment"} {
+		for _, invalid := range []struct{ key, configuration, generation, field string }{
+			{"review-1", "cfg_55555555-5555-4555-8555-555555555555", "0", "--generation"},
+			{"review-1", "cfg_55555555-5555-4555-8555-555555555555", "9007199254740992", "--generation"},
+			{"..", "cfg_55555555-5555-4555-8555-555555555555", "1", "--key"},
+			{"review-1", "wrong", "1", "--configuration"},
+		} {
+			_, _, requests, err := runOCCWithNotices(t, map[string]string{}, "--url", ":invalid-url", "--namespace", testNamespaceID, "agent", command, testAgentID, "--key", invalid.key, "--configuration", invalid.configuration, "--generation", invalid.generation)
+			if err == nil || !strings.Contains(err.Error(), invalid.field) || len(requests) != 0 {
+				t.Fatalf("%s validation: error=%v requests=%v", invalid.field, err, requests)
+			}
+		}
+	}
+}
+
+func TestFirstDeploymentClientGenerationBoundary(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Method != http.MethodGet || !strings.HasSuffix(r.URL.Path, "/9007199254740991") || r.ContentLength > 0 {
+			t.Errorf("unexpected recovery: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":null,"meta":{"requestId":"test"}}`))
+	}))
+	defer server.Close()
+	client, err := occclient.New(occclient.Config{URL: server.URL, Timeout: time.Second, ServiceKeyFile: writeKeyFile(t, `{"data":{"key":"test-key"}}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent := occclient.FirstDeploymentIntent{Key: "review-1", ExpectedConfigurationID: "cfg_55555555-5555-4555-8555-555555555555", ExpectedGeneration: 9007199254740991}
+	if receipt, err := client.RecoverAgentFirstDeployment(testNamespaceID, testAgentID, intent); err != nil || receipt != nil {
+		t.Fatalf("maximum generation: %v %v", receipt, err)
+	}
+	for _, generation := range []int64{0, -1, 9007199254740992} {
+		intent.ExpectedGeneration = generation
+		for _, call := range []func(string, string, occclient.FirstDeploymentIntent) (any, error){client.DeployAgentFirst, client.RecoverAgentFirstDeployment} {
+			if _, err := call(testNamespaceID, testAgentID, intent); err == nil || !strings.Contains(err.Error(), "--generation") {
+				t.Fatalf("accepted invalid generation %d: %v", generation, err)
+			}
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("requests = %d", calls)
+	}
+}
+
+func TestFirstDeploymentCLICanonicalDecimal(t *testing.T) {
+	for _, command := range []string{"deploy-first", "recover-first-deployment"} {
+		for _, generation := range []string{"01", "010", "08", "0x10", "10"} {
+			t.Run(command+"/"+generation, func(t *testing.T) {
+				calls := 0
+				handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					calls++
+					if command == "deploy-first" {
+						var body occclient.FirstDeploymentIntent
+						if err := json.UnmarshalRead(r.Body, &body); err != nil {
+							t.Fatal(err)
+						}
+						if r.Method != http.MethodPost || body.ExpectedGeneration != 10 {
+							t.Errorf("unexpected POST: %s %+v", r.Method, body)
+						}
+					} else if r.Method != http.MethodGet || !strings.HasSuffix(r.URL.Path, "/10") {
+						t.Errorf("unexpected GET: %s %s", r.Method, r.URL.Path)
+					}
+					w.Header().Set("Content-Type", "application/json")
+					if command == "deploy-first" {
+						w.WriteHeader(http.StatusAccepted)
+					}
+					_, _ = w.Write([]byte(`{"data":{"revisionId":"` + testRevision1ID + `","namespaceId":"` + testNamespaceID + `","agentId":"` + testAgentID + `","configurationId":"cfg_55555555-5555-4555-8555-555555555555","configurationGeneration":10,"createdAt":"2026-10-30T00:00:00.000Z"},"meta":{"requestId":"test"}}`))
+				})
+				_, _, err := runOCCAgainst(t, handler, "--namespace", testNamespaceID, "agent", command, testAgentID, "--key", "review-1", "--configuration", "cfg_55555555-5555-4555-8555-555555555555", "--generation", generation)
+				if generation == "10" {
+					if err != nil || calls != 1 {
+						t.Fatalf("decimal control: err=%v calls=%d", err, calls)
+					}
+				} else if err == nil || !strings.Contains(err.Error(), "--generation") || calls != 0 {
+					t.Fatalf("noncanonical %s: err=%v calls=%d", generation, err, calls)
+				}
+			})
 		}
 	}
 }

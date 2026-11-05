@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: "2026-10-15 18:55"
-last_updated_session: "authoring-run/b841a0a4-490b-486f-ab3c-2074d75f0ee6"
+updated: "2026-11-04 11:22"
+last_updated_session: "authoring-run/d3b76aba-07fb-422b-b0fd-f5957926b7b8"
 ---
 
 # Bootstrap and human authentication flow
@@ -136,7 +136,10 @@ password authentication, protected cookies, and PostgreSQL storage. Sign-in retu
 `safeSessionResponse` returns public identity and `sessionKey`, an auth-secret HMAC
 of the session ID (`apps/controller/src/auth/session-binding.ts`). A changed key makes
 the [Console](platform-console.md#2-resolve-the-session-before-private-reads) clear
-retained views and drafts. Sign-out revokes the session.
+retained views and drafts. Password-only sign-out uses
+`apps/controller/src/auth/password-sign-out.ts:passwordSignOut` to delete the session
+through the selected database adapter before clearing its cookie. Storage failure
+returns `503` without cookie changes; the caller can retry after recovery.
 `auth/admission.ts:passwordFailureAdmission` counts failures; fast success clears
 the selected identity, not the address. `onLimited` reports
 `authentication.sign-in-limited` once per lane/window. `auth/known-device.ts`
@@ -310,7 +313,7 @@ Account creation issues no session and infers no grants.
   password/key delivery, human sign-in, service-key access, and no reissue on rerun.
 - `node --test tests/integration/postgres-auth-accounts.test.mjs` with
   `OCC_TEST_DATABASE_URL` covers account provisioning, transactional rollback, and
-  a lost provisioning COMMIT reply.
+  a lost provisioning COMMIT reply, and password-only logout under database contention.
   Its fresh development bootstrap case also verifies the service identity,
   protected output, and key access, skipping when an Installation exists.
 - `node --test tests/integration/bootstrap-output.test.mjs` covers exclusive
@@ -349,16 +352,10 @@ Account creation issues no session and infers no grants.
 
 ## Changelog
 
+- 2026-11-04 11:22: Record durable password-only session revocation and storage failure handling. (authoring-run/d3b76aba-07fb-422b-b0fd-f5957926b7b8 - 0c7126dc16df1a01e2242e9bd35f9e742d6cee56)
+
 - 2026-10-15 18:55: Record verified GitHub identity and correlate matched sign-in attempts in audit. (authoring-run/b841a0a4-490b-486f-ab3c-2074d75f0ee6 - aad21c63837ef24f9f9bae152877812abe9b1abd)
 
 - 2026-10-10 20:56: Reject unstorable email before State reads while preserving denial audits and admission. (authoring-run/6a102658-a68a-460f-bb67-be99a2490d8d - f6526eed518b689cc99e70f2c8ad349c500e936d)
-
-- 2026-10-07 10:10: Treat IPv4-mapped trusted proxies as IPv4; refuse catch-all proxy CIDRs. (fix-678 - bf67a4317)
-
-- 2026-10-06 07:30: Reject undeclared maintenance commands before configuration. (authoring-run/8f5b1566-4538-437c-8e8a-fd2049050c6e - 4bacc7925fcef75ea8715905a0c6c86abb7203d2)
-
-- 2026-10-04 21:00: Verify an existing Installation with SQL before loading Better Auth. (fix/bootstrap-fast-path)
-
-- 2026-10-01 14:36: Bind result receipts to provider instances. (authoring-run/afd78df4-12de-4f41-b2df-7ebb53ed3213 - f22a584e6ce21d505b40a72fdb5ae1c6e74c1c84)
 
 [Bootstrap and human authentication documentation history](local-password-authentication/history.md) preserves the older dated entries.
