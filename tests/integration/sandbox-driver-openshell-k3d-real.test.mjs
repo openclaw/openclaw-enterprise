@@ -2130,7 +2130,7 @@ async function prepareProductionInstallation(
   });
   if (pluginImportOnly) {
     // Production loads package inspection and admission only for the selected Plugin Driver.
-    configuration.drivers.plugin = { id: "occ-plugin", configuration: {} };
+    configuration.drivers.plugin = [{ id: "occ-plugin", configuration: {} }];
   }
   if (pluginInstallOnly) {
     configuration.drivers.plugin = [
@@ -2330,7 +2330,8 @@ async function prepareProductionInstallation(
   const { workerDrivers } = initialWorkerDrivers;
   let { diagnosticWorkerDrivers } = initialWorkerDrivers;
   if (pluginImportOnly) {
-    assert.equal(drivers.pluginDriver?.id, "occ-plugin");
+    const pluginDriver = drivers.pluginDrivers.find((driver) => driver.harnessId === harnessId);
+    assert.equal(pluginDriver?.id, "occ-plugin");
   }
   assert.equal(drivers.sandboxDriver?.capability, "sandbox");
   assert.equal(drivers.sandboxDriver?.id, configuration.drivers.sandbox.id);
