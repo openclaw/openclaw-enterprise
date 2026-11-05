@@ -31,6 +31,16 @@ The default list permits Slack only. An empty list denies every destination.
 The bundled proxy accepts CONNECT on TCP 443 and retains public-IPv4-only
 upstream networking. It does not inspect decrypted TLS or authorize plugins.
 
+To permit every public HTTPS destination, use:
+
+```json
+{ "proxy": { "bundled": true, "allowedHosts": ["*"] } }
+```
+
+`"*"` removes hostname filtering, not the TCP 443 or public-IPv4 restrictions.
+Private and reserved ranges remain blocked by the bundled proxy's Kubernetes
+NetworkPolicy. Direct Helm users set `gatewayProxy.allowedHosts: ["*"]`.
+
 [Render and apply the profile](../deploy/installation-profiles.md). Rendering
 sets Helm `gatewayProxy.enabled`, its `allowedHosts`, the API directory route,
 and Compute `runtime.proxy` together. Do not configure a second proxy for Slack.
@@ -74,8 +84,9 @@ processes. Deploy replacement Agent revisions to apply Gateway configuration;
 restarting OCC alone does not update running Gateways. A host-list-only change
 rolls out the bundled proxy and may reconnect existing tunnels.
 
-Verify a permitted HTTPS request, an unlisted destination denial, internal
-Harness connectivity, and no direct fallback while the proxy is unavailable.
+Verify a permitted HTTPS request, internal Harness connectivity, and no direct
+fallback while the proxy is unavailable. With a host allowlist, also verify an
+unlisted destination denial; with `"*"`, verify private-network denial instead.
 For Slack, also verify directory lookup and Socket Mode separately, following
 the [Slack guide](slack.md). Keep TLS verification enabled.
 

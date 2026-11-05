@@ -553,8 +553,8 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if not (kindIs "slice" .Values.gatewayProxy.allowedHosts) -}}{{- fail "gatewayProxy.allowedHosts must be a list" -}}{{- end -}}
 {{- if gt (len .Values.gatewayProxy.allowedHosts) 256 -}}{{- fail "gatewayProxy.allowedHosts allows at most 256 entries" -}}{{- end -}}
 {{- range $host := .Values.gatewayProxy.allowedHosts -}}
-{{- if not (kindIs "string" $host) -}}{{- fail "gatewayProxy.allowedHosts entries must be DNS names" -}}{{- end -}}
-{{- if or (gt (len $host) 253) (not (regexMatch "^(\\*\\.)?[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$" $host)) -}}{{- fail "gatewayProxy.allowedHosts entries must be lowercase DNS names with optional *. prefix" -}}{{- end -}}
+{{- if not (kindIs "string" $host) -}}{{- fail "gatewayProxy.allowedHosts entries must be strings" -}}{{- end -}}
+{{- if and (ne $host "*") (or (gt (len $host) 253) (not (regexMatch "^(\\*\\.)?[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$" $host))) -}}{{- fail "gatewayProxy.allowedHosts entries must be lowercase DNS names with optional *. prefix, or * for all hosts" -}}{{- end -}}
 {{- end -}}
 {{- if .Values.gatewayProxy.enabled -}}
 {{- $proxy := .Values.gatewayProxy -}}

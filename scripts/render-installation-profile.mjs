@@ -1606,11 +1606,12 @@ function buildRendered(profile, parsed, diagnostics) {
       : stringArray(proxy, ["proxy", "allowedHosts"], diagnostics, {
           nonempty: false,
           validate: (host) =>
-            host.length <= 253 &&
-            /^(?:\*\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(
-              host,
-            ),
-          description: "a lowercase DNS name with optional *. prefix",
+            host === "*" ||
+            (host.length <= 253 &&
+              /^(?:\*\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(
+                host,
+              )),
+          description: "a lowercase DNS name with optional *. prefix, or * for all hosts",
         });
   if (allowedHosts !== undefined && allowedHosts.length > 256) {
     diagnostics.errors.push("proxy.allowedHosts allows at most 256 entries.");

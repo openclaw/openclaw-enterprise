@@ -3035,15 +3035,14 @@ test("profile transport Secret prefixes agree with controller startup admission"
 });
 
 test("profile proxy selection shares one endpoint and limits bundled policy inputs", async (t) => {
-  const configured = await render(
-    "openclaw",
-    baseInput({ proxy: { bundled: true, allowedHosts: ["api.example.com", "*.slack.com"] } }),
-  );
-  t.after(() => rmSync(configured.directory, { recursive: true, force: true }));
-  assert.deepEqual(loadYaml(configured.values).gatewayProxy.allowedHosts, [
-    "api.example.com",
-    "*.slack.com",
-  ]);
+  for (const allowedHosts of [["api.example.com", "*.slack.com"], ["*"], []]) {
+    const configured = await render(
+      "openclaw",
+      baseInput({ proxy: { bundled: true, allowedHosts } }),
+    );
+    t.after(() => rmSync(configured.directory, { recursive: true, force: true }));
+    assert.deepEqual(loadYaml(configured.values).gatewayProxy.allowedHosts, allowedHosts);
+  }
   await assertPreflightFailure(
     "openclaw",
     baseInput({ proxy: { bundled: true, url: "http://192.0.2.10:3128" } }),

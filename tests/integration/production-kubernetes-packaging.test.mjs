@@ -7089,13 +7089,34 @@ test(
       ),
       hosts,
     );
+    const unrestricted = await resources(
+      (await render({ ...overrides, "gatewayProxy.allowedHosts": "{*}" })).stdout,
+    );
+    const unrestrictedProxy = unrestricted.find(
+      ({ kind, metadata }) => kind === "Deployment" && metadata.name === proxy.metadata.name,
+    );
+    assert.deepEqual(
+      JSON.parse(
+        unrestrictedProxy.spec.template.spec.containers[0].env.find(
+          ({ name }) => name === "OCC_GATEWAY_PROXY_ALLOWED_HOSTS",
+        ).value,
+      ),
+      ["*"],
+    );
+    // Removing hostname filtering must not remove the public-IPv4-only egress
+    // policy or grant another TCP port to the bundled proxy.
+    const proxyPolicy = (items) =>
+      items.find(
+        ({ kind, metadata }) => kind === "NetworkPolicy" && metadata.name === proxy.metadata.name,
+      ).spec;
+    assert.deepEqual(proxyPolicy(unrestricted), proxyPolicy(objects));
     // An external route may not silently override the bundled destination policy.
     await assert.rejects(
       render({ ...overrides, "gatewayProxy.url": "http://192.0.2.10:3128" }),
       /must be empty/,
     );
     for (const host of [
-      "*",
+      "*example.com",
       "*.com/escape",
       "EXAMPLE.com",
       "https://example.com",

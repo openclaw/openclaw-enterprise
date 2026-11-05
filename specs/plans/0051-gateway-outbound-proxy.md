@@ -27,6 +27,8 @@ or `proxy.url` for an external endpoint. Helm `gatewayProxy` and Compute
 `runtime.proxy` consume that selection. Native OC settings and Kubernetes
 reachability derive from the same Compute endpoint independently of channels.
 The bundled server remains CONNECT/TCP 443 with public-IPv4-only Kubernetes egress.
+An explicit `allowedHosts: ["*"]` removes hostname filtering without changing
+those port or address restrictions. Slack-only remains the default.
 
 The temporary runtime-source bridge exposes an exact-endpoint bypass only for
 host-provisioned `OPENCLAW_INTERNAL_TRANSPORT_URL`. The regular Codex transport
@@ -86,6 +88,21 @@ remain intact.
 
 The older runtime and ClawHub probes below remain evidence only for their exact
 original image. They do not qualify the refreshed runtime or full OCC workflow.
+
+## All-hosts policy follow-up
+
+The operator can select `allowedHosts: ["*"]` for the bundled proxy. Profile
+rendering, Helm validation, and the CONNECT server accept it. The default remains
+Slack-only; TCP 443 and the existing public-IPv4 NetworkPolicy remain unchanged.
+
+- The new wildcard checks failed before the change at all three boundaries and
+  passed after it. The real proxy process relays bytes for unrelated hosts and
+  still rejects other ports and malformed CONNECT targets.
+- Proxy tunnel/reset, profile renderer/parity, and selected production-chart
+  suites: 134 passed, no failures or skips. Rendered NetworkPolicies are unchanged
+  between an explicit host list and `"*"`.
+- This does not establish live NetworkPolicy enforcement or model execution.
+  The deployment and model qualification items above remain pending.
 
 ## Delivery record
 

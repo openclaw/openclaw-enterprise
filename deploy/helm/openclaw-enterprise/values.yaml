@@ -300,6 +300,7 @@ gatewayProxy:
   url: ""
   # Exact DNS names, or *.example.com for subdomains only; CONNECT to TCP 443.
   # Replace/extend this list for Teams, ClawHub, and other required services.
+  # Use ["*"] for all hosts; TCP 443 and public-IPv4-only egress still apply.
   allowedHosts: [slack.com, "*.slack.com", slack-edge.com, "*.slack-edge.com", slack-msgs.com, "*.slack-msgs.com"]
   serviceName: openclaw-enterprise-gateway-proxy
   port: 3128

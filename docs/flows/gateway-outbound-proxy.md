@@ -1,7 +1,7 @@
 ---
 created: 2026-11-05
-updated: "2026-11-05 19:30"
-last_updated_session: authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62
+updated: "2026-11-05 20:13"
+last_updated_session: authoring-run/e9bf9370-1230-46cf-a388-d218708b8969
 ---
 
 # Gateway outbound proxy flow
@@ -80,7 +80,10 @@ workers use their separate unproxied configuration and initiate the Gateway conn
 
 `apps/controller/src/gateway-proxy.mjs:createGatewayProxyServer` validates the
 operator host list and accepts only CONNECT/TCP 443 for matching destinations.
-The chart excludes private/reserved IPv4 upstreams. Policy denial returns 403;
+An explicit `"*"` entry matches all hosts without changing CONNECT syntax or port
+checks. The chart still excludes private/reserved IPv4 upstreams through its
+NetworkPolicy; hostname matching does not enforce that address boundary.
+Policy denial returns 403;
 connection failure returns 502. The server does not decrypt TLS. External proxies
 own their own destination policy. Dedicated Gateway default-deny networking
 prevents direct Internet fallback; this is not whole-Harness containment.
@@ -112,4 +115,5 @@ prevents direct Internet fallback; this is not whole-Harness containment.
 
 ## Changelog
 
+- 2026-11-05 20:13: Trace explicit all-hosts policy with unchanged port and address restrictions (authoring-run/e9bf9370-1230-46cf-a388-d218708b8969 - dc5024a57ef9a046e31b191295a379296309d5ff)
 - 2026-11-05 19:30: Trace one selected proxy and the exact internal transport bridge (authoring-run/88571699-9ee3-42d5-89c5-d871f0a18b62 - 324fbad6f248bce4606e175fbb67ac506cd824ff)

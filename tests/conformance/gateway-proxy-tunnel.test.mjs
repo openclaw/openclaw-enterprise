@@ -465,9 +465,45 @@ test(
     ]) {
       assert.match((await openTunnel(t, proxyPort, target)).head, /^HTTP\/1\.1 403 Forbidden/);
     }
-    // Startup rejects malformed policy rather than accepting an unrestricted route.
-    for (const allowedHosts of [["*"], ["https://api.example.test"], "api.example.test"]) {
+    // Startup rejects malformed policy rather than widening a mistyped route.
+    for (const allowedHosts of [
+      ["*example.test"],
+      ["https://api.example.test"],
+      "api.example.test",
+    ]) {
       assert.throws(() => createGatewayProxyServer({ allowedHosts }), /allowedHosts/);
+    }
+  },
+);
+
+test(
+  "an explicit * policy permits unrelated hosts but retains CONNECT port and syntax checks",
+  testOptions,
+  async (t) => {
+    const upstream = await listen(t, (socket) => {
+      socket.on("error", () => {});
+      socket.end("public-service");
+    });
+    const { port: proxyPort } = await startGatewayProxy(t, {
+      upstreamPort: upstream.address().port,
+      upstreamHosts: ["api.example.test", "registry.other.test"],
+      allowedHosts: ["*"],
+    });
+    // Only the upstream sockets are redirected. The real process reads the operator
+    // environment policy, authorizes CONNECT, and relays bytes to both destinations.
+    for (const target of ["api.example.test:443", "registry.other.test:443"]) {
+      const tunnel = await openTunnel(t, proxyPort, target);
+      assert.match(tunnel.head, established);
+      await within(tunnel.closed, "public-service close");
+      assert.equal(tunnel.body().toString(), "public-service");
+    }
+    for (const target of [
+      "api.example.test:80",
+      "api.example.test:8443",
+      "api.example.test:443/path",
+      "user@api.example.test:443",
+    ]) {
+      assert.match((await openTunnel(t, proxyPort, target)).head, /^HTTP\/1\.1 403 Forbidden/);
     }
   },
 );

@@ -7,6 +7,12 @@ port. Compute validates the pair and permits only that peer and port from the
 Agent's Gateway, whether channels are enabled or not. Embedded Gateways receive
 the same setting; dedicated Harness processes do not.
 
+The bundled proxy's `gatewayProxy.allowedHosts` accepts exact DNS names,
+`*.example.com` for subdomains, or `"*"` for all hosts. The default permits Slack;
+an empty list denies all hosts. `"*"` removes hostname filtering only. CONNECT
+remains restricted to TCP 443, and the chart's NetworkPolicy still limits upstream
+traffic to public IPv4 addresses, excluding private and reserved ranges.
+
 The bundled Service is cluster-local. Embedded Gateways in the experimental
 two-cluster topology run in the execution cluster and require an external proxy
 reachable there; admission rejects a managed control-cluster proxy for that topology.

@@ -25,13 +25,14 @@ function validateAllowedHosts(hosts) {
       (host) =>
         typeof host !== "string" ||
         host.length > 253 ||
-        !/^(?:\*\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(
-          host,
-        ),
+        (host !== "*" &&
+          !/^(?:\*\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(
+            host,
+          )),
     )
   ) {
     throw new Error(
-      "Gateway proxy allowedHosts must be at most 256 lowercase DNS names, optionally prefixed with *.",
+      "Gateway proxy allowedHosts must be at most 256 entries: lowercase DNS names, optionally prefixed with *., or * for all hosts.",
     );
   }
 }
@@ -67,8 +68,10 @@ function isAllowedConnectTarget(target, allowedHosts) {
   return (
     parsed !== undefined &&
     parsed.port === 443 &&
-    allowedHosts.some((host) =>
-      host.startsWith("*.") ? parsed.host.endsWith(host.slice(1)) : parsed.host === host,
+    allowedHosts.some(
+      (host) =>
+        host === "*" ||
+        (host.startsWith("*.") ? parsed.host.endsWith(host.slice(1)) : parsed.host === host),
     )
   );
 }

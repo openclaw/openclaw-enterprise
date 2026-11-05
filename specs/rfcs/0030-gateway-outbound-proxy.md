@@ -58,8 +58,10 @@ proxy keys; reject them rather than silently keeping two routes.
 These are deployment-time operator settings, not per-Agent permissions. The
 bundled default permits Slack. An explicit `allowedHosts` list replaces that
 default; exact names permit one host and `*.example.com` permits subdomains,
-not the apex. An empty list denies all destinations. Operators add the hosts
-needed by their integrations; enabling a plugin does not expand this list.
+not the apex. An empty list denies all destinations. `"*"` permits all hosts,
+while retaining TCP 443 and the public-IPv4-only NetworkPolicy. Operators select
+that mode or list the hosts their integrations need; enabling a plugin does not
+expand the list.
 Existing Agent configuration and Secret bindings still enable integrations and
 supply their credentials.
 
