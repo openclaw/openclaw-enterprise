@@ -41,13 +41,12 @@ import {
   saveConfigurationUntilReady,
   settledView,
   storeRefusedConfiguration,
-  trackSettledFetches,
   versionChooser,
   versionOption,
   waitForChosenVersion,
   waitForEnabled,
-  waitForIdleFetches,
 } from "./console-agents-browser-helpers.mjs";
+import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import {
   deploymentRecordUrl,

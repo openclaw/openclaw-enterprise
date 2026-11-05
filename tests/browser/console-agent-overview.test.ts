@@ -37,16 +37,18 @@ import {
   recordLayoutShifts,
   routeFailedDeployment,
   routeOneVersionPerPage,
-  settledFetches as legacySettledFetches,
   settledView,
   takeLayoutShifts,
-  trackSettledFetches,
   waitForChosenVersion,
   waitForCondition,
   waitForEnabled,
+} from "./console-agents-browser-helpers.mjs";
+import {
+  settledFetches as legacySettledFetches,
+  trackSettledFetches,
   waitForIdleFetches,
   waitForSettledFetches,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-fetch-accounting.ts";
 import {
   deploymentDetailsOpen as legacyDeploymentDetailsOpen,
   deploymentRecordUrl,

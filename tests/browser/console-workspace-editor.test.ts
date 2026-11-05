@@ -27,13 +27,15 @@ import {
   nonAuthWriteRequests,
   pathRequests,
   settlePageRequests,
-  trackSettledFetches,
   waitForCondition,
   waitForEnabled,
-  waitForIdleFetches,
   waitForInputValue,
-  waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
+import {
+  trackSettledFetches,
+  waitForIdleFetches,
+  waitForSettledFetches,
+} from "./console-fetch-accounting.ts";
 import {
   deploymentRecordUrl,
   expectDeploymentOutcome,

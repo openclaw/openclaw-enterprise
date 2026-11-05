@@ -21,11 +21,10 @@ import {
   secretOptionLabel,
   selectSecret,
   settledView,
-  trackSettledFetches,
   waitForEnabled,
-  waitForIdleFetches,
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
+import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
 import { confirmAgentAction, responseTo } from "./console-action-helpers.ts";
 import {
   focusedLabel,

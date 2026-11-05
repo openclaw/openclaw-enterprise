@@ -37,11 +37,10 @@ import {
   pathRequests,
   secretOptionLabel,
   selectSecret,
-  trackSettledFetches,
   waitForEnabled,
-  waitForIdleFetches,
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
+import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import {
   agentPrincipalDenied,

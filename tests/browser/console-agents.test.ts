@@ -69,8 +69,8 @@ import {
   waitForInputValue,
   statusTone,
   isMaskedSecretValue,
-  trackSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
+import { trackSettledFetches } from "./console-fetch-accounting.ts";
 import {
   STARTER_CONTROL_UI,
   configurationPostRequests,
