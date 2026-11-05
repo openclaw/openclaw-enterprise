@@ -86,6 +86,8 @@ runs:
     - id: test-docker
       uses: ./.github/actions/setup-test-docker
       if: inputs.lane == 'docker-model' || inputs.lane == 'logging-collector'
+      with:
+        setup-buildx: ${{ inputs.lane != 'logging-collector' }}
     - name: Record Logging Collector Docker setup time
       if: always() && inputs.lane == 'logging-collector'
       continue-on-error: true

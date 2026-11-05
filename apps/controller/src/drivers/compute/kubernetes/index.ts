@@ -270,6 +270,10 @@ import {
 } from "../embedded-gateway-owner.ts";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
+  COMPUTE_AGENT_RUNTIME_ENTRYPOINT,
+  COMPUTE_PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
+  COMPUTE_AGENT_WITH_NODE_ENTRYPOINT,
+  COMPUTE_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   AGENT_WITH_NODE_ENTRYPOINT,
   PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
   PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
@@ -11541,12 +11545,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
       return [];
     }
     const { runtime } = pluginRuntime;
+    const selectedIds = Object.keys(runtime.selections);
     if (
       runtime.kind === "openclaw" &&
-      Object.keys(runtime.selections).length === 1 &&
-      managedInstalls.some(({ id }) => Object.hasOwn(runtime.selections, id))
+      selectedIds.length > 0 &&
+      selectedIds.every((id) => managedInstalls.some((install) => install.id === id))
     ) {
-      return []; // The managed package is already in the image.
+      return []; // The image supplies all selected packages.
     }
     const data = pluginRuntimeConfigMapData(runtime);
     const environment = new Map([
@@ -12201,7 +12206,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
     revision: AgentRevision,
     setupFile: boolean,
     workspaceSetup: WorkspaceSetup | undefined,
-    workspaceEntrypoint = AGENT_WITH_NODE_ENTRYPOINT,
+    workspaceEntrypoint = this.sandboxDriverForRevision(revision)?.provisionHarness === undefined
+      ? COMPUTE_AGENT_WITH_NODE_ENTRYPOINT
+      : AGENT_WITH_NODE_ENTRYPOINT,
   ): void {
     const { container, variables } = this.addNodeEnrollmentState(deployment, name, ca, setupFile);
     const defaults = asRecord(asRecord(revision.configuration.agents)?.defaults);
@@ -14566,13 +14573,25 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       return undefined;
     }
     const protectedCodex = this.hasProtectedCodexAdmission(revision);
+    const providerOwned = this.sandboxDriverForRevision(revision)?.provisionHarness !== undefined;
+    const entrypoints = providerOwned
+      ? {
+          agent: AGENT_RUNTIME_ENTRYPOINT,
+          protected: PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
+          workspace: AGENT_WITH_NODE_ENTRYPOINT,
+          protectedWorkspace: PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
+        }
+      : {
+          agent: COMPUTE_AGENT_RUNTIME_ENTRYPOINT,
+          protected: COMPUTE_PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
+          workspace: COMPUTE_AGENT_WITH_NODE_ENTRYPOINT,
+          protectedWorkspace: COMPUTE_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
+        };
     return {
       name: `plugin-runtime-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`,
       runtime,
-      entrypoint: protectedCodex ? PROTECTED_CODEX_RUNTIME_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT,
-      workspaceEntrypoint: protectedCodex
-        ? PROTECTED_CODEX_WITH_NODE_ENTRYPOINT
-        : AGENT_WITH_NODE_ENTRYPOINT,
+      entrypoint: protectedCodex ? entrypoints.protected : entrypoints.agent,
+      workspaceEntrypoint: protectedCodex ? entrypoints.protectedWorkspace : entrypoints.workspace,
     };
   }
 
@@ -16123,9 +16142,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     repositoryMaterial?: ResolvedRepositoryMaterialSpec,
     nativeRuntime?: NativeRuntimeSnapshot,
     providerEndpoint?: SandboxHarnessEndpoint,
-    useRuntimeWorkspace = false,
+    providerOwnsHarness = false,
   ): ManagedKubernetesObject {
-    const harnessSetupWorkspace = useRuntimeWorkspace
+    const harnessSetupWorkspace = providerOwnsHarness
       ? { environment: "OPENCLAW_WORKSPACE_DIR" as const }
       : "/home/node/workspace";
     if (nativeRuntime !== undefined && (embedded || role !== "agent")) {
@@ -16308,26 +16327,29 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         });
       }
     }
-    // The managed release is in the image. The two processes receive only its
-    // identity and the reviewed tool selection, never the account's bearer.
+    // The image supplies the releases. Both processes receive only package identities and
+    // reviewed tool selections, never account credentials.
     if (dedicated && pluginRuntime?.runtime.kind === "openclaw") {
       const { selections } = pluginRuntime.runtime;
-      const install = managedInstalls.find(({ id }) => Object.hasOwn(selections, id));
-      if (install && (selections[install.id]?.enabled || role === "gateway")) {
-        const selection = selections[install.id]!;
+      const packages = [];
+      for (const install of managedInstalls) {
+        const selection = selections[install.id];
+        if (!selection || (!selection.enabled && role !== "gateway")) {
+          continue;
+        }
         const binding =
           install.kind === "mcp" ? managedMcpCredentialBinding(selections, install) : undefined;
-        variables.push({
-          name: MANAGED_PLUGIN_ENVIRONMENT,
-          value: JSON.stringify({
-            kind: install.kind,
-            packageName: install.packageName,
-            slotId: Object.keys(install.credentials)[0],
-            ...(role === "gateway" && { id: install.id }),
-            ...(selection.enabled && { releaseSha256: install.releaseSha256 }),
-            ...(binding?.toolNames.length && { toolNames: binding.toolNames }),
-          }),
+        packages.push({
+          kind: install.kind,
+          packageName: install.packageName,
+          slotId: Object.keys(install.credentials)[0],
+          ...(role === "gateway" && { id: install.id }),
+          ...(selection.enabled && { releaseSha256: install.releaseSha256 }),
+          ...(binding?.toolNames.length && { toolNames: binding.toolNames }),
         });
+      }
+      if (packages.length > 0) {
+        variables.push({ name: MANAGED_PLUGIN_ENVIRONMENT, value: JSON.stringify(packages) });
       }
     }
     const needsPluginRuntime =
@@ -16646,7 +16668,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             name: "OPENCLAW_NATIVE_INFERENCE_CONFIG",
             value: nativeRuntime.configuration,
           });
-          if (useRuntimeWorkspace) {
+          if (providerOwnsHarness) {
             // A provider-owned worker serves a held model-check failure on this
             // port, through the provider's bearer-passthrough exposure, as the
             // provider-owned Codex Harness does (finding 1642).
@@ -16812,7 +16834,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       } else {
         runtimeEntrypoint =
           nativeRuntime === undefined
-            ? (pluginRuntime?.entrypoint ?? AGENT_RUNTIME_ENTRYPOINT)
+            ? (pluginRuntime?.entrypoint ??
+              (providerOwnsHarness ? AGENT_RUNTIME_ENTRYPOINT : COMPUTE_AGENT_RUNTIME_ENTRYPOINT))
             : NATIVE_WORKER_ENTRYPOINT;
       }
     }

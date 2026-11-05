@@ -36,10 +36,10 @@ import {
   tagView,
   viewTag,
   waitForFocusedLabel,
-} from "./console-refocus-helpers.mjs";
+} from "./console-refocus-helpers.ts";
 import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { within } from "../helpers/wait-for.mjs";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { deleteRefused, VERSION_READ_DENIED_HEADING } from "../helpers/refusal-text.mjs";

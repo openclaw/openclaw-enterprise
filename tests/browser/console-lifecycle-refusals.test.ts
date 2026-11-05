@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { Page } from "playwright";
 
-import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { NamespaceCallerPermissionsResponse } from "../../packages/contracts/src/api/resources.ts";
+
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   AGENT_READ,
   accessibleDescription,
@@ -10,7 +12,6 @@ import {
   detailUrl,
   expectReachableReason,
   fileBrowser,
-  fulfillPatchedJson,
   grantMember,
   hasFocus,
   holdRequests,
@@ -25,6 +26,7 @@ import {
   settledView,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
+import { fulfillPatchedJson } from "./console-patched-response.ts";
 import { confirmAgentAction, responseTo } from "./console-action-helpers.ts";
 import {
   fulfillMethod,
@@ -33,7 +35,7 @@ import {
   tagView,
   taggedView,
   waitForFocusedLabel,
-} from "./console-refocus-helpers.mjs";
+} from "./console-refocus-helpers.ts";
 import { withholdPermissionSummary } from "./console-agents-test-support.mjs";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import {
@@ -854,7 +856,7 @@ test("a refused Create Secret explains Show value and the page's Create Secret",
   const { page } = await newPage(t, fixture, { browser });
   // A permission answer that predates a revocation still offers creation; the API refuses it.
   await page.route(`**/namespaces/${namespace.id}/permissions`, (route) =>
-    fulfillPatchedJson(route, (body) => ({
+    fulfillPatchedJson(route, NamespaceCallerPermissionsResponse, (body) => ({
       ...body,
       data: { ...body.data, secrets: { create: true } },
     })),

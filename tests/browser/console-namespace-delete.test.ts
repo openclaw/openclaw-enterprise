@@ -8,7 +8,7 @@ import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { restrict } from "../helpers/iam-grants.mjs";
 import { NAMESPACE_DELETE_DENIED, NAMESPACE_DELETE_RESTRICTED } from "../helpers/refusal-text.mjs";
 import { createConsoleAppFixture, grantMember, memberRole } from "../helpers/console-app.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   apiRequests,
   fileBrowser,
@@ -23,7 +23,7 @@ import {
   waitForIdleFetches,
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
-import { focusedLabel, waitForFocusedLabel } from "./console-refocus-helpers.mjs";
+import { focusedLabel, waitForFocusedLabel } from "./console-refocus-helpers.ts";
 
 const browser = fileBrowser();
 

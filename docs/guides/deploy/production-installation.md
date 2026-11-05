@@ -99,11 +99,38 @@ else
 fi
 ```
 
-If a runtime build fails certificate verification when downloading a package behind an HTTPS proxy, add `--secret "id=build-ca,src=$CA_BUNDLE"` to the runtime `docker buildx build` command above. Set `CA_BUNDLE` to a PEM file with the public trust roots and the approved proxy CA certificate. The runtime Dockerfile mounts this file only during the download steps. Image registry TLS uses the builder's own trust configuration.
+If a build fails certificate verification when downloading a package behind an HTTPS proxy or from a private package registry, add `--secret "id=build-ca,src=$CA_BUNDLE"` to both `docker buildx build` commands above. Set `CA_BUNDLE` to a PEM file with the public trust roots and the approved proxy or registry CA certificate. Both Dockerfiles mount this file only during the download steps. Keep TLS verification enabled. Image registry TLS uses the builder's own trust configuration.
 
 Before installation, [check each digest](../../testing/docker.md#check-published-images)
 on native hosts for every target architecture, without skips. Configure pull
 credentials only when the selected registry requires them.
+
+### Build through a package registry mirror
+
+When building either image from source, Corepack downloads the pinned pnpm
+version, then pnpm installs dependencies. Corepack does not read npmrc. To
+route both downloads through a mirror, supply the secrets for their respective
+steps to each `docker buildx build` command:
+
+```bash
+--secret "id=corepack-env,src=$COREPACK_ENV_FILE" \
+--secret "id=npmrc,src=$NPMRC_FILE"
+```
+
+Keep both files outside the checkout and readable only by their owner. The
+Corepack file uses dotenv syntax: set `COREPACK_NPM_REGISTRY` to the mirror's
+credential-free HTTPS base URL **without a trailing slash**. When authentication
+is required, use `COREPACK_NPM_TOKEN`; Corepack sends this bearer token only to
+the configured registry origin. Do not use `COREPACK_NPM_USERNAME` and
+`COREPACK_NPM_PASSWORD`: Corepack can send those Basic credentials to a different
+archive host named by registry metadata. If the mirror uses a private CA,
+supply the `build-ca` bundle described above. Keep Corepack integrity checks enabled.
+
+Configure pnpm's registry and a separate read-only dependency credential in
+npmrc. The runtime's permitted dependency lifecycle scripts can read this file.
+The build mounts it only during dependency installation and mounts
+`corepack-env` only during bootstrap. Omitting `corepack-env` keeps Corepack's
+default registry selection.
 
 ## Configure the Installation
 
@@ -425,13 +452,15 @@ binds, reports `Prepared bootstrap volume claim ... with UID/GID 1000 mode 0700.
 and retains failed Pods. If policy forbids the Pod, have the storage administrator
 prepare the same root state.
 
-[Prepare to record the initialization Job UID](production-handoff.md#record-the-initialization-job-for-handoff), then install once:
+Exclude competing installs, upgrades and Job replacements. Use the CLI matching this chart's
+source revision. [Keep the receipt for handoff](production-handoff.md#record-the-initialization-job-for-handoff), then install once:
 
 ```bash
-helm install oce deploy/helm/openclaw-enterprise \
-  --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CONTEXT" \
-  --namespace openclaw-system -f "$OCC_INPUT_DIRECTORY/values.yaml" \
-  --wait --timeout 5m
+INSTALL_RECEIPT_DIRECTORY="$OCC_INPUT_DIRECTORY/install-receipt"
+occ installation install --release oce --chart deploy/helm/openclaw-enterprise \
+  --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" \
+  --kube-namespace openclaw-system --values "$OCC_INPUT_DIRECTORY/values.yaml" \
+  --receipt "$INSTALL_RECEIPT_DIRECTORY" --wait-timeout 5m
 ```
 
 After a lost response or refused release name, [resume this installation](production-handoff.md#resume-an-installation-in-progress).
@@ -439,8 +468,9 @@ Do not retry or switch to upgrade. An unused release name does not prove the dat
 
 For an explicitly [published chart release](../../release/chart-publication.md#pull-and-install)
 (created with `publish_chart: true`),
-verify its receipt, then use `oci://ghcr.io/openclaw/charts/openclaw-enterprise`
-with `--version "$OCE_VERSION"`.
+verify its publication receipt, pull the exact chart version locally, and pass
+that local chart archive to `--chart`. The installer freezes local chart files;
+it does not resolve a mutable remote chart reference.
 
 Helm owns migration and bootstrap ordering through its initialization hook.
 Readiness covers the API and worker probes, not authenticated API access, Agent

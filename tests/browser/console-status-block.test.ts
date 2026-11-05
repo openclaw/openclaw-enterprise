@@ -1,3 +1,4 @@
+import { openAdvancedSettings } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import type { BrowserContextOptions, Locator, Page, Route } from "playwright";
@@ -8,7 +9,7 @@ import type { PermissionAction } from "../../packages/contracts/src/index.ts";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   consoleViewports,
   detailUrl,
@@ -24,7 +25,6 @@ import {
 } from "./console-agents-browser-helpers.mjs";
 import {
   createRepositoryLaunchFixture,
-  openAdvancedSettings,
   withholdPermissionSummary,
 } from "./console-agents-test-support.mjs";
 import {

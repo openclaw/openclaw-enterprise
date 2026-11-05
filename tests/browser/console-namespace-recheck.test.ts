@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import { createRequire } from "node:module";
 import type { Locator, Page } from "playwright";
 
 import {
@@ -10,7 +9,6 @@ import {
 
 import {
   fileBrowser,
-  fulfillPatchedJson,
   login,
   newPage,
   settledFetches,
@@ -20,11 +18,12 @@ import {
   waitForIdleFetches,
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
+import { fulfillPatchedJson } from "./console-patched-response.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { NAMESPACE_UNAVAILABLE } from "../helpers/refusal-text.mjs";
 import { routeInstallationProvisioning } from "./console-agents-test-support.mjs";
-import { refocus } from "./console-refocus-helpers.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { refocus } from "./console-refocus-helpers.ts";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 
 // Create Agent open on a provisioning Namespace rechecks it every 10 s while a Dedicated plan
 // waits for it (finding 2012). These cases pin when that recheck runs and stops: a failed read
@@ -42,13 +41,6 @@ const REFUSES = "This Namespace cannot hold new Agents, so Create Agent is unava
 const ADOPTED_WAITS = "Create Agent is unavailable until this Namespace is ready.";
 const MISSING = `${NAMESPACE_UNAVAILABLE}. Choose another Namespace.`;
 const MISSING_LINE = "Create Agent is unavailable until you choose another Namespace.";
-
-const require = createRequire(new URL("../../packages/contracts/package.json", import.meta.url));
-const {
-  Check,
-}: {
-  Check(schema: typeof NamespaceListResponse, value: unknown): value is NamespaceListResponse;
-} = require("typebox/value");
 
 const browser = fileBrowser();
 
@@ -99,11 +91,7 @@ async function routeNamespace(page: Page, namespaceId: NamespaceWire["id"]) {
         await route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again."));
         return;
       }
-      await fulfillPatchedJson(route, (body: unknown) => {
-        assert.ok(
-          Check(NamespaceListResponse, body),
-          "expected a Namespace list from the controller",
-        );
+      await fulfillPatchedJson(route, NamespaceListResponse, (body) => {
         body.data = body.data.filter((item) => !(state.absent && item.id === namespaceId));
         body.data = body.data.map((item) =>
           item.id === namespaceId && state.status

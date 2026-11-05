@@ -1,3 +1,12 @@
+import {
+  assertAgentNameTaken,
+  createModelCredentialSecret,
+  enterManualModel,
+  openAdvancedSettings,
+  runProvisioningPolls,
+  waitForProvisioningFailure,
+  submitCreateAgent,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -52,22 +61,14 @@ import {
 import {
   agentPostRequests,
   agentProvisionPostRequests,
-  assertAgentNameTaken,
   configurationPostRequests,
-  createModelCredentialSecret,
-  enterManualModel,
   nativeSandboxDriver,
-  openAdvancedSettings,
   routeInstallationProvisioning,
   routeInstallationWithoutProvisioning,
-  runProvisioningPolls,
-  waitForProvisioningFailure,
-  submitCreateAgent,
-  routeProvisioningJob,
-  provisioningJob,
 } from "./console-agents-test-support.mjs";
+import { provisioningJob, routeProvisioningJob } from "./console-provisioning-job-fixture.ts";
 import { createRuntimeAuthFixture as rawRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
-import { createReadyConsoleNamespace as rawReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { createReadyConsoleNamespace as rawReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   AGENT_NAME_CONFLICT,
   CHANNEL_BINDING_FORM_REMEDY,
@@ -2455,7 +2456,7 @@ test("Create Agent drops the Pod quota line when the deployment read is denied",
     job("running", handedOff),
     failed(handedOff),
   ];
-  const served = await routeProvisioningJob(page, work, reads);
+  const served = await routeProvisioningJob(page, fixture, work, reads);
   // The first deployment read names the quota; every later one is denied.
   let deploymentReads = 0;
   await page.route(

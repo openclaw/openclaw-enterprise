@@ -176,3 +176,5 @@ Collector or local Docker log forwarding. See [Observability](../../guides/obser
 - `OTEL_COLLECTOR_PORT` — Local Collector Fluent Forward port; default: `24224`.
 - `OTEL_COLLECTOR_METRICS_PORT` — Local Collector metrics port; default: `8888`.
 - `OCC_DOCKER_LOGGING_ADDRESS` — Docker Compute log destination; local override default: `127.0.0.1:24224`.
+- `OCE_WORKER_OBSERVATIONS_FILE` — Exact private JSONL input read by the worker termination Collector; required. See [Worker termination observations](../../guides/observability/worker-terminations.md).
+- `OCE_WORKER_STATE_DIR` — Private persistent directory for worker termination Collector offsets and export queue; required. See [Worker termination observations](../../guides/observability/worker-terminations.md).

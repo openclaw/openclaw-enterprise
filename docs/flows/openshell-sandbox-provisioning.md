@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-11-04
-last_updated_session: authoring-run/63c54d1f-8f48-4ab3-a707-9b0d72978728
+updated: 2026-11-05
+last_updated_session: authoring-run/5112cc08-58d9-46f9-9e8d-eb23191832e6
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -192,6 +192,10 @@ selects a named provider and HTTPS Responses transport.
 
 `apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness`
 
+`sandboxDataMount` validates Git revisions' Harness mounts;
+`OpenShellGitRuntime.prepare` adds process-scoped `safe.directory` for that path
+to the Sandbox environment.
+
 Dedicated Codex/OpenClaw requires Landlock. Kubernetes, filesystem, process and
 [binary-scoped network policy](agent-sandbox-policy.md) use pinned `v0.1.6`.
 Relocation preserves opaque `OCE_CODEX_CHATGPT_ACCOUNT` JSON.
@@ -227,12 +231,11 @@ Renewal requires expired stored setup, later live expiry and unchanged endpoint,
 TLS fingerprint, runtime and CA. Policy permits that Gateway and `/usr/local/bin/node` only;
 foreign ownership/drift prevents creation.
 
-Version state mounts at `/sandbox/.openclaw-runtime`; persistent subpaths use
-`/sandbox/.openclaw-mounts`. Admitted `/home/node` paths move under
-runtime `harnessHome` for native hook credentials. Codex
-hooks trust the provider-file Gateway CA and require node-reachable routing.
-`OPENCLAW_NODE_STATE_DIR` uses a process-created `state` child to avoid root-owned
-mounts and symlinks.
+Version state mounts at `/sandbox/.openclaw-runtime`; persistent subpaths mount
+below `/sandbox/.openclaw-mounts`. Admitted `/home/node` paths move under
+`harnessHome` for native hook credentials. Codex hooks use the provider-file
+Gateway CA and node-reachable routing. `OPENCLAW_NODE_STATE_DIR` uses a created
+`state` child to avoid root-owned mounts and symlinks.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:agentWithNodeEntrypoint`
 and `NATIVE_WORKER_ENTRYPOINT` apply `0700` before OpenClaw setup or migration,
 clearing inherited setgid. OpenClaw prepares its children on retry; retained state
@@ -240,11 +243,10 @@ and workspace permissions stay unchanged. Permission failures stop startup.
 Workspace, node identity, sessions and images stay separate. The supervisor probes
 `/tmp`; native `TMPDIR` is a private `tmp` child under the runtime home.
 
-`prepareNativeWorkspace` uses a restricted Deployment for the Agent revision to privatize
-writable PVC subpaths, preserving retained entries. Mode and process ownership checks precede
-UID-fenced foreground deletion and writer Pod termination. After synchronous preparation,
-the process exits successfully on SIGTERM. Kubernetes keeps its normal grace
-period; the Driver waits until all writer Pods are gone before creating the Sandbox.
+`prepareNativeWorkspace` privatizes retained PVC subpaths through a restricted
+revision Deployment. Mode/ownership checks precede UID-fenced foreground deletion;
+completed preparation exits successfully on SIGTERM with normal termination grace.
+Sandbox creation waits for every writer Pod.
 Preparation requires `userNamespaces: false`, at most one operator-mode ServiceAccount
 and the pinned Gateway's default identity, without model credentials, ServiceAccount
 tokens, capabilities, or direct Pod creation. Mode support and admission report
@@ -397,6 +399,8 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 00:43: Trace exact workspace Git trust in the Sandbox environment. (authoring-run/5112cc08-58d9-46f9-9e8d-eb23191832e6 - 392d3f1d70fbf2d401afe0c1bdb2ddcf8f6341d9)
 
 - 2026-11-04 23:20: Reject plaintext setup with TLS pins. (authoring-run/63c54d1f-8f48-4ab3-a707-9b0d72978728 - 24c8c7f7c2b012bd1b802be333a3420645808533)
 

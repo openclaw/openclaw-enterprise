@@ -197,6 +197,15 @@ a successful deployment does not confirm that a third-party connector is usable.
 
 ## An OpenShell Agent stops answering
 
+For a dedicated Codex Agent on OpenShell, if the Sandbox is running but replies
+time out, ask the operator to check the Agent Gateway's route to OpenShell:
+Gateway egress, matching OpenShell ingress
+and, for secure WebSocket (WSS) connections, the served certificate's coverage
+of the advertised service hostname. A successful control-endpoint check does
+not establish that the certificate covers the advertised hostname. Keep
+hostname verification enabled; correct the owning network or certificate
+configuration, then [verify a model response](../operate/model-verification.md).
+
 On OpenShell, OCE asks the gateway to restart the Harness whenever its process
 exits. `occ agent runtime AGENT_ID` shows
 `Harness Sandbox: starting (HARNESS_RESTARTING, last exit code N, restart N)` for

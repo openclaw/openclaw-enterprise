@@ -1,5 +1,17 @@
 /// <reference lib="es2024.promise" />
 
+import {
+  openCreateSecretDialog,
+  createModelCredentialSecret,
+  enterManualModel,
+  openAdvancedSettings,
+  assertAgentNameTaken,
+  optionValues,
+  runProvisioningPolls,
+  waitForProvisioningFailure,
+  createAgentThroughForm,
+  submitCreateAgent,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -27,7 +39,7 @@ import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.mjs";
+import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   apiRequests,
@@ -50,24 +62,13 @@ import {
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
 import {
-  openCreateSecretDialog,
-  createModelCredentialSecret,
-  enterManualModel,
-  openAdvancedSettings,
   configurationPostRequests,
   routeInstallationProvisioning,
   routeInstallationWithoutProvisioning,
   agentPostRequests,
-  assertAgentNameTaken,
-  optionValues,
   raceAgentName,
-  runProvisioningPolls,
-  waitForProvisioningFailure,
-  createAgentThroughForm,
-  submitCreateAgent,
-  routeProvisioningJob,
-  provisioningJob,
 } from "./console-agents-test-support.mjs";
+import { provisioningJob, routeProvisioningJob } from "./console-provisioning-job-fixture.ts";
 import {
   AGENT_NAME_CONFLICT,
   CONSOLE_NAMESPACE_NOT_READY,
@@ -238,7 +239,7 @@ for (const malformed of ["revision ID", "error message"] as const) {
     await routeDedicatedProvisioning(page, fixture, namespace);
     const root = `/namespaces/${namespace.id}/agents/provision`;
     const work = provisioningJob(namespace.id, `work_${randomUUID()}`);
-    const served = await routeProvisioningJob(page, work, null);
+    const served = await routeProvisioningJob(page, fixture, work, null);
     const meta = { requestId: `req_${randomUUID()}` };
     const malformedMessage = { detail: "Unreadable provisioning message" };
     await page.route(`${fixture.origin}${work.url}`, (route) => {
@@ -955,6 +956,7 @@ test("Dedicated Agent creation distinguishes stopped, superseded and failed firs
   // A versioned job already identifies its revision when Create admits it.
   await routeProvisioningJob(
     page,
+    fixture,
     {
       ...work,
       job: (status, extra) =>
@@ -1073,7 +1075,7 @@ test("Dedicated Agent creation keeps the first revision observed after admission
         error: { code: "REVISION_SUPERSEDED", message: "Deployment was superseded." },
       }),
     ];
-    const served = await routeProvisioningJob(page, work, (index) => {
+    const served = await routeProvisioningJob(page, fixture, work, (index) => {
       const observation = observations[index];
       assert.ok(observation, "unexpected additional provisioning poll");
       return observation;
@@ -1292,7 +1294,7 @@ test("Dedicated Agent creation keeps one provisioning label while the job retrie
   const { url, job, failed } = work;
   // The worker starts the job, waits to retry it, then retries it twice before it fails.
   const reads = [job("running"), job("queued"), job("running"), job("running"), failed()];
-  const served = await routeProvisioningJob(page, work, reads);
+  const served = await routeProvisioningJob(page, fixture, work, reads);
 
   await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
@@ -1352,7 +1354,7 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
       job("running", handedOff),
       failed(handedOff),
     ];
-    const served = await routeProvisioningJob(page, work, reads);
+    const served = await routeProvisioningJob(page, fixture, work, reads);
     const attempts: (ProvisioningMessage | "stalled" | "unavailable")[] =
       mode === "interrupted"
         ? [
@@ -1580,7 +1582,7 @@ test("Dedicated Agent creation names the first deployment's wait while it provis
       job("queued", waiting(null)),
       failed(handedOff),
     ];
-    const served = await routeProvisioningJob(page, work, reads);
+    const served = await routeProvisioningJob(page, fixture, work, reads);
     await page.route(
       `**/namespaces/${namespace.id}/agents/${agentId}/deployments/${revisionId}`,
       (route) => {
@@ -1904,6 +1906,7 @@ test("Agent creation offers mainline Anthropic models before credentials and sav
   const selectedConfiguration = await page.getByLabel("Configuration JSON").inputValue();
   await page.getByLabel("Agent name").fill("Anthropic Agent");
   const credentialSecret = await createModelCredentialSecret(page, "test-anthropic-api-key");
+  assert.ok(credentialSecret, "Expected the created model credential Secret");
   assert.equal(await choice.inputValue(), "claude-fable-5-1");
   assert.equal(await page.getByLabel("Configuration JSON").inputValue(), selectedConfiguration);
   assert.deepEqual(
@@ -2307,6 +2310,7 @@ test("Agent creation can return from manual model entry to the list and save the
   assert.equal(await choice.inputValue(), "");
   assert.equal(JSON.parse(await configuration.inputValue()).agents?.defaults?.model, undefined);
   const secret = await createModelCredentialSecret(page, "round-trip-model-key");
+  assert.ok(secret, "Expected the created model credential Secret");
   await choice.selectOption("gpt-6-astra");
   await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
   assert.equal(await choice.isVisible(), false);
@@ -2418,6 +2422,7 @@ test("Agent creation accepts a manual model outside the static list and saves th
     "manual-model-key",
     "gpt-manual-account-model",
   );
+  assert.ok(selectedSecret, "Expected the created model credential Secret");
   assert.deepEqual(
     secretPostRequests(requests, namespace.id).map((request) => request.body),
     [{ name: "Manual model Agent model credential", value: "manual-model-key" }],
@@ -2747,6 +2752,15 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const pluginDriver = new CodexPluginDriver();
+  // Keep optional catalog prefetch local while exercising the real Agent creation conflict.
+  t.mock.method(
+    pluginDriver,
+    "discoverCatalog",
+    async (): ReturnType<typeof pluginDriver.discoverCatalog> => ({
+      plugins: [],
+      nextCursor: null,
+    }),
+  );
   fixture.controller.registerDriver(pluginDriver);
   fixture.controller.selectDriver("plugin", pluginDriver.id);
   const namespace = await fixture.createNamespace("Partial save retry", { ready: true });
@@ -2825,6 +2839,7 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
   requests.length = 0;
   await page.getByLabel("Agent name").fill("Retry Agent");
   const selectedSecret = await createModelCredentialSecret(page, "at-browser-pat");
+  assert.ok(selectedSecret, "Expected the created model credential Secret");
   assert.equal(
     await page.getByLabel("Service account token Secret", { exact: true }).inputValue(),
     secretOptionLabel(selectedSecret),
@@ -3047,6 +3062,7 @@ for (const swapped of ["Agent", "service principal"]) {
     await page.getByRole("button", { name: "Start with default Preset" }).click();
     await page.getByLabel("Agent name").fill("New Agent");
     const secret = await enterManualModel(page, "test-create-response-key");
+    assert.ok(secret, "Expected the created model credential Secret");
     await page.getByRole("button", { name: "Create Agent" }).click();
     const warning = page.getByRole("alert").filter({
       hasText: swapped === "Agent" ? "Outcome unknown" : "service principal could not be confirmed",

@@ -10,6 +10,14 @@ FROM ${NODE_BASE_IMAGE} AS node-build-base
 RUN node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 22 || (minor === 22 && patch < 1)) throw new Error(`Select a Node.js 24.22.1+ base image in the 24 series; found ${process.version}.`);'
 RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
+FROM node-build-base AS curl-packages
+COPY deploy/runtime/curl /tmp/curl
+RUN --mount=type=secret,id=build-ca,required=false \
+    set -eu; \
+    if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \
+    sh /tmp/curl/build.sh
+RUN --network=none sh /tmp/curl/verify.sh
+
 FROM ${NODE_RUNTIME_BASE_IMAGE} AS node-runtime-base
 RUN node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 22 || (minor === 22 && patch < 1)) throw new Error(`Select a Node.js 24.22.1+ base image in the 24 series; found ${process.version}.`);'
 RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
@@ -26,7 +34,16 @@ COPY packages/contracts/package.json packages/contracts/package.json
 COPY packages/iam/package.json packages/iam/package.json
 COPY packages/occ/package.json packages/occ/package.json
 COPY packages/utils/package.json packages/utils/package.json
+RUN --mount=type=secret,id=corepack-env,required=false \
+    --mount=type=secret,id=build-ca,required=false \
+    set -eu; \
+    if [ -f /run/secrets/build-ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/build-ca; fi; \
+    COREPACK_ENV_FILE=/run/secrets/corepack-env corepack pnpm --version
 RUN --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
+    --mount=type=secret,id=build-ca,required=false \
+    set -eu; \
+    if [ -f /run/secrets/build-ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/build-ca; fi; \
+    COREPACK_ENABLE_NETWORK=0 \
     corepack pnpm install --frozen-lockfile --ignore-scripts --store-dir=/tmp/pnpm-store \
     && rm -rf /tmp/pnpm-store
 
@@ -149,6 +166,13 @@ ENV OPENCLAW_BUILD_TIMESTAMP=${OPENCLAW_BUILD_TIMESTAMP}
 ENV OPENCLAW_PREFER_PNPM=1
 WORKDIR /source
 COPY --from=openclaw-source /inputs/ ./
+RUN --mount=type=secret,id=corepack-env,required=false \
+    --mount=type=secret,id=build-ca,required=false \
+    --mount=type=bind,source=deploy/runtime/install-attempts.sh,target=/tmp/install-attempts.sh \
+    set -eu; \
+    if [ -f /run/secrets/build-ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/build-ca; fi; \
+    corepack enable; \
+    COREPACK_ENV_FILE=/run/secrets/corepack-env sh /tmp/install-attempts.sh corepack pnpm --version
 
 FROM openclaw-dependency-inputs AS openclaw-patched-source
 # Keep package-store downloads out of retained layers; installed files remain.
@@ -161,8 +185,7 @@ RUN --mount=type=secret,id=build-ca,required=false \
     --mount=type=bind,source=deploy/runtime/install-attempts.sh,target=/tmp/install-attempts.sh \
     set -eu; \
     if [ -f /run/secrets/build-ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/build-ca; fi; \
-    corepack enable; \
-    sh /tmp/install-attempts.sh node /tmp/with-pinned-matrix-sdk-crypto.mjs /tmp/matrix-sdk-crypto \
+    COREPACK_ENABLE_NETWORK=0 sh /tmp/install-attempts.sh node /tmp/with-pinned-matrix-sdk-crypto.mjs /tmp/matrix-sdk-crypto \
     pnpm install --frozen-lockfile --store-dir=/tmp/pnpm-store \
       --config.supportedArchitectures.os=linux \
       --config.supportedArchitectures.cpu="$(node -p 'process.arch')" \
@@ -285,12 +308,11 @@ RUN --mount=type=secret,id=build-ca,required=false \
     --mount=type=bind,source=deploy/runtime/install-attempts.sh,target=/tmp/install-attempts.sh \
     set -eu; \
     if [ -f /run/secrets/build-ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/build-ca; fi; \
-    corepack enable; \
     set -- --filter . --filter ./ui --filter './packages/*'; \
     while IFS= read -r plugin; do \
       set -- "$@" --filter "./extensions/$plugin"; \
     done < openclaw-workspace-plugin-dirs; \
-    sh /tmp/install-attempts.sh node /tmp/with-pinned-matrix-sdk-crypto.mjs /tmp/matrix-sdk-crypto \
+    COREPACK_ENABLE_NETWORK=0 sh /tmp/install-attempts.sh node /tmp/with-pinned-matrix-sdk-crypto.mjs /tmp/matrix-sdk-crypto \
     pnpm install --frozen-lockfile --prod "$@" --store-dir=/tmp/pnpm-store \
       --config.supportedArchitectures.os=linux \
       --config.supportedArchitectures.cpu="$(node -p 'process.arch')" \
@@ -364,7 +386,15 @@ WORKDIR /app
 
 RUN node -e 'const [major, minor, patch] = process.versions.node.split(".").map(Number); if (major !== 24 || minor < 22 || (minor === 22 && patch < 1)) throw new Error(`Select a Node.js 24.22.1+ base image in the 24 series; found ${process.version}.`);'
 
-RUN apt-get update && apt-get install -y --no-install-recommends tini git ca-certificates curl openssh-client libstdc++6 libgomp1 python3 procps && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=bind,from=curl-packages,source=/out,target=/tmp/curl-packages \
+    apt-get update --error-on=any \
+    && candidate="$(apt-cache policy curl | sed -n 's/^  Candidate: //p')" \
+    && expected="$(cat /tmp/curl-packages/debian-version)" \
+    && { [ "$candidate" = "$expected" ] || { echo "Refresh the curl backport: Debian candidate is $candidate, source is $expected" >&2; exit 1; }; } \
+    && apt-get install -y --no-install-recommends tini git ca-certificates openssh-client libstdc++6 libgomp1 python3 procps /tmp/curl-packages/*.deb \
+    && mkdir -p /usr/share/doc/curl/oce \
+    && cp /tmp/curl-packages/*.sha256 /usr/share/doc/curl/oce/ \
+    && rm -rf /var/lib/apt/lists/*
 # Version checks use throwaway state directories: gh writes a random device ID
 # and Codex a randomly named arg0 directory, which would otherwise ship.
 # --retry rides out GitHub's transient release-download errors (HTTP 408, 429,

@@ -1,3 +1,4 @@
+import { submitCreateAgent } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import type { APIResponse, Page, Route } from "playwright";
@@ -29,8 +30,7 @@ import {
   waitForIdleFetches,
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
-import { submitCreateAgent } from "./console-agents-test-support.mjs";
-import { createReadyConsoleNamespace as createUntypedReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import { createReadyConsoleNamespace as createUntypedReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   AGENT_DEVICE_LOGIN_CANCEL_DENIED,
   AGENT_DEVICE_LOGIN_POLL_DENIED,

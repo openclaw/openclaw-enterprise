@@ -13,6 +13,8 @@ network policy.
 
 The Dockerfile builds OpenClaw from a verified public source archive, using its
 pinned package manager, frozen dependency lockfile, and upstream Docker assembly.
+For a package registry mirror, supply the separate Corepack and pnpm build
+secrets described in [the image build guide](../../docs/guides/deploy/production-installation.md#build-through-a-package-registry-mirror).
 The selected upstream source pins stock Codex `0.164.0`. Both Codex entrypoints
 use that same installation and frozen upstream lockfile; no dependency downgrade
 or Codex binary patch is applied. The seccomp profile retains its existing syscall
@@ -347,6 +349,10 @@ Before enabling Slack in an Installation, run the
 [live Slack test](../../docs/testing/slack.md#slack) with the verified image, projected
 credentials, and the required proxy configuration. It must prove a real mention,
 Codex turn, and gateway-authored reply; gateway readiness alone is insufficient.
+
+The runtime includes a Debian-compatible curl security backport for both curl
+and Git. See the [publication flow](../../docs/flows/container-publication.md)
+for its provenance, verification, and scanner limitations.
 
 ## Build provenance
 
