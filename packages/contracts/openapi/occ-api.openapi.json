@@ -35855,7 +35855,16 @@
           "content": {
             "application/json": {
               "examples": {
-                "example": { "summary": "Example request", "value": { "runtimeRole": "reviewer" } }
+                "example": {
+                  "summary": "Example request",
+                  "value": {
+                    "runtimeRole": "reviewer",
+                    "runtimeRoleConfiguration": {
+                      "generation": 1,
+                      "id": "cfg_123e4567-e89b-42d3-a456-426614174000"
+                    }
+                  }
+                }
               },
               "schema": {
                 "additionalProperties": false,

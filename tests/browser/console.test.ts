@@ -1031,6 +1031,7 @@ async function expectHeldPage(page: Page, shownText: string, hidden?: Locator) {
 
 test("console keeps loaded route families visible while return reads refresh", async (t) => {
   const fixture = await createBaseConsoleAppFixture(t, {
+    defaultPresets: [defaultCodexPreset],
     originHost: "console.oce.example.test",
     publicOrigin: true,
     authCookieDomain: "oce.example.test",

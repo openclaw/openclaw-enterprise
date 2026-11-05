@@ -260,7 +260,10 @@ export const requestExamples = {
     secretRef: { name: "model-api-key", key: "value" },
   },
   createIAMRole: { name: role.name, permissions: role.permissions },
-  updateIAMRuntimeRole: { runtimeRole: "reviewer" },
+  updateIAMRuntimeRole: {
+    runtimeRole: "reviewer",
+    runtimeRoleConfiguration: { id: configurationId, generation: 1 },
+  },
   createIAMAccessBinding: {
     subjectKind: "identity",
     subjectId: principal.id,

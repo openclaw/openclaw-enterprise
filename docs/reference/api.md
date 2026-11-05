@@ -9357,7 +9357,11 @@ Change the runtime role on an exact human Agent access grant
 Example request
 ```json
 {
-  "runtimeRole": "reviewer"
+  "runtimeRole": "reviewer",
+  "runtimeRoleConfiguration": {
+    "generation": 1,
+    "id": "cfg_123e4567-e89b-42d3-a456-426614174000"
+  }
 }
 ```
 
