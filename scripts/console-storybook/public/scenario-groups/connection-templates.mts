@@ -75,7 +75,7 @@ export const connectionTemplateScenarios = {
         value: "ctp_00000000-0000-4000-8000-000000000003",
       },
     ],
-    description: "Register a provider-issued client against the installed Google OAuth template.",
+    description: "The Google OAuth template selects client_secret_post by default.",
   },
   credentialsRegisterFromMcp: {
     group: "Pages/Credentials",
@@ -90,7 +90,7 @@ export const connectionTemplateScenarios = {
       },
     ],
     description:
-      "The template supplies the callback context and limits client authentication to the methods its authorization server advertised.",
+      "The MCP authorization server advertises client_secret_basic and none. The registration form offers those two token endpoint authentication methods.",
   },
   credentialsMemberAccess: {
     group: "Pages/Credentials",

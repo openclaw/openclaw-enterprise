@@ -234,7 +234,9 @@ test("a template needs an explicit availability when the administrator has no Na
   );
   await registration.getByLabel("OAuth client name").fill("Tools client");
   await registration.getByLabel("Client ID", { exact: true }).fill("tools-client");
-  await registration.getByLabel("Client authentication").selectOption("none");
+  await registration
+    .getByRole("combobox", { name: "Token endpoint authentication method", exact: true })
+    .selectOption("none");
   const registered = responseTo(page, "POST", fixture.origin + "/oauth-clients");
   await registration.getByRole("button", { name: "Register OAuth client" }).click();
   const regResult = await registered;
@@ -335,7 +337,17 @@ test("registering a provider-issued client uses a saved or newly created templat
     "engineering-directory",
   );
   assert.equal(await form.getByLabel("Client secret", { exact: true }).inputValue(), privateValue);
-  assert.equal(await form.getByLabel("Client authentication").inputValue(), "client_secret_basic");
+  const method = form.getByRole("combobox", {
+    name: "Token endpoint authentication method",
+    exact: true,
+  });
+  for (const value of ["client_secret_basic", "client_secret_post", "none"]) {
+    assert.equal(
+      await method.getByRole("option", { name: value, exact: true }).getAttribute("value"),
+      value,
+    );
+  }
+  assert.equal(await method.inputValue(), "client_secret_basic");
   const registered = responseTo(page, "POST", fixture.origin + "/oauth-clients");
   await form.getByRole("button", { name: "Register OAuth client" }).click();
   const first = await registered;
@@ -345,7 +357,7 @@ test("registering a provider-issued client uses a saved or newly created templat
   assert.equal(Object.hasOwn(client, "clientSecret"), false);
   const row = page.getByRole("heading", { name: "Engineering directory" }).locator("..");
   await row
-    .getByText("Namespace · OAuth client owners · Client secret in Authorization header", {
+    .getByText("Namespace · OAuth client owners · client_secret_basic", {
       exact: true,
     })
     .waitFor();
@@ -356,17 +368,17 @@ test("registering a provider-issued client uses a saved or newly created templat
   await templateChoice.selectOption(template.id);
   await form.getByLabel("OAuth client name").fill("Second directory");
   await form.getByLabel("Client ID", { exact: true }).fill("keep-with-original-template");
-  await form.getByLabel("Client authentication").selectOption("client_secret_basic");
+  await method.selectOption("client_secret_basic");
   await form.getByLabel("Client secret", { exact: true }).fill(privateValue);
   // Choosing a new, wider template must not carry confidential registration details across scopes.
   await templateChoice.selectOption(googleTemplate);
   assert.equal(await form.getByLabel("Client availability").inputValue(), "Installation-wide");
   assert.equal(await form.getByLabel("Client ID", { exact: true }).inputValue(), "");
   assert.equal(await form.getByLabel("Client secret", { exact: true }).inputValue(), "");
-  assert.equal(await form.getByLabel("Client authentication").inputValue(), "client_secret_post");
+  assert.equal(await method.inputValue(), "client_secret_post");
   await templateChoice.selectOption(template.id);
   await form.getByLabel("Client ID", { exact: true }).fill("second-directory");
-  await form.getByLabel("Client authentication").selectOption("none");
+  await method.selectOption("none");
   const secondRegistration = responseTo(page, "POST", fixture.origin + "/oauth-clients");
   await form.getByRole("button", { name: "Register OAuth client" }).click();
   const second = await secondRegistration;

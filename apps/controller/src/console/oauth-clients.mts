@@ -54,11 +54,6 @@ export function renderOAuthClients(
       templates = saved.filter((item) => availableInNamespace(item, currentNamespace));
       const visibleClients = data.filter((item) => availableInNamespace(item, currentNamespace));
       redirectUri = meta?.redirectUri;
-      const auth = {
-        none: "Public client",
-        client_secret_basic: "Client secret in Authorization header",
-        client_secret_post: "Client secret in request body",
-      };
       for (const item of visibleClients) {
         const scope = availabilityLabel(item, namespaces);
         rows.append(
@@ -67,7 +62,7 @@ export function renderOAuthClients(
             { className: "connection-template-row" },
             element("h3", {}, item.displayName),
             element("p", {}, item.issuer),
-            element("p", { className: "hint" }, scope + " · " + auth[item.tokenEndpointAuthMethod]),
+            element("p", { className: "hint" }, scope + " · " + item.tokenEndpointAuthMethod),
             element(
               "div",
               { className: "resource-row-actions" },

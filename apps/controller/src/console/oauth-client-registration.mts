@@ -11,11 +11,11 @@ import type { ConsolePageContext } from "./page-context.mjs";
 type Context = Pick<ConsolePageContext, "request" | "isCurrent">;
 export type PublicClient = Omit<OAuthClient, "credentialRefreshDriverId">;
 const option = (value: string, label: string) => element("option", { value }, label);
-const methods = {
-  client_secret_basic: "Client secret in Authorization header",
-  client_secret_post: "Client secret in request body",
-  none: "Public client (no secret)",
-} as const;
+const methods: readonly PublicClient["tokenEndpointAuthMethod"][] = [
+  "client_secret_basic",
+  "client_secret_post",
+  "none",
+];
 
 export function advertisedClientMethods(observed: McpAuthorizationMetadata | undefined) {
   return observed?.tokenEndpointAuthMethods ?? ["client_secret_basic"];
@@ -136,7 +136,11 @@ export function openOAuthClientRegistration(
     }),
     field({ label: "OAuth client name", control: name }),
     field({ label: "Client ID", control: clientId }),
-    field({ label: "Client authentication", control: method }),
+    field({
+      label: "Token endpoint authentication method",
+      control: method,
+      help: "Use the method registered for this client ID at the provider.",
+    }),
     secretField,
   );
   const fields = element(
@@ -177,9 +181,9 @@ export function openOAuthClientRegistration(
         ? advertisedClientMethods(template.current.observed)
         : undefined;
     method.replaceChildren(
-      ...Object.entries(methods)
-        .filter(([key]) => !allowed || allowed.includes(key))
-        .map(([key, label]) => option(key, label)),
+      ...methods
+        .filter((value) => !allowed || allowed.includes(value))
+        .map((value) => option(value, value)),
     );
     const defaultMethod =
       template?.current.issuer === "https://accounts.google.com"
