@@ -1713,7 +1713,12 @@ export class OpenShellGitRuntime {
               // ask the prepared owner for *current* approval, execution, session and material.
               // A different selection needs a new observation, never a use receipt or a replay.
               await this.fenced(entry, signal);
-              if (!isDeepStrictEqual(await this.observation(entry, signal), observed)) {
+              if (
+                !isDeepStrictEqual(
+                  await this.observation(entry, signal, { predecessor: true }),
+                  observed,
+                )
+              ) {
                 throw new OpenShellGitRouteError(
                   "material_mismatch",
                   "Preview credential recipient changed before installation.",

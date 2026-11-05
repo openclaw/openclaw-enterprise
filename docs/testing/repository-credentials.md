@@ -89,8 +89,15 @@ For durable session and recovery checks, prepare a migrated disposable database
 with an application role as described in [PostgreSQL testing](postgresql.md).
 Run `postgres-repository-sessions.test.mjs`,
 `postgres-repository-broker-receipts.test.mjs`, and the relevant restart and
-worker version tests with `OCC_TEST_DATABASE_URL` set. These checks do not prove
-a running Kubernetes Pod or model turn.
+worker version tests with `OCC_TEST_DATABASE_URL` set. The
+`postgres-openshell-standing-selected-repository.test.ts` case follows one
+`github-repository` binding through approval, deployment, its original session
+deadline, changed-recipient refusal, successor issuance, and withdrawal. A separate
+issuer with standing permission removed must refuse issuance. It uses the real PostgreSQL worker
+and credential owner with controlled OpenShell and GitHub protocol peers.
+These checks do not prove a running Kubernetes Pod or model turn.
+The final custody check moves only stored provider timestamps past verified expiry
+and clock skew; it asserts material erasure without a revocation request.
 
 ## Qualify emitted artifacts
 

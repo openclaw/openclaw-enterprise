@@ -21,5 +21,5 @@ if (process.env.OCC_TEST_REQUIRE_STANDING_GIT_CONVERSATION === "1") {
 test(
   "one deployed OpenShell Agent pushes A and B with one repository-scoped token and cannot push C",
   { ...requiresPostgres, timeout: process.env.OCC_TEST_STANDING_GIT_CODEX ? 240000 : 120000 },
-  repositorySetJourney,
+  (t) => repositorySetJourney(t),
 );
