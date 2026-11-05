@@ -302,8 +302,10 @@ export async function serviceWebSocketHandshake(
         cleanup.unref();
         socket.once("close", () => clearTimeout(cleanup));
         socket.once("error", () => socket.destroy());
+        // Let the server close TCP after acknowledging Close, within the bound above.
+        socket.once("end", () => socket.end());
         socket.resume();
-        socket.end(closeFrame);
+        socket.write(closeFrame);
         resolve(true);
       });
       request.on("response", (response: IncomingMessage) => {

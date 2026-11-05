@@ -508,7 +508,6 @@ test("an accepted OpenShell probe closes its WebSocket normally without sending 
   const { WebSocketServer } = createRequire(controller.resolve("@kubernetes/client-node"))("ws");
   const peers = new WebSocketServer({ noServer: true });
   const gateway = createServer();
-  const connected = once(peers, "connection");
   let requests = 0;
   gateway.on("upgrade", (request, socket, head) => {
     assert.equal(request.headers.authorization, `Bearer ${TOKEN}`);
@@ -527,15 +526,70 @@ test("an accepted OpenShell probe closes its WebSocket normally without sending 
   });
   const client = new GrpcOpenShellGatewayClient({ endpoint: `http://127.0.0.1:${port}` });
   t.after(() => client.close());
-  const handshake = client.serviceWebSocketHandshake(serviceUrl, TOKEN, AbortSignal.timeout(5_000));
-  const [peer] = await connected;
-  const closed = once(peer, "close", { signal: AbortSignal.timeout(5_000) });
-  assert.equal(await handshake, true);
+  const deadline = AbortSignal.timeout(5_000);
+  const closed = once(peers, "connection", { signal: deadline }).then(([peer]) =>
+    once(peer, "close", { signal: deadline }),
+  );
+  const handshake = client
+    .serviceWebSocketHandshake(serviceUrl, TOKEN, deadline)
+    .then((accepted) => assert.equal(accepted, true));
   // The real WebSocket peer reports 1006 when a probe drops TCP without a close frame.
-  const [code, reason] = await closed;
+  const [, [code, reason]] = await Promise.all([handshake, closed]);
   assert.equal(code, 1000);
   assert.equal(reason.length, 0);
   assert.equal(requests, 0, "readiness must not invoke the Harness");
+});
+
+test("an OpenShell probe gives a peer that delays TCP closure its full cleanup deadline", async (t) => {
+  const controller = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
+  const { Receiver, Sender } = createRequire(controller.resolve("@kubernetes/client-node"))("ws");
+  const gateway = createServer();
+  const sockets = new Set();
+  let closeCode;
+  gateway.on("upgrade", (request, socket, head) => {
+    sockets.add(socket);
+    const accept = createHash("sha1")
+      .update(`${request.headers["sec-websocket-key"]}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
+      .digest("base64");
+    socket.write(
+      `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`,
+    );
+    // Use the real protocol codec, but withhold TCP EOF after acknowledging Close.
+    const receiver = new Receiver({ isServer: true });
+    const sender = new Sender(socket);
+    receiver.once("conclude", (code, reason) => {
+      closeCode = code;
+      sender.close(code, reason, false, () => {});
+    });
+    if (head.length > 0) {
+      receiver.write(head);
+    }
+    socket.pipe(receiver);
+  });
+  const port = await listen(gateway);
+  t.after(async () => {
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+    await close(gateway);
+  });
+  const client = new GrpcOpenShellGatewayClient({
+    endpoint: `http://127.0.0.1:${port}`,
+    requestTimeoutMs: 1_000,
+  });
+  t.after(() => client.close());
+  const deadline = AbortSignal.timeout(5_000);
+  const ended = once(gateway, "upgrade", { signal: deadline }).then(([, socket]) =>
+    once(socket, "end", { signal: deadline }),
+  );
+  const started = performance.now();
+  const handshake = client
+    .serviceWebSocketHandshake(serviceUrl, TOKEN, deadline)
+    .then((accepted) => assert.equal(accepted, true));
+  await Promise.all([handshake, ended]);
+  assert.equal(closeCode, 1000);
+  // An early client FIN bypasses the peer's opportunity to finish closing.
+  assert.ok(performance.now() - started >= 950, "client ended TCP before the cleanup deadline");
 });
 
 test("a refused OpenShell WebSocket handshake releases an unfinished HTTP response", async () => {
