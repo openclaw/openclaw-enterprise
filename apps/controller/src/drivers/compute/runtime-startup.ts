@@ -98,10 +98,11 @@ export function openClawStateMigrationHelper(
 ): string {
   return String.raw`
 // This private presence marker survives a failed or interrupted repair even when
-// Doctor already advanced every schema. Native maintenance still owns its locks.
+// Doctor already advanced every schema. Keep it beside the shared database:
+// Gateway HOME is transient, but its state child is retained. Native owns its locks.
 function openClawMaintenancePending(stateDirectory) {
   try {
-    const stat = require("node:fs").lstatSync(require("node:path").join(stateDirectory, ".oce-maintenance-pending"));
+    const stat = require("node:fs").lstatSync(require("node:path").join(stateDirectory, "state", ".oce-maintenance-pending"));
     if (!stat.isFile() || (stat.mode & 0o077) !== 0) throw new Error("Invalid pending maintenance marker");
     return true;
   } catch (error) {
@@ -112,8 +113,16 @@ function openClawMaintenancePending(stateDirectory) {
 
 function setOpenClawMaintenancePending(stateDirectory, pending) {
   const fs = require("node:fs");
-  const marker = require("node:path").join(stateDirectory, ".oce-maintenance-pending");
-  const directory = fs.openSync(stateDirectory, "r");
+  const marker = require("node:path").join(stateDirectory, "state", ".oce-maintenance-pending");
+  const storage = require("node:path").join(stateDirectory, "state");
+  if (pending) {
+    // Older agent-only state can lack the shared directory. Persist its creation
+    // before relying on a file inside it to survive a container replacement.
+    fs.mkdirSync(storage, { recursive: true, mode: 0o700 });
+    const parent = fs.openSync(stateDirectory, "r");
+    try { fs.fsyncSync(parent); } finally { fs.closeSync(parent); }
+  }
+  const directory = fs.openSync(storage, "r");
   try {
     if (pending) {
       const fd = fs.openSync(marker, fs.constants.O_WRONLY | fs.constants.O_CREAT |

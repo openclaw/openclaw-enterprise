@@ -503,7 +503,11 @@ async function runDockerGateway(
         return {
           ...realFs,
           chmodSync() {},
-          mkdirSync() {},
+          mkdirSync(path, options) {
+            if (path.startsWith(directory)) {
+              realFs.mkdirSync(path, options);
+            }
+          },
           writeFileSync: () => events.push("write"),
         };
       }
@@ -549,7 +553,7 @@ test("Docker development Gateway starts current state without Doctor", async (t)
 test("Docker development Gateway refuses an unreadable pending-maintenance marker before native startup", async (t) => {
   const directory = await stateDirectory(t, { main: CURRENT });
   // A non-file at the reserved path cannot be treated as absent or silently removed.
-  await mkdir(join(directory, ".oce-maintenance-pending"));
+  await mkdir(join(directory, "state", ".oce-maintenance-pending"), { recursive: true });
   await assert.rejects(runDockerGateway(directory), /Invalid pending maintenance marker/);
 });
 
@@ -830,7 +834,7 @@ test("Harness retries refused maintenance after schemas advance and skips it onl
     second.spawned.map(({ name }) => name),
     ["doctor"],
   );
-  const pending = await lstat(join(state, ".oce-maintenance-pending"));
+  const pending = await lstat(join(state, "state", ".oce-maintenance-pending"));
   assert.equal(pending.mode & 0o777, 0o600);
 
   const recovered = await runHarness(directory, (child) => finishDoctor(child));

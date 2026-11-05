@@ -20827,12 +20827,18 @@ test("rendered exec arguments and environment values stay within the per-string 
       );
     }
   }
-  // The supervisor restarts Codex from the same bounded pieces.
-  assert.ok(
-    AGENT_WITH_NODE_ENTRYPOINT.includes(
-      JSON.stringify(["-e", ...nodeProgramArguments(AGENT_RUNTIME_ENTRYPOINT)]),
-    ),
+  // The supervisor carries its nested Codex program as independently bounded
+  // pieces. That child omits native-only helpers used by the standalone command.
+  const nestedArguments = JSON.parse(
+    AGENT_WITH_NODE_ENTRYPOINT.match(/args: (\["-e"[^\n]+\]),/u)[1],
   );
+  assert.equal(nestedArguments[1], nodeProgramArguments("")[0]);
+  for (const argument of nestedArguments) {
+    assert.ok(Buffer.byteLength(argument) <= EXEC_STRING_BUDGET);
+  }
+  const child = inflateRawSync(Buffer.from(nestedArguments.slice(2).join(""), "base64"));
+  const syntax = spawnSync(process.execPath, ["--check", "-"], { input: child });
+  assert.equal(syntax.status, 0, syntax.stderr.toString());
 });
 
 test(
