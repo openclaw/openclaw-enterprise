@@ -187,7 +187,7 @@ administrators, who hold every action through the built-in administrator role.
 ## Update a running sender
 
 The worker compares the current delivery policy with the policy installed for that
-Agent. If it changes, the Credential Gateway withholds usable token material while
+Agent. If its credential recipients change, the Gateway withholds token material while
 Compute and the Sandbox Driver update the sender. Compute confirms the effective
 request policy before asking OCC to release a prepared token for that revision
 and policy. OCC rechecks the grant, template and Agent binding before release.
