@@ -6,6 +6,8 @@ import {
   signComputeExecutionRelease,
   harnessEgressEnrollment,
   COMPUTE_RELEASE_PROFILE,
+  COMPUTE_RELEASE_PUBLIC_KEY,
+  computeReleasePublicKey,
 } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
 import assert from "node:assert/strict";
@@ -30,6 +32,11 @@ import { standingExecutionPlatform } from "./postgres-standing-execution.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { preparedStandingGitPeer } from "./prepared-standing-git-peer.ts";
+import { standingGitConversation } from "./standing-git-conversation.ts";
+import {
+  pluginRuntimeEnvironment,
+  pluginRuntimeSpecForRevision,
+} from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 
 const repositorySet = [
   { repositoryRef: "A", repository: "fixture/repository", repositoryId: "73" },
@@ -52,6 +59,12 @@ import { CREDENTIAL_GATEWAY_FIXTURE_ID } from "./postgres-worker-revision-fixtur
 // PostgreSQL admission, worker, owner, route and bundled proxy are production code.
 // Compute observations, the authenticated Gateway, launcher and Git provider are controlled.
 type NarrowJourney = {
+  runtime: OpenShellGitRuntime;
+  revision: AgentRevision;
+  client: Parameters<OpenShellGitRuntime["prepare"]>[1];
+  workspace: string;
+  sandbox: string;
+  writes: () => number;
   pool: Awaited<ReturnType<typeof standingExecutionPlatform>>["observerPool"];
   peer: Awaited<ReturnType<typeof preparedStandingGitPeer>>;
   sandboxId: string;
@@ -65,6 +78,18 @@ type NarrowJourney = {
   removeBinding: () => Promise<unknown>;
   withdraw: () => Promise<unknown>;
 };
+
+type NarrowPreparation = Pick<
+  NarrowJourney,
+  "runtime" | "revision" | "client" | "workspace" | "sandbox" | "pool" | "peer" | "writes"
+>;
+
+export async function beforeNarrowGitPreparation(
+  t: TestContext,
+  exercise: (journey: NarrowPreparation) => Promise<void>,
+) {
+  return repositoryGitJourney(t, undefined, exercise);
+}
 
 export async function narrowOnlineGitJourney(
   t: TestContext,
@@ -80,7 +105,14 @@ export async function repositorySetJourney(t: TestContext) {
 async function repositoryGitJourney(
   t: TestContext,
   narrow?: (journey: NarrowJourney) => Promise<void>,
+  beforePrepare?: (journey: NarrowPreparation) => Promise<void>,
 ) {
+  const narrowProfile = narrow !== undefined || beforePrepare !== undefined;
+  const codex = !narrowProfile && process.env.OCC_TEST_STANDING_GIT_CODEX;
+  const conversation = codex ? await standingGitConversation(t, codex) : undefined;
+  const modelProvider = conversation
+    ? { protocol: "openai-responses" as const, baseUrl: conversation.baseUrl }
+    : undefined;
   const workspace = "selected-journey";
   const tls = await harnessTlsFixture(t);
   const tokenPath = join(tls.directory, "gateway-token");
@@ -147,7 +179,6 @@ async function repositoryGitJourney(
   const runtime = new OpenShellGitRuntime(
     {
       registrationName: "oce-prepared-git",
-      protectedExecution: true,
       authority: {
         host: "127.0.0.1",
         port,
@@ -179,7 +210,14 @@ async function repositoryGitJourney(
           {
             name: "model",
             binaries: [{ path: "/usr/bin/codex" }],
-            endpoints: [{ host: "api.openai.com", ports: [443] }],
+            endpoints: conversation
+              ? [
+                  {
+                    host: new URL(conversation.baseUrl).hostname,
+                    ports: [Number(new URL(conversation.baseUrl).port)],
+                  },
+                ]
+              : [{ host: "api.openai.com", ports: [443] }],
           },
         ],
       },
@@ -214,7 +252,11 @@ async function repositoryGitJourney(
   });
   const gateway = new OpenShellCredentialGatewayDriver(
     { binaries: ["/usr/bin/codex"] },
-    { id: CREDENTIAL_GATEWAY_FIXTURE_ID, backend: backend as never },
+    {
+      id: CREDENTIAL_GATEWAY_FIXTURE_ID,
+      backend: backend as never,
+      ...(modelProvider && { modelProvider }),
+    },
   );
   const f = await standingExecutionPlatform(t, import.meta.url, { sandbox: selected }, [
     {
@@ -230,7 +272,7 @@ async function repositoryGitJourney(
   const peer = await preparedStandingGitPeer(t, f.observerPool, f.namespace.id, {
     driver: owner.ref,
     tokenLifetimeMs: 600_000,
-    ...(narrow
+    ...(narrowProfile
       ? { draftPull: true }
       : {
           selection: {
@@ -273,6 +315,7 @@ async function repositoryGitJourney(
   f.controller.registerDriver(gateway);
   f.controller.selectDriver("credential_gateway", gateway.id);
   const kube = createTestKubernetesComputeDriver("repository-set-compute", {
+    ...(modelProvider && { modelProvider }),
     repositoryCredentials: true,
     protectedDriver: owner,
     credentialGatewayDriver: gateway,
@@ -286,17 +329,18 @@ async function repositoryGitJourney(
   const agent = await f.agent("repository-set", {
     executionMode: "dedicated",
     auth: "credential_source",
+    ...(conversation && { modelConfig: { authorized_base_url: conversation.baseUrl } }),
   });
   const configuration = await f.controller.createConfiguration(f.actor.id, {
     namespaceId: f.namespace.id,
     kind: "agent",
-    values: createHarnessConfiguration("codex", "gpt-4.1"),
+    values: createHarnessConfiguration("codex", conversation ? "fixture-model" : "gpt-4.1"),
   });
   await f.controller.updateAgent(f.actor.id, {
     namespaceId: f.namespace.id,
     agentId: agent.id,
     configurationId: configuration.id,
-    repositoryBindings: narrow
+    repositoryBindings: narrowProfile
       ? [{ repositoryRef: "source", profile: "git-write" }]
       : repositorySet.slice(0, 2).map(({ repositoryRef }) => ({ repositoryRef })),
   });
@@ -311,7 +355,7 @@ async function repositoryGitJourney(
   );
   assert.equal(queued.rows.length, 1);
   const work = { ...revision, idempotencyKey: queued.rows[0].idempotency_key };
-  assert.equal(revision.repositoryCredentials!.bindings.length, narrow ? 1 : 2);
+  assert.equal(revision.repositoryCredentials!.bindings.length, narrowProfile ? 1 : 2);
   assert.equal(revision.executionAdmission.version, 5);
   assert.equal(revision.egressPlan!.repositoryGitAuthorization, "online-request");
   Object.assign(state, {
@@ -329,7 +373,26 @@ async function repositoryGitJourney(
   const release = new ProtectedExecutionDriver(owner);
   const wiring = await release.configure(context);
   state.policy = wiring.configuration;
-  const startupId = randomUUID();
+  if (beforePrepare) {
+    await beforePrepare({
+      runtime,
+      revision,
+      client,
+      workspace,
+      sandbox: state.sandbox,
+      pool: f.observerPool,
+      peer,
+      writes: () => wire.world.writes,
+    });
+    return;
+  }
+  let startupId: string = randomUUID();
+  const nativeChallenge = deferred<string>();
+  const nativeRelease = deferred<ReturnType<typeof signComputeExecutionRelease> | undefined>();
+  let launching:
+    ReturnType<Awaited<ReturnType<typeof standingGitConversation>>["launch"]> | undefined;
+  let askModel: ((phase: "before" | "after") => Promise<void>) | undefined;
+  let signed = false;
   let wrongIdentity = false;
   const evaluate = (input: object, signedSandbox = wrongIdentity ? "unowned" : wire.world.id) =>
     invoke(
@@ -362,10 +425,13 @@ async function repositoryGitJourney(
     headers: [],
     body: Buffer.alloc(0),
   };
+  const removedMemberProbe = {
+    ...probe,
+    target: { ...probe.target, path: "/" + repositorySet[1].repository + ".git/info/refs" },
+  };
   const challenge = {
     profile: COMPUTE_RELEASE_PROFILE,
     ...harnessEgressEnrollment(revision.egressPlan!),
-    startupId,
   };
   let acked = false;
   let lastCustody: ComputeRevisionContext | undefined;
@@ -401,9 +467,68 @@ async function repositoryGitJourney(
     async prepareRevision(r: AgentRevision, custody: ComputeRevisionContext) {
       let stage = "provider-bootstrap";
       try {
+        if (conversation && !launching) {
+          const login = kube["harnessAuthForRevision"](r, custody, {
+            name: workspace,
+            plane: "execution",
+          });
+          assert.equal(login.loginMode, "api_key");
+          assert.equal(login.credentialSource?.config.authorized_base_url, conversation.baseUrl);
+          assert.ok(r.harnessAuth.method === "credential_source");
+          assert.equal(login.credentialSource?.id, r.harnessAuth.sourceId);
+          const manifest = pluginRuntimeSpecForRevision(r, undefined, conversation.baseUrl)!;
+          launching = conversation.launch(
+            {
+              ...Object.fromEntries(
+                login.environment.map(({ name, value }: { name: string; value?: string }) => [
+                  name,
+                  value!,
+                ]),
+              ),
+              ...pluginRuntimeEnvironment(manifest),
+              OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID: r.id,
+              [COMPUTE_RELEASE_PUBLIC_KEY]: computeReleasePublicKey(keys.privateKey),
+            },
+            async (phase) => {
+              assert.equal(signed, true, "no model traffic before signed Compute release");
+              assert.equal((await f.currentAgent(agent))?.activeRevisionId, revision.id);
+              assert.equal(
+                (
+                  await client.getSandboxProviderStatus(
+                    workspace,
+                    state.sandbox,
+                    "openai",
+                    t.signal,
+                  )
+                ).state,
+                "PROVIDER_READINESS_STATE_READY",
+              );
+              if (phase === "after") {
+                const before = peer.originCalls() + peer.gh.trace.length;
+                assert.equal((await evaluate(removedMemberProbe)).decision, 2);
+                assert.equal(peer.originCalls() + peer.gh.trace.length, before);
+              }
+            },
+            async (nativeStartup) => {
+              assert.match(
+                nativeStartup,
+                /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+              );
+              nativeChallenge.resolve(nativeStartup);
+              const value = await nativeRelease.promise;
+              assert.ok(value, "The fixture ended before native release.");
+              return value;
+            },
+            harnessEgressEnrollment(r.egressPlan!).routeCount,
+          );
+          void launching.catch(nativeChallenge.reject);
+        }
+        if (conversation) {
+          startupId = await nativeChallenge.promise;
+        }
         const p = await runtime.prepare(r, client, workspace, state.sandbox, t.signal, ["openai"]);
-        // This is the synthetic process launch, after its preview registration.
-        // Both scopes must report this event, not the earlier fixture construction.
+        // The controlled Sandbox reports startup only after preview registration.
+        // The opt-in native Harness is already waiting for enrollment.
         if (!wire.world.id) {
           state.started = { seconds: Math.floor(Date.now() / 1000) };
           wire.world.id = randomUUID();
@@ -455,7 +580,21 @@ async function repositoryGitJourney(
         await custody.recordEgressInstallation!(installed);
         lastCustody = custody;
         order.push("recipient-recorded");
+        const originBeforeActivation = peer.originCalls();
+        const writesBeforeActivation = wire.world.writes;
+        await peer.prepared.maintain();
         assert.equal(peer.gh.issuesOfTokens.length, 0, "no source material before activation");
+        assert.equal(
+          wire.world.writes,
+          writesBeforeActivation,
+          "no credential update before activation",
+        );
+        assert.equal(
+          (await evaluate(probe)).decision,
+          2,
+          "recorded recipient cannot send before activation",
+        );
+        assert.equal(peer.originCalls(), originBeforeActivation);
         assert.ok(p.provider);
         return f.compute.prepareRevision(r);
       } catch (error) {
@@ -467,22 +606,22 @@ async function repositoryGitJourney(
       }
     },
   };
-  await f.start(compute, {
-    ...{ repositoryGitMaterial: peer.prepared.revisionMaterial },
-    transformDrivers: (d: { installation: { drivers: object } }) => ({
-      ...d,
-      repositoryPolicy: driver,
-      protectedDriver: owner,
-      sandboxDriver: sandbox,
-      proxyDriver: proxy,
-      credentialGatewayDriver: gateway,
-      installation: {
-        ...d.installation,
-        drivers: { ...d.installation.drivers, credential_gateway: { id: gateway.id } },
-      },
-    }),
-  });
   try {
+    await f.start(compute, {
+      ...{ repositoryGitMaterial: peer.prepared.revisionMaterial },
+      transformDrivers: (d: { installation: { drivers: object } }) => ({
+        ...d,
+        repositoryPolicy: driver,
+        protectedDriver: owner,
+        sandboxDriver: sandbox,
+        proxyDriver: proxy,
+        credentialGatewayDriver: gateway,
+        installation: {
+          ...d.installation,
+          drivers: { ...d.installation.drivers, credential_gateway: { id: gateway.id } },
+        },
+      }),
+    });
     try {
       await f.work(work, "succeeded");
     } catch (error) {
@@ -555,7 +694,7 @@ async function repositoryGitJourney(
       const installed = await release.current(context, lastCustody, async () => true);
       assert.ok(state.installed, "the launcher cannot start before material installation");
       const value = signComputeExecutionRelease(keys.privateKey, startupId, installed);
-      assert.deepEqual(value.challenge, challenge);
+      assert.deepEqual(value.challenge, { ...challenge, startupId });
       assert.ok(
         verify(
           null,
@@ -565,6 +704,11 @@ async function repositoryGitJourney(
         ),
       );
       assert.ok(value.expiresAt > Date.now());
+      if (launching) {
+        signed = true;
+        nativeRelease.resolve(value);
+        askModel = await launching;
+      }
       assert.equal(acked, false);
       acked = true;
       order.push("launcher-ack");
@@ -572,6 +716,9 @@ async function repositoryGitJourney(
     });
     assert.equal(acked, true);
     assert.ok(state.installed, "production owner material reached the authenticated recipient");
+    if (askModel) {
+      await askModel("before");
+    }
     if (narrow) {
       assert.equal(revision.repositoryCredentials!.bindings[0]!.profile, "git-write");
       assert.deepEqual(peer.gh.issuesOfTokens[0].repositoryIds, [73]);
@@ -614,6 +761,12 @@ async function repositoryGitJourney(
       assert.equal(rows.length, 1);
       const heldCredential = state.installed;
       await narrow({
+        runtime,
+        revision,
+        client,
+        workspace,
+        sandbox: state.sandbox,
+        writes: () => wire.world.writes,
         pool: f.observerPool,
         peer,
         sandboxId: wire.world.id!,
@@ -839,6 +992,9 @@ async function repositoryGitJourney(
     assert.equal(peer.gh.issuesOfTokens.length, 1, "all pushes retain one selected-set credential");
     t.diagnostic("Verified order: " + order.join(" -> "));
     await peer.noBroker();
+    if (askModel) {
+      assert.equal((await evaluate(removedMemberProbe)).decision, 1);
+    }
     await f.controller.updateAgent(f.actor.id, {
       namespaceId: f.namespace.id,
       agentId: agent.id,
@@ -853,7 +1009,13 @@ async function repositoryGitJourney(
       "member removal denies before provider traffic",
     );
     assert.equal(withdrawn.decision, 2, "withdrawal closes the same native route");
+    if (askModel) {
+      await askModel("after");
+    }
   } finally {
+    // An early fixture failure must wake and join the native launcher without signing.
+    nativeRelease.resolve(undefined);
+    await launching?.catch(() => {});
     await f.stop();
   }
 }

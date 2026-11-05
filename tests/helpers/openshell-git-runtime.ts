@@ -1,3 +1,4 @@
+import { ObservedHookPreview } from "../../apps/controller/src/drivers/egress-proxy/openshell-request-hook-preview.ts";
 import type { AgentRevision } from "../../packages/contracts/src/index.ts";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import {
@@ -9,6 +10,7 @@ import {
   openShellProfileEndpoint,
   type OpenShellProviderCreateRequest,
   type OpenShellProviderProfile,
+  type OpenShellProviderResponse,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import type { routeStore } from "../fixtures/openshell-git-route-store.mjs";
 import { unloggedFields } from "./occ-log-line.ts";
@@ -16,7 +18,10 @@ import { unloggedFields } from "./occ-log-line.ts";
 // The worker logs the runtime's events through the production logger (worker.mjs), which keeps
 // only allowlisted fields. Every event a fixture emits is logged the same way here, and a field
 // the logger drops or changes is recorded (finding 2244).
-const unloggedRuntimeFields: { readonly event: unknown; readonly fields: readonly string[] }[] = [];
+const unloggedRuntimeFields: {
+  readonly event: unknown;
+  readonly fields: readonly string[];
+}[] = [];
 
 function logRuntimeEvent(event: Readonly<Record<string, unknown>>): void {
   const fields = unloggedFields(event);
@@ -29,6 +34,10 @@ function logRuntimeEvent(event: Readonly<Record<string, unknown>>): void {
 export function takeUnloggedRuntimeFields() {
   return unloggedRuntimeFields.splice(0);
 }
+
+type FixtureProvider = Omit<OpenShellProviderResponse, "resourceVersion"> & {
+  resourceVersion: string;
+};
 
 type Entry = NonNullable<Awaited<ReturnType<OpenShellGitRuntime["entries"]["get"]>>>;
 type Faults = {
@@ -62,7 +71,7 @@ type Material = {
 };
 type Owner = {
   material: Material;
-  readOpenShellMaterial: () => Promise<Material>;
+  readOpenShellMaterial: Parameters<OpenShellGitRuntime["start"]>[0]["readOpenShellMaterial"];
   authorizeOnlineRequest: Parameters<OpenShellGitRuntime["start"]>[0]["authorizeOnlineRequest"];
 };
 interface World {
@@ -128,11 +137,13 @@ const future = () => new Date(Date.now() + 600_000).toISOString();
 
 export function openShellGitRuntimeFixture({
   store,
+  audience = "test-audience",
   world,
   resolveDelivery = createGitHubRepositoryDeliveryResolver(registry),
   onEvent,
 }: {
   store?: ReturnType<typeof routeStore>;
+  audience?: string;
   world?: World;
   resolveDelivery?: ReturnType<typeof createGitHubRepositoryDeliveryResolver>;
   onEvent?: (event: Readonly<Record<string, unknown>>) => void;
@@ -177,7 +188,7 @@ export function openShellGitRuntimeFixture({
   // (oce-git- plus 32 hex digits). Any other name is the Agent's model provider.
   const prepared = /^oce-git-[0-9a-f]{32}$/;
   const profiles = new Map<string, Record<string, unknown>>();
-  const providers = new Map<string, Record<string, unknown>>();
+  const providers = new Map<string, FixtureProvider>();
   const answer = (method: string, name?: string) => {
     const error = faults.gatewayCall?.(method, name);
     if (error) {
@@ -185,15 +196,32 @@ export function openShellGitRuntimeFixture({
     }
   };
   const client = {
-    getProvider: async (_workspace: string, name: string) => {
+    getProvider: async (workspace: string, name: string) => {
       answer("getProvider", name);
-      return prepared.test(name) ? providers.get(name) : { type: "openai", profileWorkspace: "" };
+      if (prepared.test(name)) {
+        return providers.get(name);
+      }
+      return {
+        id: "model-id",
+        name,
+        type: "openai",
+        labels: {},
+        config: {},
+        workspace,
+        profileWorkspace: "",
+        resourceVersion: "1",
+      } satisfies FixtureProvider;
     },
     getProviderProfile: async (_workspace: string | null, id: string) => {
       answer("getProviderProfile", id);
       return prepared.test(id)
         ? profiles.get(id)
-        : { definition: { endpoints: [{ host: "api.openai.com" }], credentials: [] } };
+        : {
+            definition: {
+              endpoints: [{ host: "api.openai.com" }],
+              credentials: [],
+            },
+          };
     },
     importProviderProfile: async (_workspace: string, profile: OpenShellProviderProfile) => {
       calls.providerWrites += 1;
@@ -339,26 +367,42 @@ export function openShellGitRuntimeFixture({
       return owner.material;
     },
     material,
-    authorizeOnlineRequest: async () => ({ kind: "denied", reason: "unavailable" }),
+    authorizeOnlineRequest: async () => ({
+      kind: "denied",
+      reason: "unavailable",
+    }),
   };
+  const bindingId = "binding_0123456789abcdefghijklmn";
+  // A seed for unit tests. New preparation always constructs its own real preview.
   const entry: Entry = {
     revision,
     client: client as unknown as Entry["client"],
     provider: provider as unknown as Entry["provider"],
-    bindingId: "binding_0123456789abcdefghijklmn",
+    bindingId,
+    preview: new ObservedHookPreview(sandbox.workspace, bindingId, true),
     authorization: createGitHubRepositoryDeliveryResolver(registry)(revision),
     otherProviders: ["openai"],
     binding: {
       workspace: sandbox.workspace,
       sandbox: sandbox.name,
+      executionId: revision.id,
       provider: "oce-git",
       providerId: "provider-id-one",
+      profile: "git-profile",
+      update: "accepted",
+      supervisor: "unknown",
+      readiness: {
+        rpc: "GetSandboxProviderStatus",
+        workspace: sandbox.workspace,
+        sandbox: sandbox.name,
+        provider: "oce-git",
+      },
       profileVersion: "7",
       resourceVersion: "11",
       credentialState: "bootstrap",
       expiresAt: "",
     },
-    ...(store === undefined ? {} : { fence: 1 }),
+    fence: 1,
     verify: (observed: { name: string }) => {
       if (observed.name !== "git-execution") {
         throw new Error("Refusing OpenShell Sandbox without exact AgentRevision ownership.");
@@ -369,8 +413,16 @@ export function openShellGitRuntimeFixture({
   const runtime = new OpenShellGitRuntime(
     {
       registrationName: "oce-prepared-git",
-      authority:
-        {} as import("../../apps/controller/src/composition/egress-authority.ts").EgressAuthorityConfiguration,
+      authority: {
+        host: "127.0.0.1",
+        port: 0,
+        certificatePath: "",
+        privateKeyPath: "",
+        issuerPublicKeyPath: "",
+        issuer: "test-issuer",
+        audience,
+        keyId: "test-key",
+      },
     },
     resolveDelivery,
   );
@@ -458,14 +510,6 @@ export function openShellGitRuntimeFixture({
   });
 }
 
-export async function reconciledOpenShellGitRuntimeFixture(
-  options?: Parameters<typeof openShellGitRuntimeFixture>[0],
-) {
-  const fixture = openShellGitRuntimeFixture(options);
-  await fixture.reconcile();
-  return fixture;
-}
-
 /**
  * A worker about to bootstrap the route of a revision whose Sandbox does not exist yet: no
  * local entry, no persisted route, and the gateway's prepared provider written for real by the
@@ -479,17 +523,5 @@ export function bootstrappingOpenShellGitRuntimeFixture(
   fixture.runtime["states"].clear();
   fixture.store?.rows.delete(fixture.revision.id);
   fixture.faults.sandboxMissing = true;
-  return fixture;
-}
-
-export function openShellGitRuntimeWorkerAfterRestart(
-  previous?: ReturnType<typeof openShellGitRuntimeFixture>,
-) {
-  const options = previous
-    ? { world: previous, ...(previous.store === undefined ? {} : { store: previous.store }) }
-    : {};
-  const fixture = openShellGitRuntimeFixture(options);
-  fixture.runtime["entries"].clear();
-  fixture.runtime["states"].clear();
   return fixture;
 }

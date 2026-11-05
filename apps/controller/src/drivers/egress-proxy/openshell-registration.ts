@@ -53,7 +53,7 @@ export function createOpenShellCapabilities(input: {
   const git =
     configuration &&
     resolveDelivery &&
-    new OpenShellGitRuntime({ ...configuration, protectedExecution: true }, resolveDelivery);
+    new OpenShellGitRuntime({ ...configuration }, resolveDelivery);
   const sandbox = input.createSandbox(
     { ...input.sandbox.configuration, ...(input.proxy && { egress: input.proxy.configuration }) },
     {

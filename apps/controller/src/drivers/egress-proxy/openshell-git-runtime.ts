@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { dirname } from "node:path";
@@ -34,7 +34,6 @@ import type {
 } from "../sandbox/openshell-gateway-client.ts";
 import {
   type OpenShellGitMaterialReference,
-  type OpenShellGitRouteRecord,
   type OpenShellGitRouteSnapshot,
   type OpenShellGitRouteStore,
   type OpenShellGitRouteWithdrawal,
@@ -71,7 +70,6 @@ import {
   openShellGitExecutionIdentity,
   overlapsOpenShellGitHost,
   readOpenShellGitEvidence as read,
-  sameOpenShellGitInstallation,
   type OpenShellGitObservationEntry,
   type OpenShellGitObservationFailure,
   type OpenShellGitRouteBlockReason,
@@ -82,10 +80,11 @@ export type {
   OpenShellGitRouteBlockReason,
 } from "./openshell-git-installation.ts";
 
+const missingAdmittedGitScope =
+  "OpenShell prepared Git requires one explicitly admitted GitHub binding and its dedicated Codex execution.";
+
 export interface OpenShellGitRuntimeConfiguration {
   readonly registrationName: string;
-  /** Selected with the paired Sandbox and Credential Proxy, never inferred on an old revision. */
-  readonly protectedExecution?: true;
   /** Dedicated supported stock gateway, only operator-controlled writers, no other workspace member. */
   readonly observedHookPreviewWorkspace?: string;
   readonly authority: EgressAuthorityConfiguration;
@@ -204,6 +203,7 @@ export function openShellGitRouteReadiness(
 }
 
 interface Entry extends OpenShellGitObservationEntry {
+  readonly preview: ObservedHookPreview;
   continuityDiagnosticReported?: true;
   readonly bindingId: string;
   readonly authorization: RepositoryGitDeliveryBinding;
@@ -247,14 +247,8 @@ interface Entry extends OpenShellGitObservationEntry {
   /** A provider write this worker reserved at this fence and never sent, whose cancellation
    * the store did not confirm: the next pass clears it before anything else. */
   unsentWrite?: number | undefined;
-  /** The persisted route's adoption fence this worker holds; absent without a route store. */
-  fence?: number | undefined;
-  /** The material the persisted generation was written with, until the material is read
-   * again after a restart: the same version needs no provider write (finding 2128). */
-  materialRef?: OpenShellGitMaterialReference | undefined;
-  /** The route was adopted from its persisted state after a worker restart; a route that
-   * had opened before reports its restoration once installed. */
-  adopted?: { readonly since: number } | undefined;
+  /** The persisted route's adoption fence this worker holds. */
+  fence: number;
   /** The snapshot last persisted for this fence, so the row is written only on change. */
   persisted?: OpenShellGitRouteSnapshot | undefined;
   /** Why the owner last had no material: the session is gone, or none is usable (finding 2149). */
@@ -378,31 +372,6 @@ function revisionIdentity(revision: Readonly<AgentRevision>): Readonly<Record<st
   };
 }
 
-/**
- * Whether a persisted route is this revision's own, recorded by a bootstrap that was refused
- * before its write and whose reservation was cleared (finding 2210): no provider generation,
- * no observation, no material and no write pending. Only such a route may bootstrap again;
- * anything else is adopted with the full verification.
- */
-function unsentBootstrap(
-  persisted: OpenShellGitRouteRecord,
-  revision: Readonly<AgentRevision>,
-  workspace: string,
-  sandbox: string,
-): boolean {
-  return (
-    persisted.blocked === undefined &&
-    persisted.writePending === undefined &&
-    persisted.generation === undefined &&
-    persisted.observed === undefined &&
-    persisted.material === undefined &&
-    persisted.namespaceId === revision.namespaceId &&
-    persisted.agentId === revision.agentId &&
-    persisted.workspace === workspace &&
-    persisted.sandbox === sandbox
-  );
-}
-
 /** A network policy or Agent network grant that would open a route beside the middleware. */
 export interface OpenShellGitPolicyOverlap {
   readonly name: string;
@@ -429,20 +398,14 @@ function isIpAddressHost(host: string): boolean {
 
 /**
  * Worker-local authority over each revision's Git route. The route store (migration 0060)
- * keeps the identity and custody facts of every route this worker prepared, so a restarted
- * or replacement worker re-observes the installation and re-adopts the route the way a
- * reconnected supervisor is adopted (finding 2128): only when the full observation verifies
- * as the same installation, with material read again through the normal preparation path,
- * never replayed. Anything else is a tombstone with its reason, and the revision requires a
- * new version. Without a store (or for a route that predates it) a restart still requires
- * a new revision: labels alone cannot adopt an old supervisor or resume a provider write
- * whose result was lost.
+ * keeps the identity and custody facts of every route this worker prepared. Live preparation
+ * requires the store and closes persisted routes on adoption: a restarted or replacement
+ * worker cannot inherit the held observation. A missing row with an existing Sandbox also
+ * requires a new revision; labels alone cannot resume a provider write whose result was lost.
  */
 export class OpenShellGitRuntime {
   private readonly entries = new Map<string, Promise<Entry>>();
   private readonly states = new Map<string, EntryState>();
-  /** Bootstrap reservations this worker never sent and could not yet cancel, by revision. */
-  private readonly unsentBootstraps = new Map<string, number>();
   /** One reconcile pass's read budget; a provider write has its own deadline. */
   private observeTimeoutMs = OBSERVE_TIMEOUT_MS;
   private owner: OnlineGitOwner | undefined;
@@ -474,25 +437,21 @@ export class OpenShellGitRuntime {
       !binding ||
       revision.harness.id !== "codex" ||
       revision.harness.mode !== "dedicated" ||
-      (this.configuration.protectedExecution
-        ? (revision.executionAdmission.version === 6
-            ? !this.configuration.observedHookPreviewWorkspace ||
-              binding.profile !== githubInstallationProfile ||
-              revision.egressPlan?.repositoryGitAuthorization !== observedRequestHook
-            : revision.executionAdmission.version !== 5 ||
-              revision.egressPlan?.repositoryGitAuthorization !== "online-request" ||
-              (binding.profile === githubInstallationProfile &&
-                !!this.configuration.observedHookPreviewWorkspace)) ||
-          !revision.egressPlan?.driver ||
-          !isDeepStrictEqual(revision.egressPlan.repositoryGit, state) ||
-          (binding.profile !== "git-write" &&
-            binding.profile !== githubInstallationProfile &&
-            binding.profile !== "github-repository")
-        : revision.egressPlan !== undefined || binding.profile !== "git-write")
+      (revision.executionAdmission?.version === 6
+        ? !this.configuration.observedHookPreviewWorkspace ||
+          binding.profile !== githubInstallationProfile ||
+          revision.egressPlan?.repositoryGitAuthorization !== observedRequestHook
+        : revision.executionAdmission?.version !== 5 ||
+          revision.egressPlan?.repositoryGitAuthorization !== "online-request" ||
+          (binding.profile === githubInstallationProfile &&
+            !!this.configuration.observedHookPreviewWorkspace)) ||
+      !revision.egressPlan?.driver ||
+      !isDeepStrictEqual(revision.egressPlan.repositoryGit, state) ||
+      (binding.profile !== "git-write" &&
+        binding.profile !== githubInstallationProfile &&
+        binding.profile !== "github-repository")
     ) {
-      throw new Error(
-        "OpenShell prepared Git requires one explicitly admitted GitHub binding and its dedicated Codex execution.",
-      );
+      throw new Error(missingAdmittedGitScope);
     }
     const scope = this.resolveDelivery(revision);
     if (!isDeepStrictEqual(scope.binding, binding)) {
@@ -515,8 +474,8 @@ export class OpenShellGitRuntime {
       return;
     }
     if (!entry && cold && revision.repositoryCredentials?.standingApprovalId) {
-      // The worker verifies execution before it prepares a successor session or re-adopts a
-      // route. A new process has neither a local entry nor authority to bootstrap here. Read
+      // The worker verifies execution before it prepares a successor session or route. A new
+      // process has neither a local entry nor authority to bootstrap here. Read
       // the known installation, including its original launch and both Pods, without taking
       // the route fence, asking for material, or changing any state in this worker.
       const saved = await this.routes?.standing(revision);
@@ -611,14 +570,23 @@ export class OpenShellGitRuntime {
       throw new Error("OpenShell prepared Git requires a live admitted GitHub binding.");
     }
     const scope = this.scope(revision);
+    const executionId = revision.egressPlan?.execution?.executionId;
+    if (!executionId) {
+      throw new Error(missingAdmittedGitScope);
+    }
     const legacyPreview = revision.executionAdmission?.version === 6;
     const mandatory =
       revision.egressPlan?.repositoryGitAuthorization === "online-request" &&
       scope.binding.profile !== githubInstallationProfile;
-    const preview = legacyPreview || mandatory;
+    // The bundled Proxy admits installation-wide Git only as explicit v6 preview.
+    // Keep historical scope validation available to readonly and retirement paths.
+    if (!legacyPreview && !mandatory) {
+      throw new Error(missingAdmittedGitScope);
+    }
+    const routes = this.routes;
     if (
       (legacyPreview && workspace !== this.configuration.observedHookPreviewWorkspace) ||
-      (preview && !this.routes)
+      !routes
     ) {
       throw new Error(
         "The observed-hook preview requires its dedicated workspace and durable route owner.",
@@ -637,92 +605,29 @@ export class OpenShellGitRuntime {
     let pending = this.entries.get(revision.id);
     if (!pending) {
       pending = (async (): Promise<Entry> => {
-        // A route this worker did not prepare in this process is adopted from the store
-        // (finding 2128); a failed store read is retried on the next pass, never retained.
+        // Close a route this worker did not prepare; a failed store read can be retried.
         const credentials = revision.repositoryCredentials!;
-        const pastDeadline = credentials.deadlineWallMs <= Date.now();
-        const known =
-          pastDeadline && !preview
-            ? await read(
-                () => this.routes?.standing(revision) ?? Promise.resolve(undefined),
-                signal,
-              )
-            : undefined;
-        if (pastDeadline && !known && !preview) {
-          throw new OpenShellGitRouteBlockedError("repository_expired");
-        }
-        // This worker's last bootstrap was refused before its write, and the store did not
-        // confirm clearing the reservation: clear it now, before the fence moves. A store that
-        // answers false holds no such reservation any more; adoption reads the row as it is.
-        // Without another pass the row keeps its pending write, which reads as unknown: closed.
-        const unsent = this.unsentBootstraps.get(revision.id);
-        const routes = this.routes;
-        if (unsent !== undefined && routes !== undefined) {
-          await read(() => routes.cancelWriting(revision.id, unsent), signal);
-        }
-        this.unsentBootstraps.delete(revision.id);
         const persisted = await read(
-          () =>
-            this.routes?.adopt(revision.id, this.instance, preview ? "close-preview" : undefined) ??
-            Promise.resolve(undefined),
+          () => routes.adopt(revision.id, this.instance, "close-preview"),
           signal,
         );
-        if (
-          known &&
-          (!persisted ||
-            !isDeepStrictEqual({ ...known.route, fence: known.route.fence + 1 }, persisted))
-        ) {
-          try {
-            this.emit?.({
-              event: "worker.openshell-git-continuity-refused",
-              check: "standing-route-adoption",
-              result: false,
-              ...revisionIdentity(revision),
-            });
-          } catch {
-            // Reporting cannot change adoption or its existing refusal.
-          }
-          throw new OpenShellGitRouteBlockedError("execution_replaced");
-        }
         if (persisted !== undefined) {
-          if (preview) {
-            // A restart cannot inherit this observation. Taking the fence also closed the route,
-            // even if the old worker stopped before its terminal reason could be recorded.
-            throw new OpenShellGitRouteBlockedError(persisted.blocked ?? "worker_replaced");
-          }
-          if (!unsentBootstrap(persisted, revision, workspace, sandbox)) {
-            return this.adopt(revision, client, workspace, sandbox, signal, otherProviders, {
-              scope,
-              persisted,
-            });
-          }
+          // A restart cannot inherit this observation. Taking the fence also closed the route,
+          // even if the old worker stopped before its terminal reason could be recorded.
+          throw new OpenShellGitRouteBlockedError(persisted.blocked ?? "worker_replaced");
         }
         if (credentials.deadlineWallMs <= Date.now()) {
           throw new OpenShellGitRouteBlockedError("repository_expired");
         }
         // A read that fails here is read again on the next pass, nothing written (finding
-        // 2210); a refused identity or an overlapping provider is final. A route already on
-        // record is closed in the store with that reason too, as adoption closes it.
-        const verified = async <T>(operation: () => Promise<T>): Promise<T> => {
-          try {
-            return await read(operation, signal);
-          } catch (error) {
-            if (persisted !== undefined && error instanceof OpenShellGitRouteError) {
-              await routes?.block(revision.id, persisted.fence, error.reason).catch(() => {});
-              this.emit?.({
-                event: "worker.error",
-                code: "OPENSHELL_GIT_RECONCILIATION_REQUIRED",
-                reason: error.reason,
-                ...revisionIdentity(revision),
-              });
-              throw new OpenShellGitRouteBlockedError(error.reason);
-            }
-            throw error;
-          }
-        };
-        await verified(() => checkOpenShellGitProviders(client, workspace, otherProviders, signal));
-        const current = await verified(() =>
-          client.getSandbox({ workspace, name: sandbox }, signal),
+        // 2210); a refused identity or an overlapping provider is final.
+        await read(
+          () => checkOpenShellGitProviders(client, workspace, otherProviders, signal),
+          signal,
+        );
+        const current = await read(
+          () => client.getSandbox({ workspace, name: sandbox }, signal),
+          signal,
         );
         if (current) {
           // The rejected bootstrap is retained below, so this logs once per revision while
@@ -740,16 +645,13 @@ export class OpenShellGitRuntime {
         const provider = gitProvider(
           client,
           workspace,
-          await verified(() => this.gateway(client, workspace, signal)),
+          await read(() => this.gateway(client, workspace, signal), signal),
           sandbox,
           revision.id,
           scope.delivery,
-          preview ? true : undefined,
+          true,
         );
-        const bindingId =
-          persisted?.bindingId ??
-          revision.egressPlan?.execution.executionId ??
-          randomBytes(24).toString("base64url");
+        const bindingId = executionId;
         const route = {
           revisionId: revision.id,
           namespaceId: revision.namespaceId,
@@ -761,25 +663,8 @@ export class OpenShellGitRuntime {
         // The route is on record, with its bootstrap write pending, before the write: a
         // worker that finds the write still pending knows its outcome was lost. A store
         // that does not answer here is read again on the next pass, nothing written.
-        let fence = 1;
-        if (persisted === undefined) {
-          await read(() => this.routes?.open(route, this.instance) ?? Promise.resolve(), signal);
-        } else {
-          // The route is on record from a bootstrap that was refused before its write and
-          // cleared: reserve the bootstrap write again at the adopted fence. A route that moved
-          // meanwhile is read again on the next pass.
-          const reserved = await read(
-            () => routes!.writing(revision.id, persisted.fence, "bootstrap"),
-            signal,
-          );
-          if (reserved === undefined) {
-            throw new OpenShellGitObservationError(
-              "read_failed",
-              new Error("OpenShell Git route changed before its bootstrap."),
-            );
-          }
-          fence = reserved;
-        }
+        const fence = 1;
+        await read(() => routes.open(route, this.instance), signal);
         if (credentials.deadlineWallMs <= Date.now()) {
           // The initial deadline passed while recording intent; this worker has not sent a write.
           await this.routes?.block(revision.id, fence, "repository_expired").catch(() => {});
@@ -790,12 +675,6 @@ export class OpenShellGitRuntime {
           binding = await provider.bootstrap(signal);
         } catch (error) {
           if (error instanceof OpenShellPreparedGitProviderError && error.outcome === "refused") {
-            if (error.readFailure !== undefined && !preview) {
-              // A gateway read before the write failed: nothing was sent. Clear the
-              // reservation and bootstrap again on the next pass (finding 2210).
-              await this.cancelBootstrap(revision.id, fence, signal);
-              throw new OpenShellGitObservationError(error.readFailure, error);
-            }
             // Nothing was written: the row says so, instead of outliving this attempt as a
             // pending write (which a later worker would have to read as write_unknown).
             await this.routes?.block(revision.id, fence, "bootstrap_failed").catch(() => {});
@@ -810,8 +689,8 @@ export class OpenShellGitRuntime {
           authorization: structuredClone(scope),
           otherProviders: [...otherProviders],
           bindingId,
-          ...(preview && { preview: new ObservedHookPreview(workspace, bindingId, mandatory) }),
-          ...(this.routes === undefined ? {} : { fence }),
+          preview: new ObservedHookPreview(workspace, bindingId, mandatory),
+          fence,
         };
         // The written generation is recorded now; a store that does not answer leaves the
         // bootstrap marked pending until the next verified pass records it (a worker that
@@ -932,156 +811,20 @@ export class OpenShellGitRuntime {
     return ws.id;
   }
 
-  /**
-   * Re-adopts a route from its persisted state, the route of a Sandbox this worker process
-   * did not prepare (a restarted or replacement worker, finding 2128). The persisted
-   * tombstone, a provider write still pending when the previous worker stopped (its outcome
-   * is unknown), a Sandbox that is not the persisted one and a provider overlap refuse the
-   * adoption for good, with the reason: the revision requires a new version, as before. The
-   * entry starts from the persisted generation, observation and material reference; the
-   * route reopens only once reconcile() verifies the full observation against the persisted
-   * one with the checks a reconnected supervisor passes, and reads the material again from
-   * the owner: the same version needs no provider write, a newer one installs by the normal
-   * rotation. Nothing is replayed.
-   */
-  private async adopt(
-    revision: Readonly<AgentRevision>,
-    client: OpenShellGatewayClient,
-    workspace: string,
-    sandbox: string,
-    signal: AbortSignal,
-    otherProviders: readonly string[],
-    {
-      scope,
-      persisted,
-    }: {
-      readonly scope: ReturnType<OpenShellGitRuntime["scope"]>;
-      readonly persisted: OpenShellGitRouteRecord;
-    },
-  ): Promise<Entry> {
-    const identity = revisionIdentity(revision);
-    const refuse = async (reason: OpenShellGitRouteBlockReason): Promise<never> => {
-      if (persisted.blocked === undefined) {
-        await this.routes?.block(revision.id, persisted.fence, reason).catch(() => {});
-      }
-      // Said once per process, as a live block is; every later pass rethrows the tombstone.
-      this.emit?.({
-        event: "worker.error",
-        code: "OPENSHELL_GIT_RECONCILIATION_REQUIRED",
-        reason,
-        ...identity,
-      });
-      throw new OpenShellGitRouteBlockedError(reason);
-    };
-    if (persisted.blocked !== undefined) {
-      return refuse(persisted.blocked);
-    }
-    if (
-      persisted.namespaceId !== revision.namespaceId ||
-      persisted.agentId !== revision.agentId ||
-      persisted.workspace !== workspace ||
-      persisted.sandbox !== sandbox
-    ) {
-      return refuse("sandbox_mismatch");
-    }
-    if (persisted.writePending !== undefined || persisted.generation === undefined) {
-      return refuse("write_unknown");
-    }
-    try {
-      await read(
-        () => checkOpenShellGitProviders(client, workspace, otherProviders, signal),
-        signal,
-      );
-    } catch (error) {
-      if (error instanceof OpenShellGitRouteError) {
-        return refuse(error.reason);
-      }
-      throw error;
-    }
-    // A gateway that does not answer here, or whose middleware is not registered (yet), is
-    // read again on the next pass (each retry moves the fence again); one that refuses the
-    // worker's identity blocks the route with that reason, as the bootstrap path does.
-    let workspaceId: string;
-    try {
-      workspaceId = await read(() => this.gateway(client, workspace, signal), signal);
-    } catch (error) {
-      if (error instanceof OpenShellGitRouteError) {
-        return refuse(error.reason);
-      }
-      throw error;
-    }
-    const provider = gitProvider(
-      client,
-      workspace,
-      workspaceId,
-      sandbox,
-      revision.id,
-      scope.delivery,
-    );
-    let binding: OpenShellPreparedGitBinding;
-    try {
-      binding = provider.restore(
-        persisted.generation,
-        !!revision.repositoryCredentials?.standingApprovalId,
-      );
-    } catch {
-      return refuse("unknown");
-    }
-    const entry: Entry = {
-      revision,
-      client,
-      provider,
-      binding,
-      authorization: structuredClone(scope),
-      otherProviders: [...otherProviders],
-      bindingId: persisted.bindingId,
-      fence: persisted.fence,
-      materialRef: persisted.material,
-      ...(persisted.observed === undefined
-        ? {}
-        : {
-            sandboxId: persisted.observed.sandboxId,
-            supervisor: persisted.observed,
-            unverified: true,
-            // The route had opened (material installed on a verified installation): its
-            // reopening is a restoration. A deploying version's first install is not.
-            ...(persisted.material === undefined
-              ? {}
-              : { opened: true, adopted: { since: performance.now() } }),
-          }),
-      persisted: {
-        generation: persisted.generation,
-        material: persisted.material,
-        observed: persisted.observed,
-      },
-    };
-    this.emit?.({
-      event: "worker.openshell-git-route",
-      status: "adopted",
-      reason: "worker_restarted",
-      fence: persisted.fence,
-      ...identity,
-    });
-    return entry;
-  }
-
   /** The route as this worker now holds it, written when it differs from the last write.
    * A stale fence means another worker adopted the route: this one closes it. */
   private async persist(entry: Entry, signal: AbortSignal): Promise<void> {
     const routes = this.routes;
     const fence = entry.fence;
-    if (routes === undefined || fence === undefined) {
+    if (routes === undefined) {
       return;
     }
     const snapshot: OpenShellGitRouteSnapshot = {
       generation: generationOf(entry.binding),
-      material:
-        entry.material === undefined
-          ? entry.materialRef
-          : {
-              materialVersion: entry.material.materialVersion,
-              preparationAttemptId: entry.material.preparationAttemptId,
-            },
+      material: entry.material && {
+        materialVersion: entry.material.materialVersion,
+        preparationAttemptId: entry.material.preparationAttemptId,
+      },
       observed: entry.supervisor,
       ...(entry.retainedLaunchHash && { retainedLaunchHash: entry.retainedLaunchHash }),
     };
@@ -1123,7 +866,7 @@ export class OpenShellGitRuntime {
   ): Promise<void> {
     const routes = this.routes;
     const fence = entry.fence;
-    if (routes === undefined || fence === undefined) {
+    if (routes === undefined) {
       return;
     }
     if (write === undefined) {
@@ -1151,7 +894,7 @@ export class OpenShellGitRuntime {
   private async cancelWriting(entry: Entry, signal: AbortSignal): Promise<void> {
     const routes = this.routes;
     const fence = entry.fence;
-    if (routes === undefined || fence === undefined) {
+    if (routes === undefined) {
       return;
     }
     const retry = entry.unsentWrite === fence;
@@ -1168,22 +911,6 @@ export class OpenShellGitRuntime {
       await this.fenced(entry, signal);
     }
     entry.unsentWrite = undefined;
-  }
-
-  /** Clears a bootstrap reservation proven unsent; the next prepare() retries a store that
-   * did not answer, before it adopts the route. */
-  private async cancelBootstrap(revisionId: string, fence: number, signal: AbortSignal) {
-    const routes = this.routes;
-    if (routes === undefined) {
-      return;
-    }
-    this.unsentBootstraps.set(revisionId, fence);
-    try {
-      await read(() => routes.cancelWriting(revisionId, fence), signal);
-      this.unsentBootstraps.delete(revisionId);
-    } catch {
-      // Retained for the next pass.
-    }
   }
 
   async bind(
@@ -1302,7 +1029,7 @@ export class OpenShellGitRuntime {
 
   previewReleased(revisionId: string): boolean {
     const entry = this.states.get(revisionId)?.entry;
-    return !entry?.blocked && entry?.preview?.release === "acknowledged";
+    return !entry?.blocked && entry?.preview.release === "acknowledged";
   }
 
   /** Read, never adopt, the exact current observation. Material selection and later use are
@@ -1310,7 +1037,7 @@ export class OpenShellGitRuntime {
   async mandatoryEnforcement(context: ProxyRevisionContext, sandboxId: string) {
     const entry = this.states.get(context.revision.id)?.entry;
     if (
-      !entry?.preview?.mandatory ||
+      !entry?.preview.mandatory ||
       !entry.preview.hook ||
       entry.blocked ||
       entry.sandboxId !== sandboxId ||
@@ -1445,10 +1172,8 @@ export class OpenShellGitRuntime {
    * this only after withdraw() and after OpenShell confirms the revision's Sandbox gone, so no
    * route can use the provider again: in this process the entry is blocked, and adoption by any
    * other worker finds neither the Sandbox nor the provider (the store's tombstone, written best
-   * effort, refuses it earlier). (Without a route store, which only the
-   * unprotected git-write path lacks, a restarted worker asked to prepare the revision again
-   * starts a new bootstrap with every admission check, as a first preparation does.) The name
-   * derives from the revision's own scope, as at preparation, so a restarted worker finds
+   * effort, refuses it earlier). The name derives from the revision's own scope, as at
+   * preparation, so a restarted worker finds
    * it too. `attached`, the Sandbox's provider list read before its deletion, names it when the
    * scope no longer resolves (its grant or standing approval was withdrawn, often the reason the
    * revision stopped) or derives another name (an upgrade changed the scope's inputs). A
@@ -1559,11 +1284,7 @@ export class OpenShellGitRuntime {
     if (entry.unobserved) {
       return { state: "pending", reason: "unobserved", failure: entry.unobserved.failure };
     }
-    if (
-      entry.pending === "material_unavailable" &&
-      entry.material === undefined &&
-      entry.materialRef === undefined
-    ) {
+    if (entry.pending === "material_unavailable" && entry.material === undefined) {
       return { state: "pending", reason: "awaiting_material" };
     }
     return { state: "pending", reason: entry.pending ?? "unverified" };
@@ -1684,35 +1405,25 @@ export class OpenShellGitRuntime {
     entry.materialLost = undefined;
     entry.opened = true;
     const reconnected = entry.reconnected;
-    const adopted = entry.adopted;
-    if (entry.closedAt !== undefined || reconnected !== undefined || adopted !== undefined) {
-      // A route re-adopted after a worker restart reports the restart as its reason, even
-      // when the supervisor reconnected meanwhile: the restart is what the operator did.
-      const reason =
-        adopted !== undefined
-          ? "worker_restarted"
-          : reconnected !== undefined
-            ? "supervisor_reconnected"
-            : undefined;
+    const restoredAt = entry.closedAt ?? reconnected?.since;
+    if (restoredAt !== undefined) {
+      const reason = reconnected === undefined ? undefined : "supervisor_reconnected";
       this.emit?.({
         event: "worker.openshell-git-route",
         status: "restored",
         ...(reason === undefined ? {} : { reason }),
-        durationMs: Math.round(
-          performance.now() - (entry.closedAt ?? reconnected?.since ?? adopted!.since),
-        ),
+        durationMs: Math.round(performance.now() - restoredAt),
         ...this.identity(entry),
       });
       entry.closedAt = undefined;
       entry.reconnected = undefined;
-      entry.adopted = undefined;
     }
   }
 
   /** Closes the route for good and reports why; the entry is a tombstone from here on, in
    * this process and, unless another worker holds the route now, in the store. */
   private block(entry: Entry, reason: OpenShellGitRouteBlockReason, reported = false): void {
-    if (entry.preview && entry.blocked) {
+    if (entry.blocked) {
       return;
     }
     entry.blocked = reason;
@@ -1720,12 +1431,8 @@ export class OpenShellGitRuntime {
     entry.unobserved = undefined;
     entry.closedAt = undefined;
     entry.reconnected = undefined;
-    entry.adopted = undefined;
     if (reason === "worker_replaced") {
-      // Another worker adopted the route: this copy closes and is dropped, not kept as a
-      // tombstone (the revision is fine; the adopter serves it). Should this worker hold
-      // the claim again, its next prepare() re-adopts through the store with the full
-      // verification, and the row is never written from here.
+      // This worker no longer holds the route: drop this copy without writing its row.
       if (this.entries.get(entry.revision.id) !== undefined) {
         this.entries.delete(entry.revision.id);
         this.states.delete(entry.revision.id);
@@ -1750,12 +1457,8 @@ export class OpenShellGitRuntime {
       });
       return;
     }
-    if (entry.preview && entry.fence !== undefined) {
-      entry.previewClosure = { reason, fence: entry.fence };
-      void this.confirmPreviewClosure(entry);
-    } else if (entry.fence !== undefined) {
-      void this.routes?.block(entry.revision.id, entry.fence, reason).catch(() => {});
-    }
+    entry.previewClosure = { reason, fence: entry.fence };
+    void this.confirmPreviewClosure(entry);
     this.emit?.({
       event: "worker.error",
       code: "OPENSHELL_GIT_RECONCILIATION_REQUIRED",
@@ -1870,7 +1573,7 @@ export class OpenShellGitRuntime {
       return;
     }
     const now = performance.now();
-    if (entry.preview?.verifyInstallBy !== undefined && now >= entry.preview.verifyInstallBy) {
+    if (entry.preview.verifyInstallBy !== undefined && now >= entry.preview.verifyInstallBy) {
       // The write may already be usable. A terminal tombstone makes this exact preview
       // family eligible for its owner's normal retirement, not a new installation attempt.
       this.block(entry, "preview_install_unverified");
@@ -1895,16 +1598,14 @@ export class OpenShellGitRuntime {
         this.pending(entry, "unverified");
         return;
       }
-      if (entry.preview) {
-        // Commit the observed generation before the credential owner selects exactly that row.
-        await this.persist(entry, signal);
-        if (!entry.preview.hook) {
-          return;
-        }
+      // Commit the observed generation before the credential owner selects exactly that row.
+      await this.persist(entry, signal);
+      if (!entry.preview.hook) {
+        return;
       }
       const owner = this.owner;
       const install = entry.revision.egressPlan?.repositoryGit
-        ? { revisionId: entry.revision.id, fence: entry.fence!, observed: entry.supervisor }
+        ? { revisionId: entry.revision.id, fence: entry.fence, observed: entry.supervisor }
         : undefined;
       const scopeName =
         "scope" in entry.authorization.delivery
@@ -1917,7 +1618,7 @@ export class OpenShellGitRuntime {
       const material = await read(readMaterial, signal);
       if (!material || "absent" in material) {
         entry.absent = material?.absent;
-        if (entry.material || entry.materialRef) {
+        if (entry.material) {
           // The route lost the material it had: the owner retired it (the App key was
           // rotated or rejected and preparation is quarantined, access was withdrawn, or a
           // newer version is active and this one is about to be withdrawn). The restoration
@@ -1977,87 +1678,67 @@ export class OpenShellGitRuntime {
         if (entry.blocked || this.stopped.signal.aborted || signal.aborted) {
           return;
         }
-        if (
-          entry.materialRef !== undefined &&
-          entry.materialRef.materialVersion === material.materialVersion &&
-          entry.materialRef.preparationAttemptId === material.preparationAttemptId &&
-          entry.binding.credentialState === "active" &&
-          Date.parse(material.expiresAt) > Date.now()
-        ) {
-          // The generation this worker's predecessor wrote carries this very material
-          // (re-adopted route, finding 2128): nothing to write, the verifying read below
-          // pins that generation against the Gateway's receipt before the route reopens.
-          entry.material = identity;
-          entry.materialRef = undefined;
-        } else {
-          this.pending(entry, "unverified");
-          // Marked before the write: a worker that stops in between leaves the outcome
-          // unknown, and a stale fence writes nothing.
-          await this.fenced(entry, signal, "rotate", material);
-          // Retain the selected recipient, but authorize at this reservation's new fence.
-          const reservedInstall = install && { ...install, fence: entry.fence! };
-          try {
-            const rotated = await entry.provider.rotate(
-              entry.binding,
-              async () => {
-                // Provider, profile and workspace have now been read. Recheck the fence, then
-                // ask the prepared owner for *current* approval, execution, session and material.
-                // A different selection needs a new observation, never a use receipt or a replay.
-                await this.fenced(entry, signal);
-                if (
-                  entry.preview &&
-                  !isDeepStrictEqual(await this.observation(entry, signal), observed)
-                ) {
-                  throw new OpenShellGitRouteError(
-                    "material_mismatch",
-                    "Preview credential recipient changed before installation.",
-                  );
-                }
-                const current = await read(() => readMaterial(reservedInstall), signal);
-                if (
-                  current &&
-                  !("absent" in current) &&
-                  isDeepStrictEqual(material, current) &&
-                  this.materialIsLive(entry.revision, current.expiresAt) &&
-                  !entry.blocked &&
-                  !this.stopped.signal.aborted &&
-                  !signal.aborted
-                ) {
-                  return { value: current.value, expiresAt: current.expiresAt };
-                }
-                entry.absent = current && "absent" in current ? current.absent : undefined;
-              },
-              signal,
-            );
-            if (!rotated) {
-              if (signal.aborted) {
-                // This pass ran out of time before the write (finding 2211): nothing was sent.
-                // The catch below clears the reservation; the route is observed again.
-                throw new OpenShellGitObservationError("timeout", signal.reason);
+        this.pending(entry, "unverified");
+        // Marked before the write: a worker that stops in between leaves the outcome
+        // unknown, and a stale fence writes nothing.
+        await this.fenced(entry, signal, "rotate", material);
+        // Retain the selected recipient, but authorize at this reservation's new fence.
+        const reservedInstall = install && { ...install, fence: entry.fence };
+        try {
+          const rotated = await entry.provider.rotate(
+            entry.binding,
+            async () => {
+              // Provider, profile and workspace have now been read. Recheck the fence, then
+              // ask the prepared owner for *current* approval, execution, session and material.
+              // A different selection needs a new observation, never a use receipt or a replay.
+              await this.fenced(entry, signal);
+              if (!isDeepStrictEqual(await this.observation(entry, signal), observed)) {
+                throw new OpenShellGitRouteError(
+                  "material_mismatch",
+                  "Preview credential recipient changed before installation.",
+                );
               }
-              // The writer never sent the selected material. Clear only our own write intent.
-              this.pending(entry, "material_unavailable");
-              await this.cancelWriting(entry, signal);
-              return;
+              const current = await read(() => readMaterial(reservedInstall), signal);
+              if (
+                current &&
+                !("absent" in current) &&
+                isDeepStrictEqual(material, current) &&
+                this.materialIsLive(entry.revision, current.expiresAt) &&
+                !entry.blocked &&
+                !this.stopped.signal.aborted &&
+                !signal.aborted
+              ) {
+                return { value: current.value, expiresAt: current.expiresAt };
+              }
+              entry.absent = current && "absent" in current ? current.absent : undefined;
+            },
+            signal,
+          );
+          if (!rotated) {
+            if (signal.aborted) {
+              // This pass ran out of time before the write (finding 2211): nothing was sent.
+              // The catch below clears the reservation; the route is observed again.
+              throw new OpenShellGitObservationError("timeout", signal.reason);
             }
-            entry.binding = rotated;
-            if (entry.preview) {
-              entry.preview.verifyInstallBy = performance.now() + 30_000;
-            }
-          } catch (error) {
-            if (
-              error instanceof OpenShellGitObservationError ||
-              (error instanceof OpenShellPreparedGitProviderError && error.outcome === "refused")
-            ) {
-              // Nothing was written: the marked write is cleared with the unchanged route.
-              await this.cancelWriting(entry, signal);
-            }
-            throw error;
+            // The writer never sent the selected material. Clear only our own write intent.
+            this.pending(entry, "material_unavailable");
+            await this.cancelWriting(entry, signal);
+            return;
           }
-          entry.material = identity;
-          entry.materialRef = undefined;
-          await this.persist(entry, signal);
+          entry.binding = rotated;
+          entry.preview.verifyInstallBy = performance.now() + 30_000;
+        } catch (error) {
+          if (
+            error instanceof OpenShellGitObservationError ||
+            (error instanceof OpenShellPreparedGitProviderError && error.outcome === "refused")
+          ) {
+            // Nothing was written: the marked write is cleared with the unchanged route.
+            await this.cancelWriting(entry, signal);
+          }
+          throw error;
         }
+        entry.material = identity;
+        await this.persist(entry, signal);
       }
       const installed = await this.observation(entry, signal, { adopt: true });
       if (
@@ -2067,9 +1748,7 @@ export class OpenShellGitRuntime {
         !signal.aborted
       ) {
         this.installedNow(entry, installed);
-        if (entry.preview) {
-          entry.preview.verifyInstallBy = undefined;
-        }
+        entry.preview.verifyInstallBy = undefined;
         const { materialVersion, preparationAttemptId } = entry.material;
         if (
           entry.materialInstalled?.materialVersion !== materialVersion ||
@@ -2181,7 +1860,7 @@ export class OpenShellGitRuntime {
         reason = "execution_mismatch";
         break;
       }
-      if (entry.preview && entry.preview.release !== "acknowledged") {
+      if (entry.preview.release !== "acknowledged") {
         reason = "route_pending";
         break;
       }
@@ -2190,7 +1869,7 @@ export class OpenShellGitRuntime {
         // retired credential (recovery required) from a version still verifying.
         reason = entry.unobserved
           ? "route_unobserved"
-          : entry.pending === "material_unavailable" && (entry.material || entry.materialRef)
+          : entry.pending === "material_unavailable" && entry.material
             ? "material_unavailable"
             : "route_pending";
         if (reason === "material_unavailable" && !entry.materialLost) {
@@ -2231,12 +1910,7 @@ export class OpenShellGitRuntime {
           reason = "material_rotated";
           break;
         }
-        if (
-          !observed ||
-          (entry.preview
-            ? !isDeepStrictEqual(observed, entry.installed)
-            : !sameOpenShellGitInstallation(observed, entry.installed))
-        ) {
+        if (!observed || !isDeepStrictEqual(observed, entry.installed)) {
           // The installation no longer reads as the one admitted: close the route until the
           // worker's own reconcile verifies it again.
           this.pending(entry, "unverified");
@@ -2273,7 +1947,7 @@ export class OpenShellGitRuntime {
             ...(entry.revision.egressPlan?.repositoryGit && {
               route: {
                 revisionId: entry.revision.id,
-                fence: entry.fence!,
+                fence: entry.fence,
                 observed: entry.supervisor,
               },
             }),
@@ -2319,7 +1993,7 @@ export class OpenShellGitRuntime {
 
   /** The protected sender gets committed material and one request decision, never the issuer. */
   async bindRepositoryGit(authority: ProtectedRepositoryGitAuthority) {
-    if (!this.configuration.protectedExecution || !this.routes) {
+    if (!this.routes) {
       throw new Error("OpenShell protected repository Git requires its selected route store.");
     }
     await this.start(
@@ -2366,7 +2040,7 @@ export class OpenShellGitRuntime {
         ) => {
           for (const { entry } of this.states.values()) {
             if (
-              entry?.preview &&
+              entry &&
               entry.sandboxId === q.sandboxId &&
               !entry.blocked &&
               !entry.material &&
@@ -2428,7 +2102,6 @@ export class OpenShellGitRuntime {
     this.owner = undefined;
     this.entries.clear();
     this.states.clear();
-    this.unsentBootstraps.clear();
   }
 }
 
