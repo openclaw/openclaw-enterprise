@@ -1,5 +1,97 @@
 import { PLUGIN_RUNTIME_HELPERS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 
+// TODO: Remove refusal-only metadata after the managed native-profile blocker is resolved.
+// Return only fixed diagnostic labels. Never retain text from a native error,
+// HTTP body or process log, which can contain model data and credentials.
+export function nativeTaskFailureSummary(value) {
+  const text = typeof value === "string" ? value.slice(0, 65_536) : "";
+  const patterns = [
+    ["profile-grant-mismatch", /Codex did not grant the requested (?:named )?permission profile/i],
+    [
+      "profile-not-found",
+      /(?:unknown|missing|unrecognized|not found).*permission.*profile|permission.*profile.*(?:not found|not configured|does not exist|unknown)/i,
+    ],
+    [
+      "managed-profile-refusal",
+      /allowed_permission_profiles|allowedPermissionProfiles|permission profile.*(?:not allowed|disallowed|requirements|managed)|requirements.*permission.*profile/i,
+    ],
+    [
+      "native-policy-refusal",
+      /sandbox policy.*(?:refused|denied|not allowed)|approval.*(?:required|denied)|permission.*(?:denied|not allowed)/i,
+    ],
+    ["thread-unavailable", /thread.*(?:not found|not loaded|unavailable|missing)/i],
+    [
+      "gateway-authentication",
+      /gateway.*(?:unauthorized|authentication failed|password mismatch|auth failed)|missing gateway token|gateway token mismatch/i,
+    ],
+    [
+      "device-identity-required",
+      /device identity required|pairing required|device identity.*(?:missing|required)/i,
+    ],
+    [
+      "model-authentication",
+      /invalid api key|incorrect api key|authentication_error|invalid authentication|Codex.*(?:unauthorized|authentication failed)/i,
+    ],
+    ["model-rate-or-quota", /rate.limit|quota exceeded|insufficient_quota|too many requests/i],
+    [
+      "network-or-tls",
+      /ECONNREFUSED|ENOTFOUND|ETIMEDOUT|connection refused|failed to connect|certificate.*(?:failed|invalid)|SSL_ERROR/i,
+    ],
+  ];
+  const classes = patterns.filter(([, pattern]) => pattern.test(text)).map(([name]) => name);
+  const method = ["thread/start", "thread/resume", "thread/fork", "turn/start"].find((name) =>
+    text.includes(name),
+  );
+  return {
+    classes: classes.length ? classes : ["unclassified"],
+    nativeMethod: method ?? "unknown",
+  };
+}
+
+export function nativePolicyRequirementsSummary(response) {
+  const record = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  if (!record(response) || !Object.hasOwn(response, "requirements")) {
+    return { available: false };
+  }
+  const requirements = response.requirements;
+  if (requirements === null) {
+    return { available: true, requirementsPresent: false };
+  }
+  if (!record(requirements)) {
+    return { available: false };
+  }
+  const allowlist = requirements.allowedPermissionProfiles;
+  const present =
+    record(allowlist) && Object.values(allowlist).every((value) => typeof value === "boolean");
+  const allowlistKnown =
+    Object.hasOwn(requirements, "allowedPermissionProfiles") && (allowlist === null || present);
+  const keys = present ? Object.keys(allowlist) : [];
+  const defaultId = requirements.defaultPermissions;
+  const builtin = {
+    ":workspace": "builtin-workspace",
+    ":read-only": "builtin-read-only",
+    ":danger-full-access": "builtin-danger-full-access",
+  };
+  return {
+    available: true,
+    requirementsPresent: true,
+    profileAllowlistKnown: allowlistKnown,
+    profileAllowlistPresent: allowlistKnown ? present : "unknown",
+    profileAllowlistCount: present ? keys.length : "unknown",
+    workspaceAllowed: present ? allowlist[":workspace"] === true : "unknown",
+    readOnlyAllowed: present ? allowlist[":read-only"] === true : "unknown",
+    generatedNetworkProfilesAllowed: present
+      ? keys.filter((key) => /^openclaw-network-[a-f0-9]{16}$/.test(key) && allowlist[key] === true)
+          .length
+      : "unknown",
+    defaultProfileKind: Object.hasOwn(builtin, defaultId)
+      ? builtin[defaultId]
+      : typeof defaultId === "string"
+        ? "other-named"
+        : "unknown",
+  };
+}
+
 // A trace may record an interim tool error before that same call completes.
 // Only its latest result, or an exact process-session poll, can prove success.
 export function completedToolResult(trace, call) {
@@ -350,12 +442,13 @@ export const sessionEvidenceScript = String.raw`
 // Read only: command success comes from the owning Codex thread, whose mirrored
 // display transcript can omit exit status. Never start or replay a model turn.
 export const codexRepositoryEvidenceScript = String.raw`
-  const assert = require("node:assert/strict");
   const WebSocket = require("ws");
   const marker = process.argv[1];
   const expected = JSON.parse(process.argv[2]);
   ${repositoryCommandEvidence}
   ${PLUGIN_RUNTIME_HELPERS}
+  const summarizeFailure = ${nativeTaskFailureSummary.toString()};
+  const summarizeRequirements = ${nativePolicyRequirementsSummary.toString()};
   (async () => {
     // Plugin-enabled peers rotate their transport token for each startup.
     // Resolve it through the same verified status contract as gateway startup;
@@ -371,11 +464,19 @@ export const codexRepositoryEvidenceScript = String.raw`
     });
     const pending = new Map();
     let nextId = 0;
-    const deadline = setTimeout(() => {
-      process.stderr.write("Codex repository evidence timed out\n");
-      socket.close();
-      process.exitCode = 1;
-    }, 20000);
+    let stage = "connect";
+    const capturePolicy = process.argv[3] === "with-policy";
+    let requirements = { available: false };
+    let finished = false;
+    const finish = (value) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(deadline);
+      try { socket.close(); } catch { /* Always retain the fixed observer receipt. */ }
+      process.stdout.write(JSON.stringify({ ...value, ...(capturePolicy ? { requirements } : {}) }), () => process.exit(0));
+    };
+    const unavailable = (reason, failure) => finish({ status: "unavailable", observerStage: stage, observerReason: reason, ...(failure ? { failure } : {}), commands: [] });
+    const deadline = setTimeout(() => unavailable("deadline"), 20000);
     const request = (method, params) => new Promise((resolve, reject) => {
       const id = ++nextId;
       pending.set(id, { resolve, reject });
@@ -386,18 +487,28 @@ export const codexRepositoryEvidenceScript = String.raw`
       const operation = pending.get(message.id);
       if (!operation) return;
       pending.delete(message.id);
-      message.error ? operation.reject(new Error("Codex evidence request failed")) : operation.resolve(message.result);
+      message.error
+        ? operation.reject(Object.assign(new Error("native read failed"), { diagnostic: {
+            ...summarizeFailure(JSON.stringify(message.error)),
+            rpcCode: ({ "-32601": "method-not-found", "-32602": "invalid-params", "-32603": "internal-error", "-32000": "server-error" })[message.error.code] ?? "other",
+          } }))
+        : operation.resolve(message.result);
     });
-    socket.addEventListener("error", () => { process.exitCode = 1; });
+    socket.addEventListener("error", () => unavailable("connection"));
     socket.addEventListener("open", async () => {
       try {
-        await request("initialize", { clientInfo: { name: "repository-acceptance-observer", version: "1.0.0" } });
+        stage = "initialize";
+        await request("initialize", { clientInfo: { name: "repository-acceptance-observer", version: "1.0.0" }, ...(capturePolicy ? { capabilities: { experimentalApi: true } } : {}) });
         socket.send(JSON.stringify({ method: "initialized" }));
-        // Client source labels vary across supported bridges; the exact task marker below selects the turn.
+        stage = "requirements-read";
+        try { if (capturePolicy) requirements = summarizeRequirements(await request("configRequirements/read")); }
+        catch (error) { requirements = { available: false, ...(error?.diagnostic ? { failure: error.diagnostic } : {}) }; }
+        stage = "thread-list";
         const listed = await request("thread/list", { limit: 20, modelProviders: [] });
-        assert.equal(listed.nextCursor, null, "fresh Agent must have a bounded thread inventory");
+        if (listed.nextCursor !== null) return unavailable("inventory-limit");
         const matches = [];
         for (const candidate of listed.data) {
+          stage = "thread-read";
           const { thread } = await request("thread/read", { threadId: candidate.id, includeTurns: true });
           for (const turn of thread.turns) {
             if (!turn.items.some(item => item.type === "userMessage" && item.content.some(block => block.type === "text" && block.text.includes(marker)))) continue;
@@ -443,18 +554,13 @@ export const codexRepositoryEvidenceScript = String.raw`
             });
           }
         }
-        assert.equal(matches.length, 1, "the repository task must identify one native Codex turn");
-        process.stdout.write(JSON.stringify(matches[0]));
-      } catch {
-        process.stderr.write("Codex repository evidence unavailable\n");
-        process.exitCode = 1;
-      } finally {
-        clearTimeout(deadline);
-        socket.close();
+        if (matches.length !== 1) return unavailable(matches.length ? "ambiguous-owned-turn" : "no-owned-turn");
+        finish(matches[0]);
+      } catch (error) {
+        unavailable("native-read-failed", error?.diagnostic);
       }
     });
   })().catch(() => {
-    process.stderr.write("Codex repository authentication unavailable\n");
-    process.exitCode = 1;
+    process.stdout.write(JSON.stringify({ status: "unavailable", observerStage: "startup", observerReason: "connection-or-runtime-unavailable", commands: [], requirements: { available: false } }));
   });
 `;

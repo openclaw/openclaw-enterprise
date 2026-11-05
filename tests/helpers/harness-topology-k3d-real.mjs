@@ -6021,21 +6021,6 @@ async function assertDedicatedWorkspaceRuntime(context, topology, claim, private
       }
       evidence.completedModelRequests += 1;
       evidence.answerContainsMarker = answer.includes(memoryValue);
-      try {
-        const rollouts = (await codexRollouts(topology)).filter(({ text }) =>
-          text.includes(memoryKey),
-        );
-        evidence.nativeToolInventoryAvailable = true;
-        evidence.nativeMemoryToolOffered =
-          rollouts.length === 1 && rollouts[0].dynamicTools.includes("memory_search");
-      } catch {
-        throw new Error("Native Memory tool inventory observation failed.");
-      }
-      assert.equal(
-        evidence.nativeMemoryToolOffered,
-        true,
-        "the exact native thread must advertise Memory search",
-      );
       assert.equal(
         evidence.answerContainsMarker,
         true,

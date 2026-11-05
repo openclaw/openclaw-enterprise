@@ -320,7 +320,11 @@ ${nativeCommands}`;
       httpStatus: Number.isSafeInteger(response.status) ? response.status : null,
       ...(response.failure === undefined ? {} : { failure: response.failure }),
     };
-    assert.equal(response.status, 200);
+    assert.equal(
+      response.status,
+      200,
+      "repository Gateway submission must return HTTP 200; see task diagnostics",
+    );
   } catch (error) {
     taskFailure = error;
     if (taskTransport.outcome === "unresolved") {
@@ -340,11 +344,53 @@ ${nativeCommands}`;
   });
   // A timeout is an unknown mutation outcome. Read actual trace and provider
   // state once; never replay a model task or create the PR in the runner.
-  const readNativeTrace = async () =>
-    JSON.parse(
-      await exec(codexRepositoryEvidenceScript, [completionMarker, JSON.stringify(commandSpecs)]),
-    );
-  let nativeTrace = dedicated ? await readNativeTrace() : undefined;
+  let policyCaptured;
+  const readNativeTrace = async () => {
+    const captureRequirements = taskTransport.httpStatus === 500 && !policyCaptured;
+    const output = await exec(codexRepositoryEvidenceScript, [
+      completionMarker,
+      JSON.stringify(commandSpecs),
+      captureRequirements ? "with-policy" : "turn-only",
+    ]);
+    let current;
+    try {
+      current = JSON.parse(output);
+    } catch {
+      throw new Error("native observer returned unavailable metadata");
+    }
+    if (captureRequirements) {
+      policyCaptured = { requirements: current.requirements };
+    }
+    return { ...current, ...policyCaptured };
+  };
+  let nativeTrace;
+  if (dedicated) {
+    try {
+      nativeTrace = await readNativeTrace();
+    } catch (error) {
+      if (taskFailure) {
+        throw taskFailure;
+      }
+      throw error;
+    }
+    if (nativeTrace.status === "unavailable") {
+      try {
+        await f.record("Captured native observer unavailable diagnostics", {
+          evidenceKind: "diagnostic-only",
+          observerStage: nativeTrace.observerStage,
+          observerReason: nativeTrace.observerReason,
+          failure: nativeTrace.failure,
+          requirements: nativeTrace.requirements,
+        });
+      } catch {
+        /* Preserve the original submission failure. */
+      }
+      if (taskFailure) {
+        throw taskFailure;
+      }
+      assert.fail("the exact native repository turn is unavailable; see observer diagnostics");
+    }
+  }
   try {
     // The gateway can finish its HTTP response while its native Codex turn is
     // still running. Observe that same turn; never submit the task again.
@@ -383,6 +429,7 @@ ${nativeCommands}`;
           evidenceKind: "diagnostic-only",
           status: nativeTrace.status,
           cwdMatchesExpectedWorkspace: nativeTrace.cwdMatchesExpectedWorkspace === true,
+          requirements: nativeTrace.requirements,
           classificationMeaning: "text-pattern hints, not verified causes or successful operations",
           threadId: nativeTrace.threadId,
           turnId: nativeTrace.turnId,
