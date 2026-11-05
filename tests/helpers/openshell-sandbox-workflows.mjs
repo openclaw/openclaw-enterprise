@@ -83,7 +83,6 @@ assert.ok(
 );
 const networkPolicyOnly = selectedScenario === "network-policy";
 const pluginInstallOnly = selectedScenario === "plugin-install";
-const authorityRecoveryOnly = selectedScenario === "authority-recovery";
 const installationPluginId =
   process.env.OCC_TEST_CODEX_INSTALL_PLUGIN_ID ?? "codex-plugin:linear@openai-curated-remote";
 const pluginArtifactHosts = Object.freeze([
