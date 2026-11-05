@@ -58,7 +58,7 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
        : {}),
    });
    if (required) {
-@@ -118,148 +139,258 @@
+@@ -118,148 +139,259 @@
    },
  );
 
@@ -423,7 +423,8 @@ diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/
 +            expect(changed.ok, JSON.stringify(changed.error)).toBe(true);
 +          }
 +        },
-+        /operator role changed/i,
++        // Reassignment revokes both the operator role and the retained request transport.
++        /^(?:Your operator role changed; reconnect before continuing\.|Gateway requester authority changed)$/,
 +      );
 +      if (!afterAcknowledgment) {
 +        await expect(reassigned.created).rejects.toThrow(/closed|policy changed|role changed/);

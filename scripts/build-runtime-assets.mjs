@@ -31,7 +31,7 @@ const appliedPatches = [
   },
   {
     file: "openclaw-required-worker-authority-regression.patch",
-    sha256: "fe61a9c3bd9d2c777db5ce7b6272c0db8b12da4a97a07fb7a42cc879a10dbf0e",
+    sha256: "c041f66efe98673af9c24699754888790ae6ffd245e6d6acd26cd9562e7304b3",
     field: "openclawRequiredWorkerAuthorityRegressionPatchSha256",
   },
   {
