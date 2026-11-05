@@ -43,13 +43,14 @@ else if (endpoint.includes("/commits/")) {
   fs.writeFileSync(countFile, String(count + 1));
   response = { sha: (scenario === "branch-changed" && count > 0 ? "b" : "a").repeat(40) };
 } else if (endpoint.includes("/contributors?")) response = scenario === "invalid-pages" ? [{id: 1}] : [[{id: 2}], [{id: 1}]];
-else if (endpoint.includes("/pulls?")) response = [[{number: 9, merged_at: "2026-01-01", base: {ref: "main"}, user: {id: 1}}, {number: 10, merged_at: "2026-01-01", base: {ref: "main"}, user: null}]];
+else if (endpoint.includes("/pulls?")) response = [[{number: 9, merged_at: "2026-01-01", base: {ref: "main"}, user: {id: 1}}, {number: 10, merged_at: "2026-01-01", base: {ref: "main"}, user: null}, {number: 11, merged_at: "2026-01-01", base: {ref: "main"}, user: {id: 4}}]];
 else if (endpoint === "user/1") response = {id: 1, type: "User", login: "zeta"};
 else if (endpoint === "user/2") response = {id: 2, type: "User", login: "Alpha"};
 else if (endpoint === "user/3") {
   if (scenario === "readme-changed") fs.appendFileSync("README.md", "concurrent edit\\n");
   response = {id: 3, type: "User", login: "beta"};
-} else { console.error("Unexpected endpoint"); process.exit(2); }
+} else if (endpoint === "user/4") response = {id: 4, type: "User", login: "gamma"};
+else { console.error("Unexpected endpoint"); process.exit(2); }
 console.log(JSON.stringify(response));
 `;
   const gh = join(directory, "bin", "gh");
@@ -69,11 +70,17 @@ test("generator collects paginated contributors, corrections and merged authors 
   const { result, readme } = run(t, "normal");
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stderr, /Skipping merged PR #10/);
-  assert.match(result.stdout, /Updated: 3 contributors/);
+  assert.match(result.stdout, /Updated: 4 contributors/);
   assert.ok(readme.startsWith("before\n<!-- contributors:start -->"));
   assert.ok(readme.endsWith("<!-- contributors:end -->\nafter\n"));
   assert.ok(readme.indexOf("github.com/Alpha") < readme.indexOf("github.com/beta"));
-  assert.ok(readme.indexOf("github.com/beta") < readme.indexOf("github.com/zeta"));
+  assert.ok(readme.indexOf("github.com/beta") < readme.indexOf("github.com/gamma"));
+  assert.ok(readme.indexOf("github.com/gamma") < readme.indexOf("github.com/zeta"));
+  assert.match(
+    readme,
+    /href="https:\/\/github\.com\/gamma"><img src="https:\/\/avatars\.githubusercontent\.com\/u\/4\?/,
+  );
+  assert.equal([...readme.matchAll(/github\.com\/zeta/g)].length, 1);
   assert.match(readme, /alt="A &amp; B"/);
 });
 
