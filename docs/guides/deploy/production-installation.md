@@ -6,7 +6,8 @@ tags: [nolimit]
 
 For an OpenShell cluster, start with [Kubernetes setup](kubernetes-setup.md) or
 [Amazon EKS setup](eks-openshell-setup.md), then [deploy your first Agent](deploy-first-agent.md)
-in the same operator shell.
+in the same operator shell. Those OpenShell workflows support development and
+evaluation; [production qualification remains incomplete](../../reference/drivers/openshell-sandbox.md#remaining-qualification-work).
 
 Use this guide for a custom Helm installation. Choose the [published images](#use-published-images),
 [generate the profile configuration](#recommended-generate-profile-configuration), and
