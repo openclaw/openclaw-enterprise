@@ -110,7 +110,7 @@ export async function composeProduction(
     credentialRefreshDriver,
     protectedDriver,
     preparedGitHub,
-    pluginDriver,
+    pluginDrivers,
     repositoryPolicy,
     createIAMDriver,
   } = config.drivers;
@@ -301,6 +301,9 @@ export async function composeProduction(
         ...installationControllerOptions(config.drivers.installation),
         state,
         ...(config.drivers.tokenService && { preparedTokens: config.drivers.tokenService }),
+        ...(config.drivers.pluginSourceReader === undefined
+          ? {}
+          : { pluginSourceReader: config.drivers.pluginSourceReader }),
         recordOperations: true,
         backends: installation.backend,
         defaultPresets: config.drivers.defaultPresets ?? [],
@@ -335,10 +338,7 @@ export async function composeProduction(
     controller.registerDriver(configurationDriver);
     controller.selectDriver("configuration", configurationDriver.id);
     config.serviceAccountDriverFactory?.(controller, state);
-    if (pluginDriver !== undefined) {
-      controller.registerDriver(pluginDriver);
-      controller.selectDriver("plugin", pluginDriver.id);
-    }
+    controller.installPluginDrivers(pluginDrivers ?? []);
     if (repositoryPolicy !== undefined) {
       controller.registerDriver(repositoryPolicy);
       controller.selectDriver("repo", repositoryPolicy.id);

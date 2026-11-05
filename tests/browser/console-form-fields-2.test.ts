@@ -25,8 +25,8 @@ import {
   nonAuthWriteRequests,
   selectSecret,
   shippedPreset,
-} from "./console-agents-browser-helpers.mjs";
-import { routeInstallationWithoutProvisioning } from "./console-agents-test-support.mjs";
+} from "./console-agents-browser-helpers.ts";
+import { routeInstallationWithoutProvisioning } from "./console-agents-test-support.ts";
 
 // The forms #2907 left on the browser's check (finding 1979): Plugin selections, the
 // authentication source form and the workspace file editor. Each now checks its fields itself

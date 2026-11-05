@@ -26,12 +26,14 @@
     "includeDefaults": true
   },
   "drivers": {
-    "plugin": {
-      "id": "codex-plugin",
-      "configuration": {
-        "catalogSource": "openai-curated"
+    "plugin": [
+      {
+        "id": "codex-plugin",
+        "configuration": {
+          "catalogSource": "openai-curated"
+        }
       }
-    },
+    ],
     "configuration": {
       "id": "config-kubernetes",
       "configuration": {

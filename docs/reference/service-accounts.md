@@ -236,7 +236,7 @@ admission, association, deletion, and version snapshots. The
 owns private upstream bindings and compensation; the
 [worker](../../apps/controller/src/worker.ts) reauthorizes the deployment actor.
 
-- [Service-account testing](../testing/slack.md#chatgpt-service-accounts)
+- [Service-account testing](../testing/slack.md#service-account-coverage)
 - [ServiceAccountDriver contract](drivers/service-account.md)
 - [Kubernetes Compute reference](drivers/kubernetes-compute.md)
 - [Authorization](authorization.md)

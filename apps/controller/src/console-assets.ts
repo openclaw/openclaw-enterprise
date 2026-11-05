@@ -44,6 +44,11 @@ const CONSOLE_ASSETS = new Map([
       "api-client.mts",
       "sign-in-presentation.mts",
       "configuration-fields.mts",
+      "connection-templates.mts",
+      "oauth-clients.mts",
+      "oauth-catalog.mts",
+      "oauth-deletion.mts",
+      "oauth-client-registration.mts",
       "driver-configurations.mts",
       "view-lifetime.mts",
       "request-turns.mts",
@@ -170,6 +175,8 @@ const CONSOLE_SHELL_ROUTES = new Set([
   "/console/backends",
   "/console/namespaces",
   "/console/secrets",
+  "/console/credentials/connection-templates",
+  "/console/credentials/oauth-clients",
   "/console/settings",
 ]);
 

@@ -886,7 +886,6 @@ import { selectQaMatrix } from ${JSON.stringify(qaSelectionHelper)};
 test("QA inputs", async () => {
   assert.equal(process.env.OCC_TEST_QA_OPENAI_MODEL, "selected-openai-model");
   assert.equal(process.env.OCC_TEST_QA_CODEX_MODEL, "selected-codex-model");
-  assert.equal(process.env.OCC_TEST_CODEX_CALENDAR_PROMPT, "selected calendar read");
   assert.equal(process.env.OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE, undefined);
   assert.equal(process.env.QA_REPOSITORY_FIXTURE, "isolated");
   assert.equal(process.env.OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY, "selected-app-input");
@@ -895,7 +894,7 @@ test("QA inputs", async () => {
   assert.ok(!selection.requiredEnv.includes("OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE"));
   assert.equal(process.env.OCC_TEST_QA_INSTALLATION, "compose");
   assert.equal(process.env.OCC_TEST_QA_PRESET, "Codex");
-  assert.equal(process.env.OCC_TEST_QA_SCENARIOS, "model-ui,calendar,git-write");
+  assert.equal(process.env.OCC_TEST_QA_SCENARIOS, "console-secrets,git-write");
   await writeFile(join(process.env.OCC_TEST_QA_ARTIFACTS, "matrix.json"), JSON.stringify({ outcome: "inputs received" }));
 });
 `,
@@ -923,13 +922,12 @@ test("QA inputs", async () => {
       ...Object.fromEntries(lane.requiredEnv.map((name) => [name, "fixture-input"])),
       OCC_TEST_QA_OPENAI_MODEL: "selected-openai-model",
       OCC_TEST_QA_CODEX_MODEL: "selected-codex-model",
-      OCC_TEST_CODEX_CALENDAR_PROMPT: "selected calendar read",
       OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY: "selected-app-input",
       QA_REPOSITORY_FIXTURE: "isolated",
       OCC_TEST_QA_ARTIFACTS: artifacts,
       OCC_TEST_QA_INSTALLATION: "compose",
       OCC_TEST_QA_PRESET: "Codex",
-      OCC_TEST_QA_SCENARIOS: "model-ui,calendar,git-write",
+      OCC_TEST_QA_SCENARIOS: "console-secrets,git-write",
     },
   );
   assert.equal(result.status, 0, result.stderr);
@@ -3165,6 +3163,17 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
   const root = await fixture(t);
   const resultsPath = join(root, "results/details.json");
   const statePath = join(root, "state/details.json");
+  const failedPhase = {
+    kind: "openshell-sandbox-phase",
+    stage: "network-policy",
+    outcome: "failed",
+    elapsedMs: 1_234,
+  };
+  const failedStage = { ...failedPhase, kind: "openshell-stage" };
+  const phaseDiagnostics = [failedPhase, failedStage].map(
+    (measurement) =>
+      `openclaw-ci-measurement ${JSON.stringify({ ...measurement, detail: "fixture-opaque-phase-detail" })}`,
+  );
   await writeFile(
     join(root, "tests/integration/details.test.mjs"),
     [
@@ -3176,6 +3185,7 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
       "  console.error(`credential ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);",
       '  console.log("Authorization: Bearer abcdefghijklmnop0123");',
       '  t.diagnostic("phase timings 1234 ms");',
+      `  for (const message of ${JSON.stringify(phaseDiagnostics)}) t.diagnostic(message);`,
       '  assert.fail(`password="fixture,\\nprivate-tail" phase=after ${"stage line\\n".repeat(80)}decisive line ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);',
       "});",
       "",
@@ -3213,6 +3223,8 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
 
   assert.equal(result.status, 1);
   const summary = JSON.parse(await readFile(resultsPath, "utf8"));
+  assert.equal(summary.files[0].status, "failed");
+  assert.deepEqual(summary.files[0].measurements, [failedPhase, failedStage]);
   const failed = summary.files[0].tests.find(({ name }) => name === "long failure");
   // Results and the job log keep the short message only.
   assert.match(failed.error.message, /\.\.\. \[truncated\]$/);
@@ -3225,6 +3237,7 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
   );
   const text = await readFile(`${statePath}.diagnostics.json`, "utf8");
   assert.doesNotMatch(text, /secretauthvalue|abcdefghijklmnop0123|private-tail|passing output/);
+  assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${text}`, /fixture-opaque-phase-detail/);
   const report = JSON.parse(text);
   assert.equal(report.lane, "details");
   assert.equal(report.failures.length, 1);
@@ -3232,9 +3245,9 @@ test("run keeps a failed file's whole messages, stacks and output in the diagnos
   assert.equal(record.file, "tests/integration/details.test.mjs");
   assert.equal(record.omittedTests, 0);
   const detail = record.tests.find(({ name }) => name === "long failure");
-  assert.equal(detail.line, 9);
+  assert.equal(detail.line, 10);
   assert.match(detail.message, /decisive line \[env:CI_RUNNER_FIXTURE_CREDENTIAL\]$/);
-  assert.match(detail.stack, /tests\/integration\/details\.test\.mjs:9:\d+/);
+  assert.match(detail.stack, /tests\/integration\/details\.test\.mjs:10:\d+/);
   // stdout and stderr arrive on separate pipes, so only the set of lines is fixed.
   assert.deepEqual([...record.output.lines].sort(), [
     "[redacted credential-bearing line]",
@@ -5213,12 +5226,31 @@ test("run records only allowlisted measurements from test diagnostics", async (t
   const root = await fixture(t);
   const resultsPath = join(root, "results/measurements.json");
   const measurement = (value) => `openclaw-ci-measurement ${JSON.stringify(value)}`;
+  const openshellPhase = {
+    kind: "openshell-sandbox-phase",
+    stage: "exposure-auth",
+    outcome: "passed",
+    elapsedMs: 39_000,
+  };
   await writeFile(
     join(root, "tests/integration/measurements.test.mjs"),
     [
       'import test from "node:test";',
       'test("measures", (t) => {',
       ...[
+        measurement({
+          kind: "openshell-stage",
+          stage: "oauth-refresh",
+          outcome: "passed",
+          elapsedMs: 123,
+          transcript: "secretauthvalue-transcript",
+        }),
+        measurement({
+          kind: "openshell-stage",
+          stage: "secretauthvalue-stage",
+          outcome: "passed",
+          elapsedMs: 123,
+        }),
         measurement({
           kind: "local-first-agent-command",
           phase: "setup",
@@ -5389,6 +5421,11 @@ test("run records only allowlisted measurements from test diagnostics", async (t
           elapsedMs: 1.5,
           budgetMs: 15_000,
         }),
+        measurement({ ...openshellPhase, detail: "secretauthvalue-phase-detail" }),
+        measurement({ ...openshellPhase, stage: "secretauthvalue-phase-stage" }),
+        measurement({ ...openshellPhase, outcome: "secretauthvalue-phase-outcome" }),
+        measurement({ ...openshellPhase, elapsedMs: 2_400_001 }),
+        measurement({ ...openshellPhase, elapsedMs: 0.5 }),
         "openclaw-ci-measurement secretauthvalue-not-json",
         "secretauthvalue-plain-diagnostic",
       ].map((message) => `  t.diagnostic(${JSON.stringify(message)});`),
@@ -5418,6 +5455,7 @@ test("run records only allowlisted measurements from test diagnostics", async (t
   const summary = JSON.parse(artifact);
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(summary.files[0].measurements, [
+    { kind: "openshell-stage", stage: "oauth-refresh", outcome: "passed", elapsedMs: 123 },
     {
       kind: "local-first-agent-command",
       phase: "setup",
@@ -5487,6 +5525,7 @@ test("run records only allowlisted measurements from test diagnostics", async (t
       elapsedMs: 4_321,
       budgetMs: 15_000,
     },
+    openshellPhase,
   ]);
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}\n${artifact}`, /secretauthvalue/);
 });

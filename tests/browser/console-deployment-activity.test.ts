@@ -19,9 +19,8 @@ import {
   nativeValues,
   newPage,
   waitForCondition,
-  waitForIdleFetches,
-  trackSettledFetches,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+import { waitForIdleFetches, trackSettledFetches } from "./console-fetch-accounting.ts";
 import { responseTo } from "./console-action-helpers.ts";
 
 // The real controller admits and authorizes the deployment. The fixture has no

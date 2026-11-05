@@ -1236,9 +1236,9 @@ test("production native examples satisfy the current Helm, Installation, and PVC
     "Standard OpenClaw",
     "default-codex",
   ]);
-  assert.equal(drivers.pluginDriver.id, "codex-plugin");
-  assert.equal(drivers.pluginDriver.discoveryCredential, "none");
-  const catalog = await drivers.pluginDriver.discoverCatalog({ q: "Linear" });
+  assert.equal(drivers.pluginDrivers[0].id, "codex-plugin");
+  assert.equal(drivers.pluginDrivers[0].discoveryCredential, "none");
+  const catalog = await drivers.pluginDrivers[0].discoverCatalog({ q: "Linear" });
   assert.ok(catalog.plugins.some(({ name }) => name === "Linear"));
   assert.equal(drivers.computeDriver.id, "compute-kubernetes");
   const compute = drivers.installation.drivers.compute.configuration;
@@ -4071,6 +4071,55 @@ test(
         },
       );
     }
+  },
+);
+
+test(
+  "OCC can manage private OAuth client Secrets without access to Secrets in the release namespace",
+  tooling,
+  async () => {
+    const releaseNamespace = "oauth-control-plane";
+    const objects = await resources((await render({}, { namespace: releaseNamespace })).stdout);
+    const privateNamespaces = new Set();
+    for (const [component, verbs] of [
+      ["api", ["get", "create", "update", "delete"]],
+      ["worker", ["get", "delete"]],
+    ]) {
+      const pod = objects.find(
+        ({ kind, metadata }) =>
+          kind === "Deployment" && metadata.labels?.["app.kubernetes.io/component"] === component,
+      ).spec.template.spec;
+      const namespace = pod.containers[0].env.find(
+        ({ name }) => name === "OCC_INSTALLATION_SECRET_NAMESPACE",
+      ).value;
+      privateNamespaces.add(namespace);
+      // Check the effective RoleBinding for the ServiceAccount the chart actually deploys.
+      const binding = objects.find(
+        ({ kind, metadata, subjects }) =>
+          kind === "RoleBinding" &&
+          metadata.namespace === namespace &&
+          subjects?.some((subject) => subject.name === pod.serviceAccountName),
+      );
+      assert.notEqual(namespace, releaseNamespace);
+      assert.deepEqual(binding.subjects, [
+        {
+          kind: "ServiceAccount",
+          name: pod.serviceAccountName,
+          namespace: releaseNamespace,
+        },
+      ]);
+      const role = objects.find(
+        ({ kind, metadata }) =>
+          kind === binding.roleRef.kind &&
+          metadata.namespace === namespace &&
+          metadata.name === binding.roleRef.name,
+      );
+      assert.deepEqual(role.rules, [{ apiGroups: [""], resources: ["secrets"], verbs }]);
+      assert.ok(
+        objects.some(({ kind, metadata }) => kind === "Namespace" && metadata.name === namespace),
+      );
+    }
+    assert.equal(privateNamespaces.size, 1);
   },
 );
 

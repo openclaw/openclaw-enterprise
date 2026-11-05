@@ -3,6 +3,17 @@
 Use the desktop Console first, then a 390-pixel phone frame. These stories use
 simulated API state; they do not prove persistence or live runtime behavior.
 
+At desktop and 390-pixel widths, open **Pages / Agent detail / Gateway password
+save in progress** (`gatewayPasswordSaving`). Confirm editing and deployment stay
+unavailable while the save is pending. Storybook simulates the pending save and
+does not stage malformed History state. For real Back during a held save, and
+Back and Forward after it completes, use these tests in `tests/browser/console-drafts-kept.test.ts`:
+
+- `Back during a Configuration save preserves the previous Agent tab`
+- `Back during a Configuration save survives a synthetic marker that wraps to zero`
+- `Back during a Configuration save survives a synthetic marker outside the history stack`
+- `Back during a Configuration save leaves an overflowing synthetic marker untracked`
+
 At both widths, open **Pages / Agent detail / Agent unavailable** (`agentMissing`).
 Confirm the heading is **Agent details** and the panel says **Resource unavailable**,
 without an Agent name. Choose **← Agents** (Back to Agents) and confirm the
@@ -36,7 +47,13 @@ backend persistence or deployment.
    the service target stays the same.
    Choose **Open draft**. Check the new-version notice has an even, neutral border
    without a blue stripe. Open **Edit Configuration**; the notice stays visible.
-   Repeat this check at phone width.
+   Repeat this check at phone width. For the narrow layout check, choose
+   **Open preview in its own tab**. Set the browser content area to 390 pixels wide
+   and use 200% browser zoom (195 CSS pixels of layout width). Tab to **Viewing
+   version** and check that its label wraps above the picker. Use Home to view
+   **Draft**, then Tab back to the picker and select a numbered version. Both
+   choices stay readable without horizontal scrolling, and neither changes the
+   version selected for service.
 2. Open **Deployment**. Expand **Deployment details**, read the viewed version's
    record, and run diagnostics. Switch to Configuration and back: the record and
    results remain. **Logs** still opens the viewed version's output.

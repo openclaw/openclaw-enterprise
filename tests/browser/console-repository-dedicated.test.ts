@@ -21,7 +21,7 @@ import {
   setSlackSelection,
   waitForEnabled,
   isMaskedSecretValue,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import { expectDeploymentOutcome } from "./console-deployment-activity-helpers.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 

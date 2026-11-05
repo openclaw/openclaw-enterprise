@@ -29,12 +29,12 @@ import {
   newPage,
   shippedPreset,
   waitForEnabled,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import { slackAgentValues, slackTokenBindings } from "./console-slack-agent.ts";
 import { restrict } from "../helpers/iam-grants.mjs";
 
 // The shipped default Preset, so Create Agent offers "Start with default Preset".
-const DEFAULT_CODEX_PRESET: unknown = await shippedPreset("default-codex");
+const DEFAULT_CODEX_PRESET = await shippedPreset("default-codex");
 
 function assertId(value: unknown): asserts value is { id: string } {
   assert.ok(typeof value === "object" && value !== null && "id" in value);

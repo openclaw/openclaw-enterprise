@@ -1728,6 +1728,7 @@ export class PluginPolicyValidationError extends Error {
       | "tools[id].reviewer"
       | "approvers"
       | "aliasedPlugin"
+      | "conflictingEnablementDefaults"
       | "unknownPlugin",
     driverId?: string,
     pluginId?: string,
@@ -1743,9 +1744,12 @@ export class PluginPolicyValidationError extends Error {
         driverId === undefined ? "" : ` (${driverId})`
       } does not offer${pluginId === undefined ? "" : `: ${pluginId}`}. ${
         offeredId === undefined
-          ? "Check each plugin ID and its Driver prefix against that Driver's catalog; an Installation selects one Plugin Driver."
+          ? "Check each plugin ID and its Driver prefix against the catalog for the Agent's Harness."
           : `Use ${offeredId}.`
       }`;
+    } else if (field === "conflictingEnablementDefaults") {
+      message =
+        'These defaults conflict. Choose "Inherit default policy" for either "tools enabled by default" (toolDefaults.enabled) or "Destructive tools" (driverPolicy.destructiveEnabled), keeping the other. API clients: omit either field.';
     } else if (field === "aliasedPlugin") {
       message =
         'Two plugin selections name the same plugin (a native ID and its driver-prefixed ID, such as "diffs" and "occ-plugin:diffs"). Keep one selection per plugin.';

@@ -524,8 +524,8 @@ async function writeDockerSeccompProfile(directory, codexVersion, installation) 
   await mkdir(dockerDirectory, { recursive: true, mode: 0o700 });
   await chmod(dockerDirectory, 0o700);
   const profilePath = join(dockerDirectory, `codex-${codexVersion}-${installation.sha256}.json`);
-  await writeFile(profilePath, installation.profileData, { mode: 0o644, flag: "wx" });
-  await chmod(profilePath, 0o644);
+  await writeFile(profilePath, installation.profileData, { mode: 0o600, flag: "wx" });
+  await chmod(profilePath, 0o600);
   return profilePath;
 }
 

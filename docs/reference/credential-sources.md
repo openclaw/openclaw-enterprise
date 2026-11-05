@@ -113,7 +113,7 @@ bound or deployed.
 
 ## Bind a source to an Agent
 
-Set `credentialSources` to a list of up to eight distinct
+Set `credentialSources` to a list of up to 64 distinct
 `{ "sourceId": "cs_…" }` entries. On update, the list replaces the draft's
 bindings. Omit it to keep them or send `[]` to remove them all.
 
@@ -301,6 +301,7 @@ after the caller's grant and the source lookup. `GET` on such a source reports a
 
 ## Related
 
+- [OAuth connection templates](connection-templates.md)
 - [Protected credential request flow](../flows/credential-source-egress.md)
 - [OpenShell Credential Gateway](drivers/openshell-credential-gateway.md)
 - [CredentialGatewayDriver contract](drivers/credential-gateway.md)

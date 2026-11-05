@@ -20,6 +20,7 @@ import type {
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
 import {
+  routeFailedDeployment,
   assertControlEdge,
   consoleViewports,
   detailUrl,
@@ -28,13 +29,13 @@ import {
   login,
   nativeValues,
   newPage,
-  routeFailedDeployment,
   settledView,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+
 import {
   createRepositoryLaunchFixture,
   routeInstallationWithoutProvisioning,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 
 // The console's control patterns. Button hierarchy (UX plan C2): each view shows at most one

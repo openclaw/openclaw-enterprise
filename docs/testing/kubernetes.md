@@ -15,14 +15,13 @@ Use disposable local k3d with enforcing NetworkPolicies. Fixtures exclude real g
 Install k3d, kubectl, Helm, `certutil`, and Chromium with sandbox support.
 Use a disposable container engine with image-build capacity. The
 Keycloak cases need free, bindable loopback port 443 and must not run beside
-the standalone Keycloak lane. From the root of a trusted repository checkout,
-install the dependencies and build the CLI before running:
+the standalone Keycloak lane. Run these commands from the trusted checkout root:
 
 ```sh
 pnpm install --frozen-lockfile
 pnpm exec playwright install chromium
 pnpm cli:build
-OCC_TEST_DEV_UP_K3D_REAL=1 node --test tests/integration/dev-up-k3d-real.test.mjs
+OCC_TEST_DEV_UP_K3D_REAL=1 node --test --test-concurrency=1 tests/integration/dev-up-k3d-real.test.mjs tests/integration/dev-up-k3d-refusals-real.test.ts tests/integration/dev-up-k3d-keycloak-real.test.ts
 ```
 
 The tests cover installation, cleanup, workspace boundaries, NetworkPolicy,
@@ -96,9 +95,11 @@ OCC_TEST_KUBERNETES_IMAGE=oce-fixture:local \
   node --test tests/integration/production-network-access.test.mjs
 ```
 
-Live listeners verify chart and quickstart NetworkPolicies, supervisor grant withdrawal,
-and loss of namespace ownership. Selectors exclude other releases.
-No database or model credentials are required.
+Checks cover isolation, management DNS/API/Git TCP reachability, denied ports and
+destinations, and grant withdrawal. TLS-preserving API proxies verify withdrawal;
+a controlled discovery snapshot tests removal of the last backend. Its CI lane owns
+a separate cluster and awaits slice and namespace cleanup. No database or model credentials
+are required.
 
 ## Kubernetes model turns and Secrets
 

@@ -25,11 +25,13 @@ import {
   newPage,
   revokeAdministratorGrant,
   settlePageRequests,
-  trackSettledFetches,
   waitForEnabled,
+} from "./console-agents-browser-helpers.ts";
+import {
+  trackSettledFetches,
   waitForIdleFetches,
   waitForSettledFetches,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-fetch-accounting.ts";
 import { createReadyConsoleNamespace as createUntypedReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
   AGENT_DEVICE_LOGIN_CANCEL_DENIED,
@@ -750,7 +752,7 @@ for (const savedAgent of [false, true]) {
       (await fixture.request("GET", `/namespaces/${namespace.id}/secrets/${sessionId}`)).status,
       200,
     );
-    await page.getByRole("link", { name: "Secrets", exact: true }).click();
+    await page.getByRole("link", { name: "Credentials", exact: true }).click();
     await page.waitForURL("**/console/secrets?**");
     release.resolve();
     await waitForSettledFetches(page, beginPath, 1);

@@ -8,7 +8,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
-import { after } from "node:test";
+import { fileConsoleApp as createFileConsoleApp } from "./console-file-app.ts";
 
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { createControllerAuth } from "./password-hasher.mjs";
@@ -27,7 +27,7 @@ import { NAME_MAX_CHARACTERS } from "../../packages/contracts/src/api/plain-text
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders, signInWithEmailPassword } from "./auth-session.mjs";
-import { createTestConfigurationDriver } from "./configuration-driver.mjs";
+import { createTestConfigurationDriver } from "./configuration-driver.ts";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
 import { reservePort } from "./available-port.mjs";
@@ -57,6 +57,10 @@ function computeDriver({
   agentProvisioning = false,
   sandboxDriver,
   credentialGatewayDriver,
+  resolveSandboxNamespace = async (namespace) => ({
+    ...namespace,
+    name: `console-${namespace.id}`,
+  }),
   // OCC applies the bundled Kubernetes Compute's own save rules (channel credentials only from
   // Secret bindings, finding 2319) only under its implementation, such as `kubernetes-local`.
   implementation = "test-memory-lifecycle",
@@ -91,9 +95,7 @@ function computeDriver({
       return { namespaceId: namespace.id, namespaceDeleted: true };
     },
     // The same fixture placement is shared by source management and the Sandbox.
-    async resolveSandboxNamespace(namespace) {
-      return { ...namespace, name: `console-${namespace.id}` };
-    },
+    resolveSandboxNamespace,
     async prepareRevision(revision) {
       return {
         namespaceId: revision.namespaceId,
@@ -218,62 +220,12 @@ export async function startHttpsIngress({
 // pages for the file app close when their test ends (newPage), and login() signs them in with one
 // session shared by the file.
 export function fileConsoleApp(options = {}) {
-  const cleanups = [];
-  let startPolicy;
-  /** @type {ReturnType<typeof createConsoleAppFixture> | undefined} */
-  let created;
-  after(async () => {
-    await created?.catch(() => {});
-    let cleanupError;
-    for (const cleanup of cleanups) {
-      try {
-        await cleanup();
-      } catch (error) {
-        cleanupError ??= error;
-      }
-    }
-    if (cleanupError) {
-      throw cleanupError;
-    }
-  });
-  return async function fileApp(t) {
-    if (created === undefined) {
-      const creating = (async () => {
-        const fixture = await createConsoleAppFixture(
-          { after: (cleanup) => cleanups.push(cleanup) },
-          options,
-        );
-        await fixture.bootstrap();
-        fixture.sharedByFile = true;
-        startPolicy = structuredClone(fixture.policy);
-        return fixture;
-      })();
-      // A failed start fails only the test that asked for it; the next test starts a new app,
-      // as each test did with an app of its own. The partial app's cleanups still run after.
-      creating.catch(() => {
-        if (created === creating) {
-          created = undefined;
-        }
-      });
-      created = creating;
-    }
-    const fixture = await created;
-    // The policy as the app started, restored before and after each test: a test body still
-    // running after its end (a timeout, an unawaited promise) cannot carry its changes into the
-    // next test.
-    const restorePolicy = () => {
-      for (const [key, value] of Object.entries(structuredClone(startPolicy))) {
-        fixture.policy[key].splice(0, Infinity, ...value);
-      }
-    };
-    restorePolicy();
-    t.after(restorePolicy);
-    return fixture;
-  };
+  return createFileConsoleApp((registrar) => createConsoleAppFixture(registrar, options));
 }
 
 /**
  * Keep object-typed wrappers and keyed options extracted with Parameters compatible.
+ * @param {import("./console-file-app.ts").CleanupRegistrar} t
  * @template {object | Record<string, unknown>} [Options=object]
  * @param {Options & {auditSink?: InMemoryAuditSink}} [options]
  */
@@ -301,7 +253,16 @@ export async function createConsoleAppFixture(t, options = {}) {
   // CUA fault-injection keeps Better Auth on the trusted browser origin.
   const authBaseURL = options.authBaseURL ?? origin;
   const authMode = options.authMode ?? "development";
-  const memoryDatabase = { user: [], account: [], session: [], verification: [], apikey: [] };
+  // Better Auth owns the rows; test consumers only read or change their expiry.
+  /** @type {{ expiresAt: Date }[]} */
+  const sessionRows = [];
+  const memoryDatabase = {
+    user: [],
+    account: [],
+    session: sessionRows,
+    verification: [],
+    apikey: [],
+  };
   const auth = createControllerAuth({
     installationId,
     mode: authMode,
@@ -449,6 +410,7 @@ export async function createConsoleAppFixture(t, options = {}) {
         modelProvider: options.modelProvider,
         sandboxDriver: options.sandboxDriver,
         credentialGatewayDriver: options.credentialGatewayDriver,
+        resolveSandboxNamespace: options.resolveSandboxNamespace,
         implementation: options.computeImplementation,
       }),
     configurationDriver:
@@ -473,6 +435,9 @@ export async function createConsoleAppFixture(t, options = {}) {
         state: platformState,
         ...(authorizeWith === undefined ? {} : { authorize: authorizeWith(iamDriver) }),
         preparedTokens: options.preparedTokens,
+        ...(options.pluginSourceReader === undefined
+          ? {}
+          : { pluginSourceReader: options.pluginSourceReader }),
         sandboxNetworkPolicyCeiling: options.sandboxNetworkPolicyCeiling,
         driverConfigurations: options.driverConfigurations,
         ...(options.now === undefined ? {} : { now: options.now }),
@@ -566,6 +531,11 @@ export async function createConsoleAppFixture(t, options = {}) {
     browserArgs.push(ingress.browserArg);
   }
 
+  /**
+   * @param {string} method
+   * @param {string} path
+   * @param {{headers?: Record<string, string>, body?: unknown, timeout?: number}} [options]
+   */
   async function rawRequest(method, path, { headers = {}, body, timeout = 5000 } = {}) {
     const response = await fetch(`${transportOrigin}${path}`, {
       method,
@@ -944,6 +914,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     withIamOutage,
     rawRequest,
     request,
+    fixtureResponse,
     signIn,
     bootstrap,
     createNamespace,

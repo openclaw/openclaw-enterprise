@@ -17,7 +17,8 @@ clusters, and provider services. The workflow collects the selected results in
 
 ## Trigger
 
-Manual dispatch only. Select one supported `lane` or `all`.
+Pushes to `main` select `all`. Manual dispatch selects one supported `lane` or
+`all` on `main` and requires the dispatcher's [team approval](configuration.md#environments).
 A scheduled advisory run does not run the Full Integration workflow.
 
 ## Scenarios
@@ -33,7 +34,7 @@ Some lanes are also selected by [CI](required-checks.md) or
 | Docker and Kubernetes model execution                                                                   | [Docker deployment refusals](../docker.md) and [Kubernetes model calls, Pod replacement, Secret rotation, and first-Agent reuse](../kubernetes.md#kubernetes-model-turns-and-secrets). | [Docker Model Runtime](../../../scripts/ci/test-suites/docker-model.json), [k3d Model Runtime](../../../scripts/ci/test-suites/k3d-model.json) |
 | [Private gateway routing](../kubernetes.md#private-gateway-routing)                                     | Workspace files and native administration requests pass through Envoy and OCC while preserving Agent access boundaries.                                                                | [Gateway Routing](../../../scripts/ci/test-suites/gateway-routing.json)                                                                        |
 | [Terminal chat across deployment changes](../kubernetes.md#production-tui-tests)                        | Interactive terminal chat continues across an Agent revision change in a Helm installation.                                                                                            | [Production TUI](../../../scripts/ci/test-suites/production-tui.json)                                                                          |
-| [Slack and provider-account access](../slack.md)                                                        | Slack isolation, issued credentials, and model calls.                                                                                                                                  | [Slack Live](../../../scripts/ci/test-suites/slack.json), [Provider Account](../../../scripts/ci/test-suites/provider-account.json)            |
+| [Slack access](../slack.md)                                                                             | Slack isolation, issued credentials, and model calls.                                                                                                                                  | [Slack Live](../../../scripts/ci/test-suites/slack.json)                                                                                       |
 | [OpenShell Agent deployment and sandbox policies](../openshell.md)                                      | Sandbox enforcement and first-Agent setup.                                                                                                                                             | [OpenShell](../../../scripts/ci/test-suites/openshell.json)                                                                                    |
 | [Local Kubernetes installation and recovery](../kubernetes.md#local-kubernetes-installation)            | Installation, recovery, and Keycloak sign-in.                                                                                                                                          | [Local Kubernetes Installation](../../../scripts/ci/test-suites/dev-up-k3d.json)                                                               |
 | [Private Git access and credential withdrawal](../repository-credentials.md#verify-prepared-native-git) | An installed Agent can use private Git; withdrawing its credentials interrupts an authenticated fetch while chat remains available. Uses synthetic model and Git credentials.          | [Installed Skipper private Git and live withdrawal](../../../scripts/ci/test-suites/skipper-prepared-git-installed.json)                       |
@@ -49,6 +50,14 @@ repository. [Manually prepared lanes](../manual-tests.md)
 remain excluded. QA's default `all` also excludes its four
 [explicit scenario selectors](qa-advisory.md#select-scenarios).
 
+In the hosted QA matrix, the CI account can select only built-in Codex
+permission profiles. Both Compose and Kubernetes run OpenClaw model/UI checks
+and Console Secrets for both presets. The matrix excludes Codex Git write,
+denied Git push, and Slack because each starts a native
+Codex turn with a custom permission profile. The test log and `matrix.json`
+list the exclusions. The separate Slack Live lane still runs. A local QA run
+with an account that supports custom profiles can select all three scenarios.
+
 <a id="run-it"></a>
 
 ## Execution
@@ -62,17 +71,16 @@ commit, then dispatch the selected lane or `all` on `main`:
 gh workflow run full-integration.yml --ref main -f lane=all
 ```
 
-Branch exceptions are listed in [environment policy](configuration.md#environments). `qa_repository_fixture` applies to both
-`qa-matrix` and `all`; QA and focused Slack runs execute serially.
-
 ### Run the hosted local installation lane
 
 ```sh
-gh workflow run full-integration.yml --ref '<reviewed-branch>' -f lane=dev-up-k3d
+gh workflow run full-integration.yml --ref main -f lane=dev-up-k3d
 ```
 
 Check `headSha` and `full-results-dev-up-k3d`; every case must pass without skips.
-The 180-minute job budget includes setup/cleanup.
+The 180-minute job budget includes setup/cleanup. Manual runs require the same
+team approval as credentialed lanes. Start a new approved dispatch to retry a manual run.
+Jobs triggered by a main push can retry at the original commit.
 
 ## Results and limits
 
