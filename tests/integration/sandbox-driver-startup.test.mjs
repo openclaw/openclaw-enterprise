@@ -5314,7 +5314,7 @@ test("OpenShell credential source removal fails while the provider survives dele
   assert.equal(providers.size, 1);
 });
 
-test("Google requires an OAuth source whose effective binary list is exactly the pinned executable", async () => {
+test("a directly configured Google OAuth source admits only the pinned executable", async () => {
   const pinned = managedGoogleInstall.binaryPath;
   const other = "/usr/bin/curl";
   const sourceId = "cs_00000000-0000-4000-8000-0000000000e9";
@@ -5386,7 +5386,7 @@ test("Google requires an OAuth source whose effective binary list is exactly the
     } else {
       await assert.rejects(
         f.driver.attachForRevision(attachment),
-        /grant only the pinned Google executable/,
+        (cause) => cause instanceof ScopeViolationError && /only binary/.test(cause.message),
       );
     }
     assert.deepEqual(
