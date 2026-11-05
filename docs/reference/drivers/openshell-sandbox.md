@@ -317,16 +317,15 @@ their process-owned state root to `0700`, clearing inherited setgid bits. Shared
 workspace directories keep their permissions. OpenClaw prepares its private
 children, including a `control` directory retained after a failed setup.
 
-The supervisor probes the image's `/tmp`; native OpenClaw uses its runtime-home
-`tmp` child without changing supervisor directory permissions. Codex's container has
-a `1Gi` ephemeral-storage limit. Native provisioning privatizes writable PVC
-subpaths, keeping retained entries, in a restricted per-revision Deployment;
-ownership/mode checks, foreground deletion and writer termination
-precede Sandbox creation. It needs `kubernetes.userNamespaces: false`,
-at most one `gateway.operatorWorkspaceResources` ServiceAccount and the pinned
-Gateway's default identity, without UID/GID overrides; Agent save refuses
-dedicated OpenClaw otherwise. Ordinary Kubernetes Compute may use `/home/node`
-and `/tmp` `emptyDir` volumes limited to `1Gi` and `64Mi`.
+The supervisor probes `/tmp`; native OpenClaw uses private runtime-home
+`tmp`. Codex has a `1Gi` ephemeral-storage limit. With `kubernetes.userNamespaces: false`,
+both Harnesses privatize writable PVC subpaths in a restricted Deployment.
+Ownership checks and foreground deletion drain preparation before Sandbox creation.
+It protects state and captures. Preparation requires at most one
+operator ServiceAccount and the Gateway's default UID/GID; Agent
+admission enforces these requirements. Codex with user namespaces is unchanged;
+capture ancestry remains unqualified. Kubernetes Compute may use
+`/home/node` and `/tmp` `emptyDir` volumes limited to `1Gi` and `64Mi`.
 
 ### Remaining qualification work
 

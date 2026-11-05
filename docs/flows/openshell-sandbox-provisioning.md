@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-11-05
-last_updated_session: authoring-run/33ffb317-d84b-4de5-b946-70b58f35af74
+last_updated_session: authoring-run/16d78cac-ffb3-4566-929d-47dd8c7b3d43
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -255,13 +255,12 @@ and workspace permissions stay unchanged. Permission failures stop startup.
 Workspace, node identity, sessions and images stay separate. The supervisor probes
 `/tmp`; native `TMPDIR` is a private `tmp` child under the runtime home.
 
-`prepareNativeWorkspace` privatizes retained PVC subpaths through a restricted
-revision Deployment. Mode/ownership checks precede UID-fenced foreground deletion;
-completed preparation exits successfully on SIGTERM with normal termination grace.
-Sandbox creation waits for every writer Pod.
-Preparation requires `userNamespaces: false`, at most one operator-mode ServiceAccount
-and the pinned Gateway's default identity, without model credentials, ServiceAccount
-tokens, capabilities, or direct Pod creation. Admission reports these requirements before deployment.
+`prepareNativeWorkspace` gives both Harnesses' retained PVC subpaths process-owned
+`0700` parents with `userNamespaces: false`. Its restricted Deployment uses the
+Gateway's default UID/GID and at most one operator ServiceAccount, without credentials,
+tokens or capabilities. Ownership checks and UID-fenced deletion drain preparation
+before Sandbox creation. Agent admission enforces these requirements;
+Codex with user namespaces skips preparation.
 
 After Sandbox readiness, `initializeWorkspace` validates the setup Secret's
 Namespace, Agent and setup identity, then sends initializer/JSON stdin through
@@ -410,6 +409,8 @@ model execution.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-11-05 19:38: Protect Codex PVC ancestry before Sandbox creation without user namespaces. (authoring-run/16d78cac-ffb3-4566-929d-47dd8c7b3d43 - 0ecbe50bfe0df315fda06a90274b9e218b48d96c)
 
 - 2026-11-05 14:34: Reuse bounded retries for the pinned Agent Sandbox manifest. (authoring-run/33ffb317-d84b-4de5-b946-70b58f35af74 - a383313636fc348a2325c0b1f6e05ae80327fd30)
 

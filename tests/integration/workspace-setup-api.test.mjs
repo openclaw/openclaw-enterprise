@@ -551,69 +551,73 @@ test("Credential-source deployment refuses OpenShell projected identity before c
   assert.deepEqual((await f.request("GET", `${f.path}/${agent.id}/revisions`)).data, []);
 });
 
-// Native OpenClaw's workspace preparation needs userNamespaces: false and at most one operator
-// ServiceAccount, and runs only after a deploy has stopped its predecessors, so Agent save refuses
-// those settings first and the Installation stops offering dedicated OpenClaw (findings 2334,
-// 2346, 2347).
-test("Agent create refuses dedicated OpenClaw on OpenShell settings its workspace preparation refuses", async (t) => {
+// Admission must reject preparation settings before an Agent can stop its serving
+// predecessor. Codex with user namespaces retains its existing unprepared path.
+test("Agent create refuses OpenShell settings its Harness preparation refuses", async (t) => {
   const userNamespaces =
     "Dedicated OpenClaw needs kubernetes.userNamespaces: false in the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to set it.";
+  const accounts =
+    "Dedicated OpenClaw needs at most one ServiceAccount in gateway.operatorWorkspaceResources of the OpenShell Sandbox Driver configuration. Ask an operator to remove the others.";
   const serviceAccounts = ["a", "b"].map((name) => ({
     apiVersion: "v1",
     kind: "ServiceAccount",
     metadata: { name },
   }));
-  for (const [kubernetes, gateway, message] of [
+  for (const [kubernetes, gateway, message, codexMessage] of [
     [{ userNamespaces: undefined }, {}, userNamespaces],
     [{ userNamespaces: true }, {}, userNamespaces],
     [
       {},
       { operatorWorkspaceResources: serviceAccounts },
-      "Dedicated OpenClaw needs at most one ServiceAccount in gateway.operatorWorkspaceResources of the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to remove the others.",
+      accounts,
+      accounts.replace("OpenClaw", "Codex"),
     ],
-    // Control: the shape workspace preparation accepts.
+    [
+      { userNamespaces: undefined },
+      { operatorWorkspaceResources: serviceAccounts },
+      userNamespaces,
+    ],
+    [{ userNamespaces: true }, { operatorWorkspaceResources: serviceAccounts }, userNamespaces],
     [{}, { operatorWorkspaceResources: serviceAccounts.slice(0, 1) }],
   ]) {
     const options = openShellSandbox(t, kubernetes, gateway);
-    // Capability reads must not execute this real transformation, even when settings refuse.
+    // Capability reads use the declaration, without executing configuration hooks.
     const transform = t.mock.method(options.sandboxDriver, "configureAgent");
     const f = await setup(t, options);
     transform.mock.resetCalls();
     const installation = await f.request("GET", "/installation");
     assert.equal(installation.status, 200, JSON.stringify(installation.body));
     assert.equal(transform.mock.callCount(), 0);
-    // Create Agent offers only the modes admission accepts, and shows the refusal that names the
-    // setting (finding 2373).
-    assert.deepEqual(
-      installation.data.capabilities.openclaw,
-      message === undefined
-        ? { executionModes: ["dedicated"] }
-        : { executionModes: [], settingRefusals: { dedicated: message } },
-    );
-    const openclaw = await storeConfiguration(f, "openclaw", "openai/gpt-4.1");
-    const refused = await f.create("OpenShell openclaw", {
-      configurationId: openclaw.data.id,
-      executionMode: "dedicated",
-    });
-    if (message === undefined) {
-      assert.equal(refused.status, 201, JSON.stringify(refused.body));
-      assert.ok(transform.mock.callCount() > 0);
-      assert.deepEqual(transform.mock.calls[0].arguments[0], openclaw.data.values);
-      continue;
+    for (const [harness, model, refusal] of [
+      ["codex", "codex/gpt-5.1", codexMessage],
+      ["openclaw", "openai/gpt-4.1", message],
+    ]) {
+      if (harness === "openclaw") {
+        assert.deepEqual(
+          installation.data.capabilities.openclaw,
+          refusal === undefined
+            ? { executionModes: ["dedicated"] }
+            : { executionModes: [], settingRefusals: { dedicated: refusal } },
+        );
+      }
+      const configuration = await storeConfiguration(f, harness, model);
+      const name = `OpenShell ${harness}`;
+      const created = await f.create(name, {
+        configurationId: configuration.data.id,
+        executionMode: "dedicated",
+      });
+      if (refusal === undefined) {
+        assert.equal(created.status, 201, JSON.stringify(created.body));
+        assert.ok(transform.mock.callCount() > 0);
+      } else {
+        assertApiError(created, 400, "INVALID_REQUEST");
+        assert.equal(created.body.error.message, refusal);
+        assert.equal(
+          (await f.request("GET", f.path)).data.some((agent) => agent.name === name),
+          false,
+        );
+      }
     }
-    assertApiError(refused, 400, "INVALID_REQUEST");
-    assert.equal(refused.body.error.message, message);
-    assert.equal(
-      (await f.request("GET", f.path)).data.some(({ name }) => name === "OpenShell openclaw"),
-      false,
-    );
-    // Control: Codex never runs that preparation and still saves.
-    const codex = await storeConfiguration(f, "codex", "codex/gpt-5.1");
-    const created = await f.create("OpenShell codex", {
-      configurationId: codex.data.id,
-      executionMode: "dedicated",
-    });
-    assert.equal(created.status, 201, JSON.stringify(created.body));
   }
 });
 

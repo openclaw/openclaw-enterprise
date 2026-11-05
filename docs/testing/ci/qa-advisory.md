@@ -62,6 +62,7 @@ is in the [QA manifest](../../../scripts/ci/test-suites/qa-matrix.json).
 | Scenario                | In advisory          | Presets         | Checks                                                                                                                                                     |
 | ----------------------- | -------------------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `sandbox-policy`        | Yes — OpenShell jobs | Codex           | Discover and preview configuration, then apply, update, and withdraw OpenShell network policy in a prepared environment.                                   |
+| `private-storage`       | Yes — OpenShell jobs | Codex           | API-admitted Agent private state ancestry, denial of sibling replacement, and retention across an Agent revision replacement; no model request.            |
 | `plugin-install`        | Yes — OpenShell jobs | Codex           | Install a dedicated Codex plugin, find it after the Codex process restarts, then remove it from the Agent selection.                                       |
 | `model-ui`              | Yes (Codex)          | OpenClaw, Codex | Real model turn and native browser response.                                                                                                               |
 | `console-secrets`       | Yes (Codex)          | OpenClaw, Codex | Create and manage Console Secrets referenced by Agent drafts. Refusing Namespace deletion identifies the deployed Agent and links to its cleanup controls. |
@@ -78,7 +79,7 @@ defines their applicability.
 
 ### Scenario details
 
-The OpenShell jobs cover `sandbox-policy` and `plugin-install` automatically.
+The OpenShell jobs cover `sandbox-policy`, `plugin-install`, and `private-storage` automatically.
 To select these scenarios locally through the QA matrix, prepare their OpenShell
 fixtures: [network policy](../openshell-coverage.md#qa-matrix-selector) or
 [plugin installation](../openshell.md#codex-plugin-installation).
@@ -144,12 +145,16 @@ OpenShell files or the local installation suite. For those suites, follow
 [OpenShell setup](../openshell.md#openshell-sandbox) or
 [local installation tests](../kubernetes.md#local-kubernetes-installation).
 
+`private-storage` uses the same prepared environment and credential-file inputs
+as `sandbox-policy`. It proves PVC protection and retained bytes, not successful
+native Doctor capture or enrollment after a maintenance refusal.
+
 ### Select scenarios
 
 `OCC_TEST_QA_INSTALLATION` accepts `all` (default), `compose`, `kubernetes`;
 `OCC_TEST_QA_PRESET` accepts `all` (default), `OpenClaw`, `Codex`.
 `OCC_TEST_QA_SCENARIOS` accepts `all` (default) or comma-separated selectors.
-`all` excludes the explicit `sandbox-policy`, `plugin-install`,
+`all` excludes the explicit `sandbox-policy`, `plugin-install`, `private-storage`,
 `openshell-linear-read`, and `codex-search-config` selectors.
 Invalid or wholly inapplicable selections fail before provisioning; missing
 inputs fail selected checks. Omitting `OCC_TEST_QA_MATRIX=1` skips the suite.
