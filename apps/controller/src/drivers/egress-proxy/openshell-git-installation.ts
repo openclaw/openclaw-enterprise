@@ -548,11 +548,9 @@ export async function observeOpenShellGitInstallation(
   if (adopt) {
     entry.supervisor = observed;
     entry.unverified = undefined;
-    if (
-      entry.continuity &&
-      entry.retainedLaunchHash === undefined &&
-      observed.credentialState === "active"
-    ) {
+    if (entry.continuity && observed.credentialState === "active") {
+      // Credential rotation changes the aggregate provider environment. Complete its
+      // model observation even after the original launch witness has been retained.
       const previewReceipt = await entry.preview?.completedModelReceipt(
         entry.client,
         observed,
@@ -562,18 +560,20 @@ export async function observeOpenShellGitInstallation(
       if (entry.preview && !previewReceipt) {
         return;
       }
-      const hash = await witnessOpenShellGitLaunch(
-        entry.client,
-        entry.continuity,
-        sandbox,
-        observed,
-        signal,
-        previewReceipt,
-      );
-      if (!hash) {
-        return;
+      if (entry.retainedLaunchHash === undefined) {
+        const hash = await witnessOpenShellGitLaunch(
+          entry.client,
+          entry.continuity,
+          sandbox,
+          observed,
+          signal,
+          previewReceipt,
+        );
+        if (!hash) {
+          return;
+        }
+        entry.retainedLaunchHash = hash;
       }
-      entry.retainedLaunchHash = hash;
     }
   }
   return observed;
