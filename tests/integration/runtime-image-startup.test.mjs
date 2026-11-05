@@ -1206,6 +1206,35 @@ try {
         return true;
       });
     }
+    // Malformed-peer metadata coverage through the actual bundled client, not native
+    // Codex proof: preserve the real control response except for the omitted field.
+    const peerSource = [
+      'const { createInterface } = require("node:readline");',
+      'const result = JSON.parse(process.argv[1]);',
+      'delete result.activePermissionProfile;',
+      'setTimeout(() => process.exit(1), 10000).unref();',
+      'createInterface({ input: process.stdin }).on("line", (line) => {',
+      '  const request = JSON.parse(line);',
+      '  if (request.id === undefined) return;',
+      '  if (request.method !== "initialize" && request.method !== "thread/start") process.exit(1);',
+      '  const response = request.method === "initialize"',
+      '    ? { userAgent: "codex-cli/" + process.argv[2], codexHome: "/home/node/.codex" } : result;',
+      '  process.stdout.write(JSON.stringify({ id: request.id, result: response }) + "\\n");',
+      '});',
+    ].join("\n");
+    const peer = await Client.start({ transport: "stdio", commandSource: "config",
+      command: process.execPath, args: ["-e", peerSource, JSON.stringify(control), client.getServerVersion()] });
+    try {
+      await peer.initialize();
+      await assert.rejects(peer.request("thread/start", { ...request, permissions: ":workspace" },
+        { timeoutMs: 5000 }), (error) => {
+        assert.equal(error.message, "thread/start: Codex did not grant the requested permission profile " +
+          "(requestSource=permissions, selectors=single, comparison=field-absent)");
+        return true;
+      });
+    } finally {
+      await peer.closeAndWait({ exitTimeoutMs: 2000, forceKillDelayMs: 500 });
+    }
   }
 } finally {
   client.close();
