@@ -18,7 +18,7 @@ const outputPath = fileURLToPath(
 );
 const documentationInstallationId = "ins_6054d30d-0f89-4cd0-aa56-2b76e3c5fb52";
 
-function sortKeys(value) {
+function sortKeys(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map(sortKeys);
   }
@@ -60,7 +60,7 @@ async function generateDocument() {
 
 const arguments_ = process.argv.slice(2);
 if (arguments_.length > 1 || (arguments_.length === 1 && arguments_[0] !== "--check")) {
-  throw new Error("Usage: node scripts/generate-occ-openapi.mjs [--check]");
+  throw new Error("Usage: node scripts/generate-occ-openapi.ts [--check]");
 }
 
 const document = await generateDocument();
@@ -86,8 +86,8 @@ for (const output of outputs) {
     try {
       existing = await readFile(output.path, "utf8");
     } catch (error) {
-      if (error?.code === "ENOENT") {
-        throw new Error(`Missing ${outputName}; run pnpm openapi:generate.`);
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+        throw new Error(`Missing ${outputName}; run pnpm openapi:generate.`, { cause: error });
       }
       throw error;
     }
