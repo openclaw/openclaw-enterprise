@@ -232,13 +232,9 @@ the record `deleting` for retry.
 
 `apps/controller/src/drivers/repo/github/credentials/prepared-owner.ts:createGitHubPreparationOwner`
 
-The Token Service records `issuing`, signs a five-minute JWT with the App key and rechecks
-ownership before `POST /app/installations/{installation_id}/access_tokens`.
-The Installation selects the HTTPS issuer and trust roots.
+The Token Service records `issuing`, signs a five-minute App JWT and rechecks ownership before posting to the configured installation token endpoint.
 
-The worker logs `PREPARED_GITHUB_ISSUANCE_DIAGNOSTIC` with the first failure
-stage, fixed enums and status/booleans. `requestEndCalled` means possible send,
-not delivery. Reporting cannot change custody or retries.
+Issuer diagnostics record the first failure stage. `requestEndCalled` indicates a possible send.
 
 ```mermaid
 graph TD
@@ -256,17 +252,9 @@ graph TD
   linkStyle default stroke:#89919a
 ```
 
-PostgreSQL custody requires a
-persistent 32-byte encryption key. For Credential Proxy metadata reads, OCC calls `TokenService.register` with the admitted source and App key reference. On an authorized request, the proxy calls `TokenService.resolve` with that registered reference and its original deadline. Scheduled and request-triggered work claim the same PostgreSQL family. When a token can cover the request, the proxy can use it while renewal runs. Otherwise it waits for that family until the deadline. Cancellation releases no token to the caller.
-Native Git uses a [private broker request](../reference/repository-credentials.md#native-git-from-the-agent-to-github).
+OCC registers the scoped grant and App key. PostgreSQL encrypts tokens with a persistent 32-byte key. Authorized metadata requests reuse valid tokens or join issuance until their deadline. Native Git uses its [private broker](../reference/repository-credentials.md#native-git-from-the-agent-to-github).
 
-For `acme/widgets`, the Token Service requests repository ID `12345` and
-`metadata: read`. It checks the returned ID, name, permissions and expiry.
-The approved `github-installation` profile sends `{}` and inherits installation scope.
-
-**Renewal.** Eligible tokens serve requests during renewal. Committing the replacement
-retires the old version. OCC rechecks grant and version before authorizing a
-[protected send](credential-source-egress.md#3-resolve-versioned-material-and-authorize-its-sole-send).
+For `acme/widgets`, the Token Service requests ID `12345` and `metadata: read`. It verifies the ID, name, permissions and expiry. The approved `github-installation` profile sends `{}` for installation scope. Committing a replacement retires the old version. OCC rechecks the grant and version [before sending](credential-source-egress.md#3-resolve-versioned-material-and-authorize-its-sole-send).
 
 | Limit                                | Effect                                                                                                                                                                                                              |
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -338,7 +326,7 @@ detached reads. Clearing bytes cannot revoke a token.
 
 ## Changelog
 
-- 2026-11-05 23:21: Trace registered GitHub token preparation for a protected metadata request. (codex/01a19e60-87d0-71d0-8c9a-e3e3b33b1676 - 614169814)
+- 2026-11-05 23:21: Trace GitHub request-time issuance. (codex/01a19e60-87d0-71d0-8c9a-e3e3b33b1676 - 614169814)
 
 - 2026-10-31 21:13: Reconcile diagnostics. (authoring-run/0e8d85fa-aa72-48b7-bc35-06b23a663182 - 9c45357338431ec9334642aca5eac91de862ae95)
 

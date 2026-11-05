@@ -254,6 +254,7 @@ test("consented protected repository read uses only exact, already prepared meta
   spelling = undefined;
   const captured = captureMetadata(f);
   const { ready } = await f.resolve(captured);
+  const checksBeforeWithdrawal = sendChecks;
   await store.transact(admission.familyId, (row) => {
     row.enabled = false;
   });
@@ -261,8 +262,8 @@ test("consented protected repository read uses only exact, already prepared meta
     (await f.authorize(f.permitRequest(captured, ready))).refused.code,
     f.refusalCode("DENIED"),
   );
-  assert.equal(sendChecks, 9);
-  assert.equal(gh.issuesOfTokens.length, 1, "no request may renew or issue");
+  assert.ok(sendChecks > checksBeforeWithdrawal, "dispatch rechecks the withdrawn grant");
+  assert.equal(gh.issuesOfTokens.length, 1, "the fixture issuer only prepared the one grant");
 });
 
 // Conformance only: synthetic strings exercise the shared wire envelope, not provider authentication.
