@@ -52,7 +52,7 @@ import {
   waitForEnabled,
   waitForInputValue,
   statusTone,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import {
   trackSettledFetches,
   waitForIdleFetches,

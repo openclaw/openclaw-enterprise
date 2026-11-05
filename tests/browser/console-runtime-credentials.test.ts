@@ -7,7 +7,6 @@ import type { BrowserContextOptions } from "playwright";
 import type {
   HarnessAuthBinding,
   HarnessExecutionMode,
-  OpenClawConfigurationDocument,
   OpenClawConfigurationValue,
   Restriction,
   SecretBinding,
@@ -39,7 +38,7 @@ import {
   selectSecret,
   waitForEnabled,
   waitForInputValue,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import {
@@ -90,7 +89,7 @@ async function createAgent(
   fixture: Fixture,
   namespaceId: string,
   name: string,
-  values: OpenClawConfigurationDocument,
+  values: Readonly<Record<string, unknown>>,
   options: {
     executionMode?: HarnessExecutionMode;
     harnessAuth?: HarnessAuthBinding | null;

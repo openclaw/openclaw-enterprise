@@ -37,7 +37,7 @@ import {
   waitForCondition,
   waitForInputValue,
   writeRequests,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
 import {
   configurationPostRequests,
   createRepositoryLaunchFixture,

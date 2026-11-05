@@ -53,7 +53,7 @@ const FAILURE_CODE = /^[A-Z0-9_]{1,64}$/u;
 
 /** Public pending explanations never include arbitrary Driver or provider text. */
 export function deploymentProgressForWork(
-  work: Readonly<ControllerWork>,
+  work: Readonly<Pick<ControllerWork, "state" | "availableAt">>,
   attempt: ControllerWorkAttempt | undefined,
 ): DeploymentStatusResult["progress"] {
   if (work.state === "succeeded" || work.state === "failed_permanent") {
@@ -585,7 +585,7 @@ export function validateSuccessResultData(data: unknown): SuccessResultData | un
 }
 
 export function deploymentErrorForWork(
-  work: Readonly<ControllerWork>,
+  work: Readonly<Pick<ControllerWork, "state" | "reasonCode" | "resultData">>,
 ): DeploymentStatusError | null {
   if (work.state !== "failed_permanent" && !completedWithoutActivation(work)) {
     return null;
@@ -689,7 +689,9 @@ export function controllerWorkLeaseActive(
   );
 }
 
-function completedWithoutActivation(work: Readonly<ControllerWork>): boolean {
+function completedWithoutActivation(
+  work: Readonly<Pick<ControllerWork, "state" | "reasonCode">>,
+): boolean {
   return (
     work.state === "succeeded" &&
     work.reasonCode !== "REVISION_ACTIVATED" &&
