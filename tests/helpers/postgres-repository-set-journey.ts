@@ -19,6 +19,7 @@ import type { TestContext } from "node:test";
 import type {
   AgentRevision,
   ComputeRevisionContext,
+  GitHubRepositoryCredentialBackendDefinition,
   ProxyRevisionContext,
 } from "../../packages/contracts/src/index.ts";
 import { InstalledDriver } from "../../packages/occ/src/index.ts";
@@ -664,6 +665,12 @@ async function repositoryGitJourney(
   // Observe the real bound policy calls; neither spy replaces its decisions.
   const legacyResolve = t.mock.method(driver, "resolve");
   const boundResolve = t.mock.method(driver, "resolveBindings");
+  const repositoryBackend: GitHubRepositoryCredentialBackendDefinition = {
+    id: peer.registry.backendId,
+    type: "github",
+    configuration: { registryPath: "/unused/controlled-registry.json" },
+    drivers: { repo: driver.id },
+  };
   const selectDrivers = (d: InstallationRuntimeDrivers) => ({
     ...d,
     repositoryPolicy: driver,
@@ -674,6 +681,7 @@ async function repositoryGitJourney(
     credentialGatewayDriver: gateway,
     installation: {
       ...d.installation,
+      backend: [...(d.installation.backend ?? []), repositoryBackend],
       drivers: { ...d.installation.drivers, credential_gateway: { id: gateway.id } },
     },
   });
@@ -692,7 +700,7 @@ async function repositoryGitJourney(
       );
       const otherResolve = t.mock.method(otherPolicy, "resolveBindings");
       await assert.rejects(
-        () =>
+        async () =>
           f.start(compute, {
             transformDrivers: (d: InstallationRuntimeDrivers) => ({
               ...selectDrivers(d),
