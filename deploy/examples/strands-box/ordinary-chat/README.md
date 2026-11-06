@@ -28,8 +28,7 @@ owner-only smoke config, and the normal read/exec prerequisites. For this repro:
   [tool guide](../workspace-verifier/README.md). Pin its installed digest in
   `workspaceVerifierSha256`; do not add it to the agent's read or exec lists.
 - Keep Box's normal contained networking and leave external egress ungranted.
-  Verify the dedicated placement and containment before enabling the Gateway's
-  owner binding. The local model fixture does not require a Box egress route.
+  The local model fixture does not require a Box egress route.
 
 Set `OCE` to the canonical absolute checkout; `CONFIG` to the private smoke
 config; `RUN` to a fresh, empty mode-0700 operator receipt directory; and
@@ -61,15 +60,41 @@ and a certificate with the exact private DNS authority as its SAN. For this
 standalone repro the trusted Gateway reaches that ingress directly over the
 private route; no Kubernetes Service or relay Pod is required.
 
-Follow the [Gateway owner binding](../../../runtime/README.md#bind-a-standalone-gateway-to-one-box-execution)
-to install the read-only files `/etc/openclaw-box-owner/{binding.json,ca.pem}`.
-Use a root-owned mode-0555 directory, mode-0444 regular files, and compact
-JSON for the binding,
-then provision the exact original `APP_SERVER_URL` and `APP_SERVER_TOKEN` as
-private runtime inputs. The latter is the launcher's native transport
-capability, not the Gateway login token. Do not include it in the run directory
-or print it. Leave device pairing, TLS verification, and native authentication
+### Bind a standalone Gateway to one Box execution
+
+Before enabling the binding, verify the dedicated placement and confirm that
+the original live Box confines the admitted workspace and denies all egress
+outside its admitted policy. A receipt hash identifies that execution. The
+operator and supervisor own this check.
+
+Run the Gateway as a nonroot user. Mount a root-owned mode-0555 directory
+read-only at `/etc/openclaw-box-owner` in the Gateway. Its ancestors must be
+root-owned and neither group- nor world-writable. Use root-owned mode-0444
+regular files with one link each and no symlinks. Its `ca.pem` contains the
+ingress CA. Its compact JSON `binding.json` contains only the canonical
+`wss://HOST[:port]/` URL, the workspace root `/home/node/workspace`, and the
+SHA-256 of the original owner's exact `ready.json` bytes, under the keys `url`,
+`workspaceRoot`, and `generationSha256`. Set the trusted runtime inputs
+`APP_SERVER_URL` and `APP_SERVER_TOKEN` to that same URL and the native
+transport bearer. Configure the dedicated Harness app-server as a WebSocket
+with the same endpoint, workspace, and bearer, with no additional headers.
+The bearer is the
+launcher's native transport capability, not the Gateway login token. Keep it
+in the Gateway's normal secret inputs. Do not print it or put it in the run
+directory. Leave device pairing, TLS verification, and native authentication
 enabled.
+
+An absent directory leaves ordinary Gateway behavior in place. A selected
+directory with either missing or invalid file refuses the binding. The
+runtime rechecks the mounted file identities and requires the exact generation
+on the CA-verified upgrade before sending native frames. For an ordinary
+workspace-write turn at the bound root, it selects external sandboxing with
+restricted network access and no alternate execution environment. Explicit
+read-only and workspace-restricted policies remain available inside that root.
+The bound connection accepts the chat RPCs and refuses direct shell and exec RPCs.
+Replacing the Box closes its original ingress. Set up a fresh binding before
+connecting a new Gateway, and reconcile any uncertain earlier turn before
+submitting another one.
 
 Start a fresh ordinary local-mode Gateway on loopback port 18789 with the selected Codex runtime, no
 model fallback, and an isolated state directory. Use its normal authenticated
