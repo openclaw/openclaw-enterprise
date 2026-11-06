@@ -66,11 +66,16 @@ test(
     // This owns a real Helm installation, PostgreSQL and authenticated stock Gateway.
     // The only controlled upstream is a private Git server and its App token issuer.
     const fixture = await createOpenShellGitInstallation(t);
-    const evidence = async (event: string, data: Record<string, unknown>) => {
-      await fixture.checkpoint(event, data);
-    };
-    const { request, namespace, modelSource, repositoryRef, origin, gatewayClient, workspace } =
-      fixture;
+    const {
+      request,
+      namespace,
+      modelSource,
+      repositoryRef,
+      origin,
+      gatewayClient,
+      workspace,
+      checkpoint: evidence,
+    } = fixture;
     const base = `/namespaces/${namespace.id}`;
     const suffix = randomUUID();
     const model = process.env.OCC_TEST_OPENAI_MODEL;
@@ -189,11 +194,11 @@ test(
     };
     const original = await readExecution();
     await evidence("initial-runtime", original.identity);
-    const supervisorTarget = {
+    const target = {
       sandboxName: original.sandbox.name,
       sandboxId: original.sandbox.id,
     };
-    const supervisor = await fixture.verifySupervisorImage(supervisorTarget);
+    const supervisor = await fixture.verifySupervisorImage(target);
     assert.equal(supervisor.workloadPodUid, original.identity.podUid);
     assert.equal(supervisor.sandboxId, original.identity.sandboxId);
     await evidence("installed-supervisor", supervisor);
@@ -260,10 +265,6 @@ test(
       workspace,
       checkpoint: fixture.checkpoint,
     });
-    const target = {
-      sandboxName: original.sandbox.name,
-      sandboxId: original.sandbox.id,
-    };
     const executable = await execute(target, [
       "sh",
       "-ceu",
@@ -275,7 +276,7 @@ test(
       sandbox: original.sandbox.name,
       sandboxId: original.sandbox.id,
       supervisor,
-      readSupervisor: () => fixture.verifySupervisorImage(supervisorTarget),
+      readSupervisor: () => fixture.verifySupervisorImage(target),
       executable: executable.stdout.toString("utf8").trim(),
       signal: t.signal,
     });
@@ -331,12 +332,16 @@ test(
         ? true
         : undefined;
     });
+    const retiredOrigin = origin.snapshot();
 
     const verifyRetainedExecution = async (stage: string) => {
-      const before = origin.snapshot();
+      // Keep the pre-restart baseline: replacement-worker maintenance must not
+      // issue a new token or contact the origin before this verification starts.
+      const before = retiredOrigin;
+      assert.deepEqual(origin.snapshot(), before, `${stage}: retired Git origin changed`);
       const { sandbox, identity } = await readExecution();
       assert.deepEqual(identity, original.identity, `${stage}: runtime identity changed`);
-      assert.deepEqual(await fixture.verifySupervisorImage(supervisorTarget), supervisor);
+      assert.deepEqual(await fixture.verifySupervisorImage(target), supervisor);
       const attached = sandbox.spec?.providers;
       assert.ok(Array.isArray(attached));
       assert.deepEqual([...attached].sort(), retainedNames);
@@ -436,6 +441,11 @@ test(
     // An actual Deployment restart discards all worker and Driver memory. Its
     // PostgreSQL route and custody Secret must still identify this same execution.
     const restart = await fixture.restartWorker({ agentId: agent.id, revisionId: revision.id });
+    assert.deepEqual(
+      origin.snapshot(),
+      retiredOrigin,
+      "worker restart used the retired Git origin",
+    );
     await evidence("worker-restarted", restart);
     await verifyRetainedExecution("after-worker-restart");
   },

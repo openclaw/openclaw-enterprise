@@ -17,6 +17,13 @@
   },
   "files": [
     {
+      "path": "tests/integration/openshell-git-extraction-real.test.mjs",
+      "expectedTests": [
+        "OpenShell image extraction removes its Docker container after create cancellation",
+        "OpenShell image extraction removes its Docker container after copy cancellation"
+      ]
+    },
+    {
       "path": "tests/integration/docker-compute-real.test.mjs",
       "expectedTests": [
         "Docker Compose cleanup preserves the selected engine and removes volumes only when requested",

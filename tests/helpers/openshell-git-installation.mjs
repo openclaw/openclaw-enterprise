@@ -176,6 +176,59 @@ async function certificates(command, directory, originHost, authorityHost) {
   };
 }
 
+export async function extractOpenShellImageFile({
+  command,
+  cleanup,
+  image,
+  filename,
+  destination,
+}) {
+  const name = `oce-git-extract-${randomUUID()}`;
+  let removed = false;
+  const remove = async () => {
+    if (!removed) {
+      // A lost create reply still leaves this name owned. Cleanup must outlive
+      // cancellation, but shares one finite deadline for lookup and removal.
+      const options = {
+        signal: AbortSignal.timeout(30_000),
+        timeout: 30_000,
+      };
+      const container = (
+        await command(
+          "docker",
+          ["ps", "--all", "--quiet", "--no-trunc", "--filter", `name=^/${name}$`],
+          options,
+        )
+      ).trim();
+      if (container) {
+        assert.match(container, /^[a-f0-9]{64}$/);
+        await command("docker", ["rm", container], options);
+      }
+      removed = true;
+    }
+  };
+  cleanup.push(remove);
+  const errors = [];
+  try {
+    const container = (await command("docker", ["create", "--name", name, image])).trim();
+    assert.match(container, /^[a-f0-9]{64}$/);
+    await command("docker", ["cp", `${container}:${filename}`, destination]);
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    await remove();
+  } catch (error) {
+    errors.push(error);
+  }
+  if (errors.length === 1) {
+    throw errors[0];
+  }
+  if (errors.length > 1) {
+    throw new AggregateError(errors, "Image extraction and container cleanup failed");
+  }
+}
+
 async function trustedSupervisor({ command, cleanup, directory, cluster, ca, checkpoint }) {
   // Read the same stock pin used by Local Setup rather than maintaining another
   // independent image version. Candidate supplier builds are rejected at entry.
@@ -187,15 +240,8 @@ async function trustedSupervisor({ command, cleanup, directory, cluster, ca, che
   );
   const context = join(directory, "supervisor-trust");
   await mkdir(context, { mode: 0o700 });
-  const extract = async (image, filename, destination) => {
-    const container = (await command("docker", ["create", image])).trim();
-    assert.match(container, /^[a-f0-9]{64}$/);
-    try {
-      await command("docker", ["cp", `${container}:${filename}`, destination]);
-    } finally {
-      await command("docker", ["rm", container]);
-    }
-  };
+  const extract = (image, filename, destination) =>
+    extractOpenShellImageFile({ command, cleanup, image, filename, destination });
   const stockCertificates = join(directory, "stock-ca-certificates.crt");
   await extract(parent, "/etc/ssl/certs/ca-certificates.crt", stockCertificates);
   await extract(parent, "/openshell-supervisor", join(directory, "stock-supervisor"));
@@ -753,8 +799,13 @@ async function installOpenShellGit(t) {
     assert.equal(forward.exitCode, null, "Gateway port-forward exited");
     try {
       return await gatewayClient.getWorkspace(sandboxNamespace, AbortSignal.timeout(5000));
-    } catch {
-      return undefined;
+    } catch (error) {
+      // GetWorkspace already maps NOT_FOUND to absence. Only a temporarily
+      // unavailable transport or request deadline can become ready on a later poll.
+      if ([4, 14].includes(error?.grpcStatus)) {
+        return undefined;
+      }
+      throw error;
     }
   });
   const verifySupervisorImage = async ({ sandboxName, sandboxId }) => {

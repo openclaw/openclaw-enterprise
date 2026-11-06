@@ -340,7 +340,7 @@ stored operations without reapplying.
 
 `apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts:observeOpenShellGitPredecessor`
 guards subtraction and standing succession. Expired predecessors require matching identity/generation,
-the current ready Sandbox instance and an observation under 15 seconds old.
+the ready Sandbox instance and evidence under 15 seconds old at return.
 Cold `witnessOpenShellGitLaunch` observation returns unverified identity for matching expired model evidence;
 independent worker supervision durably defers renewal.
 `subtractExpiredOpenShellGit` confirms revoked Git, ready model and

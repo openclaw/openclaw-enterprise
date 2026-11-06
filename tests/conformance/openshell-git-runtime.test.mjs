@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test, { afterEach } from "node:test";
 import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
+import { setTimeout as delay } from "node:timers/promises";
 import { ObservedHookPreview } from "../../apps/controller/src/drivers/egress-proxy/openshell-request-hook-preview.ts";
 import {
   OpenShellGitRouteBlockedError,
@@ -2012,6 +2013,15 @@ test("Git expiry observes the original model in the reduced stock installation, 
       }
       return getProfile(...args);
     };
+    let delayedSandboxRead = false;
+    const inspectSandbox = client.getSandbox;
+    client.getSandbox = async (...args) => {
+      if (delayedSandboxRead) {
+        delayedSandboxRead = false;
+        await delay(150);
+      }
+      return inspectSandbox(...args);
+    };
     client.getSandboxProviderStatus = async (workspace, sandbox, provider, _signal, receiptId) => {
       const removed = !box.spec.providers.includes(git);
       const isGit = provider === git;
@@ -2082,6 +2092,18 @@ test("Git expiry observes the original model in the reduced stock installation, 
         }
         if (fault === "stale predecessor") {
           result.observedTime = new Date(Date.parse(result.evaluatedTime) - 15_000).toISOString();
+        }
+        if (
+          fault === "predecessor expires during report read" ||
+          fault === "predecessor expires during Sandbox read"
+        ) {
+          // The report is fresh when evaluated, but expires before the caller can use it.
+          result.observedTime = new Date(Date.parse(result.evaluatedTime) - 14_900).toISOString();
+          if (fault === "predecessor expires during report read") {
+            await delay(150);
+          } else {
+            delayedSandboxRead = true;
+          }
         }
         if (fault === "changed predecessor") {
           result.receipt.desired.providerEnvRevision = "7";
@@ -2259,6 +2281,8 @@ test("Git expiry observes the original model in the reduced stock installation, 
           "generic withholding",
           "failed predecessor",
           "stale predecessor",
+          "predecessor expires during report read",
+          "predecessor expires during Sandbox read",
           "changed predecessor",
           "replaced live instance",
           "stopped live instance",
@@ -2340,6 +2364,8 @@ test("Git expiry observes the original model in the reduced stock installation, 
     ["generic withholding", "retire-runtime"],
     ["failed predecessor", "retire-runtime"],
     ["stale predecessor", "retire-runtime"],
+    ["predecessor expires during report read", "retire-runtime"],
+    ["predecessor expires during Sandbox read", "retire-runtime"],
     ["changed predecessor", "retire-runtime"],
     ["replaced live instance", "retire-runtime"],
     ["stopped live instance", "retire-runtime"],
@@ -2356,7 +2382,13 @@ test("Git expiry observes the original model in the reduced stock installation, 
     ["other process", "retire-runtime"],
     ["failed model", "retire-runtime"],
   ]) {
-    await t.test(fault, () => exercise(fault, first, cold));
+    await t.test(fault, (t) => {
+      if (fault === "fractional predecessor") {
+        // Isolate wire timestamp precision from scheduling latency within its sub-ms lease.
+        t.mock.method(process.hrtime, "bigint", () => 0n);
+      }
+      return exercise(fault, first, cold);
+    });
   }
 });
 
