@@ -55,6 +55,37 @@ const postTestAsyncActivityPrefix =
 const measurementPrefix = "openclaw-ci-measurement ";
 const openShellStageMeasurementKind = "openshell-stage";
 const openShellSandboxMeasurementKind = "openshell-sandbox-phase";
+const openShellPolicyCheckKind = "openshell-network-policy-check";
+const openShellFixtureTeardownKind = "openshell-fixture-teardown";
+const openShellMeasurementKinds = new Set([
+  openShellStageMeasurementKind,
+  openShellSandboxMeasurementKind,
+  openShellPolicyCheckKind,
+  openShellFixtureTeardownKind,
+]);
+const openShellPolicyChecks = new Set([
+  "installation-discovery",
+  "cluster-target-reachability",
+  "agent-default-control-request",
+  "agent-default-control-exit",
+  "agent-default-control-response",
+  "agent-initial-denial-request",
+  "agent-initial-denial-exit",
+  "agent-initial-denial-reason",
+  "provider-denial-read",
+  "provider-denial-observed",
+  "provider-denied-dns-binding",
+  "editing-admission",
+  "apply-authorization",
+  "grant-application",
+  "granted-agent-request",
+  "provider-allow-observed",
+  "revision-unchanged",
+  "second-agent-isolation",
+  "second-agent-cleanup",
+  "editing-state-enforcement",
+  "grant-revocation",
+]);
 const openShellSandboxStages = new Set([
   "installation",
   "exposure-auth",
@@ -138,6 +169,16 @@ function safeMeasurement(value) {
       elapsedMs: value.elapsedMs,
     };
   }
+  if (isRecord(value) && value.kind === openShellPolicyCheckKind) {
+    return openShellPolicyChecks.has(value.check)
+      ? { kind: value.kind, check: value.check }
+      : undefined;
+  }
+  if (isRecord(value) && value.kind === openShellFixtureTeardownKind) {
+    return ["passed", "failed", "incomplete"].includes(value.outcome)
+      ? { kind: value.kind, outcome: value.outcome }
+      : undefined;
+  }
   if (isRecord(value) && value.kind === "local-first-agent-setup-point") {
     if (
       ![
@@ -200,7 +241,7 @@ function safeMeasurement(value) {
     ) {
       return undefined;
     }
-    return {
+    const result = {
       kind: value.kind,
       phase: value.phase,
       stage: value.stage,
@@ -208,6 +249,24 @@ function safeMeasurement(value) {
       failed: value.failed,
       elapsedMs: value.elapsedMs,
     };
+    if (value.stage === "runtime-build") {
+      const { nonzeroExitCount = 0, signaledCount = 0 } = value;
+      if (
+        Number.isInteger(nonzeroExitCount) &&
+        nonzeroExitCount >= 0 &&
+        Number.isInteger(signaledCount) &&
+        signaledCount >= 0 &&
+        nonzeroExitCount + signaledCount <= value.failed
+      ) {
+        if (nonzeroExitCount > 0) {
+          result.nonzeroExitCount = nonzeroExitCount;
+        }
+        if (signaledCount > 0) {
+          result.signaledCount = signaledCount;
+        }
+      }
+    }
+    return result;
   }
   if (isRecord(value) && value.kind === "local-first-agent-pod") {
     if (
@@ -801,6 +860,21 @@ export function nativeFirstAgentProofDiagnostic(failureStage, worker) {
     "historyRunMessageCount",
     "historyExecCount",
     "historyExplicitSuccessCount",
+    "historyStringContentCount",
+    "historyArrayContentCount",
+    "historyOtherContentCount",
+    "historyTextPartCount",
+    "historyToolCallPartCount",
+    "historyOtherPartCount",
+    "historyExecCallCount",
+    "historyExecCommandStringCount",
+    "historyExecExactCommandCount",
+    "historyExecNonemptyTextCount",
+    "historyExecAggregatedCount",
+    "historyExecOtherJsonCount",
+    "historyToolPrefixContainsCount",
+    "historyAssistantNonemptyTextCount",
+    "historyFinalMarkerContainsCount",
     "historyToolPrefixCount",
     "historyFinalMarkerCount",
     "historyTerminalAssistantCount",
@@ -1340,12 +1414,8 @@ export default async function* jsonLinesReporter(source) {
       }
       const value = parseMeasurement(message);
       // Per-test diagnostics name their file; the run summary counts do not.
-      // OpenShell phase timings belong only in the projected measurement, even on failure.
-      if (
-        typeof event.data.file === "string" &&
-        value?.kind !== openShellStageMeasurementKind &&
-        value?.kind !== openShellSandboxMeasurementKind
-      ) {
+      // OpenShell measurements belong only in the projected record, even on failure.
+      if (typeof event.data.file === "string" && !openShellMeasurementKinds.has(value?.kind)) {
         output.diagnostic(message);
       }
       // Node diagnostics can quote thrown errors; retain only this fixed failure category.

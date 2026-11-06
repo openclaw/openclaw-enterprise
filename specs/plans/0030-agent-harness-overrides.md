@@ -157,6 +157,16 @@ proposed destination and Deploy remain visible in the checklist.
   settings, preview refusal/recovery, and deployment captures are being refreshed
   for native GitHub attachment delivery. Current-head GitHub CI remains pending.
 
+Main was merged again at `c59d1daf4dadd83ad3ae654c55ceb27ee2530f14` after
+GitHub detected a new conflict. Only flow metadata and changelog entries conflicted;
+both records remain. Migrations stayed at 0070 and 0071. The combined probe
+and provider checks passed 67 cases without skips. The Console product source
+is unchanged from the final `6f7efbfc` captures. Main's changed browser file
+passed 64 cases; its three HTTPS cases need a usable Chromium sandbox. Installing
+`certutil` resolved their first dependency failure, but this DevBox denies the
+required user namespaces. Those cases remain for current-head CI; browser sandbox
+and certificate checks were not disabled.
+
 ## Manual Notes
 
 ## Changelog

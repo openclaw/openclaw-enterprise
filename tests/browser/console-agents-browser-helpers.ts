@@ -364,19 +364,21 @@ export async function newPage(
   fixture: PageFixture,
   options: {
     args?: string[];
+    launch?: () => Promise<Browser>;
     browser?: () => Promise<Browser>;
     context?: Parameters<Browser["newContext"]>[0];
   } = {},
 ) {
   const artifacts = await artifactDirectory(t);
   assert.ok(
-    options.browser === undefined || options.args === undefined,
-    "pass a shared browser or launch arguments, not both",
+    [options.browser, options.args, options.launch].filter((option) => option !== undefined)
+      .length <= 1,
+    "pass one of a shared browser, launch arguments, or a dedicated browser factory",
   );
-  const shared = options.args === undefined;
+  const shared = options.args === undefined && options.launch === undefined;
   const browser = shared
     ? await (options.browser ?? sharedBrowser)()
-    : await launchBrowser(options);
+    : await (options.launch?.() ?? launchBrowser(options));
   const resources: {
     context?: BrowserContext;
     diagnostics?: Awaited<ReturnType<typeof watchBrowserContext>>;
