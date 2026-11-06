@@ -53,6 +53,7 @@ const postTestAsyncActivityPrefix =
 // Tests publish timings with t.diagnostic(`${measurementPrefix}${JSON}`). Only the
 // allowlisted shape below is retained in ordinary results.
 const measurementPrefix = "openclaw-ci-measurement ";
+const openShellStageMeasurementKind = "openshell-stage";
 const openShellSandboxMeasurementKind = "openshell-sandbox-phase";
 const openShellSandboxStages = new Set([
   "installation",
@@ -86,6 +87,40 @@ function parseMeasurement(message) {
 }
 
 function safeMeasurement(value) {
+  if (isRecord(value) && value.kind === openShellStageMeasurementKind) {
+    if (
+      ![
+        "installation",
+        "initial-model",
+        "filesystem-network",
+        "network-policy",
+        "credential-route",
+        "replacement",
+        "untrusted-upstream",
+        "tool-outage",
+        "model-outage",
+        "gateway-outage",
+        "oauth-refresh",
+        "non-model-source",
+        "credential-absence",
+        "credential-withdrawal",
+        "embedded-refusal",
+        "native-policy",
+      ].includes(value.stage) ||
+      !["passed", "failed"].includes(value.outcome) ||
+      !Number.isInteger(value.elapsedMs) ||
+      value.elapsedMs < 0 ||
+      value.elapsedMs > 7_200_000
+    ) {
+      return undefined;
+    }
+    return {
+      kind: value.kind,
+      stage: value.stage,
+      outcome: value.outcome,
+      elapsedMs: value.elapsedMs,
+    };
+  }
   if (isRecord(value) && value.kind === openShellSandboxMeasurementKind) {
     if (
       !openShellSandboxStages.has(value.stage) ||
@@ -792,6 +827,55 @@ function failureDiagnostic(error) {
   if (!isRecord(diagnostic)) {
     return undefined;
   }
+  if (diagnostic.kind === "openshell-startup-process") {
+    const keys = Reflect.ownKeys(diagnostic);
+    if (!keys.includes("kind") || !keys.includes("outcome")) {
+      return undefined;
+    }
+    const { kind, outcome, exitCode, signal, code } = diagnostic;
+    if (outcome === "output-limit" && keys.length === 2) {
+      return { kind, outcome };
+    }
+    if (keys.length !== 3) {
+      return undefined;
+    }
+    if (
+      outcome === "exit" &&
+      keys.includes("exitCode") &&
+      Number.isInteger(exitCode) &&
+      exitCode > 0 &&
+      exitCode <= 255
+    ) {
+      return { kind, outcome, exitCode };
+    }
+    if (
+      outcome === "signal" &&
+      keys.includes("signal") &&
+      typeof signal === "string" &&
+      Object.hasOwn(process.getBuiltinModule("node:os").constants.signals, signal)
+    ) {
+      return { kind, outcome, signal };
+    }
+    if (
+      outcome === "launch-error" &&
+      keys.includes("code") &&
+      [
+        "E2BIG",
+        "EACCES",
+        "EAGAIN",
+        "EMFILE",
+        "ENFILE",
+        "ENOENT",
+        "ENOEXEC",
+        "ENOMEM",
+        "ENOTDIR",
+        "EPERM",
+      ].includes(code)
+    ) {
+      return { kind, outcome, code };
+    }
+    return undefined;
+  }
   if (diagnostic.kind === "native-first-agent-proof") {
     return nativeFirstAgentProofDiagnostic(diagnostic.failureStage, diagnostic.worker);
   }
@@ -943,6 +1027,12 @@ function failureDiagnostic(error) {
           : undefined,
       lastHttpStatus: safeStatus(diagnostic.lastHttpStatus),
     };
+  }
+  if (diagnostic.kind === "observability-installation-status") {
+    const status = safeStatus(diagnostic.status);
+    return status === undefined
+      ? undefined
+      : { kind: "observability-installation-status", status, expectedStatus: 401 };
   }
   if (diagnostic.kind === "observability-log-export") {
     // Which attributed source never reached the OTLP receiver; no record content.
@@ -1251,7 +1341,11 @@ export default async function* jsonLinesReporter(source) {
       const value = parseMeasurement(message);
       // Per-test diagnostics name their file; the run summary counts do not.
       // OpenShell phase timings belong only in the projected measurement, even on failure.
-      if (typeof event.data.file === "string" && value?.kind !== openShellSandboxMeasurementKind) {
+      if (
+        typeof event.data.file === "string" &&
+        value?.kind !== openShellStageMeasurementKind &&
+        value?.kind !== openShellSandboxMeasurementKind
+      ) {
         output.diagnostic(message);
       }
       // Node diagnostics can quote thrown errors; retain only this fixed failure category.

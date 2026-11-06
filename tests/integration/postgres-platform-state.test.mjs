@@ -1437,7 +1437,7 @@ test(
       import("../../apps/controller/src/worker.ts"),
       import("../helpers/development.mjs"),
       import("../../packages/occ/src/state/postgres-state.ts"),
-      import("../helpers/configuration-driver.mjs"),
+      import("../helpers/configuration-driver.ts"),
       import("../helpers/postgres-backend-state.mjs"),
     ]);
     const pool = new Pool({ connectionString: databaseUrl });
@@ -2289,7 +2289,7 @@ test(
       { requestFailure },
     ] = await Promise.all([
       import("pg"),
-      import("../helpers/configuration-driver.mjs"),
+      import("../helpers/configuration-driver.ts"),
       import("../helpers/secret-driver.mjs"),
       import("../../apps/controller/src/http/errors.ts"),
     ]);
@@ -2659,7 +2659,7 @@ test(
       import("../../packages/occ/src/state/postgres-state.ts"),
       import("../../packages/occ/src/index.ts"),
       import("../../packages/iam/src/index.ts"),
-      import("../helpers/configuration-driver.mjs"),
+      import("../helpers/configuration-driver.ts"),
       import("../helpers/secret-driver.mjs"),
       import("../helpers/development.mjs"),
       import("../../apps/controller/src/drivers/channel/slack.ts"),

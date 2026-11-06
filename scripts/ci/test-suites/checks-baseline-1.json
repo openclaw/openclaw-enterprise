@@ -22,14 +22,16 @@
     "tests/docs/docs-site.test.mjs",
     "tests/integration/github-login-transport.test.mjs",
     "tests/conformance/kubernetes-compute.test.mjs",
+    "tests/conformance/openshell-static-credential-attachment.test.ts",
     "tests/conformance/kubernetes-provider-harness.test.mjs",
     "tests/conformance/kubernetes-harness-workspace-volume.test.mjs",
     "tests/conformance/workspace-node-supervisor.test.mjs",
     "tests/integration/presets-controller.test.mjs",
     "tests/integration/plugin-discovery-api.test.mjs",
+    "tests/integration/openshell-plugin-source-reader.test.ts",
     "tests/integration/runtime-credentials-api.test.mjs",
     "tests/integration/secret-api.test.mjs",
-    "tests/integration/console-api.test.mjs",
+    "tests/integration/console-api.test.ts",
     "tests/integration/caller-denial-api.test.ts",
     "tests/conformance/kubernetes-preflight.test.mjs",
     "tests/conformance/kubernetes-client.test.mjs",
@@ -58,11 +60,14 @@
     "tests/integration/production-image-upgrade.test.mjs",
     "tests/integration/production-upgrade-chart-inputs.test.ts",
     "tests/conformance/test-files.test.mjs",
+    "tests/conformance/update-contributors.test.mjs",
     "tests/conformance/socket-directory.test.mjs",
     "tests/conformance/temporary-directory.test.mjs",
     "tests/integration/production-controller-security.test.mjs",
     "tests/conformance/kubernetes-runtime-credentials.test.mjs",
     "tests/conformance/openshell-gateway-wire.test.mjs",
+    "tests/conformance/openshell-provider-profile-wire.test.ts",
+    "tests/conformance/oauth-connection.test.mjs",
     "tests/conformance/openshell-oauth-wire.test.mjs",
     "tests/conformance/openshell-codex-device.test.mjs",
     "tests/conformance/openshell-harness-status.test.mjs",
@@ -92,18 +97,19 @@
     "tests/conformance/codex-stderr-filter.test.mjs",
     "tests/docs/docs-server.test.mjs",
     "tests/integration/console-build-metadata.test.ts",
-    "tests/conformance/console-design-tokens.test.mjs",
+    "tests/conformance/console-design-tokens.test.ts",
     "tests/conformance/audit.test.mjs",
     "tests/conformance/compute-lifecycle-hooks.test.mjs",
     "tests/conformance/utils.test.mjs",
+    "tests/conformance/workspace-node-setup.test.ts",
     "tests/conformance/console-api-client.test.ts",
-    "tests/conformance/console-carry.test.mjs",
-    "tests/conformance/console-namespace-name.test.mjs",
-    "tests/conformance/console-agent-name-runs.test.mjs",
-    "tests/conformance/console-json-errors.test.mjs",
+    "tests/conformance/console-carry.test.ts",
+    "tests/conformance/console-namespace-name.test.ts",
+    "tests/conformance/console-agent-name-runs.test.ts",
+    "tests/conformance/console-json-errors.test.ts",
     "tests/integration/bootstrap-output.test.mjs",
     "tests/conformance/slack-configuration.test.mjs",
-    "tests/conformance/console-gateway-safety.test.mjs",
+    "tests/conformance/console-gateway-safety.test.ts",
     "tests/conformance/grafana-overview-dashboard.test.mjs",
     "tests/conformance/split-layout-tenants.test.mjs",
     "tests/conformance/split-layout-adopt.test.mjs",
@@ -116,6 +122,7 @@
     "tests/integration/egress-stock-online-authority.test.mjs",
     "tests/integration/managed-plugin-request-authority.test.ts",
     "tests/integration/egress-stock-online-git-authority.test.mjs",
+    "tests/integration/harness-egress-probe-diagnostics.test.ts",
     "tests/conformance/openshell-prepared-git-provider.test.mjs",
     "tests/conformance/openshell-git-runtime.test.mjs",
     "tests/integration/openshell-observed-request-hook.test.ts",
@@ -149,25 +156,28 @@
       "path": "tests/conformance/filesystem-configuration.test.mjs"
     },
     {
-      "path": "tests/conformance/console-agent-name-runs.test.mjs"
+      "path": "tests/conformance/console-agent-name-runs.test.ts"
     },
     {
       "path": "tests/conformance/console-api-client.test.ts"
     },
     {
-      "path": "tests/conformance/console-carry.test.mjs"
+      "path": "tests/conformance/console-carry.test.ts"
     },
     {
-      "path": "tests/conformance/console-namespace-name.test.mjs"
+      "path": "tests/conformance/console-namespace-name.test.ts"
     },
     {
-      "path": "tests/conformance/console-json-errors.test.mjs"
+      "path": "tests/conformance/console-json-errors.test.ts"
     },
     {
-      "path": "tests/conformance/console-design-tokens.test.mjs"
+      "path": "tests/conformance/console-design-tokens.test.ts"
     },
     {
       "path": "tests/conformance/contracts.test.mjs"
+    },
+    {
+      "path": "tests/conformance/update-contributors.test.mjs"
     },
     {
       "path": "tests/docs/docs-length.test.mjs"
@@ -198,6 +208,9 @@
     },
     {
       "path": "tests/conformance/kubernetes-compute.test.mjs"
+    },
+    {
+      "path": "tests/conformance/openshell-static-credential-attachment.test.ts"
     },
     {
       "path": "tests/conformance/kubernetes-provider-harness.test.mjs"
@@ -258,6 +271,13 @@
       "path": "tests/conformance/openshell-gateway-wire.test.mjs"
     },
     {
+      "path": "tests/conformance/openshell-provider-profile-wire.test.ts",
+      "expectedTests": ["provider profile wire defaults preserve Git overlap enforcement"]
+    },
+    {
+      "path": "tests/conformance/oauth-connection.test.mjs"
+    },
+    {
       "path": "tests/conformance/openshell-oauth-wire.test.mjs"
     },
     {
@@ -285,7 +305,7 @@
       "path": "tests/conformance/slack-configuration.test.mjs"
     },
     {
-      "path": "tests/conformance/console-gateway-safety.test.mjs"
+      "path": "tests/conformance/console-gateway-safety.test.ts"
     },
     {
       "path": "tests/conformance/service-account-driver.test.mjs"
@@ -301,6 +321,9 @@
     },
     {
       "path": "tests/conformance/utils.test.mjs"
+    },
+    {
+      "path": "tests/conformance/workspace-node-setup.test.ts"
     },
     {
       "path": "tests/conformance/workspace-files-configuration.test.mjs"
@@ -356,7 +379,7 @@
       "path": "tests/integration/installation-change-preflight.test.mjs"
     },
     {
-      "path": "tests/integration/console-api.test.mjs"
+      "path": "tests/integration/console-api.test.ts"
     },
     {
       "path": "tests/integration/caller-denial-api.test.ts"
@@ -413,6 +436,12 @@
       "path": "tests/integration/plugin-discovery-api.test.mjs"
     },
     {
+      "path": "tests/integration/openshell-plugin-source-reader.test.ts",
+      "expectedTests": [
+        "OpenShell source discovery uses the selected Backend reader with no Gateway callback"
+      ]
+    },
+    {
       "path": "tests/integration/device-authorization-api.test.mjs"
     },
     {
@@ -441,6 +470,13 @@
       "expectedTests": [
         "development wrappers resolve relative paths without changing CDPATH",
         "k3d and CI tool setup resolve the checkout without CDPATH"
+      ]
+    },
+    {
+      "path": "tests/integration/dev-up-startup-disposition.test.ts",
+      "expectedTests": [
+        "OpenShell startup diagnostics distinguish child process failures",
+        "CI results retain only closed OpenShell startup diagnostics"
       ]
     },
     {
@@ -484,6 +520,16 @@
     },
     {
       "path": "tests/conformance/codex-native-startup.test.mjs"
+    },
+    {
+      "path": "tests/conformance/native-rollout-provenance.test.mjs",
+      "expectedTests": [
+        "native rollout diagnostics keep only the exact thread and turn policy",
+        "native rollout diagnostics preserve uncertainty about opaque code-mode escalation",
+        "native rollout diagnostics stop attributing unscoped calls at lifecycle boundaries",
+        "native rollout diagnostics reject conflicting policy even under the same named profile",
+        "native rollout diagnostics fail closed on malformed and oversized input after serialization"
+      ]
     },
     {
       "path": "tests/conformance/split-layout-tenants.test.mjs"
@@ -569,6 +615,12 @@
         "protected Git replies to this online decision before its authority deadline",
         "shipped gh metadata stays within selected-repository authority",
         "bounded selected REST bodies retain transport and authority limits"
+      ]
+    },
+    {
+      "path": "tests/integration/harness-egress-probe-diagnostics.test.ts",
+      "expectedTests": [
+        "held enrollment distinguishes probe failures without exposing proxy output or retrying"
       ]
     },
     {

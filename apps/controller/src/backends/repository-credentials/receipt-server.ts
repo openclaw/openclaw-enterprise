@@ -10,7 +10,7 @@ const admissionPattern =
 const generationPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const sessionPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
-const { object, identity, counter } = createStatusWirePrimitives(() => {
+const { object, identity, counter, parseCleanup } = createStatusWirePrimitives(() => {
   throw new Error("INVALID_RECEIPT_REQUEST");
 });
 
@@ -24,19 +24,11 @@ function status(value: unknown): SessionStatus {
     "cleanup",
   ]);
   const binding = object(input.binding, ["providerInstanceId", "repositoryId", "grantId"]);
-  const cleanup = object(input.cleanup, [
-    "active",
-    "pending",
-    "revoked",
-    "expired",
-    "uncertain",
-    "auxiliaryPending",
-  ]);
+  const cleanup = parseCleanup(input.cleanup);
   if (
     typeof input.sessionId !== "string" ||
     !sessionPattern.test(input.sessionId) ||
-    !["OPEN", "CLOSED", "DISPOSED"].includes(String(input.state)) ||
-    typeof cleanup.auxiliaryPending !== "boolean"
+    !["OPEN", "CLOSED", "DISPOSED"].includes(String(input.state))
   ) {
     throw new Error("INVALID_RECEIPT_REQUEST");
   }
@@ -50,14 +42,7 @@ function status(value: unknown): SessionStatus {
       grantId: identity(binding.grantId),
     },
     activeUses: counter(input.activeUses),
-    cleanup: {
-      active: counter(cleanup.active),
-      pending: counter(cleanup.pending),
-      revoked: counter(cleanup.revoked),
-      expired: counter(cleanup.expired),
-      uncertain: counter(cleanup.uncertain),
-      auxiliaryPending: cleanup.auxiliaryPending,
-    },
+    cleanup,
   };
 }
 

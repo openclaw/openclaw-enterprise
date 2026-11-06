@@ -128,8 +128,8 @@
     {
       "rule": "cross-package-source",
       "from": "apps/controller/src/console-assets.ts",
-      "to": "packages/contracts/src/workspace-defaults.mjs",
-      "specifier": "file:packages/contracts/src/workspace-defaults.mjs",
+      "to": "packages/contracts/src/workspace-defaults.ts",
+      "specifier": "file:packages/contracts/src/workspace-defaults.ts",
       "kind": "path",
       "typeOnly": false,
       "bindings": ["*"],

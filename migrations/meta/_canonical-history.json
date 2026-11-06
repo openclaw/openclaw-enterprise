@@ -545,6 +545,22 @@
       "tag": "0068_agent_plugin_driver",
       "breakpoints": true,
       "sha256": "4ae7aeabcbdccad1f4aafef523e992740e467c055f7f7a9ab9a1f5adb202341c"
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1787000000069,
+      "tag": "0069_connection_templates",
+      "breakpoints": true,
+      "sha256": "c0cc7c64e1c13a00b07f56c624cb12fb09746439eb5bf8ad7ed3e9f3ad70299a"
+    },
+    {
+      "idx": 70,
+      "version": "7",
+      "when": 1787000000070,
+      "tag": "0070_saved_connections",
+      "breakpoints": true,
+      "sha256": "d365de5ec6046c7e0ff274c8527b3598c0bf1560a9b3ffc675103d6b3912da4d"
     }
   ],
   "initialSchemaStates": {
@@ -558,8 +574,18 @@
     "ownerOnly": {
       "owner": "occ_migrator",
       "privileges": [
-        ["occ_migrator", "occ_migrator", "CREATE", false],
-        ["occ_migrator", "occ_migrator", "USAGE", false]
+        [
+          "occ_migrator",
+          "occ_migrator",
+          "CREATE",
+          false
+        ],
+        [
+          "occ_migrator",
+          "occ_migrator",
+          "USAGE",
+          false
+        ]
       ],
       "objects": 0,
       "defaultPrivileges": 0,
@@ -592,6 +618,14 @@
     "8fc3e20bcb36ad9b2afe8ab96077139b12b50c825dd18ff323603d0e0540b250": [
       "e667773ff50cc16fe4ca002923d2f4080f3a05ec9956c55fbe93468c9bd195a7",
       "3770b2c4b812f3c57c23efb5dba782cf9dead7c2624b3466f0f22f27e141a15b"
+    ],
+    "1989ad2291a59e5d15e7f35fd008677449cac6cd11e653605b3d48675655dba9": [
+      "bbd3cd9111e30cea7ef14aef5b3e3931aec60153face63042c9637bac915f152",
+      "49d31158680d6c22d1e8672e582a6ea8518b7c6cb8c94125aabb550e111df220"
+    ],
+    "b3d9b0b499a4ea4a0cab68cd2836ab6ceba96be82c3f2bb6faac5e7fcb2a06c4": [
+      "b4b910d5ee9a960c7e04e15f67de57099824a4520fc78d70e05a03784f2578cd",
+      "7bdc8785ed987aa51c70d912e72db9f8542f9bfe0203f8a1d1a3b5c4622eebbe"
     ]
   },
   "catalogs": {
@@ -600,7 +634,7 @@
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
-    "completed": "8fc3e20bcb36ad9b2afe8ab96077139b12b50c825dd18ff323603d0e0540b250",
+    "completed": "b3d9b0b499a4ea4a0cab68cd2836ab6ceba96be82c3f2bb6faac5e7fcb2a06c4",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
     "agentProvisioning": "baac9e369ace8610f96948c1a930e6387431b1d0a33cefa3893765e52f8f7a52",
     "backendCompleted": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",
@@ -638,7 +672,9 @@
     "preSelectedRepositorySet": "15676f224ccd3cbd54e1d541db393b12297e3b2aa8e8eb70b192b5350c4c3c59",
     "preAgentDeployIntent": "fd7ca52d240d5431c76167a39aa5187cd3631d6dceee959b260f7c82cc1edf40",
     "preAgentCredentialSourceLimit": "8706a0299f3ff74eb7c2b5861a746ded4ce6484ca8df4e617a8fd2e5061bb998",
-    "preAgentPluginDriver": "c74762d7f4d45b4215f42fcc8cf9e43d01fae03dbb80522d84c4e17370a2f7c3"
+    "preAgentPluginDriver": "c74762d7f4d45b4215f42fcc8cf9e43d01fae03dbb80522d84c4e17370a2f7c3",
+    "preConnectionTemplates": "8fc3e20bcb36ad9b2afe8ab96077139b12b50c825dd18ff323603d0e0540b250",
+    "preSavedConnections": "1989ad2291a59e5d15e7f35fd008677449cac6cd11e653605b3d48675655dba9"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

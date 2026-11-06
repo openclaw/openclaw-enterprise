@@ -14,7 +14,7 @@ a credential depends on the source.
 | Gateway copy             | The selected OpenShell Credential Gateway stores a copy of a static Secret. The workload receives a placeholder. Its supervisor injects the real value on eligible traffic. Editing the Secret alone leaves the copy unchanged.     |
 | Gateway-managed OAuth    | The Credential Refresh Driver holds issuer material and manages access tokens for the Gateway. The workload keeps its placeholder across token renewal.                                                                             |
 | Protected live Secret    | After OCC authorizes an individual request, the trusted resolver reads the current Secret version. The authenticated sender receives the credential header for that request. An existing Gateway source requires explicit adoption. |
-| Worker-prepared token    | For `github-app-metadata`, the issuer owner uses the App key to prepare a GitHub installation token in the background. The request path can select a usable committed token. It cannot mint one.                                    |
+| Worker-prepared token    | For `github-app-metadata`, the Token Service renews installation tokens in the background. An authorized Credential Proxy request can also start or join issuance for its exact registered grant.                                   |
 | Credential-free metadata | The source admits a specific repository identity read. Its resolver reads no Secret and its sender adds no credential header. Request and response controls still apply.                                                            |
 
 Gateway delivery supports `openai` API keys for dedicated Codex and native
@@ -301,6 +301,7 @@ after the caller's grant and the source lookup. `GET` on such a source reports a
 
 ## Related
 
+- [OAuth connection templates](connection-templates.md)
 - [Protected credential request flow](../flows/credential-source-egress.md)
 - [OpenShell Credential Gateway](drivers/openshell-credential-gateway.md)
 - [CredentialGatewayDriver contract](drivers/credential-gateway.md)
