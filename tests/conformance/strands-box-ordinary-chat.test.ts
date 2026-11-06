@@ -4,6 +4,7 @@ import {
   chmodSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -35,6 +36,41 @@ const session = "agent:main:box-repro-00000000-0000-4000-8000-000000000001";
 const runId = "00000000-0000-4000-8000-000000000002";
 const header = "Wall time: 0.1234 seconds\nProcess exited with code 0\nOutput:\n";
 const evidence = `strands-shell: effect denied: policy denied this operation on '${path}' [default-deny]: No permit policy matched this request.\nOCE_BOX_MARKER_IDENTITY 0 27 155\nOCE_BOX_MODEL_MARKER ${marker}\n`;
+test("the documented Gateway model selects the credential-free native Box fixture", () => {
+  const example = new URL("../../deploy/examples/strands-box/ordinary-chat/", import.meta.url);
+  const readme = readFileSync(new URL("README.md", example), "utf8");
+  const fragment = /```json\n([\s\S]*?)\n```/.exec(readme)?.[1];
+  assert.ok(fragment);
+  const config = JSON.parse(fragment) as {
+    agents: {
+      entries: Record<string, unknown>;
+      defaults: {
+        model: { primary: string; fallbacks: string[] };
+        models: Record<string, { agentRuntime: { id: string } }>;
+      };
+    };
+    models: { providers: Record<string, unknown> };
+  };
+  const launcher = readFileSync(new URL("launch-fixture.ts", example), "utf8");
+  const provider = /^model_provider = "([a-z_]+)"$/m.exec(launcher)?.[1];
+  const model = /^const modelConfig = `model = "([^"]+)"$/m.exec(launcher)?.[1];
+  const baseUrl = /^base_url = "(http:\/\/127\.0\.0\.1:\d+\/v1)"$/m.exec(launcher)?.[1];
+  assert.ok(provider && model && baseUrl);
+  const selected = `codex/${provider}/${model}`;
+  assert.deepEqual(config.agents.entries, { main: {} });
+  assert.deepEqual(config.agents.defaults.model, { primary: selected, fallbacks: [] });
+  assert.deepEqual(config.agents.defaults.models, {
+    [selected]: { agentRuntime: { id: "codex" } },
+  });
+  assert.deepEqual(config.models.providers, {
+    codex: {
+      baseUrl,
+      api: "openai-responses",
+      models: [{ id: `${provider}/${model}`, name: "Controlled gpt-5" }],
+    },
+  });
+});
+
 test("actual loopback fixture submits one approved tool and refuses replay", async () => {
   const rows: Record<string, unknown>[] = [];
   const server = controlledModel(nonce, (row) => rows.push(row));

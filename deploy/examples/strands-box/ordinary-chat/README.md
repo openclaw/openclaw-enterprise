@@ -80,10 +80,22 @@ resolves the environment references in the trusted Gateway process.
 {
   "gateway": { "mode": "local", "bind": "loopback" },
   "agents": {
+    "entries": { "main": {} },
     "defaults": {
       "workspace": "/home/node/workspace",
-      "model": { "primary": "openai/gpt-5" },
-      "models": { "openai/gpt-5": { "agentRuntime": { "id": "codex" } } }
+      "model": { "primary": "codex/box_repro_fixture/gpt-5", "fallbacks": [] },
+      "models": {
+        "codex/box_repro_fixture/gpt-5": { "agentRuntime": { "id": "codex" } }
+      }
+    }
+  },
+  "models": {
+    "providers": {
+      "codex": {
+        "baseUrl": "http://127.0.0.1:18949/v1",
+        "api": "openai-responses",
+        "models": [{ "id": "box_repro_fixture/gpt-5", "name": "Controlled gpt-5" }]
+      }
     }
   },
   "plugins": {
@@ -104,6 +116,13 @@ resolves the environment references in the trusted Gateway process.
   }
 }
 ```
+
+The explicit `agentRuntime.id` selects Codex. Keep the model reference
+`codex/box_repro_fixture/gpt-5`: the `codex/` prefix lets the app-server use the
+provider named in the qualified model, and `box_repro_fixture` matches the
+provider configured by the launcher in the Box Codex home. The Gateway
+entry describes that loopback fixture and needs no API key. An `openai/`
+model reference selects a different provider.
 
 Do not add a permission profile or custom headers. The guarded runtime checks
 the CA-verified upgrade and exact generation before dispatching native frames.
