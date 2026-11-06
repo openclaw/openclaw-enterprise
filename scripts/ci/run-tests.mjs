@@ -119,6 +119,7 @@ function normalizeFile(file, laneName, index, issues) {
     path: file.path,
     expectedTests: stringArray(file.expectedTests, `${path}.expectedTests`, issues),
     requiredEnv: stringArray(file.requiredEnv, `${path}.requiredEnv`, issues),
+    optionalEnv: stringArray(file.optionalEnv, `${path}.optionalEnv`, issues),
   };
 }
 
@@ -1224,7 +1225,11 @@ async function runFile(root, lane, file, statePath, prepareFile, setup = (step) 
   }
 
   const requiredEnv = [...lane.requiredEnv, ...file.requiredEnv];
-  const env = mergeEnv(baseChildEnv([...requiredEnv, ...lane.optionalEnv]), lane.env, prepared.env);
+  const env = mergeEnv(
+    baseChildEnv([...requiredEnv, ...lane.optionalEnv, ...file.optionalEnv]),
+    lane.env,
+    prepared.env,
+  );
   for (const name of requiredEnv) {
     if (env[name] === undefined || env[name] === "") {
       issues.push(

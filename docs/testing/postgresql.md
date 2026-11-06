@@ -166,6 +166,15 @@ OCC_TEST_CANDIDATE_CONTROLLER_REVISION="$CANDIDATE_COMMIT" \
   tests/integration/postgres-migration-compatibility.test.mjs
 ```
 
+For native runner receipts, use the prepare/run/cleanup pattern above with lane
+`postgres`. Prepare the lane without `--file`, then supply the same four inputs
+to `node scripts/ci/run-tests.mjs run postgres` with
+`--file tests/integration/postgres-migration-compatibility.test.mjs`.
+This runs the whole migration file, including the selected compatibility case.
+Require that case to pass and inspect `releasedController` and `candidateController`
+in the file result's `imageDigests`; passing ordinary migration cases alone does
+not qualify the pair. The selectors are optional and inherited only by this file.
+
 Each image must carry its matching `org.opencontainers.image.revision` label.
 The case never pulls images. It is registered only when at least one image or
 revision input is supplied; partial selection fails. With no inputs, ordinary

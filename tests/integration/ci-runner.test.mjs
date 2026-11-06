@@ -794,7 +794,7 @@ test("run records failed, skipped, todo, and passed dispositions separately", as
   );
 });
 
-test("run clears inherited selectors and keep flags while preserving explicit lane inputs", async (t) => {
+test("run clears inherited selectors and keep flags while preserving explicit lane and file inputs", async (t) => {
   const root = await fixture(t);
 
   await writeFile(
@@ -807,6 +807,8 @@ test("run clears inherited selectors and keep flags while preserving explicit la
       '  assert.equal(process.env.OCC_TEST_LANE_SELECTOR, "lane");',
       '  assert.equal(process.env.OCC_TEST_OPTIONAL_SELECTOR, "selected");',
       '  assert.equal(process.env.OCC_TEST_OPTIONAL_EMPTY, "");',
+      '  assert.equal(process.env.OCC_TEST_FILE_SELECTOR, "file");',
+      "  assert.equal(process.env.OCC_TEST_FILE_ABSENT, undefined);",
       "  assert.equal(process.env.OCC_TEST_OPTIONAL_ABSENT, undefined);",
       "  assert.equal(process.env.OCC_TEST_LEAKED_SELECTOR, undefined);",
       '  assert.equal(process.env.OCC_PROBE_REQUIRED_SELECTOR, "required");',
@@ -831,13 +833,32 @@ test("run clears inherited selectors and keep flags while preserving explicit la
           "OCC_TEST_OPTIONAL_ABSENT",
           "OCC_TEST_LANE_SELECTOR",
         ],
-        files: [{ path: "tests/integration/env-isolation.test.mjs" }],
+        files: [
+          {
+            path: "tests/integration/env-isolation.test.mjs",
+            optionalEnv: ["OCC_TEST_FILE_SELECTOR", "OCC_TEST_FILE_ABSENT"],
+          },
+          { path: "tests/integration/env-sibling.test.mjs" },
+        ],
       },
     },
     groups: {
       ci: ["isolated"],
     },
   });
+
+  await writeFile(
+    join(root, "tests/integration/env-sibling.test.mjs"),
+    [
+      'import assert from "node:assert/strict";',
+      'import test from "node:test";',
+      'test("file selectors do not leak into siblings", () => {',
+      "  assert.equal(process.env.OCC_TEST_FILE_SELECTOR, undefined);",
+      '  assert.equal(process.env.OCC_TEST_OPTIONAL_SELECTOR, "selected");',
+      "});",
+      "",
+    ].join("\n"),
+  );
 
   const result = run(
     root,
@@ -859,6 +880,7 @@ test("run clears inherited selectors and keep flags while preserving explicit la
       OCC_TEST_LEAKED_SELECTOR: "1",
       OCC_TEST_REQUIRED_SELECTOR: "required",
       OCC_TEST_OPTIONAL_SELECTOR: "selected",
+      OCC_TEST_FILE_SELECTOR: "file",
       OCC_TEST_OPTIONAL_EMPTY: "",
       OCC_TEST_LANE_SELECTOR: "inherited",
       OCC_PROBE_LEAKED_SELECTOR: "1",
