@@ -1,19 +1,23 @@
 import { status, type ServerUnaryCall, type sendUnaryData } from "@grpc/grpc-js";
-import type { CredentialProxyExchange, SavedAccountRequest } from "@openclaw-enterprise/contracts";
+import type {
+  CredentialProxyExchange,
+  RequestCredentialInput,
+} from "@openclaw-enterprise/contracts";
 import { asRecord } from "@openclaw-enterprise/utils";
 import type { OpenShellEgressIdentity } from "./openshell-identity.ts";
 import { readOpenShellHttpRequest } from "./openshell-http-request.ts";
 
 type Wire = Record<string, unknown>;
 
-export const savedAccountCapability = "openshell.supervisor-middleware.http-request-credential.v1";
+export const requestCredentialCapability =
+  "openshell.supervisor-middleware.http-request-credential.v1";
 
-/** Authoritative source and token are looked up from this installed slot, never from the request headers. */
-export function savedAccountBinding(
+/** The installed binding identifies the credential. The workload supplies only the outbound request. */
+export function requestCredentialBinding(
   config: unknown,
-): Pick<SavedAccountRequest, "binding" | "bindingId"> | undefined {
+): Pick<RequestCredentialInput, "execution" | "bindingId"> | undefined {
   const fields = asRecord(asRecord(config)?.fields);
-  if (!fields || Object.keys(fields).length !== 6) {
+  if (!fields || Object.keys(fields).length !== 4) {
     return undefined;
   }
   const field = (name: string): string | undefined => {
@@ -31,27 +35,25 @@ export function savedAccountBinding(
   const namespaceId = field("namespace_id");
   const agentId = field("agent_id");
   const revisionId = field("revision_id");
-  const pluginId = field("plugin_id");
-  const slotId = field("slot_id");
-  if (!bindingId || !namespaceId || !agentId || !revisionId || !pluginId || !slotId) {
+  if (!bindingId || !namespaceId || !agentId || !revisionId) {
     return undefined;
   }
-  return { bindingId, binding: { namespaceId, agentId, revisionId, pluginId, slotId } };
+  return { bindingId, execution: { namespaceId, agentId, revisionId } };
 }
 
 /** OpenShell freezes this request before calling and consumes the bearer once before expires_at. */
-export function savedAccountHandler(
+export function requestCredentialHandler(
   identity: OpenShellEgressIdentity,
   registrationName: string,
-  resolve: NonNullable<CredentialProxyExchange["resolveSavedAccount"]>,
+  resolve: NonNullable<CredentialProxyExchange["resolveRequestCredential"]>,
 ) {
   return async (call: ServerUnaryCall<Wire, Wire>, callback: sendUnaryData<Wire>) => {
     const values = call.metadata.get("authorization");
     const peer =
       values.length === 1 && typeof values[0] === "string" && identity.credentialSandbox(values[0]);
-    const binding = savedAccountBinding(call.request.config);
+    const binding = requestCredentialBinding(call.request.config);
     const view = peer && readOpenShellHttpRequest(call.request, peer.sandboxId);
-    const denied = { code: status.PERMISSION_DENIED, message: "Saved account request denied." };
+    const denied = { code: status.PERMISSION_DENIED, message: "Request credential denied." };
     if (
       !peer ||
       !binding ||
@@ -75,9 +77,8 @@ export function savedAccountHandler(
       const result = await resolve(
         {
           ...binding,
-          sandboxId: peer.sandboxId,
+          recipient: { id: peer.sandboxId, context: view.workspace },
           requestId: view.requestId,
-          workspace: view.workspace,
           deadlineAt: new Date(deadline).toISOString(),
           http: { target: view.target, headers: view.headers, body: view.body },
         },

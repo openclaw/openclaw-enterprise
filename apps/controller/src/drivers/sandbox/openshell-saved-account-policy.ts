@@ -37,18 +37,22 @@ function unsupported(message: string): never {
   throw new SandboxRevisionUnsupportedError("SANDBOX_HARNESS_UNSUPPORTED", message);
 }
 
+export interface OpenShellCredentialMiddlewareRegistration {
+  readonly name: string;
+  readonly audience: string;
+}
+
 /** Nonsecret launch inputs. Each terminal middleware entry names one admitted release slot. */
 export function openShellSavedAccountPolicy(
   revision: Readonly<AgentRevision>,
-  registrationName?: string,
+  registration?: OpenShellCredentialMiddlewareRegistration,
 ) {
   const saved = revision.plugins?.savedAccounts;
   if (!saved) {
     return undefined;
   }
   if (
-    !registrationName ||
-    saved.registrationName !== registrationName ||
+    !registration ||
     revision.harness.id !== "openclaw" ||
     revision.harness.mode !== "dedicated" ||
     revision.plugins?.driver.implementation !== "occ/openclaw-plugin"
@@ -93,12 +97,10 @@ export function openShellSavedAccountPolicy(
       namespace_id: revision.namespaceId,
       agent_id: revision.agentId,
       revision_id: revision.id,
-      plugin_id: install.id,
-      slot_id: slotId,
     };
     middlewares[name] = {
       name,
-      middleware: registrationName,
+      middleware: registration.name,
       config: {
         fields: Object.fromEntries(
           Object.entries(fields).map(([key, value]) => [key, { stringValue: value }]),
@@ -142,7 +144,7 @@ export function openShellSavedAccountPolicy(
       "The selected OpenShell sender cannot enforce every saved OAuth slot on this revision.",
     );
   }
-  return { middlewares, networks, environment, hosts, registrationName, audience: saved.audience };
+  return { middlewares, networks, environment, hosts, registration };
 }
 
 export function assertSavedAccountRules(
@@ -174,7 +176,7 @@ export function verifySavedAccountPolicy(
   const registrations = Array.isArray(config?.supervisor_middleware_services)
     ? config.supervisor_middleware_services
         .map(asRecord)
-        .filter((service) => service?.name === expected.registrationName)
+        .filter((service) => service?.name === expected.registration.name)
     : [];
   const [registration] = registrations;
   if (
@@ -187,7 +189,7 @@ export function verifySavedAccountPolicy(
     config.extension_authentication_enabled !== true ||
     registrations.length !== 1 ||
     registration?.allow_insecure_transport ||
-    registration?.audience !== expected.audience ||
+    registration?.audience !== expected.registration.audience ||
     (registration.binding_policy !== 2 && registration.binding_policy !== 3) ||
     !Array.isArray(registration.bindings) ||
     !registration.bindings.includes(httpRequestCredentialInjectionBinding) ||

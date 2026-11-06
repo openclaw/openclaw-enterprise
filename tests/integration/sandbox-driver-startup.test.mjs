@@ -1424,14 +1424,38 @@ test("OpenShell builds managed MCP rules for the declared endpoint and upstream 
   );
 });
 
-test("OpenShell provisions saved OAuth slots with an authenticated terminal request authority", async () => {
+test("OpenShell provisions saved OAuth slots with an authenticated terminal request authority", async (t) => {
   const registrationName = "oauth-requests";
   const audience = "oce-test-oauth-broker";
   const client = workspaceGatewayClient();
-  const driver = openShellDriver(client, {
-    ...sandboxInstallation().drivers.sandbox.configuration,
-    egress: { middlewareName: registrationName, authorityScope: "execution" },
+  const installation = sandboxInstallation();
+  installation.backend[0].configuration = {
+    endpoint: "https://openshell-gateway.openshell.svc:8080",
+    auth: { mode: "bearerTokenFile", path: "/etc/openclaw/openshell/token" },
+  };
+  installation.backend[0].drivers.credential_proxy = "openshell-proxy";
+  installation.drivers.credential_proxy = {
+    id: "openshell-proxy",
+    configuration: {
+      middlewareName: registrationName,
+      authorityScope: "execution",
+      authority: {
+        host: "127.0.0.1",
+        port: 8453,
+        certificatePath: "/etc/openclaw/openshell/tls.crt",
+        privateKeyPath: "/etc/openclaw/openshell/tls.key",
+        issuerPublicKeyPath: "/etc/openclaw/openshell/issuer.pub",
+        issuer: "https://gateway.example.test",
+        keyId: "gateway-key",
+        audience,
+      },
+    },
+  };
+  // Production composition must give the Sandbox its paired proxy's registration.
+  const runtime = await loadInstallationFile(t, installation, {
+    createOpenShellBackend: () => backendFor(client),
   });
+  const driver = runtime.sandboxDriver;
   const { context, revision, requirements } = runtimeSandboxFixture(driver, {
     harnessId: "openclaw",
   });
@@ -1440,9 +1464,7 @@ test("OpenShell provisions saved OAuth slots with an authenticated terminal requ
   revision.plugins = {
     driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
     savedAccounts: {
-      credentialProxyId: "openshell-proxy",
-      audience,
-      registrationName,
+      driver: runtime.protectedDriver.ref,
       sourceIds: [slackId, googleId],
     },
     plugins: {
@@ -1466,6 +1488,7 @@ test("OpenShell provisions saved OAuth slots with an authenticated terminal requ
   revision.sandboxPolicy = { defaults: {}, additions: [] };
   let created;
   let registeredBindings = [4];
+  let registeredAudience = audience;
   let bindingPolicy = 3;
   client.createSandbox = async (input) => {
     created = { ...input, serviceUrls: {}, resourceVersion: "1" };
@@ -1483,7 +1506,7 @@ test("OpenShell provisions saved OAuth slots with an authenticated terminal requ
       {
         name: registrationName,
         grpc_endpoint: "https://oauth-requests.example:443",
-        audience,
+        audience: registeredAudience,
         binding_policy: bindingPolicy,
         bindings: registeredBindings,
       },
@@ -1500,6 +1523,7 @@ test("OpenShell provisions saved OAuth slots with an authenticated terminal requ
       .map(({ allow }) => allow.params.name.glob),
     ["slack_search_public"],
   );
+  assert.equal(middleware["oce-oauth-slack"].middleware, registrationName);
   assert.equal(middleware["oce-oauth-slack"].config.fields.agent_id.stringValue, revision.agentId);
   assert.deepEqual(middleware["oce-oauth-slack"].endpoints.include, [
     managedSlackInstall.endpoint.host,
@@ -1522,6 +1546,9 @@ test("OpenShell provisions saved OAuth slots with an authenticated terminal requ
   // The Gateway attests the allowed binding (4). A service that reports only the terminal RPC operation (5) has not admitted that binding.
   bindingPolicy = 2;
   await provision(); // An explicit operator allowlist can authorize the same terminal binding.
+  registeredAudience = "different-audience";
+  await assert.rejects(provision, /authenticated request-time credential authority/);
+  registeredAudience = audience;
   registeredBindings = [5];
   await assert.rejects(provision, /authenticated request-time credential authority/);
 });

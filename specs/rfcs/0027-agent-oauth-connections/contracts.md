@@ -170,8 +170,9 @@ Detaching removes the Agent’s grant. Other Agents keep their grants.
 
 ## Protected egress
 
-OpenShell sends the deployed execution, plugin slot and final request to
-Credential Proxy. OCC checks the Agent grant, saved account and operation.
+The sender supplies the execution, installed binding ID and final request.
+The selected Driver verifies the recipient. OpenShell owns its middleware
+registration and audience. OCC resolves the slot and checks the grant and operation.
 Credential Proxy resolves the access token through Token Service, rechecks
 authorization, then returns the bearer and send deadline. OpenShell strips
 caller credentials, injects the bearer once and discards it. A reviewed public

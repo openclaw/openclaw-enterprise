@@ -1,7 +1,7 @@
 import type {
   CredentialProxyBinding,
   CredentialProxyExchange,
-  SavedAccountRequest,
+  RequestCredentialInput,
   EgressExchangeOwner,
 } from "../../credential-proxy-exchange.ts";
 import { repositoryGitDeliveryProfile } from "../repo/index.ts";
@@ -22,7 +22,7 @@ import type {
   PreparedTokenSource,
   PreparedTokenEvidence,
 } from "../../prepared-token.ts";
-import type { Driver, DriverRegistrationRef } from "../index.ts";
+import { validDriverRegistrationRef, type Driver, type DriverRegistrationRef } from "../index.ts";
 import type {
   AgentRevision,
   CredentialSource,
@@ -435,16 +435,14 @@ export interface CredentialPolicyWithdrawalOptions {
 export interface CredentialProxyDriver extends Driver {
   readonly capability: "credential_proxy";
   readonly sourceControl: CredentialSourceControl;
-  /** The installed terminal HTTP credential operation on the paired Sandbox. */
-  readonly savedAccountMiddleware?: {
-    readonly registrationName: string;
-    readonly audience: string;
+  /** Prove that the installed sender can resolve a credential for the current HTTP request. */
+  readonly requestTimeCredentials?: {
     assertAvailable(signal: AbortSignal): Promise<void>;
     /** Confirm the authenticated sandbox is the installed recipient for this exact revision. */
-    verifySandbox(
+    verifyRecipient(
       namespace: Readonly<Namespace>,
       revision: Readonly<AgentRevision>,
-      recipient: Pick<SavedAccountRequest, "sandboxId" | "workspace">,
+      recipient: RequestCredentialInput["recipient"],
       signal: AbortSignal,
     ): Promise<boolean>;
   };
@@ -554,13 +552,7 @@ export function assertExecutionAdmission(
   const owner = revision.egressPlan?.driver;
   if (
     admission.version === 3 || protectedRepositoryGitAdmission(admission)
-      ? !owner ||
-        typeof owner.id !== "string" ||
-        !owner.id.trim() ||
-        typeof owner.implementation !== "string" ||
-        !owner.implementation.trim() ||
-        !/^[0-9a-f]{64}$/u.test(owner.configurationId) ||
-        Object.keys(owner).length !== 3
+      ? !validDriverRegistrationRef(owner)
       : owner !== undefined
   ) {
     throw new Error("Invalid protected Driver registration in execution admission.");

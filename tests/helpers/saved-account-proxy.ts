@@ -13,7 +13,7 @@ import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/driver
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { installEgressAuthority } from "../../apps/controller/src/composition/egress-authority.ts";
-import { savedAccountCapability } from "../../apps/controller/src/drivers/egress-proxy/openshell-saved-account.ts";
+import { requestCredentialCapability } from "../../apps/controller/src/drivers/egress-proxy/openshell-request-credential.ts";
 import { bindReservedPortInProcess, reservePort } from "./available-port.mjs";
 import { harnessTlsFixture } from "./harness-tls.mjs";
 import { grpc, invoke, openShellMiddlewareClient, token } from "./openshell-online-wire.mjs";
@@ -35,7 +35,11 @@ export interface SavedAccountPeer {
   readonly workspace: string;
   readonly middlewareName: string;
   readonly bindingConfig: Record<string, string>;
-  resolve(target: URL, body: Record<string, unknown>): Promise<string | undefined>;
+  resolve(
+    target: URL,
+    body: Record<string, unknown>,
+    wire?: { middlewareName?: string; audience?: string },
+  ): Promise<string | undefined>;
 }
 
 /** Real OCC, request authority, Plugin Driver and OAuth issuer; the test owns the Gateway inventory. */
@@ -53,7 +57,11 @@ export function installSavedAccountPlacement(controller: OpenClawController) {
   controller.selectDriver("compute", compute.id);
 }
 
-export async function installSavedAccountProxy(t: TestContext, controller: OpenClawController) {
+export async function installSavedAccountProxy(
+  t: TestContext,
+  controller: OpenClawController,
+  middlewareName = "oauth-credential",
+) {
   const tls = await harnessTlsFixture(t);
   const keys = generateKeyPairSync("ed25519");
   const issuerPublicKeyPath = join(tls.directory, "supervisor-issuer.pem");
@@ -62,7 +70,6 @@ export async function installSavedAccountProxy(t: TestContext, controller: OpenC
   t.after(reservation.release);
   await bindReservedPortInProcess(reservation);
   const id = savedAccountSandboxRegistration.driverId;
-  const middlewareName = "oauth-credential";
   const audience = "saved-account-credential";
   const boxes = new Map<string, { id: string; annotations: Record<string, string> }>();
   const backend = {
@@ -77,7 +84,7 @@ export async function installSavedAccountProxy(t: TestContext, controller: OpenC
                 configured_name: middlewareName,
                 kind: 4,
                 protocol_major: 1,
-                supported_capabilities: [savedAccountCapability],
+                supported_capabilities: [requestCredentialCapability],
               },
             ],
           };
@@ -150,19 +157,20 @@ export async function installSavedAccountProxy(t: TestContext, controller: OpenC
     "HttpRequestCredential",
   );
   return {
+    driver: owner.ref,
     peer(
       namespace: Readonly<Namespace>,
       revision: Readonly<AgentRevision>,
       pluginId: string,
       slotId: string,
       sourceId: string,
+      sandboxId: string = randomUUID(),
     ): SavedAccountPeer {
       const workspace = kubernetesNamespaceName(namespace.id);
       const { resourceName: sandboxName } = sandbox.harnessResource({
         namespace: { ...namespace, name: workspace },
         revision,
       });
-      const sandboxId = randomUUID();
       boxes.set(workspace + "/" + sandboxName, {
         id: sandboxId,
         annotations: {
@@ -176,8 +184,6 @@ export async function installSavedAccountProxy(t: TestContext, controller: OpenC
         namespace_id: namespace.id,
         agent_id: revision.agentId,
         revision_id: revision.id,
-        plugin_id: pluginId,
-        slot_id: slotId,
         binding_id: savedAccountBindingId(revision.id, pluginId, slotId, sourceId),
       };
       return {
@@ -190,14 +196,14 @@ export async function installSavedAccountProxy(t: TestContext, controller: OpenC
         workspace,
         middlewareName,
         bindingConfig,
-        async resolve(target, body) {
+        async resolve(target, body, wire) {
           const request_id = randomUUID();
           try {
             const response = await invoke(
               client,
               "Resolve",
               {
-                middleware_name: middlewareName,
+                middleware_name: wire?.middlewareName ?? middlewareName,
                 phase: 3,
                 context: { request_id, sandbox_id: sandboxId, workspace },
                 config: {
@@ -219,7 +225,9 @@ export async function installSavedAccountProxy(t: TestContext, controller: OpenC
                 headers: [{ name: "content-type", value: "application/json" }],
                 body: Buffer.from(JSON.stringify(body)),
               },
-              bearer,
+              wire?.audience === undefined
+                ? bearer
+                : token(keys, "supervisor", sandboxId, wire.audience),
             );
             assert.equal(response.request_id, request_id);
             return response.bearer_token;

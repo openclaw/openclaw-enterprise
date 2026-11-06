@@ -28,6 +28,7 @@ import type { ControllerAppOptions } from "../../apps/controller/src/index.ts";
 import { NativeIAMDriver, validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.ts";
 import {
   DependencyUnavailableError,
+  OpenClawController,
   PostgresHumanAuthentication,
 } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
@@ -1093,6 +1094,7 @@ test(
       state,
       pool,
       secretDriver,
+      preparedTokens,
       inject,
       namespaceId,
       base,
@@ -1595,12 +1597,20 @@ test(
         view.revisions.findRevision(namespaceId, id, deployment.json().data.id),
       );
       assert.ok(revision);
+      assert.deepEqual(revision.plugins?.savedAccounts, {
+        driver: runtime.driver,
+        sourceIds: [report.id],
+      });
       assert.ok(
         await state.transact((unit) =>
           unit.agents.compareAndSetActiveRevision(namespaceId, id, undefined, revision.id),
         ),
       );
-      admittedPeers.push({ id, peer: runtime.peer(ns, revision, pluginId, "reports", report.id) });
+      admittedPeers.push({
+        id,
+        revision,
+        peer: runtime.peer(ns, revision, pluginId, "reports", report.id),
+      });
     }
     const [agentA, agentB] = admittedPeers;
     assert.ok(agentA && agentB);
@@ -1619,6 +1629,39 @@ test(
     );
     const before = origin.requests[0]!.tokenHash;
     assert.equal(before, origin.requests[1]!.tokenHash);
+    // A valid Sandbox signature for another registration or audience cannot release a token.
+    const target = new URL(origin.url);
+    for (const wire of [{ middlewareName: "other-registration" }, { audience: "other-audience" }]) {
+      assert.equal(await agentA.peer.resolve(target, allowed, wire), undefined);
+    }
+    // A restart preserves an admitted revision's authority only for the same configured Driver.
+    // Both peers sign fresh valid requests and use the same Sandbox and Credential Proxy IDs.
+    for (const [registration, accepted] of [
+      ["oauth-credential", true],
+      ["replacement-credential", false],
+    ] as const) {
+      const restarted = new OpenClawController(controller.installation, {
+        state,
+        preparedTokens,
+        driverConfigurations: [savedAccountSandboxRegistration],
+      });
+      for (const capability of ["iam", "compute"] as const) {
+        const driver = controller.selectedDriver(capability);
+        restarted.registerDriver(driver);
+        restarted.selectDriver(capability, driver.id);
+      }
+      restarted.installPluginDrivers([codexCatalog, plugin]);
+      const pair = await installSavedAccountProxy(t, restarted, registration);
+      const peer = pair.peer(
+        ns,
+        agentA.revision,
+        pluginId,
+        "reports",
+        report.id,
+        agentA.peer.sandboxId,
+      );
+      assert.equal(typeof (await peer.resolve(target, allowed)) === "string", accepted);
+    }
     assert.equal(
       await origin.dispatch(agentA.peer, {
         ...allowed,

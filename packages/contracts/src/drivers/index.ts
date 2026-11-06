@@ -1,3 +1,4 @@
+import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import type { ChannelDriver } from "./channel/index.ts";
 import type { ComputeDriver, ComputeLifecycleHooks } from "./compute/index.ts";
 import type {
@@ -72,6 +73,18 @@ export interface DriverRegistrationRef {
   readonly id: string;
   readonly implementation: string;
   readonly configurationId: string;
+}
+
+export function validDriverRegistrationRef(value: unknown): value is DriverRegistrationRef {
+  const owner = asRecord(value);
+  return (
+    !!owner &&
+    Object.keys(owner).length === 3 &&
+    isNonEmptyString(owner.id) &&
+    isNonEmptyString(owner.implementation) &&
+    typeof owner.configurationId === "string" &&
+    /^[0-9a-f]{64}$/u.test(owner.configurationId)
+  );
 }
 
 /** An installation-owned capability selection. Object identity proves a common owner in this process. */

@@ -31,12 +31,12 @@ export async function installEgressAuthority(
         throw new Error("An exchange owner can be bound only at installation.");
       }
       canBind = false;
-      const proxy = controller.createCredentialProxy(exchangeOwner);
+      const proxy = controller.createCredentialProxy(exchangeOwner, owner);
       // Return only the transport contract, not the controller or the proxy's internal ports.
       return Object.freeze({
         resolve: proxy.resolve.bind(proxy),
-        ...(driver.savedAccountMiddleware && {
-          resolveSavedAccount: proxy.resolveSavedAccount.bind(proxy),
+        ...(driver.requestTimeCredentials && {
+          resolveRequestCredential: proxy.resolveRequestCredential.bind(proxy),
         }),
         authorizeSend: proxy.authorizeSend.bind(proxy),
         beginResponse: proxy.beginResponse.bind(proxy),

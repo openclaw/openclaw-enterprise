@@ -11,26 +11,37 @@ import type {
 } from "./drivers/credential-proxy/index.ts";
 
 import type { ResolvedToken } from "./prepared-token.ts";
-import type { PluginAccountRequest } from "./drivers/plugin/index.ts";
 
-/** The selected sender authenticates the sandbox and supplies its installed route binding. */
-export interface SavedAccountRequest {
-  readonly sandboxId: string;
-  readonly workspace: string;
+/** The actual HTTPS request inspected by the sender, before secret headers are injected. */
+export interface CredentialHttpRequest {
+  readonly target: {
+    readonly reportedScheme: "https";
+    readonly host: string;
+    readonly port: number;
+    readonly path: string;
+    readonly query: string;
+    readonly method: string;
+  };
+  readonly headers: readonly (readonly [string, string])[];
+  readonly body: Uint8Array;
+}
+
+/** The installed sender supplies its authenticated recipient and the binding for this request. */
+export interface RequestCredentialInput {
+  readonly recipient: {
+    /** Authenticated by the sender. OCC uses this ID for per-recipient capacity limits. */
+    readonly id: string;
+    /** Passed back unchanged to the same Driver for verification against the revision. */
+    readonly context?: unknown;
+  };
   readonly requestId: string;
   readonly deadlineAt: string;
   readonly bindingId: string;
-  readonly binding: {
-    readonly namespaceId: string;
-    readonly agentId: string;
-    readonly revisionId: string;
-    readonly pluginId: string;
-    readonly slotId: string;
-  };
-  readonly http: PluginAccountRequest;
+  readonly execution: Pick<EgressExecution, "namespaceId" | "agentId" | "revisionId">;
+  readonly http: CredentialHttpRequest;
 }
 
-export type SavedAccountResolution = ResolvedToken | { readonly kind: "without_credential" };
+export type RequestCredentialResolution = ResolvedToken | { readonly kind: "without_credential" };
 
 export interface CredentialProxyBinding {
   close(): void | Promise<void>;
@@ -39,10 +50,10 @@ export interface CredentialProxyBinding {
 /** Request, send and response decisions available only to the selected transport. */
 export interface CredentialProxyExchange {
   /** Only the authenticated terminal request handler may receive the token for this dispatch. */
-  resolveSavedAccount?(
-    request: SavedAccountRequest,
+  resolveRequestCredential?(
+    request: RequestCredentialInput,
     signal: AbortSignal,
-  ): Promise<SavedAccountResolution | undefined>;
+  ): Promise<RequestCredentialResolution | undefined>;
   resolve(
     authorization: string,
     sandboxId: string,

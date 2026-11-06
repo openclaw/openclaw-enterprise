@@ -5585,6 +5585,12 @@ export class ControllerWorker {
   }
 
   private validateExecutionAdmission(revision: AgentRevision): void {
+    const saved = revision.plugins?.savedAccounts;
+    if (saved && !isDeepStrictEqual(saved.driver, this.protectedDriver?.ref)) {
+      throw new Error(
+        "The installed Credential Proxy differs from the one selected for this Agent revision.",
+      );
+    }
     if (this.compute.validateExecutionAdmission === undefined) {
       assertExecutionReleaseAllowed(revision);
     } else {

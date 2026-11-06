@@ -13,7 +13,7 @@ import type {
   CredentialProxyExchange,
   OAuthAccountRef,
   OAuthConnectionAccessToken,
-  SavedAccountRequest,
+  RequestCredentialInput,
   TokenResolveOptions,
   EgressExchangeOwner,
   EgressPeer,
@@ -86,7 +86,7 @@ export interface EgressAuthorityPorts {
   readonly resolvePrepared?: PreparedTokenIssuer["resolve"];
   readonly savedAccountSender?: EgressRef;
   checkSavedAccount?(
-    request: SavedAccountRequest,
+    request: RequestCredentialInput,
     signal: AbortSignal,
     selected?: Pick<OAuthConnectionAccessToken, "version" | "grantedScopes">,
   ): Promise<OAuthAccountRef | { readonly kind: "without_credential" } | undefined>;
@@ -421,7 +421,7 @@ export class CredentialProxy implements CredentialProxyExchange {
     this.capacity = resolved.capacity;
   }
 
-  async resolveSavedAccount(request: SavedAccountRequest, signal: AbortSignal) {
+  async resolveRequestCredential(request: RequestCredentialInput, signal: AbortSignal) {
     const { checkSavedAccount, resolveOAuth } = this.ports;
     const deadline = Date.parse(request.deadlineAt);
     const budget = Math.ceil(deadline - this.ports.now());
@@ -436,7 +436,7 @@ export class CredentialProxy implements CredentialProxyExchange {
     if (!this.ports.savedAccountSender) {
       return undefined;
     }
-    const share = JSON.stringify([this.ports.savedAccountSender, request.sandboxId]);
+    const share = JSON.stringify([this.ports.savedAccountSender, request.recipient.id]);
     const charge = this.reserveOperation(share);
     if (!charge) {
       return undefined;

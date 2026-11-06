@@ -60,6 +60,12 @@ export function createOpenShellCapabilities(input: {
       backend: input.backend,
       operatorOwnedKubernetesResources: input.operatorOwnedKubernetesResources,
       ...(git && { openShellGit: git }),
+      ...(input.proxy?.exchangeAuthority && {
+        credentialMiddleware: {
+          name: input.proxy.configuration.middlewareName,
+          audience: input.proxy.exchangeAuthority.audience,
+        },
+      }),
     },
   );
   const proxy: CredentialProxyDriver | undefined =

@@ -1,3 +1,4 @@
+import type { CredentialHttpRequest } from "../../credential-proxy-exchange.ts";
 import type { Driver } from "../index.ts";
 import type {
   Agent,
@@ -35,20 +36,6 @@ export type PluginAccountTarget = Pick<
   "issuer" | "tokenUrl" | "destinations" | "mcp"
 >;
 
-/** The actual HTTPS request inspected by the sender, before secret headers are injected. */
-export interface PluginAccountRequest {
-  readonly target: {
-    readonly reportedScheme: "https";
-    readonly host: string;
-    readonly port: number;
-    readonly path: string;
-    readonly query: string;
-    readonly method: string;
-  };
-  readonly headers: readonly (readonly [string, string])[];
-  readonly body: Uint8Array;
-}
-
 export interface PluginDriver extends Driver {
   readonly capability: "plugin";
   /** Harness family authorized to use this catalog. */
@@ -74,7 +61,7 @@ export interface PluginDriver extends Driver {
           authorizeRequest?(
             target: PluginAccountTarget,
             grantedScopes: readonly string[],
-            request: PluginAccountRequest,
+            request: CredentialHttpRequest,
           ): "credential" | "public" | "deny";
           bind(sourceId: string): PluginDesiredSelection;
         }
@@ -110,7 +97,7 @@ export interface PluginDriver extends Driver {
     credentialRuntime?: {
       readonly sandbox: string | undefined;
       readonly gateway: string | undefined;
-      readonly savedAccountMiddleware?: boolean;
+      readonly requestTimeCredentials?: boolean;
     },
   ): void;
   listCatalog(context: PluginDriverContext): Promise<readonly PluginCatalogEntry[]>;

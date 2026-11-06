@@ -1,4 +1,4 @@
-import { savedAccountCapability } from "./openshell-saved-account.ts";
+import { requestCredentialCapability } from "./openshell-request-credential.ts";
 import type { ModelProviderConfiguration } from "../compute/model-provider.ts";
 import { wirePolicy } from "./openshell-wire-policy.ts";
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
@@ -267,7 +267,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
   readonly implementation = "openshell";
   readonly id: string;
   readonly sourceControl: CredentialSourceControl;
-  readonly savedAccountMiddleware?: NonNullable<CredentialProxyDriver["savedAccountMiddleware"]>;
+  readonly requestTimeCredentials?: NonNullable<CredentialProxyDriver["requestTimeCredentials"]>;
   readonly bindExchange?: NonNullable<CredentialProxyDriver["bindExchange"]>;
   readonly bindRepositoryGit?: NonNullable<CredentialProxyDriver["bindRepositoryGit"]>;
   private readonly mandatoryEnforcement?: OpenShellGitRuntime["mandatoryEnforcement"];
@@ -349,18 +349,16 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
           options.middlewareName,
           createProxy,
         );
-      this.savedAccountMiddleware = {
-        registrationName: options.middlewareName,
-        audience: exchange.audience,
-        verifySandbox: async (namespace, revision, recipient, signal) => {
+      this.requestTimeCredentials = {
+        verifyRecipient: async (namespace, revision, recipient, signal) => {
           const workspace = openShellWorkspaceName(namespace);
-          if (workspace !== recipient.workspace) {
+          if (workspace !== recipient.context) {
             return false;
           }
           const ref = this.sandbox.harnessResource!({ namespace, revision });
           const client = this.backend.client.clientForNamespace(ref.namespaceName);
           const existing = await client.getSandbox({ workspace, name: ref.resourceName }, signal);
-          if (!existing || existing.id !== recipient.sandboxId) {
+          if (!existing || existing.id !== recipient.id) {
             return false;
           }
           this.assertOwned(existing.annotations, { namespace, revision });
@@ -378,12 +376,12 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
                 (item.kind === 4 || item.kind === "EXTENSION_KIND_SUPERVISOR_MIDDLEWARE") &&
                 item.protocol_major === 1 &&
                 Array.isArray(item.supported_capabilities) &&
-                item.supported_capabilities.includes(savedAccountCapability)
+                item.supported_capabilities.includes(requestCredentialCapability)
               );
             })
           ) {
             throw new DependencyUnavailableError(
-              "The selected OpenShell gateway must support request-time credential injection for saved OAuth accounts.",
+              "The selected OpenShell gateway must support request-time credential injection.",
             );
           }
         },

@@ -2,9 +2,9 @@
 export function supportsManagedPluginRuntime(
   sandbox?: string,
   gateway?: string,
-  savedAccountMiddleware = false,
+  requestTimeCredentials = false,
 ): boolean {
-  return sandbox === "openshell" && (gateway === "openshell" || savedAccountMiddleware);
+  return sandbox === "openshell" && (gateway === "openshell" || requestTimeCredentials);
 }
 
 export const managedCredentialEnvironment = "OPENCLAW_MANAGED_CREDENTIAL_ENV";

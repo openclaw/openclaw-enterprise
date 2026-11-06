@@ -1,4 +1,4 @@
-import type { PluginAccountRequest, ConnectionEndpoint } from "@openclaw-enterprise/contracts";
+import type { CredentialHttpRequest, ConnectionEndpoint } from "@openclaw-enterprise/contracts";
 import { hasControlCharacter } from "@openclaw-enterprise/utils";
 import {
   googleCatalog,
@@ -143,7 +143,7 @@ function matchesJson(value: unknown, schema: GoogleSchema | undefined, depth = 0
 }
 
 const utf8 = new TextDecoder("utf-8", { fatal: true });
-function matchesBody(op: GoogleOperation, request: PluginAccountRequest) {
+function matchesBody(op: GoogleOperation, request: CredentialHttpRequest) {
   if (!op.requestSchema) {
     return request.body.length === 0;
   }
@@ -179,7 +179,7 @@ function matchesBody(op: GoogleOperation, request: PluginAccountRequest) {
 
 function validGoogleRequest(
   scope: GoogleRequestScope,
-  request: PluginAccountRequest,
+  request: CredentialHttpRequest,
   discovery: "provider" | "proxy",
 ): boolean {
   const { host, path, query, port, reportedScheme, method } = request.target;
@@ -292,7 +292,7 @@ function validGoogleRequest(
 export function classifyGoogleAccountRequest(
   destinations: readonly ConnectionEndpoint[],
   scopes: readonly string[],
-  request: PluginAccountRequest,
+  request: CredentialHttpRequest,
 ): "credential" | "public" | "deny" {
   const publicPath =
     request.target.path.startsWith("/discovery/v1/apis") ||

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import {
   isAllowedSecretBindingDestination,
   type CredentialSource,
-  type PluginAccountRequest,
+  type CredentialHttpRequest,
   type PluginAccountTarget,
   type PluginCatalogEntry,
   type PluginDesiredState,
@@ -425,7 +425,7 @@ const mcpClientHeaders = new Set([
 function allowsMcpAccountRequest(
   install: ManagedMcpInstall,
   toolNames: readonly string[],
-  request: PluginAccountRequest,
+  request: CredentialHttpRequest,
 ) {
   const { host, port, path, query, method } = request.target;
   if (
@@ -520,7 +520,7 @@ export function managedPluginAccountSlot(
     authorizeRequest(
       target: PluginAccountTarget,
       grantedScopes: readonly string[],
-      request: PluginAccountRequest,
+      request: CredentialHttpRequest,
     ): "credential" | "public" | "deny" {
       if (
         !selection?.enabled ||

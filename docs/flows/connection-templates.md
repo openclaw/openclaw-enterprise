@@ -87,7 +87,9 @@ Saving a selection checks the exact slot, account and Agent permissions together
 
 For **Load tools**, OCC checks the caller’s permission and the saved MCP server and resource before resolving a token. This request originates in the Console.
 
-At deployment, OCC records the selected Credential Proxy and source IDs on the revision. The Sandbox Driver puts each slot’s nonsecret binding into a terminal middleware rule. OpenShell applies its network and operation policies, then sends the final HTTPS request details to the selected authority. OCC verifies the supervisor’s signed Sandbox identity against the revision and checks the Agent grant, saved account, current destinations and operation. Token Service resolves the token outside the policy transaction. Before replying, OCC rechecks authorization and the token version. OpenShell presents the bearer once. An already authorized send can finish after detach. [Terminal request handler](../../apps/controller/src/drivers/egress-proxy/openshell-saved-account.ts) · [Credential Proxy contract](../reference/drivers/credential-proxy.md#saved-oauth-accounts)
+OCC records the selected Driver registration and saved source IDs on the Agent revision. The OpenShell Driver supplies its middleware registration and audience, and installs a binding ID for each selected slot. The worker checks the Driver registration before it starts the revision.
+
+On each request, the OpenShell Driver authenticates the sender and verifies that its Sandbox belongs to the revision. OCC uses the binding ID and revision to find the slot and saved account. It checks the Agent grant, current destinations and operation. Token Service resolves the token outside the policy transaction. Before returning the bearer, OCC checks the grant and token version again. OpenShell injects it for one send. A send that already passed its final check can finish after detach. [OpenShell request handler](../../apps/controller/src/drivers/egress-proxy/openshell-request-credential.ts) · [Credential Proxy contract](../reference/drivers/credential-proxy.md#saved-oauth-accounts)
 
 ## Debugging and Verification
 

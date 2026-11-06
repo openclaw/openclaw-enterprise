@@ -1,7 +1,11 @@
 import type { Static } from "typebox";
 import type { HarnessAuthBindingSchema } from "./api/common.ts";
 import type { ComputeAgentProvisioningCapabilities } from "./drivers/compute/index.ts";
-import type { DriverCapability } from "./drivers/index.ts";
+import {
+  validDriverRegistrationRef,
+  type DriverCapability,
+  type DriverRegistrationRef,
+} from "./drivers/index.ts";
 import type {
   ExecutionAdmission,
   ProtectedEgressSource,
@@ -46,8 +50,9 @@ export type {
 export type {
   CredentialProxyBinding,
   CredentialProxyExchange,
-  SavedAccountRequest,
-  SavedAccountResolution,
+  CredentialHttpRequest,
+  RequestCredentialInput,
+  RequestCredentialResolution,
   EgressPeer,
   CapturedEgressUse,
   EgressExchangeOwner,
@@ -833,7 +838,7 @@ export interface PluginCatalogPage {
   readonly setup?: { readonly message: string; readonly links: readonly PluginCatalogLink[] };
 }
 
-/** Identifies an operator-installed middleware binding without exposing its account to the workload. */
+/** Bind one slot and source to the execution in which OCC admitted them. */
 export function savedAccountBindingId(
   revisionId: string,
   pluginId: string,
@@ -846,9 +851,7 @@ export function savedAccountBindingId(
 export interface PluginRevisionState {
   /** Saved OAuth selections are authorized at send time by this admitted Credential Proxy. */
   readonly savedAccounts?: {
-    readonly credentialProxyId: string;
-    readonly registrationName: string;
-    readonly audience: string;
+    readonly driver: DriverRegistrationRef;
     readonly sourceIds: readonly string[];
   };
   readonly driver: PluginDriverIdentity;
@@ -924,12 +927,8 @@ export function validPluginRevisionState(value: unknown): value is PluginRevisio
     const saved = asRecord(record.savedAccounts);
     if (
       !saved ||
-      Object.keys(saved).some(
-        (key) => !["credentialProxyId", "registrationName", "audience", "sourceIds"].includes(key),
-      ) ||
-      !isNonEmptyString(saved.credentialProxyId) ||
-      !isNonEmptyString(saved.registrationName) ||
-      !isNonEmptyString(saved.audience) ||
+      Object.keys(saved).some((key) => key !== "driver" && key !== "sourceIds") ||
+      !validDriverRegistrationRef(saved.driver) ||
       !Array.isArray(saved.sourceIds) ||
       saved.sourceIds.length === 0 ||
       !saved.sourceIds.every(isNonEmptyString) ||
@@ -1510,7 +1509,6 @@ export type {
 } from "./drivers/sandbox/index.ts";
 export type {
   PluginDriver,
-  PluginAccountRequest,
   PluginAccountTarget,
   PluginDriverContext,
   PluginDiscoveryAuthentication,

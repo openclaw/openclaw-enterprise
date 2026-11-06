@@ -2,6 +2,7 @@ import {
   assertSavedAccountRules,
   openShellSavedAccountPolicy,
   verifySavedAccountPolicy,
+  type OpenShellCredentialMiddlewareRegistration,
 } from "./openshell-saved-account-policy.ts";
 import { managedCredentialEnvironment } from "./openshell-plugin-runtime.ts";
 import {
@@ -243,6 +244,7 @@ export interface OpenShellSandboxDriverOptions {
 }
 
 export interface OpenShellSandboxDriverSelection {
+  readonly credentialMiddleware?: OpenShellCredentialMiddlewareRegistration;
   readonly openShellGit?: OpenShellGitRuntime;
   readonly operatorOwnedKubernetesResources?: boolean;
   readonly id?: string;
@@ -2923,6 +2925,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   static readonly configurationContributions = configurationContributions;
   readonly networkPolicy = Object.freeze({ wildcards: true, portRanges: true, live: true });
   private readonly options: OpenShellSandboxDriverOptions;
+  private readonly credentialMiddleware: OpenShellCredentialMiddlewareRegistration | undefined;
   private readonly backend: Backend<OpenShellGateway>;
   private readonly operatorOwnedKubernetesResources: boolean;
   private readonly openShellGit: OpenShellGitRuntime | undefined;
@@ -2972,6 +2975,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     });
     const git = selection.openShellGit;
     this.openShellGit = git;
+    this.credentialMiddleware = selection.credentialMiddleware;
     if (git) {
       this.repositoryAccess = openShellRepositoryAccess(git, (context) =>
         this.standingGitExecution(context),
@@ -3269,10 +3273,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     const codex = context.revision.harness.id === "codex";
     const client = this.gatewayClientForNamespace(sandbox.namespaceName);
     const workspace = workspaceName(context.namespace);
-    const savedAccounts = openShellSavedAccountPolicy(
-      context.revision,
-      this.options.egress?.middlewareName,
-    );
+    const savedAccounts = openShellSavedAccountPolicy(context.revision, this.credentialMiddleware);
     const plugin = openShellPluginPolicy(
       context.revision,
       context.requirements,
@@ -4543,10 +4544,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       throw new Error("Missing policy baseline.");
     }
     const candidate = openShellPolicyCandidate(baseline, input.snapshot);
-    const savedAccounts = openShellSavedAccountPolicy(
-      context.revision,
-      this.options.egress?.middlewareName,
-    );
+    const savedAccounts = openShellSavedAccountPolicy(context.revision, this.credentialMiddleware);
     if (savedAccounts) {
       assertSavedAccountRules(candidate, savedAccounts);
       assertPluginNetworkInspection(openShellAgentNetworkRules(input.snapshot.additions), [
