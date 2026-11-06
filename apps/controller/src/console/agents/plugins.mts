@@ -213,7 +213,7 @@ export function renderAgentPlugins(
     (agent.harnessAuth?.method === "codex_pat" && agent.harnessAuth.source?.kind === "secret");
   const harnessId = configuredHarnessId(snapshot.values);
   const codex = harnessId === "codex";
-  const dedicatedOpenClaw = harnessId === "openclaw" && agent.executionMode === "dedicated";
+  // The saved capabilities already resolve the OpenClaw Harness, including the default.
   let openClawDriver = false;
   // Codex serves curated plugins only to ChatGPT logins; an API-key Agent gets each
   // selected plugin disabled at deployment with PLUGIN_AUTH_REQUIRED.
@@ -233,7 +233,7 @@ export function renderAgentPlugins(
     canDiscover: () =>
       !updateDenied &&
       (openClawDriver
-        ? dedicatedOpenClaw && catalogCredential === "none"
+        ? agent.executionMode === "dedicated" && catalogCredential === "none"
         : codex &&
           !apiKeyAuth &&
           (catalogCredential === "none" ||
@@ -342,7 +342,7 @@ export function renderAgentPlugins(
 
   let importVisible = false;
   function showNamespaceImport(anchor: HTMLElement) {
-    if (dedicatedOpenClaw && !importVisible) {
+    if (agent.executionMode === "dedicated" && !importVisible) {
       void context.publishPluginsAllowed?.().then((allowed) => {
         if (context.isCurrent() && allowed === true && !importVisible) {
           importVisible = true;
@@ -652,8 +652,15 @@ export function renderAgentPlugins(
       ),
       saveReason,
     );
-    // Publishing belongs to the Namespace even when this Agent grants only read access.
-    showNamespaceImport(saveReason);
+    // A reader cannot fetch Agent plugin capabilities. Without Agent or model settings,
+    // OCC defaults to OpenClaw. Incomplete model selections can still be saved as drafts.
+    const values = snapshot.values;
+    if (
+      harnessId === "openclaw" ||
+      (values !== undefined && values.agents === undefined && values.models === undefined)
+    ) {
+      showNamespaceImport(saveReason);
+    }
   });
   return section;
 }

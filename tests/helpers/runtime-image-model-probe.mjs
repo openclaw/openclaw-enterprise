@@ -14,7 +14,7 @@ import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
 import { gatewayMemoryArguments, runDockerCommand } from "./runtime-image-startup.mjs";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import { createModelProbeCertificates } from "./runtime-model-probe-certificates.mjs";
-import { modelProbeDiagnostic } from "./runtime-model-probe-observation.mjs";
+import { modelProbeDiagnostic } from "./runtime-model-probe-observation.ts";
 import { jsonLines } from "./json-lines.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";

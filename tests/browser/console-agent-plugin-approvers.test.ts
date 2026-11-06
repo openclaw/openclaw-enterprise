@@ -212,36 +212,55 @@ test("The dedicated Agent draft can select a published skill while its hosted se
     controller(fixture).selectDriver(driver.capability, driver.id);
   }
   const agent = agentEntity(
-    await fixture.createAgent(namespace.id, "Report reader", nativeValues("import"), {
-      executionMode: "dedicated",
-      harnessAuth: null,
-    }),
+    await fixture.createAgent(
+      namespace.id,
+      "Report reader",
+      {},
+      {
+        executionMode: "dedicated",
+        harnessAuth: null,
+      },
+    ),
   );
-  const { page } = await newPage(t, fixture, { browser });
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
-  await page.getByText("Import plugin", { exact: true }).click();
+  // The Namespace publisher can read this default-Harness Agent but cannot edit it.
+  const publisher = record(
+    await fixture.createNamespaceMember("plugin-publisher", namespace.id, [
+      ["read", "namespace"],
+      ["publish_plugins", "namespace"],
+      ["read", "agent"],
+      ["read", "agent_revision"],
+      ["read", "configuration"],
+    ]),
+  );
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "plugins");
+  const { page: publishPage } = await newPage(t, fixture, { browser });
+  await login(publishPage, fixture, url, record(publisher.credentials));
+  await publishPage
+    .getByText("These are the version draft's plugin selections, read-only", { exact: false })
+    .waitFor();
+  await publishPage.getByText("Import plugin", { exact: true }).click();
   const archive = await importedPluginPackage(t, "readable marker", {
     mcpUrl: "https://reports.example.com/mcp",
   });
-  await page.getByLabel("Package archive").setInputFiles({
+  await publishPage.getByLabel("Package archive").setInputFiles({
     name: "reports.tgz",
     mimeType: "application/gzip",
     buffer: Buffer.from(archive, "base64"),
   });
-  const preview = page.waitForResponse((response) =>
+  const preview = publishPage.waitForResponse((response) =>
     response.url().endsWith("/plugin-releases/preview"),
   );
-  await page.getByRole("button", { name: "Preview package", exact: true }).click();
+  await publishPage.getByRole("button", { name: "Preview package", exact: true }).click();
   const reviewed = responseData(await (await preview).json());
   assert.deepEqual(reviewed.skills, ["import-probe"]);
   const digest = text(reviewed.digest);
-  const publish = page.waitForResponse(
+  const publish = publishPage.waitForResponse(
     (response) =>
       response.url().endsWith("/plugin-releases") && response.request().method() === "POST",
   );
-  await page.getByRole("button", { name: "Publish to Namespace", exact: true }).click();
+  await publishPage.getByRole("button", { name: "Publish to Namespace", exact: true }).click();
   assert.equal(responseData(await (await publish).json()).digest, digest);
-  await page
+  await publishPage
     .getByText("Release published to this Namespace’s plugin catalog.", { exact: true })
     .waitFor();
 
@@ -251,6 +270,8 @@ test("The dedicated Agent draft can select a published skill while its hosted se
   const title = "import-probe 1.0.0 (" + digest.slice(0, 12) + ")";
   const existing = responseData(await fixture.request("GET", path)).plugins;
   assert.equal(record(existing ?? {})[pluginId], undefined);
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, url);
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Configure plugins" });
   await dialog.getByRole("button", { name: title, exact: true }).click();
@@ -267,6 +288,51 @@ test("The dedicated Agent draft can select a published skill while its hosted se
   assert.deepEqual(record(responseData(await fixture.request("GET", path)).plugins)[pluginId], {
     enabled: true,
   });
+});
+
+test("A dedicated Agent with empty configuration can browse the default OpenClaw catalog", async (t) => {
+  const { fixture, namespace: namespaceValue }: { fixture: Fixture; namespace: unknown } =
+    await createReadyConsoleNamespace(t, "Default plugin catalog");
+  const namespace = entity(namespaceValue);
+  for (const driver of [
+    new OCCPluginDriver(),
+    createTestKubernetesComputeDriver("compute-default-plugin-catalog"),
+  ]) {
+    controller(fixture).registerDriver(driver);
+    controller(fixture).selectDriver(driver.capability, driver.id);
+  }
+  const agent = entity(
+    await fixture.createAgent(
+      namespace.id,
+      "Default catalog Agent",
+      {},
+      {
+        executionMode: "dedicated",
+        harnessAuth: null,
+      },
+    ),
+  );
+  const catalogUrl = new URL(
+    `/namespaces/${namespace.id}/agents/${agent.id}/plugins`,
+    fixture.origin,
+  ).href;
+  const { page } = await newPage(t, fixture, { browser });
+  await Promise.all([
+    responseTo(page, "GET", `${catalogUrl}/capabilities`).then((response) =>
+      assert.equal(response.status(), 200, "saved Agent plugin capabilities"),
+    ),
+    responseTo(page, "POST", catalogUrl).then((response) =>
+      assert.equal(response.status(), 200, "saved Agent plugin catalog"),
+    ),
+    (async () => {
+      await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+      await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+    })(),
+  ]);
+  await page
+    .getByRole("dialog", { name: "Configure plugins", exact: true })
+    .getByRole("button", { name: "Google Workspace", exact: true })
+    .waitFor({ state: "visible" });
 });
 
 test("Plugin details refresh preserves the user's current keyboard focus", async (t) => {
