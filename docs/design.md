@@ -116,9 +116,10 @@ platform state, IAM policy, controller work, and audit evidence.
 
 The API authenticates human sessions and non-Agent service keys, resolves an
 explicitly provisioned identity, and authorizes exact resource operations.
-The console at `/console/` uses these same APIs. GitHub and Google sign-in require
-administrator-enrolled identities; neither sign-in nor Namespace membership
-grants permissions. See [authentication](reference/authentication.md) and
+The console at `/console/` uses these same APIs. External sign-in uses enrolled
+identities. GitHub optionally enrolls verified team members into an operator-selected
+native IAM Group; its existing bindings determine access. Namespace membership
+does not grant permissions. See [authentication](reference/authentication.md) and
 [authorization](reference/authorization.md).
 
 Resource mutations, queued work, and audit records commit together. The worker

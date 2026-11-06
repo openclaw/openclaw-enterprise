@@ -236,6 +236,10 @@
                         "label": "External Sign-In"
                       },
                       {
+                        "page": "reference/authentication/team-enrollment",
+                        "label": "GitHub Team Enrollment"
+                      },
+                      {
                         "page": "reference/authentication/service-api-keys",
                         "label": "Service API Keys"
                       }

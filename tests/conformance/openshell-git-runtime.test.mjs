@@ -2356,7 +2356,13 @@ const legacyRegistrationBytes = Buffer.from(
 
 async function observedGitRoute(
   mandatoryPolicy,
-  { legacy = false, removeBinding = false, changedStartup = false, narrowRepository } = {},
+  {
+    legacy = false,
+    removeBinding = false,
+    changedStartup = false,
+    narrowRepository,
+    probeFailure,
+  } = {},
 ) {
   const repositoryOnly = narrowRepository !== undefined;
   const previewRegistry = validateGitHubRepositoryRegistry(
@@ -2606,6 +2612,40 @@ async function observedGitRoute(
       ),
     };
   };
+  if (probeFailure !== undefined) {
+    // The transport exposes only a failed response wrapper. Even hostile fields cannot
+    // enter the worker log, and recording a diagnosis must not release or retry startup.
+    await assert.rejects(
+      f.runtime.observeHeldPreview(revision.id, startupId, signal, async () => ({ probeFailure })),
+      /did not receive its exact middleware denial/,
+    );
+    assert.deepEqual(f.runtime.route(revision.id), {
+      state: "blocked",
+      reason: "bootstrap_failed",
+    });
+    assert.equal(f.calls.material, 0);
+    assert.equal(f.calls.rotate, 0);
+    const events = f.events.filter((event) => event.event === "worker.openshell-git-probe-failed");
+    const recognized = ["probe_process_failed", "probe_response_invalid"].includes(
+      probeFailure.error,
+    );
+    assert.equal(events.length, recognized ? 1 : 0);
+    if (recognized) {
+      const { namespaceId, agentId, revisionId, repositoryRef, ...diagnostic } = events[0];
+      assert.equal(revisionId, revision.id);
+      assert.deepEqual(diagnostic, {
+        event: "worker.openshell-git-probe-failed",
+        reason: probeFailure.error,
+        ...(probeFailure.error === "probe_process_failed" && probeFailure.code === 56
+          ? { code: 56 }
+          : {}),
+      });
+    }
+    await f.runtime.observeHeldPreview(revision.id, startupId, signal, async () => {
+      assert.fail("a failed one-shot probe must not be repeated");
+    });
+    return;
+  }
   assert.equal(await f.runtime.observeHeldPreview(revision.id, startupId, signal, probe), "held");
   if (repositoryOnly) {
     // The stock endpoint checks this prefix before invoking the mandatory hook.
@@ -2878,6 +2918,18 @@ for (const policy of [undefined, 2, 3]) {
     await observedGitRoute(policy, { changedStartup: true });
   });
 }
+
+test("held Git probe failures reach worker diagnostics without response content or retries", async () => {
+  for (const probeFailure of [
+    { error: "probe_process_failed", code: 56, stdout: "private-output", stderr: "private-error" },
+    { error: "probe_process_failed", code: "private-code" },
+    { error: "probe_process_failed", code: 100 },
+    { error: "probe_response_invalid", code: 56, response: "private-body" },
+    { error: "private-unrecognized-error", code: 56 },
+  ]) {
+    await observedGitRoute(2, { probeFailure });
+  }
+});
 
 test("the running OpenShell recipient refuses a changed Repo ref or foreign supplier identity without restoring access", async () => {
   for (const narrowRepository of [

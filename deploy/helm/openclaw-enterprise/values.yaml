@@ -71,6 +71,9 @@ auth:
     # when GitHub cannot answer the membership lookup.
     allowedOrgs: []
     allowedTeams: []
+    # Optional existing Installation IAM Group. Enroll active allowedTeams members on login.
+    # Requires allowedTeams and no allowedOrgs; the GitHub App also needs Email addresses: read.
+    autoEnrollGroupId: ""
   # Optional Google sign-in (OpenID Connect) for existing password accounts (API Pod
   # only). Same requirements as auth.github; its Secret must differ from auth.github's.
   # Create the dedicated Secret first.

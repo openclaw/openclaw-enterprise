@@ -1192,8 +1192,51 @@ try {
   if (!${historicalCodex}) {
     // Managed read-only requirements also refuse a workspace profile. Check the native
     // response before exposing that silently substituted thread to the Gateway caller.
-    await assert.rejects(client.request("thread/start", { ...request, permissions: ":workspace" }),
-      /thread.start: Codex did not grant the requested permission profile/);
+    for (const [selection, source, selectors] of [
+      [{ permissions: ":workspace" }, "permissions", "single"],
+      [{ config: { default_permissions: ":workspace" } }, "configDefault", "single"],
+      [{ permissions: ":workspace", config: { default_permissions: ":workspace" } }, "permissions", "both-equal"],
+      [{ permissions: ":workspace", config: { default_permissions: ":read-only" } }, "permissions", "both-different"],
+    ]) {
+      await assert.rejects(client.request("thread/start", { ...request, ...selection }), (error) => {
+        // The real managed read-only response has activePermissionProfile: null.
+        // Exact text also excludes arbitrary profile values from the diagnostic.
+        assert.equal(error.message, "thread/start: Codex did not grant the requested permission profile (requestSource=" +
+          source + ", selectors=" + selectors + ", comparison=field-null). " +
+          "Ask your workspace administrator to verify profile availability and runtime compatibility before retrying.");
+        return true;
+      });
+    }
+    // Malformed-peer metadata coverage through the actual bundled client, not native
+    // Codex proof: preserve the real control response except for the omitted field.
+    const peerSource = [
+      'const { createInterface } = require("node:readline");',
+      'const result = JSON.parse(process.argv[1]);',
+      'delete result.activePermissionProfile;',
+      'setTimeout(() => process.exit(1), 10000).unref();',
+      'createInterface({ input: process.stdin }).on("line", (line) => {',
+      '  const request = JSON.parse(line);',
+      '  if (request.id === undefined) return;',
+      '  if (request.method !== "initialize" && request.method !== "thread/start") process.exit(1);',
+      '  const response = request.method === "initialize"',
+      '    ? { userAgent: "codex-cli/" + process.argv[2], codexHome: "/home/node/.codex" } : result;',
+      '  process.stdout.write(JSON.stringify({ id: request.id, result: response }) + "\\n");',
+      '});',
+    ].join("\n");
+    const peer = await Client.start({ transport: "stdio", commandSource: "config",
+      command: process.execPath, args: ["-e", peerSource, JSON.stringify(control), client.getServerVersion()] });
+    try {
+      await peer.initialize();
+      await assert.rejects(peer.request("thread/start", { ...request, permissions: ":workspace" },
+        { timeoutMs: 5000 }), (error) => {
+        assert.equal(error.message, "thread/start: Codex did not grant the requested permission profile " +
+          "(requestSource=permissions, selectors=single, comparison=field-absent). " +
+          "Ask your workspace administrator to verify profile availability and runtime compatibility before retrying.");
+        return true;
+      });
+    } finally {
+      await peer.closeAndWait({ exitTimeoutMs: 2000, forceKillDelayMs: 500 });
+    }
   }
 } finally {
   client.close();
@@ -1876,7 +1919,7 @@ assert.equal(provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256, ${
     )});
 assert.deepEqual(provenance.patches, {
   "openclaw-codex-read-only-paths.patch": provenance.openclawBridgePatchSha256,
-  "openclaw-codex-full-access-profile.patch": ${historicalCodex} ? "7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a" : "e942e1804475a8e828859c5ba81c20de944105a7dbe00bbba6c2275b32c0944b",
+  "openclaw-codex-full-access-profile.patch": ${historicalCodex} ? "7c95a5a3727bd4c73bb9ccf3022eb4b33d182cd7f6b761dc93ecfe08ef08e27a" : "5112e56cf2e436abf794ad538774d72327eb2a95e111b7400db4caa970328ebe",
   "openclaw-required-worker-authority-regression.patch": provenance.openclawRequiredWorkerAuthorityRegressionPatchSha256,
   "openclaw-google-worker-placeholder.patch": "55be2c531b9335da06799f934200bb34a4fbc98608d4433ca6e955bbe966af31",
   ...(${historicalCodex} ? {

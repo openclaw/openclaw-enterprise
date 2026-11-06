@@ -943,6 +943,18 @@ function signInProvider(source, name, diagnostics) {
       "controlPlane.github.allowedOrgs and allowedTeams list at most 10 entries together.",
     );
   }
+  if (source.autoEnrollGroupId !== undefined) {
+    rendered.autoEnrollGroupId = optionalString(
+      source,
+      [...path, "autoEnrollGroupId"],
+      diagnostics,
+    );
+    if (!rendered.allowedTeams?.length || rendered.allowedOrgs?.length) {
+      diagnostics.errors.push(
+        "controlPlane.github.autoEnrollGroupId requires allowedTeams and no allowedOrgs.",
+      );
+    }
+  }
   return rendered;
 }
 
@@ -1264,7 +1276,14 @@ function buildInput(rawInput, diagnostics) {
   closed(
     github,
     "controlPlane.github",
-    ["secretName", "clientIdKey", "clientSecretKey", "allowedOrgs", "allowedTeams"],
+    [
+      "secretName",
+      "clientIdKey",
+      "clientSecretKey",
+      "allowedOrgs",
+      "allowedTeams",
+      "autoEnrollGroupId",
+    ],
     diagnostics,
   );
   const google = section(controlPlane, "google", diagnostics, false);

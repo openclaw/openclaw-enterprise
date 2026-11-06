@@ -42,7 +42,7 @@ func TestProtectedEgressSelectionFailsBeforeEffects(t *testing.T) {
 	r.env["OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP"] = ""
 	for _, value := range []string{"true", "yes", "2"} {
 		r.env["OCC_DEVELOPMENT_PROTECTED_EGRESS"] = value
-		check("OCC_DEVELOPMENT_PROTECTED_EGRESS must be 0 or 1")
+		check("OCC_DEVELOPMENT_PROTECTED_EGRESS must be unset, empty, or set to 0")
 	}
 	delete(r.env, "OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP")
 	for _, value := range []string{"", "0"} {

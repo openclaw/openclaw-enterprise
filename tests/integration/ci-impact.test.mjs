@@ -1320,7 +1320,7 @@ test("Suite Audit and Static Checks runs the audit and every check the lanes ski
       "pnpm lint",
       "pnpm format:check",
       "pnpm openapi:check",
-      "pnpm docs:install && pnpm openapi:lint && pnpm docs:check && pnpm docs:build",
+      "pnpm docs:install && pnpm openapi:lint && pnpm exec tsc --project scripts/docs-site/tsconfig.json --pretty false && pnpm docs:check && pnpm docs:build",
     ],
   );
   // A check moved out of the lanes must still gate CI Required in every mode.
@@ -1392,6 +1392,88 @@ test("every formatting check provisions pinned Bun and scans without a formatter
         lane === "checks-baseline-1" && staticChecks !== "false",
       );
     }
+  }
+});
+
+test("failed lane summary preserves the first unsuccessful step", (t) => {
+  const steps = loadYaml(".github/actions/run-ci-lane/action.yml").runs.steps;
+  const summary = steps.at(-1);
+  assert.equal(summary.name, "Summarize first lane failure");
+  assert.equal(summary.if, "failure() || cancelled()");
+  assert.equal(summary["continue-on-error"], true);
+  const order = steps
+    .slice(0, -1)
+    .filter((step) => step["continue-on-error"] !== true)
+    .map((step) => step.id);
+  assert.ok(order.every(Boolean));
+  assert.equal(new Set(order).size, order.length);
+  assert.deepEqual(
+    summary.env.CI_LANE_CONCLUSIONS.trimEnd().split("\n"),
+    order.map((id) => `${id}=\${{ steps.${id}.conclusion }}`),
+  );
+
+  const root = temporaryDirectorySync(t, "lane-failure-summary-");
+  const cases = [
+    {
+      name: "pre-run",
+      outcomes: {
+        "static-lint": "failure",
+        "run-lane": "skipped",
+        "cleanup-lane": "failure",
+        "aggregate-results": "failure",
+        "attempt-results": "success",
+      },
+      first: "static-lint (failure)",
+      run: "skipped",
+    },
+    {
+      name: "runner",
+      outcomes: { "run-lane": "failure", "cleanup-lane": "failure" },
+      first: "run-lane (failure)",
+      run: "failure",
+    },
+    {
+      name: "retention",
+      outcomes: { "run-lane": "success", "aggregate-results": "failure" },
+      first: "aggregate-results (failure)",
+      run: "success",
+    },
+    {
+      name: "cancelled",
+      outcomes: { "run-lane": "cancelled" },
+      first: "run-lane (cancelled)",
+      run: "cancelled",
+    },
+    { name: "missing", outcomes: {}, first: "unavailable", run: "unavailable" },
+  ];
+  for (const { name, outcomes, first, run } of cases) {
+    const output = join(root, name);
+    const env = Object.fromEntries(
+      Object.entries(summary.env).map(([key, value]) => [
+        key,
+        value.replace(/\$\{\{ steps\.([\w-]+)\.conclusion \}\}/g, (_, id) => outcomes[id] ?? ""),
+      ]),
+    );
+    const result = spawnSync("bash", ["-euo", "pipefail", "-c", summary.run], {
+      encoding: "utf8",
+      env: { PATH: process.env.PATH, GITHUB_STEP_SUMMARY: output, ...env },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const receipt = readFileSync(output, "utf8");
+    assert.equal(
+      receipt,
+      [
+        "",
+        "### CI lane failure",
+        "",
+        `- First unsuccessful step: \`${first}\``,
+        `- Run lane: \`${run}\``,
+        `- Cleanup lane: \`${outcomes["cleanup-lane"] ?? "unavailable"}\``,
+        `- Aggregate result upload: \`${outcomes["aggregate-results"] ?? "unavailable"}\``,
+        `- Attempt result upload: \`${outcomes["attempt-results"] ?? "unavailable"}\``,
+        "",
+      ].join("\n"),
+    );
   }
 });
 

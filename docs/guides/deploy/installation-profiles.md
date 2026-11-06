@@ -238,10 +238,11 @@ short release names) and root CA (`occ-gateway-<hash>-root`) Secrets the chart
 generates, and, with `controlPlane.loggingCollector.enabled`, from
 `occ-otel-collector-config` and `occ-otel-collector-exporter`.
 
-`github`, `google` and `oidc` also accept `secretName`, `clientIdKey`, `clientSecretKey`; `github` also accepts `allowedOrgs` and `allowedTeams`
-([allowlist](../../reference/authentication/external-sign-in.md#organization-and-team-allowlist));
-`oidc` also accepts `tokenAuth` and `displayName`;
-`trustedProxy` accepts `clientAddressHeader`, required for the `generic` preset.
+`github`, `google` and `oidc` accept `secretName`, `clientIdKey` and `clientSecretKey`.
+To restrict GitHub sign-in, set [`allowedOrgs` or `allowedTeams`](../../reference/authentication/external-sign-in.md#organization-and-team-allowlist).
+To enroll team members in an existing IAM Group, set [`autoEnrollGroupId`](../../reference/authentication/team-enrollment.md).
+`oidc` also accepts `tokenAuth` and `displayName`.
+The `generic` trusted proxy preset requires `trustedProxy.clientAddressHeader`.
 Preflight refuses `x-occ-client-ip`, `cookie`, `forwarded`, `authorization`, `host`,
 `origin`, and `x-api-key`; use a header that carries plain client addresses, such as
 `x-forwarded-for` or `x-real-ip`.
