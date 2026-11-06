@@ -32,6 +32,7 @@ import { createTestSecretDriver } from "./secret-driver.mjs";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
 import { reservePort } from "./available-port.mjs";
 import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.mjs";
+import { createConsoleFixtureTransport } from "./console-fixture-transport.ts";
 import { createFixtureResponse } from "./console-fixture-response.ts";
 import { temporaryDirectory } from "./temporary-directory.mjs";
 
@@ -250,6 +251,10 @@ export async function createConsoleAppFixture(t, options = {}) {
   const origin = `${options.https === true ? "https" : "http"}://${originHost}:${browserPort}`;
   const browserArgs = [];
   const transportOrigin = `http://127.0.0.1:${port}`;
+  const { rawRequest, fetchThroughLoopback } = createConsoleFixtureTransport(
+    origin,
+    transportOrigin,
+  );
   // CUA fault-injection keeps Better Auth on the trusted browser origin.
   const authBaseURL = options.authBaseURL ?? origin;
   const authMode = options.authMode ?? "development";
@@ -531,26 +536,6 @@ export async function createConsoleAppFixture(t, options = {}) {
     browserArgs.push(ingress.browserArg);
   }
 
-  /**
-   * @param {string} method
-   * @param {string} path
-   * @param {{headers?: Record<string, string>, body?: unknown, timeout?: number}} [options]
-   */
-  async function rawRequest(method, path, { headers = {}, body, timeout = 5000 } = {}) {
-    const response = await fetch(`${transportOrigin}${path}`, {
-      method,
-      headers: {
-        host: new URL(origin).host,
-        ...headers,
-        ...(body === undefined ? {} : { "content-type": "application/json" }),
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      signal: AbortSignal.timeout(timeout),
-    });
-    const text = await response.text();
-    return { response, text };
-  }
-
   function parseJson(result) {
     assert.match(result.response.headers.get("content-type") ?? "", /application\/json/i);
     const payload = JSON.parse(result.text);
@@ -559,19 +544,6 @@ export async function createConsoleAppFixture(t, options = {}) {
     assert.equal(result.response.headers.get("cache-control"), "no-store");
     assert.equal(result.response.headers.get("x-content-type-options"), "nosniff");
     return payload;
-  }
-
-  async function fetchThroughLoopback(request) {
-    const url = new URL(request.url);
-    return fetch(`${transportOrigin}${url.pathname}${url.search}`, {
-      method: request.method,
-      headers: {
-        ...Object.fromEntries(request.headers),
-        host: url.host,
-      },
-      ...(request.body === null ? {} : { body: Buffer.from(await request.arrayBuffer()) }),
-      signal: request.signal,
-    });
   }
 
   async function signIn(overrides = {}) {
