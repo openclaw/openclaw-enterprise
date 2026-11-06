@@ -85,9 +85,9 @@ and `quiescence-<component>-patch.json` against live state before resuming.
 
 Helm failure or disconnection does not prove migration rollback. Inspect live
 Helm status/history, initialization Job/Pod outcomes and the retained database;
-`current-helm-status.json` may be stale. Keep the operator freeze. Resolve
-`pending-*` releases with the release owner after stopping/reconciling the
-original Helm client. Revision checks cannot fence concurrent clients.
+`current-helm-status.json` may be stale. Keep the operator freeze. Stop and
+reconcile the original Helm client before retry or recovery. Resolve `pending-*`
+releases with the release owner. Revision checks cannot fence concurrent clients.
 
 Resume skips Helm only for `helm-started`'s expected deployed revision with
 matching candidate values and Installation. Invalid intents or revisions outside
