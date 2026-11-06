@@ -2044,6 +2044,25 @@ test(
       allowlistManifests,
       /name: OCC_AUTH_GITHUB_ALLOWED_TEAMS\n\s+value: "other\/platform"/,
     );
+    const enrolling = await render(
+      "openclaw",
+      externalSignInInput({
+        trustedProxy,
+        github: { allowedTeams: ["acme/platform"], autoEnrollGroupId: "team.platform" },
+      }),
+    );
+    assert.equal(enrolling.summary.ok, true, enrolling.preflight.errors.join("\n"));
+    assert.match(
+      helmTemplate(enrolling),
+      /name: OCC_AUTH_GITHUB_AUTO_ENROLL_GROUP_ID\n\s+value: "team.platform"/,
+    );
+    await assertPreflightFailure(
+      "openclaw",
+      externalSignInInput({
+        github: { allowedTeams: ["acme/platform"], autoEnrollGroupId: "\uFEFF " },
+      }),
+      /autoEnrollGroupId must be a nonempty string/,
+    );
     // Password sign-in stays open to every account unless recovery-only is chosen.
     assert.doesNotMatch(github.values, /passwordSignIn/);
     assert.doesNotMatch(manifests, /OCC_AUTH_PASSWORD_SIGN_IN/);
@@ -2229,6 +2248,20 @@ test("preflight rejects external sign-in Secret names Kubernetes refuses", async
     ["google", { github: undefined, google: { secretName: "Bad_Name" } }],
     ["oidc", { github: undefined, oidc: { ...oidc, secretName: "Bad_Name" } }],
   ]) {
+    for (const github of [
+      { autoEnrollGroupId: "team.platform" },
+      {
+        autoEnrollGroupId: "team.platform",
+        allowedTeams: ["acme/platform"],
+        allowedOrgs: ["acme"],
+      },
+    ]) {
+      await assertPreflightFailure(
+        "openclaw",
+        externalSignInInput({ github }),
+        /autoEnrollGroupId requires allowedTeams and no allowedOrgs/,
+      );
+    }
     await assertPreflightFailure(
       "openclaw",
       externalSignInInput(signIn),
