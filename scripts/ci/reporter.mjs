@@ -1028,6 +1028,12 @@ function failureDiagnostic(error) {
       lastHttpStatus: safeStatus(diagnostic.lastHttpStatus),
     };
   }
+  if (diagnostic.kind === "observability-installation-status") {
+    const status = safeStatus(diagnostic.status);
+    return status === undefined
+      ? undefined
+      : { kind: "observability-installation-status", status, expectedStatus: 401 };
+  }
   if (diagnostic.kind === "observability-log-export") {
     // Which attributed source never reached the OTLP receiver; no record content.
     return typeof diagnostic.api === "boolean" && typeof diagnostic.worker === "boolean"
