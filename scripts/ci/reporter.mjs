@@ -217,8 +217,12 @@ function safeMeasurement(value) {
         signaledCount >= 0 &&
         nonzeroExitCount + signaledCount <= value.failed
       ) {
-        if (nonzeroExitCount > 0) result.nonzeroExitCount = nonzeroExitCount;
-        if (signaledCount > 0) result.signaledCount = signaledCount;
+        if (nonzeroExitCount > 0) {
+          result.nonzeroExitCount = nonzeroExitCount;
+        }
+        if (signaledCount > 0) {
+          result.signaledCount = signaledCount;
+        }
       }
     }
     return result;
