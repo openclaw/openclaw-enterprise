@@ -2847,6 +2847,29 @@ function withoutSyntheticOneofs(
   );
 }
 
+function canonicalSandboxPolicy(value: unknown): unknown {
+  const policy = asRecord(value);
+  const rules = asRecord(policy?.network_policies);
+  if (policy === undefined || rules === undefined) {
+    return canonicalProtobufValues(value);
+  }
+  return canonicalProtobufValues({
+    ...policy,
+    network_policies: Object.fromEntries(
+      Object.entries(rules).map(([name, value]) => {
+        const rule = asRecord(value);
+        // Proto3 omits empty repeated endpoints. Both forms deny every
+        // destination; retain every nonempty or malformed value for comparison.
+        if (rule !== undefined && Array.isArray(rule.endpoints) && rule.endpoints.length === 0) {
+          const { endpoints: _empty, ...rest } = rule;
+          return [name, rest];
+        }
+        return [name, value];
+      }),
+    ),
+  });
+}
+
 function canonicalSandboxSpec(spec: Readonly<Record<string, unknown>> | undefined): unknown {
   const template = asRecord(spec?.template);
   if (spec === undefined || template === undefined) {
@@ -2856,7 +2879,7 @@ function canonicalSandboxSpec(spec: Readonly<Record<string, unknown>> | undefine
   const { provider_attachment_epoch: _epoch, restart_policy: restartPolicy, ...rest } = spec;
   return {
     ...withoutSyntheticOneofs(rest),
-    ...(spec.policy === undefined ? {} : { policy: canonicalProtobufValues(spec.policy) }),
+    ...(spec.policy === undefined ? {} : { policy: canonicalSandboxPolicy(spec.policy) }),
     ...(ADOPTABLE_RESTART_POLICIES.has(restartPolicy as string | number | undefined)
       ? {}
       : { restart_policy: restartPolicy }),

@@ -8484,11 +8484,27 @@ test("ordinary public Git QA closes only its launcher GitHub grant through norma
     const loaded = await loadInstallationFile(t, installationInput);
     assert.ok(loaded.sandboxDriver instanceof OpenShellSandboxDriver);
     const gateway = workspaceGatewayClient();
+    const specCodec = controllerRequire("@grpc/proto-loader").loadSync(
+      fileURLToPath(
+        new URL(
+          "../../apps/controller/src/drivers/sandbox/proto/openshell-gateway.proto",
+          import.meta.url,
+        ),
+      ),
+      { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
+    )["openshell.v1.SandboxSpec"];
     let created;
-    gateway.createSandbox = async (request) => (created = storedSandbox(request));
-    gateway.getSandbox = async () => created;
+    let stored;
+    gateway.createSandbox = async (request) => {
+      created = request;
+      stored = storedSandbox(request, {
+        spec: specCodec.deserialize(specCodec.serialize(request.spec)),
+      });
+      return stored;
+    };
+    gateway.getSandbox = async () => stored;
     gateway.getService = async (_workspace, sandbox, service) =>
-      harnessService(sandbox, service, created?.serviceUrls[""]);
+      harnessService(sandbox, service, stored?.serviceUrls[""]);
     const driver = openShellDriver(gateway, options);
     const context = namespaceContext();
     const revision = dedicatedRevision(driver, context, "000000001717");
@@ -8508,6 +8524,26 @@ test("ordinary public Git QA closes only its launcher GitHub grant through norma
     assert.deepEqual(emitted["source-control"].binaries, [{ path: "/usr/bin/git" }]);
     assert.equal(emitted["public-github-read"], undefined, "no opt-in grants no reader route");
     assert.equal(gateway.profiles.has("oce-codex-runtime-public-github-read"), false);
+    // Proto3 omits an empty repeated endpoint list. Reconciliation must adopt
+    // that same closed rule, while a newly added destination remains a mismatch.
+    await driver.provisionHarness({
+      ...context,
+      revision,
+      requirements: codexRequirements(revision),
+    });
+    if (narrow) {
+      stored.spec.policy.network_policies["source-control"].endpoints = [
+        { host: "github.com", ports: [443], tls: "NETWORK_TLS_MODE_SKIP" },
+      ];
+      await assert.rejects(
+        driver.provisionHarness({
+          ...context,
+          revision,
+          requirements: codexRequirements(revision),
+        }),
+        /without exact AgentRevision ownership and content/,
+      );
+    }
   }
 });
 
