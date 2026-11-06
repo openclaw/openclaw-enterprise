@@ -169,7 +169,7 @@ runs:
       uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
       with:
         go-version-file: go.mod
-        cache: true
+        cache: ${{ inputs.lane != 'checks-browser' }}
     - name: Run workspace boundary check
       if: inputs.lane == 'checks-baseline-1' && inputs.static-checks != 'false'
       shell: bash
