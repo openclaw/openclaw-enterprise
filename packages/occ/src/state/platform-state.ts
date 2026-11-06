@@ -21,6 +21,7 @@ import { createPlatformReadView } from "../ports/platform-read-view.ts";
 import type { SandboxPolicy } from "@openclaw-enterprise/contracts";
 import type {
   RepositorySessionAttempt,
+  RepositoryRevisionOwner,
   RepositoryBrokerReceipt,
   RepositoryStandingApproval,
   RepositorySessionReadRepository,
@@ -1126,6 +1127,8 @@ export interface PlatformOperationReadRepository {
   list(): Promise<readonly Readonly<PlatformOperation>[]>;
   findWork(idempotencyKey: string): Promise<Readonly<ControllerWork> | undefined>;
   findWorkAttempt(idempotencyKey: string): Promise<Readonly<ControllerWorkAttempt> | undefined>;
+  /** Whether this revision completed maintenance requiring fresh repository execution. */
+  hasRepositoryExecutionRedeployRequired(owner: RepositoryRevisionOwner): Promise<boolean>;
   /** True while credential withdrawal work for the revision is queued or claimed. */
   hasOutstandingCredentialWithdrawalWork(namespaceId: string, revisionId: string): Promise<boolean>;
 }
@@ -4296,6 +4299,7 @@ function repositories(
       retryFailedNamespaceDeletion: async () => false,
       expediteCredentialWithdrawalWork: async () => false,
       findWorkAttempt: async () => undefined,
+      hasRepositoryExecutionRedeployRequired: async () => false,
       // Recorded work never executes here, so every recorded withdrawal stays outstanding.
       hasOutstandingCredentialWithdrawalWork: async (namespaceId, revisionId) =>
         snapshot.operations.some(

@@ -8607,6 +8607,10 @@ Get the saved deployment status for an Agent revision
 | `data.error` | `null or object` | Yes | `null` unless deployment failed. A failure contains `code`, a fixed safe message, and optional data with known fields. `CONVERGENCE_DEADLINE_EXCEEDED` can include `data.timeoutMs` and `data.runtimeFailure` with startup failure details. A component, check, or code unknown to the runtime is shown as `UNRECOGNIZED`. `RUNTIME_MODEL_PROBE_FAILED` can include `data.runtimeFailure` with the cause of the failed startup model check. The response never includes native error text. |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.progress` | `null or object` | Yes | Pending deployment progress. Null for terminal outcomes. A last attempt describes a recorded result, not current runtime health. |
+| `data.repositoryAccess` | `object` | No | Present when completed maintenance for this exact revision recorded that repository access requires a new revision. This condition does not change the original deployment result. Absence does not establish current repository access health. |
+| `data.repositoryAccess.code` | `"REPOSITORY_EXECUTION_REDEPLOY_REQUIRED"` | Yes | — |
+| `data.repositoryAccess.message` | `string` | Yes | — |
+| `data.repositoryAccess.state` | `"redeploy-required"` | Yes | — |
 | `data.status` | `"queued" or "running" or "succeeded" or "failed"` | Yes | — |
 | `data.warnings` | `array<object>` | Yes | Warnings recorded from this deployment startup. Plugin install and connector-auth warnings mean the deployment succeeded after the runtime disabled the affected admitted plugin for that startup. |
 | `data.warnings[].code` | `"PLUGIN_INSTALL_FAILED" or "PLUGIN_AUTH_REQUIRED"` | Yes | — |

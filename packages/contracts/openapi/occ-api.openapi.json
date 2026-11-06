@@ -24439,6 +24439,20 @@
                           ],
                           "description": "Pending deployment progress. Null for terminal outcomes. A last attempt describes a recorded result, not current runtime health."
                         },
+                        "repositoryAccess": {
+                          "additionalProperties": false,
+                          "description": "Present when completed maintenance for this exact revision recorded that repository access requires a new revision. This condition does not change the original deployment result. Absence does not establish current repository access health.",
+                          "properties": {
+                            "code": {
+                              "const": "REPOSITORY_EXECUTION_REDEPLOY_REQUIRED",
+                              "type": "string"
+                            },
+                            "message": { "type": "string" },
+                            "state": { "const": "redeploy-required", "type": "string" }
+                          },
+                          "required": ["state", "code", "message"],
+                          "type": "object"
+                        },
                         "status": {
                           "anyOf": [
                             { "const": "queued", "type": "string" },

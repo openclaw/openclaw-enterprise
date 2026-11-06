@@ -409,6 +409,7 @@ import {
   controllerWorkDeploymentStatus,
   deploymentErrorForWork,
   deploymentProgressForWork,
+  deploymentRepositoryAccessStatus,
   deploymentStatusForWork,
   deploymentWarningsForWork,
   type DeploymentStatusResult,
@@ -462,6 +463,7 @@ export type { OperationRefusalHintCode } from "./state/controller-work.ts";
 export {
   ActivationFailedError,
   ComputePreparationFailedError,
+  RepositoryExecutionRequiresRedeployError,
   ActivationPendingError,
   agentEntryMessage,
   AgentCredentialSourceBindingError,
@@ -6098,6 +6100,13 @@ export class OpenClawController {
         work.state === "queued" || work.state === "claimed"
           ? await state.operations.findWorkAttempt(idempotencyKey)
           : undefined;
+      const repositoryAccess = deploymentRepositoryAccessStatus(
+        await state.operations.hasRepositoryExecutionRedeployRequired({
+          namespaceId: revision.namespaceId,
+          agentId: revision.agentId,
+          revisionId: revision.id,
+        }),
+      );
       return Object.freeze({
         deploymentId: revision.id,
         namespaceId: revision.namespaceId,
@@ -6105,6 +6114,7 @@ export class OpenClawController {
         status: deploymentStatusForWork(work, attempt, this.clock()),
         cleanup: await this.deploymentCleanupStatus(state, revision),
         error: deploymentErrorForWork(work),
+        ...(repositoryAccess === undefined ? {} : { repositoryAccess }),
         warnings: deploymentWarningsForWork(work),
         progress: deploymentProgressForWork(work, attempt),
       });
