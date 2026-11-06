@@ -471,7 +471,7 @@ test(
     const [{ createSystemClock }, { createCredentialService }, { startListeners }] =
       await Promise.all([
         appModule("drivers/repo/credentials/clock"),
-        appModule("drivers/repo/credentials/service"),
+        import("../fixtures/repository-credentials/service.ts"),
         appModule("drivers/repo/credentials/server"),
       ]);
     const clock = createSystemClock();
@@ -571,7 +571,7 @@ test(
       limits: { exchanges: 1, exchangesPerSession: 1 },
     });
     const [{ createCredentialService }, { startListeners }] = await Promise.all([
-      appModule("drivers/repo/credentials/service"),
+      import("../fixtures/repository-credentials/service.ts"),
       appModule("drivers/repo/credentials/server"),
     ]);
     const received = [];

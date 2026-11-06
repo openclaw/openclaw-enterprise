@@ -80,6 +80,15 @@ export function configurationFields(
     onChange(structuredClone(draft));
   };
 
+  function focusField(path: string) {
+    const box = root.querySelector(`[data-configuration-path="${CSS.escape(path)}"]`);
+    const control =
+      box?.querySelector<HTMLElement>(
+        "input:enabled:not([readonly]), select:enabled, textarea:enabled:not([readonly])",
+      ) ?? box?.querySelector<HTMLButtonElement>("button:enabled");
+    control?.focus();
+  }
+
   function field(
     schema: FieldSchema | boolean,
     current: unknown,
@@ -165,11 +174,14 @@ export function configurationFields(
         row.append(
           button(
             `Remove ${label} ${index + 1}`,
-            () => {
+            (event) => {
               values.splice(index, 1);
               set(values);
               changed();
               render();
+              if (event.detail === 0) {
+                focusField(values.length ? `${path}/${Math.min(index, values.length - 1)}` : path);
+              }
             },
             { disabled: values.length <= (definition.minItems ?? 0) },
           ),
@@ -179,11 +191,14 @@ export function configurationFields(
       box.append(
         button(
           `Add ${label}`,
-          () => {
+          (event) => {
             values.push(initialValue(items));
             set(values);
             changed();
             render();
+            if (event.detail === 0) {
+              focusField(`${path}/${values.length - 1}`);
+            }
           },
           { disabled: values.length >= (definition.maxItems ?? Infinity) },
         ),

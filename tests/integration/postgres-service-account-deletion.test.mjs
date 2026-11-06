@@ -8,7 +8,7 @@ import {
   ResourceConflictError,
   ServiceAccountDriverNotConfiguredError,
 } from "../../packages/occ/src/index.ts";
-import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.ts";
 import {
   createDevelopmentComputeDriver,
   registerAndSelectDrivers,

@@ -297,7 +297,9 @@ test(
 /** Makes the Agent's row unreadable: the column only checks for an object, the reader each entry. */
 async function unreadableAgent(fixture, owner) {
   await fixture.observerPool.query(
-    `UPDATE occ.agents SET plugins = '{"entries": "unreadable"}'::jsonb WHERE id = $1`,
+    `UPDATE occ.agents SET plugins = '{"entries": "unreadable"}'::jsonb,
+       plugin_driver = '{"id": "occ-plugin", "implementation": "occ/openclaw-plugin"}'::jsonb
+     WHERE id = $1`,
     [owner.id],
   );
   return () => {};

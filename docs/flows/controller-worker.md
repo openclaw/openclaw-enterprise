@@ -403,7 +403,7 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 - [OCC API](../../tests/integration/occ-api.test.mjs) checks deploy audit attribution
   and append-failure rollback after an IAM Driver change.
 - [Sandbox startup](../../tests/integration/sandbox-driver-startup.test.mjs) and
-  [k3d](../../tests/integration/sandbox-driver-openshell-k3d-real.test.mjs) tests
+  [k3d](../../tests/helpers/openshell-sandbox-workflows.mjs) tests
   verify composition and infrastructure.
 
 ## Related docs

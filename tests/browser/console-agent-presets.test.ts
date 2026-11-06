@@ -1,5 +1,15 @@
 /// <reference lib="es2024.promise" />
 
+import {
+  createModelCredentialSecret,
+  enterManualModel,
+  openAdvancedSettings,
+  assertAgentNameTaken,
+  optionValues,
+  waitForCreateFormReads,
+  submitCreateAgent,
+  createAgentThroughForm,
+} from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
@@ -37,7 +47,7 @@ import {
   backendFixtures,
 } from "../helpers/console-app.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
-import { consoleStorage } from "../helpers/console-storage.mjs";
+import { consoleStorage } from "../helpers/console-storage.ts";
 import {
   apiRequests,
   consoleViewports,
@@ -46,6 +56,7 @@ import {
   focusKeptOverClose,
   holdRequests,
   inViewport,
+  isRecord,
   login,
   nativeValues,
   newPage,
@@ -56,28 +67,19 @@ import {
   secretPostRequests,
   selectSecret,
   settlePageRequests,
-  trackSettledFetches,
   waitForEnabled,
   waitForInputValue,
-  waitForSettledFetches,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-agents-browser-helpers.ts";
+import { trackSettledFetches, waitForSettledFetches } from "./console-fetch-accounting.ts";
 import { normalizeProvisioningConfiguration } from "../../packages/occ/src/agent-provisioning.ts";
 import { resolveConfiguredHarnessId } from "../../packages/occ/src/index.ts";
-import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
+import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.ts";
 import {
-  createModelCredentialSecret,
-  enterManualModel,
-  openAdvancedSettings,
   configurationPostRequests,
   routeInstallationWithoutProvisioning,
   agentPostRequests,
-  assertAgentNameTaken,
-  optionValues,
   raceAgentName,
-  waitForCreateFormReads,
-  submitCreateAgent,
-  createAgentThroughForm,
-} from "./console-agents-test-support.mjs";
+} from "./console-agents-test-support.ts";
 import {
   AGENT_NAME_CONFLICT,
   callerDenied,
@@ -704,6 +706,34 @@ test("Main-only Preset models create drafts through the regular Agent APIs", asy
   }
 });
 
+test("Model clearing preserves enumerable draft content", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Draft merge contents", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  const requests = apiRequests(page, fixture.origin);
+  await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
+  await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
+  await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
+  await openAdvancedSettings(page);
+  const editor = page.getByLabel("Configuration JSON", { exact: true });
+  const draft: unknown = JSON.parse(await editor.inputValue());
+  assert.ok(isRecord(draft) && isRecord(draft.models));
+  const retained = { models: [{ id: "draft-local" }] };
+  // This malformed parent has no selected provider catalog. Clearing the model must keep
+  // its enumerable contents, leaving admission to reject the unsupported shape on save.
+  draft.models.providers = [retained];
+  await editor.fill(JSON.stringify(draft));
+  const model = page.getByLabel("Model ID", { exact: true });
+  await model.fill("");
+  await model.press("Tab");
+  const edited: unknown = JSON.parse(await editor.inputValue());
+  assert.ok(isRecord(edited) && isRecord(edited.models));
+  assert.deepEqual(edited.models.providers, { "0": retained });
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+});
+
 test("Model edits preserve refusals for invalid Advanced JSON rosters", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap("Invalid roster editing");
@@ -953,12 +983,11 @@ test("Runtime-auth Presets are refused before anything is saved where Compute re
   });
 });
 
-test("Create Agent browses the curated plugin catalog without a discovery credential", async (t) => {
+test("Create Agent browses the Codex catalog and discards its selections when switching to OpenClaw", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const driver = new CodexPluginDriver({ catalogSource: "openai-curated" });
-  fixture.controller.registerDriver(driver);
-  fixture.controller.selectDriver("plugin", driver.id);
+  fixture.controller.installPluginDrivers([new OCCPluginDriver(), driver]);
   const namespace = await fixture.createNamespace("Curated plugin browsing", { ready: true });
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
@@ -984,7 +1013,7 @@ test("Create Agent browses the curated plugin catalog without a discovery creden
   await linear.waitFor();
   assert.deepEqual(
     pathRequests(requests, "POST", catalogPath).map(({ body }) => body),
-    [{}],
+    [{ harnessId: "codex" }],
   );
   await linear.click();
   await dialog.getByRole("button", { name: "Add Linear", exact: true }).click();
@@ -993,8 +1022,47 @@ test("Create Agent browses the curated plugin catalog without a discovery creden
   });
   assert.deepEqual(
     pathRequests(requests, "POST", `${catalogPath}/details`).map(({ body }) => body),
-    [{ pluginId: "plugin_asdk_app_69a089a326dc8191b32a3f2553f5be2c" }],
+    [{ harnessId: "codex", pluginId: "plugin_asdk_app_69a089a326dc8191b32a3f2553f5be2c" }],
   );
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  await dialog
+    .getByText("To install Google Workspace, open Plugins on a saved dedicated OpenClaw Agent", {
+      exact: false,
+    })
+    .waitFor();
+  assert.equal(await dialog.getByRole("button", { name: "Load plugins" }).isDisabled(), true);
+  assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), {});
+  assert.equal(await linear.count(), 0);
+});
+
+test("Create Agent clears approvers when the selected Harness has no plugin catalog", async (t) => {
+  const fixture = await createConsoleAppFixture(t, {
+    defaultPresets: [],
+    filesystemConfiguration: true,
+  });
+  await fixture.bootstrap();
+  fixture.controller.installPluginDrivers([new CodexPluginDriver()]);
+  const namespace = await fixture.createNamespace("Single catalog", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name", { exact: true }).fill("OpenClaw without plugins");
+  const harness = page.getByLabel("Harness", { exact: true });
+  await harness.selectOption("codex");
+  await openAdvancedSettings(page);
+  const approvers = page.getByLabel("Default plugin approvers mode");
+  await approvers.selectOption("chosen");
+  const people = page.getByRole("combobox", { name: "Default plugin approvers people" });
+  await people.fill("UOTHER123");
+  await people.press("Enter");
+  await page.locator('.slack-directory-chip[data-value="UOTHER123"]').waitFor();
+  await harness.selectOption("openclaw");
+  await approvers.waitFor({ state: "hidden" });
+  await enterManualModel(page, "single-catalog-model-key", "gpt-4.1");
+  const response = await submitCreateAgent(page, fixture, namespace.id, { status: 201 });
+  assert.equal(Object.hasOwn(response.request().postDataJSON(), "pluginApprovers"), false);
 });
 
 test("Create Agent discovers hosted plugins with a transient PAT through the selected Driver", async (t) => {
@@ -1223,7 +1291,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
     pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/plugins`).map(
       ({ body }) => body,
     ),
-    [{ accessToken: "at-browser-plugin-one" }],
+    [{ harnessId: "codex", accessToken: "at-browser-plugin-one" }],
   );
   const setup = dialog.locator(".plugin-access-help");
   const setupDisclosure = setup.locator("summary");
@@ -1456,7 +1524,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
     catalogRequests()
       .slice(beforeTyping)
       .map((request) => request.body),
-    [{ accessToken: "at-browser-plugin-one", q: "linear" }],
+    [{ harnessId: "codex", accessToken: "at-browser-plugin-one", q: "linear" }],
   );
   assert.equal(
     await dialog.getByRole("button", { name: "Previous page", exact: true }).isDisabled(),
@@ -1641,8 +1709,12 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
     (request) =>
       request.path.endsWith("/agents/plugins") || request.path.endsWith("/agents/plugins/details"),
   );
-  assert.deepEqual(selectedRequests.at(-2)?.body, { secretRef: firstSecret.ref });
+  assert.deepEqual(selectedRequests.at(-2)?.body, {
+    harnessId: "codex",
+    secretRef: firstSecret.ref,
+  });
   assert.deepEqual(selectedRequests.at(-1)?.body, {
+    harnessId: "codex",
     secretRef: firstSecret.ref,
     pluginId: "remote-calendar",
   });
@@ -1657,7 +1729,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   assert.equal(await calendar.count(), 0);
   assert.deepEqual(
     requests.filter((request) => request.path.endsWith("/agents/plugins")).at(-1)?.body,
-    { secretRef: secondSecret.ref },
+    { harnessId: "codex", secretRef: secondSecret.ref },
   );
   await closePluginDialog();
   assert.equal(
@@ -2848,6 +2920,7 @@ for (const viewport of consoleViewports) {
     // The real Kubernetes deploy admission admits the Configuration the form saved, so this path
     // cannot pass with one a Kubernetes install refuses (finding 3133). The Agent uses its model
     // Secret once an Installation administrator grants it.
+    assert.ok(created.harnessAuth && "source" in created.harnessAuth);
     await fixture.grantAgentSecretOperate(created, created.harnessAuth.source, {
       modelGrant: true,
     });
@@ -4229,7 +4302,58 @@ test("invalid Preset application retains chooser edits and the applied form for 
   }
 });
 
-test("failed Preset form construction retains chooser edits for both origins", async (t) => {
+test("a stored null Preset primary opens with model choices for both origins", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Unset primary", { ready: true });
+  const starter = await defaultPresetSummary(fixture, namespace.id);
+  const template = await presetTemplate(fixture, namespace.id, starter.id);
+  // Exercise an older stored value through real reads, without asserting current write admission.
+  const stored = await fixture.controller.transact((state: PlatformUnitOfWork) =>
+    state.presets.updatePreset(namespace.id, starter.id, {
+      template: {
+        ...template,
+        configuration: {
+          ...template.configuration,
+          values: {
+            ...template.configuration?.values,
+            agents: { defaults: { model: { primary: null } } },
+          },
+        },
+      },
+    }),
+  );
+  assert.ok(stored);
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  for (const origin of ["shortcut", "explicit"]) {
+    if (origin === "explicit") {
+      await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
+      await page.getByLabel("Preset template").selectOption(starter.id);
+      await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+    } else {
+      await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
+    }
+    const model = page.getByLabel("Model", { exact: true });
+    await model.waitFor();
+    assert.equal(await model.inputValue(), "", origin);
+    assert.equal(await model.isEnabled(), true, origin);
+    await openAdvancedSettings(page);
+    const before: unknown = JSON.parse(
+      await page.getByLabel("Configuration JSON", { exact: true }).inputValue(),
+    );
+    assert.partialDeepStrictEqual(before, { agents: { defaults: { model: { primary: null } } } });
+    await model.selectOption("gpt-6-sol");
+    const after: unknown = JSON.parse(
+      await page.getByLabel("Configuration JSON", { exact: true }).inputValue(),
+    );
+    assert.partialDeepStrictEqual(after, {
+      agents: { defaults: { model: { primary: "codex/gpt-6-sol" } } },
+    });
+  }
+});
+
+test("a non-text Preset primary refuses application and retains chooser edits for both origins", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const { page } = await newPage(t, fixture);
@@ -4280,8 +4404,13 @@ test("failed Preset form construction retains chooser edits for both origins", a
     await page.getByRole("button", { name: "Use Preset", exact: true }).click();
     await page
       .getByRole("alert")
-      .filter({ hasText: /startsWith/ })
+      .filter({
+        hasText:
+          "This Preset's primary model must be text. Choose another Preset, or ask a Preset editor to fix the template.",
+      })
       .waitFor();
+    assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0, origin);
+    assert.equal(await marker.inputValue(), `draft ${origin}`, origin);
     await page.getByRole("link", { name: "← Agents" }).click();
     await page.getByRole("button", { name: "Create Agent", exact: true }).click();
     await marker.waitFor();

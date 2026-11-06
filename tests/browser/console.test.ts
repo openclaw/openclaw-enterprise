@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cp, readFile } from "node:fs/promises";
+import { cp } from "node:fs/promises";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import type { ServerResponse } from "node:http";
@@ -14,7 +14,7 @@ import { apiErrorResponse } from "../helpers/api-error.mjs";
 import {
   describePendingBrowserRequests,
   noteBrowserEvent,
-} from "../helpers/browser-failure-diagnostics.mjs";
+} from "../helpers/browser-failure-diagnostics.ts";
 import {
   createConsoleAppFixture as createBaseConsoleAppFixture,
   fileConsoleApp,
@@ -25,20 +25,25 @@ import {
   expectNoText,
   expireSessions,
   expireSessionsWhenSettled,
+  holdRequests,
   login,
   loginThroughForm,
   newPage,
   nextFrames,
   nonAuthWriteRequests,
-  settledFetches,
   settledView,
+  shippedPreset,
   settlePageRequests,
-  trackSettledFetches,
   waitForEnabled,
+  writeRequests,
+} from "./console-agents-browser-helpers.ts";
+import {
+  settledFetches,
+  trackSettledFetches,
   waitForIdleFetches,
   waitForSettledFetches,
-  writeRequests,
-} from "./console-agents-browser-helpers.mjs";
+} from "./console-fetch-accounting.ts";
+import { responseTo } from "./console-action-helpers.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
   NO_READABLE_NAMESPACES,
@@ -69,9 +74,7 @@ function namedResource(value: unknown): Pick<Namespace, "id" | "name"> {
   return { id: resource.id, name: resource.name };
 }
 
-const defaultCodexPreset: unknown = JSON.parse(
-  await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
-);
+const defaultCodexPreset = await shippedPreset("default-codex");
 const createConsoleAppFixture = (
   t: TestContext,
   options: {
@@ -82,28 +85,7 @@ const createConsoleAppFixture = (
 ) => createBaseConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset], ...options });
 // The sign-in page tests share one app (fileConsoleApp): they make no Namespace, change no
 // policy and end no session. Every other test keeps an app of its own.
-const sharedSignInApp = fileConsoleApp({ defaultPresets: [defaultCodexPreset] });
-type SignInFixture = Pick<
-  Awaited<ReturnType<typeof createConsoleAppFixture>>,
-  "origin" | "credentials"
-> & { sharedByFile: true };
-
-function isSignInFixture(value: unknown): value is SignInFixture {
-  return (
-    isJsonObject(value) &&
-    typeof value.origin === "string" &&
-    value.sharedByFile === true &&
-    isJsonObject(value.credentials) &&
-    typeof value.credentials.email === "string" &&
-    typeof value.credentials.password === "string"
-  );
-}
-
-async function signInApp(t: TestContext) {
-  const fixture: unknown = await sharedSignInApp(t);
-  assert.ok(isSignInFixture(fixture));
-  return fixture;
-}
+const signInApp = fileConsoleApp({ defaultPresets: [defaultCodexPreset] });
 
 test("mounted theme brands sign-in, Agent navigation and mobile without losing session behavior", async (t) => {
   const directory = await temporaryDirectory(t, "occ-browser-theme-");
@@ -501,7 +483,7 @@ async function holdRoute(
   };
 }
 
-test("console debug flag is opt-in and follows Namespace navigation without leaking prior Agent reads", async (t) => {
+test("console debug preference persists and follows Namespace navigation without leaking prior Agent reads", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const alpha = namedResource(await fixture.createNamespace("Debug Alpha", { ready: true }));
@@ -509,13 +491,25 @@ test("console debug flag is opt-in and follows Namespace navigation without leak
   await fixture.createAgent(alpha.id, "Alpha runtime");
   await fixture.createAgent(beta.id, "Beta runtime");
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
-  await login(page, fixture, `/console/agents?namespace=${alpha.id}&debug=false`);
+  await login(page, fixture, `/console/agents?namespace=${alpha.id}`);
   await page.getByRole("heading", { name: "Agents" }).waitFor();
   assert.equal(await page.locator(".runtime-debug").count(), 0);
   assert.ok(!requests.some(({ path }) => path.endsWith("/runtime-images")));
 
-  await page.goto(`${fixture.origin}/console/agents?namespace=${alpha.id}&debug=true`);
+  await page.goto(`${fixture.origin}/console/settings?namespace=${alpha.id}&debug=true`);
+  await page.getByRole("heading", { name: "Settings", exact: true }).waitFor();
+  const debug = page.getByRole("switch", { name: "Debug mode" });
+  assert.equal(await debug.count(), 1, "Settings exposes the Debug mode preference");
+  assert.equal(await debug.isChecked(), false, "the URL cannot enable diagnostics");
+  assert.equal(await page.locator(".runtime-debug").count(), 0);
+  await debug.check();
+  await page.reload();
+  await page.getByRole("heading", { name: "Settings", exact: true }).waitFor();
+  assert.equal(await debug.isChecked(), true, "the browser retains the preference after reload");
+  assert.equal(await page.evaluate(() => localStorage.getItem("oce.console.debug")), "true");
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
   const panel = page.getByRole("region", { name: "Build and runtime images" });
   await panel.getByText("No deployed runtime images observed.").waitFor({ state: "attached" });
   const initialPanelText = await panel.textContent();
@@ -526,7 +520,7 @@ test("console debug flag is opt-in and follows Namespace navigation without leak
   const changedPanelText = await panel.textContent();
   assert.ok(changedPanelText !== null);
   assert.doesNotMatch(changedPanelText, /Alpha runtime/);
-  assert.equal(new URL(page.url()).searchParams.get("debug"), "true");
+  assert.equal(new URL(page.url()).searchParams.has("debug"), false);
   await panel.getByText("No deployed runtime images observed.").waitFor({ state: "attached" });
   const runtimeRow = await panel.locator(".runtime-debug-images details").elementHandle();
   assert.ok(runtimeRow);
@@ -538,7 +532,7 @@ test("console debug flag is opt-in and follows Namespace navigation without leak
   });
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("heading", { name: "Namespaces" }).waitFor();
-  assert.equal(new URL(page.url()).searchParams.get("debug"), "true");
+  assert.equal(new URL(page.url()).searchParams.has("debug"), false);
   await page.goBack();
   await page.locator('.content [aria-live="polite"]:not([inert])').waitFor();
   assert.equal(
@@ -551,9 +545,48 @@ test("console debug flag is opt-in and follows Namespace navigation without leak
     true,
     "Returning preserves expanded runtime image diagnostics",
   );
-  await page.goto(`${fixture.origin}/console/agents?namespace=${beta.id}`);
+  await page.goto(`${fixture.origin}/console/settings?namespace=${beta.id}`);
+  await debug.uncheck();
+  await page.reload();
+  await page.getByRole("heading", { name: "Settings", exact: true }).waitFor();
+  assert.equal(await debug.isChecked(), false);
+  const before = requests.filter(({ path }) => path.endsWith("/runtime-images")).length;
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
   await page.getByRole("heading", { name: "Agents" }).waitFor();
   assert.equal(await page.locator(".runtime-debug").count(), 0);
+  await waitForIdleFetches(page);
+  assert.equal(requests.filter(({ path }) => path.endsWith("/runtime-images")).length, before);
+  assert.deepEqual(
+    nonAuthWriteRequests(requests),
+    [],
+    "a browser preference needs no API mutation",
+  );
+});
+
+test("console reports a refused debug preference save without enabling diagnostics", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture);
+  // A browser can deny site storage; the actual Settings control must not claim it saved.
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "localStorage", {
+      get() {
+        throw new DOMException("Site storage is blocked", "SecurityError");
+      },
+    });
+  });
+  await login(page, fixture, "/console/settings");
+  const debug = page.getByRole("switch", { name: "Debug mode" });
+  await debug.click();
+  await page
+    .getByText(
+      "Could not save this preference. Check your browser’s site storage settings and try again.",
+    )
+    .waitFor();
+  assert.equal(await debug.isChecked(), false);
+  assert.equal(await page.locator(".runtime-debug").count(), 0);
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
+  await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
 });
 
 test("console browser flow keeps Namespace URL state across global pages and logout", async (t) => {
@@ -2933,7 +2966,7 @@ test("compact navigation preserves the page position while its drawer can still 
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
   await toggle.click();
-  await page.getByRole("link", { name: "Secrets", exact: true }).click();
+  await page.getByRole("link", { name: "Credentials", exact: true }).click();
   await page.locator(settledView).waitFor();
   const returned = await page.evaluate(() => {
     const heading = globalThis.document.querySelector("h1");
@@ -2958,7 +2991,9 @@ test("compact navigation preserves the page position while its drawer can still 
     JSON.stringify(returned),
   );
 
-  await page.goto(`${fixture.origin}${secretsPath}&debug=true`);
+  await page.goto(`${fixture.origin}/console/settings?namespace=${namespace.id}`);
+  await page.getByRole("switch", { name: "Debug mode" }).check();
+  await page.goto(`${fixture.origin}${secretsPath}`);
   await page.locator(settledView).waitFor();
   await toggle.click();
   const diagnostics = page.getByRole("region", { name: "Build and runtime images" });
@@ -3186,6 +3221,154 @@ test("login restores a scrubbed Agent destination only after the tab confirms it
       null,
     );
   }
+});
+
+test("a late startup observer offers Reload after a native entry failure without retrying modules", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture);
+  const url = `${fixture.origin}/console/login`;
+  const entryUrl = `${fixture.origin}/console/console.mjs`;
+  const dependencyUrl = `${fixture.origin}/console/view-lifetime.mjs`;
+  const observerUrl = `${fixture.origin}/console/startup-recovery.mjs`;
+  const requests = { entry: 0, dependency: 0 };
+  page.on("request", (request) => {
+    if (request.method() !== "GET") {
+      return;
+    }
+    if (request.url() === entryUrl) {
+      requests.entry += 1;
+    }
+    if (request.url() === dependencyUrl) {
+      requests.dependency += 1;
+    }
+  });
+  // Capture the browser's actual parser-entry error before the observer can arrive.
+  await page.addInitScript(() => {
+    document.addEventListener(
+      "error",
+      (event) => {
+        const entry = event.target;
+        if (
+          event.isTrusted &&
+          entry instanceof HTMLScriptElement &&
+          entry.id === "console-entry" &&
+          entry.src === `${location.origin}/console/console.mjs`
+        ) {
+          entry.dataset.nativeStartupErrors = String(
+            Number(entry.dataset.nativeStartupErrors ?? "0") + 1,
+          );
+        }
+      },
+      true,
+    );
+  });
+  const observer = await holdRequests(t, page, observerUrl, {
+    once: true,
+    method: "GET",
+    afterServer: true,
+  });
+  let aborted = false;
+  await page.route(dependencyUrl, async (route) => {
+    if (route.request().method() === "GET" && !aborted) {
+      aborted = true;
+      await route.abort("failed");
+    } else {
+      await route.fallback();
+    }
+  });
+  const entryResponse = responseTo(page, "GET", entryUrl);
+  const documentResponse = await page.goto(url, { waitUntil: "commit" });
+  assert.equal(documentResponse?.status(), 200);
+  assert.equal((await entryResponse).status(), 200);
+  assert.equal((await observer.requested)?.status(), 200);
+  await page
+    .locator('#console-entry[data-native-startup-errors="1"]')
+    .waitFor({ state: "attached" });
+  assert.equal(aborted, true);
+  assert.deepEqual(requests, { entry: 1, dependency: 1 });
+
+  const observerResponse = responseTo(page, "GET", observerUrl);
+  observer.release();
+  assert.equal((await observerResponse).status(), 200);
+  await page.waitForLoadState("load");
+  const reload = page.getByRole("button", { name: "Reload page", exact: true });
+  await reload.waitFor();
+  assert.equal(await reload.isEnabled(), true);
+  assert.equal(
+    await page.locator("#app > p.startup[role='status']").textContent(),
+    "OpenClaw Enterprise could not load. Reload the page to try again.",
+  );
+  assert.deepEqual(requests, { entry: 1, dependency: 1 }, "recovery must not retry either module");
+  assert.equal(
+    await page.locator("#console-entry").getAttribute("data-native-startup-errors"),
+    "1",
+  );
+
+  // Only the explicit user action may start another document and module graph.
+  const reloadedDocument = responseTo(page, "GET", url);
+  const reloadedEntry = responseTo(page, "GET", entryUrl);
+  const reloadedDependency = responseTo(page, "GET", dependencyUrl);
+  await reload.click();
+  assert.equal((await reloadedDocument).status(), 200);
+  assert.equal((await reloadedEntry).status(), 200);
+  assert.equal((await reloadedDependency).status(), 200);
+  await page.getByRole("heading", { name: "Sign in", exact: true }).waitFor();
+  assert.equal(await page.getByLabel("Email", { exact: true }).isEnabled(), true);
+  assert.equal(page.url(), url);
+  assert.deepEqual(requests, { entry: 2, dependency: 2 });
+  assert.equal(await page.locator("#app > .startup-recovery").count(), 0);
+});
+
+test("a late startup observer does not report failure while the real session response is held", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture);
+  const url = `${fixture.origin}/console/login`;
+  const observerUrl = `${fixture.origin}/console/startup-recovery.mjs`;
+  const sessionUrl = `${fixture.origin}/api/auth/session`;
+  // Keep both routes registered: one-shot route removal can release the other held response.
+  const observer = await holdRequests(t, page, observerUrl, {
+    once: true,
+    method: "GET",
+    afterServer: true,
+  });
+  const session = await holdRequests(t, page, sessionUrl, {
+    once: true,
+    method: "GET",
+    afterServer: true,
+  });
+  let sessionDelivered = false;
+  page.on("response", (response) => {
+    if (response.request().method() === "GET" && response.url() === sessionUrl) {
+      sessionDelivered = true;
+    }
+  });
+  const documentResponse = await page.goto(url, { waitUntil: "commit" });
+  assert.equal(documentResponse?.status(), 200);
+  assert.equal((await observer.requested)?.status(), 200);
+  assert.equal((await session.requested)?.status(), 200);
+  assert.equal(await page.locator("#app > .startup-recovery").count(), 0);
+
+  const observerResponse = responseTo(page, "GET", observerUrl);
+  observer.release();
+  assert.equal((await observerResponse).status(), 200);
+  await page.waitForLoadState("load");
+  await page
+    .locator("#app > p.startup[role='status']")
+    .getByText("Checking session…", { exact: true })
+    .waitFor();
+  assert.equal(sessionDelivered, false, "the real session response must still be held");
+  assert.equal(await page.getByRole("button", { name: "Reload page", exact: true }).count(), 0);
+  assert.equal(await page.getByRole("heading", { name: "Sign in", exact: true }).count(), 0);
+
+  const sessionResponse = responseTo(page, "GET", sessionUrl);
+  session.release();
+  assert.equal((await sessionResponse).status(), 200);
+  await page.getByRole("heading", { name: "Sign in", exact: true }).waitFor();
+  assert.equal(await page.getByLabel("Email", { exact: true }).isEnabled(), true);
+  assert.equal(page.url(), url);
+  assert.equal(await page.locator("#app > .startup-recovery").count(), 0);
 });
 
 test("a cold console visit shows neither navigation nor sign-in until its session is known", async (t) => {

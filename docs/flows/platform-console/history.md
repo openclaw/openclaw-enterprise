@@ -13,6 +13,7 @@ This record preserves the dated changes to the platform console request flow. Se
 - 2026-10-30 12:00: Refocus rereads the Agent page's permission answer and keeps focus on a rebuilt Agents list row. (fix-dogfood-r59)
 - 2026-10-29 20:40: Refocus does not read again a version the page proved unreadable. (fix-console-r53)
 - 2026-10-29 18:30: A Tab lap past the page end starts no refocus check. (fix-keyboard-sweep)
+- 2026-10-29 10:44: Redact outcomes. (authoring-run/799eb0ca-6366-42a2-a2c1-3914595f0a61 - 134c539bdc6b712618bcb2a60788a4e5ba7810b0)
 - 2026-10-29 10:33: Close row confirmations after Namespace loss. (authoring-run/615bd51e-99c7-4208-bfdd-9816f2ea20b8 - b3e4d127b04f2a5eb1e74ba619f9d720d40e7f33)
 - 2026-10-29 10:25: Clear rows after Namespace access loss. (authoring-run/2fac9913-c631-4243-8ad0-758beda7f031 - bd67c46d5e5340e95d5e80bc850ebe41bc80f6ed)
 - 2026-10-28 13:01: Keep a held press on one Agent’s copy button from activating another Agent’s button after navigation. (fix-3678 - 594de5868)

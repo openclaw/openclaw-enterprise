@@ -10,12 +10,15 @@ import type {
   LeaveGuard,
   TabNavigation,
 } from "./page-context.mjs";
+import { renderOAuthClients } from "./oauth-clients.mjs";
+import { renderConnectionTemplates } from "./connection-templates.mjs";
 import { renderInstallationConfigurations } from "./driver-configurations.mjs";
 import {
   element,
   button,
   requestIdDisclosure,
   setUnavailable,
+  setFieldError,
   statusBlock,
   trackVisualViewport,
 } from "./dom.mjs";
@@ -40,7 +43,12 @@ import {
   type RequestOptions,
 } from "./api-client.mjs";
 import { createViewLifetime } from "./view-lifetime.mjs";
-import { createNavigation, pages } from "./navigation.mjs";
+import {
+  connectionTemplatesPage,
+  oauthClientsPage,
+  createNavigation,
+  pages,
+} from "./navigation.mjs";
 import {
   brandContents,
   createShell,
@@ -124,6 +132,7 @@ interface RetainedView {
 }
 
 const app = document.querySelector<HTMLElement>("#app")!;
+app.querySelector(":scope > .startup-recovery")?.remove();
 const lifetime = createViewLifetime();
 let session: Session | null = null;
 let namespaces: Namespace[] = [];
@@ -450,7 +459,7 @@ function settleNotAdministrator() {
   observabilityUrl = null;
   installationAdmin = false;
   observabilityOwner = sessionOwnerKey(session);
-  shellUI.dropObservabilityLink();
+  shellUI.dropAdministrationLinks();
   if (ended) {
     for (const handler of mountedViewState?.administrationEnded ?? []) {
       handler();
@@ -1276,7 +1285,19 @@ function collectionPath(feature: string, namespacePath: string | null) {
   if (feature === "backends") {
     return "/backends";
   }
-  return namespacePath === null ? null : `${namespacePath}/${feature}`;
+  return namespacePath !== null && ["secrets", "agents"].includes(feature)
+    ? `${namespacePath}/${feature}`
+    : null;
+}
+
+const debugStorageKey = "oce.console.debug";
+
+function readDebugPreference() {
+  try {
+    return localStorage.getItem(debugStorageKey) === "true";
+  } catch {
+    return false;
+  }
 }
 
 function renderShell(
@@ -1291,7 +1312,9 @@ function renderShell(
     namespaces,
     namespaceId,
     observabilityUrl,
+    debug: readDebugPreference(),
     namespaceAdmissionPending,
+    installationAdmin: installationAdmin === true,
     recovery,
     page,
   });
@@ -2335,6 +2358,41 @@ async function loadPage({
     if (shell.diagnostics) {
       attachDiagnostics(shell.diagnostics);
     }
+    if (current.feature === connectionTemplatesPage || current.feature === oauthClientsPage) {
+      // Re-enter with current administrator access and a fresh editor on history navigation.
+      viewState.reusable = false;
+      const view = shell.view;
+      const showRequiredAccess = () =>
+        panel(
+          view,
+          "Installation administrator access required",
+          current.feature === oauthClientsPage
+            ? "Installation administrators manage OAuth clients."
+            : "Installation administrators manage connection templates.",
+        );
+      if (installationAdmin) {
+        viewState.administrationEnded.add(showRequiredAccess);
+        const render =
+          current.feature === oauthClientsPage ? renderOAuthClients : renderConnectionTemplates;
+        view.append(
+          render(
+            { request: viewRequest, isCurrent: viewIsCurrent },
+            namespaces,
+            namespaces.find((item) => item.id === selectedNamespace)?.id ?? null,
+          ),
+        );
+      } else if (installationAdmin === false) {
+        showRequiredAccess();
+      } else {
+        panel(
+          view,
+          "Could not confirm administrator access",
+          "Refresh to check your Installation permissions.",
+        );
+      }
+      markMountedRoute(current);
+      return;
+    }
     if (current.feature === "settings") {
       shell.view.append(settingsView(session.user));
       if (installationAdmin) {
@@ -3194,9 +3252,33 @@ function resumePage() {
   });
 }
 
-// Settings (UX spec 3.10): the signed-in account, and this session with Sign out. The session
+// Settings: the signed-in account, browser preferences, and this session with Sign out. The session
 // read carries no sign-in method, sign-in time or expiry, so the cards show only what it has.
 function settingsView(user: Session["user"]) {
+  const debug = element("input", {
+    type: "checkbox",
+    role: "switch",
+    id: "settings-debug",
+    "aria-describedby": "settings-debug-help",
+  });
+  debug.checked = readDebugPreference();
+  debug.addEventListener("change", () => {
+    try {
+      localStorage.setItem(debugStorageKey, String(debug.checked));
+    } catch {
+      debug.checked = readDebugPreference();
+      setFieldError(
+        debug,
+        "Could not save this preference. Check your browser’s site storage settings and try again.",
+      );
+      return;
+    }
+    // Rebuild diagnostics with the new preference; retained pages must not restore old panels.
+    retainedViews.clear();
+    void loadPage().then(() => {
+      app.querySelector<HTMLInputElement>("#settings-debug")?.focus({ preventScroll: true });
+    });
+  });
   return element(
     "div",
     { className: "settings-page" },
@@ -3223,6 +3305,17 @@ function settingsView(user: Session["user"]) {
           element("dt", {}, "Email"),
           element("dd", {}, user.email),
         ),
+      ),
+    ),
+    element(
+      "section",
+      { className: "card" },
+      element("h2", {}, "Browser preferences"),
+      element("label", { className: "settings-debug-control" }, debug, "Debug mode"),
+      element(
+        "p",
+        { className: "hint", id: "settings-debug-help" },
+        "Show the OCE commit and Agent runtime images. Saved for this installation in this browser.",
       ),
     ),
     element(

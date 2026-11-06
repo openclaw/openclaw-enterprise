@@ -38,6 +38,7 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { bashString, commandShim, startCommandServer } from "../helpers/fixture-command-server.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { runDeployedCapability } from "../helpers/deployed-repository-capability.ts";
+import { loadYaml } from "../helpers/qa-utils.mjs";
 import { registerDispatchRestoreTests } from "../helpers/production-upgrade-dispatch-restore.ts";
 
 const execute = promisify(execFile);
@@ -1215,6 +1216,8 @@ async function fixture(
     inventoryNamespaces = null,
     names = null,
     configurationValues = null,
+    pluginDrivers,
+    candidatePluginDrivers,
     olderDraftRules = false,
     unavailableDraftResolver = false,
     afterDeploy,
@@ -1308,6 +1311,7 @@ async function fixture(
         }
       : {}),
     drivers: {
+      ...(pluginDrivers && { plugin: pluginDrivers }),
       compute: {
         id: "compute-kubernetes",
         configuration: {
@@ -1449,10 +1453,13 @@ async function fixture(
     const candidateValues = JSON.parse(values);
     candidateValues.api = { channelDirectoryProxyUrl: "http://198.51.100.25:3128" };
     const candidateInstallation = JSON.parse(installation);
-    candidateInstallation.drivers.plugin = {
-      id: "codex-plugin",
-      configuration: { catalogSource: "openai-curated" },
-    };
+    candidateInstallation.drivers.plugin = candidatePluginDrivers ?? [
+      ...(candidateInstallation.drivers.plugin ?? []),
+      {
+        id: "codex-plugin",
+        configuration: { catalogSource: "openai-curated" },
+      },
+    ];
     await writeFile(join(directory, "candidate-values.json"), JSON.stringify(candidateValues), {
       mode: 0o600,
     });
@@ -1541,6 +1548,144 @@ async function fixture(
     failNext: (name) => writeFile(join(directory, name), ""),
   };
 }
+
+test("an image upgrade can select curated Codex while preserving both plugin registrations", async (t) => {
+  const pluginDrivers = [
+    { id: "occ-plugin", configuration: {} },
+    {
+      id: "codex-plugin",
+      configuration: {
+        catalogSource: "hosted",
+        codexExecutable: "/usr/bin/codex",
+        codexHome: "/var/lib/codex",
+      },
+    },
+  ];
+  const candidatePluginDrivers = structuredClone(pluginDrivers);
+  candidatePluginDrivers[1].configuration.catalogSource = "openai-curated";
+  const f = await fixture(t, { candidates: true, pluginDrivers, candidatePluginDrivers });
+  await f.run();
+  const state = await f.state();
+  const installed = loadYaml(
+    Buffer.from(state.secret.data["installation.yaml"], "base64").toString(),
+  );
+  assert.deepEqual(installed.drivers.plugin, candidatePluginDrivers);
+});
+// Existing installations can retain the former single-registration shape. Only
+// an explicit candidate may convert it, without changing the selected Driver.
+test("an image upgrade can explicitly wrap an existing plugin registration", async (t) => {
+  for (const selection of ["occ-plugin", "codex-plugin", "curated-codex"]) {
+    await t.test(selection, async (subtest) => {
+      const id = selection === "curated-codex" ? "codex-plugin" : selection;
+      const pluginDrivers = {
+        id,
+        configuration:
+          id === "codex-plugin"
+            ? {
+                catalogSource: "hosted",
+                codexExecutable: "/usr/bin/codex",
+                codexHome: "/var/lib/codex",
+              }
+            : {},
+      };
+      const candidatePluginDrivers = [structuredClone(pluginDrivers)];
+      if (selection === "curated-codex") {
+        candidatePluginDrivers[0].configuration.catalogSource = "openai-curated";
+      }
+      const f = await fixture(subtest, {
+        candidates: true,
+        controllerOnly: true,
+        pluginDrivers,
+        candidatePluginDrivers,
+      });
+      await f.run();
+      const state = await f.state();
+      const installed = loadYaml(
+        Buffer.from(state.secret.data["installation.yaml"], "base64").toString(),
+      );
+      assert.deepEqual(installed.drivers.plugin, candidatePluginDrivers);
+      assert.equal(state.version, 2);
+    });
+  }
+});
+
+test("wrapping a plugin registration preserves protected settings", async (t) => {
+  for (const change of [
+    "executable",
+    "home",
+    "driver",
+    "extra-driver",
+    "configuration-shape",
+    "registration-shape",
+    "duplicate-driver",
+    "unrelated-setting",
+    "unknown-installed-driver",
+    "installed-extra-field",
+    "installed-missing-configuration",
+    "installed-configuration-shape",
+  ]) {
+    await t.test(change, async (subtest) => {
+      const pluginDrivers = {
+        id: "codex-plugin",
+        configuration: {
+          catalogSource: "hosted",
+          codexExecutable: "/usr/bin/codex",
+          codexHome: "/var/lib/codex",
+        },
+      };
+      // Invalid installed registrations must not become accepted through wrapping.
+      if (change === "unknown-installed-driver") {
+        pluginDrivers.id = "unknown-plugin";
+      }
+      if (change === "installed-extra-field") {
+        pluginDrivers.extra = true;
+      }
+      if (change === "installed-missing-configuration") {
+        delete pluginDrivers.configuration;
+      }
+      if (change === "installed-configuration-shape") {
+        pluginDrivers.configuration = [];
+      }
+      const candidatePluginDrivers = [structuredClone(pluginDrivers)];
+      const candidate = candidatePluginDrivers[0];
+      if (change === "executable") {
+        candidate.configuration.codexExecutable = "/other/codex";
+      }
+      if (change === "home") {
+        candidate.configuration.codexHome = "/other/home";
+      }
+      if (change === "driver") {
+        candidate.id = "occ-plugin";
+      }
+      if (change === "extra-driver") {
+        candidatePluginDrivers.push({ id: "occ-plugin", configuration: {} });
+      }
+      if (change === "configuration-shape") {
+        candidate.configuration = [];
+      }
+      if (change === "registration-shape") {
+        candidatePluginDrivers[0] = "codex-plugin";
+      }
+      if (change === "duplicate-driver") {
+        candidatePluginDrivers.push(structuredClone(candidate));
+      }
+      const f = await fixture(subtest, {
+        candidates: true,
+        controllerOnly: true,
+        pluginDrivers,
+        candidatePluginDrivers,
+      });
+      if (change === "unrelated-setting") {
+        const path = join(f.directory, "candidate-installation.json");
+        const installation = JSON.parse(await readFile(path, "utf8"));
+        installation.name = "Different installation";
+        await writeFile(path, JSON.stringify(installation));
+      }
+      await assert.rejects(f.run(), /candidate Installation changes a protected setting/);
+      assert.deepEqual(await f.events(), []);
+    });
+  }
+});
 
 registerDispatchRestoreTests(fixture, injectedFault);
 
@@ -2649,6 +2794,7 @@ test("preparation rejects non-mapping candidate documents before protected-setti
 test("reviewed settings survive an interrupted controller upgrade without losing unrelated Secret data", async (t) => {
   const f = await fixture(t, {
     candidates: true,
+    pluginDrivers: [{ id: "occ-plugin", configuration: {} }],
     controllerOnly: true,
     repositoryCredentials: true,
     simulatePair: true,
@@ -2660,7 +2806,10 @@ test("reviewed settings survive an interrupted controller upgrade without losing
   const liveInstallation = JSON.parse(
     Buffer.from(interrupted.secret.data["installation.yaml"], "base64").toString(),
   );
-  assert.equal(liveInstallation.drivers.plugin.configuration.catalogSource, "openai-curated");
+  assert.deepEqual(liveInstallation.drivers.plugin, [
+    { id: "occ-plugin", configuration: {} },
+    { id: "codex-plugin", configuration: { catalogSource: "openai-curated" } },
+  ]);
   assert.equal(liveInstallation.drivers.compute.configuration.images.gateway, oldRuntime);
   assert.equal(
     liveInstallation.backend[0].configuration.registryPath,
@@ -2855,6 +3004,7 @@ test(
       "plugin-executable",
       "plugin-hosted",
       "plugin-null",
+      "plugin-add-occ",
       "unreviewed-values",
     ]) {
       cases.push(
@@ -2899,11 +3049,13 @@ test(
               },
             };
           } else if (change === "plugin-executable") {
-            installation.drivers.plugin.configuration.codexExecutable = "/etc/other/codex";
+            installation.drivers.plugin[0].configuration.codexExecutable = "/etc/other/codex";
           } else if (change === "plugin-hosted") {
-            installation.drivers.plugin.configuration.catalogSource = "hosted";
+            installation.drivers.plugin[0].configuration.catalogSource = "hosted";
+          } else if (change === "plugin-add-occ") {
+            installation.drivers.plugin.push({ id: "occ-plugin", configuration: {} });
           } else if (change === "plugin-null") {
-            installation.drivers.plugin = { id: null, configuration: { catalogSource: null } };
+            installation.drivers.plugin = null;
           } else {
             values.controlPlane = { extraSetting: true };
           }

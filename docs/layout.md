@@ -25,6 +25,7 @@ of truth for HTTP behavior.
 
 The console Storybook in `scripts/console-storybook/` is also an isolated tool
 with its own manifest and lockfile. See [Console Storybook](contributing/console-storybook.md).
+Use the standalone [interface sketch renderer](../scripts/interface-sketches/README.md) to describe architecture in TypeScript and generate shareable diagrams.
 
 Within `internal/occcli/`, `cli.go` assembles the command tree and resource
 commands. `iam.go` owns IAM policy, ServicePrincipal, and service-key commands.
@@ -202,10 +203,15 @@ architecture pages for every feature.
 Put contributor workflows for documentation in `docs/contributing/`, starting
 with the [writing guide](contributing/documentation.md). Existing site-tooling
 guides and inventories may remain directly under `docs/`; `docs/testing/` owns
-code verification and test setup. The [documentation taxonomy](taxonomy.md) maps page kinds to their templates.
+code verification and test setup. Per-check coverage pages live in
+`docs/testing/ci/` and use the [CI check template](contributing/ci-check-template.md).
+The CI index links to those pages; shared configuration and lane procedures have
+their own pages in that directory.
+The [documentation taxonomy](taxonomy.md) maps page kinds to their templates.
 
-The [documentation map](README.md) has six menus. **Getting Started**, **Topics**,
+The [documentation map](README.md) has seven menus. **Getting Started**, **Topics**,
 **Integrations**, **Deploy & Operate**, and **Reference** serve product users and operators;
+**Testing & CI** serves contributors running and interpreting checks;
 **Contribute** serves people changing the platform. A menu opens its sidebar.
 Register every Markdown page once in [docs/docs.json](docs.json) and link it from
 its owning overview. Deep implementation and testing pages can use the owning

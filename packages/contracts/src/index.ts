@@ -140,6 +140,24 @@ export {
   sandboxNetworkGrantsWithinCeiling,
 } from "./sandbox-policy.ts";
 
+export type {
+  OAuthClient,
+  OAuthClientAuthMethod,
+  McpAuthorizationMetadata,
+  ConnectionEndpoint,
+  ConnectionTemplate,
+  ConnectionTemplateValues,
+  OAuthConnectionTemplateVersion,
+} from "./connection-templates.ts";
+export {
+  ConnectionTemplateValidationError,
+  connectionValuesChanged,
+  isFlowOwnedOAuthParameter,
+  isOAuthScopeToken,
+  normalizeConnectionDestinations,
+  validateConnectionTemplateAuthorization,
+  validateConnectionTemplateDestinations,
+} from "./connection-templates.ts";
 export type { ComputePreparationFailureEvidence } from "./compute-preparation.ts";
 export { isComputePreparationFailureEvidence } from "./compute-preparation.ts";
 
@@ -305,8 +323,12 @@ export interface InstallationCapabilities {
   readonly agentProvisioning?: ComputeAgentProvisioningCapabilities;
   /** A selected Credential Gateway requires source-backed model authentication. */
   readonly credentialSources?: { readonly types: readonly CredentialSourceType[] };
-  readonly pluginPolicies?: PluginPolicyCapabilities & { readonly driver: PluginDriverIdentity };
-  readonly pluginDiscovery?: { readonly credential: "required" | "none" };
+  /** Plugin catalogs by Harness. */
+  readonly pluginCatalogs?: readonly {
+    readonly harnessId: "openclaw" | "codex";
+    readonly pluginPolicies: PluginPolicyCapabilities & { readonly driver: PluginDriverIdentity };
+    readonly pluginDiscovery?: { readonly credential: "required" | "none" };
+  }[];
   /** Present only when dedicated native OpenClaw can be admitted. */
   readonly nativeWorkers?: { readonly support: "pinned-runtime" | "custom-image" };
   /**
@@ -811,7 +833,7 @@ export function validPluginApprovers(approvers: unknown): approvers is PluginApp
   return approvers === undefined || Check(PLUGIN_SCHEMA_REFS, PluginApproversSchema, approvers);
 }
 
-function validPluginDriverIdentity(value: unknown): value is PluginDriverIdentity {
+export function validPluginDriverIdentity(value: unknown): value is PluginDriverIdentity {
   if (!Check(PLUGIN_SCHEMA_REFS, PluginDriverIdentitySchema, value)) {
     return false;
   }
@@ -870,10 +892,9 @@ export function pluginRuntimeHarnessRequirement(
   harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
 ): string | undefined {
   if (implementation === CODEX_PLUGIN_DRIVER_IMPLEMENTATION) {
-    return (harness.id === "codex" && harness.mode === "dedicated") ||
-      (harness.id === "openclaw" && harness.mode === "embedded")
+    return harness.id === "codex" && harness.mode === "dedicated"
       ? undefined
-      : "a dedicated Codex Harness or embedded OpenClaw Harness";
+      : "a dedicated Codex Harness";
   }
   if (implementation === OPENCLAW_PLUGIN_DRIVER_IMPLEMENTATION) {
     return harness.id === "openclaw" &&
@@ -884,21 +905,11 @@ export function pluginRuntimeHarnessRequirement(
   return undefined;
 }
 
-/**
- * Whether this Harness reaches the repository credential broker through the Codex network
- * proxy when Compute delivers repository material to it: a dedicated Codex Harness, or an
- * embedded OpenClaw Harness whose plugins run in the Codex Plugin Driver.
- */
+/** Dedicated Codex reaches the repository credential broker through its Harness network proxy. */
 export function codexProxiesRepositoryBroker(
   harness: Readonly<Pick<RevisionHarnessDescriptor, "id" | "mode">>,
-  pluginDriverImplementation: string | undefined,
 ): boolean {
-  return (
-    (harness.id === "codex" && harness.mode === "dedicated") ||
-    (harness.id === "openclaw" &&
-      harness.mode === "embedded" &&
-      pluginDriverImplementation === CODEX_PLUGIN_DRIVER_IMPLEMENTATION)
-  );
+  return harness.id === "codex" && harness.mode === "dedicated";
 }
 
 const CODEX_NETWORK_PROXY_SETTING = "plugins.entries.codex.config.appServer.networkProxy";
@@ -1013,6 +1024,8 @@ export interface Agent extends Scope {
   readonly executionMode: HarnessExecutionMode;
   /** Desired Gateway administration mode; each deployment snapshots the selected value. */
   readonly gatewayManagedMode: boolean;
+  /** Driver that admitted the nonempty plugin selection. */
+  readonly pluginDriver?: PluginDriverIdentity;
   readonly plugins?: PluginDesiredState;
   readonly pluginApprovers?: PluginApprovers;
   readonly repositoryBindings?: readonly RepositoryBindingSelection[];
@@ -1039,6 +1052,7 @@ export interface ConfigurationReadError {
 
 export type AgentMetadata = Omit<
   Agent,
+  | "pluginDriver"
   | "plugins"
   | "pluginApprovers"
   | "repositoryBindings"
@@ -1378,7 +1392,11 @@ export type {
   IAMManagedServicePrincipalInput,
 } from "./drivers/iam/index.ts";
 export type { ServiceAccountDriver } from "./drivers/service-account/index.ts";
-export type { SecretDriver } from "./drivers/secret/index.ts";
+export type {
+  InstallationSecretRef,
+  InstallationSecretStore,
+  SecretDriver,
+} from "./drivers/secret/index.ts";
 export type {
   CredentialGatewayDriver,
   CredentialGatewayContext,
@@ -1468,6 +1486,10 @@ export type JSONSchema = Readonly<Record<string, unknown>>;
 export { isAllowedSecretBindingDestination, normalizeSecretBindings } from "./secret-bindings.ts";
 
 export * from "./api/common.ts";
+export {
+  ConnectionTemplateSchema,
+  OAuthConnectionTemplateVersionSchema,
+} from "./api/connection-templates.ts";
 export * from "./api/resources.ts";
 export * from "./api/routes.ts";
 

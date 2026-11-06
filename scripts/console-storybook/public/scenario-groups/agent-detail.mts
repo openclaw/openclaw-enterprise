@@ -131,6 +131,40 @@ export function createAgentDetailScenarios({
   currentVersion: string;
   candidateVersion: string;
 }) {
+  const configurationConflictDraft = {
+    group: "Pages/Agent detail",
+    path: draft,
+    configurationChangedElsewhere: {
+      values: {
+        gateway: { bind: "loopback" },
+        agents: { defaults: { model: "codex/gpt-5.1" } },
+      },
+    },
+    actions: [
+      click("Edit Configuration"),
+      {
+        selector: "#configuration-json",
+        value: JSON.stringify(
+          {
+            gateway: { mode: "local", bind: "lan" },
+            agents: {
+              defaults: {
+                model: "codex/gpt-4.1",
+                models: { "codex/gpt-4.1": { agentRuntime: { id: "codex" } } },
+              },
+            },
+            channels: {},
+          },
+          null,
+          2,
+        ),
+      },
+    ],
+  } satisfies Pick<
+    AgentDetailScenario,
+    "group" | "path" | "configurationChangedElsewhere" | "actions"
+  >;
+
   const runtimeLogsPage = {
     group: "Pages/Agent detail",
     path: `${candidateVersion}&tab=logs`,
@@ -558,6 +592,11 @@ export function createAgentDetailScenarios({
         actions: [{ selector: "#agent-plugins", value: "[]" }, click("Save plugin selections")],
         description:
           "Save with Plugin selections JSON that is not an object: the error shows under the JSON and focus moves to it, with no browser bubble.",
+        steps: [
+          "Confirm the array error appears below the raw JSON editor and the editor has focus.",
+          'Replace the draft with {"sample":{"enabled":true,"driverPolicy":{"destructiveEnabled":1e400}}}. Collapse the JSON editor and choose Save plugin selections. The editor opens and takes focus with a number-range error; no save request starts.',
+          "Open Configure plugins. The existing invalid-JSON guidance appears, focus stays in the dialog, and the raw draft remains unchanged. Correct the number before using policy controls.",
+        ],
       },
       agentAuthenticationRequiredFields: {
         group: "Pages/Agent detail",
@@ -1238,6 +1277,12 @@ export function createAgentDetailScenarios({
         ],
         description:
           "Invalid JSON is reported under the editor with its line and column. The editor keeps its contents and sends no Configuration write.",
+        steps: [
+          "Check the initial syntax error, then Cancel and reopen Edit Configuration. Expand Advanced settings to restore a complete Configuration JSON draft.",
+          'Set plugins.entries.knowledge to {"enabled":true,"config":{"thresholds":[1,1e400,3]}}, preserving the rest of the document. This is valid JSON syntax, but the middle number is outside the supported range. Select Save Configuration.',
+          "Read the error under the editor: A number is too large or too small to save. Use a number closer to zero. Check that the editor has focus, its exact text is unchanged, and no Configuration write occurs.",
+          "Change only 1e400 to 2 and save again. Reopen the editor and check that thresholds is [1,2,3], with no null substituted. This is simulated UI evidence only.",
+        ],
       },
       invalidConfigurationInvisibleCharacters: {
         group: "Pages/Agent detail",
@@ -1276,34 +1321,10 @@ export function createAgentDetailScenarios({
         ],
       },
       configurationChangedElsewhereMerged: {
-        group: "Pages/Agent detail",
+        ...configurationConflictDraft,
         name: "Configuration edits merged over another browser's save",
-        path: draft,
-        configurationChangedElsewhere: {
-          values: {
-            gateway: { bind: "loopback" },
-            agents: { defaults: { model: "codex/gpt-5.1" } },
-          },
-        },
         actions: [
-          click("Edit Configuration"),
-          {
-            selector: "#configuration-json",
-            value: JSON.stringify(
-              {
-                gateway: { mode: "local", bind: "lan" },
-                agents: {
-                  defaults: {
-                    model: "codex/gpt-4.1",
-                    models: { "codex/gpt-4.1": { agentRuntime: { id: "codex" } } },
-                  },
-                },
-                channels: {},
-              },
-              null,
-              2,
-            ),
-          },
+          ...configurationConflictDraft.actions,
           click("Save Configuration"),
           click("Reload draft"),
         ],
@@ -1312,6 +1333,29 @@ export function createAgentDetailScenarios({
         steps: [
           "Check the note names /gateway/bind with the saved value, and the editor keeps the other browser's model with this reader's bind.",
         ],
+      },
+      configurationConflictFocus: {
+        ...configurationConflictDraft,
+        name: "Configuration conflict preserves moved focus",
+        rules: [
+          {
+            method: "GET",
+            suffix: "/configurations/cfg_00000000-0000-4000-8000-000000000001",
+            skip: 1,
+            once: true,
+            // Leave time for a person to move focus during the simulated preflight.
+            delayMs: 10000,
+          },
+        ],
+        description:
+          "The first save waits 10 seconds for its simulated preflight read, then reports a conflict. Compare recovery focus with focus moved to the editor or navigation.",
+        steps: [
+          "Focus Save Configuration and press Enter. Stay on Checking Configuration: the conflict moves focus to Reload draft and announces an alert.",
+          "Reset. Save, then click Configuration JSON and use Select All during the 10-second check. The conflict keeps focus and active selection in the read-only editor without scrolling to the alert.",
+          "Reset and repeat, moving focus to the Agents link during the check. Focus stays on that link.",
+          "Choose Reload draft to merge the edits. Check that the saved model and this reader's bind remain, with a note naming /gateway/bind.",
+        ],
+        gap: "Simulated preflight conflict only; the browser regression checks a real Controller PATCH race.",
       },
       admitted: {
         group: "Pages/Agent detail",
@@ -2698,7 +2742,35 @@ export function createAgentDetailScenarios({
             status: 404,
           },
         ],
-        description: "A deleted or inaccessible Agent link returns a resource-unavailable panel.",
+        description:
+          "A simulated 404 shows Agent details and Resource unavailable without an Agent name.",
+        actions: [{ text: "Agent details" }],
+        steps: [
+          "Confirm the page heading is Agent details and the panel says Resource unavailable, without an Agent name.",
+          "Choose ← Agents and confirm the collection heading is Agents.",
+        ],
+      },
+      agentReadInterrupted: {
+        group: "Pages/Agent detail",
+        name: "Retry a direct Agent link",
+        path: draft,
+        rules: [
+          {
+            method: "GET",
+            path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+            once: true,
+            status: 503,
+            code: "DEPENDENCY_UNAVAILABLE",
+          },
+        ],
+        description:
+          "A simulated interruption shows Agent details and Request unavailable. Retry reads the fixture's Research assistant.",
+        actions: [{ text: "Agent details" }, { text: "Request unavailable" }],
+        steps: [
+          "Open the preview directly in its own tab, without navigating from the Agents list.",
+          "Confirm the heading is Agent details and the panel says Request unavailable, without an Agent name.",
+          "Use Tab to reach Retry and press Enter. Confirm the H1 becomes Research assistant and receives keyboard focus.",
+        ],
       },
       configurationError: {
         group: "Pages/Agent detail",
@@ -2794,6 +2866,26 @@ export function createAgentDetailScenarios({
           },
         ],
         description: "Deployment stays disabled when revision history cannot be read.",
+      },
+      revisionRejected: {
+        group: "Pages/Agent detail",
+        name: "Revision history rejects with null",
+        path: `${draft}&tab=configuration`,
+        rules: [
+          {
+            method: "GET",
+            path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/revisions",
+            rejectWithNull: true,
+          },
+        ],
+        description:
+          "The revision-history fetch rejects with raw JavaScript null and no HTTP status. The draft Configuration GET uses its normal fixture response. The separate Revision history unavailable preview retains HTTP 403.",
+        steps: [
+          "At desktop and 390-pixel widths, confirm Version history unavailable appears without No readable versions or Load older versions.",
+          "Read the draft Configuration, open Edit Configuration, then Cancel. The history warning remains local to version history.",
+          "Confirm Deploy new version stays unavailable and explains that version history is required before deploying.",
+        ],
+        gap: "Simulated JavaScript rejection through the production Console; this does not prove a normal browser network failure, backend persistence, or deployment.",
       },
       deployDenied: {
         group: "Pages/Agent detail",

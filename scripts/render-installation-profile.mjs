@@ -2280,11 +2280,11 @@ function buildRendered(profile, parsed, diagnostics) {
 }
 
 async function resolveHostedDiscoveryCidrs(profile, parsed, values, diagnostics) {
-  const plugin = profile.installation.drivers.plugin;
-  if (
-    plugin.id !== "codex-plugin" ||
-    (plugin.configuration?.catalogSource ?? "hosted") !== "hosted"
-  ) {
+  const hostedDiscovery = profile.installation.drivers.plugin.some(
+    (entry) =>
+      entry.id === "codex-plugin" && (entry.configuration?.catalogSource ?? "hosted") === "hosted",
+  );
+  if (!hostedDiscovery) {
     return;
   }
   const hosts = ["auth.openai.com", "chatgpt.com"];
