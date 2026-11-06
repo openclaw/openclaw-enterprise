@@ -5,6 +5,7 @@ import { readFile, unlink, writeFile } from "node:fs/promises";
 import { createServer, request } from "node:https";
 import { join } from "node:path";
 import type { TestContext } from "node:test";
+import { createSecureContext } from "node:tls";
 import { promisify } from "node:util";
 import { certificateAuthority, signedLeaf } from "./certificates.mjs";
 import { temporaryDirectory } from "./temporary-directory.mjs";
@@ -27,6 +28,7 @@ export async function createSavedAccountOrigin(t: TestContext, issuer: string) {
     subjectAltName: `DNS:${host}`,
   });
   const root = await readFile(ca.caPath, "utf8");
+  const recipientTrust = createSecureContext({ ca: root });
   const requests: { tokenHash: string; subject: string; tool: string }[] = [];
   const server = createServer({ key: leaf.key, cert: leaf.cert }, async (req, res) => {
     const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
@@ -147,7 +149,7 @@ export async function createSavedAccountOrigin(t: TestContext, issuer: string) {
             port: address.port,
             method: "POST",
             path: url.pathname,
-            ca: root,
+            secureContext: recipientTrust,
             agent: false,
             headers: {
               host: url.host,
