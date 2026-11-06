@@ -41,8 +41,6 @@ See the [API reference](api.md#connections) for request and response fields.
 
 OCC handles browser consent and the callback. After exchange, OCC registers the grant with the Token Service. It returns a stable account reference and renews the access token using the original client registration. Users can connect an account before an administrator configures a Credential Gateway for Agent delivery.
 
-In a Helm installation, the OCC API Pod contacts the provider for MCP discovery and the authorization-code exchange. The chart lets the cluster operator control API egress. The worker performs scheduled refreshes. If you use saved OAuth accounts, allow the worker to reach each provider’s token endpoint through your cluster’s network policy.
-
 1. Use a signed-in browser session. List available templates at
    `GET /namespaces/{namespaceId}/connection-templates`. OCC requires
    `credential_source:create` for that Namespace. A template appears here once

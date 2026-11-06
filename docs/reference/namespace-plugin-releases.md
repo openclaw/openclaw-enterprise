@@ -18,6 +18,6 @@ For a published MCP server, open **Configure plugins** on the Agent and choose *
 
 Attach the source to the Agent, select the tools, save the draft and deploy. The dedicated OpenShell proxy injects the bearer token at the admitted endpoint and checks each tool name. Installations using the execution-scoped Credential Proxy Driver require its future MCP support.
 
-Installation administrators can separately register [OAuth connection templates](connection-templates.md) under **Credentials → Connection templates**. The Token Service can save and renew those accounts. Attaching a saved OAuth account to an Agent requires support for Agent grants. Imported MCP servers currently accept the release’s bearer CredentialSource.
+Binding a saved OAuth account to an imported server is pending in the shared Agent grant workflow. For account setup, see [OAuth connection templates](connection-templates.md).
 
 The Agent revision pins the release and its files. Publishing another release does not upgrade a running Agent. Removing a selection and deploying removes that version's skill and server. An old connection can stay attached to the Agent. The next worker receives it only if the deployed revision selects the matching release, server, and at least one tool. For revocation on a running Agent, see [withdraw a credential source](credential-sources/withdrawal.md).
