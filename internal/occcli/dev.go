@@ -140,17 +140,25 @@ func developmentRepository() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	const declaration = "module github.com/openclaw/openclaw-enterprise"
 	for {
-		module, err := os.ReadFile(filepath.Join(directory, "go.mod"))
-		if err == nil && strings.HasPrefix(string(module), "module github.com/openclaw/openclaw-enterprise\n") {
+		modulePath := filepath.Join(directory, "go.mod")
+		module, err := os.ReadFile(modulePath)
+		content := string(module)
+		line, _, hasNewline := strings.Cut(content, "\n")
+		if err == nil && hasNewline && strings.TrimSuffix(line, "\r") == declaration {
 			if _, err := os.Stat(filepath.Join(directory, "compose.yaml")); err == nil {
-				return directory, nil
+				if !strings.Contains(content, "\r\n") {
+					return directory, nil
+				}
+				return "", fmt.Errorf("%q uses CRLF line endings; convert it to LF before running occ dev", modulePath)
 			}
 		}
 		parent := filepath.Dir(directory)
 		if parent == directory {
-			return "", fmt.Errorf("run occ dev from an OpenClaw Enterprise source checkout")
+			break
 		}
 		directory = parent
 	}
+	return "", fmt.Errorf("run occ dev from an OpenClaw Enterprise source checkout")
 }
