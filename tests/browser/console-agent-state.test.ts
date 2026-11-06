@@ -58,7 +58,6 @@ import {
 import { agentDeleteRequests, agentStopRequests } from "./console-agents-test-support.ts";
 import { createReadyConsoleNamespace } from "../helpers/console-ready-namespace.ts";
 import {
-  ACCESS_TAB_UNAVAILABLE,
   AGENT_CREATE_RESTRICTED,
   AGENT_DELETE_DENIED,
   AGENT_STOP_AND_DELETE_DENIED,
@@ -162,6 +161,30 @@ function deploymentBody(
 
 const authenticationFailure = persistedDeploymentError("RUNTIME_AUTHENTICATION_FAILED");
 assert.ok(authenticationFailure);
+
+const OCC_SHARING_UNAVAILABLE =
+  "OCC sharing requires Installation administration. Direct Control UI access is checked separately.";
+
+async function expectSharingUnavailable(page: Page) {
+  await page.getByRole("tab", { name: "Access", selected: true }).waitFor();
+  const sharing = page.getByRole("region", { name: "Share Agent through OCC", exact: true });
+  await sharing.getByText(OCC_SHARING_UNAVAILABLE, { exact: true }).waitFor();
+  assert.equal(
+    await sharing.getByRole("button", { name: "Share Agent", exact: true }).count(),
+    0,
+    "a denied OCC policy exposes no sharing write form",
+  );
+  assert.equal(
+    await sharing.getByRole("button", { name: "Remove binding", exact: true }).count(),
+    0,
+    "a denied OCC policy retires previously readable bindings and removal controls",
+  );
+  assert.equal(
+    await sharing.getByText("Current policy loaded.", { exact: true }).isVisible(),
+    false,
+    "an OCC policy denial must not retain the old current-policy success claim",
+  );
+}
 
 test("Refresh deployment also refreshes the viewed version's deployment record", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -421,6 +444,7 @@ test("Deployment activity keeps following after Back restores the cached Agent v
   assert.ok(panel);
   // The Console caches the Agent view for Back only if its reads finished before it was left.
   await waitForIdleFetches(page);
+  assert.equal(await page.getByRole("region", { name: "People" }).count(), 0);
 
   // While the Agent view is cached, its poll timer fires without a current view.
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
@@ -762,11 +786,26 @@ test("Agent detail returns to the Agents list once background deletion finishes"
   await page.getByRole("heading", { name: "Agents" }).waitFor();
 });
 
-test("Agent detail hides sharing instead of showing an error to non-administrators", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
+test("Agent detail keeps Access and hides OCC write controls when sharing is denied", async (t) => {
+  const fixture = await createConsoleAppFixture(t, {
+    gatewayPeopleAccess: {
+      async list() {
+        return [
+          {
+            identity: "oidc:direct-reader@example.test",
+            profileId: null,
+            displayName: "",
+            role: null,
+            hasAvatar: false,
+          },
+        ];
+      },
+    },
+  });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Sharing denied", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Shared Agent", nativeValues("x"));
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
   await page.route(`${fixture.origin}/namespaces/${namespace.id}/iam/**`, (route) =>
     route.fulfill({
@@ -782,26 +821,22 @@ test("Agent detail hides sharing instead of showing an error to non-administrato
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
   await login(page, fixture, url);
   await page.getByRole("heading", { name: "Shared Agent" }).waitFor();
-  const panel = page.locator(".agent-access");
-  await panel.waitFor({ state: "hidden" });
-  assert.equal(
-    await page.getByText(/Sharing policy requires Installation administration/).count(),
-    0,
-  );
-  // The refused read hides the tab too, and Configuration opens in its place.
-  await page.waitForURL((current) => current.searchParams.get("tab") === "configuration");
-  const configuration = page.getByRole("tab", { name: "Configuration", selected: true });
-  await configuration.waitFor();
-  assert.equal(await page.getByRole("tab", { name: "Access" }).count(), 0);
-  // The arrow keys skip the hidden Access tab: End and wrapping stop at Deployment.
+  await expectSharingUnavailable(page);
+  // OCC policy denial cannot remove independently authorized direct Gateway access.
+  await page
+    .getByRole("region", { name: "Direct Control UI access", exact: true })
+    .getByText("oidc:direct-reader@example.test", { exact: true })
+    .waitFor();
+  await page.waitForURL((current) => current.searchParams.get("tab") === "access");
+  const access = page.getByRole("tab", { name: "Access", selected: true });
   const focused = () => page.evaluate(() => globalThis.document.activeElement?.textContent);
-  await configuration.focus();
+  await access.focus();
   await page.keyboard.press("End");
-  assert.equal(await focused(), "Deployment");
+  assert.equal(await focused(), "Access");
   await page.keyboard.press("ArrowRight");
   assert.equal(await focused(), "Configuration");
   await page.keyboard.press("ArrowLeft");
-  assert.equal(await focused(), "Deployment");
+  assert.equal(await focused(), "Access");
 });
 
 // The API audits each refused read as an authorization denial, one nobody attempted. A member's
@@ -828,12 +863,14 @@ test("Only an administrator's session probes Installation administration and rea
   const memberRequests = apiRequests(member, fixture.origin);
   await login(member, fixture, access, reader.credentials);
   await member.getByRole("heading", { name: "Audited Agent" }).waitFor();
-  await member.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
-  assert.equal(await member.getByRole("tab", { name: "Access" }).count(), 0);
+  await member.getByRole("tab", { name: "Access", selected: true }).waitFor();
+  await expectSharingUnavailable(member);
+  assert.equal(await member.getByRole("tab", { name: "Access" }).count(), 1);
   // The Namespace permission answer's refusal is not kept across reloads, so a reload and another
   // page ask it again; none of them probes.
   await member.reload();
-  await member.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
+  await member.getByRole("tab", { name: "Access", selected: true }).waitFor();
+  await expectSharingUnavailable(member);
   await member.goto(`${fixture.origin}/console/namespaces`);
   await member.getByRole("list", { name: "Namespaces" }).getByText("Audited access").waitFor();
   await waitForIdleFetches(member);
@@ -845,7 +882,7 @@ test("Only an administrator's session probes Installation administration and rea
   const adminRequests = apiRequests(admin, fixture.origin);
   await login(admin, fixture, access);
   await admin
-    .getByRole("region", { name: "Share Agent", exact: true })
+    .getByRole("region", { name: "Share Agent through OCC", exact: true })
     .getByText("Current policy loaded.", { exact: true })
     .waitFor();
   assert.equal(
@@ -1467,11 +1504,13 @@ test("Installation-administration reads after a revoke are refused and audited o
   const pages = {
     access: async () => {
       await page.goto(String(detailUrl(fixture, namespace.id, agent.id, "draft", "access")));
-      await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
-      await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
+      await page.getByRole("tab", { name: "Access", selected: true }).waitFor();
+      await expectSharingUnavailable(page);
+      // Secret read authorization is proved on Configuration, not by an OCC denial moving us there.
+      await page.getByRole("tab", { name: "Configuration", exact: true }).click();
       await unlisted.waitFor();
       await waitForIdleFetches(page);
-      assert.equal(await page.getByRole("tab", { name: "Access" }).count(), 0);
+      assert.equal(await page.getByRole("tab", { name: "Access" }).count(), 1);
     },
     agent: async () => {
       await page.goto(agentUrl);
@@ -1537,7 +1576,7 @@ test("Installation-administration reads after a revoke are refused and audited o
   await waitForIdleFetches(page);
   assert.equal(adminDenials().length, 3);
   await page.getByRole("tab", { name: "Access", exact: true }).click();
-  await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
+  await expectSharingUnavailable(page);
   await waitForIdleFetches(page);
   assert.equal(await observability.count(), 0);
   assert.equal(adminDenials().length, 4);
@@ -1549,7 +1588,9 @@ test("Installation-administration reads after a revoke are refused and audited o
   await waitForDriverConfigurations(page);
   revoke();
   await page.goto(String(detailUrl(fixture, namespace.id, agent.id, "draft", "access")));
-  await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
+  await expectSharingUnavailable(page);
+  // The regranted Secret read is verified on Configuration, while Access stays independent.
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await named.waitFor();
   await waitForIdleFetches(page);
   assert.equal(await observability.count(), 0);
@@ -1634,7 +1675,7 @@ test("Back to a kept Agent page after a revoke sends no more audited administrat
   await waitForDriverConfigurations(page);
   revoke();
   await page.goto(accessUrl);
-  await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
+  await expectSharingUnavailable(page);
   await waitForIdleFetches(page);
   assert.equal(adminDenials().length, 2);
   await leaveForAgents();
@@ -2369,7 +2410,7 @@ test("A return to the Access tab after a revoke shows the member notice, audited
   assert.equal(policyReads(sent).length, 2);
   // A share's outcome stays through the next return: the recheck rereads the policy but keeps
   // what the panel said.
-  const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+  const panel = page.getByRole("region", { name: "Share Agent through OCC", exact: true });
   const shared = panel.getByText("Agent access is shared.", { exact: false });
   const recipient = fixture.provisionedAccounts[0];
   assert.ok(recipient);
@@ -2393,10 +2434,10 @@ test("A return to the Access tab after a revoke shows the member notice, audited
   revoke();
   sent = requests.length;
   await accessTab.click();
-  await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
-  await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
+  await expectSharingUnavailable(page);
+  await page.getByRole("tab", { name: "Access", selected: true }).waitFor();
   await waitForIdleFetches(page);
-  assert.equal(await accessTab.count(), 0);
+  assert.equal(await accessTab.count(), 1);
   assert.equal(await loaded.count(), 0);
   assert.equal(await remove.count(), 0);
   assert.equal(policyReads(sent).length, 1);
@@ -2415,7 +2456,7 @@ test("A return to the Access tab after a revoke shows the member notice, audited
   assert.equal(policyReads(sent).length, 0);
   assert.equal(iamDenials().length, 1);
 
-  // Access that returns is used again: Refresh asks again, and the Access tab is back.
+  // Regranted OCC administration is used again: page Refresh rechecks access without removing Access.
   grantInstallationAdministration(fixture, account.principal);
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await accessTab.click();
@@ -2428,7 +2469,7 @@ test("A return to the Access tab after a revoke shows the member notice, audited
 // both policy reads at once. An administrator revoked before that first open was refused, and
 // audited, twice. The tab reads one list at a time, so the revoke costs one audited refusal, as a
 // return to the tab does (D790), and the tab gives way to Configuration.
-test("A first Access open after a revoke shows the member notice, audited once", async (t) => {
+test("A first Access open after a revoke audits each independent section once", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Revoked first open", { ready: true });
@@ -2454,15 +2495,16 @@ test("A first Access open after a revoke shows the member notice, audited once",
   const audited = authorizationDenials(fixture.auditSink).length;
   const sent = requests.length;
   await accessTab.click();
-  await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
-  await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
+  await expectSharingUnavailable(page);
+  await page.getByRole("tab", { name: "Access", selected: true }).waitFor();
   await waitForIdleFetches(page);
-  assert.equal(await accessTab.count(), 0);
+  assert.equal(await accessTab.count(), 1);
   assert.deepEqual(
     authorizationDenials(fixture.auditSink)
       .slice(audited)
-      .map(({ action }: AuditEvent) => action),
-    ["openclaw.iam.roles.list"],
+      .map(({ action }: AuditEvent) => action)
+      .sort(),
+    ["openclaw.agents.gateway.people.read", "openclaw.iam.roles.list"],
   );
   assert.deepEqual(
     requests
@@ -2483,7 +2525,7 @@ test("A share after a revoke rereads the policy one list at a time, audited once
     "Revoked share",
     "draft",
   );
-  const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+  const panel = page.getByRole("region", { name: "Share Agent through OCC", exact: true });
   await waitForEnabled(panel.getByRole("button", { name: "Share Agent", exact: true }));
 
   revoke();
@@ -2538,7 +2580,7 @@ test("A share after a revoke rereads the policy one list at a time, audited once
 async function shareRefusedAfterRevoke(t: TestContext, name: string) {
   const opened = await openAsRevocableAdministrator(t, name, "draft");
   const { fixture, page, revoke } = opened;
-  const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+  const panel = page.getByRole("region", { name: "Share Agent through OCC", exact: true });
   await waitForEnabled(panel.getByRole("button", { name: "Share Agent", exact: true }));
   revoke();
   const audited = authorizationDenials(fixture.auditSink).length;
@@ -2612,10 +2654,10 @@ test("Refresh sharing while still revoked sends no policy read and adds no audit
   const accessTab = page.getByRole("tab", { name: "Access", exact: true });
   const sent = requests.length;
   await panel.getByRole("button", { name: "Refresh sharing", exact: true }).click();
-  await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
-  await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
+  await expectSharingUnavailable(page);
+  await page.getByRole("tab", { name: "Access", selected: true }).waitFor();
   await waitForIdleFetches(page);
-  assert.equal(await accessTab.count(), 0);
+  assert.equal(await accessTab.count(), 1);
   assert.equal(await opened.stop.isVisible(), false);
   assert.equal(await opened.remove.isVisible(), false);
   const after = requests.slice(sent);
@@ -2681,7 +2723,7 @@ test("A revoke the Access tab settles takes away administrator controls without 
     { once: true },
   );
   await accessTab.click();
-  await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
+  await expectSharingUnavailable(page);
   await reread.requested;
   await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   await page.getByRole("tab", { name: "Plugins", selected: true }).waitFor();
@@ -2697,12 +2739,13 @@ test("A revoke the Access tab settles takes away administrator controls without 
     requests.slice(sent).filter(({ path }) => path.endsWith("/plugins/capabilities")).length,
     0,
   );
-  // The Access tab's refused policy read is the only audited refusal.
+  // Each independent section has one first refusal; neither repeats it. Order is not a contract.
   assert.deepEqual(
     authorizationDenials(fixture.auditSink)
       .slice(audited)
-      .map(({ action }: AuditEvent) => action),
-    ["openclaw.iam.roles.list"],
+      .map(({ action }: AuditEvent) => action)
+      .sort(),
+    ["openclaw.agents.gateway.people.read", "openclaw.iam.roles.list"],
   );
 });
 
@@ -2750,7 +2793,7 @@ test("A revoke the Access tab settles drops the Namespaces only administration c
   const audited = authorizationDenials(fixture.auditSink).length;
   let sent = requests.length;
   await accessTab.click();
-  await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
+  await expectSharingUnavailable(page);
   await waitForIdleFetches(page);
   assert.deepEqual(await choices(), ["Member team"]);
   assert.equal(await selector.inputValue(), namespace.id);
@@ -2760,8 +2803,9 @@ test("A revoke the Access tab settles drops the Namespaces only administration c
   assert.deepEqual(
     authorizationDenials(fixture.auditSink)
       .slice(audited)
-      .map(({ action }: AuditEvent) => action),
-    ["openclaw.iam.roles.list"],
+      .map(({ action }: AuditEvent) => action)
+      .sort(),
+    ["openclaw.agents.gateway.people.read", "openclaw.iam.roles.list"],
   );
 
   // Administration returns at Refresh, and then ends together with her own Namespace read
@@ -2859,7 +2903,7 @@ test("After a revoke the selector keeps its Namespace, and a reread the page lef
   revoke();
   let sent = requests.length;
   await accessTab.click();
-  await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
+  await expectSharingUnavailable(page);
   await waitForIdleFetches(page);
   assert.deepEqual(await choices(), ["Alpha team", "Member team"]);
   assert.equal(await selector.inputValue(), namespace.id);
@@ -3049,8 +3093,8 @@ test("An older permission reread that answers after a newer one failed applies t
   );
   const failed = responseTo(page, "GET", permissionsUrl);
   await page.getByRole("tab", { name: "Access", exact: true }).click();
+  await expectSharingUnavailable(page);
   assert.equal((await failed).status(), 503);
-  await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
   older.release();
   // She holds Agent read only: Stop, Delete and the draft's access all follow the older answer.
   await stop.waitFor({ state: "hidden" });
@@ -3086,7 +3130,7 @@ test("An older permission reread that answers after a newer one leaves the newer
   // The newer reread: the Access tab's refused recheck ends administration, and the page reads
   // her reader's answer, which it receives first.
   await page.getByRole("tab", { name: "Access", exact: true }).click();
-  await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
+  await expectSharingUnavailable(page);
   await stop.waitFor({ state: "hidden" });
   assert.equal(await remove.isVisible(), false);
   assert.equal(await draftEntry.textContent(), DRAFT_READ_ONLY);
@@ -3125,7 +3169,7 @@ test("Plugins opened while a newer permission reread is in flight waits for it",
   // revoke, and the page receives it last.
   const newer = await holdRequests(t, page, permissionsUrl, { once: true, afterServer: true });
   await page.getByRole("tab", { name: "Access", exact: true }).click();
-  await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
+  await expectSharingUnavailable(page);
   await newer.requested;
   const answered = await settledFetches(page, permissionsPath);
   older.release();
@@ -3145,12 +3189,13 @@ test("Plugins opened while a newer permission reread is in flight waits for it",
     requests.slice(sent).filter(({ path }) => path.endsWith("/plugins/capabilities")).length,
     0,
   );
-  // The Access tab's refused policy read is the only audited refusal.
+  // Each independent section has one first refusal; neither repeats it. Order is not a contract.
   assert.deepEqual(
     authorizationDenials(fixture.auditSink)
       .slice(audited)
-      .map(({ action }: AuditEvent) => action),
-    ["openclaw.iam.roles.list"],
+      .map(({ action }: AuditEvent) => action)
+      .sort(),
+    ["openclaw.agents.gateway.people.read", "openclaw.iam.roles.list"],
   );
 });
 
@@ -3253,7 +3298,7 @@ test("An unknown Installation access answer keeps the Access tab", async (t) => 
   await evidence.waitFor();
   await page.getByRole("tab", { name: "Access", exact: true }).click();
   await page
-    .getByRole("region", { name: "Share Agent", exact: true })
+    .getByRole("region", { name: "Share Agent through OCC", exact: true })
     .getByText("Current policy loaded.", { exact: true })
     .waitFor();
   assert.equal(await evidence.isHidden(), true);
@@ -3261,7 +3306,7 @@ test("An unknown Installation access answer keeps the Access tab", async (t) => 
 
 // A refused policy read with focus on the Access tab hides the tab, moves focus to
 // Configuration's and replaces the Access entry in history, so Back does not return to it.
-test("A refused sharing read moves focus off the hidden Access tab", async (t) => {
+test("A refused sharing read preserves focus on the independently available Access tab", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Sharing refused", { ready: true });
@@ -3282,23 +3327,21 @@ test("A refused sharing read moves focus off the hidden Access tab", async (t) =
   await read.requested;
   assert.equal(await page.evaluate(() => globalThis.document.activeElement?.textContent), "Access");
   read.release();
-  await page.waitForURL((current) => current.searchParams.get("tab") === "configuration");
-  const configuration = page.getByRole("tab", { name: "Configuration", selected: true });
-  await configuration.waitFor();
-  await page.waitForFunction(
-    () => globalThis.document.activeElement?.textContent === "Configuration",
-  );
+  await expectSharingUnavailable(page);
+  await page.waitForURL((current) => current.searchParams.get("tab") === "access");
+  await page.waitForFunction(() => globalThis.document.activeElement?.textContent === "Access");
   assert.equal(await page.evaluate(() => globalThis.history.length), entries + 1);
 });
 
 // The read is refused after the reader left the tab: Back to it opens Configuration in its
 // place, never the hidden panel.
-test("Back to a refused Access tab opens Configuration", async (t) => {
+test("Back to Access retains the independent OCC denial without another policy probe", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Sharing left", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Left Agent", nativeValues("x"));
   const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
   const read = await holdRequests(
     t,
     page,
@@ -3312,11 +3355,16 @@ test("Back to a refused Access tab opens Configuration", async (t) => {
   await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   await page.waitForURL((current) => current.searchParams.get("tab") === "plugins");
   read.release();
-  await page.getByRole("tab", { name: "Access" }).waitFor({ state: "detached" });
+  await page.getByRole("tab", { name: "Access", exact: true }).waitFor();
   await page.goBack();
-  await page.waitForURL((current) => current.searchParams.get("tab") === "configuration");
-  await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
-  assert.equal(await page.locator(".agent-access").count(), 0);
+  await page.waitForURL((current) => current.searchParams.get("tab") === "access");
+  await expectSharingUnavailable(page);
+  assert.equal(await page.locator(".agent-access").count(), 1);
+  assert.equal(
+    requests.filter(({ path }) => path.endsWith("/iam/roles")).length,
+    1,
+    "Back does not replay the refused policy read",
+  );
 });
 
 function routeDeploymentStatus(
@@ -4691,4 +4739,40 @@ test("Agents list permission advice updates its own row without moving focus els
   );
   assert.ok((await accessibleDescription(guardedStop)).includes(AGENT_STOP_AND_DELETE_DENIED));
   assert.deepEqual(nonAuthWriteRequests(requests), []);
+});
+
+test("Refresh sharing recovers when a person newly gains administration", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("New sharing administrator", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Sharing recovery Agent",
+    nativeValues("new-admin"),
+  );
+  const account = await fixture.createNamespaceMember("new-sharing-administrator", namespace.id, [
+    ["read", "namespace"],
+    ["read", "agent"],
+    ["read", "agent_revision"],
+    ["read", "configuration"],
+  ]);
+  const { page } = await newPage(t, fixture);
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "access"),
+    account.credentials,
+  );
+  await expectSharingUnavailable(page);
+  const revoke = grantInstallationAdministration(fixture, account.principal);
+  t.after(revoke);
+  // The same authenticated person now has real policy authority. The stale
+  // initial UI hint must not discard the successful authoritative reread.
+  const policyPath = "/namespaces/" + namespace.id + "/iam/roles";
+  assert.equal(await page.evaluate(async (path) => (await fetch(path)).status, policyPath), 200);
+  await page.getByRole("button", { name: "Refresh sharing", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Share Agent", exact: true })
+    .waitFor({ state: "visible" });
+  assert.equal(new URL(page.url()).searchParams.get("tab"), "access");
 });

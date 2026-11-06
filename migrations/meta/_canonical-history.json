@@ -569,6 +569,14 @@
       "tag": "0071_default_users",
       "breakpoints": true,
       "sha256": "a4f7c22caf4f9dcb548cad3f3a069a0f66ea941a0b43f9fe2087b5f72803cce9"
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1787000000072,
+      "tag": "0072_agent_control_ui_bookmark",
+      "breakpoints": true,
+      "sha256": "f58180489fc5a66513e2c38e7d9642cc93d5aa0a2996d5921055ff7d904f4a25"
     }
   ],
   "initialSchemaStates": {
@@ -582,18 +590,8 @@
     "ownerOnly": {
       "owner": "occ_migrator",
       "privileges": [
-        [
-          "occ_migrator",
-          "occ_migrator",
-          "CREATE",
-          false
-        ],
-        [
-          "occ_migrator",
-          "occ_migrator",
-          "USAGE",
-          false
-        ]
+        ["occ_migrator", "occ_migrator", "CREATE", false],
+        ["occ_migrator", "occ_migrator", "USAGE", false]
       ],
       "objects": 0,
       "defaultPrivileges": 0,
@@ -601,6 +599,18 @@
     }
   },
   "logicalRestoreCatalogs": {
+    "34c0b890f9bc3d5227f3e1b1d348e70507243f80eff0e3cf7382a37c7a2eb938": [
+      "f5e6d3b869ca34578e3ba4bdcfcaddd5f62e76be8872ddd18b29ce8563e74e54",
+      "10ad7e05dfe242cf260a2b2fe7aa97ebaaddda0973dd61586772794de4766044"
+    ],
+    "b4d51ba1958dd4060000175da976e6ea09a6316886b722e8a5038386972e89f3": [
+      "3cb274cd0311720a91ba232a89bf07b2ca2c58abd699d8b1a31cdc10cf5ce828",
+      "d33e98f54a4e23aef31094196fca48d53cead17c8eb10071e0850a8ab93a518e"
+    ],
+    "2607a849c82063bc2022c70807447a4a6ba4213dd534ad2840157b411add202c": [
+      "1888f0f42173ce8d6f34d001cd1c2c1ebfe7c725ad2f2f732df97d898a9f4cc0",
+      "f5d680b99f839016aae9109e0e615cab6f241f4617ccb5e6ced0267332ceef1d"
+    ],
     "eb024f6c9697e8796d9633de0400495f41a2ad2378a2d8d6512feb7b99db9e73": [
       "890302ea4befd5ca8a1aa9d49e1c2b5ae124379cacb4fa74a377e6da210d2428"
     ],
@@ -646,7 +656,7 @@
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
-    "completed": "451fc5103dcacb194c7decfd419da6444995d78ddbd4f44ee4f69217b4cb6c5b",
+    "completed": "34c0b890f9bc3d5227f3e1b1d348e70507243f80eff0e3cf7382a37c7a2eb938",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
     "agentProvisioning": "baac9e369ace8610f96948c1a930e6387431b1d0a33cefa3893765e52f8f7a52",
     "backendCompleted": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",
@@ -687,7 +697,8 @@
     "preAgentPluginDriver": "c74762d7f4d45b4215f42fcc8cf9e43d01fae03dbb80522d84c4e17370a2f7c3",
     "preConnectionTemplates": "8fc3e20bcb36ad9b2afe8ab96077139b12b50c825dd18ff323603d0e0540b250",
     "preSavedConnections": "1989ad2291a59e5d15e7f35fd008677449cac6cd11e653605b3d48675655dba9",
-    "preDefaultUsers": "b3d9b0b499a4ea4a0cab68cd2836ab6ceba96be82c3f2bb6faac5e7fcb2a06c4"
+    "preDefaultUsers": "b3d9b0b499a4ea4a0cab68cd2836ab6ceba96be82c3f2bb6faac5e7fcb2a06c4",
+    "preAgentControlUiBookmark": "451fc5103dcacb194c7decfd419da6444995d78ddbd4f44ee4f69217b4cb6c5b"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",
@@ -696,7 +707,7 @@
   "catalogEvidence": {
     "postgres": "18.6",
     "drizzleOrm": "0.45.4",
-    "method": "Historical catalogs retain their recorded qualification. The completed catalog and logical restore were measured on PostgreSQL 18.6 after stock Drizzle execution with occ_migrator and effective occ_app privileges."
+    "method": "Historical catalogs retain their recorded qualification. The completed catalog was measured on PostgreSQL 18.6 after stock Drizzle execution with occ_migrator and effective occ_app privileges."
   },
   "compatibleLineages": {
     "providerCompleted": {

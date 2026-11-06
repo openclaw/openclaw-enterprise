@@ -53,6 +53,10 @@ affected `field`. Authorization and strict mutation/runtime validation are uncha
 query failures still fail requests. See the
 [Console warning](../guides/console/agent-details.md#unreadable-saved-settings).
 
+[Direct Control UI access](agents/gateway-people.md) describes configured users
+and the optional operator-maintained entry bookmark. The bookmark is shared Agent
+metadata, not Configuration or ingress setup.
+
 ## Deployment status
 
 The `deploymentId` is the saved AgentRevision ID from

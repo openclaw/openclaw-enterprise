@@ -253,7 +253,7 @@ test("Share Agent refusals", async (t) => {
     );
     const { page } = await newPage(t, fixture, { browser, context: { viewport } });
     await login(page, fixture, detailUrl(fixture, target.id, agent.id, "draft", "access"));
-    const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+    const panel = page.getByRole("region", { name: "Share Agent through OCC", exact: true });
     const [recipient] = fixture.provisionedAccounts;
     assert.ok(recipient, "Share recipient was provisioned");
     await panel.getByLabel("Existing person’s Principal ID").fill(recipient.principal.id);

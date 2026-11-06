@@ -342,6 +342,19 @@ test(
                           await browser.verify(agent);
                         },
                       );
+                      await step(
+                        "authorized Gateway people read through installed OCC",
+                        async () => {
+                          // Exercise the normal Console API's private Gateway RPC adapter.
+                          const { people } = await f.api(
+                            "GET",
+                            `/namespaces/${agent.namespaceId}/agents/${agent.id}/gateway/people`,
+                          );
+                          // This ordinary deployment configures only the machine identity.
+                          // A successful native read must not promote historical profiles to members.
+                          assert.deepEqual(people, []);
+                        },
+                      );
                     },
                   ]);
                 } else {

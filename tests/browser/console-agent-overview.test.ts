@@ -421,7 +421,7 @@ test("the Share Agent form shows disabled while the sharing policy loads", async
   );
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "access"));
   await roles.requested;
-  const sharing = page.getByRole("region", { name: "Share Agent", exact: true });
+  const sharing = page.getByRole("region", { name: "Share Agent through OCC", exact: true });
   const principal = sharing.getByLabel("Existing person’s Principal ID");
   await principal.waitFor();
   const share = sharing.getByRole("button", { name: "Share Agent" });
@@ -2827,7 +2827,7 @@ async function pendingDeploy(
     await expectDeploymentOutcome(page, outcome, { reveal: false });
     await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
     if (tab === "access") {
-      await page.getByRole("heading", { name: "Share Agent" }).waitFor();
+      await page.getByRole("heading", { name: "Share Agent through OCC" }).waitFor();
     }
     await waitForIdleFetches(page);
   };
@@ -2975,7 +2975,7 @@ for (const viewport of [
     assert.equal(band.minHeight, "");
     assert.ok(band.below < 40, `${band.below} px under the outcome`);
     await page.getByRole("tab", { name: "Access", exact: true }).click();
-    await page.getByRole("heading", { name: "Share Agent", exact: true }).waitFor();
+    await page.getByRole("heading", { name: "Share Agent through OCC", exact: true }).waitFor();
     const settledTop = await shareTop();
     t.diagnostic(`${size} Share Agent at ${firstTop}, ${attemptTop}, ${settledTop}`);
     assert.ok(Math.abs(attemptTop - firstTop) <= 1, `moved ${attemptTop - firstTop} px`);
@@ -3740,7 +3740,7 @@ for (const viewport of [
     // On the Access tab, beside the sharing panel, the open disclosure shows all three.
     await page.getByRole("tab", { name: "Access", exact: true }).click();
     await page
-      .getByRole("region", { name: "Share Agent", exact: true })
+      .getByRole("region", { name: "Share Agent through OCC", exact: true })
       .getByText("Current policy loaded.", { exact: true })
       .waitFor();
     for (const sentence of GUARANTEES) {
@@ -3772,14 +3772,27 @@ test("The page's disclosure names listed bindings only beside the sharing panel"
     }),
   );
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "access"));
-  // The refused read hides the tab and opens Configuration in its place.
-  await page.waitForURL((current) => current.searchParams.get("tab") === "configuration");
-  await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
+  // Access remains available for direct Gateway users; OCC policy denial is local to sharing.
+  await page.waitForURL((current) => current.searchParams.get("tab") === "access");
+  await page.getByRole("tab", { name: "Access", selected: true }).waitFor();
+  const sharing = page.getByRole("region", { name: "Share Agent through OCC", exact: true });
+  await sharing
+    .getByText(
+      "OCC sharing requires Installation administration. Direct Control UI access is checked separately.",
+      { exact: true },
+    )
+    .waitFor();
+  assert.equal(await sharing.getByRole("button", { name: "Share Agent", exact: true }).count(), 0);
+  assert.equal(
+    await sharing.getByRole("button", { name: "Remove binding", exact: true }).count(),
+    0,
+  );
   const disclosure = page.locator("details.disclosure");
   await disclosure.getByText("What this page can tell you", { exact: true }).click();
   await disclosure.getByText(required(GUARANTEES[0]), { exact: true }).waitFor();
   await disclosure.getByText(required(GUARANTEES[1]), { exact: true }).waitFor();
   assert.equal(await page.getByRole("region", { name: "Share Agent", exact: true }).count(), 0);
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   assert.equal(
     await disclosure.getByText(required(GUARANTEES[2]), { exact: true }).isVisible(),
     false,
@@ -3822,7 +3835,7 @@ test("Share Agent is on the Access tab, not the overview", async (t) => {
     "Logs",
     "Access",
   ]);
-  assert.equal(await page.getByRole("heading", { name: "Share Agent" }).count(), 0);
+  assert.equal(await page.getByRole("heading", { name: "Share Agent through OCC" }).count(), 0);
   assert.deepEqual(policyReads(), []);
 
   await page.getByRole("tab", { name: "Access", exact: true }).click();
@@ -3830,9 +3843,9 @@ test("Share Agent is on the Access tab, not the overview", async (t) => {
   await page.getByRole("tab", { name: "Access", selected: true }).waitFor();
   const panel = page
     .getByRole("tabpanel")
-    .getByRole("region", { name: "Share Agent", exact: true });
+    .getByRole("region", { name: "Share Agent through OCC", exact: true });
   await panel.getByText("Current policy loaded.", { exact: true }).waitFor();
-  await page.getByRole("heading", { name: "Agent-wide access" }).waitFor();
+  await page.getByRole("heading", { name: "Access", exact: true }).waitFor();
   assert.equal(await panel.getByRole("button", { name: "Share Agent", exact: true }).count(), 1);
   assert.deepEqual(
     policyReads()
@@ -3847,7 +3860,7 @@ test("Share Agent is on the Access tab, not the overview", async (t) => {
   await second.getByRole("tab", { name: "Access", selected: true }).waitFor();
   await second
     .getByRole("tabpanel")
-    .getByRole("region", { name: "Share Agent", exact: true })
+    .getByRole("region", { name: "Share Agent through OCC", exact: true })
     .getByText("Current policy loaded.", { exact: true })
     .waitFor();
   assert.equal((await second.getByRole("tab").allTextContents()).at(-1), "Access");
@@ -3872,7 +3885,7 @@ test("A share in flight finishes across a tab switch", async (t) => {
     { method: "POST", once: true },
   );
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "access"));
-  const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+  const panel = page.getByRole("region", { name: "Share Agent through OCC", exact: true });
   await panel.getByText("Current policy loaded.", { exact: true }).waitFor();
   await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
   await panel.getByRole("checkbox").check();
@@ -3921,7 +3934,7 @@ test("A share in flight holds version and page changes until it finishes", async
   );
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
   await login(page, fixture, url);
-  const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+  const panel = page.getByRole("region", { name: "Share Agent through OCC", exact: true });
   await panel.getByText("Current policy loaded.", { exact: true }).waitFor();
   const versionOptions = { exact: true, includeHidden: true };
   const version = page.getByLabel("Viewing version", versionOptions);
@@ -4003,7 +4016,7 @@ test("A share in flight holds a Retry that would rebuild the page", async (t) =>
   const retry = page.getByRole("tabpanel").getByRole("button", { name: "Retry", exact: true });
   await retry.waitFor();
   await page.getByRole("tab", { name: "Access", exact: true }).click();
-  const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+  const panel = page.getByRole("region", { name: "Share Agent through OCC", exact: true });
   await panel.getByText("Current policy loaded.", { exact: true }).waitFor();
   await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
   await panel.getByRole("checkbox").check();
@@ -4049,7 +4062,7 @@ test("Delete during a share in flight keeps saying why the page stays open", asy
   );
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
   await login(page, fixture, url);
-  const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+  const panel = page.getByRole("region", { name: "Share Agent through OCC", exact: true });
   await panel.getByText("Current policy loaded.", { exact: true }).waitFor();
   await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
   await panel.getByRole("checkbox").check();
@@ -4182,7 +4195,7 @@ test("A share in flight on a version preserves Back to the draft and Forward to 
   await waitForChosenVersion(page);
   await page.getByRole("tab", { name: "Access", exact: true }).click();
   await page.waitForURL((current) => current.searchParams.get("tab") === "access");
-  const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+  const panel = page.getByRole("region", { name: "Share Agent through OCC", exact: true });
   await panel.getByText("Current policy loaded.", { exact: true }).waitFor();
   await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
   await panel.getByRole("checkbox").check();

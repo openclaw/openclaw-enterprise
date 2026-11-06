@@ -1052,6 +1052,16 @@ test(
       provisionNativeAdmin: true,
       nativeOptions: {
         controlUi: { enabled: true },
+        auth: {
+          trustedProxy: {
+            allowUsers: ["occ-workspace-files", "oidc:member-01"],
+            deviceAutoApprove: { enabled: true, scopes: ["operator.read", "operator.write"] },
+          },
+          identityScopes: {
+            "occ-workspace-files": ["operator.admin"],
+            "oidc:member-01": ["operator.read"],
+          },
+        },
       },
       workspaceGateway: true,
     });
@@ -1090,6 +1100,20 @@ test(
     assert.equal(status.bootstrapUrl, undefined);
     assert.equal(status.url, expectedTarget.origin + "/");
     assert.equal(status.activeRevisionId, topology.revision.id);
+
+    // The installed OCC route must read native config, not infer members from profiles.
+    // This admitted external identity has never connected; the shared proxy is not a person.
+    const people = await topology.adminRequest("GET", agentPath(topology, "/gateway/people"));
+    assert.equal(people.status, 200, JSON.stringify(people.error));
+    assert.deepEqual(people.data.people, [
+      {
+        identity: "oidc:member-01",
+        profileId: null,
+        displayName: "",
+        role: null,
+        hasAvatar: false,
+      },
+    ]);
 
     const route = await resource(
       "httproute",

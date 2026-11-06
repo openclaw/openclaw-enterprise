@@ -1,3 +1,4 @@
+import { openAdvancedSettings } from "./console-agents-ui-test-support.ts";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import test, { type TestContext } from "node:test";
@@ -30,6 +31,7 @@ import {
   viewTag,
 } from "./console-refocus-helpers.ts";
 import { restrict } from "../helpers/iam-grants.mjs";
+import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
 
 type Agent = Pick<AgentWire, "id" | "name" | "configurationId">;
 type Namespace = Pick<NamespaceWire, "id">;
@@ -2059,4 +2061,152 @@ test("the console web font is ready before the entry script runs, fetched once",
   script.release();
   await page.getByLabel("Email", { exact: true }).waitFor();
   assert.deepEqual(fonts, [`${fixture.origin}/console/fonts/instrument-sans-latin.woff2`]);
+});
+
+// Access is Agent metadata, not a Configuration authorization check. Returning
+// editors must retain live action wiring as well as input and read authorization.
+test("Returning to retained Configuration after Access refocus rechecks revoked read access", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = namespaceResource(
+    await fixture.createNamespace("Protected retained tab", { ready: true }),
+  );
+  const agent = agentResource(
+    await fixture.createAgent(
+      namespace.id,
+      "Protected retained Agent",
+      nativeValues("retained-private-marker"),
+    ),
+  );
+  const agentBase = "/namespaces/" + namespace.id + "/agents/" + agent.id;
+  const bookmark = await fixture.request("PUT", agentBase + "/control-ui-bookmark", {
+    body: { url: "https://control.example.com/retained-agent", expectedVersion: 0 },
+  });
+  assert.equal(bookmark.status, 200);
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const configurationPath =
+    "/namespaces/" + namespace.id + "/configurations/" + agent.configurationId;
+  const snapshotStatuses: number[] = [];
+  page.on("response", (response) => {
+    if (
+      new URL(response.url()).pathname === configurationPath &&
+      response.request().method() === "GET"
+    ) {
+      snapshotStatuses.push(response.status());
+    }
+  });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const access = page.getByRole("tab", { name: "Access", exact: true });
+  const configuration = page.getByRole("tab", { name: "Configuration", exact: true });
+  const direct = page.getByRole("link", { name: "Open direct Control UI", exact: true });
+  const deploy = page.getByRole("button", { name: "Deploy new version", exact: true });
+  await waitForEnabled(deploy);
+  await waitForIdleFetches(page);
+  let beforeAccess = snapshotStatuses.length;
+  await access.click();
+  await direct.waitFor();
+  await refocusHeld(t, page);
+  await waitForIdleFetches(page);
+  assert.equal(
+    snapshotStatuses.length,
+    beforeAccess,
+    "Access and its focus recheck must not read the selected Configuration",
+  );
+  await configuration.click();
+  await waitForEnabled(deploy);
+  await page.getByRole("button", { name: "Edit Configuration", exact: true }).click();
+  await openAdvancedSettings(page);
+  const json = page.getByLabel("Configuration JSON");
+  await json.waitFor();
+  const saved = await json.inputValue();
+  const edited = saved.replace("retained-private-marker", "edited-after-return-marker");
+  assert.notEqual(edited, saved);
+  await json.fill(edited);
+  const save = page.getByRole("button", { name: "Save Configuration", exact: true });
+  await waitForEnabled(save);
+  assert.equal(
+    await deploy.isDisabled(),
+    true,
+    "the visible Deploy control must follow edits made after restoring a clean Configuration view",
+  );
+  const written = responseTo(page, "PATCH", fixture.origin + configurationPath);
+  await save.click();
+  assert.equal((await written).status(), 200);
+  await page.getByText("Configuration saved.", { exact: true }).waitFor();
+  await waitForEnabled(deploy);
+  const persisted = await fixture.request("GET", configurationPath);
+  assert.equal(persisted.status, 200);
+  assert.ok(
+    JSON.stringify(persisted.data).includes("edited-after-return-marker"),
+    "normal Save persists the restored editor’s new input",
+  );
+
+  // Exercise unsaved-input retention separately from the clean-view action check.
+  await page.reload();
+  await page.getByRole("button", { name: "Edit Configuration", exact: true }).click();
+  await openAdvancedSettings(page);
+  await json.waitFor();
+  const draft = (await json.inputValue()).replace(
+    "edited-after-return-marker",
+    "unsaved-private-marker",
+  );
+  await json.fill(draft);
+  await waitForIdleFetches(page);
+  beforeAccess = snapshotStatuses.length;
+  await access.click();
+  await direct.waitFor();
+  await refocusHeld(t, page);
+  await waitForIdleFetches(page);
+  assert.equal(snapshotStatuses.length, beforeAccess);
+  await configuration.click();
+  await json.waitFor();
+  assert.equal(
+    await json.inputValue(),
+    draft,
+    "a still-authorized editor keeps its unsaved input after refocus",
+  );
+
+  beforeAccess = snapshotStatuses.length;
+  await access.click();
+  await direct.waitFor();
+  restrict(fixture.policy, "read", "configuration", {
+    namespaceId: namespace.id,
+    resourceId: agent.configurationId,
+  });
+  await refocusHeld(t, page);
+  await waitForIdleFetches(page);
+  assert.equal(
+    snapshotStatuses.length,
+    beforeAccess,
+    "a revoked Configuration still must not be probed while Access is active",
+  );
+  assert.equal(await direct.isVisible(), true, "the independent shared bookmark stays available");
+  await configuration.click();
+  assert.equal(
+    await json.isVisible(),
+    false,
+    "a parked private Configuration must not be restored before its read is authorized again",
+  );
+  await waitForIdleFetches(page);
+  assert.equal(
+    snapshotStatuses.at(-1),
+    403,
+    "returning to the protected editor must reach the real Configuration authorization boundary",
+  );
+  assert.equal(await json.isVisible(), false);
+  assert.equal(
+    await page.locator(".agent-draft-actions").count(),
+    0,
+    "a refused snapshot must retire its shared generation checklist and Deploy controls",
+  );
+  const deniedReads = snapshotStatuses.length;
+  await access.click();
+  await direct.waitFor();
+  await waitForIdleFetches(page);
+  assert.equal(
+    snapshotStatuses.length,
+    deniedReads,
+    "the protected refusal must not make Access depend on Configuration reads",
+  );
 });

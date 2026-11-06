@@ -1392,11 +1392,6 @@ export function registerSettingsRefocusAndTabsCases(detailApp: ReturnType<typeof
         "The Repositories tab is on the version draft only. Showing Configuration.",
       ],
       ["draft", "logs", "The Logs tab is on deployed versions only. Showing Configuration."],
-      [
-        "draft",
-        "access",
-        "The Access tab needs Installation administration, which your access does not include. Showing Configuration.",
-      ],
       ["draft", "bogus", "This Agent has no “bogus” tab. Showing Configuration."],
     ] as const) {
       const { page } = await newPage(t, fixture);
@@ -1725,7 +1720,7 @@ export function registerSettingsRefocusAndTabsCases(detailApp: ReturnType<typeof
       await login(page, fixture, url);
       await page.getByRole("heading", { name: `Refocus ${variant} Agent` }).waitFor();
       if (variant === "sharing") {
-        const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+        const panel = page.getByRole("region", { name: "Share Agent through OCC", exact: true });
         await panel.getByLabel("Existing person’s Principal ID").fill("typed-principal");
       } else {
         await page.locator(".content form:not(.agent-access-form)").first().waitFor();
@@ -2232,7 +2227,7 @@ export function registerSharingCredentialsAndChannelsCases(
     const requests = apiRequests(page, fixture.origin);
     const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
     await login(page, fixture, detail);
-    const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+    const panel = page.getByRole("region", { name: "Share Agent through OCC", exact: true });
     await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
     await panel.getByRole("checkbox").check();
     await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
@@ -2599,7 +2594,7 @@ export function registerSharingCredentialsAndChannelsCases(
     const requests = apiRequests(page, fixture.origin);
     const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
     await login(page, fixture, detail);
-    const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+    const panel = page.getByRole("region", { name: "Share Agent through OCC", exact: true });
     const principal = panel.getByLabel("Existing person’s Principal ID");
     const writes = () =>
       nonAuthWriteRequests(requests).filter((request) => request.path.includes("/iam/"));
@@ -2698,7 +2693,7 @@ export function registerSharingCredentialsAndChannelsCases(
     const requests = apiRequests(page, fixture.origin);
     const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
     await login(page, fixture, detail);
-    const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+    const panel = page.getByRole("region", { name: "Share Agent through OCC", exact: true });
     await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
     await panel.getByRole("checkbox").check();
     const share = panel.getByRole("button", { name: "Share Agent", exact: true });

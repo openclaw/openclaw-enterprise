@@ -54,6 +54,7 @@ import {
   renderHarnessAuthSummary,
 } from "./harness-auth.mjs";
 import { renderAgentAccess } from "./access.mjs";
+import { renderGatewayPeople } from "./people.mjs";
 import { renderNativeAdminAccess } from "./native-admin.mjs";
 import { createAgentDeletion } from "./deletion.mjs";
 import { createAgentStop } from "./stop.mjs";
@@ -445,9 +446,6 @@ const GATEWAY_MANAGED_MODE_ADMINISTRATOR_ONLY =
 // The summary card's note, first deployment or redeploy alike, for a version this tab deployed
 // that the caller cannot read (finding D755).
 const DEPLOYED_VERSION_UNREADABLE = "You cannot read the version you deployed.";
-// Sharing policy reads need Installation administration (spec 3.8).
-const ACCESS_TAB_NEEDS_ADMINISTRATION =
-  "The Access tab needs Installation administration, which your access does not include.";
 // A draft the caller can read but neither change nor save (finding 2421).
 const READ_ONLY_DRAFT_NOTICE =
   "Version draft · read-only with your access. The next deployment uses it as saved.";
@@ -826,10 +824,7 @@ export async function renderAgentDetail(
   let visibleRevisionsLoaded = false;
   const selected = url.searchParams.get("revision") ?? agent.activeRevisionId ?? "draft";
   const tab = url.searchParams.get("tab");
-  // Sharing policy reads need Installation administration and a denial is audited, so the
-  // Access tab is left out (not disabled) when the session probe already showed that access is
-  // missing (spec 3.8). It is about the whole Agent, so every version's strip has it, last.
-  const sharingTab = context.installationAdmin !== false;
+  // Direct Gateway access and OCC sharing have separate permission boundaries.
   const tabLabels: [string, string][] = [
     ["configuration", "Configuration"],
     ["plugins", "Plugins"],
@@ -843,9 +838,7 @@ export async function renderAgentDetail(
   if (selected !== "draft") {
     tabLabels.push(["logs", "Logs"]);
   }
-  if (sharingTab) {
-    tabLabels.push(["access", "Access"]);
-  }
+  tabLabels.push(["access", "Access"]);
   const tabsForSelection = new Set(tabLabels.map(([id]) => id));
   let selectedTab = tab && tabsForSelection.has(tab) ? tab : "configuration";
   // A link to a tab this version or this reader does not have shows Configuration and says why,
@@ -856,13 +849,11 @@ export async function renderAgentDetail(
       return "";
     }
     const reason =
-      requested === "access"
-        ? ACCESS_TAB_NEEDS_ADMINISTRATION
-        : requested === "repositories" || requested === "credentials"
-          ? `The ${requested === "credentials" ? "Credentials" : "Repositories"} tab is on the version draft only.`
-          : requested === "logs"
-            ? "The Logs tab is on deployed versions only."
-            : `This Agent has no “${requested.slice(0, 40)}” tab.`;
+      requested === "repositories" || requested === "credentials"
+        ? `The ${requested === "credentials" ? "Credentials" : "Repositories"} tab is on the version draft only.`
+        : requested === "logs"
+          ? "The Logs tab is on deployed versions only."
+          : `This Agent has no “${requested.slice(0, 40)}” tab.`;
     return `${reason} Showing Configuration.`;
   }
   const tabNotice = statusBlock("info", null, null, [], {
@@ -1632,6 +1623,13 @@ export async function renderAgentDetail(
     },
   );
   headerActions.append(nativeAdmin.launch, nativeAdmin.unavailable);
+  const gatewayPeople = renderGatewayPeople(
+    context,
+    path,
+    () => latestPermissionsRead.then((permissions) => permissions?.administer),
+    () => selectedTab === "access",
+    () => latestPermissionsRead.then((permissions) => permissions?.update),
+  );
   const recovery = createDeploymentRecovery(context, {
     path,
     selected,
@@ -1796,6 +1794,10 @@ export async function renderAgentDetail(
   }
   // A page restored for Back mounts at its old scroll position.
   context.onResume?.(() => {
+    // The live roster is excluded from generic replay; only a restored Access tab owns its read.
+    if (selectedTab === "access" && !deleting) {
+      void gatewayPeople.refresh();
+    }
     const linked = takeLinkedVersionView(linkedKey());
     if (linked && !deleting) {
       openVersionDetail({ deploy: linked.deploy, edit: linked.edit });
@@ -1870,29 +1872,14 @@ export async function renderAgentDetail(
   // The details read that has settled, so a tab rebuilt from it shows no loading text.
   let settledDetails: Promise<DetailsResult> | null = null;
   const retainedTabs = new Map<string, MountedTab>();
+  // Agent-wide focus checks deliberately do not read the selected snapshot. Keep
+  // parked editors, but authorize their snapshot again before showing any of them.
+  let snapshotAccessEpoch = 0;
+  let authorizedSnapshotEpoch = 0;
+  let snapshotRecheck: { epoch: number; read: ReturnType<typeof readSnapshot> } | null = null;
   let mountedTab: MountedTab | null = null;
   // The Access tab's sharing panel, built the first time the tab opens.
   let accessPanel: ReturnType<typeof renderAgentAccess> | null = null;
-  // Replaces an Access tab whose policy read was refused with Configuration, in place, once the
-  // page shows (a page still behind its loading stand-in would rebuild instead) and the
-  // navigation that opened the tab has finished. It says why, as a link to the tab would for a
-  // known member: the refusal means the reader does not administer the Installation (finding
-  // D760).
-  function leaveDeniedAccess({ refocus = false } = {}) {
-    void revealed.then(() => {
-      const leaving = selectedTab === "access" && context.isCurrent() && !deleting;
-      if (leaving) {
-        context.navigate(target(selected, "configuration"), namespaceId, true);
-      }
-      // The navigation switched tabs in place, unless it rebuilt the page.
-      if (leaving && selectedTab === "configuration" && context.isCurrent()) {
-        showTabNotice(`${ACCESS_TAB_NEEDS_ADMINISTRATION} Showing Configuration.`);
-      }
-      if (refocus && context.isCurrent() && document.activeElement === document.body) {
-        tabControls.get(selectedTab)?.focus({ preventScroll: true });
-      }
-    });
-  }
   // Installation administration ended while the page is open: an administrator-only read, such
   // as the Access tab's recheck after a revoke, was refused and the permission answer settled
   // "not an administrator". The page kept the administrator's Deploy, saves, Stop and Delete
@@ -1914,9 +1901,16 @@ export async function renderAgentDetail(
     if (!context.isCurrent() || deleting) {
       return;
     }
+    if (selectedTab === "access" || selectedTab === "workspace") {
+      snapshotAccessEpoch += 1;
+      snapshotRecheck = null;
+    }
     agentSaveDenied = rereadPermissions().then((permissions) =>
       agentSaveDenial(permissions, agent),
     );
+    if (selectedTab === "access") {
+      void gatewayPeople.refresh();
+    }
   });
   // Shown once by the tab a draft refresh rebuilds after a save (finding 1445).
   let savedNotice = "";
@@ -2028,11 +2022,11 @@ export async function renderAgentDetail(
         element(
           "div",
           {},
-          element("h2", {}, "Agent-wide access"),
+          element("h2", {}, "Access"),
           element(
             "p",
             { className: "muted" },
-            "Sharing applies to the whole Agent, not to one version.",
+            "Review direct Control UI access and sharing through OCC.",
           ),
         ),
       );
@@ -2322,6 +2316,9 @@ export async function renderAgentDetail(
       }
       // Native admin access depends on the serving version, so a finished deployment rereads it.
       nativeAdmin.refresh();
+      if (selectedTab === "access") {
+        void gatewayPeople.refresh();
+      }
     }
     if (revisionResult) {
       renderOverview(revisionResult, snapshot);
@@ -3076,11 +3073,16 @@ export async function renderAgentDetail(
   }
 
   let detailsGeneration = 0;
-  async function loadDetails(): Promise<DetailsResult> {
+  async function loadDetails(
+    snapshotRead?: ReturnType<typeof readSnapshot>,
+  ): Promise<DetailsResult> {
     const generation = ++detailsGeneration;
     const results = await Promise.allSettled([
       revisionsPromise,
-      selected === "draft" && agent.configurationReadError ? Promise.resolve(null) : readSnapshot(),
+      snapshotRead ??
+        (selected === "draft" && agent.configurationReadError
+          ? Promise.resolve(null)
+          : readSnapshot()),
     ]);
     if (!context.isCurrent() || deleting) {
       return;
@@ -4463,6 +4465,24 @@ export async function renderAgentDetail(
     );
   }
 
+  function snapshotBackedTab(tab: string) {
+    return (
+      !["access", "workspace", "policy", "logs"].includes(tab) &&
+      (tab !== "deployment" || selected !== "draft")
+    );
+  }
+
+  function restoreRetainedTab(retained: MountedTab, nodes: readonly ChildNode[]) {
+    mountedTab = retained;
+    showDraftEditorNavigationBlock = retained.showBlock ?? showBlockInPanel;
+    content.replaceChildren(...nodes);
+    content.style.minHeight = "";
+    // The deployment or permission answer may have changed while this tab was parked.
+    renderVersionNotice();
+    retained.resumeDrafts?.();
+    redrawConfigurationAccessViews();
+  }
+
   async function renderTab({ activated = false } = {}) {
     const resumeDrafts = context.suspendDrafts();
     if (mountedTab) {
@@ -4515,18 +4535,18 @@ export async function renderAgentDetail(
     revealSelectedTab();
     fadeTabEdges();
     refreshDeployControls();
+    const needsSnapshotRecheck =
+      snapshotBackedTab(tab) && authorizedSnapshotEpoch !== snapshotAccessEpoch;
     const retained = retainedTabs.get(tab);
     retainedTabs.delete(tab);
     if (retained?.nodes && retained.mutations === context.mutationVersion()) {
-      mountedTab = retained;
-      showDraftEditorNavigationBlock = retained.showBlock ?? showBlockInPanel;
-      content.replaceChildren(...retained.nodes);
-      // The deployment may have settled while this tab was parked.
-      renderVersionNotice();
-      retained.resumeDrafts?.();
-      // So may a permission answer that changes Configuration access (finding 2421).
-      redrawConfigurationAccessViews();
-      return;
+      if (!needsSnapshotRecheck) {
+        restoreRetainedTab(retained, retained.nodes);
+        return;
+      }
+      // Keep unsaved controls detached while authorization is pending, including
+      // when the reader switches away and back before that check settles.
+      retainedTabs.set(tab, retained);
     }
     showDraftEditorNavigationBlock = showBlockInPanel;
     const state: MountedTab = {
@@ -4586,6 +4606,62 @@ export async function renderAgentDetail(
     // Retain the panel's height during reads so loading does not jump the scroll position.
     content.style.minHeight = `${content.getBoundingClientRect().height}px`;
     content.replaceChildren();
+    if (needsSnapshotRecheck) {
+      const epoch = snapshotAccessEpoch;
+      const check =
+        snapshotRecheck?.epoch === epoch ? snapshotRecheck : { epoch, read: readSnapshot() };
+      snapshotRecheck = check;
+      content.append(
+        element("p", { role: "status", className: "delayed-status" }, "Loading configuration…"),
+      );
+      // This is authorization only. Rebuilding Details would replace the shared
+      // draft model/actions while parked editor handlers still close over them.
+      let refusal: { error: unknown } | null = null;
+      try {
+        await check.read;
+      } catch (error) {
+        refusal = { error };
+      }
+      if (!tabContext.isCurrent() || deleting) {
+        return;
+      }
+      if (epoch !== snapshotAccessEpoch) {
+        snapshotRecheck = null;
+        void renderTab();
+        return;
+      }
+      content.replaceChildren();
+      if (refusal) {
+        // Reuse the actual failed read for normal refusal cleanup, without a
+        // second probe or a new successful model being applied behind the editor.
+        details = loadDetails(check.read);
+        settledDetails = null;
+        versionSummary.querySelector(":scope > .agent-draft-actions")?.remove();
+        renderDetailHeading();
+        const status = requestFailure(refusal.error).status;
+        if (status === 403 || status === 404) {
+          for (const id of retainedTabs.keys()) {
+            if (snapshotBackedTab(id)) {
+              retainedTabs.delete(id);
+            }
+          }
+        }
+      } else {
+        authorizedSnapshotEpoch = epoch;
+        const readable = retainedTabs.get(tab);
+        if (readable?.nodes && readable.mutations === context.mutationVersion()) {
+          retainedTabs.delete(tab);
+          restoreRetainedTab(readable, readable.nodes);
+          return;
+        }
+        if (!details) {
+          // First use of a protected view still needs its model, using the read
+          // that already passed authorization rather than requesting it again.
+          details = loadDetails(check.read);
+          settledDetails = null;
+        }
+      }
+    }
     if (tab === "deployment") {
       if (selected !== "draft") {
         const data = await (details ??= loadDetails());
@@ -4630,18 +4706,6 @@ export async function renderAgentDetail(
             updateNavigationControls();
           }
         },
-        onDenied: () => {
-          // A refused policy read (the session probe could not tell) hides the tab, as the
-          // panel hid on the overview; a reader on it is taken to Configuration instead. Focus
-          // on the hidden tab moves to Configuration's.
-          const control = tabControls.get("access");
-          if (!control) {
-            return;
-          }
-          const focused = document.activeElement === control;
-          control.hidden = true;
-          leaveDeniedAccess({ refocus: focused });
-        },
         // Refresh sharing rereads the Agent's permission answer, so the page's controls follow
         // a grant or revoke since it loaded, and asks again whether a caller this tab settled as
         // no administrator administers the Installation (finding 2943). Neither read is audited.
@@ -4652,14 +4716,10 @@ export async function renderAgentDetail(
           return Promise.all([agentSaveDenied, context.recheckAdministration?.()]);
         },
       });
-      if (tabControls.get("access")?.hidden) {
-        // Back to a tab whose policy read was refused.
-        leaveDeniedAccess();
-      } else {
-        content.append(accessPanel.section);
-        if (returning) {
-          accessPanel.recheck();
-        }
+      content.append(gatewayPeople.section, accessPanel.section);
+      void gatewayPeople.refresh();
+      if (returning) {
+        accessPanel.recheck();
       }
       state.loading = false;
       content.style.minHeight = "";

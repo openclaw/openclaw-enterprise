@@ -36,7 +36,7 @@ Tracks platform Namespaces, their lifecycle status, and any existing Kubernetes 
 
 ### `agents`
 
-Stores Agent drafts, their desired runtime state, and the selected version reference.
+Stores Agent drafts, their desired runtime state, the selected version reference, and shared Agent bookmark metadata.
 
 - `id`
 - `namespace_id`
@@ -59,6 +59,8 @@ Stores Agent drafts, their desired runtime state, and the selected version refer
 - `active_revision_id`
 - `desired_runtime_state`
 - `sandbox_policy_editing`
+- `control_ui_bookmark_url` (optional operator-maintained direct-entry link)
+- `control_ui_bookmark_version` (bookmark-only optimistic concurrency token)
 - `status`
 - `created_at`
 

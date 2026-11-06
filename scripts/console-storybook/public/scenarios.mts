@@ -49,6 +49,7 @@ import { secretsScenarios } from "./scenario-groups/secrets.mts";
 import { connectionTemplateScenarios } from "./scenario-groups/connection-templates.mts";
 import { settingsScenarios } from "./scenario-groups/settings.mts";
 import { signInScenarios } from "./scenario-groups/sign-in.mts";
+import { directControlUiAccessScenarios } from "./scenario-groups/direct-control-ui-access.mts";
 
 type FixtureRule = Parameters<typeof createFixtureFetch>[0][number];
 type AgentPermissions = NonNullable<Parameters<typeof agentSaveGap>[0]>;
@@ -2253,6 +2254,7 @@ const authoredScenarios = {
     ],
     gap: "The console reports deletion status but provides no detailed cleanup-progress view. Configurations and Secrets remain Namespace-owned and need separate management.",
   } satisfies LocalScenario,
+  ...directControlUiAccessScenarios(),
 };
 
 // Keep the authored keys and values available to builders; only runtime lookup uses a dictionary.

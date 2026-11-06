@@ -626,6 +626,12 @@
       "expectedTests": [
         "worker.mjs exits cleanly on SIGTERM after stopping the worker and its metrics listener"
       ]
+    },
+    {
+      "path": "tests/integration/postgres-agent-control-ui-bookmark.test.ts",
+      "expectedTests": [
+        "shared Agent Control UI bookmarks enforce exact authority, CAS, clearing, and atomic audit without runtime changes"
+      ]
     }
   ]
 }

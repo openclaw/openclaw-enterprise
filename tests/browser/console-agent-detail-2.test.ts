@@ -553,7 +553,7 @@ test("Agent sharing grants existing people exact discovery and native access, th
   const { page, artifacts } = await newPage(t, fixture, browserOptions);
   const detail = detailUrl(fixture, namespace.id, agent.id, active.revision.id, "access");
   await login(page, fixture, detail);
-  const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+  const panel = page.getByRole("region", { name: "Share Agent through OCC", exact: true });
   await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
   await panel.getByRole("checkbox").check();
   await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
@@ -626,27 +626,33 @@ test("Agent sharing grants existing people exact discovery and native access, th
   const recipient = (await newPage(t, fixture, browserOptions)).page;
   const recipientRequests = apiRequests(recipient, fixture.origin);
   await login(recipient, fixture, detail, person.credentials);
-  // Agent sharing does not include version read, so the version pane says so.
+  // Sharing does not grant version read. Check the protected pane explicitly,
+  // then return to independently readable Access rather than depending on the default tab.
+  await recipient.getByRole("tab", { name: "Configuration", exact: true }).click();
   await recipient
     .getByRole("heading", { name: VERSION_READ_DENIED_HEADING, exact: true })
     .waitFor();
-  // The policy reads are denied, so the sharing card is hidden instead of showing an error.
-  await recipient.locator(".agent-access").waitFor({ state: "hidden" });
-  assert.equal(
-    await recipient
-      .getByText("Sharing policy requires Installation administration.", { exact: false })
-      .count(),
-    0,
-  );
+  await recipient.getByRole("tab", { name: "Access", exact: true }).click();
+  // Readable Access remains available; only OCC sharing requires Installation administration.
+  await recipient
+    .getByRole("region", { name: "Share Agent through OCC", exact: true })
+    .getByText(
+      "OCC sharing requires Installation administration. Direct Control UI access is checked separately.",
+      { exact: true },
+    )
+    .waitFor();
   await recipient.getByRole("link", { name: "Open Agent UI" }).waitFor();
-  // A non-administrator never reads sharing policy: each denial would be audited. The link to
-  // the Access tab opens Configuration, and the strip has no Access tab.
+  // A non-administrator never probes sharing policy, but can independently read the
+  // Agent bookmark and administer its native Gateway with exact Agent grants.
   assert.equal(
-    await recipient.getByRole("region", { name: "Share Agent", exact: true }).count(),
+    await recipient.getByRole("region", { name: "Share Agent through OCC", exact: true }).count(),
+    1,
+  );
+  assert.equal(
+    await recipient.getByRole("button", { name: "Share Agent", exact: true }).count(),
     0,
   );
-  assert.equal(await recipient.getByRole("tab", { name: "Access" }).count(), 0);
-  await recipient.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
+  await recipient.getByRole("tab", { name: "Access", exact: true, selected: true }).waitFor();
   assert.deepEqual(
     recipientRequests.filter((request) => request.path.includes("/iam/")),
     [],
@@ -701,9 +707,24 @@ test("Agent sharing grants existing people exact discovery and native access, th
     "Refreshed Agent permissions must match the Controller contract",
   );
   assert.equal(adviceBody.data.operate, true);
+  // Reloading Access must not turn an independently granted operation into a
+  // Configuration-read failure. Sharing administration remains denied separately.
   await recipient
-    .getByRole("heading", { name: VERSION_READ_DENIED_HEADING, exact: true })
+    .getByRole("region", { name: "Share Agent through OCC", exact: true })
+    .getByText(
+      "OCC sharing requires Installation administration. Direct Control UI access is checked separately.",
+      { exact: true },
+    )
     .waitFor();
+  assert.equal(
+    await recipient
+      .getByRole("heading", { name: VERSION_READ_DENIED_HEADING, exact: true })
+      .count(),
+    0,
+  );
+  // Runtime controls live in Configuration’s danger zone, independently of
+  // whether this person can read the protected version content.
+  await recipient.getByRole("tab", { name: "Configuration", exact: true }).click();
   await recipient.getByRole("button", { name: "Stop Agent", exact: true }).click();
   await recipient
     .getByRole("dialog")

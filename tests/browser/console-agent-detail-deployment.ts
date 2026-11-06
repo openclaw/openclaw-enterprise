@@ -1105,7 +1105,7 @@ test("Agent sharing shows a rejected write's reason, but generic text after an a
     });
   };
   assert.ok(fixture.provisionedAccounts[0]);
-  const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+  const panel = page.getByRole("region", { name: "Share Agent through OCC", exact: true });
   await panel
     .getByLabel("Existing person’s Principal ID")
     .fill(fixture.provisionedAccounts[0].principal.id);

@@ -108,6 +108,7 @@ import {
   isAllowedWorkspaceFileName,
   type ControllerWorkspaceFileReadResult,
   type ControllerWorkspaceFilesAccess,
+  type ControllerGatewayPeopleAccess,
   type ControllerWorkspaceFileWriteResult,
 } from "./gateway/contracts.ts";
 import type { NativeAdminAccessConfig } from "./gateway/native-admin.ts";
@@ -199,6 +200,7 @@ export interface ControllerAppOptions {
   readonly maxBodyBytes?: number;
   readonly auth: ControllerAuth;
   readonly workspaceFilesAccess?: ControllerWorkspaceFilesAccess;
+  readonly gatewayPeopleAccess?: ControllerGatewayPeopleAccess;
   readonly workspaceFileRequestTimeoutMs?: number;
   readonly discoverMcpAuthorization?: typeof discoverMcpAuthorization;
   readonly readManagedMcpToolNames?: typeof listManagedMcpToolNames;
@@ -1603,7 +1605,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     return disconnected.signal;
   }
 
-  function workspaceFileRequestSignal(
+  function gatewayRequestSignal(
     request: FastifyRequest,
     reply: FastifyReply,
     timeoutMs: number,
@@ -1641,7 +1643,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     };
   }
 
-  async function withWorkspaceFileRequestSignal<T>(
+  async function withGatewayRequestSignal<T>(
     signal: AbortSignal,
     operation: Promise<T>,
     abortError: () => Error = dependencyUnavailable,
@@ -2932,11 +2934,101 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }
 
     if (
+      operation.operationId === "getAgentGatewayPeople" ||
+      operation.operationId === "getAgentGatewayPersonAvatar"
+    ) {
+      const lifetime = gatewayRequestSignal(request, reply, 5_000);
+      const deadline = new Date(Date.now() + 5_000);
+      try {
+        if (options.gatewayPeopleAccess === undefined) {
+          await withGatewayRequestSignal(
+            lifetime.signal,
+            controller.getAdministerableAgent(context.actorId, namespaceId, agentId),
+          );
+          if (operation.operationId === "getAgentGatewayPeople") {
+            reply
+              .header("cache-control", "no-store")
+              .send({ data: { people: null }, meta: { requestId: request.id } });
+            return;
+          }
+          throw failure(
+            501,
+            "NOT_IMPLEMENTED",
+            "Gateway people are not configured for this installation.",
+          );
+        }
+        const { agent, revision, successor } = await withGatewayRequestSignal(
+          lifetime.signal,
+          controller.getAdministerableActiveAgentRevision(context.actorId, namespaceId, agentId),
+        );
+        if (agent.desiredRuntimeState !== "running") {
+          throw failure(409, "RESOURCE_CONFLICT", "The Agent Gateway is not serving.");
+        }
+        if (successor !== undefined) {
+          let compute: ComputeDriver;
+          try {
+            compute = controller.selectedDriver("compute");
+          } catch {
+            throw dependencyUnavailable();
+          }
+          if (
+            successor.compute.id === compute.id &&
+            successor.compute.implementation === compute.implementation &&
+            compute.requiresStoppedPredecessors?.(successor) === true
+          ) {
+            throw failure(409, "RESOURCE_CONFLICT", "The Agent Gateway is not serving.");
+          }
+        }
+        const input = { revision, signal: lifetime.signal, deadline };
+        if (operation.operationId === "getAgentGatewayPeople") {
+          const people = await withGatewayRequestSignal(
+            lifetime.signal,
+            options.gatewayPeopleAccess.list(input).catch(() => {
+              throw dependencyUnavailable();
+            }),
+          );
+          reply.header("cache-control", "no-store").send({
+            data: {
+              people: people.map(({ identity, profileId, displayName, role, hasAvatar }) => ({
+                identity,
+                profileId,
+                displayName,
+                role,
+                hasAvatar,
+              })),
+            },
+            meta: { requestId: request.id },
+          });
+        } else {
+          const avatar = await withGatewayRequestSignal(
+            lifetime.signal,
+            options.gatewayPeopleAccess
+              .avatar({ ...input, profileId: params.profileId! })
+              .catch(() => {
+                throw dependencyUnavailable();
+              }),
+          );
+          if (avatar === undefined) {
+            throw failure(404, "NOT_FOUND", "The profile avatar was not found.");
+          }
+          reply
+            .header("cache-control", "no-store")
+            .header("x-content-type-options", "nosniff")
+            .type(avatar.mime)
+            .send(Buffer.from(avatar.bytes));
+        }
+      } finally {
+        lifetime.dispose();
+      }
+      return;
+    }
+
+    if (
       operation.operationId === "getAgentWorkspaceFile" ||
       operation.operationId === "putAgentWorkspaceFile"
     ) {
       const deadlineMs = workspaceFileRequestTimeoutMs;
-      const workspaceFileSignal = workspaceFileRequestSignal(request, reply, deadlineMs);
+      const workspaceFileSignal = gatewayRequestSignal(request, reply, deadlineMs);
       const signal = workspaceFileSignal.signal;
       const deadline = new Date(Date.now() + deadlineMs);
       try {
@@ -2952,7 +3044,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         if (signal.aborted) {
           throw dependencyUnavailable();
         }
-        const { agent, revision } = await withWorkspaceFileRequestSignal(
+        const { agent, revision } = await withGatewayRequestSignal(
           signal,
           operation.operationId === "getAgentWorkspaceFile"
             ? controller.getReadableActiveAgentRevision(context.actorId, namespaceId, agentId)
@@ -2977,7 +3069,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             if (signal.aborted) {
               throw dependencyUnavailable();
             }
-            result = await withWorkspaceFileRequestSignal(
+            result = await withGatewayRequestSignal(
               signal,
               options.workspaceFilesAccess.read({
                 revision,
@@ -3019,7 +3111,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           if (signal.aborted) {
             throw dependencyUnavailable();
           }
-          result = await withWorkspaceFileRequestSignal(
+          result = await withGatewayRequestSignal(
             signal,
             options.workspaceFilesAccess.write({
               revision,
@@ -3036,7 +3128,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         } catch (error) {
           if (error instanceof ControllerWorkspaceFileUnknownOutcomeError) {
             try {
-              await withWorkspaceFileRequestSignal(
+              await withGatewayRequestSignal(
                 signal,
                 options.auditSink.append(
                   workspaceFileAuditEvent(operation, request, target, context, filename, {
@@ -3052,7 +3144,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             throw failure(503, "UNKNOWN_OUTCOME", error.message);
           }
           try {
-            await withWorkspaceFileRequestSignal(
+            await withGatewayRequestSignal(
               signal,
               options.auditSink.append(
                 workspaceFileAuditEvent(operation, request, target, context, filename, {
@@ -3068,7 +3160,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         }
         if (result.status === "missing") {
           try {
-            await withWorkspaceFileRequestSignal(
+            await withGatewayRequestSignal(
               signal,
               options.auditSink.append(
                 workspaceFileAuditEvent(operation, request, target, context, filename, {
@@ -3084,7 +3176,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         }
         if (result.status === "unavailable") {
           try {
-            await withWorkspaceFileRequestSignal(
+            await withGatewayRequestSignal(
               signal,
               options.auditSink.append(
                 workspaceFileAuditEvent(operation, request, target, context, filename, {
@@ -3099,7 +3191,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           throw dependencyUnavailable();
         }
         try {
-          await withWorkspaceFileRequestSignal(
+          await withGatewayRequestSignal(
             signal,
             options.auditSink.append(
               workspaceFileAuditEvent(operation, request, target, context, filename, {

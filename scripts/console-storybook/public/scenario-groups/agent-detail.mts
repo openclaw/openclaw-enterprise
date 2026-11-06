@@ -523,9 +523,9 @@ export function createAgentDetailScenarios({
         rules: [{ suffix: "/iam/roles", status: 403, skip: 1 }],
         actions: [{ text: "Current policy loaded." }, click("Configuration"), click("Access")],
         description:
-          "The story loads the Access tab, opens Configuration, then returns to Access, whose policy reread is refused as after a revoke. The tab gives way to Configuration and says why; the earlier grants and Remove binding are gone.",
+          "The story loads Access, opens Configuration, then returns to Access, whose policy reread is refused as after a revoke. Access stays selected and shows the refusal in its OCC sharing region; the earlier grants and Remove binding are gone.",
         steps: [
-          "Configuration is selected and the note reads “The Access tab needs Installation administration, which your access does not include. Showing Configuration.” The Access tab is gone.",
+          "Access remains selected. Its OCC sharing region shows the authorization refusal, without exposing the earlier grants or Remove binding. Direct Control UI access is checked separately.",
           "The request log shows one refused /iam/roles read on the return and no /iam/access-bindings read after it.",
         ],
         gap: "Simulated UI proof: the refused reread stands in for administration revoked while the page is open.",
