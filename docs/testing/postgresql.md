@@ -167,9 +167,10 @@ OCC_TEST_CANDIDATE_CONTROLLER_REVISION="$CANDIDATE_COMMIT" \
 ```
 
 Each image must carry its matching `org.opencontainers.image.revision` label.
-The case never pulls images. Without all image inputs it either skips (none
-supplied) or fails (partial selection). Ordinary PostgreSQL CI does not select
-this lane and therefore does not qualify released-image compatibility.
+The case never pulls images. It is registered only when at least one image or
+revision input is supplied; partial selection fails. With no inputs, ordinary
+PostgreSQL CI runs its existing cases without an extra skipped test and does not
+qualify released-image compatibility.
 
 The released image bootstraps and migrates a fresh database with its canonical
 commands. Its real Fastify app, password authentication, Native IAM and worker

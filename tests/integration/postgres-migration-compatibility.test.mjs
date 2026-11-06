@@ -3672,19 +3672,25 @@ test(
   },
 );
 
-test(
-  "Released controller remains usable across candidate database writes",
-  {
-    skip: Object.values(controllerImages).every((image) =>
-      Object.values(image).every((value) => value === undefined),
-    )
-      ? "Requires explicitly selected local released and candidate controller images and revisions."
-      : false,
-    timeout: 360_000,
-  },
-  async (t) => {
-    const fixture = await migrationHistoryFixture();
-    const db = await historyDatabase(t, fixture, "released_controller");
-    await assertReleasedControllerCompatibility(t, db, controllerImages);
-  },
-);
+// An unselected opt-in case must not become an unexpected skip in native PostgreSQL CI.
+if (
+  Object.values(controllerImages).some((image) =>
+    Object.values(image).some((value) => value !== undefined),
+  )
+) {
+  test(
+    "Released controller remains usable across candidate database writes",
+    { timeout: 360_000 },
+    async (t) => {
+      assert.ok(
+        Object.values(controllerImages).every(
+          (image) => typeof image.reference === "string" && typeof image.revision === "string",
+        ),
+        "Both released and candidate controller image references and revisions are required.",
+      );
+      const fixture = await migrationHistoryFixture();
+      const db = await historyDatabase(t, fixture, "released_controller");
+      await assertReleasedControllerCompatibility(t, db, controllerImages);
+    },
+  );
+}
