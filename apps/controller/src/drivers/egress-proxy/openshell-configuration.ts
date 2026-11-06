@@ -54,7 +54,7 @@ export function openShellProxyConfiguration(
   if (repository) {
     closed(
       egress,
-      ["observedHookPreviewWorkspace", "modelApiKeyDelivery"],
+      ["observedHookPreviewWorkspace", "allowNonProxyCredentials"],
       "drivers.credential_proxy.configuration",
     );
     const preview =
@@ -72,8 +72,8 @@ export function openShellProxyConfiguration(
         middlewareName: repository.registrationName,
         repositoryMiddlewareName: repository.registrationName,
         authorityScope: "execution",
-        ...(egress.modelApiKeyDelivery !== undefined && {
-          modelApiKeyDelivery: egress.modelApiKeyDelivery,
+        ...(egress.allowNonProxyCredentials !== undefined && {
+          allowNonProxyCredentials: egress.allowNonProxyCredentials,
         }),
         ...preview,
       },
@@ -87,7 +87,7 @@ export function openShellProxyConfiguration(
       "authority",
       "preparedGitHub",
       "tokenGrant",
-      "modelApiKeyDelivery",
+      "allowNonProxyCredentials",
     ],
     "drivers.credential_proxy.configuration",
   );

@@ -1932,7 +1932,6 @@ test(
     // saved grant. The fixture stands in for Compute activation and Gateway inventory.
     // Register the model keys only after both delivery drivers are selected, as the
     // Create Agent form does. Only the external OpenShell provider RPC store is controlled.
-    installSavedAccountPlacement(controller);
     const proxyFixture = await savedAccountProxyFixture(t);
     const runtime = await installSavedAccountProxy(proxyFixture, controller);
     const gatewayId = CREDENTIAL_GATEWAY_FIXTURE_ID;
@@ -1947,11 +1946,12 @@ test(
     });
     t.after(() => store.backend.client.close());
     const gateway = new OpenShellCredentialGatewayDriver(
-      { binaries: ["/usr/local/bin/openclaw"] },
+      { binaries: ["/usr/local/bin/openclaw"], toolBinaries: ["/usr/bin/curl"] },
       { id: gatewayId, backend: store.backend },
     );
     controller.registerDriver(gateway);
     controller.selectDriver("credential_gateway", gateway.id);
+    const kubernetes = installSavedAccountPlacement(controller, runtime.owner, gateway);
     const selectedPlugin = {
       [pluginId]: {
         enabled: true,
@@ -1972,16 +1972,33 @@ test(
       plugins: selectedPlugin,
     });
     assert.equal(preflight.statusCode, 204, preflight.body);
-    const modelSources: string[] = [];
-    for (const name of ["Harness model", "Unrelated gateway source"]) {
-      const source = await owner("POST", base + "/credential-sources", {
-        name,
-        type: "openai",
-        config: {},
-        secrets: { api_key: harnessRef },
-      });
-      assert.equal(source.statusCode, 201, source.body);
-      const sourceId = source.json().data.id;
+    // A separate ordinary tool gets its own credential and API receiver.
+    const toolToken = randomUUID();
+    const toolSecret = await owner("POST", base + "/secrets", {
+      name: "Reports tool token",
+      value: toolToken,
+    });
+    assert.equal(toolSecret.statusCode, 201, toolSecret.body);
+    const model = await owner("POST", base + "/credential-sources", {
+      name: "Harness model",
+      type: "openai",
+      config: {},
+      secrets: { api_key: harnessRef },
+    });
+    const tool = await owner("POST", base + "/credential-sources", {
+      name: "Reports API",
+      type: "bearer-token",
+      config: { host: "tools.example.test", path: "/reports/**", env_var: "REPORTS_TOOL_TOKEN" },
+      secrets: { token: toolSecret.json().data.ref },
+    });
+    assert.equal(model.statusCode, 201, model.body);
+    assert.equal(tool.statusCode, 201, tool.body);
+    const modelSource: string = model.json().data.id;
+    const toolSource: string = tool.json().data.id;
+    for (const [sourceId, key, value] of [
+      [modelSource, "OPENAI_API_KEY", modelKey],
+      [toolSource, "REPORTS_TOOL_TOKEN", toolToken],
+    ] as const) {
       const registered = await state.read((unit) =>
         unit.credentialSources.findCredentialSource(namespaceId, sourceId),
       );
@@ -1991,14 +2008,11 @@ test(
         (entry) => entry.name === openShellProviderName(sourceId),
       );
       assert.ok(
-        provider?.credentials.OPENAI_API_KEY === modelKey,
-        "the Gateway received the selected model key",
+        provider?.credentials[key] === value,
+        "the Gateway received the selected source material",
       );
-      modelSources.push(sourceId);
     }
     assert.equal(store.mutations.filter((operation) => operation === "createProvider").length, 2);
-    const [modelSource, unrelatedSource] = modelSources;
-    assert.ok(modelSource && unrelatedSource);
     const modelRole = await owner("POST", base + "/iam/roles", {
       name: "Use model credential",
       permissions: [{ action: "operate", resourceKind: "credential_source" }],
@@ -2012,7 +2026,7 @@ test(
       ["Agent with renewed access", "00000000-0000-4000-8000-000000000001"],
       ["Agent keeping access", "00000000-0000-4000-8000-000000000002"],
     ] as const) {
-      const checkUnrelated = name === "Agent with renewed access";
+      const withTool = name === "Agent with renewed access";
       const modelSelection = {
         configurationId: config.json().data.id,
         harnessAuth: { method: "credential_source", sourceId: modelSource },
@@ -2022,7 +2036,7 @@ test(
         name,
         executionMode: "dedicated",
         ...modelSelection,
-        ...(checkUnrelated ? {} : { plugins: selectedPlugin }),
+        ...(withTool ? {} : { plugins: selectedPlugin }),
       });
       assert.equal(created.statusCode, 201, created.body);
       const { id, servicePrincipalId } = created.json().data;
@@ -2037,7 +2051,7 @@ test(
         assert.equal(permission.statusCode, 201, permission.body);
       }
       await grantGatewaySource(modelSource);
-      if (checkUnrelated) {
+      if (withTool) {
         // A plugin-only Proxy also permits a normal model-only Create and deploy.
         const modelOnly = await owner("POST", path(id) + "/deploy");
         assert.equal(modelOnly.statusCode, 202, modelOnly.body);
@@ -2045,6 +2059,7 @@ test(
           unit.revisions.findRevision(namespaceId, id, modelOnly.json().data.id),
         );
         assert.ok(revision);
+        kubernetes.validateExecutionAdmission(revision, "stored");
         assert.deepEqual(revision.credentialSources, [
           { sourceId: modelSource, credentialGatewayId: gateway.id, sourceType: "openai" },
         ]);
@@ -2052,25 +2067,10 @@ test(
         const save = await owner("PATCH", path(id), {
           ...modelSelection,
           plugins: selectedPlugin,
-          credentialSources: modelSources.map((sourceId) => ({ sourceId })),
+          credentialSources: [modelSource, toolSource].map((sourceId) => ({ sourceId })),
         });
         assert.equal(save.statusCode, 200, save.body);
-        // This deployer may delegate both references. Reject the unrelated source and roll
-        // back the temporary Agent grant added by deployment in the same transaction.
-        assert.equal(await canUse(id, unrelatedSource), false);
-        const refused = await owner("POST", path(id) + "/deploy");
-        assert.equal(refused.statusCode, 409, refused.body);
-        assert.match(refused.json().error.message, /unrelated credential binding/i);
-        assert.equal(await canUse(id, unrelatedSource), false);
-        await grantGatewaySource(unrelatedSource);
-        const mixed = await owner("POST", path(id) + "/deploy");
-        assert.equal(mixed.statusCode, 409, mixed.body);
-        assert.match(mixed.json().error.message, /unrelated credential binding/);
-        const kept = await owner("PATCH", path(id), {
-          configurationId: config.json().data.id,
-          credentialSources: [{ sourceId: modelSource }, { sourceId: report.id }],
-        });
-        assert.equal(kept.statusCode, 200, kept.body);
+        await grantGatewaySource(toolSource);
       }
       const deployment = await owner("POST", path(id) + "/deploy");
       assert.equal(deployment.statusCode, 202, deployment.body);
@@ -2078,8 +2078,25 @@ test(
         view.revisions.findRevision(namespaceId, id, deployment.json().data.id),
       );
       assert.ok(revision);
+      kubernetes.validateExecutionAdmission(revision, "stored");
+      if (withTool) {
+        // An older v2 row without this Compute admission must stop before any workload is prepared.
+        const { admission: _admission, ...computeIdentity } = revision.compute;
+        const unapproved = { ...revision, compute: computeIdentity };
+        await assert.rejects(
+          kubernetes.prepareRevision(unapproved),
+          /exact paired Compute release/,
+        );
+        await assert.rejects(
+          kubernetes.activateRevision(unapproved),
+          /exact paired Compute release/,
+        );
+      }
       assert.deepEqual(revision.credentialSources, [
         { sourceId: modelSource, credentialGatewayId: gateway.id, sourceType: "openai" },
+        ...(withTool
+          ? [{ sourceId: toolSource, credentialGatewayId: gateway.id, sourceType: "bearer-token" }]
+          : []),
       ]);
       assert.deepEqual(revision.plugins?.savedAccounts, {
         driver: runtime.driver,

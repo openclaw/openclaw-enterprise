@@ -314,8 +314,8 @@ export interface CredentialProviderDefinition {
 }
 
 export interface CredentialSourceControl {
-  /** Registration policy for new static Harness API keys. Existing sources retain their delivery. */
-  readonly modelApiKeyDelivery?: "credential_gateway" | "credential_proxy";
+  /** Permit ordinary Gateway sources and supported workload Secret bindings alongside request-time credentials. */
+  readonly allowNonProxyCredentials?: boolean;
   readonly backend: EgressRef;
   readonly sender: EgressRef;
   readonly resolver: EgressRef;

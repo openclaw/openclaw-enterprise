@@ -25,8 +25,8 @@ shared exchange but does not establish static inference or Git transport support
 
 New protected revisions record version 3 admission, including the Driver identity and
 configuration shared by Sandbox and Credential Proxy. Upgrade the API and workers
-before creating one: an older worker refuses this revision. Version 2 represents
-unprotected admission only. Protected versions 4, 5 and 6 carry the distinct
+before creating one: an older worker refuses this revision. Version 2 records execution without a protected dispatch plan. A dedicated Agent can use its
+authorized ordinary credentials and saved plugin accounts after Compute verifies the revision’s admission. Protected versions 4, 5 and 6 carry the distinct
 [repository authorization contracts](../repository-credentials/protected-openshell-git.md).
 Version 7 requires exact-dispatch Git and authenticated reduction v2 support.
 Advertising v2 does not replace v4, v5 or v6 admission or imply v1 support.

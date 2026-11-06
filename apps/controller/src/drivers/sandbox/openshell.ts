@@ -2461,13 +2461,13 @@ function validateOptions(options: OpenShellSandboxDriverOptions): void {
       "OpenShell static providers must be nonempty names outside the OCC credential-source namespace.",
     );
   }
-  if (options.egress?.modelApiKeyDelivery === "credential_gateway" && options.providers?.length) {
+  if (options.egress?.allowNonProxyCredentials === true && options.providers?.length) {
     throw new ConfigurationValidationError([
       {
         path: "/providers",
         code: "INVALID_VALUE",
         message:
-          "Remove static Sandbox providers when modelApiKeyDelivery is credential_gateway. They would attach to every Agent alongside its admitted model credential.",
+          "Remove static Sandbox providers when allowNonProxyCredentials is enabled. They would attach to every Agent alongside its authorized credentials.",
       },
     ]);
   }
@@ -3284,6 +3284,12 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       throw new SandboxRevisionUnsupportedError(
         "SANDBOX_HARNESS_UNSUPPORTED",
         "OpenShell v0.1.5 cannot preserve an Agent ServiceAccount and projected identity token; disable ServicePrincipal credentials or select another Sandbox Driver.",
+      );
+    }
+    if (context.revision.plugins?.savedAccounts && this.options.providers?.length) {
+      throw new SandboxRevisionUnsupportedError(
+        "SANDBOX_HARNESS_UNSUPPORTED",
+        "Remove static Sandbox providers to deploy saved plugin accounts. Each credential must be authorized for this Agent.",
       );
     }
     labels(context.requirements.labels, "Harness workload labels");

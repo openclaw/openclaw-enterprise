@@ -153,13 +153,14 @@ A dedicated OpenClaw Agent can use a saved OAuth account with stock OpenShell's 
 
 OCC approves the actual request after checking the Agent grant, template destination and slot operation. For MCP, that includes the protected resource and selected tool. The token endpoint matches the authenticated Sandbox, request ID and slot binding to that approval and consumes it once. The approval expires within 30 seconds. OCC makes its final grant and token-version check before returning the bearer. An authorized send can finish after detach. The detached Agent loses access on its next request. Other Agents keep their own grants.
 
-To deliver Harness model API keys through the existing OpenShell Credential Gateway, set
-`drivers.credential_proxy.configuration.modelApiKeyDelivery: credential_gateway` on the Installation.
-OCC registers each new model key with the Gateway. OpenShell injects it on the configured model route.
-Keep the Sandbox Driver’s static `providers` list empty with this setting. Static providers would expose their credentials to every such Sandbox.
-Saved plugin accounts continue to use the Proxy and Token Service. With `credential_proxy` or
-with the setting omitted, a new key must satisfy protected model admission. A sender failure
-cannot select Gateway delivery. Existing sources keep their recorded delivery.
+Set `drivers.credential_proxy.configuration.allowNonProxyCredentials: true` to use
+ordinary Gateway sources and supported workload Secret bindings alongside saved accounts.
+OCC registers new ordinary Gateway catalog types with the selected Credential Gateway.
+For example, OpenShell can inject the Agent’s model key on its model API route and fetch
+its Slack account token through Credential Proxy on each MCP request. Each source needs its own grant. Give ordinary sources
+distinct hosts and environment variable names from those of saved account slots. Leave the Sandbox Driver’s static `providers` list empty because it applies
+to every Sandbox. Omitting the option keeps protected admission. Existing sources keep
+their recorded delivery.
 
 For saved plugin accounts, the Driver sets the OpenShell bearer cache TTL to zero. Each credentialed plugin request obtains its token from OCC. Token Service can reuse a valid token or refresh it. On public Google discovery routes a workload may supply its own Authorization header. OpenShell sends those requests without the saved account’s bearer.
 

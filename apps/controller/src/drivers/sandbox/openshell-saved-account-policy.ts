@@ -92,6 +92,38 @@ function admittedMcpRestAccess(defaults: unknown, host: string, port: number) {
   return presets[Math.max(-1, ...ranks)];
 }
 
+/** A saved slot owns its launch placeholder and the hosts selected by its request middleware. */
+export function* openShellSavedAccountSlots(revision: Readonly<AgentRevision>) {
+  const plugins = revision.plugins;
+  if (!plugins?.savedAccounts) {
+    return;
+  }
+  const { plugins: selections, savedAccounts: saved } = plugins;
+  for (const install of managedInstalls) {
+    const mcp =
+      install.kind === "mcp" ? managedMcpCredentialBinding(selections, install) : undefined;
+    const cli = install.kind === "cli" ? managedCredentialBinding(selections, install) : undefined;
+    const sourceId = mcp?.sourceId ?? cli?.sourceId;
+    if (!sourceId || !saved.sourceIds.includes(sourceId)) {
+      continue;
+    }
+    if (install.kind === "cli" && install !== managedGoogleInstall) {
+      unsupported(`OpenShell has no saved-account request policy for ${install.packageName}.`);
+    }
+    const slotId = install.kind === "mcp" ? install.slotId : cli!.slot;
+    const destinationHosts = install.kind === "mcp" ? [install.endpoint.host] : googleHosts;
+    yield {
+      install,
+      cli,
+      mcp,
+      sourceId,
+      slotId,
+      destinationHosts,
+      env: install.credentials[slotId]!.delivery.env,
+    };
+  }
+}
+
 /** Each credentialed route belongs to one empty OpenShell provider and its admitted OCC slot. */
 export function openShellSavedAccountPolicy(
   revision: Readonly<AgentRevision>,
@@ -112,26 +144,21 @@ export function openShellSavedAccountPolicy(
       "This revision requires the admitted saved-account Credential Proxy and dedicated OpenClaw worker.",
     );
   }
-  const selections = revision.plugins.plugins;
   const middlewares: Record<string, Readonly<Record<string, unknown>>> = {};
   const networks: Record<string, Readonly<Record<string, unknown>>> = {};
   const providers: { name: string; profile: Omit<OpenShellProviderProfile, "annotations"> }[] = [];
   const environment: Record<string, string> = {};
   const sources = new Set<string>();
   const hosts = new Set<string>();
-  for (const install of managedInstalls) {
-    const mcp =
-      install.kind === "mcp" ? managedMcpCredentialBinding(selections, install) : undefined;
-    const cli = install.kind === "cli" ? managedCredentialBinding(selections, install) : undefined;
-    const sourceId = mcp?.sourceId ?? cli?.sourceId;
-    if (!sourceId || !saved.sourceIds.includes(sourceId)) {
-      continue;
-    }
-    if (install.kind === "cli" && install !== managedGoogleInstall) {
-      unsupported(`OpenShell has no saved-account request policy for ${install.packageName}.`);
-    }
-    const slotId = install.kind === "mcp" ? install.slotId : cli!.slot;
-    const destinationHosts = install.kind === "mcp" ? [install.endpoint.host] : googleHosts;
+  for (const {
+    install,
+    cli,
+    mcp,
+    sourceId,
+    slotId,
+    destinationHosts,
+    env,
+  } of openShellSavedAccountSlots(revision)) {
     if (destinationHosts.some((host) => hosts.has(host))) {
       unsupported(
         "Two saved OAuth slots select the same request host. OpenShell cannot determine which account to present.",
@@ -141,7 +168,6 @@ export function openShellSavedAccountPolicy(
       hosts.add(host);
     }
     sources.add(sourceId);
-    const env = install.credentials[slotId]!.delivery.env;
     environment[env] = "oce:saved-account:" + env;
     if (cli) {
       environment[managedCredentialEnvironment] = env;

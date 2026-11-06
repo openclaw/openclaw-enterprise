@@ -48,6 +48,7 @@ import {
   type OpenShellProviderProfile,
 } from "./openshell-gateway-client.ts";
 import { verifyManagedPluginRegistration } from "./openshell-plugin-policy.ts";
+import { openShellSavedAccountSlots } from "./openshell-saved-account-policy.ts";
 
 // Shared internally so source operations and attachment operations retain one error identity.
 export class OpenShellCredentialGatewayFailure extends Error {}
@@ -150,7 +151,9 @@ export class OpenShellCredentialAttachments {
       await verifyManagedPluginRegistration(client, context.signal);
     }
     const attachments: CredentialSourceAttachment[] = [];
-    const environment = new Set<string>();
+    const savedSlots = [...openShellSavedAccountSlots(context.revision)];
+    const environment = new Set(savedSlots.map(({ env }) => env));
+    const savedHosts = new Set(savedSlots.flatMap(({ destinationHosts }) => destinationHosts));
     for (const source of context.sources) {
       if (source.driverId !== this.id || source.namespaceId !== context.namespace.id) {
         throw new ScopeViolationError("The credential source is not owned by this gateway.");
@@ -199,6 +202,13 @@ export class OpenShellCredentialAttachments {
       const profile = type.profile(source.id, source.config, () =>
         this.backend.client.placement(context.namespace.name),
       );
+      if (
+        profile.endpoints.some(({ host }) => savedHosts.has(host.toLowerCase().replace(/\.$/, "")))
+      ) {
+        throw new ScopeViolationError(
+          "An attached credential supplies authentication on a host reserved by a saved OAuth account.",
+        );
+      }
       await ensureOpenShellProviderProfile(client, workspace, profile, context.signal);
       attachments.push(
         Object.freeze({

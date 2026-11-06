@@ -68,7 +68,7 @@ OCC returns `201` with a `cs_` source ID, binding `ref` and status. Use the
 `cs_` ID in the Agent draft. The `sec_` reference stays on the source.
 
 - `name` is unique within the Namespace.
-- Choose an Installation `type`. Credential Proxy requires a protected profile except for [Gateway-managed model API keys](drivers/credential-proxy.md#saved-oauth-accounts).
+- Choose an Installation `type`. [Credential Proxy configuration](drivers/credential-proxy.md#saved-oauth-accounts) determines whether new ordinary types use the Credential Gateway.
 - `config` contains nonsecret catalog fields. OpenShell's `openai` type accepts
   `authorized_base_url` as immutable destination authorization. Omission authorizes
   only `https://api.openai.com/v1`; a custom authorization must match the

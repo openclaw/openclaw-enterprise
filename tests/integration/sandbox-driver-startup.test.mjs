@@ -1,3 +1,4 @@
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { verifyOpenShellPushNegotiation } from "../helpers/openshell-git-push-negotiation.mjs";
 import { runDocker, image, imageTestOptions } from "../helpers/runtime-image-startup.mjs";
 import { managedMcpInstalls } from "../../apps/controller/src/drivers/plugin/managed-catalog.ts";
@@ -1443,7 +1444,7 @@ test("OpenShell provisions zero-cache token grants and authorizes each saved OAu
     configuration: {
       middlewareName: registrationName,
       authorityScope: "execution",
-      modelApiKeyDelivery: "credential_gateway",
+      allowNonProxyCredentials: true,
       tokenGrant: {
         endpoint: tokenEndpoint,
         port: 8454,
@@ -1472,13 +1473,13 @@ test("OpenShell provisions zero-cache token grants and authorizes each saved OAu
   await assert.rejects(loadInstallationFile(t, withStaticProvider, backendOptions), (error) => {
     assert.ok(error instanceof SharedConfigurationValidationError);
     assert.equal(error.error.details[0]?.path, "/providers");
-    assert.match(error.error.details[0].message, /modelApiKeyDelivery/);
+    assert.match(error.error.details[0].message, /allowNonProxyCredentials/);
     return true;
   });
   const runtime = await loadInstallationFile(t, installation, backendOptions);
   assert.equal(
-    runtime.protectedDriver.require("credential_proxy").sourceControl.modelApiKeyDelivery,
-    "credential_gateway",
+    runtime.protectedDriver.require("credential_proxy").sourceControl.allowNonProxyCredentials,
+    true,
   );
   const driver = runtime.sandboxDriver;
   const { context, revision, requirements } = runtimeSandboxFixture(driver, {
@@ -1510,6 +1511,30 @@ test("OpenShell provisions zero-cache token grants and authorizes each saved OAu
       },
     },
   };
+  // Admit the same ordinary model binding and saved plugin sources that this worker
+  // prepares below. Persist the Compute-issued receipt before the worker reads it back.
+  const modelId = "cs_00000000-0000-4000-8000-000000000093";
+  const model = {
+    sourceId: modelId,
+    credentialGatewayId: runtime.credentialGatewayDriver.id,
+    sourceType: "openai",
+  };
+  revision.harnessAuth = { method: "credential_source", ...model, loginMode: "api_key" };
+  revision.configuration = createHarnessConfiguration("openclaw", "gpt-5.1");
+  revision.credentialSources = [model];
+  revision.executionAdmission = { version: 2, mode: "unprotected" };
+  revision.compute = {
+    id: runtime.computeDriver.id,
+    implementation: runtime.computeDriver.implementation,
+  };
+  requirements.credentialAttachments = [{ sourceId: modelId, ref: openShellProviderName(modelId) }];
+  function admit() {
+    delete revision.compute.admission;
+    runtime.computeDriver.validateExecutionAdmission(revision, runtime.protectedDriver);
+    revision.compute.admission = runtime.computeDriver.admitRevision(revision);
+    runtime.computeDriver.validateExecutionAdmission(revision, "stored");
+  }
+  admit();
   revision.sandboxPolicy = { defaults: {}, additions: [] };
   let droppedCacheTtl = false;
   const readProfile = client.getProviderProfile;
@@ -1729,7 +1754,19 @@ test("OpenShell provisions zero-cache token grants and authorizes each saved OAu
     scopes: ["https://www.googleapis.com/auth/gmail.readonly"],
   };
   const ref = openShellProviderName(googleId);
-  requirements.credentialAttachments = [{ sourceId: googleId, ref, requestScope }];
+  revision.credentialSources = [
+    model,
+    {
+      sourceId: googleId,
+      credentialGatewayId: runtime.credentialGatewayDriver.id,
+      sourceType: "oauth2-refresh-token",
+    },
+  ];
+  requirements.credentialAttachments = [
+    { sourceId: modelId, ref: openShellProviderName(modelId) },
+    { sourceId: googleId, ref, requestScope },
+  ];
+  admit();
   legacyRule = {
     name: "_provider_" + ref.replaceAll("-", "_"),
     binaries: [{ path: managedGoogleInstall.binaryPath }],
@@ -5876,6 +5913,57 @@ test("Google requires an OAuth source whose effective binary list is exactly the
       ["import"],
     );
   }
+});
+
+test("an ordinary Gateway source can accompany a saved Slack account on its own host and placeholder", async () => {
+  const gateway = credentialGatewayOverProviders({ toolBinaries: ["/usr/local/bin/node"] });
+  const { bearer, register, revisionContext } = bearerTokenSources(gateway);
+  const savedId = "cs_00000000-0000-4000-8000-000000000090";
+  const together = (source) => {
+    const context = revisionContext([source]);
+    return gateway.driver.attachForRevision({
+      ...context,
+      revision: {
+        harness: { id: "openclaw", mode: "dedicated" },
+        plugins: {
+          driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" },
+          savedAccounts: {
+            driver: {
+              id: "credential-proxy-openshell",
+              implementation: "openshell",
+              configurationId: "a".repeat(64),
+            },
+            sourceIds: [savedId],
+          },
+          plugins: {
+            [managedSlackInstall.id]: {
+              enabled: true,
+              driverPolicy: {
+                releaseSha256: managedSlackInstall.releaseSha256,
+                credentials: { account: savedId },
+                toolNames: ["slack_send_message"],
+              },
+            },
+          },
+        },
+      },
+    });
+  };
+  const distinct = bearer("cs_00000000-0000-4000-8000-000000000097");
+  await register(gateway.driver, distinct);
+  assert.deepEqual(await together(distinct), [
+    { sourceId: distinct.id, ref: openShellProviderName(distinct.id) },
+  ]);
+
+  // Stock places provider aliases after declared environment, so an ordinary source
+  // on a different host can otherwise shadow the saved Slack launch placeholder.
+  const shadows = bearer("cs_00000000-0000-4000-8000-000000000098", "SLACK_MCP_TOKEN");
+  await register(gateway.driver, shadows);
+  await assert.rejects(together(shadows), /same environment variable/);
+  const overlap = bearer("cs_00000000-0000-4000-8000-000000000099");
+  overlap.config = { ...overlap.config, host: "mcp.slack.com", path: "/mcp" };
+  await register(gateway.driver, overlap);
+  await assert.rejects(together(overlap), /host reserved by a saved OAuth account/);
 });
 
 test("a Slack MCP source stays independent and cannot acquire a broad REST credential route", async () => {

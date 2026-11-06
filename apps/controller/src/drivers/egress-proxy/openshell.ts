@@ -71,7 +71,7 @@ function registeredWithoutExecution(extensions: unknown, registration: string): 
 
 export interface OpenShellProxyOptions extends Pick<
   CredentialSourceControl,
-  "modelApiKeyDelivery"
+  "allowNonProxyCredentials"
 > {
   readonly tokenGrant?: OpenShellTokenGrantConfiguration;
   readonly middlewareName: string;
@@ -292,11 +292,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     properties: {
       middlewareName: { type: "string", minLength: 1 },
       tokenGrant: tokenGrantSchema,
-      modelApiKeyDelivery: {
-        type: "string",
-        enum: ["credential_gateway", "credential_proxy"],
-        default: "credential_proxy",
-      },
+      allowNonProxyCredentials: { type: "boolean", default: false },
       repositoryMiddlewareName: { type: "string", minLength: 1 },
       observedHookPreviewWorkspace: { type: "string", maxLength: 19, minLength: 1 },
       authorityScope: { type: "string", const: "execution" },
@@ -311,16 +307,15 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         (key) =>
           ![
             "middlewareName",
-            "modelApiKeyDelivery",
+            "allowNonProxyCredentials",
             "tokenGrant",
             "authorityScope",
             "repositoryMiddlewareName",
             "observedHookPreviewWorkspace",
           ].includes(key),
       ) ||
-      (value.modelApiKeyDelivery !== undefined &&
-        value.modelApiKeyDelivery !== "credential_gateway" &&
-        value.modelApiKeyDelivery !== "credential_proxy") ||
+      (value.allowNonProxyCredentials !== undefined &&
+        typeof value.allowNonProxyCredentials !== "boolean") ||
       (value.tokenGrant !== undefined && !validTokenGrantConfiguration(value.tokenGrant)) ||
       typeof value.middlewareName !== "string" ||
       !value.middlewareName.trim() ||
@@ -422,7 +417,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     this.sandbox = selection.sandbox;
     this.options = immutableCopy(options);
     this.sourceControl = Object.freeze({
-      modelApiKeyDelivery: options.modelApiKeyDelivery ?? "credential_proxy",
+      allowNonProxyCredentials: options.allowNonProxyCredentials ?? false,
       backend: { id: selection.backend.id, generation: 1 },
       sender: { id: `${selection.backend.id}/supervisor`, generation: 1 },
       resolver: { id: `${selection.id}/resolver`, generation: 1 },

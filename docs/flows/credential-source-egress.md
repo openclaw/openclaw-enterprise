@@ -64,7 +64,7 @@ graph TD
 
 ### 1. Admit source and install the revision plan
 
-With `modelApiKeyDelivery: credential_gateway`, OCC registers new model API keys through the Gateway. OpenShell attaches the admitted Harness provider alongside the saved plugin account’s token grant.
+With `allowNonProxyCredentials: true`, OCC registers ordinary Credential Gateway types with that Gateway. Kubernetes Compute checks the admitted revision before release. OpenShell can attach the Agent’s model provider alongside its saved plugin account’s token grant.
 
 OCC checks source and Secret permissions at admission. Existing sources need
 explicit opt-in. Version 3 binds Sandbox and Credential Proxy to one registered

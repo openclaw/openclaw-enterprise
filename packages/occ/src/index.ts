@@ -8892,11 +8892,11 @@ export class OpenClawController {
     sandboxDriverId?: string,
     repositoryGit?: RepositoryRevisionState,
     harnessAuth?: HarnessAuthSnapshot,
-    harnessSourceType?: CredentialSourceType,
+    secretBindings?: SecretBindings,
     savedPluginDriver?: PluginDriver,
   ): Promise<ProxyPlan | undefined> {
     const sources: CredentialSource[] = [];
-    const nativePluginSources: CredentialSource[] = [];
+    const gatewaySources: CredentialSource[] = [];
     let harnessCredentialSource: ProxyPlan["harnessCredentialSource"];
     for (const binding of admittedSources) {
       const source = await state.credentialSources.findCredentialSource(
@@ -8907,26 +8907,18 @@ export class OpenClawController {
         sources.push(source);
       } else if (
         source?.state === "ready" &&
-        harnessAuth?.method === "credential_source" &&
-        source.id === harnessAuth.sourceId &&
-        credentialSourceMatchesSnapshot(source, harnessAuth)
-      ) {
-        if (repositoryGit || savedPluginDriver) {
-          harnessCredentialSource = harnessAuth;
-        } else if (
-          agent.executionMode === "dedicated" &&
-          admittedSources.length === 1 &&
-          this.modelApiKeyUsesGateway(harnessSourceType)
-        ) {
-          // The admitted Gateway model binding is the only credential released to this execution.
-          return undefined;
-        }
-      } else if (
-        savedPluginDriver &&
-        source?.ownerCapability === "credential_gateway" &&
+        source.ownerCapability === "credential_gateway" &&
         credentialSourceMatchesSnapshot(source, binding)
       ) {
-        nativePluginSources.push(source);
+        gatewaySources.push(source);
+        if (
+          (repositoryGit || savedPluginDriver) &&
+          harnessAuth?.method === "credential_source" &&
+          source.id === harnessAuth.sourceId &&
+          credentialSourceMatchesSnapshot(source, harnessAuth)
+        ) {
+          harnessCredentialSource = harnessAuth;
+        }
       }
     }
     // Each refusal below is an Installation property or the Agent's saved bindings, after the
@@ -8942,6 +8934,22 @@ export class OpenClawController {
       }
       return undefined;
     }
+    const hasSecretBindings =
+      Object.keys(secretBindings ?? {}).length > 0 ||
+      ((harnessAuth?.method === "api_key" || harnessAuth?.method === "codex_pat") &&
+        harnessAuth.source.kind === "secret");
+    // These sources and Secret bindings already passed their own admission and exact Agent grants.
+    // A protected source or Git plan still requires its dedicated sender.
+    if (
+      agent.executionMode === "dedicated" &&
+      !repositoryGit &&
+      sources.length === 0 &&
+      gatewaySources.length === admittedSources.length &&
+      this.allowsNonProxyCredentials() &&
+      (gatewaySources.length > 0 || hasSecretBindings)
+    ) {
+      return undefined;
+    }
     if (savedPluginDriver) {
       // Saved-account middleware applies to plugin routes, alongside the ordinary Harness.
       // A revision with a protected Git or inference plan still needs that plan's exclusive sender.
@@ -8950,13 +8958,18 @@ export class OpenClawController {
           "The selected protected execution cannot also install a saved OAuth plugin request policy.",
         );
       }
+      if (hasSecretBindings && !this.allowsNonProxyCredentials()) {
+        throw new ResourceStateConflictError(
+          "The Installation must allow non-Proxy credentials to combine a workload Secret with a saved plugin account.",
+        );
+      }
       // Native attachments must be accounted for by the separately admitted Harness or a
       // credential slot on the enabled, pinned release. An unused Gateway source would be
       // attached by the worker without any Credential Proxy route or managed plugin policy.
       const selectedSlots = this.pluginAccountBindings(
         savedPluginDriver,
         agent.plugins,
-        nativePluginSources,
+        gatewaySources,
       ).filter(
         ({ pluginId, slot }) =>
           agent.plugins?.[pluginId]?.driverPolicy?.releaseSha256 === slot.releaseSha256,
@@ -9177,12 +9190,11 @@ export class OpenClawController {
             secretRefs[protectedType.issuer.issuerInput]!,
           )
         : undefined;
-      const gatewayModelKey = selected !== undefined && this.modelApiKeyUsesGateway(type);
       const egress =
         prepared?.source ??
         (type.type === credentialFreeMetadataType
           ? await this.admitCredentialFreeMetadata(state, principalId, locked.id, sourceId, config)
-          : this.selections.has("credential_proxy") && !gatewayModelKey
+          : this.selections.has("credential_proxy") && !this.allowsNonProxyCredentials()
             ? await this.admitStaticEgressSource(
                 state,
                 principalId,
@@ -14378,7 +14390,7 @@ export class OpenClawController {
         sandbox?.id,
         repositoryCredentials,
         harnessAuth,
-        credentialSourceType,
+        secretBindings,
         savedAccounts ? driver : undefined,
       );
       let executionAdmission: ExecutionAdmission;
@@ -14402,17 +14414,6 @@ export class OpenClawController {
       }
       const execution = { executionAdmission, ...(egressPlan === undefined ? {} : { egressPlan }) };
       assertExecutionAdmission(execution);
-      try {
-        if (compute.validateExecutionAdmission === undefined) {
-          assertExecutionReleaseAllowed(execution);
-        } else {
-          compute.validateExecutionAdmission(execution, egressPlan && this.selectedProxyOwner());
-        }
-      } catch {
-        throw new DependencyUnavailableError(
-          "The selected Compute cannot admit this execution mode; protected release and old-reader fencing are unavailable.",
-        );
-      }
       const policy = await state.sandboxPolicies.find(namespace.id, lockedAgent.id);
       const policyScope = { repositoryCredentials: repositoryCredentials !== undefined };
       // Finding 2053: protected execution refuses Agent additions, never drops them. Only an
@@ -14461,6 +14462,49 @@ export class OpenClawController {
           "The selected Sandbox Driver cannot enforce this Agent's network policy.",
         );
       }
+      const revisionDraft: AgentRevision = {
+        id: revisionId,
+        ...execution,
+        namespaceId: namespace.id,
+        agentId: lockedAgent.id,
+        revision: previous.length + 1,
+        backendId,
+        configurationId: configuration.id,
+        configurationKind: configuration.kind,
+        configurationGeneration: configuration.generation,
+        // Admission checked the Configuration as written; a refusal names only its own settings.
+        // The name then becomes the served Agent's OpenClaw display name.
+        configuration: frozenValues(withAgentIdentityName(admittedConfiguration, lockedAgent.name)),
+        gatewayManagedMode: lockedAgent.gatewayManagedMode,
+        harness: revisionHarness,
+        compute: { id: compute.id, implementation: compute.implementation },
+        ...(sandbox === undefined ? {} : { sandboxDriverId: sandbox.id }),
+        ...(sandboxPolicy === undefined ? {} : { sandboxPolicy }),
+        ...(secretDriver === undefined ? {} : { secretDriverId: secretDriver.id, secretBindings }),
+        ...(pluginState === undefined ? {} : { plugins: pluginState }),
+        ...(lockedAgent.pluginApprovers === undefined
+          ? {}
+          : { pluginApprovers: lockedAgent.pluginApprovers }),
+        ...(repositoryCredentials === undefined ? {} : { repositoryCredentials }),
+        harnessAuth,
+        ...(credentialSources.length === 0 ? {} : { credentialSources }),
+        servicePrincipalId: lockedAgent.servicePrincipalId,
+        createdAt,
+      };
+      try {
+        if (compute.validateExecutionAdmission === undefined) {
+          assertExecutionReleaseAllowed(execution);
+        } else {
+          compute.validateExecutionAdmission(
+            revisionDraft,
+            this.selections.has("credential_proxy") ? this.selectedProxyOwner() : undefined,
+          );
+        }
+      } catch {
+        throw new DependencyUnavailableError(
+          "The selected Compute cannot admit this execution mode; protected release and old-reader fencing are unavailable.",
+        );
+      }
       if (compute.requiresAgentRuntimeCredentials === true) {
         if (
           compute.getAgentRuntimeCredentialStatus === undefined ||
@@ -14502,35 +14546,6 @@ export class OpenClawController {
           }
         }
       }
-      const revisionDraft: AgentRevision = {
-        id: revisionId,
-        ...execution,
-        namespaceId: namespace.id,
-        agentId: lockedAgent.id,
-        revision: previous.length + 1,
-        backendId,
-        configurationId: configuration.id,
-        configurationKind: configuration.kind,
-        configurationGeneration: configuration.generation,
-        // Admission checked the Configuration as written; a refusal names only its own settings.
-        // The name then becomes the served Agent's OpenClaw display name.
-        configuration: frozenValues(withAgentIdentityName(admittedConfiguration, lockedAgent.name)),
-        gatewayManagedMode: lockedAgent.gatewayManagedMode,
-        harness: revisionHarness,
-        compute: { id: compute.id, implementation: compute.implementation },
-        ...(sandbox === undefined ? {} : { sandboxDriverId: sandbox.id }),
-        ...(sandboxPolicy === undefined ? {} : { sandboxPolicy }),
-        ...(secretDriver === undefined ? {} : { secretDriverId: secretDriver.id, secretBindings }),
-        ...(pluginState === undefined ? {} : { plugins: pluginState }),
-        ...(lockedAgent.pluginApprovers === undefined
-          ? {}
-          : { pluginApprovers: lockedAgent.pluginApprovers }),
-        ...(repositoryCredentials === undefined ? {} : { repositoryCredentials }),
-        harnessAuth,
-        ...(credentialSources.length === 0 ? {} : { credentialSources }),
-        servicePrincipalId: lockedAgent.servicePrincipalId,
-        createdAt,
-      };
       if (
         revisionDraft.gatewayManagedMode === true &&
         compute.supportsGatewayManagedMode !== true
@@ -18039,15 +18054,8 @@ export class OpenClawController {
     return { compute, resolve };
   }
 
-  private modelApiKeyUsesGateway(type: CredentialSourceType | undefined): boolean {
-    return (
-      type?.harnessAuth?.loginMode === "api_key" &&
-      type.rotation !== "refresh" &&
-      type.deviceAuthorization === undefined &&
-      this.selections.has("credential_proxy") &&
-      this.selectedDriver("credential_proxy").sourceControl.modelApiKeyDelivery ===
-        "credential_gateway"
-    );
+  private allowsNonProxyCredentials(): boolean {
+    return this.selectedDriver("credential_proxy").sourceControl.allowNonProxyCredentials === true;
   }
 
   /** A protected source is offered only by the selected pair and its installed lifecycle owner. */

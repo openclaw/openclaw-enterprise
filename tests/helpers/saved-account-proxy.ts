@@ -9,6 +9,7 @@ import type { TestContext } from "node:test";
 import {
   savedAccountBindingId,
   type AgentRevision,
+  type CredentialGatewayDriver,
   type Namespace,
 } from "../../packages/contracts/src/index.ts";
 import { InstalledDriver, type OpenClawController } from "../../packages/occ/src/index.ts";
@@ -17,6 +18,7 @@ import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbo
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { installEgressAuthority } from "../../apps/controller/src/composition/egress-authority.ts";
 import { bindReservedPortInProcess, reservePort } from "./available-port.mjs";
+import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
 import { harnessTlsFixture } from "./harness-tls.mjs";
 import { grpc, invoke, openShellMiddlewareClient, token } from "./openshell-online-wire.mjs";
 
@@ -56,18 +58,31 @@ export interface SavedAccountPeer {
 }
 
 /** Real OCC, request authority, Plugin Driver and OAuth issuer; the test owns the Gateway inventory. */
-export function installSavedAccountPlacement(controller: OpenClawController) {
-  // This existing PostgreSQL fixture provides Compute lifecycle without Kubernetes. Use the
-  // normal Namespace mapping so the real OpenShell verifier looks up the installed Sandbox.
+export function installSavedAccountPlacement(
+  controller: OpenClawController,
+  protectedDriver: InstalledDriver,
+  credentialGatewayDriver: CredentialGatewayDriver,
+) {
+  // Run the same fresh and stored Compute admission as the Kubernetes worker.
+  // The PostgreSQL fixture still owns runtime credentials and workload activation.
+  const kubernetes = createTestKubernetesComputeDriver("saved-account-compute", {
+    gatewayRuntime: true,
+    protectedDriver,
+    credentialGatewayDriver,
+  });
   const compute = {
     ...controller.selectedDriver("compute"),
-    id: "saved-account-compute",
+    id: kubernetes.id,
+    implementation: kubernetes.implementation,
+    validateExecutionAdmission: kubernetes.validateExecutionAdmission.bind(kubernetes),
+    admitRevision: kubernetes.admitRevision.bind(kubernetes),
     async resolveSandboxNamespace(namespace: Readonly<Namespace>) {
       return { ...namespace, name: kubernetesNamespaceName(namespace.id) };
     },
   };
   controller.registerDriver(compute);
   controller.selectDriver("compute", compute.id);
+  return kubernetes;
 }
 
 export async function savedAccountProxyFixture(t: TestContext) {
@@ -164,7 +179,7 @@ export async function installSavedAccountProxy(
     middlewareName,
     authorityScope: "execution" as const,
     tokenGrant,
-    modelApiKeyDelivery: "credential_gateway" as const,
+    allowNonProxyCredentials: true,
   };
   const proxy = new OpenShellCredentialProxyDriver(opts, {
     id,
@@ -212,6 +227,7 @@ export async function installSavedAccountProxy(
     bindHost,
   );
   return {
+    owner,
     driver: owner.ref,
     close,
     peer(
