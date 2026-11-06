@@ -8,7 +8,8 @@ author: Kimiyu-186
 
 - **ID:** RFC-0030
 - **Created:** 2026-11-05
-- **Last updated:** 2026-11-05
+- **Last updated:** 2026-11-06
+- **RFC PR:** [#4857](https://github.com/openclaw/openclaw-enterprise/pull/4857)
 - **Related:** [Image upgrades](0011-coordinated-image-upgrade.md), [pre-stop checks proposal #1045](https://github.com/openclaw/openclaw-enterprise/pull/1045)
 
 ## Decision
@@ -17,14 +18,18 @@ Add one bounded waiting stage before an ordinary planned replacement stops its
 serving revision. Pause independent new work, keep the old Gateway and Harness
 running with still-valid authority, and let admitted tasks and their result
 delivery finish. Then use the existing exclusive replacement. Propose a maximum
-of **30 minutes per serving Agent revision**; reaching that deadline starts the
-existing stop path even if work remains. It does not promise readiness within
-30 minutes or recovery of every interrupted task.
+of **30 minutes per serving Agent revision**. At or after that fixed cutoff, the
+next authorized reconciliation starts the existing stop path without another
+completion wait, even if work remains. A Controller outage can delay that pass;
+this does not promise wall-clock stopping or readiness during an outage, or
+recovery of every interrupted task.
 
 The first delivery covers image-only updates of Kubernetes Agents with a
 dedicated Codex Harness and an OpenClaw Gateway supporting the new wait contract.
-Changes to effective configuration, identity or authorization are outside this
-eligibility rule. Stop, deletion and authority withdrawal remain immediate.
+The Compute Driver establishes eligibility from admitted snapshots; core worker
+code does not identify specific vendors. Changes to effective configuration,
+identity or authorization are outside this eligibility rule. Stop, deletion and
+authority withdrawal bypass completion waiting.
 
 ## Why another wait is necessary
 
@@ -52,9 +57,21 @@ stop or a hook also used by security withdrawal.
 Before the boundary, the serving revision must retain its authorized maintenance.
 Currently a newer exclusive candidate can supersede that maintenance as soon as
 it is admitted. [#1045](https://github.com/openclaw/openclaw-enterprise/pull/1045)
-proposes the same later boundary for replacement preflight. Share that boundary;
-do not introduce a second handover owner or require its proposed probe Pods here.
-Once stopping is committed, old maintenance must never recreate the predecessor.
+proposes the same later boundary for replacement preflight. Use one sequence:
+revalidate ownership and authority, run optional candidate-only preflight, wait
+if eligible, then commit the single stop boundary. A failed preflight should not
+pause users. Newer candidates run their own preflight but inherit the serving
+revision's existing cutoff. Its proposed probe Pods remain separate work.
+
+The same stop fact must govern maintenance, native-admin access and deployment
+status, including replacements that skip waiting. Today
+[native-admin](../../apps/controller/src/http/native-admin.ts) becomes unavailable
+merely because a newer exclusive successor exists. Preserve currently authorized
+access during an explicitly owned pre-stop operation, so reconnections and
+approval replies work; expose stopping after commitment. The lifecycle owner's
+authenticated handoff must still be possible at that boundary. Do not add a
+second availability rule or coordinator. Once stopping is committed, old
+maintenance must never recreate the predecessor.
 
 The dashed edges below are proposed; solid edges retain the existing stop/start
 path. Waiting yields Work so an idle Agent can upgrade independently.
@@ -77,18 +94,21 @@ config:
 ---
 flowchart TB
   Work["<b>Existing deployment Work</b><br/>Check current authority"]
+  Preflight["<b>Optional preflight</b><br/>Proposed in #1045<br/>Old revision still serves"]
   Wait["<b>Proposed bounded wait</b><br/>Pause independent admission<br/>Keep old runtime and maintenance"]
   Stop["<b>Commit predecessor stop</b><br/>End old maintenance<br/>Close credentials"]
   Gateway["<b>Stop old Gateway</b><br/>Wait for its Pods to leave"]
   Harness["<b>Stop old Harness</b><br/>Release exclusive resources"]
   Start["<b>Prepare replacement</b><br/>Existing readiness and activation"]
-  Work -.->|eligible planned update| Wait
+  Work -.-> Preflight
+  Preflight -.->|eligible planned update| Wait
+  Preflight -.->|wait not applicable| Stop
   Wait -.->|tasks and delivery complete, or deadline| Stop
   Work -->|existing immediate path| Stop
   Stop --> Gateway --> Harness --> Start
   classDef pending fill:#F3F4F6,stroke:#98A2AE,color:#44505F,stroke-width:1px,stroke-dasharray:4 4
   classDef existing fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
-  class Wait pending
+  class Wait,Preflight pending
   class Work,Stop,Gateway,Harness,Start existing
   linkStyle default stroke:#8B949E,stroke-width:1px
 ```
@@ -98,20 +118,26 @@ checks; this does not introduce a promise that one always becomes ready first.
 
 ## Complexity budget
 
-| Addition                              | Owner and boundary                                                                                                                                                                                                                            |
-| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| One internal record per waiting Agent | OCC's existing durable state: predecessor revision ID, absolute deadline, and `waiting` or `stopping` phase. No new database or task content.                                                                                                 |
-| One optional Compute capability       | Begin/poll an eligible wait and cancel an uncommitted wait. Inputs identify the predecessor, owner and fixed deadline; results distinguish waiting, completed, unsupported and unavailable. These operations are proposed, not existing APIs. |
-| One Gateway planned-wait mode         | Extend the authenticated suspension contract to keep admission paused while existing work finishes; report actual completion separately from custody readiness.                                                                               |
-| Existing Work progress and timeouts   | Show waiting and deadline/forced-stop reason. Align worker convergence and release-helper waits with the new stage.                                                                                                                           |
+| Addition                                                | Owner and boundary                                                                                                                                                                                                                                       |
+| ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| One small lifecycle fact per predecessor being replaced | Extend an existing OCC Agent/Work lifecycle record with predecessor revision ID, fixed cutoff when waiting, and the pre-stop/committed-stop distinction. Prefer typed fields on existing storage; no new table or database is required by this proposal. |
+| One optional Compute capability                         | Begin/poll an eligible wait and cancel an uncommitted wait. Inputs identify the predecessor, owner and fixed deadline; results distinguish waiting, completed, unsupported and unavailable. These operations are proposed, not existing APIs.            |
+| One Gateway planned-wait mode                           | Extend the authenticated suspension contract to keep admission paused while existing work finishes; report actual completion separately from custody readiness.                                                                                          |
+| Existing Work progress and timeouts                     | Show waiting and deadline/forced-stop reason. Align worker convergence and release-helper waits with the new stage.                                                                                                                                      |
 
-The worker creates the record transactionally with its normal Agent/claim checks.
-Retries, Controller restart and newer candidates for the same serving revision
-reuse its deadline. Immediately before closing credentials, it commits `stopping`
-under current ownership and authorization; this phase never returns to waiting.
-Clear the record after retirement or cancellation before stop. The same existing
-Agent ownership checks must prevent superseded work from stopping or resuming a
-different revision.
+Reuse the existing Work claims, per-Agent serialization, Namespace-to-Agent locks
+and yielding. Current Work timestamps are candidate-scoped, pending Work cannot
+carry `result_data`, and admitted revisions are immutable; those fields cannot
+store this policy unchanged. Use the existing state store's clock for the cutoff.
+
+The worker records the pre-stop operation transactionally under its existing
+claim/Agent checks. Retries, restart and newer candidates reuse the predecessor's
+cutoff. Before credential closure or any stop effect, persist `stopping` under
+current candidate/predecessor ownership and authority. It never returns to waiting.
+Retain that fact until retirement; a newer cancellation cannot erase it. On
+pre-stop cancellation, preserve this attempt's no-stop outcome in existing Work
+evidence before clearing temporary wait data. Missing or legacy evidence is
+unknown, not permission to recreate a predecessor or claim it still serves.
 
 The Gateway owns a short renewable admission lease, capped by the fixed deadline.
 Polling cannot extend the deployment deadline. A dead Controller eventually
@@ -120,11 +146,22 @@ wait using the original deadline. This intentionally prefers availability over
 keeping an abandoned deployment frozen. Unexpected Gateway/Harness death follows
 existing recovery and cannot be reported as successful task completion.
 
+A completion observation is valid only for its matching live admission lease and
+Gateway process. Reuse/extend OpenClaw's exact-process suspension handoff to consume
+that lease at committed shutdown. Lease expiry or process change invalidates the
+observation: before commitment, reacquire and reobserve within the original
+deadline, or take the deadline-forced path. After durable stop commitment, finish
+retirement without reopening normal maintenance. An uncertain handoff is not a
+protected completion. The record is stop intent, not proof that a Pod has exited.
+
 Kubernetes Compute should reuse the administrative Gateway route and client used
 by [node enrollment](../../apps/controller/src/gateway/node-enrollment-client.ts),
 with exact revision/process targeting and authenticated method authorization.
-Whether suspension RPCs are permitted on that route needs an isolated integration
-check. This proposal grants no new public endpoint or broader credential scope.
+The native CLI supplies a handoff owner, but its exit alone does not retire the
+Kubernetes workload. Isolated qualification must prove route authorization,
+process targeting, handoff availability at the stop boundary and Pod deletion
+ordering without restarting the old Gateway. This proposal grants no new public
+endpoint or broader credential scope.
 
 No new release service, fleet-wide lock, message database, tool-result journal,
 executor snapshot, replay engine or automatic rollback manager is included.
@@ -180,14 +217,17 @@ fixed image digests. Required observations:
    messages submitted during the pause each gain one admission and one effect.
 3. An existing scheduled job with a test OAuth connection runs naturally before
    and after upgrade, without reauthorization or duplicate execution.
-4. A task exceeds 30 minutes: stopping begins by the bounded deadline and the
-   release proceeds; unknown tool effects are not replayed. Test the real timer
-   once, with fast-clock tests for retries and newer candidates.
+4. A task exceeds 30 minutes with an available Controller: the first authorized
+   pass at/after the cutoff starts stopping without another wait. A Controller
+   returning after the cutoff does the same. Unknown tool effects are not replayed.
+   Test the real timer once; use fast clocks for retries and newer candidates.
 5. Controller restart, cancellation and supersession retain the cutoff and correct
    predecessor. Credential revocation and explicit stop bypass the wait; old
    maintenance cannot resurrect a stopped workload.
-6. Final delivery still pending is not completion. A missing capability is explicit;
-   the first supported update and its subsequent protected update are distinct.
+6. Final delivery still pending is not completion. Exercise lease expiry/process
+   change between completion and handoff, and native UI/approval reconnection
+   during waiting. A missing capability is explicit; first enrollment and the
+   subsequent protected update are distinct.
 
 These are acceptance requirements, not completed tests of the proposal. Native UI
 offline handling, real OAuth continuity and the administrative suspension route
