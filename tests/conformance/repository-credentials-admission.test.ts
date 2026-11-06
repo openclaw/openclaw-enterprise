@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createCredentialService } from "../../apps/controller/src/drivers/repo/credentials/service.ts";
+import { createCredentialService } from "../fixtures/repository-credentials/service.ts";
 import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/credentials/configuration.ts";
 import type {
   Clock,
@@ -18,8 +18,6 @@ type Hooks = {
   sessions?: number;
   credentialSlots?: number;
   clock?: Clock;
-  // A prepared factory may resolve by profile instead of by registry binding.
-  unbound?: boolean;
 };
 const unexpected = () => {
   throw new Error("unexpected credential operation");
@@ -67,8 +65,9 @@ function fixture(prepared: boolean, hooks: Hooks = {}) {
     ),
     factory: prepared
       ? {
-          ...factory,
-          ...(hooks.unbound ? {} : { resolveBound: resolve }),
+          parseAuthentication: factory.parseAuthentication,
+          unauthenticated: factory.unauthenticated,
+          resolveBound: resolve,
           createPrepared(_authority, resolved) {
             assert.equal(resolved, selection);
             hooks.construct?.();
@@ -86,8 +85,7 @@ function fixture(prepared: boolean, hooks: Hooks = {}) {
     deadlineWallMs: clock.wallNow() + 60000,
     preparedOnly: true as const,
   };
-  const input =
-    prepared && !hooks.unbound ? boundInput : { durationSeconds: 60, profile: "git-write" };
+  const input = prepared ? boundInput : { durationSeconds: 60, profile: "git-write" };
   return { service, input, boundInput, alternate };
 }
 
@@ -175,24 +173,36 @@ test("shutdown during resolution refuses publication and drains", async () => {
 });
 
 test("shutdown started by the expiry sweep refuses admission before resolution", async () => {
-  const clock = createControlledClock(1700000000000);
+  const controlled = createControlledClock(1700000000000);
+  let onCancel: (() => void) | undefined;
+  const clock: Clock = {
+    ...controlled,
+    schedule(delay, callback) {
+      const cancel = controlled.schedule(delay, callback);
+      return () => {
+        cancel();
+        const notify = onCancel;
+        onCancel = undefined;
+        notify?.();
+      };
+    },
+  };
   let resolutions = 0;
   let shutdown: Promise<ShutdownSummary> | undefined;
-  const f = fixture(true, {
+  const f = fixture(false, {
     clock,
-    unbound: true,
+    sessions: 2,
     resolve: () => {
       resolutions++;
     },
   });
   assert.equal(f.service.open(f.input).session.state, "OPEN");
-  f.service.observeDisposal(() => {
-    shutdown ??= f.service.shutdown(50);
-  });
-  // Only wall time passes, so the deadline timer has not fired. The next
-  // admission's expiry sweep closes and disposes the first session, and its
-  // disposal observer starts shutdown before the new grant is resolved.
-  await clock.advance(0, 60000);
+  onCancel = () => {
+    shutdown = f.service.shutdown(50);
+  };
+  // Only wall time passes. The next admission closes the expired session
+  // and cancels its pending timer, reentering shutdown before resolution.
+  await controlled.advance(0, 60000);
   assert.throws(() => f.service.open(f.input), /SERVICE_CLOSED/);
   assert.equal(resolutions, 1);
   assert.equal((await shutdown!).graceExpired, false);

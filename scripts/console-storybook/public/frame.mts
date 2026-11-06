@@ -1,10 +1,12 @@
 import type { PluginFieldsOptions } from "/console/agents/plugin-fields.mjs";
 import type { StoryAction } from "../story-action.mts";
-import { scenarios } from "./scenarios.mjs";
-import { installFixture } from "./fixtures.mjs";
+import { scenarios } from "./scenarios.mts";
+import { installFixture } from "./fixtures.mts";
 
 interface FrameScenarioBase {
   name: string;
+  debugEnabled?: boolean;
+  storageUnavailable?: boolean;
   buildRevision?: string | undefined;
   path?: string | undefined;
   clipboard?: string | undefined;
@@ -13,6 +15,7 @@ interface FrameScenarioBase {
 }
 
 type FrameScenario = FrameScenarioBase &
+  Parameters<typeof installFixture>[0] &
   (
     | { component?: undefined }
     | {
@@ -84,6 +87,14 @@ const evidence: FrameEvidence = {
 };
 Object.assign(window, { __consoleStory: evidence });
 installFixture(scenario, evidence);
+localStorage.setItem("oce.console.debug", scenario.debugEnabled === true ? "true" : "false");
+if (scenario.storageUnavailable) {
+  Object.defineProperty(window, "localStorage", {
+    get() {
+      throw new DOMException("Site storage is blocked", "SecurityError");
+    },
+  });
+}
 // Simulated build metadata; deployed images bake this meta tag into their HTML.
 const buildRevision = document.createElement("meta");
 buildRevision.name = "occ-build-revision";

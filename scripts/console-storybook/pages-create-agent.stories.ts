@@ -110,6 +110,8 @@ export const CreateDeploymentSuperseded = {
   name: "A newer deployment took over",
 };
 export const CreateDeploymentFailed = story("createDeploymentFailed");
+export const CreateMalformedProvisioningRevision = story("createMalformedProvisioningRevision");
+export const CreateMalformedProvisioningMessage = story("createMalformedProvisioningMessage");
 export const CreateDeploymentStopped = story("createDeploymentStopped");
 export const CreateProvisioningStopped = story("createProvisioningStopped");
 export const CreateUnsupportedProvisioning = {
@@ -206,6 +208,10 @@ export const CreateBoundCredentialPreset = {
 export const CreatePresetInvalidField = {
   ...story("createPresetInvalidField"),
   name: "Preset with an invalid field",
+};
+export const CreatePresetNonTextPrimary = {
+  ...story("createPresetNonTextPrimary"),
+  name: "Preset with a non-text primary",
 };
 export const CreateCapabilitiesDenied = {
   ...story("createCapabilitiesDenied"),

@@ -10,7 +10,7 @@ import {
 } from "./kubernetes-real.mjs";
 
 // The caller owns the disposable namespace and registers its cleanup before installation.
-export async function installProductionHelmControlPlane({
+export async function prepareProductionHelmControlPlane({
   selection,
   images,
   namespace: system,
@@ -230,6 +230,27 @@ export async function installProductionHelmControlPlane({
     values.metrics = metrics;
   }
   await writeFile(join(directory, "values.json"), JSON.stringify(values), { mode: 0o600 });
+  return {
+    adminEmail,
+    valuesPath: join(directory, "values.json"),
+    diagnose: (error) =>
+      withHelmInstallDiagnostic(error, {
+        selection,
+        namespace: system,
+        release,
+        secrets: failureSecrets([
+          process.env,
+          Object.fromEntries(
+            secretValues.map((value, index) => [`INSTALL_SECRET_${index}`, value]),
+          ),
+        ]),
+      }),
+  };
+}
+
+export async function installProductionHelmControlPlane(options) {
+  const { selection, namespace: system, release, run, record } = options;
+  const prepared = await prepareProductionHelmControlPlane(options);
   await run(
     "helm",
     [
@@ -244,25 +265,17 @@ export async function installProductionHelmControlPlane({
       "--kube-context",
       selection.kubernetesContext,
       "-f",
-      join(directory, "values.json"),
+      prepared.valuesPath,
       "--wait",
       "--timeout",
       "300s",
     ],
     { timeout: 330_000 },
   ).catch(async (error) => {
-    throw await withHelmInstallDiagnostic(error, {
-      selection,
-      namespace: system,
-      release,
-      secrets: failureSecrets([
-        process.env,
-        Object.fromEntries(secretValues.map((value, index) => [`INSTALL_SECRET_${index}`, value])),
-      ]),
-    });
+    throw await prepared.diagnose(error);
   });
   await record("Helm initialization, API and worker ready", { namespace: system });
-  return { adminEmail };
+  return { adminEmail: prepared.adminEmail };
 }
 
 // A failed install says only which hook or resource failed (finding 1574: the initialization

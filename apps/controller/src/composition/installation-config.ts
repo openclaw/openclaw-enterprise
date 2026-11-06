@@ -2,6 +2,7 @@ import type { ModelProviderConfiguration } from "../drivers/compute/model-provid
 import {
   openShellProxyConfiguration,
   openShellRepositoryConfiguration,
+  openShellGitChartListener,
   validateOpenShellRepositoryTransport,
 } from "../drivers/egress-proxy/openshell-configuration.ts";
 import { githubRepositoryConfiguration } from "../drivers/repo/github/installation.ts";
@@ -117,6 +118,7 @@ import { GitHubRepositoryPolicy } from "../drivers/repo/github/policy.ts";
 import { loadRepositoryPolicy } from "./repository-credentials/policy.ts";
 import type { PreparedRepositoryGitConfiguration } from "../backends/repository-credentials/prepared-git-owner.ts";
 import { createOpenShellBackend, type OpenShellGateway } from "../backends/openshell.ts";
+import { bindOpenShellPluginSourceReader } from "./openshell-plugin-source-reader.ts";
 import {
   OpenShellCredentialGatewayDriver,
   type OpenShellCredentialGatewayOptions,
@@ -166,7 +168,7 @@ export interface InstallationStartupConfiguration {
     readonly credential_gateway?: SelectedDriverConfiguration;
     readonly credential_refresh?: SelectedDriverConfiguration;
     readonly credential_proxy?: SelectedDriverConfiguration;
-    readonly plugin?: SelectedDriverConfiguration;
+    readonly plugin?: readonly SelectedDriverConfiguration[];
     readonly service_account?: { readonly id: string };
   };
 }
@@ -175,11 +177,13 @@ export interface InstallationStartupConfiguration {
 export function installationDriverConfigurations(
   installation: InstallationStartupConfiguration | undefined,
 ): readonly import("@openclaw-enterprise/occ").DriverConfigurationRegistration[] {
-  const selections = {
-    ...installation?.drivers,
-    ...(installation?.repository === undefined ? {} : { repo: installation.repository }),
-  };
-  return Object.entries(selections).flatMap(([capability, selection]) => {
+  const { plugin = [], ...drivers } = installation?.drivers ?? {};
+  const selections = [
+    ...Object.entries(drivers),
+    ...plugin.map((selection) => ["plugin", selection] as const),
+    ...(installation?.repository ? [["repo", installation.repository] as const] : []),
+  ];
+  return selections.flatMap(([capability, selection]) => {
     if (!("definition" in selection)) {
       return [];
     }
@@ -240,6 +244,7 @@ export interface InstallationRuntimeDrivers {
   readonly secretDriver: SecretDriver;
   readonly sandboxDriver?: SandboxDriver;
   readonly credentialGatewayDriver?: CredentialGatewayDriver;
+  readonly pluginSourceReader?: ControllerOptions["pluginSourceReader"];
   readonly credentialRefreshDriver?: CredentialRefreshDriver;
   readonly protectedDriver?: InstalledDriver;
   readonly proxyDriver?: CredentialProxyDriver;
@@ -247,7 +252,7 @@ export interface InstallationRuntimeDrivers {
   readonly repositoryGitDriver?: InstalledDriver;
   readonly tokenService?: TokenService;
   readonly preparedGitHub?: PostgresPreparedGitHubLifecycle;
-  readonly pluginDriver?: PluginDriver;
+  readonly pluginDrivers?: readonly PluginDriver[];
   readonly repositoryPolicy?: RepositoryPolicyDriver;
   readonly repositoryAdmission?: Awaited<
     ReturnType<typeof loadRepositoryPolicy>
@@ -1021,7 +1026,7 @@ export async function loadInstallationConfiguration(options: {
   requireChartListener(
     repositoryTransportConfiguration?.authority,
     environment,
-    chartListeners.openshellGit,
+    openShellGitChartListener,
   );
 
   const backends = backendConfiguration(
@@ -1040,32 +1045,28 @@ export async function loadInstallationConfiguration(options: {
   const iamSelection = object(drivers.iam, "drivers.iam");
   const computeSelection = object(drivers.compute, "drivers.compute");
   const secretSelection = object(drivers.secret, "drivers.secret");
-  const pluginSelection =
-    drivers.plugin === undefined ? undefined : object(drivers.plugin, "drivers.plugin");
-  if (pluginSelection !== undefined) {
-    closed(pluginSelection, ["id", "configuration"], "drivers.plugin");
-    if (pluginSelection.id !== "occ-plugin" && pluginSelection.id !== "codex-plugin") {
-      throw new Error("drivers.plugin.id must select occ-plugin or codex-plugin.");
-    }
+  const pluginEntries = drivers.plugin === undefined ? [] : drivers.plugin;
+  if (!Array.isArray(pluginEntries)) {
+    throw new Error("drivers.plugin must be an array of Plugin Driver registrations.");
   }
-  const PluginImplementation =
-    pluginSelection?.id === "codex-plugin" ? CodexPluginDriver : OCCPluginDriver;
-  const plugin =
-    pluginSelection === undefined
-      ? undefined
-      : selected(
-          pluginSelection,
-          "plugin",
-          pluginSelection.id === "codex-plugin" ? "occ/codex-plugin" : "occ/openclaw-plugin",
-          PluginImplementation,
-        );
-  const pluginDriver =
-    plugin === undefined
-      ? undefined
-      : new PluginImplementation(plugin.configuration, {
-          id: plugin.id,
-          implementation: plugin.implementation,
-        });
+  const pluginIds = new Set<string>();
+  const plugins = pluginEntries.map((entry, index) => {
+    const path = `drivers.plugin[${index}]`;
+    const selection = object(entry, path);
+    closed(selection, ["id", "configuration"], path);
+    if (selection.id !== "occ-plugin" && selection.id !== "codex-plugin") {
+      throw new Error(`${path}.id must select occ-plugin or codex-plugin.`);
+    }
+    if (pluginIds.has(selection.id)) {
+      throw new Error(`${path}.id duplicates another Plugin Driver selection.`);
+    }
+    pluginIds.add(selection.id);
+    const Driver = selection.id === "codex-plugin" ? CodexPluginDriver : OCCPluginDriver;
+    const implementation =
+      selection.id === "codex-plugin" ? "occ/codex-plugin" : "occ/openclaw-plugin";
+    const config = selected(selection, "plugin", implementation, Driver, path);
+    return { config, driver: new Driver(config.configuration, config) };
+  });
   for (const [capability, selection] of [
     ["configuration", configurationSelection],
     ["iam", iamSelection],
@@ -1318,7 +1319,7 @@ export async function loadInstallationConfiguration(options: {
       ...(credentialGateway === undefined ? {} : { credential_gateway: credentialGateway }),
       ...(credentialRefresh === undefined ? {} : { credential_refresh: credentialRefresh }),
       ...(proxySelection === undefined ? {} : { credential_proxy: proxySelection }),
-      ...(plugin === undefined ? {} : { plugin }),
+      plugin: plugins.map(({ config }) => config),
       ...(serviceAccount === undefined ? {} : { service_account: serviceAccount }),
     }),
   });
@@ -1342,17 +1343,12 @@ export async function loadInstallationConfiguration(options: {
   const repositoryBackend = backends.find((backend) => backend.type === "github");
   let repositoryRuntime;
   if (repoSelection !== undefined && repositoryBackend !== undefined) {
-    if (repositoryDeliveryMode === "native") {
+    if (nativeRepositorySelection !== undefined) {
       const { composeRepositoryAccess } = await import("./repository-credentials/platform.ts");
-      repositoryRuntime = await composeRepositoryAccess({
-        backend: repositoryBackend,
-        selection: nativeRepositorySelection
-          ? {
-              ...repoSelection,
-              configuration: { ...repoSelection.configuration, ...nativeRepositorySelection },
-            }
-          : repoSelection,
-      });
+      repositoryRuntime = await composeRepositoryAccess(
+        { backend: repositoryBackend, selection: repoSelection },
+        nativeRepositorySelection,
+      );
     } else {
       const policy = await loadRepositoryPolicy({
         backend: repositoryBackend,
@@ -1397,6 +1393,10 @@ export async function loadInstallationConfiguration(options: {
             ...(modelProvider === undefined ? {} : { modelProvider }),
           },
         );
+  const pluginSourceReader =
+    credentialGatewayDriver === undefined
+      ? undefined
+      : bindOpenShellPluginSourceReader(openShell!, credentialGatewayDriver);
   if (
     proxySelection !== undefined &&
     sandboxPackage === undefined &&
@@ -1415,7 +1415,12 @@ export async function loadInstallationConfiguration(options: {
   }
   const secretDriver = new KubernetesSecretDriver(
     secret.configuration as unknown as KubernetesSecretDriverOptions,
-    { id: secret.id, implementation: secret.implementation, preprovisionedNamespace },
+    {
+      id: secret.id,
+      implementation: secret.implementation,
+      preprovisionedNamespace,
+      installationSecretNamespace: environment.OCC_INSTALLATION_SECRET_NAMESPACE,
+    },
   );
   const tokenService = new TokenService();
   let preparedGitHub: PostgresPreparedGitHubLifecycle | undefined;
@@ -1532,6 +1537,20 @@ export async function loadInstallationConfiguration(options: {
         lifecycleDrivers: [configurationDriver],
         ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
         ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
+        // Both built-ins above received this exact Backend; injected and package Sandboxes opt out.
+        ...(openShell !== undefined &&
+        sandboxDriver !== undefined &&
+        sandboxPackage === undefined &&
+        options.createSandboxDriver === undefined &&
+        credentialGatewayDriver !== undefined
+          ? {
+              openShellAttachments: {
+                sandboxDriver,
+                credentialGatewayDriver,
+                attachments: credentialGatewayDriver.attachments,
+              },
+            }
+          : {}),
         ...(protectedDriver === undefined ? {} : { protectedDriver }),
         preparedTokens: tokenService,
         ...(preparedRepositoryGit === undefined || repositoryTransport || repositoryGitDriver
@@ -1572,6 +1591,7 @@ export async function loadInstallationConfiguration(options: {
     secretDriver,
     ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
     ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
+    ...(pluginSourceReader === undefined ? {} : { pluginSourceReader }),
     ...(credentialRefreshDriver === undefined ? {} : { credentialRefreshDriver }),
     ...(protectedDriver === undefined
       ? {}
@@ -1580,7 +1600,7 @@ export async function loadInstallationConfiguration(options: {
     tokenService,
     ...(preparedGitHub === undefined ? {} : { preparedGitHub }),
     createIAMDriver,
-    ...(pluginDriver === undefined ? {} : { pluginDriver }),
+    pluginDrivers: plugins.map(({ driver }) => driver),
     ...(repositoryRuntime ?? {}),
     ...(preparedRepositoryGit ? { preparedRepositoryGit } : {}),
     ...(repositoryTransport ? { repositoryTransport } : {}),

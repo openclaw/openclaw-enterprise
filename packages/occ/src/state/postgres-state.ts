@@ -17,6 +17,8 @@ import { RepositoryTransactionLifetime } from "../ports/transaction.ts";
 import { bindRepository } from "../ports/repository-factory.ts";
 import { bindPlatformUnitOfWork } from "../ports/platform-unit-of-work.ts";
 import { createPlatformReadView } from "../ports/platform-read-view.ts";
+import { postgresSavedConnections } from "./postgres-saved-connections.ts";
+import { postgresConnectionTemplates } from "./postgres-connection-templates.ts";
 import { postgresRepositorySessions } from "./postgres-repository-sessions.ts";
 import {
   validRepositoryBindingSelections,
@@ -43,6 +45,7 @@ import type {
   Installation,
   Namespace,
   PluginDesiredState,
+  PluginDriverIdentity,
   PluginApprovers,
   Preset,
   Permission,
@@ -488,6 +491,9 @@ function agentFromRow(row: PostgresRow, metadata = agentMetadataFromRow(row)): R
   }
   return immutableCopy({
     ...metadata,
+    ...(row.plugin_driver == null
+      ? {}
+      : { pluginDriver: row.plugin_driver as PluginDriverIdentity }),
     ...(plugins === undefined ? {} : { plugins }),
     ...(pluginApprovers === undefined ? {} : { pluginApprovers }),
     ...(repositoryBindings === undefined ? {} : { repositoryBindings }),
@@ -617,6 +623,7 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
   const ownerCapability = text(row, "owner_capability");
   if (
     (ownerCapability !== "credential_gateway" &&
+      ownerCapability !== "token_service" &&
       (ownerCapability !== "credential_proxy" || row.egress == null)) ||
     Object.values(config).some((value) => typeof value !== "string") ||
     Object.values(secretIds).some((value) => typeof value !== "string")
@@ -638,8 +645,9 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
         { kind: "secret" as const, namespaceId, id },
       ]),
     ),
-    driverId: text(row, "driver_id"),
-    ownerCapability,
+    ...(ownerCapability === "token_service"
+      ? { ownerCapability }
+      : { ownerCapability, driverId: text(row, "driver_id") }),
     state,
     createdAt: timestamp(row, "created_at"),
   });
@@ -3003,7 +3011,7 @@ export class PostgresPlatformState implements PlatformStateStore {
             source.name,
             source.type,
             JSON.stringify(source.config),
-            source.driverId,
+            source.driverId ?? null,
             source.state,
             source.createdAt,
             source.egress === undefined ? null : JSON.stringify(source.egress),
@@ -3340,7 +3348,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         (
           await client.query(
             `SELECT a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                    a.backend_id, a.plugins, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
+                    a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
                     a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode
              FROM occ.agents AS a
              JOIN occ.namespaces AS n ON n.id = a.namespace_id AND n.deleted_at IS NULL
@@ -3420,7 +3428,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         (
           await client.query(
             `SELECT a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                      a.backend_id, a.plugins, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
+                      a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
                       a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode
                FROM occ.agents AS a
                JOIN occ.namespaces AS n ON n.id = a.namespace_id AND n.deleted_at IS NULL
@@ -3572,9 +3580,9 @@ export class PostgresPlatformState implements PlatformStateStore {
           `INSERT INTO occ.agents
            (id, namespace_id, name, configuration_id, backend_id, execution_mode,
              service_principal_id, harness_auth, active_revision_id, created_at, plugins,
-             plugin_approvers, repository_bindings, repository_access, credential_sources, gateway_managed_mode)
+             plugin_approvers, repository_bindings, repository_access, credential_sources, gateway_managed_mode, plugin_driver)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11::jsonb, $12::jsonb, $13::jsonb,
-                    $14::jsonb, $15::jsonb, $16)`,
+                    $14::jsonb, $15::jsonb, $16, $17::jsonb)`,
           [
             saved.id,
             saved.namespaceId,
@@ -3592,6 +3600,7 @@ export class PostgresPlatformState implements PlatformStateStore {
             repositoryAccess === undefined ? null : JSON.stringify(repositoryAccess),
             agentCredentialSources === undefined ? null : JSON.stringify(agentCredentialSources),
             saved.gatewayManagedMode,
+            saved.pluginDriver === undefined ? null : JSON.stringify(saved.pluginDriver),
           ],
         );
         await client.query(
@@ -3614,6 +3623,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         repositoryAccess,
         nextCredentialSources,
         gatewayManagedMode,
+        pluginDriver,
       ) => {
         if (harnessAuth !== undefined) {
           await assertHarnessAuthAvailable(
@@ -3644,12 +3654,13 @@ export class PostgresPlatformState implements PlatformStateStore {
                    repository_bindings = CASE WHEN $13::boolean THEN $14::jsonb ELSE a.repository_bindings END,
                    repository_access = CASE WHEN $15::boolean THEN $16::jsonb ELSE a.repository_access END,
                    credential_sources = CASE WHEN $17::boolean THEN $18::jsonb ELSE a.credential_sources END,
-                   gateway_managed_mode = COALESCE($19::boolean, a.gateway_managed_mode)
+                   gateway_managed_mode = COALESCE($19::boolean, a.gateway_managed_mode),
+                   plugin_driver = CASE WHEN $20::boolean THEN $21::jsonb ELSE a.plugin_driver END
                FROM occ.namespaces AS n
                WHERE a.namespace_id = $1 AND a.id = $2
                  AND n.id = a.namespace_id AND n.deleted_at IS NULL
                  RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                          a.backend_id, a.plugins, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
+                          a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
                           a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode`,
               [
                 namespaceId,
@@ -3679,6 +3690,8 @@ export class PostgresPlatformState implements PlatformStateStore {
                   ? null
                   : JSON.stringify(nextCredentialSources),
                 gatewayManagedMode ?? null,
+                pluginDriver !== undefined,
+                pluginDriver == null ? null : JSON.stringify(pluginDriver),
               ],
             )
           ).rows,
@@ -3700,7 +3713,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                 AND a.active_revision_id IS NOT DISTINCT FROM $3::text
                   AND n.id = a.namespace_id AND n.deleted_at IS NULL
                   RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                          a.backend_id, a.plugins, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
+                          a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
                           a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode`,
               [namespaceId, agentId, expectedRevisionId ?? null, candidateRevisionId],
             )
@@ -3717,7 +3730,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                WHERE a.namespace_id = $1 AND a.id = $2 AND a.active_revision_id = $3
                  AND n.id = a.namespace_id AND n.deleted_at IS NULL
                 RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                         a.backend_id, a.plugins, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
+                         a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
                          a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode`,
               [namespaceId, agentId, expectedRevisionId],
             )
@@ -3736,7 +3749,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                  AND a.desired_runtime_state = ANY($3::text[])
                  AND n.id = a.namespace_id AND n.deleted_at IS NULL
                 RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                         a.backend_id, a.plugins, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
+                         a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
                          a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode`,
               [namespaceId, agentId, expectedStates, next],
             )
@@ -3758,7 +3771,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                  AND a.status = ANY($3::text[])
                  AND n.id = a.namespace_id AND n.deleted_at IS NULL
                RETURNING a.id, a.namespace_id, a.name, a.configuration_id, a.execution_mode,
-                         a.backend_id, a.plugins, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
+                         a.backend_id, a.plugins, a.plugin_driver, a.plugin_approvers, a.repository_bindings, a.repository_access, a.service_principal_id, a.harness_auth, a.credential_sources,
                          a.active_revision_id, a.desired_runtime_state, a.status, a.created_at, a.sandbox_policy_editing, a.gateway_managed_mode`,
               [namespaceId, agentId, expectedStatuses, next],
             )
@@ -4536,6 +4549,10 @@ export class PostgresPlatformState implements PlatformStateStore {
       installations,
       namespaces,
       configurations,
+      savedConnections: postgresSavedConnections(client, () => this.requireInitialized(context)),
+      connectionTemplates: postgresConnectionTemplates(client, () =>
+        this.requireInitialized(context),
+      ),
       presets,
       secrets,
       credentialSources,

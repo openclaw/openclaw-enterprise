@@ -10,6 +10,7 @@ import {
   inspectDigest,
   repository,
   skopeo,
+  skopeoLogin,
   validatePackage,
   verifyCi,
   verifyEnvironment,
@@ -92,18 +93,7 @@ async function main(env) {
       { stdio: "inherit" },
     );
     const digest = inspectDigest(`oci-archive:${archive}`);
-    skopeo(
-      [
-        "login",
-        "--authfile",
-        authfile,
-        "--username",
-        env.GITHUB_ACTOR,
-        "--password-stdin",
-        "ghcr.io",
-      ],
-      { input: env.GH_TOKEN, stdio: ["pipe", "ignore", "pipe"] },
-    );
+    skopeoLogin("ghcr.io", authfile, env.GITHUB_ACTOR, env.GH_TOKEN);
     for (const pkg of packages) {
       await validate();
       const existing = await github(pkg.path, { allowNotFound: true });

@@ -25,7 +25,7 @@ import {
   element,
   field as formField,
   fieldError,
-  jsonObjectProblem,
+  jsonObjectDiagnostic,
   setFieldError,
   setStatusTone,
   setText,
@@ -120,30 +120,45 @@ export interface CreateAgentContext extends AgentNavigation {
 
 // Only fields this editor changes. Preserve other native configuration and model metadata.
 type ModelSettings = Record<string, unknown>;
-type ModelSelection = string | { primary?: string | undefined; fallbacks?: unknown[] };
-type ProviderModel = Record<string, unknown> & { id: string; name?: string };
-type LaunchValues = Record<string, unknown> & {
-  agents?: {
-    defaults?: {
-      model?: ModelSelection | undefined;
-      models?: Record<string, ModelSettings>;
-    };
-    entries?: Record<string, { model?: ModelSelection; models?: Record<string, ModelSettings> }>;
-  };
-  models?: { providers?: Record<string, { models?: ProviderModel[] }> };
-  plugins?: { entries?: Record<string, unknown>; allow?: string[] };
-};
-
-function modelPrimary(selection: ModelSelection | undefined): string | undefined {
-  return typeof selection === "string" ? selection : selection?.primary;
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function configuredModelSelection(values: LaunchValues | undefined): ModelSelection | undefined {
-  const defaults = values?.agents?.defaults?.model;
-  return modelPrimary(defaults)
-    ? defaults
-    : (Object.values(values?.agents?.entries ?? {}).find((entry) => modelPrimary(entry?.model))
-        ?.model ?? defaults);
+function isArray(value: unknown): value is unknown[] {
+  return Array.isArray(value);
+}
+
+function objectFields(value: unknown): Record<string, unknown> {
+  return isObject(value) ? value : {};
+}
+
+// Object spread keeps array indexes and string code units too. Draft reads must not decide
+// which enumerable user fields survive a merge; the API owns full schema validation.
+function spreadFields(value: unknown): Record<string, unknown> {
+  return { ...(value ?? {}) };
+}
+
+function modelPrimaryValue(selection: unknown): unknown {
+  return typeof selection === "string" ? selection : objectFields(selection).primary;
+}
+
+function modelPrimary(selection: unknown): string | undefined {
+  const primary = modelPrimaryValue(selection);
+  return typeof primary === "string" ? primary : undefined;
+}
+
+function configuredModelSelection(values: Record<string, unknown> | undefined): unknown {
+  const agents = objectFields(values?.agents);
+  const defaults = objectFields(agents.defaults).model;
+  // Keep the original candidate order, including non-text primaries, so initialization can
+  // explain a broken Preset instead of silently opening it with a different model.
+  if (modelPrimaryValue(defaults)) {
+    return defaults;
+  }
+  const entry = Object.values(objectFields(agents.entries)).find(
+    (entry) => isObject(entry) && modelPrimaryValue(entry.model),
+  );
+  return isObject(entry) ? entry.model : defaults;
 }
 
 export interface CreateAgentDraft {
@@ -603,7 +618,10 @@ async function waitForProvisioning({
   const neutralOutcome =
     cancelledAgent === "kept"
       ? "stopped"
-      : neutralDeploymentOutcome({ status: current.status, error: current.error ?? null });
+      : neutralDeploymentOutcome({
+          status: current.status,
+          error: current.error?.code === undefined ? null : { code: current.error.code },
+        });
   // A failed job's reason leads the form's error line, so its status line would only repeat
   // that it failed (finding 2423).
   status.textContent =
@@ -851,8 +869,6 @@ function renderAgentForm(
   let notReadyNote = notReady ? namespaceNote(notReady) : null;
   const agent: NonNullable<PresetLaunchSettings["agent"]> & { harnessAuth?: unknown } =
     rendered.agent ?? {};
-  const isObject = (value: unknown): value is Record<string, unknown> =>
-    value !== null && typeof value === "object" && !Array.isArray(value);
   const workspaceFileNames = Object.keys(WORKSPACE_DEFAULTS);
   const initialWorkspaceFiles = isObject(agent.initialWorkspaceFiles)
     ? agent.initialWorkspaceFiles
@@ -1021,8 +1037,14 @@ function renderAgentForm(
     "aria-describedby": "configuration-json-hint",
   });
   const configurationError = fieldError(configuration);
-  const primary = configuredModelSelection(rendered.configuration?.values);
-  const initialModel = modelPrimary(primary);
+  let catalogErrorMessage: string | undefined;
+  const initialModel =
+    modelPrimaryValue(configuredModelSelection(rendered.configuration?.values)) ?? undefined;
+  if (initialModel !== undefined && typeof initialModel !== "string") {
+    throw new Error(
+      "This Preset's primary model must be text. Choose another Preset, or ask a Preset editor to fix the template.",
+    );
+  }
   const nativeProvider = element(
     "select",
     { id: "model-provider" },
@@ -1082,20 +1104,21 @@ function renderAgentForm(
   let pendingModelSettings = draft.pendingModelSettings;
   let pendingPrimaryModel = draft.pendingPrimaryModel;
   let pendingModelSelections = draft.pendingModelSelections;
-  const modelSelections = (values: LaunchValues) => ({
-    defaults: isObject(values.agents?.defaults)
-      ? { model: values.agents.defaults.model }
-      : values.agents?.defaults,
-    entries: isObject(values.agents?.entries)
-      ? Object.fromEntries(
-          Object.entries(values.agents.entries).map(([id, entry]) => [
-            id,
-            isObject(entry) ? { model: entry.model } : entry,
-          ]),
-        )
-      : values.agents?.entries,
-  });
-  function retainPendingModel(values: LaunchValues) {
+  const modelSelections = (values: Record<string, unknown>) => {
+    const agents = objectFields(values.agents);
+    return {
+      defaults: isObject(agents.defaults) ? { model: agents.defaults.model } : agents.defaults,
+      entries: isObject(agents.entries)
+        ? Object.fromEntries(
+            Object.entries(agents.entries).map(([id, entry]): [string, unknown] => [
+              id,
+              isObject(entry) ? { model: entry.model } : entry,
+            ]),
+          )
+        : agents.entries,
+    };
+  };
+  function retainPendingModel(values: Record<string, unknown>) {
     if (pendingModelSelections && !sameValue(pendingModelSelections, modelSelections(values))) {
       pendingModelSettings = undefined;
       pendingPrimaryModel = undefined;
@@ -1109,15 +1132,25 @@ function renderAgentForm(
     ...modelChoices().map((id) => element("option", { value: id }, id)),
   );
   const toggleModel = button("Enter model ID manually", () => {
+    const values = readModelConfiguration();
     if (manualModel) {
-      resetModelChoices(false, model.value);
+      if (!resetModelChoices(false, model.value, values)) {
+        return;
+      }
     } else {
+      if (values === "invalid-allow" || !canMergeModelCatalog(values, model.value)) {
+        return;
+      }
       manualModel = true;
       modelChoice.value = "";
-      updateModelConfiguration();
+      updateModelConfiguration(false, values);
       updateControls();
     }
-    (manualModel ? model : modelChoice).focus();
+    if (values === "number-range") {
+      focusConfiguration();
+    } else {
+      (manualModel ? model : modelChoice).focus();
+    }
   });
   const modelField = field("Model ID", model, "Enter a model ID available to this credential.");
   const choiceField = field(
@@ -1131,22 +1164,37 @@ function renderAgentForm(
     ...(useModelChoices ? [choiceField, toggleModel] : []),
     modelField,
   );
-  function resetModelChoices(resetTransport = false, selectedModel = "") {
+  function resetModelChoices(
+    resetTransport = false,
+    selectedModel = "",
+    values = readModelConfiguration(),
+  ) {
+    const nextModel = modelChoices().includes(selectedModel) ? selectedModel : "";
+    if (values === "invalid-allow" || !canMergeModelCatalog(values, nextModel, resetTransport)) {
+      return false;
+    }
     manualModel = !useModelChoices;
-    model.value = modelChoices().includes(selectedModel) ? selectedModel : "";
+    model.value = nextModel;
     modelChoice.replaceChildren(
       element("option", { value: "" }, "Choose a model"),
       ...modelChoices().map((id) => element("option", { value: id }, id)),
     );
     modelChoice.value = model.value;
-    updateModelConfiguration(resetTransport);
+    updateModelConfiguration(resetTransport, values);
     updateControls();
+    return true;
   }
   if (useModelChoices) {
     modelChoice.addEventListener("change", () => {
+      const values = readModelConfiguration();
+      if (values === "invalid-allow" || !canMergeModelCatalog(values, modelChoice.value)) {
+        // The native select has already changed; keep the last applied choice visible.
+        modelChoice.value = model.value;
+        return;
+      }
       manualModel = false;
       model.value = modelChoice.value;
-      updateModelConfiguration();
+      updateModelConfiguration(false, values);
     });
   }
   const modelCredentialPicker = createSecretReferenceField({
@@ -1344,21 +1392,74 @@ function renderAgentForm(
     feedback.textContent = "";
     renderChannelEditor();
   });
-  function updateModelConfiguration(resetTransport = false) {
-    const values = parseObject(configuration);
+  function readModelConfiguration(
+    targetHarness = harness.value,
+  ): Record<string, unknown> | "invalid-json" | "number-range" | "invalid-allow" {
+    const diagnostic = jsonObjectDiagnostic(configuration.value);
+    const values = parseObject(configuration, diagnostic.kind === "number-range", diagnostic);
+    // Keep the existing control transitions for invalid JSON; only the merge is skipped.
     if (values === undefined) {
+      return diagnostic.kind === "number-range" ? "number-range" : "invalid-json";
+    }
+    // Only the Codex template merges this field. Do not validate unrelated draft settings.
+    if (targetHarness !== "codex" || !Object.hasOwn(objectFields(values.plugins), "allow")) {
+      return values;
+    }
+    const allow = objectFields(values.plugins).allow;
+    if (isArray(allow) && allow.every((id) => typeof id === "string")) {
+      return values;
+    }
+    configurationError.show(
+      'Set plugins.allow to an array of strings, such as ["codex"], or remove the field.',
+    );
+    focusConfiguration();
+    return "invalid-allow";
+  }
+  function canMergeModelCatalog(
+    values: ReturnType<typeof readModelConfiguration>,
+    selectedModel: string,
+    resetTransport = false,
+  ): boolean {
+    // Transport replacement and clearing a selection do not read the existing catalog.
+    if (typeof values === "string" || resetTransport || !selectedModel.trim()) {
+      return true;
+    }
+    const providerId = harness.value === "codex" ? "codex" : nativeProvider.value;
+    const catalog = objectFields(
+      objectFields(objectFields(values.models).providers)[providerId],
+    ).models;
+    if (
+      catalog === undefined ||
+      (isArray(catalog) &&
+        catalog.every((entry) => isObject(entry) && typeof entry.id === "string"))
+    ) {
+      return true;
+    }
+    catalogErrorMessage = `Set models.providers.${providerId}.models to an array of model objects with an id, or remove the field.`;
+    configurationError.show(catalogErrorMessage);
+    focusConfiguration();
+    return false;
+  }
+  function updateModelConfiguration(resetTransport = false, values = readModelConfiguration()) {
+    if (typeof values === "string" || !canMergeModelCatalog(values, model.value, resetTransport)) {
       return;
     }
     retainPendingModel(values);
     const next = configurationTemplate(harness.value, nativeProvider.value, model.value.trim());
-    const previous = values.agents?.defaults?.model;
+    const agents = objectFields(values.agents);
+    const defaults = objectFields(agents.defaults);
+    const models = objectFields(values.models);
+    const plugins = objectFields(values.plugins);
+    const pluginEntries = objectFields(plugins.entries);
+    const previous = defaults.model;
     const previousModel = modelPrimary(configuredModelSelection(values)) ?? pendingPrimaryModel;
-    const modelSettings = { ...values.agents?.defaults?.models };
+    const modelSettings = spreadFields(defaults.models);
     const selectedModel = next.agents?.defaults.model;
     const selectedSettings = {
-      ...((selectedModel && modelSettings[selectedModel]) ||
+      ...(((selectedModel && modelSettings[selectedModel]) ||
         (previousModel && modelSettings[previousModel]) ||
-        pendingModelSettings),
+        pendingModelSettings) ??
+        {}),
       ...(selectedModel ? next.agents?.defaults.models[selectedModel] : {}),
     };
     pendingModelSettings = selectedModel ? undefined : selectedSettings;
@@ -1368,7 +1469,7 @@ function renderAgentForm(
         : selectedModel;
     // OCC requires one primary across the roster. Keep explicit selections in step with
     // the edited primary, without materializing inherited selections or losing local policy.
-    const entries = values.agents?.entries;
+    const entries = agents.entries;
     const defaultPrimary = modelPrimary(previous);
     // Only a shared, qualified primary is a bulk-edit basis. Pending state comes from
     // clearing this control; a JSON selection edit revokes it before reading new selections.
@@ -1387,16 +1488,16 @@ function renderAgentForm(
               isObject(entry) &&
               (entry.model === undefined
                 ? defaultPrimary === previousModel || pendingPrimaryModel === previousModel
-                : modelPrimary(entry.model as ModelSelection) === previousModel),
+                : modelPrimary(entry.model) === previousModel),
           )));
     const nextEntries =
       selectedModel && sharedPrimary && isObject(entries)
         ? Object.fromEntries(
-            Object.entries(entries).map(([id, entry]) => {
+            Object.entries(entries).map(([id, entry]): [string, unknown] => {
               if (!isObject(entry)) {
                 return [id, entry];
               }
-              const selection = entry.model as ModelSelection | undefined;
+              const selection = entry.model;
               const localPolicy = isObject(entry.models)
                 ? (entry.models[selectedModel] ??
                   (previousModel ? entry.models[previousModel] : undefined))
@@ -1411,12 +1512,12 @@ function renderAgentForm(
                         model:
                           typeof selection === "string"
                             ? selectedModel
-                            : { ...selection, primary: selectedModel },
+                            : { ...(selection ?? {}), primary: selectedModel },
                       }),
                   ...(isObject(localPolicy)
                     ? {
                         models: {
-                          ...entry.models,
+                          ...(entry.models ?? {}),
                           [selectedModel]: {
                             ...localPolicy,
                             ...next.agents?.defaults.models[selectedModel],
@@ -1431,8 +1532,8 @@ function renderAgentForm(
         : entries;
     const selections = [
       nextModel,
-      ...(nextEntries && typeof nextEntries === "object" && !Array.isArray(nextEntries)
-        ? Object.values(nextEntries).map((entry) => entry?.model)
+      ...(isObject(nextEntries)
+        ? Object.values(nextEntries).map((entry) => objectFields(entry).model)
         : []),
     ];
     const referencedModels = new Set(
@@ -1440,26 +1541,26 @@ function renderAgentForm(
         typeof selection === "string"
           ? [selection]
           : [
-              selection?.primary,
-              ...(Array.isArray(selection?.fallbacks) ? selection.fallbacks : []),
+              modelPrimary(selection),
+              ...(isObject(selection) && isArray(selection.fallbacks) ? selection.fallbacks : []),
             ],
       ),
     );
     if (previousModel && !referencedModels.has(previousModel)) {
       delete modelSettings[previousModel];
       if (nextEntries !== entries) {
-        for (const entry of Object.values(nextEntries ?? {})) {
-          if (isObject(entry?.models)) {
+        for (const entry of Object.values(objectFields(nextEntries))) {
+          if (isObject(entry) && isObject(entry.models)) {
             delete entry.models[previousModel];
           }
         }
       }
     }
     values.agents = {
-      ...values.agents,
+      ...(values.agents ?? {}),
       ...(nextEntries === undefined ? {} : { entries: nextEntries }),
       defaults: {
-        ...values.agents?.defaults,
+        ...(agents.defaults ?? {}),
         model: nextModel,
         models: {
           ...modelSettings,
@@ -1467,7 +1568,7 @@ function renderAgentForm(
         },
       },
     };
-    const providers = { ...values.models?.providers };
+    const providers = spreadFields(models.providers);
     const previousId =
       typeof previousModel === "string"
         ? previousModel.slice(previousModel.indexOf("/") + 1)
@@ -1482,14 +1583,17 @@ function renderAgentForm(
     } else if (selectedModel) {
       const providerId = harness.value === "codex" ? "codex" : nativeProvider.value;
       const templateProvider = next.models?.providers[providerId];
-      const existingProvider = providers[providerId] ?? templateProvider;
-      const existingModels: ProviderModel[] = existingProvider?.models ?? [];
+      const provider = providers[providerId] ?? templateProvider;
+      const existingProvider = objectFields(provider);
+      const existingModels = isArray(existingProvider.models) ? existingProvider.models : [];
       const selectedId = model.value.trim();
       const retainPrevious = referencedModels.has(`${providerId}/${previousId}`);
-      const namesModel = (entry: ProviderModel, id: string | undefined) =>
-        entry.id === id || entry.id === `${providerId}/${id}`;
+      const namesModel = (entry: unknown, id: string | undefined) =>
+        isObject(entry) && (entry.id === id || entry.id === `${providerId}/${id}`);
       if (!existingModels.some((entry) => namesModel(entry, selectedId))) {
-        const previousEntry = existingModels.find((entry) => namesModel(entry, previousId));
+        const previousEntry = existingModels
+          .filter(isObject)
+          .find((entry) => namesModel(entry, previousId));
         const selectedEntry = {
           ...(previousEntry ?? templateProvider?.models[0]),
           id: selectedId,
@@ -1499,7 +1603,7 @@ function renderAgentForm(
               : selectedId,
         };
         providers[providerId] = {
-          ...existingProvider,
+          ...(provider ?? {}),
           models:
             previousEntry && !retainPrevious
               ? existingModels.map((entry) => (entry === previousEntry ? selectedEntry : entry))
@@ -1507,7 +1611,7 @@ function renderAgentForm(
         };
       } else {
         providers[providerId] = {
-          ...existingProvider,
+          ...(provider ?? {}),
           models: existingModels.filter(
             (entry) =>
               !namesModel(entry, previousId) || namesModel(entry, selectedId) || retainPrevious,
@@ -1515,31 +1619,41 @@ function renderAgentForm(
         };
       }
     }
-    values.models = { ...values.models, providers };
+    values.models = { ...(values.models ?? {}), providers };
     if (next.plugins) {
       values.plugins = {
-        ...values.plugins,
-        allow: [...new Set([...(values.plugins?.allow ?? []), ...next.plugins.allow])],
+        ...(values.plugins ?? {}),
+        allow: [
+          ...new Set([...(isArray(plugins.allow) ? plugins.allow : []), ...next.plugins.allow]),
+        ],
         entries: {
-          ...values.plugins?.entries,
+          ...(plugins.entries ?? {}),
           codex: resetTransport
             ? next.plugins.entries.codex
-            : (values.plugins?.entries?.codex ?? next.plugins.entries.codex),
+            : (pluginEntries.codex ?? next.plugins.entries.codex),
         },
       };
-    } else if (values.plugins?.entries?.codex) {
-      delete values.plugins.entries.codex;
-      if (Array.isArray(values.plugins.allow)) {
-        values.plugins.allow = values.plugins.allow.filter((id) => id !== "codex");
+    } else if (pluginEntries.codex) {
+      delete pluginEntries.codex;
+      if (isArray(plugins.allow)) {
+        plugins.allow = plugins.allow.filter((id) => id !== "codex");
       }
     }
     configuration.value = JSON.stringify(values, null, 2);
-    // Snapshot the serialized selections, where an undefined primary is omitted. Unrelated
-    // JSON edits keep catalog provenance; changed selections cannot borrow clear-state trust.
-    pendingModelSelections =
-      !selectedModel && sharedPrimary
-        ? modelSelections(JSON.parse(configuration.value) as LaunchValues)
-        : undefined;
+    // Read the written selections: omitted primaries and -0 must match subsequent draft reads.
+    // Unrelated JSON edits keep provenance; changed selections cannot borrow clear-state trust.
+    const writtenValues = !selectedModel && sharedPrimary ? parseObject(configuration) : undefined;
+    pendingModelSelections = writtenValues ? modelSelections(writtenValues) : undefined;
+    // Clear only our catalog remedy; other validation shares this field-error node.
+    // Clearing the model alone retains its catalog, including any reported invalid list.
+    if (
+      (resetTransport || selectedModel) &&
+      catalogErrorMessage !== undefined &&
+      configurationError.node.textContent === catalogErrorMessage
+    ) {
+      configurationError.clear();
+      catalogErrorMessage = undefined;
+    }
     configuration.setCustomValidity("");
     feedback.textContent = "";
     renderChannelEditor();
@@ -1553,24 +1667,41 @@ function renderAgentForm(
   }
   nativeProvider.addEventListener("change", () => {
     // Operator-managed Presets retain the embedded harness required by their fixed binding.
-    harness.value =
+    const targetHarness =
       nativeProvider.value === "anthropic" || binding?.method === "runtime" ? "openclaw" : "codex";
+    const values = readModelConfiguration(targetHarness);
+    if (values === "invalid-allow") {
+      // The native select changed before preflight; retain the last applied provider.
+      nativeProvider.value = appliedProvider;
+      return;
+    }
+    appliedProvider = nativeProvider.value;
+    harness.value = targetHarness;
     mode.value = harness.value === "codex" ? "dedicated" : "embedded";
     // A provider change must not send the previous provider's key to a different service.
     clearModelCredential();
     if (!binding) {
       authMethod.value = "api_key";
-      resetModelChoices(true);
+      resetModelChoices(true, "", values);
     } else {
-      updateModelConfiguration(true);
+      updateModelConfiguration(true, values);
     }
   });
   authMethod.addEventListener("change", () => {
     clearModelCredential();
-    resetModelChoices();
+    if (!resetModelChoices()) {
+      // The authentication choice still applies when the Configuration merge is blocked.
+      updateControls();
+    }
   });
   model.addEventListener("change", () => updateModelConfiguration());
   harness.addEventListener("change", () => {
+    const values = readModelConfiguration();
+    if (values === "invalid-allow") {
+      // Only Codex merges the allowlist; the other harness choice was OpenClaw.
+      harness.value = "openclaw";
+      return;
+    }
     // Embedded is OpenClaw's default because dedicated OpenClaw needs a provisioning
     // Sandbox Driver; operators opt into it through Execution mode. An Installation that
     // refuses Embedded preselects Dedicated when it accepts that (#2670).
@@ -1584,9 +1715,9 @@ function renderAgentForm(
     ) {
       authMethod.value = "api_key";
       clearModelCredential();
-      resetModelChoices(true);
+      resetModelChoices(true, "", values);
     } else {
-      updateModelConfiguration(true);
+      updateModelConfiguration(true, values);
     }
     updateControls();
   });
@@ -1641,6 +1772,7 @@ function renderAgentForm(
           clearModelCredential();
         }
         nativeProvider.value = selectedProvider;
+        appliedProvider = selectedProvider;
         if (selectedProvider === "anthropic") {
           harness.value = "openclaw";
           mode.value = "embedded";
@@ -1662,11 +1794,14 @@ function renderAgentForm(
   plugins.value = JSON.stringify(agent.plugins ?? {}, null, 2);
   let pluginDiscoveryCredential: "none" | "required" | null = null;
   let savedOpenClawCatalog = false;
+  let catalogUnavailable = false;
+  let pluginHarness = harness.value;
+  let installationCapabilities: InstallationCapabilities | undefined;
   // Codex serves curated plugins only to ChatGPT logins; API-key Agents get them disabled.
   const apiKeyCodex = () =>
     harness.value === "codex" && (binding?.method ?? authMethod.value) === "api_key";
   function discoveryCredential() {
-    if (savedOpenClawCatalog || apiKeyCodex()) {
+    if (catalogUnavailable || savedOpenClawCatalog || apiKeyCodex()) {
       return null;
     }
     if (harness.value === "codex" && pluginDiscoveryCredential === "none") {
@@ -1713,15 +1848,23 @@ function renderAgentForm(
       ["codex_pat", "credential_source"].includes(binding?.method ?? authMethod.value) &&
       Boolean(boundSource ?? modelCredentialSource ?? apiKey.value.trim()),
     isPending: () => pending,
-    requestBody: (body) => ({ ...discoveryCredential(), ...body }),
-    unavailableMessage: () =>
-      savedOpenClawCatalog
+    requestBody: (body) => ({
+      ...discoveryCredential(),
+      harnessId: harness.value,
+      ...body,
+    }),
+    unavailableMessage: () => {
+      if (catalogUnavailable) {
+        return "This Installation has no plugin catalog for the selected Harness.";
+      }
+      return savedOpenClawCatalog
         ? "To install Google Workspace, open Plugins on a saved dedicated OpenClaw Agent using Kubernetes Compute."
         : apiKeyCodex()
           ? "Codex plugins need a ChatGPT login. With an OpenAI API key, each selected plugin is disabled when the Agent deploys (PLUGIN_AUTH_REQUIRED). Choose Service Accounts or ChatGPT OAuth to browse and use plugins."
           : pluginDiscoveryCredential === "none"
             ? "Choose the Codex harness to browse this Installation's curated plugin catalog."
-            : "For discovery, choose ChatGPT OAuth (Experimental) and sign in, or choose Service Accounts with the Codex harness and select a Secret or enter a preview token.",
+            : "For discovery, choose ChatGPT OAuth (Experimental) and sign in, or choose Service Accounts with the Codex harness and select a Secret or enter a preview token.";
+    },
     availableMessage: () =>
       pluginDiscoveryCredential === "none"
         ? "Load the installation's curated plugin catalog. Access and tool availability are checked separately."
@@ -1734,8 +1877,33 @@ function renderAgentForm(
       }),
   });
   const pluginFields = pluginDiscovery.fields;
-  const updatePluginDiscovery = pluginDiscovery.update;
-  const resetPluginDiscovery = pluginDiscovery.reset;
+  function applyPluginCapabilities() {
+    const capabilities = installationCapabilities;
+    const catalog = capabilities?.pluginCatalogs?.find(
+      (candidate) => candidate.harnessId === harness.value,
+    );
+    const policies = catalog?.pluginPolicies;
+    const discovery = catalog?.pluginDiscovery;
+    savedOpenClawCatalog = policies?.driver.implementation === "occ/openclaw-plugin";
+    catalogUnavailable = capabilities !== undefined && discovery === undefined;
+    pluginDiscoveryCredential = discovery?.credential ?? (catalogUnavailable ? null : "required");
+    pluginFields.setCapabilities(policies ?? null);
+    defaultApprovers.hidden = policies?.approvers?.agent !== true;
+    if (!defaultApprovers.hidden) {
+      defaultApprovers.refreshNames();
+    } else if (capabilities && pluginApprovers !== undefined) {
+      pluginApprovers = undefined;
+      defaultApprovers.refreshValue();
+    }
+  }
+  function resetPluginDiscovery() {
+    if (pluginHarness !== harness.value) {
+      pluginHarness = harness.value;
+      plugins.value = "{}";
+      applyPluginCapabilities();
+    }
+    pluginDiscovery.reset();
+  }
   apiKey.addEventListener("input", resetPluginDiscovery);
   for (const control of [nativeProvider, authMethod, harness]) {
     control.addEventListener("change", resetPluginDiscovery);
@@ -2292,6 +2460,7 @@ function renderAgentForm(
       input.value = value;
     }
   }
+  let appliedProvider = nativeProvider.value;
   manualModel = draft.manualModel ?? manualModel;
   // Whether the reader changed the form or its Preset variables: Cancel then asks first, and a
   // reload or tab close warns. Restoring a draft and the form's own updates fire no trusted event.
@@ -2365,16 +2534,16 @@ function renderAgentForm(
       context.setDraftCapture(captureDraft, unsavedDraft);
     }
   }
-  function parseObject<T extends Record<string, unknown> = LaunchValues>(
+  function parseObject(
     input: HTMLTextAreaElement,
     reportInvalid = false,
-  ): T | undefined {
-    const problem = jsonObjectProblem(input.value);
-    if (problem === undefined) {
-      return JSON.parse(input.value);
+    diagnostic = jsonObjectDiagnostic(input.value),
+  ): Record<string, unknown> | undefined {
+    if (diagnostic.kind === "valid") {
+      return diagnostic.value;
     }
     if (reportInvalid && input === configuration) {
-      configurationError.show(problem);
+      configurationError.show(diagnostic.message);
       focusConfiguration();
     } else if (reportInvalid) {
       const details = input.closest("details");
@@ -2394,7 +2563,7 @@ function renderAgentForm(
     }
     configuration.focus();
   }
-  function hasEnabledChannel(values: LaunchValues) {
+  function hasEnabledChannel(values: Record<string, unknown>) {
     const channels = values.channels;
     if (channels === null || typeof channels !== "object" || Array.isArray(channels)) {
       return false;
@@ -2776,7 +2945,11 @@ function renderAgentForm(
     if (!planLocked && capabilityDiscoveryDone && (!nativeAdminAvailable || !shouldProvision())) {
       nativeAdmin.checked = false;
     }
-    updatePluginDiscovery();
+    if (pluginHarness !== harness.value) {
+      resetPluginDiscovery();
+    } else {
+      pluginDiscovery.update();
+    }
     pluginFields.setDisabled(planLocked);
     channelEditor.toggleAttribute("inert", planLocked || saved);
     channelEditor.setAttribute("aria-busy", pending ? "true" : "false");
@@ -3248,14 +3421,8 @@ function renderAgentForm(
     }
   }
   function applyCapabilities(capabilities: InstallationCapabilities | undefined) {
-    pluginDiscoveryCredential = capabilities?.pluginDiscovery?.credential ?? "required";
-    savedOpenClawCatalog =
-      capabilities?.pluginPolicies?.driver?.implementation === "occ/openclaw-plugin";
-    pluginFields.setCapabilities(capabilities?.pluginPolicies ?? null);
-    defaultApprovers.hidden = capabilities?.pluginPolicies?.approvers?.agent !== true;
-    if (!defaultApprovers.hidden) {
-      defaultApprovers.refreshNames();
-    }
+    installationCapabilities = capabilities;
+    applyPluginCapabilities();
     nativeAdminAvailable = capabilities?.nativeAdmin === true;
     nativeWorkersAvailable = capabilities?.nativeWorkers !== undefined;
     const openclawModes = capabilities?.openclaw?.executionModes;
@@ -3630,7 +3797,7 @@ function renderAgentForm(
     if (values === undefined) {
       return;
     }
-    const desiredPlugins = parseObject<Record<string, unknown>>(plugins, true);
+    const desiredPlugins = parseObject(plugins, true);
     const bindings = configurationSecretBindings;
     if (values === undefined || desiredPlugins === undefined) {
       return;
@@ -3662,8 +3829,8 @@ function renderAgentForm(
     }
     if (
       (!binding || hasBoundModelCredential) &&
-      typeof selected === "object" &&
-      Array.isArray(selected.fallbacks) &&
+      isObject(selected) &&
+      isArray(selected.fallbacks) &&
       selected.fallbacks.some(
         (ref) =>
           typeof ref !== "string" ||

@@ -196,7 +196,10 @@ export function secretsScenarios({
       },
       actions: [click("Demo model API key (simulated)")],
       description:
-        "The readable Agent keeps its link. A previously listed Agent shows no identity or link and asks you to reopen the Secret to check again. Hidden count, incomplete-list warning and disabled deletion remain. Simulated UI proof.",
+        "The inspector says “This Secret is referenced.” The readable Agent keeps its link. A previously listed Agent shows no identity or link and asks you to reopen the Secret to check again. The hidden count and incomplete-list warning remain.",
+      steps: [
+        "Tab to Delete Secret. It looks unavailable and its accessible description is “This Secret is referenced.” Inspecting usage does not ask you to remove references.",
+      ],
     },
     secretsReadOnly: {
       group: "Pages/Secrets",
@@ -213,9 +216,9 @@ export function secretsScenarios({
       },
       actions: [click("Demo model API key (simulated)")],
       description:
-        "The Secret read says this caller may neither replace nor delete the Secret. Both buttons are disabled before any typing, and each names its reason. Consumers name the Agent, with its ID beside it. Simulated UI proof.",
+        "The inspector says “This Secret is referenced.” Consumers name the Agent, with its ID beside it. This caller cannot replace or delete the Secret.",
       steps: [
-        "Tab to Replace value and Delete Secret. Each takes focus and looks unavailable. Replace value is described by its note; Delete Secret by the blocked-deletion sentence and its note. Enter, Space or a click opens nothing.",
+        "Tab to Replace value and Delete Secret. Each takes focus and looks unavailable. Replace value is described by its access note. Delete Secret is described by the neutral usage sentence and its separate access note. Enter, Space or a click opens nothing.",
       ],
       gap: "The answer is advisory. The controller still authorizes each write.",
     },
@@ -271,14 +274,12 @@ export function secretsScenarios({
             "The Secret is still referenced by Agent agt_00000000-0000-4000-8000-000000000001. Remove those references first.",
         },
       ],
-      actions: [
-        click("Demo model API key (simulated)"),
-        click("Delete Secret"),
-        click("Permanently delete Secret"),
-      ],
+      actions: [click("Demo model API key (simulated)")],
       description:
-        "A newly added reference can refuse deletion after the detail read. Reopen the detail to inspect current consumers.",
+        "The inspector starts with “No current consumers were found.” A reference added after that read can still block deletion.",
       steps: [
+        "Choose Delete Secret. Check that the confirmation has no removal guidance yet, then choose Permanently delete Secret.",
+        "The refusal names the Agent and asks you to remove the references, then close and reopen the Secret to inspect its current consumers.",
         "Tab to Permanently delete Secret. It takes focus and looks unavailable, described by the refusal; Enter, Space or a click sends nothing (finding 2935).",
       ],
     },
