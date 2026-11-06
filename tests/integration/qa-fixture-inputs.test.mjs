@@ -4019,6 +4019,78 @@ test("public Git QA discovers its managed skill beneath native HOME or state dir
   }
 });
 
+test("public Git admission QA uses the public policy view and revision registry", async () => {
+  const { assertOrdinaryPublicGithubAdmission: observe } =
+    await import("../helpers/qa-public-github-git.mjs");
+  // The public revision DTO deliberately omits executionAdmission, sandboxPolicy
+  // and Compute service snapshots; the policy API supplies revision-bound facts.
+  const agent = {
+    namespaceId: "namespace-one",
+    id: "agent-one",
+    revision: {
+      id: "revision-one",
+      sandboxDriverId: "openshell",
+      harness: { id: "codex", mode: "dedicated" },
+    },
+  };
+  const view = {
+    protectedExecution: false,
+    defaultsRevisionId: agent.revision.id,
+    deployedPolicyVersion: 1,
+    defaults: { "source-control": { endpoints: [], binaries: [{ path: "/usr/bin/git" }] } },
+    policy: { version: 1, additions: [] },
+  };
+  const peer = { namespace: "reader", authorizationConfigMapName: "reader-grants" };
+  const entries = {};
+  const f = {
+    installation: { id: "installation-one" },
+    configuration: { drivers: { sandbox: { id: "openshell" } } },
+    async api(method, path) {
+      assert.equal(method, "GET");
+      assert.equal(path, "/namespaces/namespace-one/agents/agent-one/sandbox-policy/networking");
+      return view;
+    },
+    async resource(kind, name, namespace) {
+      assert.deepEqual([kind, name, namespace], ["configmap", "reader-grants", "reader"]);
+      return { data: { "authorizations.json": JSON.stringify(entries) } };
+    },
+  };
+  const absent = await observe(f, agent, peer);
+  assert.equal(absent.publicReadAuthorization, null);
+  const policy = { mode: "all" };
+  const row = {
+    installationId: f.installation.id,
+    namespaceId: agent.namespaceId,
+    agentId: agent.id,
+    revisionId: agent.revision.id,
+    policy,
+    validUntil: new Date(Date.now() + 60_000).toISOString(),
+    tokenSha256: "f".repeat(64),
+  };
+  entries[agent.revision.id] = row;
+  const selected = await observe(f, agent, peer, policy);
+  assert.equal(selected.protectedExecution, false);
+  assert.deepEqual(selected.publicReadAuthorization.policy, policy);
+  assert.equal(JSON.stringify(selected).includes(row.tokenSha256), false);
+  await assert.rejects(observe(f, agent, peer), /unselected revision/);
+  view.defaultsRevisionId = "another-revision";
+  await assert.rejects(observe(f, agent, peer, policy), /revision/);
+  view.defaultsRevisionId = agent.revision.id;
+  view.protectedExecution = true;
+  await assert.rejects(observe(f, agent, peer, policy), /unprotected/);
+  view.protectedExecution = false;
+  view.defaults["source-control"].endpoints = [{ host: "github.com", ports: [443] }];
+  await assert.rejects(observe(f, agent, peer, policy), /GitHub/);
+  view.defaults["source-control"].endpoints = [];
+  row.agentId = "another-agent";
+  await assert.rejects(observe(f, agent, peer, policy), /authorization identity/);
+  row.agentId = agent.id;
+  row.validUntil = "1970-01-01T00:00:00.000Z";
+  await assert.rejects(observe(f, agent, peer, policy), /live reader authorization/);
+  delete entries[agent.revision.id];
+  await assert.rejects(observe(f, agent, peer, policy), /selected revision/);
+});
+
 test("public Git provisioning evidence retains only fixed categories for the failed revision", async (t) => {
   const { recordPublicGithubProvisionFailure } =
     await import("../helpers/qa-public-github-git.mjs");

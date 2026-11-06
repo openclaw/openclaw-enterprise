@@ -60,16 +60,76 @@ export function configureQaOrdinaryPublicGithubPolicy(sandbox) {
   selected[0].endpoints = [];
 }
 
-function assertOrdinaryPublicGithubAdmission(revision, services) {
-  assert.equal(revision.executionAdmission.mode, "unprotected");
-  assert.equal(revision.egressPlan, undefined);
+export async function assertOrdinaryPublicGithubAdmission(f, agent, reader, policy) {
+  const revision = agent.revision;
   assert.equal(revision.repositoryCredentials, undefined);
-  assert.deepEqual(revision.compute.serviceAccess ?? [], services);
-  assert.deepEqual(revision.sandboxPolicy.serviceAccess ?? [], services);
-  assert.equal(revision.sandboxPolicy.implementation, "openshell");
-  assert.deepEqual(revision.sandboxPolicy.defaults["source-control"].endpoints, []);
-  assert.deepEqual(revision.sandboxPolicy.additions, []);
-  assertNoDirectGithubPolicy(revision.sandboxPolicy.defaults, revision.sandboxPolicy.additions);
+  assert.equal(revision.harness.id, "codex");
+  assert.equal(revision.harness.mode, "dedicated");
+  assert.equal(revision.sandboxDriverId, f.configuration.drivers.sandbox.id);
+  const view = await f.api(
+    "GET",
+    `/namespaces/${agent.namespaceId}/agents/${agent.id}/sandbox-policy/networking`,
+  );
+  assert.equal(
+    view.protectedExecution,
+    false,
+    "ordinary public Git QA requires unprotected execution",
+  );
+  assert.equal(
+    view.defaultsRevisionId,
+    revision.id,
+    "policy defaults must belong to this revision",
+  );
+  assert.equal(view.deployedPolicyVersion, view.policy.version);
+  assert.deepEqual(
+    view.defaults?.["source-control"]?.endpoints,
+    [],
+    "ordinary public Git QA must keep its launcher GitHub rule closed",
+  );
+  assert.deepEqual(view.policy.additions, []);
+  assertNoDirectGithubPolicy(view.defaults, view.policy.additions);
+  const registry = JSON.parse(
+    (await f.resource("configmap", reader.authorizationConfigMapName, reader.namespace)).data[
+      "authorizations.json"
+    ],
+  );
+  const row = registry[revision.id];
+  let authorization = null;
+  if (policy === undefined) {
+    assert.equal(row, undefined, "an unselected revision must have no reader authorization");
+  } else {
+    assert.ok(row, "the selected revision must have reader authorization");
+    const identity = {
+      installationId: row.installationId,
+      namespaceId: row.namespaceId,
+      agentId: row.agentId,
+      revisionId: row.revisionId,
+    };
+    assert.deepEqual(
+      identity,
+      {
+        installationId: f.installation.id,
+        namespaceId: agent.namespaceId,
+        agentId: agent.id,
+        revisionId: revision.id,
+      },
+      "reader authorization identity must match the deployed revision",
+    );
+    assert.deepEqual(row.policy, policy);
+    assert.equal(row.withdrawn, undefined);
+    assert.ok(Date.parse(row.validUntil) > Date.now(), "a live reader authorization is required");
+    authorization = { ...identity, policy: row.policy, validUntil: row.validUntil };
+  }
+  return {
+    executionMode: "ordinary-openshell",
+    protectedExecution: view.protectedExecution,
+    sandboxDriverId: revision.sandboxDriverId,
+    defaultsRevisionId: view.defaultsRevisionId,
+    policyVersion: view.deployedPolicyVersion,
+    defaults: view.defaults,
+    additions: view.policy.additions,
+    publicReadAuthorization: authorization,
+  };
 }
 
 async function verifyReaderSource(f) {
@@ -439,12 +499,11 @@ export async function verifyQaPublicGithubGit(context, artifacts) {
         };
       },
     });
-    assertOrdinaryPublicGithubAdmission(first.revision, []);
+    const initialAdmission = await assertOrdinaryPublicGithubAdmission(f, first, reader.peer);
     await f.record("public-git-execution-boundary", {
-      executionMode: "ordinary-openshell",
-      executionAdmission: "unprotected",
+      ...initialAdmission,
       directGithubDefault: "no endpoints",
-      readerServiceAccessBeforeOptIn: [],
+      readerAuthorizationBeforeOptIn: "absent",
       protectedCoexistenceQualified: false,
     });
     let commandIndex = 0;
@@ -509,9 +568,11 @@ export async function verifyQaPublicGithubGit(context, artifacts) {
     async function select(agent, policy) {
       const values = structuredClone(agent.configuration.values);
       values.plugins.entries.codex.config.publicGithubRead = policy;
+      // Upload-pack uses POST. Select full HTTP methods explicitly while
+      // retaining the exact reader-host allow and no local binding.
       values.plugins.entries.codex.config.appServer.networkProxy = {
         enabled: true,
-        mode: "limited",
+        mode: "full",
         allowLocalBinding: false,
         domains: { [reader.peer.address]: "allow" },
       };
@@ -522,27 +583,10 @@ export async function verifyQaPublicGithubGit(context, artifacts) {
       );
       agent.configuration.values = values;
       await f.deployAndWait(agent);
-      assertOrdinaryPublicGithubAdmission(agent.revision, [
-        {
-          id: "public-github-read",
-          driverId: f.configuration.drivers.compute.id,
-          implementation: "kubernetes",
-          endpoint: `https://${reader.peer.address}:8080`,
-          configuration: {
-            policy,
-            peer: { namespace: reader.peer.namespace, podLabels: reader.peer.podLabels },
-            authorizationConfigMapName: reader.peer.authorizationConfigMapName,
-            installationId: f.installation.id,
-            caBundle: reader.peer.caBundle,
-          },
-        },
-      ]);
-      await f.record(`public-git-admission-${agent.revision.id}`, {
-        executionMode: "ordinary-openshell",
-        executionAdmission: agent.revision.executionAdmission.mode,
-        sandboxPolicy: agent.revision.sandboxPolicy,
-        serviceAccess: agent.revision.compute.serviceAccess,
-      });
+      await f.record(
+        `public-git-admission-${agent.revision.id}`,
+        await assertOrdinaryPublicGithubAdmission(f, agent, reader.peer, policy),
+      );
       const pod = await f.pod(agent, "agent");
       assert.ok(
         pod.metadata.ownerReferences.some((owner) => owner.kind === "Sandbox"),
@@ -678,7 +722,7 @@ export async function verifyQaPublicGithubGit(context, artifacts) {
     await stopQaAgent(f, second);
     const evidence = await f.record("public-github-git", {
       executionMode: "ordinary-openshell",
-      executionAdmission: "unprotected",
+      protectedExecution: false,
       protectedCoexistenceQualified: false,
       provider: "live anonymous github.com",
       model: process.env.OCC_TEST_QA_CODEX_MODEL,
