@@ -254,10 +254,12 @@ with `--resume --migration-history-checked`.
 
 ## Correct values the candidate refuses
 
-Before the window, render the candidate chart with live values from its checkout:
+Render live values from the candidate checkout, matching release and namespace:
 
 ```bash
-helm template --is-upgrade oce deploy/helm/openclaw-enterprise -f /secure/occ/values.yaml > /dev/null
+helm template --is-upgrade oce deploy/helm/openclaw-enterprise \
+  --namespace openclaw-system \
+  -f /secure/occ/values.yaml > /dev/null
 ```
 
 The helper renders and runs its
