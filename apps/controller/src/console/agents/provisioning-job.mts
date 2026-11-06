@@ -2,11 +2,14 @@ import type { AgentProvisioningStatusWire } from "@openclaw-enterprise/contracts
 import { responseFields } from "../api-client.mjs";
 
 type ProvisioningJob = Pick<AgentProvisioningStatusWire, "url" | "status"> & {
+  phase?: AgentProvisioningStatusWire["phase"];
   agentId?: string;
   revisionId?: string;
   error?: { code?: string; message?: string };
   progress?: { lastAttempt: { code: string; message: string } };
 };
+
+export type { ProvisioningJob };
 
 // Match the contracts' prefixed lowercase v4 UUIDs without loading server schemas in the browser.
 function resourceId(value: unknown, prefix: "agt_" | "rev_"): value is string {
@@ -43,6 +46,16 @@ export function provisioningJob(
     throw new Error("The provisioning response did not identify the expected job.");
   }
   const result: ProvisioningJob = { url, status };
+  // The phase names the last phase the worker completed. A reply without a readable phase still
+  // identifies its job; the step meter simply stays on its indeterminate step.
+  if (
+    job.phase === "admitted" ||
+    job.phase === "configuration" ||
+    job.phase === "transport" ||
+    job.phase === "handoff"
+  ) {
+    result.phase = job.phase;
+  }
   for (const [key, prefix] of [
     ["agentId", "agt_"],
     ["revisionId", "rev_"],

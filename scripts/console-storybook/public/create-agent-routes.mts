@@ -40,6 +40,9 @@ type CreateScenario = {
   >;
   provisionedDeploymentError?: AgentDeploymentStatusWire["error"];
   provisioningStatus?: AgentProvisioningStatusWire["status"];
+  // The completed phase each status read reports, in order (the last one repeats). Defaults to
+  // configuration on the first read and handoff after it, as before.
+  provisioningPhases?: readonly AgentProvisioningStatusWire["phase"][];
   malformedProvisioningReply?: "revision-id" | "error-message";
   provisioningNamesDeploymentWait?: boolean;
 };
@@ -326,7 +329,13 @@ export function createAgentRoutes(scenario: CreateScenario, dependencies: Create
             requestId: current.requestId,
             workId: current.workId,
             status: current.status,
-            phase: current.reads > 1 ? "handoff" : "configuration",
+            phase: scenario.provisioningPhases
+              ? (scenario.provisioningPhases[
+                  Math.min(current.reads - 1, scenario.provisioningPhases.length - 1)
+                ] ?? "handoff")
+              : current.reads > 1
+                ? "handoff"
+                : "configuration",
             attemptCount: 1,
             updatedAt: createdAt,
             url: current.url,
