@@ -180,7 +180,7 @@ jobs:
       OCC_TEST_QA_INSTALLATION: compose
       OCC_TEST_QA_PRESET: Codex
       OCC_TEST_QA_SCENARIOS: public-github-git
-      OCC_TEST_QA_CODEX_MODEL: gpt-4.1-mini
+      OCC_TEST_QA_CODEX_MODEL: ${{ vars.OCC_TEST_QA_CODEX_MODEL }}
       OCC_TEST_QA_CODEX_MODEL_BASE_URL: https://api.openai.com/v1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
