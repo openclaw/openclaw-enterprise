@@ -1031,7 +1031,7 @@ function renderExternalSignIn(controlPlane, github, google, oidc, authBaseUrl, d
     : ["agentNativeAdminDomain", "sharedCookieDomain"]) {
     if (controlPlane[key] !== undefined) {
       diagnostics.errors.push(
-        `controlPlane.${key} is not consumed with external sign-in: GitHub, Google and OIDC sign-in disable native admin.`,
+        `controlPlane.${key} is not consumed with external sign-in in this mode. GitHub native admin requires host-only-exchange; Google and OIDC do not support native admin.`,
       );
     }
   }
