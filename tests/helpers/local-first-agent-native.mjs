@@ -1087,9 +1087,16 @@ export function nativeWorkerHistoryEvidence({
       ? message.content.filter((part) => part?.type === "toolCall" && part.name === "exec")
       : [],
   );
+  const nestedExitCodes = [];
   const envelopes = exec.map((message) => {
     try {
       const value = JSON.parse(text(message.content));
+      if (
+        typeof value?.value?.aggregated === "string" &&
+        Number.isSafeInteger(value.value.exitCode)
+      ) {
+        nestedExitCodes.push(value.value.exitCode);
+      }
       return typeof value?.value?.aggregated === "string" ? "aggregated" : "other";
     } catch {
       return "plain";
@@ -1121,6 +1128,15 @@ export function nativeWorkerHistoryEvidence({
           part?.type !== "toolCall" && !(part?.type === "text" && typeof part.text === "string"),
       ).length,
       historyExecCallCount: calls.length,
+      historyExecCodeStringCount: calls.filter((part) => typeof part.arguments?.code === "string")
+        .length,
+      // A source mention is not evidence that the nested command executed.
+      historyExecCodeToolPrefixContainsCount: calls.filter(
+        (part) =>
+          typeof part.arguments?.code === "string" && part.arguments.code.includes(toolPrefix),
+      ).length,
+      historyExecNestedExitZeroCount: nestedExitCodes.filter((code) => code === 0).length,
+      historyExecNestedExitNonzeroCount: nestedExitCodes.filter((code) => code !== 0).length,
       historyExecCommandStringCount: calls.filter(
         (part) => typeof part.arguments?.command === "string",
       ).length,

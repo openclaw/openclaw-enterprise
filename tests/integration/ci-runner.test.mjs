@@ -1342,18 +1342,23 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
     messages: [
       {
         role: "assistant",
-        content: [{ type: "toolCall", name: "exec", arguments: { command: nativePrivate } }],
+        content: [{ type: "toolCall", name: "exec", arguments: { code: nativePrivate } }],
         __openclaw: { runId: "selected" },
       },
       {
         role: "toolResult",
         toolName: "exec",
         isError: false,
-        content: JSON.stringify({ value: { aggregated: nativePrivate } }),
+        content: JSON.stringify({ value: { aggregated: nativePrivate, exitCode: 0 } }),
         __openclaw: { runId: "selected" },
       },
     ],
   }).observation;
+  assert.equal(nativeHistory.historyExecCodeStringCount, 1);
+  assert.equal(nativeHistory.historyExecCommandStringCount, 0);
+  assert.equal(nativeHistory.historyExecNestedExitZeroCount, 1);
+  assert.equal(nativeHistory.historyToolProofPresent, false);
+  assert.equal(nativeHistory.historyFinalProofPresent, false);
   const nativeWorker = nativeWorkerPlacementObservation({
     placement: {
       state: "failed",
@@ -6387,6 +6392,56 @@ test("native history proof keeps exact run, explicit success and marker predicat
       JSON.stringify(evidence.observation),
       /private-host|private-value|FIRST_AGENT_NATIVE/,
     );
+  }
+  // Code Mode can succeed without producing the requested shell proof. Source
+  // mentions and nested exit codes remain observations, never proof predicates.
+  for (const [exitCode, aggregated] of [
+    ...[0, 2, undefined, null, "0", 0.5].map((code) => [code, "private-output"]),
+    [0, undefined],
+    [2, null],
+    [0, ""],
+  ]) {
+    const call = {
+      ...final,
+      stopReason: "toolUse",
+      content: [
+        {
+          type: "toolCall",
+          name: "exec",
+          arguments: { code: `console.log(${JSON.stringify(prefix)}); // private-code` },
+        },
+      ],
+    };
+    const result = {
+      ...tool,
+      content: JSON.stringify({ value: { aggregated, exitCode } }),
+    };
+    const evidence = nativeWorkerHistoryEvidence({
+      messages: [
+        call,
+        result,
+        { ...final, content: "Done" },
+        { ...call, __openclaw: { runId: "other" } },
+        { ...result, __openclaw: { runId: "other" } },
+      ],
+      runId: "selected",
+      toolPrefix: prefix,
+      marker,
+    });
+    assert.equal(evidence.observation.historyExecCodeStringCount, 1);
+    assert.equal(evidence.observation.historyExecCodeToolPrefixContainsCount, 1);
+    assert.equal(evidence.observation.historyExecCommandStringCount, 0);
+    assert.equal(
+      evidence.observation.historyExecNestedExitZeroCount,
+      exitCode === 0 && typeof aggregated === "string" ? 1 : 0,
+    );
+    assert.equal(
+      evidence.observation.historyExecNestedExitNonzeroCount,
+      exitCode === 2 && typeof aggregated === "string" ? 1 : 0,
+    );
+    assert.equal(evidence.observation.historyToolProofPresent, false);
+    assert.equal(evidence.observation.historyFinalProofPresent, false);
+    assert.doesNotMatch(JSON.stringify(evidence.observation), /private-|FIRST_AGENT_NATIVE/);
   }
   // Peer-supplied part names and command arguments must not become diagnostic values.
   const command = "private-command";
