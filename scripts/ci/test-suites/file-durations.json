@@ -89,7 +89,7 @@
     "tests/conformance/module-boundaries.test.mjs": 4000,
     "tests/conformance/module-policy.test.mjs": 3700,
     "tests/conformance/native-admin-upgrade-reset.test.mjs": 6800,
-    "tests/conformance/native-admin-websocket-relay.test.ts": 1200,
+    "tests/conformance/native-admin-websocket-relay.test.mjs": 1200,
     "tests/conformance/node-enrollment-client.test.mjs": 2800,
     "tests/conformance/node-test-summary.test.mjs": 100,
     "tests/conformance/occ-api-security.test.mjs": 3100,
