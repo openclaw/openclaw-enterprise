@@ -8,7 +8,7 @@ author: mrunalp
 
 - **ID:** RFC-0026 (provisional; renumber before merge)
 - **Created:** 2026-10-29
-- **Last updated:** 2026-11-04
+- **Last updated:** 2026-11-06
 - **RFC PR:** [#4207](https://github.com/openclaw/openclaw-enterprise/pull/4207)
 - **Implementation plan:** [TASK-0050](../plans/0050-default-users.md)
 - **Related:** [Agent Author role (#4045)](https://github.com/openclaw/openclaw-enterprise/pull/4045),
@@ -28,7 +28,7 @@ creator owns the resource it creates, through a configured Owner Role. An
 Installation administrator maps identity provider groups to OCC Groups; at each
 sign-in, OCC creates the person's account if a mapping matches and updates their
 mapped memberships. An AccessBinding without a resource applies to every
-resource in its Namespace, for any Role. Existing flows keep their behavior.
+resource in its Namespace, for any Role.
 
 ## Motivation
 
@@ -87,15 +87,15 @@ Kubernetes namespace ([security](../../docs/reference/security.md)).
 
 ### Owners and state
 
-| Concern                            | Owner                                                                                     |
-| ---------------------------------- | ----------------------------------------------------------------------------------------- |
-| Roles, Groups, and Group bindings  | Installation configuration `iam`; OCC writes them as ordinary rows at startup             |
-| Group bindings in a new Namespace  | OCC, when it creates a Namespace that a configured binding names                          |
-| Default Group membership           | `POST /api/auth/accounts`, for each Group in `iam.defaultUserGroups`                      |
-| Owner bindings                     | Each create operation, in its transaction, to `iam.ownerRole`                             |
-| Mapping rules                      | New Installation IAM API and console Settings card; Installation `administer`; PostgreSQL |
-| Account creation and membership    | Controller sign-in path, through the IAM Driver, in one transaction with its audit event  |
-| Agent credential grants            | `deployAgent`, through the existing Agent operate Roles                                   |
+| Concern                           | Owner                                                                                     |
+| --------------------------------- | ----------------------------------------------------------------------------------------- |
+| Roles, Groups, and Group bindings | Installation configuration `iam`; OCC writes them as ordinary rows at startup             |
+| Group bindings in a new Namespace | OCC, when it creates a Namespace that a configured binding names                          |
+| Default Group membership          | `POST /api/auth/accounts`, for each Group in `iam.defaultUserGroups`                      |
+| Owner bindings                    | Each create operation, in its transaction, to `iam.ownerRole`                             |
+| Mapping rules                     | New Installation IAM API and console Settings card; Installation `administer`; PostgreSQL |
+| Account creation and membership   | Controller sign-in path, through the IAM Driver, in one transaction with its audit event  |
+| Agent credential grants           | `deployAgent`, through the existing Agent operate Roles                                   |
 
 ### Configured Roles, Groups, and bindings
 
@@ -106,8 +106,15 @@ of the Installation configuration declares ordinary ones:
 iam:
   roles:
     - id: agent_creator
-      permissions: [agent:create, configuration:create, secret:create,
-        credential_source:create, namespace:read, preset:read]
+      permissions:
+        [
+          agent:create,
+          configuration:create,
+          secret:create,
+          credential_source:create,
+          namespace:read,
+          preset:read,
+        ]
     - id: namespace_creator
       permissions: [namespace:create]
     - id: owner
@@ -147,8 +154,8 @@ resources:
   caller can read, so members of `default` see only their own.
 - An Agent's revisions and sandbox policy belong to the Agent. OCC passes the
   parent Agent with each `agent_revision` and `sandbox_policy` check, and IAM
-  applies the Agent's bindings to them. Without this, an owner could not read
-  the revisions that their deploys create.
+  applies the Agent's bindings to them, so an owner can read the revisions
+  their deploys create.
 
 Deleting a resource deletes its exact bindings, as today. An administrator
 changes an owner by deleting the Owner binding and creating another.
@@ -216,22 +223,24 @@ audited.
 
 ### Revocation keeps what people created
 
-Removing a binding from the configuration, removing a person from a mapped
-Group or the provider group, or disabling the account stops new creates. Everything they created stays: Owner bindings,
-Namespaces, Agents, and grants remain until an administrator deletes them or
-moves the Owner binding. A person who loses the Agent creation binding loses
-`read` on `default` and cannot reach their Agents there, but those Agents keep
-running.
+Removing a binding from the configuration, or a person from a mapped Group or
+the provider group, removes only that Group's permissions. OCC refuses only
+operations that no remaining grant permits. Owner bindings stay: with a known
+resource ID, the person can still read, update, and deploy what they own, and a
+Namespace-wide Owner binding still permits creates there. Disabling the account
+ends all of their API access. Either way, Owner bindings, Namespaces, Agents,
+and grants stay, and the Agents keep running, until an administrator deletes the
+resources or the Owner bindings.
 
 OCC learns of a change as follows:
 
-| Change                                                       | Takes effect                                          |
-| ------------------------------------------------------------ | ----------------------------------------------------- |
-| An administrator disables an account                         | The next request; policy and session lookups are live |
-| An administrator changes the `iam` configuration             | The next API and worker startup                       |
-| The provider removes a group or disables the person          | The next sign-in; sessions last at most eight hours   |
+| Change                                              | Takes effect                                          |
+| --------------------------------------------------- | ----------------------------------------------------- |
+| An administrator disables an account                | The next request; policy and session lookups are live |
+| An administrator changes the `iam` configuration    | The next API and worker startup                       |
+| The provider removes a group or disables the person | The next sign-in; sessions last at most eight hours   |
 
-Session lifetime stays at eight hours. A person whom the provider disabled
+A person whom the provider disabled
 cannot sign in again, so their last mapped sign-in in the Default users list
 grows old. SCIM, through Better Auth's `@better-auth/scim` plugin, is the
 follow-up for enterprise providers that push changes. It writes memberships with
@@ -361,8 +370,7 @@ claim:
   would gain nothing, but it needs built-in Roles, and a caller who can operate
   a source can already bind it to an Agent.
 - **SCIM in the first release.** It covers only providers that push, needs its
-  own tables and tokens, and still needs the same Group mapping. Sign-in sync
-  comes first; SCIM follows.
+  own tables and tokens, and still needs the same Group mapping.
 - **Build on the proposed Agent Author Role (#4045).** It is not accepted, it
   omits `agent:administer`, and an administrator assigns it per person.
 
