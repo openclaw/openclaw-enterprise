@@ -300,6 +300,7 @@ export {
 } from "@openclaw-enterprise/iam";
 
 export interface ControllerAuth {
+  readonly nativeBrowser?: PostgresHumanAuthentication["nativeBrowser"];
   readonly auth: ControllerBetterAuth;
   readonly issuer: string;
   readonly sessionCookieName: string;
@@ -2067,6 +2068,7 @@ export async function createPostgresControllerAuth(
         throw new CallerStateDeniedError("The assigning session is no longer current.");
       }
     },
+    ...(guarded && persistence ? { nativeBrowser: persistence.nativeBrowser } : {}),
     ...(activationSkipped.length === 0 ? {} : { activationSkipped }),
     ...(withoutExternalIdentity.length === 0 ? {} : { withoutExternalIdentity }),
     ...(humanLogin === undefined

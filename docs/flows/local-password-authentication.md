@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: "2026-11-06 02:07"
-last_updated_session: "authoring-run/8d231212-5a96-46b9-8dee-2eac79700e32"
+updated: "2026-11-06 19:16"
+last_updated_session: "authoring-run/58e06c73-4f86-4a03-b654-b9af9a6429d1"
 ---
 
 # Bootstrap and human authentication flow
@@ -94,22 +94,19 @@ password file on the same protected PVC, and development writes to its
 bootstrap-only volume or explicit direct-initialization path. No plaintext reaches logs, audit, HTTP
 bootstrap responses, or the worker.
 
-Both modes commit Installation/IAM/audit in one controller transaction. The
-initializer owns one attempt across account creation, key issuance, output and
-commit. The API loads committed state without calling the human-session-only
+Both modes commit Installation/IAM/audit atomically. One attempt covers account
+creation, key issuance, output and commit. The API loads committed state without calling the human-session-only
 `POST /installation/bootstrap`. Singleton constraints permit one committed seed;
 a losing initializer fails.
 
 Any error ends the single attempt with `installation.bootstrap-failed`,
 available non-secret IDs and paths, and a nonzero exit; the Helm initialization
-Job uses `backoffLimit: 0`. Completed tracked accounts, keys, and files,
-including partial output, remain for inspection. One pre-return Better
-Auth failure is narrower: if password `linkAccount` fails inside
-`createAccount`, the helper attempts to delete the just-created user before
-rethrowing. That is not a general artifact-recovery path; the initializer never
+Job uses `backoffLimit: 0`. Tracked accounts, keys, and files, including partial output, remain for inspection.
+If password `linkAccount` fails inside `createAccount`, the helper attempts to
+delete the just-created user before rethrowing. Otherwise, the initializer never
 automatically revokes, retries, repairs, or resets committed or uncertain state.
 
-An uncertain commit may have persisted the seed. The
+After an uncertain commit, the
 [recovery procedure](../guides/deploy/service-keys.md#recover-an-incomplete-bootstrap)
 requires confirming transaction completion and exact attempt IDs before repair;
 file existence is insufficient. Reset requires identifying the disposable
@@ -242,12 +239,15 @@ properties, exit `64` with usage. The
 [maintenance procedure](../guides/deploy/auth-maintenance.md) lists supported operations
 and exit codes.
 
-Activation requires stopped admission, drained or terminated requests, and stopped
-old controllers; startup does not fence live readers. Both PostgreSQL compositions
-reject GitHub with native administration, including without its cookie domain.
-`apps/controller/src/auth/index.ts:createPostgresControllerAuth` checks the secret,
-canonical origin and profile before activation. Invalid configuration leaves
-sessions, enrollment and recovery designation unchanged.
+Activation requires stopped admission, drained or terminated requests, and every
+old controller stopped; startup cannot fence live readers. Both PostgreSQL
+compositions require GitHub native administration to use
+[host-only exchange](../reference/agent-native-admin.md#host-only-session-exchange).
+Google and OIDC require native administration disabled.
+`apps/controller/src/auth/index.ts:createPostgresControllerAuth` constructs and
+initializes authentication before activation, checking the secret, canonical HTTP
+origin, and supported profile. Invalid static configuration leaves legacy sessions,
+account enrollment, and the recovery designation unchanged.
 `PostgresHumanAuthentication.activateRecovery` then validates and enrolls the complete existing password-user/Principal population,
 fixes the usable recovery administrator, and removes unbound historical sessions
 in one State transaction before serving resumes. Unsupported or incomplete
@@ -259,9 +259,8 @@ Account routes enforce the
 State locks actor and target, rechecks the actor session, and applies the
 caller's `expectedVersion`. Attachment, disablement, and account-wide revocation advance
 that version and invalidate target sessions and proofs without changing IAM.
-A guarded read returns current account and method state, not a prior operation
-receipt. Unknown completion returns an explicit dependency failure without
-replay or compensation; operators must resolve uncertainty before a new action.
+Guarded reads return current account and method state. Unknown completion returns a dependency failure without replay or compensation;
+resolve uncertainty before another action.
 Without GitHub or Google, the composition supplies no account operations; the routes
 still authorize the caller, then return `409 RESOURCE_CONFLICT`.
 Logout commits deletion and audit before clearing the cookie. The [authentication reference](../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
@@ -288,11 +287,11 @@ closed. Bearer credentials and caller-supplied identity headers are rejected.
 `apps/controller/src/index.ts:createFastifyApp` lets an authorized human Installation
 administrator create accounts with or without GitHub. `prepareAccount` validates
 and hashes the password without writes. `provisionPasswordAccount` writes the user,
-password method, Principal, explicit existing-role binding, enrollment and audit
-atomically, without subsequent compensation. A lost COMMIT reply returns `503`
+password method, Principal, optional existing-role binding, configured
+[default Group memberships](../reference/authorization/default-users.md#group-membership),
+enrollment and audit atomically, without subsequent compensation. A lost COMMIT reply returns `503`
 with unknown outcome: retrying the same email creates an account only if the first
-attempt did not commit; otherwise it returns `409`. Creation issues no session
-and infers no grants.
+attempt did not commit; otherwise it returns `409`. Creation issues no session.
 
 ### 6. Enroll a verified team member
 
@@ -309,8 +308,7 @@ one State transaction. Existing identities retain their attempt-currentness and
 disabled-account checks. New identities reuse `insertPasswordAccount`; only the
 transaction that inserted them can snapshot those new methods without an older
 attempt timestamp. Account, external method, membership and their audits commit
-together. The normal session transaction rechecks the resulting proof before
-issuing its cookie. Group bindings supply permission; this path creates none.
+together. The session transaction rechecks the proof before issuing its cookie. Group bindings supply permission; this path creates none.
 
 ## Debugging and Verification
 
@@ -362,6 +360,10 @@ Run `tests/integration/` files with `node --test`.
 
 ## Changelog
 
+- 2026-11-06 19:16: Preserve team enrollment and host-only browser access; trace configured account memberships. (authoring-run/58e06c73-4f86-4a03-b654-b9af9a6429d1 - 491908448534fbcee539aac386180fbf9268d59b)
+
+- 2026-11-06 08:56: Document host-only GitHub native administration. (authoring-run/2205da1f-3410-4bcb-9697-f2bbb5ebc49a - 4d7abb4a7f48c9dddf19afe87bbedfa1807a5749)
+
 - 2026-11-06 02:07: Trace opt-in GitHub team enrollment and transactional identity creation. (authoring-run/8d231212-5a96-46b9-8dee-2eac79700e32 - 201eed939abe18e2d522f2b2ead5047626ade755)
 
 - 2026-11-04 11:22: Record durable password-only session revocation and storage failure handling. (authoring-run/d3b76aba-07fb-422b-b0fd-f5957926b7b8 - 0c7126dc16df1a01e2242e9bd35f9e742d6cee56)
@@ -370,4 +372,4 @@ Run `tests/integration/` files with `node --test`.
 
 - 2026-10-10 20:56: Reject unstorable email before State reads while preserving denial audits and admission. (authoring-run/6a102658-a68a-460f-bb67-be99a2490d8d - f6526eed518b689cc99e70f2c8ad349c500e936d)
 
-[Bootstrap and human authentication documentation history](local-password-authentication/history.md) preserves the older dated entries.
+[Bootstrap and human authentication documentation history](local-password-authentication/history.md) preserves older entries.

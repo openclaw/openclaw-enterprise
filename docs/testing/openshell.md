@@ -119,10 +119,21 @@ OCC_TEST_DEV_UP_OPENSHELL_COMPOSE_REAL=1 \
   node --test tests/integration/dev-up-openshell-k3d-real.test.mjs
 ```
 
-Each command selects one case and skips the other. These tests verify setup,
-Workspace reconciliation, and cleanup. They use a synthetic credential and
-do not create an Agent or make a model call. They default to Docker; set
+Each command selects one case and skips the other. Both verify setup, Workspace
+reconciliation, and cleanup. The Kubernetes control-plane case also creates a
+real Agent and checks browser access and a model reply. Its GitHub provider is a
+protocol fixture. The Compose case uses a synthetic credential and makes no
+model call. They default to Docker; set
 `OCC_TEST_DEV_UP_CONTAINER_ENGINE=podman` to use Podman.
+
+Set `OCC_TEST_NATIVE_BROWSER_RECEIPT` to a new file in an existing directory to
+retain the successful browser check's source, image identities, and assertion
+results. The test refuses to overwrite an existing file. Without this setting,
+it prints a temporary receipt path. The OpenShell CI lane uploads only this JSON
+file as `native-browser-receipt-*` for seven days, including on successful runs.
+It contains no cookies, OAuth exchanges, model text, or browser media. Screenshots
+and video for [Console visual review](../contributing/console-storybook.md#appearance-review)
+remain a separate requirement; this functional check does not record video.
 
 ## OpenShell Sandbox
 

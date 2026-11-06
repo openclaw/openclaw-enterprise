@@ -1,7 +1,7 @@
 # External sign-in and account controls
 
-This page covers GitHub, Google and generic OIDC sign-in for existing OpenClaw
-Control Plane (OCC) accounts, including session, recovery and account controls. The [authentication reference](../authentication.md)
+GitHub, Google and generic OIDC sign-in for existing OpenClaw Control Plane (OCC)
+accounts shares these session, recovery and account controls. The [authentication reference](../authentication.md)
 covers bootstrap, password sessions, request origin, provisioning, and failures.
 
 ## Console sign-in destinations
@@ -15,8 +15,9 @@ recovery ends at its console page; opening native UI remains a separate action.
 
 GitHub sign-in requires one serving controller, one Installation, PostgreSQL with
 its restricted application role, native IAM, one GitHub App on github.com, and one
-canonical HTTPS Console origin with host-only cookies. Shared-cookie native
-administration (startup fails with `EXTERNAL_SIGN_IN_NATIVE_ADMIN_UNSUPPORTED`),
+canonical HTTPS Console origin with host-only cookies. Native administration requires
+[host-only exchange](../agent-native-admin.md#host-only-session-exchange).
+Shared-cookie native administration (startup fails with `EXTERNAL_SIGN_IN_NATIVE_ADMIN_UNSUPPORTED`),
 other session readers, rolling or mixed-version serving, and mutable Installation
 policy are unsupported. Keep bootstrap, seeding, external
 policy writers, and recovery-affecting changes stopped.

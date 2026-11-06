@@ -2014,6 +2014,7 @@ test(
       [68, "preConnectionTemplates"],
       [69, "preSavedConnections"],
       [70, "preDefaultUsers"],
+      [71, "preNativeBrowserAccess"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2491,6 +2492,7 @@ test(
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
+      [71, "preNativeBrowserAccess"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2746,6 +2748,7 @@ test(
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
+      [71, "preNativeBrowserAccess"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2766,7 +2769,9 @@ test(
         // 0058 creates the policy table; 0059 has no DDL, so later prefixes reach custody.
         // Fail the common reduction grant after admission backfill and repository authority.
         // All three pending receipts, schema changes and main-row annotations roll back.
+        // Reject native browser trigger creation after its tables and grants; all of 0072 must roll back.
         const rollbackTag = [
+          [71, "CREATE TRIGGER"],
           [58, "GRANT"],
           [57, "CREATE TABLE"],
           [56, "CREATE FUNCTION"],
