@@ -37,6 +37,29 @@ function hasAccountCoordinates(ref: OAuthAccountRef) {
   );
 }
 
+function resolutionDeadline(deadline: number) {
+  const controller = new AbortController();
+  let timer: NodeJS.Timeout | undefined;
+  // A relative timer can wake before the signed wall-clock deadline. Allow its one
+  // millisecond of wall-clock precision, while bounding a backwards clock step.
+  const latest = performance.now() + (deadline - Date.now()) + 1;
+  const remainingMs = () => Math.min(deadline - Date.now(), latest - performance.now());
+  const check = () => {
+    const remaining = remainingMs();
+    if (remaining <= 0) {
+      controller.abort();
+    } else {
+      timer = setTimeout(check, Math.min(Math.ceil(remaining), 2_147_483_647)).unref();
+    }
+  };
+  check();
+  return {
+    signal: controller.signal,
+    expired: () => remainingMs() <= 0,
+    clear: () => clearTimeout(timer),
+  };
+}
+
 /** The same issuance budget applies to scheduled and request-triggered work. */
 export function runPreparation(owner: Preparation, outer: AbortSignal) {
   const budget = 25_000;
@@ -176,10 +199,8 @@ export class TokenService implements TokenServiceContract {
   async resolve(reference: PreparedTokenRef | OAuthAccountRef, options: TokenResolveOptions) {
     const { signal: caller, minimumValidityMs } = options;
     const deadline = Date.parse(options.deadlineAt);
-    const remaining = deadline - Date.now();
     if (
-      !Number.isFinite(remaining) ||
-      remaining <= 0 ||
+      !(deadline > Date.now()) ||
       caller.aborted ||
       !Number.isFinite(minimumValidityMs) ||
       minimumValidityMs < 0
@@ -199,27 +220,28 @@ export class TokenService implements TokenServiceContract {
           return undefined;
         }
         issuer = this.issuer(reference.key.provider);
-        if (!issuer || issuer.tokenKind !== reference.kind) {
+        if (!issuer || issuer.tokenKind !== reference.kind || issuer.shutdownSignal?.aborted) {
           return undefined;
         }
         break;
       default:
         return undefined;
     }
-    const signals = [caller, AbortSignal.timeout(Math.min(remaining, 2_147_483_647))];
+    const timeout = resolutionDeadline(deadline);
+    const signals = [caller, timeout.signal];
     if (issuer?.shutdownSignal) {
       signals.push(issuer.shutdownSignal);
     }
     const signal = AbortSignal.any(signals);
-    if (signal.aborted) {
-      return undefined;
-    }
     let cancel!: () => void;
     const stopped = new Promise<undefined>((resolve) => {
       cancel = () => resolve(undefined);
     });
     signal.addEventListener("abort", cancel, { once: true });
     try {
+      if (signal.aborted) {
+        return undefined;
+      }
       // Each caller has its own time budget. A provider can finish an already-dispatched
       // renewal after a caller leaves, but a delayed read must never release its bytes.
       const bounded = { ...options, signal };
@@ -235,9 +257,10 @@ export class TokenService implements TokenServiceContract {
       const expiresAt = Date.parse(token.expiresAt);
       const usableUntil =
         "usableUntil" in token ? Math.min(expiresAt, Date.parse(token.usableUntil)) : expiresAt;
-      return now < deadline && usableUntil > now + minimumValidityMs ? token : undefined;
+      return !timeout.expired() && usableUntil > now + minimumValidityMs ? token : undefined;
     } finally {
       signal.removeEventListener("abort", cancel);
+      timeout.clear();
     }
   }
 
